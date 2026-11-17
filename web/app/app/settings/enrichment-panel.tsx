@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { panelError } from './panel-error'
 
 interface Slot { connector: string; last4: string; enabled: boolean }
 interface AuditRow { connector: string; scan_job_id: string | null; lookup: string; status: string; results: number; created_at: number }
@@ -9,8 +10,9 @@ const SLOTS = [
   { id: 'enrich:pdl', name: 'People Data Labs', hint: 'api key. Used only when no Apollo key is saved - unless you turn on the fallback below. Person search can use your PDL credits per profile returned. Your plan determines available credits and billing, and the cost on your account is not verified.' },
 ]
 
+type MailboxChecks = { state: string; verifier: string | null; day: { used: number; cap: number; remaining: number }; month: { used: number; cap: number; scope: string }; note: string }
 export default function EnrichmentPanel() {
-  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean; credits?: { provider: 'apollo' | 'pdl'; window: 'day' | 'month'; reserved: number; charged: number; limit: number | null; source: 'tenant' | 'operator' | null }[] | null } | null>(null)
+  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean; mailbox_checks?: MailboxChecks | null; credits?: { provider: 'apollo' | 'pdl'; window: 'day' | 'month'; reserved: number; charged: number; limit: number | null; source: 'tenant' | 'operator' | null }[] | null } | null>(null)
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState('')
   const [limits, setLimits] = useState<Record<string, string>>({})
@@ -19,7 +21,7 @@ export default function EnrichmentPanel() {
   async function act(body: Record<string, unknown>) {
     const r = await fetch('/api/settings/enrichment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     const j = await r.json().catch(() => ({}))
-    setMsg(r.ok ? (body.disconnect ? 'Removed.' : 'Saved.') : j.error || 'Something went wrong')
+    setMsg(r.ok ? (body.disconnect ? 'Removed.' : 'Saved.') : panelError(j.error, 'Something went wrong'))
     setKeys({})
     void load()
   }
@@ -103,6 +105,16 @@ export default function EnrichmentPanel() {
               <span>{a.status}{a.results ? ` · ${a.results}` : ''}</span>
             </div>
           ))}
+        </div>
+      )}
+      {data.mailbox_checks && (
+        <div className="mt-4 text-xs text-[#555]" data-testid="mailbox-checks" data-state={data.mailbox_checks.state}>
+          <div className="font-medium text-[#111]">Mailbox checks{data.mailbox_checks.verifier ? ` (${data.mailbox_checks.verifier.includes('staging-fake') ? 'STAGING TEST verifier, not a real check' : data.mailbox_checks.verifier})` : ''}</div>
+          <p>{data.mailbox_checks.note}</p>
+          {data.mailbox_checks.state !== 'off' && <p data-testid="mailbox-checks-numbers">
+            Today: {data.mailbox_checks.day.used} used{data.mailbox_checks.day.cap > 0 ? ` of ${data.mailbox_checks.day.cap}, ${data.mailbox_checks.day.remaining} left` : ', no checks allowed (daily limit 0)'}.
+            {' '}This month: {data.mailbox_checks.month.used} used by this workspace{data.mailbox_checks.verifier ? `; the monthly limit of ${data.mailbox_checks.month.cap} is shared by all workspaces` : ''}.
+          </p>}
         </div>
       )}
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}

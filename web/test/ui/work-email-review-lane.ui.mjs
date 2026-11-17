@@ -39,6 +39,9 @@ const LEADS = [lead(A, 'Harlow Reed', 'outside_window_undated'), lead(C, 'Counte
 // no hyphen or dot for the browser to break at before the domain: only the wrap class keeps it inside a 390 px card
 const LONG = 'jordanhammondchiefmarketingofficerextralonglocalpartforalawfirm@averyveryverylonglawfirmdomainnameharlowreedlaw.example'
 const weCalls = []
+// #1182: the list answer carries the page's stored work-email lookups (one read), so no per-lead GET is made on load.
+let stored = false
+const STORED_ROW = { target: 'Jordan Hammond|Chief Marketing Officer', status: 'published', provider: 'site', address: 'jordan@harlowreedlaw.example', detail: 'printed on the company website', source_url: 'https://www.harlowreedlaw.example/contact-us/', mailbox_check: null, mailbox_verifier: null, updated_at: 1 }
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
 await ctx.route('**/*', async route => {
@@ -47,7 +50,7 @@ await ctx.route('**/*', async route => {
   if (!u.pathname.startsWith('/api/')) return route.continue()
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (u.pathname === '/api/scan/status') return json({ status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Chicago law firms that opened a new office' })
-  if (u.pathname === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
+  if (u.pathname === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS, work_email: { providers: { apollo: false, pdl: false, pdlNeedsOptIn: false, mailboxCheck: false }, providers_by_lead: {}, lookups: stored ? { [A]: [STORED_ROW] } : {} } })
   if (u.pathname === '/api/scan/jobs') return json({ jobs: [] })
   const we = /^\/api\/leads\/([a-f0-9]{24})\/work-email$/.exec(u.pathname)
   if (we) {
@@ -93,6 +96,14 @@ try {
   // control: without the wrap class the same address does overflow, so the assertions above are what the class buys
   const without = await page.evaluate(() => { const a = document.querySelector('[data-testid="work-email-address"] .font-mono'); a.classList.remove('break-all'); const r = document.querySelector('[data-testid="work-email-address"]').getBoundingClientRect(); return { right: Math.round(r.right), vw: window.innerWidth, page: document.documentElement.scrollWidth > document.documentElement.clientWidth } })
   assert.ok(without.right > without.vw || without.page, `control: the unwrapped address overflows at 390 px: ${JSON.stringify(without)}`)
+  // 4. (#1182) a lookup stored earlier is shown after a reload with no click and no per-lead request at all
+  weCalls.length = 0; stored = true
+  await page.setViewportSize({ width: 1280, height: 1000 })
+  await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  await page.locator('[data-testid="work-email-address"]').first().waitFor({ timeout: 15000 })
+  assert.match(await page.locator('[data-testid="review-work-email"]').first().innerText(), /jordan@harlowreedlaw\.example/)
+  assert.deepEqual(weCalls, [], 'the stored answer came with the list: no GET and no POST for the lead')
+  await shot('review-lane-stored-1280')
   console.log('work-email review-lane UI check passed:', weCalls.join(', '))
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

@@ -27,11 +27,12 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
-async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { tfFetchAnswer?: (u: string) => Response; tfAnswer?: (u: string) => Response; served?: string; setup?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
+async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { tfFetchAnswer?: (u: string) => Response; tfAnswer?: (u: string) => Response; served?: string; setup?: (db: Database.Database) => void; beforeClaim?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); saveKey(db, 'A', 'anthropic', KEY, master)
   createQueryJob(db, 'A', { query: 'Find Ohio companies with 10 to 100 employees that recently posted a payroll job', icp: JSON.stringify(ICP), ...(x.runBudget ? { runBudget: x.runBudget } : {}) })
+  x.beforeClaim?.(db)
   const job = claimKeyedJob(db)!
   x.setup?.(db)
   const lead = { company: 'Harbor Freight Supply', name: 'Pat Lee', signal: 'Hiring a payroll specialist', excerpt: QUOTE, source_url: 'https://jobs.example/hf', event_date: recent }
@@ -144,7 +145,8 @@ test('#846 #847 runner: a scan of an account with no operator entry reserves eve
 test('#846 runner: past the deployment day cap the first model request is never sent; the scan stops budget_stopped with owner_pool_limit recorded', async () => {
   const x = await run({ DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: '0.0001', DAZL_OWNER_MONTH_MAX_USD: undefined }, true)
   assert.equal(x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length, 0, 'no model request was sent')
-  assert.deepEqual(x.calls.filter(c => c.status === 'refused').map(c => [c.kind, c.reason]).slice(0, 1), [['llm.anthropic', 'owner_pool_limit']])
+  // the model call is refused first; the later steps of the attempt are refused too (#1167), in the same second, and the ledger orders by (created_at, id)
+  assert.deepEqual(x.calls.filter(c => c.status === 'refused' && c.kind.startsWith('llm.')).map(c => [c.kind, c.reason]).slice(0, 1), [['llm.anthropic', 'owner_pool_limit']])
   assert.equal(x.row.error, 'budget_stopped')
   assert.deepEqual(await poolRows(x.db, 'A'), [], 'a refused reservation writes nothing')
 })
@@ -343,4 +345,98 @@ test('settleAll: a second settle and a retry with different amounts are refused 
   const r2 = await reserveAllUsd([g], 2)
   r2.settlement = { deltaUsd: -1, reportedUsd: 1 }
   await assert.rejects(settleAll([g], -2, 0, r2), /different amounts/)
+})
+
+// #1168 (the real run for #1154, job b51c4104e46070941c974229): the account day cap refused the profile and query-writing model
+// calls (owner_pool_limit), the run went on with the request's own words, then the search failed. The page said "A source this run
+// depends on failed ... This was not a budget stop". The limit refused first, so the limit stop is what the run ends with.
+test('#1168 runner: the account cap refuses the model calls, then the search fails: the scan ends as the limit stop (owner_pool_limit), not source_error', async () => {
+  const x = await run({ DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: '0.0001', DAZL_OWNER_MONTH_MAX_USD: undefined }, true, { tfAnswer: () => new Response('down', { status: 500 }) })
+  assert.equal(x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length, 0, 'no model request was sent')
+  assert.ok(x.calls.some(c => c.status === 'refused' && c.kind === 'llm.anthropic' && c.reason === 'owner_pool_limit'), JSON.stringify(x.calls))
+  assert.deepEqual([x.row.status, x.row.error], ['failed', 'budget_stopped'], 'the limit stop, not the later source failure')
+  // #1168 item 1: calls refused before sending are not recorded as model requests
+  const has = x.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'scan_model_calls'").get()
+  const recorded = has ? (x.db.prepare('SELECT count(*) AS n FROM scan_model_calls').get() as { n: number }).n : 0
+  assert.equal(recorded, 0, 'no model call is recorded as made')
+})
+
+// #1167 (owner decision, review of #1172 at b8eef37e): an account at its day or month cap sends NOTHING. The reviewer's probe on
+// b8eef37e, and dazl.ai jobs 6f8f98c6feb6f40cc78b9c07 / 35f5e4ee080d0cce5d02d605, showed a scan at the cap still running its
+// searches and fetches (3 + 1 here, 2 + 2 on prod) although every model call was refused. These count every request the real runner
+// sends to the model, the search and the fetch endpoints.
+import { migrateSpendPools, periodOf } from '../lib/llm/spend-pool.ts'
+const NO_CAPS = { DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined, DAZL_OWNER_DAY_MAX_USD: undefined, DAZL_OWNER_MONTH_MAX_USD: undefined }
+const sentTo = (x: Awaited<ReturnType<typeof run>>) => ({
+  model: x.paid.filter(p => p.url === 'https://api.anthropic.com/v1/messages').length,
+  search: x.paid.filter(p => p.url.startsWith('https://api.search.tinyfish.ai')).length,
+  fetch: x.paid.filter(p => p.url.startsWith('https://api.fetch.tinyfish.ai')).length,
+})
+// a window of account A already holding `usd` (as earlier scans of the day / month left it)
+const filled = (w: 'day' | 'month', usd: number) => (db: Database.Database) => {
+  migrateSpendPools(db)
+  db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, ?, 1, ?)').run('A', periodOf(w, Math.floor(Date.now() / 1000)), usd, usd, Math.floor(Date.now() / 1000))
+}
+const NOTHING = { model: 0, search: 0, fetch: 0 }
+
+test('#1167 control: under the caps the scan still searches, fetches and calls the model', async () => {
+  const s = sentTo(await run(NO_CAPS, true))
+  assert.ok(s.model >= 2 && s.search >= 1 && s.fetch >= 1, JSON.stringify(s))
+})
+for (const [name, env, setup] of [
+  ['a low day cap', { ...NO_CAPS, DAZL_OWNER_DAY_MAX_USD: '0.0001' }, undefined],
+  ['a low month cap', { ...NO_CAPS, DAZL_OWNER_MONTH_MAX_USD: '0.0001' }, undefined],
+  ['the day window already at the default $10', NO_CAPS, filled('day', 10)],
+  ['the month window already at the default $100', NO_CAPS, filled('month', 100)],
+  ['the day window a fraction under its cap, so only the model call does not fit', { ...NO_CAPS, DAZL_OWNER_DAY_MAX_USD: '1' }, filled('day', 0.9999)],
+  ['a named account at its own day cap', { ...NO_CAPS, DAZL_RUN_MAX_USD_USERS: 'A:0.0001' }, undefined],
+  ['a named account whose month window is already full', { ...NO_CAPS, DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_OWNER_MONTH_MAX_USD_USERS: 'A:20' }, filled('month', 20)],
+] as const) {
+  test(`#1167 at the account cap the scan sends nothing - ${name}: 0 model, 0 search, 0 fetch; it ends as the account-limit stop`, async () => {
+    const x = await run(env, true, setup ? { setup } : {})
+    assert.deepEqual(sentTo(x), NOTHING, JSON.stringify(x.calls.map(c => [c.kind, c.status, c.reason])))
+    assert.deepEqual([x.row.status, x.row.error], ['failed', 'budget_stopped'])
+    assert.ok(x.calls.some(c => c.status === 'refused' && c.reason === 'owner_pool_limit'), 'the account-limit refusal is in the ledger (a named account too)')
+  })
+}
+
+// review finding 3: the two #1168 fixes did not reach a NAMED account (its guard refuses before the ledger): cap then search failure
+// ended source_error, and the cost line said "Actual model cost was not recorded".
+test('#1168 named account: at its cap, with search down, the scan ends as the limit stop and the cost line says no model call was made', async () => {
+  const { readRefusedModelCalls } = await import('../lib/scan/status-reads.ts'); const { sqliteDb } = await import('../lib/db/client.ts'); const { compareActual } = await import('../lib/scan/price-estimate.ts')
+  const x = await run({ ...NO_CAPS, DAZL_RUN_MAX_USD_USERS: 'A:0.0001' }, true, { tfAnswer: () => new Response('down', { status: 500 }) })
+  assert.deepEqual(sentTo(x), NOTHING)
+  assert.deepEqual([x.row.status, x.row.error], ['failed', 'budget_stopped'], 'not source_error')
+  const jobId = (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  const refused = await readRefusedModelCalls(sqliteDb(x.db), 'A', jobId)
+  assert.ok(refused !== null && refused >= 1, `the refusal is counted: ${refused}`)
+  const est = { total: { min: 0.09, max: 0.81 }, rows: [{ id: 'm', kind: 'model', label: 'model', usd: { min: 0.09, max: 0.81 } }] } as unknown as Parameters<typeof compareActual>[0]
+  assert.match(compareActual(est, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0, refusedBeforeSending: refused }).summary, /^No model call was made: \d+ (was|were) refused by a spending limit before sending, so the model cost is \$0\./)
+})
+
+// review finding 4: the cap hit between the first and the second model call, with model-usage recording off: one call WAS sent.
+test('#1168 a model call that was sent is never reported as "no model call was made" (cap between call 1 and 2, DAZL_MODEL_USAGE=0)', async () => {
+  const { readRefusedModelCalls } = await import('../lib/scan/status-reads.ts'); const { sqliteDb } = await import('../lib/db/client.ts')
+  // the first model call reserves about 0.0116; a day cap just above it admits one call and refuses the next
+  const x = await run({ ...NO_CAPS, DAZL_OWNER_DAY_MAX_USD: '0.0125', DAZL_MODEL_USAGE: '0' }, false)
+  const s = sentTo(x)
+  assert.equal(s.model, 1, JSON.stringify({ s, calls: x.calls.map(c => [c.kind, c.status, c.reason, c.reserve_usd]) }))
+  assert.ok(x.calls.some(c => c.kind === 'llm.anthropic' && c.status === 'refused' && c.reason === 'owner_pool_limit'))
+  const jobId = (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
+  assert.equal(await readRefusedModelCalls(sqliteDb(x.db), 'A', jobId), null, 'a sent call: the line keeps its unknown-cost wording')
+})
+
+// review finding 2: a trial scan stopped at the account cap gives its free-scan attempt back (nothing was spent). That is only
+// right when such a scan costs dazl nothing: N of them must send no search and no fetch at all.
+test('#1167 trial: three free-trial scans refused at the account cap send 0 model, 0 search and 0 fetch requests in total, and charge the trial nothing', async () => {
+  const trialEnv = { ...NO_CAPS, DAZL_OWNER_DAY_MAX_USD: '0.0001', DAZL_TRIAL_ANTHROPIC_KEY: KEY, DAZL_TRIAL_SCAN_RESERVE_USD: '3', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '5', DAZL_TRIAL_GLOBAL_DAILY_USD: '50', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0', DAZL_TRIAL_TINYFISH_FETCH_USD: '0' }
+  const total = { model: 0, search: 0, fetch: 0 }
+  for (let i = 0; i < 3; i++) {
+    // funded by the trial BEFORE the runner claims it, so the runner itself takes the trial path (its guard, its settlement)
+    const x = await run(trialEnv, true, { beforeClaim: db => { db.prepare("UPDATE scan_jobs SET funded_by = 'trial'").run(); db.prepare('DELETE FROM tenant_llm_keys').run() } })
+    const s = sentTo(x); total.model += s.model; total.search += s.search; total.fetch += s.fetch
+    const row = x.db.prepare('SELECT funded_by, status, error, spend_reserved_usd FROM scan_jobs').get() as { funded_by: string; status: string; error: string; spend_reserved_usd: number | null }
+    assert.deepEqual([row.funded_by, row.status, row.error, row.spend_reserved_usd ?? 0], ['trial', 'failed', 'budget_stopped', 0], `scan ${i + 1}`)
+  }
+  assert.deepEqual(total, NOTHING)
 })

@@ -7,7 +7,7 @@ name: web-preview
 # network fence, so nothing is scanned, sent, billed or fetched from a provider. Not a hosted URL; see web/docs/DEPLOY.md.
 on:
   pull_request:
-    paths: ["web/**", ".github/workflows/web-preview.yml"]
+    paths: ["web/**", "extension/**", ".github/workflows/web-preview.yml"]
 permissions:
   contents: read
 concurrency:
@@ -68,6 +68,13 @@ jobs:
           set -o pipefail
           SHOTS=preview/settings-advanced node test/ui/settings-advanced-unsupported.ui.mjs | tee /tmp/sa.out
           ! grep -q '^NOT RUN' /tmp/sa.out
+      # One-click Connect LinkedIn (#1037): the UNPACKED extension/ in Chromium against this build, a synthetic LinkedIn session in the
+      # browser's cookie jar and a loopback stub worker (no LinkedIn request); not installed / connected / disconnected, desktop and 390px.
+      - name: Rendered Connect LinkedIn (dazl Connect extension) check
+        run: |
+          set -o pipefail
+          SHOTS=preview/linkedin-connect node test/ui/linkedin-connect.ui.mjs | tee /tmp/lc.out
+          ! grep -q '^NOT RUN' /tmp/lc.out
       # The #379 offer-question binding: picking an offer binds the play's offer on both surfaces (stubbed; screenshots into preview/offer-question). It must run, not skip.
       - name: Rendered offer-question binding check (first-run + leads draft editor)
         run: |

@@ -1,4 +1,5 @@
 // Code decides "done": every candidate is resolved (dated, company confirmed, contact attached) or carries a specific reason after bounded targeted lookups. Stubbed pages only; invented companies.
+import './crawl-gap-zero.ts'   // first: the crawl's politeness gap is 0 against stubbed hosts (gate-2 budget)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'

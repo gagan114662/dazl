@@ -130,7 +130,7 @@ export async function spendCapsCheck(env: Env = process.env, opts: { tenant?: st
       checked_at: new Date(now * 1000).toISOString(),
       caps: { scan, account, day, month },
       models,
-      scope: 'Proves the effective numbers, their sources, the configured models being priced, and the reservation arithmetic of the deployed code at each cap. It does not prove that a given call path is wired to the caps: that is the test suite (test/spend-caps-846-847.test.ts, scan-spend-cap-runner, owner-spend-paths).',
+      scope: 'Proves the effective numbers, their sources, the configured models being priced, and the reservation arithmetic of the deployed code at each cap. It does not prove that a given call path is wired to the caps: that is the test suite (test/spend-caps-846-847.test.ts, scan-spend-cap-runner, owner-spend-paths). The account day and month caps count every priced step (model, render, priced TinyFish search / fetch, Apollo / PDL; a free step moves nothing), and an account at either cap sends nothing: once the account limit refuses a step of a scan, or a window is already full, every later paid step of that scan is refused before it is sent.',
       trial_funded: trialFundable(env as NodeJS.ProcessEnv),
     }
   } finally { raw.close() }

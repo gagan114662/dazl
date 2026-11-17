@@ -3,7 +3,7 @@
 // user's time, and why now". Every grade must cite the lead's already-verified evidence.
 import type { Provider } from '../llm/provider.ts'
 import type { Icp } from './icp.ts'
-import { proofBackedTiming } from './scoreboard.ts'
+import { eventDayVerified, proofBackedTiming } from './scoreboard.ts'
 
 // Key-free signal taxonomy. Each signal is observable on public pages (news, jobs boards,
 // company sites, changelogs, community posts) and must be backed by the lead's cited evidence.
@@ -87,9 +87,20 @@ export function holdUngraded(leads: { fit?: number; why?: string }[], reason: st
   for (const l of leads) { l.fit = 0; l.why = reason.slice(0, WHY_MAX) }
 }
 
-export function scorePrompt(icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null }[]): string {
+// What the grader is told about the event day. #878 / #1176: it used to print the retired date_status, which no scan sets to 'verified' any more, so every lead
+// whose day IS proven on its cited source (event_date_proof, the proof its own card shows) was graded as unverified timing: intent 0 and a "why" saying no
+// timing was verified, beside a card saying "verified on the cited source". The proof decides now (eventDayVerified, the card's own check); a stored
+// 'verified' without a proof is never shown as verified.
+export function eventAssociation(l: { event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null }, now: Date): string {
+  if (l.event_date && eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof ?? null, signal: l.signal ?? null, signal_kind: l.signal_kind ?? null }, { now })) return 'verified (the cited source states this day for this company and event)'
+  const s = l.date_status ?? 'unknown'
+  return s === 'verified' ? 'unverified' : s
+}
+export function scorePrompt(icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], now: Date = new Date()): string {
   return `You are grading sales leads for one seller. Their target profile (ICP):
 ${icpText}
+
+Today is ${now.toISOString().slice(0, 10)}. Any date before today is in the past. Knowing today only tells past from future: it never verifies a date, so an unverified date still means intent 0.
 
 Grade each lead below on three axes, 0-5 each:
 - fit: is this company someone the seller would actually sell to, given the ICP (0 = irrelevant or excluded, 5 = exact ICP)
@@ -97,6 +108,7 @@ Grade each lead below on three axes, 0-5 each:
 - action: can the seller act on it (0 = anonymous or unreachable giant, 5 = identifiable, right-sized, contactable)
 
 Rules:
+- Timing NEVER lowers fit. Unknown, unverified, disputed or out-of-window dates affect intent only; grade fit on who the company is.
 - Event date is a claim unless event association is verified. Publication, copyright and retrieval dates never prove a live trigger. Unknown timing means intent 0 and no NOW assertion.
 - Grade ONLY from the evidence shown. If the evidence does not show timing, intent is low. A true quote about the wrong company is still fit 0.
 - Announcements, listicles and news about a company are not the same as that company being a buyer; grade fit on who the company is, intent on what just happened to them.
@@ -111,7 +123,7 @@ Rules:
 Reply with one line per lead, exactly this format, no preamble:
 LEAD <n> | fit <0-5> | intent <0-5> | action <0-5> | match <4 letters like yy?n> | signals <comma list or none> | why <sentence>[ | mism <words>]
 
-${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\ndate claim: ${l.event_date ?? "unknown"}; event association: ${l.date_status ?? "unknown"}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
+${leads.map((l, i) => `LEAD ${i + 1}: company=${l.company || '?'} name=${l.name || '?'}\ndate claim: ${l.event_date ?? "unknown"}; event association: ${eventAssociation(l, now)}\nsignal: ${l.signal}\nevidence: ${l.excerpt ?? '(none)'}`).join('\n\n')}`
 }
 
 const clamp5 = (n: number) => Math.max(0, Math.min(5, Math.round(n)))
@@ -175,7 +187,7 @@ export interface ScoreTimingOpts { windowDays?: number | null; now?: Date }
 export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], fetchImpl?: typeof fetch, opts: ScoreTimingOpts = {}): Promise<LeadScore[] | null> {
   if (!provider.complete || leads.length === 0) return null
   try {
-    const text = await provider.complete(apiKey, scorePrompt(icpText, leads.slice(0, 40)), fetchImpl, 2500)
+    const text = await provider.complete(apiKey, scorePrompt(icpText, leads.slice(0, 40), opts.now), fetchImpl, 2500)
     const parsed = parseScores(text, Math.min(leads.length, 40))
     if (!parsed) console.error('lead scoring: could not parse model output', text.slice(0, 300))
     if (parsed) parsed.forEach((g, i) => {

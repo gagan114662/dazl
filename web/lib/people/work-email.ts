@@ -30,9 +30,12 @@ import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
-import { reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
+import { refundCredits, reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
+import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
+import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
+import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -40,6 +43,7 @@ import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
 import { stagingFakePdl } from '../enrich/pdl.ts'
+import { runWithTenantSpend } from '../scan/spend-cap.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
 // DAZL_ENV=staging; the fake ZeroBounce needs the same plus its own flag), so neither a real People Data Labs key nor the
@@ -104,6 +108,36 @@ export function workEmailsFor(db: Database.Database, tenantId: string, leadId: s
   return rows.map(r => shownRow(r, nowS)).map(r => r.status === 'pending' && r.updated_at < nowS - PENDING_STALE_S ? { ...r, status: 'uncertain' as const, detail: 'the last lookup did not finish; it may have used a credit' } : r)
 }
 
+// #1182: the stored lookups of every lead a Leads page shows, in ONE tenant-scoped read (WHERE tenant_id = ? AND lead_id IN (...), the table's
+// primary key is (tenant_id, lead_id, target)), grouped by lead. Same mapping as workEmailsFor (a stale 'pending' reads 'uncertain'; an
+// address the mailbox check found undeliverable or do-not-mail is never included).
+export function workEmailsForLeads(db: Database.Database, tenantId: string, leadIds: string[], nowS: number = Math.floor(Date.now() / 1000)): Record<string, WorkEmailRow[]> {
+  migrateWorkEmail(db)
+  const out: Record<string, WorkEmailRow[]> = {}
+  const ids = [...new Set(leadIds.filter(id => typeof id === 'string' && /^[a-f0-9]{24}$/.test(id)))]
+  for (let i = 0; i < ids.length; i += 200) {
+    const part = ids.slice(i, i + 200)
+    const rows = db.prepare(`SELECT lead_id, ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id IN (${part.map(() => '?').join(',')}) ORDER BY lead_id, target`).all(tenantId, ...part) as (WorkEmailRow & { lead_id: string })[]
+    for (const { lead_id, ...r } of rows) {
+      const shown = shownRow(r as WorkEmailRow, nowS)
+      const row = shown.status === 'pending' && shown.updated_at < nowS - PENDING_STALE_S ? { ...shown, status: 'uncertain' as const, detail: 'the last lookup did not finish; it may have used a credit' } : shown
+      ;(out[lead_id] ??= []).push(row)
+    }
+  }
+  return out
+}
+
+// What the Leads page needs for every work-email block on it, read once with the list (#1182): the providers answer (the same for every
+// lead, except the test-only fixture lead, whose answer is adjusted exactly as its own GET does) and the stored lookups by lead.
+// guesses (#1036): the shown guessed addresses by lead (flag off or none: {}), so a reload shows a stored guess with no per-lead request.
+export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]>; guesses: Record<string, GuessView[]> }
+export function workEmailPageRead(db: Database.Database, tenantId: string, leads: { id: string; company?: string | null; source_kind?: string | null }[], env: Record<string, string | undefined> = process.env): WorkEmailPageRead {
+  const providers = workEmailProviders(db, tenantId, env)
+  const providers_by_lead: Record<string, WorkEmailProviders> = {}
+  for (const l of leads) if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false }
+  return { providers, providers_by_lead, lookups: workEmailsForLeads(db, tenantId, leads.map(l => l.id)), guesses: guessesForLeads(db, tenantId, leads.map(l => l.id), env) }
+}
+
 // Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).
 // mailboxCheck (#1036): the free-tier mailbox check can run at all here (flag, key and both caps set), so the UI offers it.
 export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck: boolean }
@@ -123,9 +157,12 @@ export function workEmailProviders(db: Database.Database, tenantId: string, env:
   return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn, mailboxCheck }
 }
 
+// guess (#1036): with EMAIL_GUESS_ENABLED, when nothing was found for this person ('not_found', or no key to look further), an address
+// built from the tenant's learned format at this company's domain, labelled guessed, unverified/verified (lib/people/email-formats.ts).
+// Never a lookup row, never copyable unless a mailbox check said valid, never a draft recipient.
 export type FindWorkEmailResult =
-  | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string }
-  | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean }
+  | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string; guess?: GuessView | null }
+  | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean; guess?: GuessView | null }
 
 interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null }
 
@@ -182,9 +219,29 @@ const failText = (e: unknown, P: string) => {
   return name === 'AbortError' || name === 'TimeoutError' ? `${P} timed out (may have used a credit)` : `${P} answer could not be read (may have used a credit)`
 }
 
-export async function findWorkEmail(
+type FindDeps = { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
+// What the lookup worked out about the person (filled by lookupWorkEmail), so the guess is built from exactly the same derivation.
+interface Derived { foreign?: boolean; person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
+// #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
+export async function findWorkEmail(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
+  return runWithTenantSpend(db, tenantId, () => findWorkEmailCounted(db, tenantId, leadId, target, deps))
+}
+async function findWorkEmailCounted(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
+  const derived: Derived = {}
+  const r = await lookupWorkEmail(db, tenantId, leadId, target, deps, derived)
+  // Only where nothing was found: a found address (published, verified, found-not-checked) is never replaced or joined by a guess.
+  // US only (docs/DECISIONS.md 2026-10-26): a play that names another country gets published addresses only, so no guess either. The paid
+  // path refuses such a play AFTER its no-key return, so a keyless workspace must be stopped here, not by that check.
+  if ((r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site || derived.foreign !== false) return r
+  let guess: GuessView | null = null
+  try { guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), deps.env ?? process.env) }
+  catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+  return guess ? { ...r, guess } : r
+}
+
+async function lookupWorkEmail(
   db: Database.Database, tenantId: string, leadId: string, target: unknown,
-  deps: { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {},
+  deps: FindDeps, derived: Derived,
 ): Promise<FindWorkEmailResult> {
   migrateWorkEmail(db)
   const now = deps.now ?? Math.floor(Date.now() / 1000)
@@ -209,9 +266,12 @@ export async function findWorkEmail(
   try { const p = lead.icp ? JSON.parse(lead.icp) : null; if (p && typeof p === 'object' && !Array.isArray(p)) icp = p } catch { icp = {} }
   const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
   const icpText = strs(icp.who).join('; ')
+  derived.foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].some(c => c !== 'US')
   const person = workEmailTargets(rows, icpText, now * 1000, site).find(p => targetKey(p) === target)
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
   const want: WantPerson = { ...queryName(person.name)!, title: person.title, linkedin: person.linkedin }
+  derived.person = { name: person.name, title: person.title }; derived.site = site.site
+  derived.others = workEmailTargets(rows, icpText, now * 1000, site).map(p => splitName(p.name))
 
   const read = () => db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND target = ?`).get(tenantId, lead.id, target) as WorkEmailRow | undefined
   const prior = read()
@@ -292,7 +352,16 @@ export async function findWorkEmail(
           await settle(db, hold, r.billed ? 1 : 0) // 404 = PDL's unbilled no-match
           v = judgeMatch('pdl', r.match, want, site.site, icpText)
         }
-      } catch (e) { notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue } // charge unknown: the reservation stays
+      } catch (e) {
+        // #1167: the account's day / month spend cap refused the lookup BEFORE it was sent: the credit goes back, and the
+        // next provider would be refused by the same cap
+        if (e instanceof SpendRefused) {
+          await refundCredits(db, hold).catch((x) => console.error('[work-email] credit refund not saved (reservation kept):', x instanceof Error ? x.message.slice(0, 120) : 'error'))
+          const cap = e.reason === OWNER_POOL_LIMIT_REASON
+          notes.push(cap ? 'account spend limit reached: nothing was sent' : `spend check refused the lookup (${e.reason}): nothing was sent`); incomplete = true; log(cap ? 'spend_cap' : `spend_refused:${e.reason}`); break
+        }
+        notes.push(failText(e, P)); incomplete = true; log(e instanceof EnrichError ? e.code : 'error'); continue // charge unknown: the reservation stays
+      }
       answered = true
       seen.add(v.kind); notes.push(v.note); log(v.kind, v.kind === 'verified' || v.kind === 'unverified' ? 1 : 0)
       if (v.kind === 'verified' || v.kind === 'unverified') { best = { ...v, provider: prov }; break } // a kept address: no further spend

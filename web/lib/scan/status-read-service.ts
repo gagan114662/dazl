@@ -2,7 +2,7 @@ import { readProviderIssues } from './provider-issues.ts'
 import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verification-pass.ts'
 import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
-import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost } from './status-reads.ts'
+import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readRefusedModelCalls, readLastActivity } from './status-reads.ts'
 import { compareActual, type RunEstimate } from './price-estimate.ts'
 import { readRunReport } from './run-report.ts'
 import { effectiveStatus, enrichState } from './enrichment.ts'
@@ -51,7 +51,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
     const est = saved.estimate ? JSON.parse(saved.estimate) as Pick<RunEstimate, 'total' | 'rows' | 'payer' | 'cap'> : null
     if (est) {
       const ended = job.status === 'done' || job.status === 'failed'
-      const actual = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, servedModels: model_usage.served_models ?? null }) : null
+      const actual = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }) : null
       // Cost per verification pass: the scan's own verified counter as denominator, model cost as
       // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead
       // claim. Unknowns (running, unrecorded cost or count, zero passes) stay named, never 0/Infinity.
@@ -59,12 +59,18 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
     }
   } catch { cost = null }
   const provider_issues = await readProviderIssues(db, tenantId, job.id)
+  // #1157 line 2: the newest recorded activity: a provider call sent or settled, or the current claim. A retry's fresh
+  // claim is newer than the previous attempt's calls, so it never reads as quiet (1157-F1). null when neither exists.
+  const lastCall = await readLastActivity(db, tenantId, job.id)
+  const claim = job.claimed_at == null ? null : Number(job.claimed_at)
+  const lastVals = [lastCall, claim].filter((v): v is number => v != null && Number.isFinite(v))
+  const last_progress_at = lastVals.length ? Math.max(...lastVals) : null
   // The recorded stop provenance for the failure copy (typed report only); null = no reason kept (legacy row), so a
   // legacy budget_stopped must render neutrally - never a claim that a specific limit refused.
   const stop_refusal_reason = (run_report as { stop?: { spend_refusal_reason?: string | null } | null }[] | null)?.at(-1)?.stop?.spend_refusal_reason ?? null
   // #1082: the platform's fair share of the operator search budget limited this run: say so instead of a normal-looking run
   const cap = (run_report as { capacity?: { searches?: number; fetches?: number } | null }[] | null)?.at(-1)?.capacity ?? null
   const capacity_note = cap && ((cap.searches ?? 0) > 0 || (cap.fetches ?? 0) > 0) ? 'Platform search capacity reached today: results are thinner.' : null
-  return { ...(first5 ? { first5 } : {}), cost, provider_issues, progress, outcome, resolution, stop_refusal_reason, capacity_note, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null }
+  return { ...(first5 ? { first5 } : {}), cost, provider_issues, progress, outcome, resolution, stop_refusal_reason, capacity_note, last_progress_at, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null }
 
 }
