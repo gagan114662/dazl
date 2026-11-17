@@ -1,0 +1,29 @@
+name: needs-human
+# After 3 rounds of "changes requested" on one PR, flag it for Quest/Gagan instead of looping (REVIEW.md, "Three-round stop").
+# Reads only PR metadata (reviews, labels); never checks out or runs PR code, so pull_request_target is safe here.
+on:
+  pull_request_target:
+    types: [opened, synchronize, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted]
+permissions:
+  pull-requests: write
+  issues: write
+jobs:
+  rounds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Count changes-requested rounds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          n=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate --jq '[.[] | select(.state=="CHANGES_REQUESTED")] | length')
+          echo "changes-requested rounds: $n"
+          if [ "$n" -ge 3 ]; then
+            gh api "repos/$REPO/issues/$PR/labels" -f "labels[]=needs-human" >/dev/null
+            echo "::error::3+ rounds of changes requested. Flagged needs-human: Quest and the reviewer agree the fix together (REVIEW.md)."
+            exit 1
+          fi
