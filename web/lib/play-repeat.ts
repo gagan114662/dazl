@@ -22,7 +22,7 @@
 // with the person saving a play by hand. Nothing here runs a scan or spends anything; the runs are the scheduler's.
 import { randomBytes } from 'node:crypto'
 import type { Db, Tx, TxBody } from './db/client.ts'
-import { watchLeadsStep, type Fence } from './watch.ts'
+import { claimWatchAlertsStep, watchLeadsStep, type Fence } from './watch.ts'
 import { normalizeIcp } from './scan/icp.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
@@ -74,6 +74,9 @@ function* createRepeat(t: Tx, c: Candidate, now: number, fence: Fence): TxBody<s
   const next = firstRepeatAt(Number(c.finished_at), now)
   yield* t.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, last_run_at, run_budget, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, c.user_id, query, icp, next, Number(c.created_at), c.run_budget ?? null, now])
   yield* watchLeadsStep(t, id, c.id)
+  // #883: the first play's own leads were shown to the account as that play's results, so the repeat holds them in the
+  // tenant's alert record: another play that finds one of these companies later does not mail it as new
+  yield* claimWatchAlertsStep(t, id, c.id, now)
   return id
 }
 

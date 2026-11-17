@@ -9,12 +9,14 @@ export default function CompetitorsPanel() {
   const [text, setText] = useState('')
   const [msg, setMsg] = useState('')
   const [loaded, setLoaded] = useState(false)
+  // A list that could not be read is never shown as an empty form (saving that would wipe the stored list, #1043 council).
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    void fetch('/api/settings/competitors').then(r => (r.ok ? r.json() : null)).then(j => {
-      if (j) { setText(j.competitors.join('\n')) }
-      setLoaded(true)
-    })
+    void fetch('/api/settings/competitors').then(r => (r.ok ? r.json() : Promise.reject(new Error(String(r.status))))).then(j => {
+      if (!Array.isArray(j?.competitors)) throw new Error('shape')
+      setText(j.competitors.join('\n')); setLoaded(true)
+    }).catch(() => setFailed(true))
   }, [])
 
   async function save(e: React.FormEvent) {
@@ -27,6 +29,7 @@ export default function CompetitorsPanel() {
     else setMsg(j?.error || 'Could not save')
   }
 
+  if (failed) return <div id="competitors" className="card p-6 mb-4 scroll-mt-6"><h2 className="font-semibold mb-1">Competitors</h2><p className="text-sm" role="alert" data-testid="competitors-unread">Could not load your competitors, so they cannot be edited right now. Refresh to retry.</p></div>
   if (!loaded) return null
   return (
     <div id="competitors" className="card p-6 mb-4 scroll-mt-6">

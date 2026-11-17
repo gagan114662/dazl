@@ -12,6 +12,17 @@
 // 'user_confirmed'): the address a provider returns must be on that domain, so an unsettled site means no lookup.
 import { contactsFromEnrichments, roleContradicted, type ContactEnrichment, type RankedPerson } from './rank.ts'
 import type { SiteIdentity } from './currency.ts'
+import { companySearchEligible } from '../scan/find-contact-eligible.ts'
+
+// #1036 live check: the ONE test-only lead that may show Find work email although it is a fixture row (source_kind 'test',
+// which companySearchEligible refuses). Only the work-email fixture (lib/scan/work-email-fixture.ts) creates a 'test' lead with
+// this company; the server also requires the test tenant AND the staging fake PDL before any lookup on it (work-email.ts).
+export const WORK_EMAIL_FIXTURE_COMPANY = 'dazl work-email fixture company (test only)'
+export const isWorkEmailFixtureLead = (l: { source_kind?: string | null; company?: string | null }): boolean =>
+  l.source_kind === 'test' && l.company === WORK_EMAIL_FIXTURE_COMPANY
+// Which lead rows may offer Find work email at all: a company row (the Find-contact rule), or the work-email fixture lead.
+export const workEmailLeadEligible = (l: { human_confirmed_from?: string | null; source_kind?: string | null; company?: string | null }): boolean =>
+  companySearchEligible(l) || isWorkEmailFixtureLead(l)
 
 export const DECISION_MAKER = /\b(?:founder|co-?founder|owner|ceo|cto|cfo|coo|cmo|cro|chief|president|vp|vice president|head|director|partner|principal|general manager|managing director|gm)\b/i
 
@@ -47,7 +58,7 @@ export function linkedinHandle(u: string | null | undefined): string | null {
 }
 
 export function isWorkEmailTarget(p: RankedPerson, icpText: string): boolean {
-  if (p.historical || !p.title || roleContradicted(p.title, icpText)) return false
+  if (p.historical || p.nameOnly || !p.title || roleContradicted(p.title, icpText)) return false // name-only: possibly another business's person, never looked up
   if (!queryName(p.name)) return false
   if (targetKey(p).length > TARGET_KEY_MAX) return false
   return icpText.trim() ? p.tier !== 'none' : DECISION_MAKER.test(p.title)
@@ -163,8 +174,28 @@ export function workEmailCopy(v: WorkEmailView): { tone: WorkEmailTone; headline
     default: return { tone: 'none', checked: false, showAddress: false, headline: 'Unknown state', note: 'Not shown.' }
   }
 }
+// #1036: a GUESSED address (lib/people/email-formats.ts): built from the company's address format learned from addresses this
+// workspace already holds as confirmed. Shown only with its label. "guessed, unverified" is amber, has no Copy and says nothing
+// confirmed the mailbox; "guessed, verified" needs a mailbox check that really answered valid (who, when). Never "published", never
+// a draft recipient. `learned_from`: the confirmed addresses that taught the format, each with the page it was printed on.
+export interface GuessShown {
+  person: string; address: string; label: 'guessed, verified' | 'guessed, unverified'
+  state: 'not_checked' | 'catch_all' | 'uncertain' | 'verified'
+  verifier: string | null; checked_at: number | null; format: string; confidence: string | null; domain: string
+  learned_from: { person: string; address: string; url: string | null }[]
+}
+export function guessCopy(g: GuessShown): { checked: boolean; chip: string; headline: string; note: string; learned: string } {
+  const by = VERIFIER_NAME[g.verifier ?? ''] ?? 'a mailbox check'
+  const from = g.learned_from.length ? g.learned_from.slice(0, 2).map(e => e.address).join(' and ') : 'addresses this workspace already confirmed at this company'
+  const learned = `Format learned from ${from}${g.learned_from.length > 2 ? ` and ${g.learned_from.length - 2} more` : ''}.`
+  if (g.label === 'guessed, verified') return { checked: true, chip: 'guessed, verified', headline: 'Guessed work email, verified', note: `${by} confirmed the mailbox accepts mail on ${day(g.checked_at)}. The address itself is built from the company's format, not printed anywhere; dazl does not draft to it.`, learned }
+  const why = g.state === 'catch_all' ? ' The domain accepts every address (catch-all), so a check proves nothing.' : g.state === 'uncertain' ? ' A mailbox check did not finish.' : ' No mailbox check has run on it.'
+  return { checked: false, chip: 'guessed, unverified', headline: 'Guessed work email, not verified', note: `Built from the company's address format; nothing confirmed that this mailbox exists.${why} Do not send to it unverified; dazl does not draft to it.`, learned }
+}
+
 export function workEmailCostNote(p: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }): string {
-  if (!p.apollo && !p.pdl) return 'No Apollo or People Data Labs key set. Add your own key in Settings > Enrichment to look up work emails.'
+  // #1036: the free first step (an address the company website prints for this person) runs with no key at all.
+  if (!p.apollo && !p.pdl) return 'Free: checks whether the company website prints this person\'s own address. No Apollo or People Data Labs key is set, so nothing else is looked up (add your own key in Settings > Enrichment). US contacts only.'
   const parts = [p.apollo ? 'up to 1 credit on your Apollo key' : null, p.pdl ? `${p.apollo ? 'then, only if Apollo has none, ' : ''}1 People Data Labs credit, only on a match` : null].filter(Boolean)
   return `Free if the company website prints it; otherwise ${parts.join(', ')}. US contacts only.${p.pdlNeedsOptIn ? ' People Data Labs fallback is off (Settings > Enrichment).' : ''}`
 }

@@ -14,6 +14,7 @@
 // ON by default; DAZL_MODEL_USAGE=0 turns recording off. Never throws into the scan.
 import type Database from 'better-sqlite3'
 import type { Provider } from '../llm/provider.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 
 export const modelUsageEnabled = (env: Record<string, string | undefined> = process.env) => env.DAZL_MODEL_USAGE !== '0'
 
@@ -39,10 +40,13 @@ export const stageOfPrompt = (prompt: string): string => { const head = prompt.s
 export function meterProvider(p: Provider, record: (c: ModelCall) => void): Provider {
   const model = () => { try { return p.configuredModel?.() ?? null } catch { return null } }
   const note = (c: ModelCall) => { try { record(c) } catch { /* never affects the scan */ } }
+  // #1168: a call refused before sending (SpendRefused: a spending limit, a missing context) is not a request dazl SENT, so it is
+  // not recorded as one (the refusal itself is in scan_spend_calls). Every other failure may have reached the provider.
+  const failed = (c: ModelCall, e: unknown) => { if (!(e instanceof SpendRefused)) note(c) }
   const out: Provider = {
     research: async (k, prompt, f) => {
       const base = { stage: 'research', method: 'research' as const, model_requested: model(), model_served: null, input_tokens: null, output_tokens: null, max_tokens: null, prompt_chars: prompt.length }
-      try { const r = await p.research(k, prompt, f); note({ ...base, model_served: r.usage?.model ?? null, input_tokens: r.usage?.input_tokens ?? null, output_tokens: r.usage?.output_tokens ?? null, outcome: 'ok' }); return r } catch (e) { note({ ...base, outcome: 'error' }); throw e }
+      try { const r = await p.research(k, prompt, f); note({ ...base, model_served: r.usage?.model ?? null, input_tokens: r.usage?.input_tokens ?? null, output_tokens: r.usage?.output_tokens ?? null, outcome: 'ok' }); return r } catch (e) { failed({ ...base, outcome: 'error' }, e); throw e }
     },
     ...(p.configuredModel ? { configuredModel: () => p.configuredModel!() } : {}),
   }
@@ -53,14 +57,14 @@ export function meterProvider(p: Provider, record: (c: ModelCall) => void): Prov
         const d = await p.completeDetailed!(k, prompt, f, max)
         note({ ...base, model_served: d.model, input_tokens: typeof d.usage?.input_tokens === 'number' ? d.usage.input_tokens : null, output_tokens: typeof d.usage?.output_tokens === 'number' ? d.usage.output_tokens : null, outcome: 'ok' })
         return d
-      } catch (e) { note({ ...base, model_served: null, input_tokens: null, output_tokens: null, outcome: 'error' }); throw e }
+      } catch (e) { failed({ ...base, model_served: null, input_tokens: null, output_tokens: null, outcome: 'error' }, e); throw e }
     }
     // complete() is completeDetailed().text in the real providers; going through it keeps the served model and usage.
     out.complete = async (k, prompt, f, max) => (await out.completeDetailed!(k, prompt, f, max)).text
   } else if (p.complete) {
     out.complete = async (k, prompt, f, max) => {
       const base = { stage: stageOfPrompt(prompt), method: 'complete' as const, model_requested: model(), model_served: null, input_tokens: null, output_tokens: null, max_tokens: max ?? null, prompt_chars: prompt.length }
-      try { const t = await p.complete!(k, prompt, f, max); note({ ...base, outcome: 'ok' }); return t } catch (e) { note({ ...base, outcome: 'error' }); throw e }
+      try { const t = await p.complete!(k, prompt, f, max); note({ ...base, outcome: 'ok' }); return t } catch (e) { failed({ ...base, outcome: 'error' }, e); throw e }
     }
   }
   return out

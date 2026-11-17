@@ -6,13 +6,14 @@ import { migrateNewsjacks, parseArticle, createNewsjack, approveNewsjack, recent
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import type { Lookup } from '../lib/net/public-fetch.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { migrateSpendPools } from '../lib/llm/spend-pool.ts'
 
 const pubLookup: Lookup = async () => [{ address: '93.184.216.34', family: 4 }]
 
 const master = randomBytes(32)
 const LONG = 'TAKE\nthing happened and it matters because reasons.\nANGLE\na practical view from selling.\nTALKING POINTS\n- one\n- two\n- three'
 const ARTICLE = `<html><head><title>Big CRM bought by MegaCorp</title><style>x{}</style></head><body><script>evil()</script><p>${'News content here. '.repeat(30)}</p></body></html>`
-function setup() { const db = new Database(':memory:'); migrateKeys(db); migrateNewsjacks(db); return db }
+function setup() { const db = new Database(':memory:'); migrateKeys(db); migrateNewsjacks(db); migrateSpendPools(db); return db } // #846/#847: the account caps' store
 
 test('parseArticle: title out, scripts/styles stripped, text compacted', () => {
   const a = parseArticle(ARTICLE)

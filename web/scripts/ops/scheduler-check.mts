@@ -7,6 +7,7 @@
 // Stamps live in --state-dir. The alert carries the endpoint's counts and states only: no tenant id or error text.
 //   node --experimental-strip-types scripts/ops/scheduler-check.mts --url http://127.0.0.1:3100/api/health/scheduler --state-dir /var/lib/dazl-scheduler-check
 // Exit 0 = ok; 1 = problem (alerted or throttled).
+import { alertDestinationProblem, alertRequest } from '../../lib/ops/alert-destination.ts'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -71,9 +72,10 @@ const send = async (b: { type: string; host?: string; problems: string[]; schedu
     if (result.error || result.status !== 0) { console.error('scheduler-check: alert command failed'); return false }
     return true
   }
-  if (!hook?.startsWith('https://')) { console.error('scheduler-check: no alert destination: set OPS_ALERT_WEBHOOK_URL (https); problems are in the journal only'); return false }
+  const req = alertRequest(hook, b as Record<string, unknown>, summary(b))
+  if (!req) { console.error(`scheduler-check: no alert destination (${alertDestinationProblem(hook)}); problems are in the journal only`); return false }
   try {
-    const r = await fetch(hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: summary(b), ...b }), signal: AbortSignal.timeout(10_000) })
+    const r = await fetch(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body, signal: AbortSignal.timeout(10_000) })
     if (!r.ok) { console.error(`scheduler-check: alert webhook HTTP ${r.status}`); return false }
     return true
   } catch (e) { console.error(`scheduler-check: alert webhook failed (${e instanceof Error ? e.name : 'error'})`); return false }

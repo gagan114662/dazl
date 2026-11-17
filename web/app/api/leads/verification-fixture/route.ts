@@ -5,6 +5,8 @@ import { rateLimit } from '@/lib/rate-limit'
 import { createVerificationFixture, deleteVerificationFixture, VERIFICATION_FIXTURE_JOB } from '@/lib/scan/verification-fixture'
 import { createReviewDraftFixture, deleteReviewDraftFixtures } from '@/lib/scan/review-draft-fixture'
 import { createFirstTouchFixture, deleteFirstTouchFixture, firstTouchFixtureExists } from '@/lib/scan/first-touch-fixture'
+import { createWorkEmailFixture, deleteWorkEmailFixture, workEmailFixtureAvailable, workEmailFixtureExists } from '@/lib/scan/work-email-fixture'
+import { deleteRealCompanyChecks, parseRealCheckInput, realCheckAvailable, RealCheckNotRead, runRealCompanyCheck } from '@/lib/scan/real-company-check'
 import { fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 import { denied } from '@/lib/workspace-access'
 
@@ -13,6 +15,13 @@ import { denied } from '@/lib/workspace-access'
 // populated rendering of right-people / source quality / warm paths can be checked
 // without a paid scan, real contacts, network calls or email. DELETE removes every
 // row the fixture created.
+//
+// action 'work_email' (#1036): ONE labelled test-only lead on a settled site naming five buyer-role people, so Find work email can
+// be clicked through on staging against the staging fake People Data Labs and fake ZeroBounce. Created only on the test tenant
+// with DAZL_ENV=staging, DAZL_STAGING_FAKE_PDL=1 and DAZL_STAGING_FAKE_ZEROBOUNCE=1 (403 staging_fakes_only otherwise). DELETE with action 'work_email' removes it.
+//
+// action 'work_email_real' (#1036 live check, staging only): { company, url, who } - one REAL company added as a lead on the test
+// tenant and crawled with the real site crawl (no model call, $0), so Find work email can be checked on real pages. DELETE removes them.
 //
 // action 'first_touch' (#411): ONE labelled test-only lead addressed to the allowlisted test inbox that the real
 // autopilot may draft to once the user confirms it. Lead only: the draft, hold, scheduler drain and send run through the
@@ -44,7 +53,7 @@ export async function GET() {
   const db = getScanDb()
   const exists = !!db.prepare('SELECT id FROM scan_jobs WHERE user_id = ? AND business_name = ? LIMIT 1').get(user.tenantId, VERIFICATION_FIXTURE_JOB)
   const available = fixtureAvailable(db, user.tenantId)
-  return NextResponse.json({ available, exists, firstTouchExists: available && firstTouchFixtureExists(db, user.tenantId) })
+  return NextResponse.json({ available, exists, firstTouchExists: available && firstTouchFixtureExists(db, user.tenantId), workEmailAvailable: workEmailFixtureAvailable(db, user.tenantId), workEmailExists: available && workEmailFixtureExists(db, user.tenantId), realCheckAvailable: realCheckAvailable(db, user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
@@ -54,9 +63,21 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   if (!(await rateLimit(`verification-fixture:${user.tenantId}`, 5, 60_000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   try {
-    const action = await actionOf(req, ['first_touch', 'review_draft'])
+    const raw = await req.clone().text().catch(() => '')
+    const action = await actionOf(req, ['first_touch', 'review_draft', 'work_email', 'work_email_real'])
     if (action === null) return badAction()
+    if (action === 'work_email_real') {
+      // Gate first (test tenant on staging), then validate: nobody else learns what input would be accepted.
+      if (!fixtureAvailable(getScanDb(), user.tenantId)) throw new FixtureError('test_tenant_only')
+      if (!realCheckAvailable(getScanDb(), user.tenantId)) throw new FixtureError('staging_only')
+      let body: unknown = null; try { body = JSON.parse(raw) } catch { body = null }
+      const input = parseRealCheckInput(body)
+      if (!input) return NextResponse.json({ error: 'bad_input' }, { status: 400 })
+      try { return NextResponse.json(await runRealCompanyCheck(getScanDb(), user.tenantId, input)) }
+      catch (e) { if (e instanceof RealCheckNotRead) return NextResponse.json({ error: 'site_not_read', reason: e.reason, jobId: e.jobId }, { status: 422 }); throw e }
+    }
     if (action === 'first_touch') return NextResponse.json(createFirstTouchFixture(getScanDb(), user.tenantId))
+    if (action === 'work_email') return NextResponse.json(createWorkEmailFixture(getScanDb(), user.tenantId))
     return NextResponse.json(action==='review_draft' ? createReviewDraftFixture(getScanDb(),user.tenantId) : createVerificationFixture(getScanDb(), user.tenantId))
   } catch (e) {
     if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 403 })
@@ -71,13 +92,16 @@ export async function DELETE(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad origin' }, { status: 403 })
   try {
     if (!fixtureAvailable(getScanDb(),user.tenantId)) throw new FixtureError('test_tenant_only')
-    const action = await actionOf(req, ['first_touch'])
+    const action = await actionOf(req, ['first_touch', 'work_email', 'work_email_real'])
     if (action === null) return badAction()
+    if (action === 'work_email_real') return NextResponse.json(deleteRealCompanyChecks(getScanDb(), user.tenantId))
+    if (action === 'work_email') return NextResponse.json(deleteWorkEmailFixture(getScanDb(), user.tenantId))
     // First: a send to the first-touch fixture in flight, uncertain or sent in the last 24 h refuses the whole cleanup
     // before anything is removed.
     const firstTouch = deleteFirstTouchFixture(getScanDb(), user.tenantId)
     if (action === 'first_touch') return NextResponse.json(firstTouch)
     deleteReviewDraftFixtures(getScanDb(),user.tenantId)
+    deleteWorkEmailFixture(getScanDb(), user.tenantId)
     return NextResponse.json(deleteVerificationFixture(getScanDb(), user.tenantId))
   } catch (e) {
     if (e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 403 })

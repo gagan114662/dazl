@@ -65,6 +65,7 @@ With `DAZL_SCAN_SHARED_QUEUE=1` (default OFF; switching it on is a deploy-time s
 
 - **The tick kicks the scan runner every time**, after its response, outside its lease. A scan whose worker died (lease expired) or whose retry backoff has passed is claimed again within one tick.
 - **Fair service.** Claims go round-robin across tenants, and one tenant has at most `SCAN_PER_TENANT_MAX` scans claimed at once (default 1). A tenant with a long backlog or a provider that never answers holds one run slot; every other tenant's scan takes the next free one. Reply checks do not wait for scans at all: they run in the tick's own loop, while scans run in the runner's slots.
+- **A second worker (#836, staging).** `dazl-staging-worker.service` runs `scripts/scan-worker.mts` beside the app: the same kick every 5 s, so a handed-back or retried scan does not wait for a tick or a status poll. Which instance took each attempt is in `work_queue.claimed_by` and `claim_log` (`docs/STAGING.md`, "Second scan worker").
 - **Proof.** `test/tenant-load-tick.test.ts` runs the real tick route and the real runner: tenant A with a 300-thread history on a slow Gmail and 40 queued scans on a provider that never answers, tenants B and C with one of each. One tick reads B's and C's threads (B's opt-out applied) and runs their scans to done while A holds one slot; the next tick does it again. With the flag unset (the control), the tick kicks no scan, and the next status-poll kick goes to the in-process claimer: A takes every slot and B's and C's scans wait.
 
 ## States and thresholds

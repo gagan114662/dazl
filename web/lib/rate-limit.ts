@@ -36,6 +36,8 @@ export const DEGRADED: Record<string, Degraded> = {
   'settings:enrichment': 'closed', 'enrich-retry': 'closed', polish: 'closed', seo: 'closed', 'seo-brief': 'closed', newsjack: 'closed',
   'seo-idx': 'closed', 'commenter-import': 'closed', 'csv-import': 'closed', 'csv-resume': 'closed', crm: 'closed',
   workers: 'closed', // runtime worker runs (app/api/workers): shared host capacity, so no runs while limits cannot be counted
+  // Connect LinkedIn (#1037): pairing codes, the extension's calls (per IP and per workspace) and the account check
+  'adv-pair': 'closed', 'adv-me': 'closed', 'ext-li': 'closed', 'ext-li-ip': 'closed',
   checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', 'first-party': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   'play-run-now': 'closed', // #1042 Find leads now: queues a real scan on the account's key and monthly scans
   // low risk: the app's own data, or must keep working
@@ -47,6 +49,7 @@ export const DEGRADED: Record<string, Degraded> = {
   'audit-denied': 'local',    // only spaces out the audit trail's own refusal events; the refusal itself never waits on it
   send: 'local', draft: 'local', reopen: 'local', sequences: 'local', 'ranking-fixture': 'local', 'verification-fixture': 'local',
   'inbox-fixture': 'local',   // test-only inbox fixture (#369): the designated test tenant's own rows; no provider or send
+  'tech-fixture': 'local',    // test-only staging technology fixture (#769): a local page and the caller's own fixture rows; no provider
 }
 // The kind of a key is the longest listed prefix followed by ':' (keys may hold IPv6 addresses or emails after it).
 export function degradedPolicy(key: string): Degraded {

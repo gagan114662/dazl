@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
 import { gmailIsStubbed } from '../staging.ts'
+import { stagingFakeReplies, stagingFakeGmail } from './staging-fake-replies.ts'
 import { auditAt } from './autopilot.ts'
 import { grantConsent, revokeAll } from './ledger.ts'
 import { norm, READ_CONSENT_VERSION } from './store.ts'
@@ -45,6 +46,8 @@ export function migrateReplies(db: Database.Database): void {
   `)
   const columns = db.prepare('PRAGMA table_info(inbound_messages)').all() as { name: string }[]
   if (!columns.some(c => c.name === 'outreach_message_id')) db.exec('ALTER TABLE inbound_messages ADD COLUMN outreach_message_id TEXT')
+  // #1040 Home's 30-day results: replies since a date, and a reply's sent message (PG 0067)
+  db.exec('CREATE INDEX IF NOT EXISTS inbound_messages_tenant_received ON inbound_messages (tenant_id, received_at); CREATE INDEX IF NOT EXISTS inbound_messages_outreach ON inbound_messages (tenant_id, outreach_message_id)')
   migrateBounceLedger(db) // both notice paths account through the one ledger (idempotent DDL, also run by the migration list)
 }
 
@@ -362,11 +365,18 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   // before anything read is stored or granted from (#928). A revoked consent, replaced connection or unreadable check ends the sync.
   const LOST = Symbol('read_authority_lost') // a sentinel, not an error type: it never leaves this function
   const authority = () => { if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) throw LOST }
-  const f = d.fetchImpl ?? fetch
+  let f = d.fetchImpl ?? fetch
   let token: string
   try { token = await getAccessToken(db, tenantId, d) } catch { return { ...out, error: 'gmail_unavailable' } }
   if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) return { ...out, error: 'reading_not_enabled' }
-  if (gmailIsStubbed((d.env ?? process.env) as Record<string, string | undefined>)) return out // stubbed Gmail: no mailbox to read
+  const syncEnv = (d.env ?? process.env) as Record<string, string | undefined>
+  if (gmailIsStubbed(syncEnv)) {
+    if (!stagingFakeReplies(syncEnv)) return out // stubbed Gmail: no mailbox to read
+    f = stagingFakeGmail({ // TEST-ONLY staging reply source (#413 live check): the real sync reads synthetic threads
+      threadOf: (gid) => db.prepare('SELECT thread_id FROM outreach_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, gid) as { thread_id: string | null } | undefined,
+      sentTo: (id) => db.prepare("SELECT to_email, sent_at FROM outreach_messages WHERE tenant_id = ? AND (thread_id = ? OR gmail_id = ?) AND status = 'sent' ORDER BY sent_at DESC LIMIT 1").get(tenantId, id, id) as { to_email: string; sent_at: number | null } | undefined,
+    })
+  }
   const get = async (path: string) => { authority(); const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); const body = await r.json(); authority(); return body }
 
   const seq = tableExists(db, 'sequences') ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : '0'

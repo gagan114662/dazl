@@ -112,11 +112,11 @@ test('[sqlite] two handles on one file racing one owner: exactly the limit is ad
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('operator settings: day from DAZL_RUN_MAX_USD_USERS, month from DAZL_OWNER_MONTH_MAX_USD_USERS; malformed entries ignored', () => {
+test('operator settings: day from DAZL_RUN_MAX_USD_USERS, month from DAZL_OWNER_MONTH_MAX_USD_USERS; malformed entries ignored; the other window is the default (#847)', () => {
   const env = { DAZL_RUN_MAX_USD_USERS: 'A:2, B:abc', DAZL_OWNER_MONTH_MAX_USD_USERS: 'A:30,C:5' }
   assert.deepEqual(ownerLimits('A', env), { day: 2, month: 30 })
   assert.equal(ownerLimits('B', env), null)
-  assert.deepEqual(ownerLimits('C', env), { day: null, month: 5 })
+  assert.deepEqual(ownerLimits('C', env), { day: 10, month: 5 })
   assert.equal(ownerLimits('A2', env), null)
 })
 

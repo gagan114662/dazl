@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
@@ -37,7 +38,7 @@ function setup() {
 }
 const usageRows = (db: Database.Database) => db.prepare('SELECT vendor, model, request_id, outcome, input_tokens, output_tokens FROM outreach_llm_usage ORDER BY id').all() as { vendor: string | null; model: string | null; request_id: string | null; outcome: string; input_tokens: number | null; output_tokens: number | null }[]
 
-test('completeDetailed: anthropic served model, usage + request id extracted, no content kept', async () => {
+test('completeDetailed: anthropic served model, usage + request id extracted, no content kept', () => runWithoutAccountSpend('test', async () => {
   const fetchImpl = (async () => json({ id: 'msg_123', model: 'claude-served-x', content: [{ type: 'text', text: 'hello' }], usage: { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 9, cache_creation_input_tokens: 4 } })) as unknown as typeof fetch
   const d = await anthropicProvider.completeDetailed!('k', 'p', fetchImpl, 600)
   assert.equal(d.text, 'hello')
@@ -47,9 +48,9 @@ test('completeDetailed: anthropic served model, usage + request id extracted, no
   const noModel = (async () => json({ id: 'msg_124', content: [{ type: 'text', text: 'hi' }], usage: { input_tokens: 1, output_tokens: 1 } })) as unknown as typeof fetch
   const d2 = await anthropicProvider.completeDetailed!('k', 'p', noModel, 600)
   assert.equal(d2.model, null, 'a response without a model field yields null, never the requested model mislabeled as served')
-})
+}))
 
-test('completeDetailed: openai responses-API shape extracted', async () => {
+test('completeDetailed: openai responses-API shape extracted', () => runWithoutAccountSpend('test', async () => {
   const fetchImpl = (async () => json({ id: 'resp_9', model: 'gpt-4.1-2025-04-14', output: [{ type: 'message', content: [{ type: 'output_text', text: 'hi' }] }], usage: { input_tokens: 5, output_tokens: 6, input_tokens_details: { cached_tokens: 2 } } })) as unknown as typeof fetch
   const d = await openaiProvider.completeDetailed!('k', 'p', fetchImpl, 600)
   assert.equal(d.text, 'hi')
@@ -59,7 +60,7 @@ test('completeDetailed: openai responses-API shape extracted', async () => {
   const noModel = (async () => json({ id: 'resp_10', output: [], usage: { input_tokens: 1, output_tokens: 1 } })) as unknown as typeof fetch
   const d2 = await openaiProvider.completeDetailed!('k', 'p', noModel, 600)
   assert.equal(d2.model, null, 'a response without a model field yields null, never the requested model mislabeled as served')
-})
+}))
 
 test('polish records an attempt row per outcome: rewritten, blocked_claim, error, no_profile', async () => {
   const db = setup()

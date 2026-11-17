@@ -6,6 +6,7 @@
 import type { LeadsReadDb } from './leads-read.ts'
 import { STALE_RUNNING_S, MAX_ATTEMPTS } from '../scan/store.ts'
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
+import { SETTLE_FREE_ORPHANS_STALE_SQL, STALE_SCANS_SQL, numbered } from '../scan/free-orphans.ts'
 import { INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { GAPS_S, TEST_GAPS_S, MAX_STEPS } from '../outreach/sequences.ts'
 import { eventTimingFresh } from '../events/store.ts'
@@ -58,6 +59,8 @@ export function pgLeadsRead(pg: PgQueryable): LeadsReadDb {
          WHERE status = 'pending'
            AND id IN (SELECT scan_job_id FROM scan_spend_calls WHERE status = 'reserved')`,
       )
+      // #1157: a free (US$0) call left reserved is not 'maybe billed'. After the park, so a parked pending row is covered too.
+      { const nowS = Math.floor(Date.now() / 1000); for (const j of (await pg.query(numbered(STALE_SCANS_SQL), [cutoff])).rows as { id: string; user_id: string }[]) await pg.query(numbered(SETTLE_FREE_ORPHANS_STALE_SQL), [nowS, j.user_id, j.id, j.id, j.user_id, cutoff]) }
       await pg.query(
         `UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', finished_at = CAST(floor(extract(epoch from now())) AS BIGINT), claimed_at = NULL
          WHERE status = 'running' AND claimed_at < $1
@@ -99,7 +102,7 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
            l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage
          FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
          WHERE j.id = $1 AND j.user_id = $2 ${includeHidden ? '' : 'AND (l.fit IS NULL OR l.fit > 1)'}
-         ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC LIMIT $3`,
+         ORDER BY (l.fit IS NULL), l.fit DESC, l.action DESC, (l.confidence IS NULL), l.confidence DESC, l.score DESC, l.created_at DESC, l.insert_seq LIMIT $3`,
         [jobId, userId, Math.min(limit, 500)],
       )
       return (rows as Record<string, unknown>[]).map(r => ({
