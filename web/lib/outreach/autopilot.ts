@@ -124,9 +124,11 @@ export function disable(db: Database.Database, tenantId: string): void {
   // will not run this tenant's drain, so its last row must not keep reporting an earlier failure. Best effort, after the
   // switch is off: the user's off switch never depends on this row (a store whose kind check is not widened yet refuses it).
   try {
-    if (tableExists(db, 'scheduler_progress')) db.prepare(`INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id)
-      VALUES (?, 'autopilot', ?, NULL, NULL, 'hold', 'off', 0, NULL)
-      ON CONFLICT (tenant_id, kind) DO UPDATE SET last_attempt_at = excluded.last_attempt_at, last_error = NULL, last_outcome = 'hold', last_hold = 'off', consecutive_failures = 0`).run(tenantId, Math.floor(Date.now() / 1000))
+    // The tick records the drain under 'first_touch' (app/api/internal/tick/route.ts); clear it too (#698), or 3 earlier
+    // failures keep a disabled tenant blocked for good: it is never selected again, so no success can clear the row.
+    if (tableExists(db, 'scheduler_progress')) for (const kind of ['autopilot', 'first_touch']) db.prepare(`INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_error, last_outcome, last_hold, consecutive_failures, last_run_id)
+      VALUES (?, ?, ?, NULL, NULL, 'hold', 'off', 0, NULL)
+      ON CONFLICT (tenant_id, kind) DO UPDATE SET last_attempt_at = excluded.last_attempt_at, last_error = NULL, last_outcome = 'hold', last_hold = 'off', consecutive_failures = 0`).run(tenantId, kind, Math.floor(Date.now() / 1000))
   } catch (e) { captureError(e, { source: 'worker', where: 'autopilot:disable:progress', tenantId }) }
 }
 // Autopilot's held first touches (#411) go back to the user: out of its queue, unapproved where autopilot had approved
