@@ -1,0 +1,42 @@
+name: never-again-gates
+# docs/NEVER-AGAIN.md: the doc's own consistency test, the live-check gate's tests (#3) and the no-on-box-build tests (#1).
+# Runs on every pull request (no path filter: the doc cites files across the repo, so any change can break it).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  never-again:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # CI follow-up 2 (2026-11-16): gate rules come from main. A PR that changes its own gates (workflows, gate
+      # scripts, acceptance checks, deploy smoke) fails here until a reviewer adds the 'gate-change-approved' label.
+      - name: Gates are read from main (gate changes need reviewer approval)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          changed=$(git diff --name-only "$BASE...HEAD" -- .github/workflows .github/scripts ops/acceptance ops/prod/check-hydration.mjs ops/prod/check-pages.py ops/ci-proposed REVIEW.md || true)
+          [ -z "$changed" ] && { echo "no gate files changed"; exit 0; }
+          echo "gate files changed:"; echo "$changed"
+          case " $LABELS " in *" gate-change-approved "*) echo "approved by reviewer label"; exit 0;; esac
+          echo "::error::This PR changes CI gates. A reviewer must add the 'gate-change-approved' label after checking them."; exit 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: NEVER-AGAIN doc + live-check gate tests (.github/scripts)
+        run: node --test '.github/scripts/*.test.mjs'
+      - name: No build on the box (ops/test_never_again.py)
+        run: python3 -m unittest discover -s ops -p 'test_never_again.py' -v
+      - name: shellcheck the deploy scripts (errors only)
+        run: shellcheck -S error ops/staging/deploy.sh ops/staging/pull-prebuilt.sh ops/prod/deploy-prod.sh ops/prod/pull-release.sh ops/prod/run-release.sh ops/prod/check-installed.sh
+      - name: shellcheck the backup install scripts (errors only)
+        run: shellcheck -S error ops/backup/install-prod.sh ops/backup/prod-run.sh ops/backup/live-release.sh ops/backup/restore-offhost.sh
