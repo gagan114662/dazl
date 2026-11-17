@@ -111,8 +111,12 @@ export function contactRoute(l: RouteLead, person: RoutePerson | null, now: numb
   const channel = email ? 'email' : phone ? 'phone_only' : 'none'
 
   // Provenance: the page that printed the route and when dazl last read it. First-published dates are never recorded.
-  const fromLead = email ? email === direct : !!phone && PHONE.test(l.contact ?? '')
-  const row = fromLead ? null : email ? crawled : phoneRow ?? null
+  // #384: equality with the lead's contact does not prove the cited page printed it. When a sitecrawl row recorded the
+  // SAME address with its page, that record (page + read date) is the provenance - the same choice addressCitationUrl
+  // makes for drafts - so the card never relabels an old crawl read as "read when the scan ran".
+  const sameCrawl = email && email === direct ? rows.find(r => r.connector === 'sitecrawl' && r.kind === 'email' && norm(r.value) === email && !!r.source_url) ?? null : null
+  const fromLead = sameCrawl ? false : email ? email === direct : !!phone && PHONE.test(l.contact ?? '')
+  const row = fromLead ? null : email ? (sameCrawl ?? crawled) : phoneRow ?? null
   const url = fromLead ? l.source_url : row?.source_url ?? null
   const lastReadAt = row?.retrieved_at ?? null
   const ageDays = lastReadAt ? daysSince(lastReadAt, now) : null
