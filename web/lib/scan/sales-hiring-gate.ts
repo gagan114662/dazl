@@ -61,7 +61,9 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
 // title is read, by the same title shape as a board record (titleIsRole), and the quote must name the lead's company; a negated or past
 // clause, or a title that is not the role's own shape, is not proof (fail closed). The caller checks the lead's own date.
 // a word after the abbreviation that makes it another title, not the ad's place or terms
-const TITLE_SUFFIX = /^\s*(?:[,\-–—/|:]\s*)?(?:team\s+)?(?:manager|lead|leader|director|head|vp|supervisor|recruiter|engineer|trainer|coordinator|assistant|specialist|intern\w*|program\w*|apprentice\w*|trainee|co-?op|enablement|operations|talent|community|pool|pipeline|network)s?\b/i
+// review at f4c751e3 (Hermes F1): the suffix is judged as a whole title, so up to three modifier words ("Senior Manager", "Sr. Director", "Sales Manager")
+// before the title word still make it another title; the place/terms after a real heading ("New York City Full-Time", "United States") do not match.
+const TITLE_SUFFIX = /^\s*(?:[,\-–—/|:]\s*)?(?:(?:senior|sr\.?|junior|jr\.?|associate|assistant|principal|staff|chief|global|regional|area|deputy|executive|exec|sales|account|business|development|team|group|lead|interim|acting|founding|first)\s+){0,3}(?:manager|lead|leader|director|head|vp|supervisor|recruiter|engineer|trainer|coordinator|assistant|specialist|intern\w*|program\w*|apprentice\w*|trainee|co-?op|enablement|operations|talent|community|pool|pipeline|network)s?\b/i
 const GENERIC_GTM_ROLES = requestedHiringRoles('hiring SDR or BDR or account executive or salesperson or sales manager or head of sales or business development manager')
 export function jobAdQuoteRole(excerpt: string | null | undefined, company: string | null | undefined, roles: RequestedHiringRole[]): RequestedHiringRole | null {
   const first = (excerpt ?? '').split(/[.;!?\n\u2022|]/)[0].split(',')[0].trim().slice(0, 200)
