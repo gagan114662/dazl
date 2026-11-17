@@ -173,6 +173,11 @@ export default function LeadsClient() {
     if (pending) restoredSearch.current = true
     // a failed link: the refusal is back with its way forward (Link Google again, or the password first)
     queueMicrotask(() => { setLinkNote(linked); if (pending) setQuery(pending.query); if (!linked.ok) setTrialRefused({ reason: 'google_required', query: pending?.query ?? '' }) })
+    // #1319: the note belongs to this one return from Google. Moving back/forward in history drops it, so it never
+    // sticks on a Leads page whose address no longer carries ?google=.
+    const drop = () => setLinkNote(null)
+    window.addEventListener('popstate', drop)
+    return () => window.removeEventListener('popstate', drop)
   }, [])
   const playBox = useRef<HTMLTextAreaElement>(null)
   // The play box grows to fit its text (a long query is never clipped to one line), at any width.
@@ -751,7 +756,7 @@ export default function LeadsClient() {
       </div>
       {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
           at any width (below the card it sat off screen at 390). */}
-      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''}</p>}
+      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
@@ -760,7 +765,7 @@ export default function LeadsClient() {
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
-          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null) }}
+          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null); setLinkNote(null) }}
             placeholder="Find people who..." />
           <button disabled={busy || starting || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
         </div>
@@ -768,7 +773,7 @@ export default function LeadsClient() {
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
               <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null) }} className="chip">{t}</button>)}
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null); setLinkNote(null) }} className="chip">{t}</button>)}
             </div>)}
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">

@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import type { Db, TxBody } from './db/client.ts'
 import { createPersonalWorkspace } from './workspaces.ts'
 import { VERIFIED_BACKFILL_SQL } from './email-ownership.ts'
+import { sameMailbox } from './google-link.ts'
 
 
 // Sign in with Google: authorization code + PKCE + state + nonce, identity only
@@ -196,15 +197,20 @@ export async function linkGoogle(db: Db, userId: string, id: GoogleIdentity, ses
     const hit = yield* t.get<{ user_id: string }>("SELECT user_id FROM oauth_identities WHERE provider = 'google' AND subject = ?", [id.sub])
     if (hit) return hit.user_id === userId ? 'already' : 'taken'
     const u = yield* t.get<{ email: string; v: number | null }>('SELECT email, email_verified_at AS v FROM users WHERE id = ?', [userId])
-    if (!u || u.email !== id.email) return 'mismatch'
+    // #1319: the Google address must be this account's mailbox. An exact match, or the same mailbox with a +tag
+    // (name+x@domain signed up, Google is name@domain). Any other address stays 'mismatch': linking is not a way to
+    // attach someone else's mailbox. Only an EXACT match confirms the account's email below; a +tag match links without
+    // confirming it (Google vouched for name@domain, not for the +tag address).
+    if (!u || !sameMailbox(u.email, id.email)) return 'mismatch'
+    const exact = u.email.toLowerCase() === id.email.toLowerCase()
     // #1095 (decision on the issue): an unconfirmed account is confirmed by this link. The ID token was checked with
     // email_verified (verifyIdToken), so Google vouches that the signer controls exactly this address: the same proof the
     // confirmation link gives, and the proof dazl already trusts to create verified Google accounts (resolveUser). Same
     // transaction as the identity insert: both happen or neither. mismatch / taken / stale session never get here.
     // Only with the caller's own fresh session (checked above): without one an unconfirmed account cannot link.
     if (u.v === null && sessionToken === undefined) return 'unverified'
-    if (u.v === null) {
-      yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [Math.floor(Date.now() / 1000), userId, id.email])
+    if (u.v === null && exact) {
+      yield* t.run('UPDATE users SET email_verified_at = coalesce(email_verified_at, ?) WHERE id = ? AND email = ?', [Math.floor(Date.now() / 1000), userId, u.email])
       // Defense in depth: until now nobody had proved this address, so the account's OTHER sessions are signed out; only
       // the session that just proved it is kept. (Whoever set the password can still sign in with it: the protection
       // against a planted account is that a cross-site page can neither sign a browser in nor start a link, #1095.)

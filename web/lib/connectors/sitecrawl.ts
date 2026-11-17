@@ -17,6 +17,8 @@ import { detectTech, observability, type Observability, type TechHit } from './t
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { revealEmails } from '../people/email-reveal.ts'
+import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
+import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -954,6 +956,12 @@ export function rawRedirectTarget(host: string, timeoutMs = TIMEOUT_MS, lookup: 
   })
 }
 
+// #1122/#1037 (#1334-F1): the held-lead reasons a whole-job crawl admits: the holds the people search reads, plus outside_window_undated,
+// minus the holds where the event itself is over. Shared by the crawl's lead pick and its unreached-lead note.
+export function crawlEligibleHolds(): string[] {
+  return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
+}
+
 export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
@@ -969,7 +977,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // date/quote classes: a blocked article says nothing about the company's own site. This never re-fetches the blocked evidence
     // page (below) and never clears the hold: identity/contact discovery only, qualification unchanged. Classes where the hold is
     // the event itself (job_closed, no_event_evidence, counterparty_signal, ...) are NOT selected - identity cannot change them.
-    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN ('outside_window_undated', 'quote_unconfirmed', 'blocked_by_site', 'needs_javascript')) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
+    // #1122/#1037: every held lead whose company is still the named one gets a company website (and so a buyer search): the holds the
+    // people search reads (searchable-holds.ts), plus outside_window_undated, except the classes where the hold is the event itself being
+    // over (a closed job, a stale or out-of-window date, no event at all). Identity/contact discovery only: the hold is never cleared.
+    // #1334-F1: ONE list decides both which held leads the crawl picks and, for leads past the top-lead cap, whether the note says
+    // "did not reach this company" (eligible) or "the check does not run for this hold" (excluded), so the two can never drift apart.
+    const CRAWL_HOLD_LIST = crawlEligibleHolds()
+    const CRAWL_HOLDS = CRAWL_HOLD_LIST.map(r => `'${r.replace(/'/g, "''")}'`).join(',')
+    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN (${CRAWL_HOLDS})) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
     const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
@@ -1066,6 +1081,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const blockedHost = (l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? (() => { try { return new URL(l.source_url).hostname.toLowerCase() } catch { return null } })() : null
       const notBlockedHost = (d: string) => { const h = d.toLowerCase(); return !blockedHost || (h !== blockedHost && !h.endsWith('.' + blockedHost) && !blockedHost.endsWith('.' + h)) }
       const basisOf = new Map<string, DomainBasis>()
+      const sourceOf = new Map<string, string>()   // 1328-F1: page that linked/named a site, when it is not the lead's original page
       const nowSec = Math.floor((deps.now ?? Date.now()) / 1000)
       let sites: string[] = []
       // A site the cited page shows as a link (or the page's own domain) is "linked": if it is read and refused, resolution ends there, as
@@ -1075,6 +1091,21 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
       // anchored link existed): after the linked sites, under the same checks; it never turns into a reason to skip what the page links
       if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
+      // #1122/#1037: a job-board posting that links no company site: the employer's ATS posting it links (same company slug) is read once,
+      // and any site IT links or names becomes a candidate; then the slug's own domains join the name guesses below.
+      const board = ev && !anchored ? jobBoardSlugs(l.company, ev.finalUrl ?? l.source_url, ev.body) : { slug: '', ats: [] as string[] }
+      for (const a of board.ats) {
+        if (anchored || deps.signal?.aborted) break
+        let page: Awaited<ReturnType<typeof evidenceGet>> = null
+        try { page = await evidenceGet(a) } catch { page = null }
+        if (!page) continue
+        for (const o of findCompanySitesWithBasis(l.company, page.body, page.finalUrl ?? a)) {
+          if (o.basis === 'evidence_own_domain') continue   // the ATS's own host is never the company's
+          if (!basisOf.has(o.site)) { basisOf.set(o.site, o.basis); sourceOf.set(o.site, page.finalUrl ?? a) }   // 1328-F1: the ATS page is this site's evidence
+          if (!structured.includes(o.site)) structured.push(o.site)
+        }
+      }
+      const fromSlug = board.slug ? slugDomains(board.slug, where) : []
       let unresolved = anchored ? 'linked_site_not_confirmed' : 'not_confirmed'
       if (!anchored) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
@@ -1092,7 +1123,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           // #1036 4b: the company's own host from a web search first (one search per lead, capped by the caller), then the name guesses
           let found: string[] = []
           if (deps.findSites && !deps.signal?.aborted && !ownBlocked) { try { found = await deps.findSites(l.company, where) } catch { found = [] } }
-          sites = [...structured, ...found.filter(d => !structured.includes(d)), ...guesses.filter(d => !found.includes(d) && !structured.includes(d))]
+          sites = [...new Set([...structured, ...found, ...fromSlug, ...guesses])]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
           const ownCode = l.review_reason === 'needs_javascript' ? 'own_site_needs_javascript' : 'own_site_refused_reading'
@@ -1188,7 +1219,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // identity test, so a probed or link-selected domain is recorded as such and never as verified ownership.
       if (r.reason === 'ok' || r.reason === 'none_published') {
         const basis = basisOf.get(site) ?? 'name_probe'
-        addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
+        addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (sourceOf.get(site) ?? ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
       }
       // The identity check passed for this site (name on the homepage, and the place or street agreed or was not contradicted): record it,
       // so the contact sweep and the score can tell this domain from a legacy name guess that only agrees with itself.
@@ -1245,7 +1276,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       try {
         const picked = new Set(leads.map(l => l.id))
         const rest = db.prepare("SELECT id, source_url, review_reason, confidence FROM leads WHERE scan_job_id = ? AND company <> '' AND company_domain IS NULL AND quarantined_at IS NULL LIMIT 200").all(jobId) as { id: string; source_url: string; review_reason: string | null; confidence: number | null }[]
-        const eligible = (x: { review_reason: string | null; confidence: number | null }) => (x.review_reason === null && x.confidence !== null) || ['outside_window_undated', 'quote_unconfirmed', 'blocked_by_site', 'needs_javascript'].includes(x.review_reason ?? '')
+        const eligible = (x: { review_reason: string | null; confidence: number | null }) => (x.review_reason === null && x.confidence !== null) || (x.review_reason !== null && CRAWL_HOLD_LIST.includes(x.review_reason))
         for (const x of rest) {
           if (picked.has(x.id) || db.prepare('SELECT 1 FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').get(x.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND)) continue
           // a lead the crawl would check but did not reach (it reads the scan's top leads only) is told that, not that it is "held"
