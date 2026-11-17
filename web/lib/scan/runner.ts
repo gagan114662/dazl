@@ -4,7 +4,9 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
-import { ProviderError, providers, type Provider } from '../llm/provider.ts'
+import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
+import { runResearchScan } from '../research/scan-job.ts'
+import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
 import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
@@ -28,11 +30,11 @@ import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
-import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates } from '../sources/jobboards.ts'
+import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
-import { eventDateBound } from './event-date-binding.ts'
+import { eventDateBound, dayStatedForEvent } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
 import { HeldText, COPY_ORIGIN, type HeldPage } from './held-text.ts'
 import { markHeldInProcess } from './held-state.ts'
@@ -41,7 +43,8 @@ import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
-import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
+import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
+import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
@@ -212,6 +215,10 @@ export function scoringSellerContext(db: Database.Database, userId: string, jobI
 }
 export interface VerifyOutcome { leads: VerifiedLead[]; review: ReviewLead[]; dropped: Record<string, number>; quotes?: Map<string, QuoteEvidence[]>; postingTitles?: Map<string, string> } // quotes: every VERIFIED candidate's quote by company key, even when a duplicate candidate was the one kept; the sales-hiring gate reads them only through its identity-compatibility check
 
+// #381: measured on real sydney-agencies / bangalore-manufacturing scans (14 Nov), the judge answered "contradicts" for passages whose headline
+// states the claim (Krones' Rs 315 crore plant near Bengaluru; Bayer's MoU for a facility near Bengaluru) and for a passage that merely does
+// not mention the claim's month or neighbourhood. "contradicts" drops the lead outright, so it is now defined: a stated conflict only. A detail
+// the passage omits is never a contradiction; a passage that gives a DIFFERENT date for the event is "unclear", never "supports".
 export function judgePrompt(c: Pick<LeadDraft, 'company' | 'signal'>, passage: string): string {
   const safe = passage.replace(/<<<|>>>/g, ' ').slice(0, 1800)
   return `You check one claim against a passage copied from a web page.
@@ -222,7 +229,11 @@ Passage:
 <<<
 ${safe}
 >>>
-Does the passage support the claim, contradict it, or say nothing clear about it? Reply with exactly one word: supports, contradicts, or unclear.`
+Does the passage support the claim, contradict it, or say nothing clear about it? A date, month or time in the claim that the passage does not mention changes nothing: judge the event itself (dates are checked separately). If the passage gives a DIFFERENT date for the event, answer unclear.
+- supports: the passage states the claim's event for this company.
+- contradicts: ONLY when the passage states something that cannot be true together with the claim: a different company did it, the event did not happen or was cancelled or denied, or the passage gives a different place, amount or kind of event. A detail the passage simply does not mention is never a contradiction.
+- unclear: the passage does not state the event.
+Reply with exactly one word: supports, contradicts, or unclear.`
 }
 
 export function parseJudgement(text: string): Judgement {
@@ -389,6 +400,14 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
         if (!b.bound) { undatedWhy = `the claimed event date ${cIn.event_date} is not tied to this company and event by the fetched page (${b.why}); treated as undated`; c0 = { ...cIn, event_date: null } }
         else c0 = { ...cIn, event_date_proof: 'page_bound', event_date_proof_note: b.why.slice(0, 200) }
       }
+    }
+    // #878: no bound day yet (none claimed, or the claimed one is not this event's), but the quote itself states one that the same rule ties to this
+    // company and event on this page: that day is the event's. A claimed day the date rules reject (stale, future) is still on c0, so it keeps its hold
+    // and is never replaced; a hiring candidate is dated by the job board's own day only (above), never by a day in its text. The window and date rules
+    // below judge the day like any other.
+    if (page && !isFail(page) && !c0.event_date && !hiringCand) {
+      const q = dayStatedForEvent(page.text, cIn.excerpt, cIn.company)
+      if (q) c0 = { ...c0, event_date: q.day, event_date_proof: 'page_bound', event_date_proof_note: `the day the quote states (${q.why})${cIn.event_date ? `; the claimed ${cIn.event_date} is not this event's day` : ''}`.slice(0, 200) }
     }
     // A candidate with no date gets one read from the text we already fetched (or a season label). Same rules apply to it afterwards.
     let c = c0
@@ -1220,7 +1239,7 @@ export interface RunDeps {
   // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
   trace?: import('../evals/trace.ts').TraceRecorder
   linkedinTransport?: import('../signals/linkedin-people.ts').LinkedInTransport   // a reviewed LinkedIn transport (#192); none by default, so nothing is requested
-  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
+  first5?: boolean; autopilot?: typeof runAutopilot; sourceHttp?: import('../sources/types.ts').SafeGet; newsHttp?: import('../sources/types.ts').SafeGet; score?: boolean; ground?: boolean; providers?: Record<Vendor, Provider>; fetchImpl?: typeof fetch; freeSiteFetch?: typeof fetch; master?: Buffer; fetchPage?: PageFetcher; now?: Date; judge?: Judge | null; advancedWorker?: import('../advanced/index.ts').WorkerFetch; crawlGet?: import('../connectors/sitecrawl.ts').Get; memory?: import('../memory.ts').Memory | null; paidFallback?: boolean; creditEnrichment?: boolean; salesHiringGate?: typeof applySalesHiringGate; jobBudgetMs?: number; clock?: () => number }
 
 // A free-trial scan's charge for each TinyFish call on dazl's key (lib/billing/trial-budget.ts), set while that scan runs.
 const trialCharges = new WeakMap<Job, (kind: 'search' | 'fetch', units: number) => Promise<void>>()
@@ -1360,6 +1379,45 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       }
       icpForSources = icp
       prompt = buildIcpPrompt(job.query, icp)
+    }
+    // MISSION v2 (LEAD_ENGINE=research): the research engine (lib/research/scan-job.ts) runs instead of the discovery below when every stage
+    // exists and the profile names a place and a category; otherwise (null) this scan runs the old engine unchanged. Its model calls go through
+    // this job's own spend guards, meter and accounting flags; its searches through the queued research search inside this scan's caps.
+    if (icpForSources && vendor === 'anthropic' && researchEngineOn()) {
+      const modelFor = (m: string): Provider => {
+        const p = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(m), c => ledger.model(c))
+        return spendLimit === null ? flagAccounting(db, job, p, vendor) : flagAccounting(db, job, guardProvider(p, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
+      }
+      const deadline = jobDeadlines.get(job)
+      const r = await runResearchScan({ db, job, icp: icpForSources, key, model: modelFor, isRefusal: e => e instanceof SpendRefused, checkpoint: () => assertOwned(db, job), ...(deadline ? { deadline } : {}),
+        tf: { ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}), charge: trialCharges.get(job) } })
+      if (r) {
+        const leads = r.leads as unknown as VerifiedLead[], review = r.review as unknown as ReviewLead[]
+        // the funnel's drops ('held' leads are kept in review, not dropped)
+        const dropped = Object.fromEntries(r.run.funnel.stages.flatMap(s => Object.entries(s.dropped).filter(([k]) => k !== 'held').map(([k, n]) => [`research_${s.stage}_${k}`, n])))
+        const refusal = r.run.refusal
+        // A refusal is read exactly as the old engine reads it: the trial's budget holds every lead in review (finishTrialBudget); only a NUMERIC
+        // budget is a budget stop that keeps what was verified; any other refusal (count_failed, model_unpriced, ...) fails the run, since no
+        // budget can fix it.
+        if (refusal instanceof SpendRefused) {
+          if (trialGuard && (refusal.reason === TRIAL_BUDGET_REASON || trialGuard.refused)) return finishTrialBudget(db, job, { candidates: null, outcome: { leads, review, dropped } }, ledger)
+          if (refusalCode(refusal, ledger) !== 'budget_stopped') throw refusal
+        }
+        const owned = finish(db, job, 'done', refusal ? 'budget_stopped' : null, { leads, review, dropped }, r.candidates, ledger)
+        // D's proof rows and G's people: a failure there is reported, never turns a finished scan into a retry
+        if (owned) { try { await r.afterSave?.(db, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:after-save', tenantId: job.user_id, ref: job.id }) } }
+        // The old engine's post-finish steps that apply to research leads as they are (#1267 review blocker 3). The rest are not run for a research
+        // scan, by design, and named in the PR: buyer-fit scoring, the sales-hiring gate, the #377 timing-proof record and completeLeads (D's research
+        // proof is the ready rule instead), the old people pass (G's company research names the person), enrichment and autopilot (a new engine
+        // never sends on its own).
+        if (owned) {
+          if (job.watch_id) { try { markWatchLeads(db, job.watch_id, job.id) } catch { /* bonus only */ } }
+          try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
+          try { enforceContactSource(db, job.user_id, job.id) } catch (e) { captureError(e, { source: 'worker', where: 'research:contact-source', tenantId: job.user_id, ref: job.id }) }
+        }
+        if (trialGuard?.refused) holdTrialBudget(db, job)
+        return 'done'
+      }
     }
     const complete = providers_[vendor].complete
     // Primary backend when the operator set TINYFISH_API_KEY: TinyFish search and fetch, the user's own model reads the
@@ -1552,7 +1610,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
-    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : 'skipped_no_place')
+    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : placeSkipReason(job.query, icpForSources?.where ?? []))   // #1205: the reason names the place and what to change
     const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
     const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (job-board source, and careers-page ATS postings: the board's own publish date, null for an own-domain page)
@@ -2095,7 +2153,65 @@ export function postFinishBudgetMs(env: Record<string, string | undefined> = pro
 // be the company's own (sitecrawl.ts companyHostsFromSearch) are returned; crawlJob still runs the homepage name check and the place
 // check on each before anything is recorded. undefined when TinyFish is off: the crawl then guesses domains from the name as before.
 // A search the scan's budget refuses ends the searching for this scan (nothing was sent); it never ends the crawl.
-export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
+export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; freeSiteFetch?: typeof fetch; crawlGet?: unknown; first5?: boolean; paidFallback?: boolean; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
+  const free = freeSiteFinderFor(db, job, deps, signal)
+  const paid = paidSiteFinderFor(db, job, deps, signal)
+  if (!free) return paid
+  if (!paid) return free
+  // free public data first; the paid search only for a company the free sources could not place
+  return Object.assign(async (company: string, where: string[]) => { const f = await free(company, where); return f.length > 0 ? f : paid(company, where) }, { recordSite: free.recordSite })
+}
+
+// #1122: the company's own site from free public data (Wikidata's official website, OpenStreetMap's website tag), for EVERY scan kind:
+// it costs nothing, so a trial, a first play and a scheduled run get it too. One lookup per company per scan, at most
+// FREE_SITE_LOOKUPS_PER_SCAN; every lookup leaves an audit row (site_free_<outcome>). DAZL_FREE_SITE_FINDER=0 turns it off.
+// #1122/#1037: after the two public records, a free web search (DuckDuckGo HTML) for a company neither placed; DAZL_FREE_WEB_SEARCH=0 turns
+// that step off (an injected test fetch reaches it only with DAZL_FREE_WEB_SEARCH=1).
+export const FREE_SITE_LOOKUPS_PER_SCAN = 20
+export type SiteFinder = ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean }
+export function freeSiteFinderFor(db: Database.Database, job: Job, deps: { freeSiteFetch?: typeof fetch; freeSiteClock?: { sleep: (ms: number) => Promise<void>; now: () => number }; crawlGet?: unknown; env?: Record<string, string | undefined> }, signal?: AbortSignal): SiteFinder | undefined {
+  if ((deps.env ?? process.env).DAZL_FREE_SITE_FINDER === '0') return undefined
+  // a run whose crawl fetch is injected (tests, fixtures) never reaches the public internet through this finder unless its fetch is injected too
+  if (deps.crawlGet && !deps.freeSiteFetch) return undefined
+  let asked = 0
+  const answers = new Map<string, Promise<string[]>>()
+  // 1289-F2: a public-record mark is bound to the company whose OWN lookup returned it (exact name key, "Group" kept), never to the host alone
+  const records = new Set<string>()
+  const recordKey = (site: string, company: string) => `${siteCompanyKey(company)}\u0000${site}`   // 1289-F2 r3: the same key as the answer cache
+  const note = (company: string, outcome: string, results: number) => { try { audit(db, { tenantId: job.user_id, connector: 'sitecrawl', jobId: job.id, lookup: company, status: `site_free_${outcome}`.slice(0, 60), results }) } catch { /* the audit write never affects the crawl */ } }
+  const find = (company: string, where: string[]): Promise<string[]> => {
+    if (hostNamesFor(company).length === 0) return Promise.resolve([])
+    const key = siteCompanyKey(company)   // 1289-F2 r3: accents folded, no letter deleted, "Group" kept
+    const had = answers.get(key)
+    if (had) return had
+    if (asked >= FREE_SITE_LOOKUPS_PER_SCAN || signal?.aborted) return Promise.resolve([])
+    asked++
+    const answer = (async () => {
+      try {
+        const { hits, outcomes } = await freeCompanySitesDetailed(company, where, { webSearch: deps.freeSiteFetch ? (deps.env ?? process.env).DAZL_FREE_WEB_SEARCH === '1' : (deps.env ?? process.env).DAZL_FREE_WEB_SEARCH !== '0', ...(deps.freeSiteFetch ? { fetchImpl: deps.freeSiteFetch } : {}), ...(deps.freeSiteClock ?? {}), ...(signal ? { signal } : {}) })
+        // Wikidata answers by NAME alone (a same-named town or brand is possible), so its host must carry the company's name, as a web-search
+        // hit must; an OpenStreetMap record is a business of that name IN the request's place, so any own-site host it gives is a candidate
+        const named = companyHostsFromSearch(company, hits.filter(h => h.source === 'wikidata'), 3, where)
+        const mapped = hits.filter(h => h.source === 'openstreetmap').map(h => ownSiteHost(h.url)).filter((x): x is string => !!x)
+        // #1122/#1037: a free web-search result is held to the same rule as a paid one: its host must carry the company's name
+        const searched = companyHostsFromSearch(company, hits.filter(h => h.source === 'websearch'), 3, where)
+        const hosts = [...new Set([...named, ...mapped, ...searched])].slice(0, 3)
+        for (const h of named) if (hosts.includes(h)) records.add(recordKey(h, company))   // Wikidata's official website of an item named exactly like the company
+        const from = [...new Set([...(named.length ? ['wikidata'] : []), ...(mapped.some(m => hosts.includes(m)) ? ['openstreetmap'] : []), ...(searched.some(m => hosts.includes(m) && !named.includes(m) && !mapped.includes(m)) ? ['web'] : [])])].join('+') || 'none'
+        // 1289-F3: a source that failed or was cancelled is named in the audit ("osm" keeps the row inside the 60-character status); with no host, the lookup is failed/cancelled, not no_match
+        const incomplete = (Object.entries(outcomes) as [string, string | undefined][]).filter(([, o]) => o === 'failed' || o === 'cancelled')
+        const head = hosts.length > 0 ? `ok_${from}` : incomplete.some(([, o]) => o === 'failed') ? 'failed' : incomplete.length > 0 ? 'cancelled' : 'no_match'
+        note(company, `${head}${incomplete.map(([s, o]) => ` ${s === 'openstreetmap' ? 'osm' : s}=${o}`).join('')}`, hosts.length)
+        return hosts
+      } catch { note(company, 'error', 0); return [] }
+    })()
+    answers.set(key, answer)
+    return answer
+  }
+  return Object.assign(find, { recordSite: (site: string, company: string) => records.has(recordKey(site, company)) })
+}
+
+function paidSiteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl?: typeof fetch; first5?: boolean; paidFallback?: boolean }, signal?: AbortSignal): ((company: string, where: string[]) => Promise<string[]>) | undefined {
   // Policy (run-budget.ts SITE_SEARCHES_PER_SCAN): never a free-trial scan (its reserve is planned for the lead and people searches),
   // never a first play, never a run that switched paid steps off. Those scans keep the name-guessed domains.
   if (!tinyfishEnabled() || deps.first5 || deps.paidFallback === false || job.funded_by === 'trial' || trialCharges.get(job)) return undefined
@@ -2110,7 +2226,7 @@ export function siteFinderFor(db: Database.Database, job: Job, deps: { fetchImpl
   return (company, where) => {
     // a name too short to tell one company's host from another's would spend a search whose every result is refused
     if (hostNamesFor(company).length === 0) return Promise.resolve([])
-    const key = company.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const key = siteCompanyKey(company)   // 1289-F2 r3: accents folded, no letter deleted, "Group" kept
     const had = answers.get(key)
     if (had) return had
     if (stopped || asked >= SITE_SEARCHES_PER_SCAN || signal?.aborted) return Promise.resolve([])

@@ -17,6 +17,7 @@ import { leadPerson, NO_BUYER, type LeadPerson } from '@/lib/people/lead-person'
 import { peopleSearchable } from '@/lib/people/searchable-holds'
 import { NAME_ONLY_REASON } from '@/lib/people/company-tie'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
+import { ResearchRationale } from './research-rationale'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
@@ -55,6 +56,7 @@ import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
+import { lastActivityNote } from '@/lib/scan/progress'
 import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
@@ -109,7 +111,7 @@ const REASON: Record<string, string> = {
   source_cap: 'over the 3-per-page cap',
   url_refused: 'unsafe or unsupported address', duplicate: 'duplicate company',
 }
-const REVIEW: Record<string, string> = { legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - check the date on the source before you use it', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', location_unconfirmed: 'The source page does not name the place you asked for, so it cannot be tied to a company there - not verified', location_mismatch: 'The source page names a different place than you asked for - possibly a same-name business elsewhere. Not verified', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead', no_event_evidence: 'The request asks for a funding or other event as well as hiring, and the saved quote shows only hiring (a job ad alone does not show that) - check the source for the event before you use it', no_sales_hiring_evidence: 'The request asks for sales hiring too, and no dated sales or GTM posting was found on a public job board tied to this company - the funding evidence alone is not enough', sales_hiring_check_failed: 'The sales-hiring check could not run, so the lead is not verified. Run the scan again', outside_window_undated: 'No event date was found, so it cannot be placed inside the time window you asked for - research only', trial_budget_reached: 'Found before this free scan reached its spending limit - some checks did not run, so it is not verified', first_party_signal: 'From your own site or form (signed, consent recorded) - an account-level visit does not identify a person; buying need and outreach consent are not verified' }
+const REVIEW: Record<string, string> = { research_unverified: 'The event is quoted on the source page, but its day or a named decision-maker is not proven there - read the source before you use it', legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - check the date on the source before you use it', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Manually supplied claim - literal source checks do not verify its meaning, date, buying need or consent', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', location_unconfirmed: 'The source page does not name the place you asked for, so it cannot be tied to a company there - not verified', location_mismatch: 'The source page names a different place than you asked for - possibly a same-name business elsewhere. Not verified', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead', no_event_evidence: 'The request asks for a funding or other event as well as hiring, and the saved quote shows only hiring (a job ad alone does not show that) - check the source for the event before you use it', no_sales_hiring_evidence: 'The request asks for sales hiring too, and no dated sales or GTM posting was found on a public job board tied to this company - the funding evidence alone is not enough', sales_hiring_check_failed: 'The sales-hiring check could not run, so the lead is not verified. Run the scan again', outside_window_undated: 'No event date was found, so it cannot be placed inside the time window you asked for - research only', trial_budget_reached: 'Found before this free scan reached its spending limit - some checks did not run, so it is not verified', first_party_signal: 'From your own site or form (signed, consent recorded) - an account-level visit does not identify a person; buying need and outreach consent are not verified' }
 // Own keys only: a stored reason such as 'constructor' or 'toString' is an unknown reason, never an Object.prototype member rendered as text.
 const reviewLabel = (r: string | null | undefined): string | undefined => (r && Object.hasOwn(REVIEW, r) ? REVIEW[r] : undefined)
 
@@ -171,6 +173,11 @@ export default function LeadsClient() {
     if (pending) restoredSearch.current = true
     // a failed link: the refusal is back with its way forward (Link Google again, or the password first)
     queueMicrotask(() => { setLinkNote(linked); if (pending) setQuery(pending.query); if (!linked.ok) setTrialRefused({ reason: 'google_required', query: pending?.query ?? '' }) })
+    // #1319: the note belongs to this one return from Google. Moving back/forward in history drops it, so it never
+    // sticks on a Leads page whose address no longer carries ?google=.
+    const drop = () => setLinkNote(null)
+    window.addEventListener('popstate', drop)
+    return () => window.removeEventListener('popstate', drop)
   }, [])
   const playBox = useRef<HTMLTextAreaElement>(null)
   // The play box grows to fit its text (a long query is never clipped to one line), at any width.
@@ -203,6 +210,7 @@ export default function LeadsClient() {
   // Live per-source progress from the status poll; null when the response had none (older server or a failed read).
   const [progress, setProgress] = useState<SourceProgress[] | null>(null)
   const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [lastProgressAt, setLastProgressAt] = useState<number | null>(null)
   const [createdAt, setCreatedAt] = useState<number | null>(null)
   const [attempt, setAttempt] = useState<[number, number] | null>(null)
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000))
@@ -577,7 +585,7 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
-      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
+      setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setLastProgressAt(typeof s.last_progress_at === 'number' ? s.last_progress_at : null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       // #1095: a search restored after linking Google stays in the box even when the open job has its own query
@@ -748,7 +756,7 @@ export default function LeadsClient() {
       </div>
       {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
           at any width (below the card it sat off screen at 390). */}
-      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''}</p>}
+      {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
@@ -757,7 +765,7 @@ export default function LeadsClient() {
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
-          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null) }}
+          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null); setLinkNote(null) }}
             placeholder="Find people who..." />
           <button disabled={busy || starting || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
         </div>
@@ -765,7 +773,7 @@ export default function LeadsClient() {
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
               <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null) }} className="chip">{t}</button>)}
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null); setLinkNote(null) }} className="chip">{t}</button>)}
             </div>)}
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">
@@ -981,11 +989,12 @@ export default function LeadsClient() {
               + fit checks), done. Below it, each source that has started reports live (progress from the status poll). */}
           <Stepper steps={[
             { label: 'Read your profile and play', state: status === 'pending' ? 'live' : 'done', note: status === 'pending' ? `Queued${createdAt ? ` ${Math.max(0, Math.floor((now - createdAt) / 60))} min` : ''}` : undefined },
-            { label: 'Search and read sources', state: status === 'running' ? 'live' : 'todo', note: status === 'running' ? `Searching...${startedAt ? ` ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}` : undefined },
+            { label: 'Search and read sources', state: status === 'running' ? 'live' : 'todo', note: status === 'running' ? `Searching...${startedAt ? ` ${Math.max(0, Math.floor((now - startedAt) / 60))} min` : ''}${lastActivityNote(now, lastProgressAt) && !lastActivityNote(now, lastProgressAt)!.quiet ? ` - ${lastActivityNote(now, lastProgressAt)!.text.toLowerCase()}` : ''}` : undefined },
             { label: 'Check fit and find contacts', state: 'todo' },
             { label: leadsSoFar > 0 ? `Found ${leadsSoFar} lead${leadsSoFar === 1 ? '' : 's'}` : 'Found leads', state: 'todo', note: leadsSoFar > 0 ? 'so far' : undefined },
           ]} />
           <SourceProgressList progress={progress} />
+          {status === 'running' && lastActivityNote(now, lastProgressAt)?.quiet && <div className="text-sm text-[var(--ink-2)]" role="status" data-testid="scan-quiet">{lastActivityNote(now, lastProgressAt)!.text}</div>}
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm border-t border-[var(--line)] pt-3">
             <div>
               <span className="font-semibold">{status === 'pending' ? 'Queued - waiting to start.' : 'Scanning - this can take a few minutes.'}</span>
@@ -1233,7 +1242,7 @@ export default function LeadsClient() {
             </div>
             <OpportunityCardView lead={l} buyerRoles={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} />
             <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>
-            {l.why && <div className="text-xs text-gray-300 mt-1">Research rationale: {l.why}</div>}
+            <ResearchRationale why={l.why} />
             {parseSignals(l.signals).length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">{parseSignals(l.signals).map(sg => <span key={sg} className="text-[10px] uppercase tracking-wide text-gray-500 border border-white/10 px-1 py-0.5">{sg.replace(/_/g, ' ')}</span>)}</div>
             )}

@@ -1,0 +1,43 @@
+# dazl session worker (session-worker/, #1037): the companion that reads LinkedIn (and the other advanced connectors) through a
+# tenant's own saved session for the app. One instance per environment: dazl-session-worker@staging, dazl-session-worker@prod.
+# Installed and (re)started by ops/session-worker/install.sh, which also writes the instance's env file. It carries tenants'
+# session cookies in each request and stores nothing, so it runs as its own unprivileged user, on 127.0.0.1 only (WORKER_HOST in the env
+# file), with a read-only view of the system and no home.
+# Memory: measured on Node 22 with this ExecStart, 92 MB resident idle and 106 MB peak after 40 platform requests (2026-11-14,
+# ~/work/verify/session-worker). The box has 1.8 GB for production's two releases, staging and its scan worker, so the cap is
+# tight: a worker killed at the cap fails the request it was serving (the app records a failed fetch, never an empty result).
+[Unit]
+Description=dazl session worker (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dazl-session
+Group=dazl-session
+# A symlink install.sh points at the reviewed copy of session-worker/ for this instance (a git archive of one commit).
+WorkingDirectory=/opt/dazl-session-worker/%i
+# PORT, WORKER_HOST and ADVANCED_WORKER_TOKEN only. Never the app's env file: the worker needs none of its secrets.
+EnvironmentFile=/etc/dazl-session-worker/%i.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node --max-old-space-size=64 --experimental-strip-types --no-warnings src/server.ts
+Restart=on-failure
+RestartSec=5
+MemoryHigh=160M
+MemoryMax=192M
+TasksMax=64
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
