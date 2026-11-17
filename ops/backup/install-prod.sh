@@ -34,6 +34,7 @@
 #                                                              existing file is kept and compared, never rewritten
 #   the backup directory (app user, 700) and an empty ledger file, each ONLY when absent: an existing directory or
 #   file is never re-owned or re-moded (it is checked, and a backup directory the app user cannot write is refused)
+#   the ledger's append-only flag (chattr +a, #1089), on a new or an existing ledger: the app appends, nobody rewrites
 # Then: systemctl daemon-reload, enable --now both timers, and one backup run right away so the first copy exists
 # before this script returns (its exit code is the script's). No secrets are read or written: the off-host recipients
 # are PUBLIC keys; rclone credentials stay in the app user's own rclone config (or the instance role).
@@ -186,6 +187,15 @@ if [ ! -e "$ROOT$LEDGER" ]; then
   if [ ! -e "$ld" ]; then install -d -m 750 "$ld"; own "$APP_USER:$GROUP" "$ld"; fi
   install -m 600 /dev/null "$ROOT$LEDGER"; own "$APP_USER:$GROUP" "$ROOT$LEDGER"
   echo "install-prod: created the empty deletion ledger $LEDGER"
+fi
+# append-only (#1089): the app user owns the ledger and appends to it (lib/tenant/ledger.ts opens it with 'a'); the
+# kernel's append-only flag, which only root can set or clear, refuses any rewrite, truncation, rename or delete of it,
+# even by its owner. Set on a new or an existing ledger and read back; FAILS CLOSED (before any unit is installed or
+# enabled) when it cannot be proved. Skipped only under --root (tests drive the helper directly).
+# shellcheck source=ops/backup/ledger-append-only.sh
+source "$HERE/ledger-append-only.sh"
+if [ -z "$ROOT" ]; then
+  ensure_ledger_append_only "$LEDGER" || die "the deletion ledger $LEDGER could not be proved append-only (see above). No units were installed or enabled. Fix it and run this again."
 fi
 
 # --- the units: same schedule as the templates in this directory, pointed at the installed entry point
