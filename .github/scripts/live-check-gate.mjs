@@ -17,9 +17,23 @@ export const PASS_RE = /^ {0,3}(?:#{1,6}[ \t]+|[-*+][ \t]+)?(?:\*\*|__)?(?:Quest
 export const EXAMPLE_SHA = '1a2b3c4d'
 export const MIN_EVIDENCE = 80   // characters of the comment besides the PASS line: what was checked on dazl.ai and what it showed
 export const EXEMPT_REASONS = new Set(['not_planned', 'duplicate'])
+export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned'])
 // 'triage:close': Gagan approved closing triaged duplicate / obsolete / already-fixed issues in a batch (2026-11-16) without a
-// per-issue live check; each carries a "[Quest triage]" evidence comment.
-export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned', 'triage:close'])
+// per-issue live check; each carries a "[Quest triage]" evidence comment. It is exempt ONLY when the issue's latest `labeled`
+// event for it was made by an allowed labeler (Gagan's condition, 2026-11-17: only Hermes or Gagan may apply it). The list
+// comes from the TRIAGE_LABELERS env (comma-separated logins), default the repo owner. No labeled event, events that cannot
+// be read, or another actor: not exempt (the gate fails toward open).
+export const TRIAGE_LABEL = 'triage:close'
+export const TRIAGE_LABELERS = new Set(String(process.env.TRIAGE_LABELERS || 'gagan114662').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+const labelName = l => String(typeof l === 'string' ? l : l?.name ?? '').toLowerCase()
+// null if triage:close was applied by an allowed labeler, else why not
+export function triageProblem(events, allowed = TRIAGE_LABELERS) {
+  const last = (Array.isArray(events) ? events : []).filter(e => e?.event === 'labeled' && labelName(e.label) === TRIAGE_LABEL)
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)).pop()
+  if (!last) return 'no labeled event shows who applied it'
+  const who = String(last.actor?.login ?? '').toLowerCase()
+  return allowed.has(who) ? null : `applied by ${who || 'an unknown account'}, not an allowed labeler`
+}
 export const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 
 // The comment's own text: everything GitHub shows as a quote, as code, or not at all is removed first.
@@ -64,19 +78,23 @@ export function passProblem(c, after = null) {
 // issue: the CURRENT issue object; comments: every comment on it (all pages); lastReopenedAt: created_at of its most recent
 // `reopened` event, or null. A PASS counts only when posted after that: a check of commit A does not cover a regression
 // the issue was reopened for. Returns { reopen, reason }.
-export function decide(issue, comments, lastReopenedAt = null) {
+// events: the issue's events (for who applied triage:close); allowed: the triage:close labelers.
+export function decide(issue, comments, lastReopenedAt = null, events = [], allowed = TRIAGE_LABELERS) {
   if (!issue || issue.pull_request) return { reopen: false, reason: 'not an issue' }
   if (issue.state !== 'closed') return { reopen: false, reason: 'not closed' }
   if (EXEMPT_REASONS.has(issue.state_reason)) return { reopen: false, reason: `closed as ${issue.state_reason}` }
-  const labels = (issue.labels || []).map(l => String(typeof l === 'string' ? l : l?.name ?? '').toLowerCase())
+  const labels = (issue.labels || []).map(labelName)
   const lab = labels.find(l => EXEMPT_LABELS.has(l))
   if (lab) return { reopen: false, reason: `labelled ${lab}` }
+  const triage = labels.includes(TRIAGE_LABEL) ? triageProblem(events, allowed) : 'not labelled'
+  if (triage === null) return { reopen: false, reason: `labelled ${TRIAGE_LABEL} by an allowed labeler` }
   const list = Array.isArray(comments) ? comments : []
   const pass = list.find(c => passProblem(c, lastReopenedAt) === null)
   if (pass) return { reopen: false, reason: `live check comment ${pass.html_url || pass.id}` }
   // the nearest miss, so the reopen says what was wrong with it
   const near = list.map(c => ({ c, why: passProblem(c, lastReopenedAt) })).filter(x => /Live check/i.test(String(x.c?.body ?? '')) && TRUSTED.has(x.c?.author_association)).pop()
-  return { reopen: true, reason: `no valid "Live check (prod <commit>): PASS" comment from a maintainer${near ? ` (latest live-check comment: ${near.why})` : ''}` }
+  const why = labels.includes(TRIAGE_LABEL) ? `; ${TRIAGE_LABEL} does not count: ${triage}` : ''
+  return { reopen: true, reason: `no valid "Live check (prod <commit>): PASS" comment from a maintainer${near ? ` (latest live-check comment: ${near.why})` : ''}${why}` }
 }
 
 export const REOPEN_BODY = [
@@ -118,15 +136,16 @@ const exempt = issue => EXEMPT_REASONS.has(issue?.state_reason) || (issue?.label
 // (reopen): the gate fails toward open, never toward a close nobody checked. If the issue itself cannot be read, the
 // event's own copy (fallback) stands in for it.
 async function check(token, issueUrl, fallback = null) {
-  let issue, comments = [], reopenedAt = null, unread = null
+  let issue, comments = [], events = [], reopenedAt = null, unread = null
   try { issue = await (await gh(token, 'GET', issueUrl)).json() }
   catch (e) { if (!fallback) throw e; issue = fallback; unread = `the issue: ${String(e?.message ?? e).slice(0, 160)}` }
   if (!unread) try {
     comments = await allPages(token, `${issueUrl}/comments`)
-    reopenedAt = (await allPages(token, `${issueUrl}/events`)).filter(e => e?.event === 'reopened').map(e => e.created_at).sort().pop() ?? null
+    events = await allPages(token, `${issueUrl}/events`)
+    reopenedAt = events.filter(e => e?.event === 'reopened').map(e => e.created_at).sort().pop() ?? null
   } catch (e) { unread = String(e?.message ?? e).slice(0, 200) }
   const d = unread && issue.state === 'closed' && !issue.pull_request && !exempt(issue)
-    ? { reopen: true, reason: `could not be read, so there is no proof (${unread})` } : unread ? { reopen: false, reason: 'exempt or not a closed issue' } : decide(issue, comments, reopenedAt)
+    ? { reopen: true, reason: `could not be read, so there is no proof (${unread})` } : unread ? { reopen: false, reason: 'exempt or not a closed issue' } : decide(issue, comments, reopenedAt, events)
   return { issue, ...d }
 }
 
