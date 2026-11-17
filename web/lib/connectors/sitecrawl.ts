@@ -17,6 +17,7 @@ import { detectTech, observability, type Observability, type TechHit } from './t
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { revealEmails } from '../people/email-reveal.ts'
+import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -389,6 +390,52 @@ export function probeDomains(company: string, where: string[] = []): string[] {
     if (stem.length >= 3) out.unshift(`${stem}.ai`)
   }
   return out
+}
+
+// #1122/#1037: the employer's own slug on a job board. An aggregator posting (growthroles.com/jobs/war-room-business-development-...)
+// names the company only as a slug, and links the employer's ATS posting (ats.rippling.com/war-room-careers/jobs/<id>). The ATS links and the
+// aggregator's own company/job paths give slugs; a slug is kept only when it IS the company's name (folded, a careers/jobs tail removed),
+// so another employer's ATS link on the same page is never used. Pure: no fetch.
+const ATS_SLUG: RegExp[] = [
+  /^https?:\/\/ats\.(?:[a-z0-9]+\.)?rippling\.com\/([a-z0-9-]+)(?:\/|$)/i,
+  /^https?:\/\/jobs\.(?:eu\.)?lever\.co\/([a-z0-9-]+)(?:\/|$)/i,
+  /^https?:\/\/(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io\/([a-z0-9-]+)(?:\/|$)/i,
+  /^https?:\/\/jobs\.ashbyhq\.com\/([a-z0-9-]+)(?:\/|$)/i,
+  /^https?:\/\/apply\.workable\.com\/([a-z0-9-]+)(?:\/|$)/i,
+  /^https?:\/\/(?:jobs|careers)\.smartrecruiters\.com\/([a-z0-9-]+)(?:\/|$)/i,
+  /^https?:\/\/([a-z0-9-]+)\.(?:bamboohr\.com|breezy\.hr|recruitee\.com|teamtailor\.com|pinpointhq\.com)(?:\/|$)/i,
+]
+const EVENT_OVER_HOLDS = new Set(['job_closed', 'outside_window', 'event_date_stale', 'no_event_evidence'])
+const SLUG_TAIL = /-(careers|career|jobs|job|hiring|inc|ltd|llc|corp)$/
+export function jobBoardSlugs(company: string, sourceUrl: string, html = ''): { slug: string; ats: string[] } {
+  const want = norm(company)
+  const none = { slug: '', ats: [] as string[] }
+  if (want.length < 4) return none
+  const nameSlug = company.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/&/g, ' and ').split(/[^a-z0-9]+/).filter(Boolean).join('-')
+  const fits = (raw: string) => { let s = raw.toLowerCase(); for (let i = 0; i < 2; i++) s = s.replace(SLUG_TAIL, ''); return norm(s.replace(/-/g, ' ')) === want }
+  const ats: string[] = []
+  let slug = ''
+  for (const m of html.matchAll(/href\s*=\s*["'](https?:\/\/[^"'#\s]+)["']/gi)) {
+    const u = m[1].replace(/&amp;/g, '&')
+    for (const re of ATS_SLUG) { const x = re.exec(u); if (x && fits(x[1])) { if (!ats.includes(u) && ats.length < 2) ats.push(u); slug ||= x[1].toLowerCase(); break } }
+  }
+  // the aggregator's own paths: /companies/<slug> or /jobs/<slug>-<title>-<id>, where the slug is exactly the company's name
+  try {
+    const path = new URL(sourceUrl).pathname.toLowerCase()
+    const seg = path.split('/').filter(Boolean)
+    if (!slug && seg.length >= 2 && /^(jobs?|companies|company|employers?)$/.test(seg[0]) && nameSlug && (seg[1] === nameSlug || seg[1].startsWith(nameSlug + '-'))) slug = nameSlug
+  } catch { /* unparseable source */ }
+  if (!slug) for (const m of html.matchAll(/href\s*=\s*["'](?:https?:\/\/[^/"']+)?\/(?:companies|company|employers?)\/([a-z0-9-]+)["'\/?]/gi)) { if (fits(m[1])) { slug = m[1].toLowerCase(); break } }
+  return { slug, ats }
+}
+// Domains a job-board slug points to: the folded slug (careers/jobs tail removed) at .com and the request country's TLD, plus the common
+// company-site forms <slug>inc.com and <slug>hq.com ("War Room" lives at warroominc.com). Each is only a candidate: the crawl's homepage name
+// check and place check decide.
+export function slugDomains(slug: string, where: string[] = []): string[] {
+  let s = slug.toLowerCase(); for (let i = 0; i < 2; i++) s = s.replace(SLUG_TAIL, '')
+  const base = s.replace(/[^a-z0-9]/g, '')
+  if (base.length < 4 || base.length > 30) return []
+  return [...new Set([`${base}.com`, ...countryTlds(where).map(t => `${base}.${t}`), `${base}inc.com`, `${base}hq.com`])]
 }
 
 // Most leads per scan that get domain probes, so a big scan cannot turn into hundreds of fetches.
@@ -969,7 +1016,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // date/quote classes: a blocked article says nothing about the company's own site. This never re-fetches the blocked evidence
     // page (below) and never clears the hold: identity/contact discovery only, qualification unchanged. Classes where the hold is
     // the event itself (job_closed, no_event_evidence, counterparty_signal, ...) are NOT selected - identity cannot change them.
-    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN ('outside_window_undated', 'quote_unconfirmed', 'blocked_by_site', 'needs_javascript')) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
+    // #1122/#1037: every held lead whose company is still the named one gets a company website (and so a buyer search): the holds the
+    // people search reads (searchable-holds.ts), plus outside_window_undated, except the classes where the hold is the event itself being
+    // over (a closed job, a stale or out-of-window date, no event at all). Identity/contact discovery only: the hold is never cleared.
+    const CRAWL_HOLDS = [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r)).map(r => `'${r.replace(/'/g, "''")}'`).join(',')
+    const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN (${CRAWL_HOLDS})) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
     const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
@@ -1075,6 +1126,21 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
       // anchored link existed): after the linked sites, under the same checks; it never turns into a reason to skip what the page links
       if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
+      // #1122/#1037: a job-board posting that links no company site: the employer's ATS posting it links (same company slug) is read once,
+      // and any site IT links or names becomes a candidate; then the slug's own domains join the name guesses below.
+      const board = ev && !anchored ? jobBoardSlugs(l.company, ev.finalUrl ?? l.source_url, ev.body) : { slug: '', ats: [] as string[] }
+      for (const a of board.ats) {
+        if (anchored || deps.signal?.aborted) break
+        let page: Awaited<ReturnType<typeof evidenceGet>> = null
+        try { page = await evidenceGet(a) } catch { page = null }
+        if (!page) continue
+        for (const o of findCompanySitesWithBasis(l.company, page.body, page.finalUrl ?? a)) {
+          if (o.basis === 'evidence_own_domain') continue   // the ATS's own host is never the company's
+          if (!basisOf.has(o.site)) basisOf.set(o.site, o.basis)
+          if (!structured.includes(o.site)) structured.push(o.site)
+        }
+      }
+      const fromSlug = board.slug ? slugDomains(board.slug, where) : []
       let unresolved = anchored ? 'linked_site_not_confirmed' : 'not_confirmed'
       if (!anchored) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
@@ -1092,7 +1158,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           // #1036 4b: the company's own host from a web search first (one search per lead, capped by the caller), then the name guesses
           let found: string[] = []
           if (deps.findSites && !deps.signal?.aborted && !ownBlocked) { try { found = await deps.findSites(l.company, where) } catch { found = [] } }
-          sites = [...structured, ...found.filter(d => !structured.includes(d)), ...guesses.filter(d => !found.includes(d) && !structured.includes(d))]
+          sites = [...new Set([...structured, ...found, ...fromSlug, ...guesses])]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
           const ownCode = l.review_reason === 'needs_javascript' ? 'own_site_needs_javascript' : 'own_site_refused_reading'
