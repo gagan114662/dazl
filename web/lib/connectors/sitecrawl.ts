@@ -1072,6 +1072,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const blockedHost = (l.review_reason === 'blocked_by_site' || l.review_reason === 'needs_javascript') ? (() => { try { return new URL(l.source_url).hostname.toLowerCase() } catch { return null } })() : null
       const notBlockedHost = (d: string) => { const h = d.toLowerCase(); return !blockedHost || (h !== blockedHost && !h.endsWith('.' + blockedHost) && !blockedHost.endsWith('.' + h)) }
       const basisOf = new Map<string, DomainBasis>()
+      const sourceOf = new Map<string, string>()   // 1328-F1: page that linked/named a site, when it is not the lead's original page
       const nowSec = Math.floor((deps.now ?? Date.now()) / 1000)
       let sites: string[] = []
       // A site the cited page shows as a link (or the page's own domain) is "linked": if it is read and refused, resolution ends there, as
@@ -1091,7 +1092,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (!page) continue
         for (const o of findCompanySitesWithBasis(l.company, page.body, page.finalUrl ?? a)) {
           if (o.basis === 'evidence_own_domain') continue   // the ATS's own host is never the company's
-          if (!basisOf.has(o.site)) basisOf.set(o.site, o.basis)
+          if (!basisOf.has(o.site)) { basisOf.set(o.site, o.basis); sourceOf.set(o.site, page.finalUrl ?? a) }   // 1328-F1: the ATS page is this site's evidence
           if (!structured.includes(o.site)) structured.push(o.site)
         }
       }
@@ -1209,7 +1210,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // identity test, so a probed or link-selected domain is recorded as such and never as verified ownership.
       if (r.reason === 'ok' || r.reason === 'none_published') {
         const basis = basisOf.get(site) ?? 'name_probe'
-        addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
+        addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (sourceOf.get(site) ?? ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
       }
       // The identity check passed for this site (name on the homepage, and the place or street agreed or was not contradicted): record it,
       // so the contact sweep and the score can tell this domain from a legacy name guess that only agrees with itself.

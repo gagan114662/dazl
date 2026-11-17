@@ -38,7 +38,8 @@ async function crawlWarRoom(reviewReason: string | null, sites: Record<string, R
   }
   await sc.crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-11-16T12:00:00Z'), redirectOf: async () => null })
   const domain = (db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain
-  return { domain, fetched }
+  const src = (db.prepare("SELECT source_url FROM lead_enrichments WHERE lead_id = ? AND connector = 'sitecrawl' AND kind = 'domain'").get('L1') as { source_url: string } | undefined)?.source_url ?? null
+  return { domain, fetched, src }
 }
 
 test('#1122 #1037 a HELD War Room lead (needs review: no sales-hiring evidence) still gets its company domain from the job-board slug', async () => {
@@ -51,6 +52,27 @@ test('#1122 #1037 a HELD War Room lead (needs review: no sales-hiring evidence) 
 test('#1122 the ATS posting that links the company site gives it, ahead of the guesses', async () => {
   const r = await crawlWarRoom('source_review_required', { 'wearewarroom.com': { '/': HOME } }, html('<a href="https://wearewarroom.com/">War Room website</a>'))
   assert.equal(r.domain, 'wearewarroom.com')
+  // 1328-F1: the domain's provenance is the ATS page that linked it, not the aggregator page (which never linked this site)
+  assert.equal(r.src, ATS)
+})
+
+test('1328-F1 control: a site the original page links itself keeps the original page as its provenance', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, Ontario'] }), job)
+  db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,review_reason) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .run('L1', job, 'War Room', null, 'Hiring a Business Development Representative in Toronto', SRC, 'War Room is looking for a Business Development Representative (BDR) in Toronto, Ontario', null, 70, 'source_review_required')
+  const page = html('<h1>War Room</h1><a href="https://wearewarroom.com/">War Room website</a>')
+  const get: sc.Get = async url => {
+    const u = new URL(url)
+    if (url === SRC) return { status: 200, body: page, finalUrl: url }
+    if (u.hostname.replace(/^www\./, '') !== 'wearewarroom.com') return null
+    if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
+    return u.pathname === '/' ? { status: 200, body: HOME, finalUrl: url } : { status: 404, body: '', finalUrl: url }
+  }
+  await sc.crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-11-16T12:00:00Z'), redirectOf: async () => null })
+  assert.equal((db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain, 'wearewarroom.com')
+  assert.equal((db.prepare("SELECT source_url FROM lead_enrichments WHERE lead_id = ? AND connector = 'sitecrawl' AND kind = 'domain'").get('L1') as { source_url: string }).source_url, SRC)
 })
 
 test('#1122 a slug domain whose homepage names another business is refused (the identity check is unchanged)', async () => {
