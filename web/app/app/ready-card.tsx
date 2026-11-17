@@ -31,7 +31,11 @@ export default function ReadyCard() {
               <div className="font-semibold text-sm">{x.label}<span className="sr-only">{x.state === 'done' ? ' (done)' : x.state === 'unknown' ? ' (could not check)' : x.next ? ' (next step)' : ' (to do)'}</span></div>
               <div className="text-xs text-[var(--ink-2)] mt-0.5 break-words line-clamp-2" title={x.detail}>{x.detail}</div>
             </div>
-            {x.fix && (x.fix.href.includes('?setup=')
+            {x.alt && <Link href={x.alt.href} className="btn-ghost btn-sm shrink-0" data-testid={`rc-${x.id}-alt`}>{x.alt.label}</Link>}
+            {x.fix && (x.fix.href.startsWith('/api/')
+              // #1319: Link Google is a full-page round trip to Google (never a client-side route), and the main way forward
+              ? <a href={x.fix.href} className={`${x.fix.primary ? 'btn-primary' : 'btn-ghost'} btn-sm shrink-0`} data-testid={`rc-${x.id}-fix`}>{x.fix.label}</a>
+              : x.fix.href.includes('?setup=')
               // The setup steps read ?setup= once, on load, so that link loads the page.
               ? <a href={x.fix.href} className="btn-ghost btn-sm shrink-0">{x.fix.label}</a>
               : <Link href={x.fix.href} className="btn-ghost btn-sm shrink-0">{x.fix.label}</Link>)}
