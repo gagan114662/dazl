@@ -7,7 +7,7 @@
 //   unavailable          cannot run (no key / feature off)
 // Instrumentation only: nothing here changes a lead or a decision.
 import type Database from 'better-sqlite3'
-import { ENRICH_SKIP_STATUSES, NO_KEY_STATUS } from './provider-issue-text.ts'
+import { ENRICH_SKIP_STATUSES, NO_KEY_STATUS, PAID_VENDOR_OFF_STATUS } from './provider-issue-text.ts'
 
 export type StageStatus = 'ok' | 'attempted_no_result' | 'skipped' | 'failed' | 'unavailable'
 export interface StageNote { stage: string; status: StageStatus; reason: string | null; detail?: Record<string, number | string> }
@@ -128,7 +128,8 @@ export function paidEnrichmentOutcomes(db: Database.Database, tenantId: string, 
   } catch { out.unreadable = true; return out }
   try { // the pass's own failure rows (shared connector): read with the same tenant + job scope
     // #1037: the 'no key' row is the pass saying it had nothing to run with, not a failure
-    const pass = db.prepare('SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status <> ?').get(tenantId, jobId, PAID_ENRICH_PASS_CONNECTOR, NO_KEY_STATUS) as { n: number } | undefined
+    // Refs #1099: neither is 'paid_vendor_off' (the policy kept the paid vendors off): nothing was tried
+    const pass = db.prepare('SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status NOT IN (?, ?)').get(tenantId, jobId, PAID_ENRICH_PASS_CONNECTOR, NO_KEY_STATUS, PAID_VENDOR_OFF_STATUS) as { n: number } | undefined
     out.passFailed = Number(pass?.n ?? 0); out.failed += out.passFailed
   } catch { out.unreadable = true; return out }
   // A claims table that cannot be read is NOT "no claims": the audit rows alone cannot tell a matched company from a contact, so
@@ -225,9 +226,10 @@ export function notePaidEnrichment(trace: EnrichmentTrace, db: Database.Database
   const detail = { pass_failed: o.passFailed, lookups: o.total, unconfirmed: o.unconfirmed, with_results: o.ok, empty: o.empty, held: o.held, failed: o.failed, company_ok: o.company.ok, company_empty: o.company.empty, company_rejected: o.company.rejected, apollo_lookups: o.byProvider.apollo, pdl_lookups: o.byProvider.pdl, basis: o.basis }
   if (o.unreadable) trace.note('paid_enrichment', 'failed', 'the paid-enrichment records could not be read, so what the paid lookups did is unknown', detail)
   else if (o.total === 0 && o.unconfirmed === 0 && o.held === 0 && o.failed === 0) {
-    let noKey = false
+    let noKey = false, policyOff = false
+    try { policyOff = !!db.prepare('SELECT 1 FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = ? LIMIT 1').get(tenantId, jobId, PAID_ENRICH_PASS_CONNECTOR, PAID_VENDOR_OFF_STATUS) } catch { /* unreadable: the generic note */ }
     try { noKey = !!db.prepare('SELECT 1 FROM connector_audit WHERE tenant_id = ? AND scan_job_id = ? AND connector = ? AND status = ? LIMIT 1').get(tenantId, jobId, PAID_ENRICH_PASS_CONNECTOR, NO_KEY_STATUS) } catch { /* unreadable: the old wording */ }
-    trace.note('paid_enrichment', 'unavailable', noKey ? 'no enabled Apollo / People Data Labs key is saved for this workspace, so no contact lookup was made' : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
+    trace.note('paid_enrichment', 'unavailable', policyOff ? 'Apollo and People Data Labs are not used: dazl uses no paid third-party service by default (DAZL_PAID_VENDORS)' : noKey ? 'no enabled Apollo / People Data Labs key is saved for this workspace, so no contact lookup was made' : 'no Apollo / People Data Labs key configured for this tenant, or no eligible lead', detail)
   }
   else if (o.ok > 0) {
     const lookupFailed = o.failed - o.passFailed
