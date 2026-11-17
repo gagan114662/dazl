@@ -28,7 +28,7 @@ class CiRunnerPlacement(unittest.TestCase):
                     for forbidden in ("--privileged", "--network host", "--network=host",
                                       "--ipc host", "--ipc=host", "docker.sock", "/mnt/c"):
                         self.assertNotIn(forbidden, options)
-                    self.assertEqual(job["defaults"]["run"]["shell"], "bash")
+                    self.assertEqual(job["defaults"]["run"]["shell"], "/usr/local/bin/ci-bash {0}")
                     first = job["steps"][0]
                     self.assertEqual(first["name"], "Isolated job prerequisites")
                     self.assertEqual(first["working-directory"], "/")
@@ -51,6 +51,34 @@ class CiRunnerPlacement(unittest.TestCase):
         commands = "\n".join(step.get("run", "") for step in job["steps"])
         self.assertIn("DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate", commands)
         self.assertIn("test/leads-read-pg-live.test.ts", commands)
+
+    def test_runtime_dependencies_and_nonroot_bootstrap_are_present(self):
+        for filename, identifiers in CPU_JOBS.items():
+            for identifier in identifiers:
+                with self.subTest(workflow=filename, job=identifier):
+                    job = workflows()[filename]["jobs"][identifier]
+                    bootstrap = job["steps"][0]
+                    self.assertEqual(bootstrap.get("shell"), "bash")
+                    for command in ("sqlite3", "rsync", "age"):
+                        self.assertIn(command, bootstrap["run"])
+                    helpers = [step for step in job["steps"]
+                               if step.get("name") == "Install non-root CI command shell"]
+                    self.assertEqual(len(helpers), 1)
+                    self.assertEqual(helpers[0]["shell"], "bash")
+                    self.assertIn("ci-container-bootstrap.sh", helpers[0]["run"])
+                    self.assertEqual(job["env"]["NPM_CONFIG_CACHE"], "/tmp/ci-npm-cache")
+
+    def test_preflight_has_node_and_real_browser_before_prod_discovery(self):
+        steps = workflows()["release-preflight.yml"]["jobs"]["fail-closed"]["steps"]
+        prod = next(i for i, step in enumerate(steps)
+                    if "unittest discover -s ops/prod" in step.get("run", ""))
+        node = next(i for i, step in enumerate(steps)
+                    if step.get("uses") == "actions/setup-node@v4")
+        browser = next(i for i, step in enumerate(steps)
+                       if step.get("name") == "Preflight real browser prerequisite")
+        self.assertLess(node, prod)
+        self.assertLess(browser, prod)
+        self.assertIn("google-chrome", steps[browser]["run"])
 
     def test_native_release_builds_and_secret_jobs_do_not_move(self):
         all_workflows = workflows()

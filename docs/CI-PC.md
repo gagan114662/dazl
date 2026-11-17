@@ -19,3 +19,5 @@ An online listener or routing file is NOT successful migration. Verify each exec
 The protected migration PR must remain unmerged until the actual routed suites and required checks pass, with reset, browser and service-container behavior verified. The host baseline and detailed receipts remain in private operator evidence storage, not in this repository.
 
 Job-container umask is explicitly0022. Docker exec was observed to default to0000 despite restrictive service settings; verified checkout modes must therefore accompany the host settings.
+
+Original test/build shell commands execute as the non-root ci user through the job-local ci-bash shell. Only prerequisite setup and JavaScript actions retain the standard root container context. Explicit source/cache ownership and command-file handoff preserve access without making source files group-writable. rsync, sqlite3 and age are installed before tests; preflight receives Node22 and real Chrome before ops/prod discovery. This preserves permission-sensitive and browser/restore coverage instead of accepting root/tool-related skips.

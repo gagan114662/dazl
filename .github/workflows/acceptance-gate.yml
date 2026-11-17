@@ -26,15 +26,26 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    env:
+      NPM_CONFIG_CACHE: /tmp/ci-npm-cache
     defaults:
       run:
-        shell: bash
+        shell: /usr/local/bin/ci-bash {0}
     steps:
       - name: Isolated job prerequisites
+        shell: bash
         working-directory: /
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo gh
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo gh sqlite3 rsync age passwd
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install non-root CI command shell
+        shell: bash
+        working-directory: /
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ci-container-bootstrap.sh"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -73,19 +84,26 @@ jobs:
     timeout-minutes: 5
     outputs:
       numbers: ${{ steps.scope.outputs.numbers }}
+    env:
+      NPM_CONFIG_CACHE: /tmp/ci-npm-cache
     defaults:
       run:
-        shell: bash
+        shell: /usr/local/bin/ci-bash {0}
     steps:
       - name: Isolated job prerequisites
+        shell: bash
         working-directory: /
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo sqlite3 rsync age passwd
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Install non-root CI command shell
+        shell: bash
+        working-directory: /
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ci-container-bootstrap.sh"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -119,20 +137,27 @@ jobs:
       image: ubuntu:24.04
       options: --cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022
     timeout-minutes: 15
+    env:
+      NPM_CONFIG_CACHE: /tmp/ci-npm-cache
     defaults:
       run:
-        shell: bash
+        shell: /usr/local/bin/ci-bash {0}
         working-directory: web
     steps:
       - name: Isolated job prerequisites
+        shell: bash
         working-directory: /
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo sqlite3 rsync age passwd
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
+      - name: Install non-root CI command shell
+        shell: bash
+        working-directory: /
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ci-container-bootstrap.sh"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
