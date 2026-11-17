@@ -29,6 +29,20 @@ function copy(dir: string, t: number, i: number, o: { kind?: 'backup' | 'ledger'
   if (!o.noManifest) writeFileSync(path.join(dir, `${name}.json`), JSON.stringify({ tool: 'dazl-offhost-copy', ciphertext: name, ciphertext_sha256: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body), copied_at: new Date(o.copiedAt ?? t + 30_000).toISOString() }))
   return name
 }
+// `count` hourly copy times back from `newest`, except the oldest `tail` sit a minute apart just under the copy before them,
+// on its UTC day. Retention keeps the newest 48 PLUS the newest copy of each UTC day and week (retainedCopies), so with plain
+// hourly times a copy past the 48 was kept as its day's newest whenever a UTC midnight fell just after it: the expected
+// retire counts then failed only when the suite ran between about 22:30 and 01:00 UTC. Here a copy past the policy always
+// shares its day (and week) with a newer copy, so what retention keeps no longer depends on the time of day.
+function hourlyTimes(newest: number, count: number, tail = 4): number[] {
+  const t = Array.from({ length: count }, (_, i) => newest - i * HOUR)
+  const a = count - tail - 1
+  if (a < 1) return t
+  const intoDay = t[a] % DAY // ms since UTC midnight
+  if (intoDay < (tail + 1) * 60_000) t[a] -= intoDay + 10 * 60_000 // too close after midnight: 23:50 the day before
+  for (let j = 1; j <= tail; j++) t[a + j] = t[a] - j * 60_000
+  return t
+}
 function dirs() {
   const box = path.join(T, `box${++n}`), here = path.join(T, `here${n}`)
   mkdirSync(box); mkdirSync(here, { mode: 0o700 })
@@ -77,7 +91,7 @@ test('#1080 pull: copies and manifests only, checked; append-only (a copy the bo
 test('#1080 pull: a bad copy and a future-dated copy go to .bad and alert; with 48 good copies here nothing is retired while they do', { skip }, () => {
   const { box, here } = dirs()
   copy(box, now - 10 * 60_000, 9, { kind: 'ledger' })
-  for (let i = 0; i < 48; i++) copy(box, now - (i + 1) * HOUR, i)
+  hourlyTimes(now - HOUR, 48).forEach((t, i) => copy(box, t, i))
   assert.equal(run(box, here).code, 0)
   const held = copies(here).length
   assert.equal(held, 48)
@@ -215,7 +229,7 @@ test('#1080 pull: stale newest copy, no ledger copy, an unreachable box, nothing
 test('#1080 pull: a LATE manifest for a copy older than what was held when its ciphertext came is set aside; a corrupt pending record holds retention', { skip }, () => {
   const { box, here } = dirs()
   copy(box, now - 10 * 60_000, 9, { kind: 'ledger' }); copy(box, now - 30 * 60_000, 1)
-  for (let i = 0; i < 49; i++) copy(box, now - 90 * 60_000 - i * HOUR, 10 + i) // 50 hourly copies: past the 48 policy
+  hourlyTimes(now - 90 * 60_000, 49).forEach((t, i) => copy(box, t, 10 + i)) // 50 copies: past the 48 policy
   assert.equal(run(box, here).code, 0)
   const x = copy(box, now - 4 * HOUR, 2, { noManifest: true }) // ciphertext only, named older than the copy held
   assert.equal(run(box, here).code, 1) // older than 2 h without its manifest: alerts, nothing else
@@ -264,7 +278,7 @@ test('#1080 pull: a split fake whose pending record was LOST (removed) is still 
 test('#1080 pull: when a copy cannot be moved to .bad/ it is never counted, and an unreadable .retired/bad-names is a problem', { skip: (skip || process.getuid?.() === 0) && 'rsync missing or running as root' }, () => {
   const { box, here } = dirs()
   copy(box, now - 10 * 60_000, 9, { kind: 'ledger' }); copy(box, now - 30 * 60_000, 1)
-  for (let i = 0; i < 49; i++) copy(box, now - 90 * 60_000 - i * HOUR, 10 + i)
+  hourlyTimes(now - 90 * 60_000, 49).forEach((t, i) => copy(box, t, 10 + i))
   assert.equal(run(box, here).code, 0)
   mkdirSync(path.join(here, '.bad'), { mode: 0o700 }); chmodSync(path.join(here, '.bad'), 0o500) // cannot be written
   const fake = copy(box, now - 5 * DAY, 99)
