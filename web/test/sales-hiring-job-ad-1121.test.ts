@@ -94,3 +94,20 @@ test('#1121 F1 HELD: a modified title suffix (Senior Manager, Sr. Director, Sale
   assert.ok(jobAdQuoteRole('Sales Development Representative (SDR) New York City Full-Time On-Site About Clark', 'Clark', roles))
   assert.ok(jobAdQuoteRole('Founding Sales Development Representative (SDR) Chesky United States', 'Chesky', roles))
 })
+
+// review at 06969a58 (Hermes F1): a separator before the modified suffix ("- Senior Manager", "/ Sales Manager") must not bypass the
+// suffix guard on the whole-title path; the same refusal applies before either successful return
+test('#1121 F1 (06969a58) HELD: a separator-prefixed modified title suffix is refused, specific and generic', () => {
+  for (const [quote, company] of [
+    ['Sales Development Representative (SDR) - Senior Manager at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) / Sales Manager at Mercury', 'Mercury'],
+    ['Sales Development Representative - Senior Manager at Mercury', 'Mercury'],
+    ['Sales Development Representative (SDR) – Sr. Director at Mercury', 'Mercury'],
+  ] as const) {
+    assert.equal(jobAdQuoteRole(quote, company, roles), null, quote)
+    assert.equal(jobAdQuoteRole(quote, company, []), null, `generic: ${quote}`)
+  }
+  assert.ok(jobAdQuoteRole('Sales Development Representative (SDR) New York City Full-Time On-Site About Clark', 'Clark', roles))
+  assert.ok(jobAdQuoteRole('Founding Sales Development Representative (SDR) Chesky United States', 'Chesky', roles))
+  assert.ok(jobAdQuoteRole('As a Sales Development Representative at Mercury, you will book meetings', 'Mercury', roles))
+})
