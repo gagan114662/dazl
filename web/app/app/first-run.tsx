@@ -99,6 +99,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     for (const k of ['summary', 'who', 'industries', 'sizes', 'where', 'signals', 'exclude', 'research']) delete rest[k]
     setBuyerRest(rest)
   }
+  // #1325 F1: the Google-return note is for one return, as on Leads: history movement (back/forward) drops it.
+  useEffect(() => {
+    const drop = () => setLinkNote(null)
+    window.addEventListener('popstate', drop)
+    return () => window.removeEventListener('popstate', drop)
+  }, [])
   const loadUsage = () => fetch('/api/usage').then(r => r.ok ? r.json() : null).then(j => { if (j) setUsage(j) }).catch(() => {})
   useEffect(() => {
     void Promise.all([
@@ -319,7 +325,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-[var(--ink)]">What&apos;s your website?</h1>
               <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first leads.</p>
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
-              {linkNote && <p className={`text-sm mt-4 ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}</p>}
+              {linkNote && <p className={`text-sm mt-4 ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
               {linkNote && trialRefused && <div className="mt-4 text-left" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="site" text="Link Google to this account to read your site free (no card)." /></div>}
               {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); void loadUsage().then(() => readSite()) }} /></div>}
               <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
@@ -346,7 +352,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready to contact.` : f5Found && ready ? `dazl found ${f5Found} lead${f5Found === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (ready?.length ? `dazl found ${ready.length} lead${ready.length === 1 ? '' : 's'} ready to contact.` : readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
-              {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''}</p>}
+              {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
               {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
                 <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
@@ -407,7 +413,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     </form>
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
                     <div className="mt-2 flex flex-col gap-2">
-                      {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy || noPool || poolUnknown || !!trialRefused} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); if (!noPool && !poolUnknown) void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
+                      {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy || noPool || poolUnknown || !!trialRefused} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); if (!noPool && !poolUnknown) void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
                     </div>
                   </>}
                   {/* Live: which source is being read and how many candidates so far, from the scan's own progress record. */}
@@ -469,7 +475,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     <div className="max-w-2xl">
       <ol className="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-6" aria-label="Setup steps">{dot('site', 1, 'Your website')}{dot('brain', 2, 'What you sell')}{dot('ask', 3, 'Who to find')}</ol>
       {error && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="alert">{error}</p>}
-      {linkNote && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''}</p>}
+      {linkNote && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
       {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ask" /></div>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
@@ -510,7 +516,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
           <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>
         </div>
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
-          {plays.map(p => <button type="button" key={p} disabled={busy || !!trialRefused} onClick={() => { setAsk(p); setAskIsSuggestion(true); void start(p) }} className="chip justify-between">{p}<Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
+          {plays.map(p => <button type="button" key={p} disabled={busy || !!trialRefused} onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); void start(p) }} className="chip justify-between">{p}<Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
         </div>
         {needKey && !hasKey && <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} />}
         <div className="flex flex-wrap items-center gap-2 text-xs">
