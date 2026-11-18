@@ -61,10 +61,12 @@ export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session:
 
 // Worker protocol: POST {platform, query, session} with a bearer token, reply {items:[{url,title,quote,date,login_walled,author?}]}.
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
+export const hasWorkerSession = (session: string | null): session is string => (session?.trim().length ?? 0) >= 10
+
 export function httpWorker(env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): WorkerFetch {
   return async req => {
     // Older workers can fall back to an operator cookie when a session is absent or too short.
-    if (req.session.trim().length < 10) return { failed: 'no_session' }
+    if (!hasWorkerSession(req.session)) return { failed: 'no_session' }
     try {
       const res = await fetchImpl(`${env.ADVANCED_WORKER_URL!.replace(/\/$/, '')}/fetch`, {
         method: 'POST',
@@ -170,6 +172,9 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     if (p === 'linkedin' && sessionCookieReserved(tenantId, env)) { await skip('session_transport_owns_cookie'); continue }
     // A LinkedIn stop (throttled/challenge/unauthorised) by any consumer is a 24 h tenant cooldown: this post search must not spend the shared budget inside it.
     if (p === 'linkedin' && (await coolingDown(db, tenantId, id, deps.now ?? Math.floor(Date.now() / 1000)))) { await skip('cooldown'); continue }
+    const publicIndex = p === 'x' && xViaOperatorIndex(env)
+    const session = publicIndex ? '' : await readEnabledCredential(db, tenantId, id, deps.master)
+    if (!publicIndex && !hasWorkerSession(session)) { await skip('no_session'); continue }
     // Atomic: the reservation and the limit check are one step, shared with every other consumer of this connector (the LinkedIn people reader included), so concurrent scans cannot exceed the cap (#192).
     if (!(await reserveRequest(db, tenantId, connectorId(p), maxCallsPerHour(p, env), 'advanced', deps.now ?? Math.floor(Date.now() / 1000)))) { await skip('rate_limited'); continue }
     // X path 1: operator-key web search of the public index (TinyFish free tier, capped
@@ -177,7 +182,7 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     // tenant's account banned. A search snippet is not the verbatim post text, so every
     // hit is login_walled: the quote-verification gate keeps them in the review lane and
     // they are never auto-verified. Set X_VIA_SEARCH=0 to force the worker path.
-    if (p === 'x' && xViaOperatorIndex(env)) {
+    if (publicIndex) {
       const r = await tfSearch(db, tenantId, `site:x.com ${q}`.slice(0, 300), {}, { searches: 0 }, { env, fetchImpl: deps.fetchImpl })
       if (!r.ok) { await skip(r.reason); continue }
       const items: (Evidence & { login_walled: boolean })[] = []
@@ -191,9 +196,7 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
       out.push(...items)
       continue
     }
-    // Session-worker path: use the tenant's own credential. The HTTP transport refuses missing sessions.
-    const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
-    const r = await worker({ platform: p, query: q.slice(0, 300), session })
+    const r = await worker({ platform: p, query: q.slice(0, 300), session: session ?? '' })
     if (r === null) { await skip('worker_error'); continue }
     // The platform call failed for a known reason: audit that reason, not 'empty'.
     if ('failed' in r) { await skip(r.failed); continue }

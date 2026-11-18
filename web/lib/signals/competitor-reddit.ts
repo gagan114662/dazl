@@ -1,15 +1,14 @@
 // Competitor complaints on Reddit: a public post complaining about a competitor is
 // prospecting evidence (the user picked this shape: post as candidate, complaint as
 // the quote, badge naming the competitor). Search goes through the existing Reddit
-// worker fetcher - same consent scope, same per-tenant session with operator-env
-// fallback, same rate budget as the other advanced fetchers. Public posts only,
+// worker fetcher with the tenant's consent and session, and the same rate budget as the other advanced fetchers. Public posts only,
 // nothing is ever sent anywhere. Competitors are configured in Settings (max 5).
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
 import { audit, getEnabledCredential, readEnabledCredential, writeAudit, type AuditEntry } from '../connectors/store.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
-import { hasConsent, httpWorker, readConsent, type WorkerAuthor, type WorkerFetch } from '../advanced/index.ts'
+import { hasConsent, hasWorkerSession, httpWorker, readConsent, type WorkerAuthor, type WorkerFetch } from '../advanced/index.ts'
 
 export const MAX_COMPETITORS = 5
 const MAX_POST_AGE_DAYS = 30
@@ -69,7 +68,7 @@ export const complaintQuery = (name: string): string => `${name} (complaint OR a
 // Connector audit rows share the per-platform hourly budget with the platform's normal
 // fetcher: complaint searches count as adv:<platform> calls so the two never stack.
 const callsLastHourSql = (platform: 'reddit' | 'x'): string =>
-  `SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector IN ('adv:${platform}', 'adv:${platform}-competitor') AND created_at > ?`
+  `SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND connector IN ('adv:${platform}', 'adv:${platform}-competitor') AND created_at > ? AND status <> 'no_session'`
 
 export interface ComplaintItem extends Evidence { login_walled: boolean; complaint_of: string; author?: WorkerAuthor }
 type ComplaintDeps = { worker?: WorkerFetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
@@ -95,9 +94,10 @@ async function complaints(store: ComplaintStore, tenantId: string, jobId: string
     const skip = (status: string) => store.audit({ tenantId, connector, jobId, lookup: `${competitors.length} competitors`, status, results: 0 })
     if (!platformAllowed(platform, advFlags(env))) { await skip('disabled'); continue }
     if (!(await store.consented(platform))) { await skip('no_consent'); continue }
+    const session = await store.session(platform)
+    if (!hasWorkerSession(session)) { await skip('no_session'); continue }
     const budget = maxCallsPerHour(platform, env) - await store.callsLastHour(platform, now - 3600)
     if (budget <= 0) { await skip('rate_limited'); continue }
-    const session = (await store.session(platform)) || ''
     for (const name of competitors.slice(0, budget)) {
       const q = complaintQuery(name)
       const r = await worker({ platform, query: q.slice(0, 300), session }).catch(() => null)

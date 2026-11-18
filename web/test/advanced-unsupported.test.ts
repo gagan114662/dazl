@@ -20,6 +20,7 @@ test('unsupported platform: audited unsupported without consent, worker or budge
   let calls = 0
   const worker: WorkerFetch = async () => { calls++; return { items: [], unsupported: null } }
   acceptConsent(db, 'A', 'advanced')
+  saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-1234', master)
   saveCredential(db, 'A', 'adv:facebook', 'session-of-tenant-A-1234', master)
   const out = await collectAdvanced(db, 'A', 'j1', ['facebook', 'xiaohongshu', 'reddit'], 'q', { worker, master, env: ON })
   assert.deepEqual(out, [])
@@ -32,6 +33,7 @@ test('unsupported platform: audited unsupported without consent, worker or budge
 
 test('version skew: a worker refusal is audited unsupported, never empty or worker_error', async () => {
   const db = setup(); acceptConsent(db, 'A', 'advanced')
+  saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-1234', master)
   const worker: WorkerFetch = async () => ({ items: [], unsupported: 'not implemented by the worker' })
   const out = await collectAdvanced(db, 'A', 'j1', ['reddit'], 'q', { worker, master, env: ON })
   assert.deepEqual(out, [])
@@ -70,6 +72,7 @@ test('over the wire: the real worker reports unsupported for facebook, with no i
 test('failed platform calls: auth, throttling and schema failures are audited distinctly, never empty', async () => {
   for (const failed of ['auth_failed', 'throttled', 'schema_error', 'upstream_error'] as const) {
     const db = setup(); acceptConsent(db, 'A', 'advanced')
+    saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-1234', master)
     const worker: WorkerFetch = async () => ({ failed })
     const out = await collectAdvanced(db, 'A', 'j1', ['reddit'], 'q', { worker, master, env: ON })
     assert.deepEqual(out, [])
