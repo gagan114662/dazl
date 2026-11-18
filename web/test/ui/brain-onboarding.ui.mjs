@@ -17,6 +17,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { onboardingEstimate } from '../helpers/onboarding-estimate.mjs'
 import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
@@ -61,6 +62,7 @@ async function run(width, height, tag, leads = LEADS, fail = false) {
     if (p === '/api/scan/icp-from-url') { await new Promise(r => setTimeout(r, 1200)); return json(READ) }
     if (p === '/api/settings/profile' && m === 'POST') { const body = JSON.parse(req.postData()); st.profileBodies.push(body); st.profile = { ...st.profile, ...body }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
+    if (p === '/api/scan/estimate' && m === 'POST') return json({ estimate: onboardingEstimate })
     if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return json({ job_id: J }) }
     if (p === '/api/scan/status') { st.polls++; st.status = st.polls < 2 ? 'running' : fail ? 'failed' : 'done'; return json({ job_id: J, status: st.status, lead_count: st.status === 'done' ? 6 : 2 }) }
     if (p === '/api/leads') return json({ leads, hidden_count: 0 })
@@ -106,10 +108,11 @@ async function run(width, height, tag, leads = LEADS, fail = false) {
   // 4. One click starts the first play; customers appear in place.
   const firstPlay = await page.getByTestId('first-play').first().innerText()
   await page.getByTestId('ready-cta').click()
+  await page.getByTestId('estimate-confirm-run').click()
   await page.getByTestId('first-progress').waitFor()
   assert.equal(await page.getByTestId('first-heading').textContent(), 'Finding your first leads')
   if (leads === LEADS) await page.getByTestId('first-lead').first().waitFor({ timeout: 20000 })
-  assert.deepEqual(st.scanBodies, [{ query: firstPlay.trim(), icp: READ.icp, mode: 'first5' }], 'exactly one scan: the first play (the prefilled sentence) and the inferred profile, every list item as read, as the fast first scan')
+  assert.deepEqual(st.scanBodies, [{ estimate_ack: onboardingEstimate.ack, query: firstPlay.trim(), icp: READ.icp, mode: 'first5' }], 'exactly one scan: the first play (the prefilled sentence) and the inferred profile, every list item as read, as the fast first scan')
   if (leads !== LEADS) {
     // Nothing ready (only held, none at all, or the play failed): heading and button say what is there, never "Start
     // reaching out" (Instinct #332).
@@ -135,7 +138,7 @@ async function run(width, height, tag, leads = LEADS, fail = false) {
   await fits('ready screen with leads')
   await shot('4-customers')
   if (process.env.SHOTS) await page.getByTestId('first-customers').screenshot({ path: path.join(process.env.SHOTS, `4-first-customers-${tag}.png`) })
-  assert.deepEqual(writes, ['POST /api/scan/icp-from-url', 'POST /api/settings/profile', 'POST /api/scan'])
+  assert.deepEqual(writes, ['POST /api/scan/icp-from-url', 'POST /api/settings/profile', 'POST /api/scan/estimate', 'POST /api/scan'])
   await ctx.close()
 }
 try {
