@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { bareUsCity } from '../lib/sources/jobboards.ts'
+import { bareUsCity, profilePlace } from '../lib/sources/jobboards.ts'
 import { US_CITY_RANKS } from '../lib/sources/us-city-ranks.ts'
 
 test('an ordinary hyphenated city is not aliased to its first or last part', () => {
@@ -30,7 +30,8 @@ test('the generator imports no module the documented redirect truncates', () => 
 
 
 test('#1236 consolidated county names never become standalone cities', () => {
-  assert.deepEqual(bareUsCity('Davidson'), { city: 'Davidson', abbr: 'NC' })
+  assert.equal(bareUsCity('Davidson'), null)
+  assert.deepEqual(profilePlace('Davidson, NC', 'US'), { text: 'Davidson, NC', name: 'Davidson, NC' })
   assert.equal(bareUsCity('Silver Bow'), null)
   for (const [city, abbr] of [
     ['Nashville', 'TN'], ['Louisville', 'KY'], ['Lexington', 'KY'],

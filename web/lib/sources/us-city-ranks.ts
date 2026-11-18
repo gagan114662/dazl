@@ -3263,3 +3263,5 @@ export const US_CITY_RANKS: readonly string[] = [
   "Zion|IL|24315",
   "Zionsville|IN|31982",
 ]
+// A bare county part can also name an unrelated city. Require an explicit state for those names.
+export const US_COUNTY_SHORT_NAMES: readonly string[] = ["Davidson","Silver Bow"]
