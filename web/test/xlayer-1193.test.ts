@@ -84,11 +84,11 @@ async function monitorRun(db: Db, mon: string, at: number, leads: L[]): Promise<
 
 const HIRING_LABELS = ['hiring', 'hiring_relevant_role', 'open_role_language', 'growing_team', 'job_board_presence']
 const heldKind = (db: Db) => db.get<{ signal_kind: string | null }>("SELECT signal_kind FROM play_alerts WHERE tenant_id = ? AND entity_key = 'd:flexport.com'", [A])
-async function weekly(db: Db, kind: string | null) {
+async function weekly(db: Db, kind: string | null, event: L = {}) {
   const w = await createWatch(db, A, Q, ICP, null, NOW - 3 * DAY)
   assert.ok(w.watch, JSON.stringify(w))
   await db.run('UPDATE watches SET created_at = ? WHERE id = ?', [NOW - 3 * DAY, w.watch.id])
-  await watchRun(db, w.watch.id, Q, NOW, [{ kind }])
+  await watchRun(db, w.watch.id, Q, NOW, [{ ...event, kind }])
   return w.watch.id
 }
 
@@ -115,10 +115,19 @@ test('#1193 weekly play -> monitor: an ungraded sighting on either side is the s
   }
 })
 
+test('#1193 a board-proven weekly alert keeps the hiring identity when the first grade says expansion', async () => {
+  const { db } = await open()
+  await weekly(db, 'expansion', { signals: ['expansion', 'hiring'] })
+  assert.deepEqual(await heldKind(db), { signal_kind: 'hiring' })
+  const m = await createMonitor(db, A, { query: Q2 }, NOW)
+  assert.ok('id' in m)
+  assert.deepEqual(await monitorRun(db, m.id, NOW + DAY, [{ kind: 'hiring' }]), [])
+})
+
 test('#1193 weekly play -> monitor: another event stays another event (not a company-level mute)', async () => {
   // the play mailed Flexport as an EXPANSION on that day: the monitor's hiring posting of the same day is a different event
   const { db } = await open()
-  await weekly(db, 'expansion')
+  await weekly(db, 'expansion', { proof: 'page_bound', url: 'https://flexport.com/news/expansion' })
   const m = await createMonitor(db, A, { query: Q2 }, NOW)
   assert.ok('id' in m)
   assert.deepEqual((await monitorRun(db, m.id, NOW + DAY, [{ kind: 'hiring' }])).map(a => a.kind), ['new_signal'])

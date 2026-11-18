@@ -164,8 +164,8 @@ export const sameEventAs = (held: Pick<PlayAlert, 'event_date' | 'signal_kind'>,
 // below it).
 export const SEEDED = '~seeded'
 export const SEED_MAX = 5000
-const SEED_PLAY_SQL = `SELECT q.company, q.company_domain, q.event_date, q.signal_kind, q.job_id, q.play_id, q.at FROM (
-    SELECT l.company, l.company_domain, l.event_date, l.signal_kind, j.id AS job_id, w.id AS play_id, COALESCE(j.finished_at, j.created_at) AS at, l.score AS score, l.id AS lead_id
+const SEED_PLAY_SQL = `SELECT q.company, q.company_domain, q.event_date, q.event_date_proof, q.signal_kind, q.job_id, q.play_id, q.at FROM (
+    SELECT l.company, l.company_domain, l.event_date, l.event_date_proof, l.signal_kind, j.id AS job_id, w.id AS play_id, COALESCE(j.finished_at, j.created_at) AS at, l.score AS score, l.id AS lead_id
     FROM watches w JOIN scan_jobs j ON j.watch_id = w.id AND j.user_id = w.user_id JOIN leads l ON l.scan_job_id = j.id
     WHERE w.user_id = ? AND j.status = 'done' AND l.watch_new = 1 AND ${VISIBLE_LEAD}
       AND (j.created_at < w.created_at OR EXISTS (SELECT 1 FROM watch_seen s WHERE s.watch_id = w.id AND s.seen_key = 'mail:' || j.id))
@@ -174,14 +174,14 @@ const SEED_PLAY_SQL = `SELECT q.company, q.company_domain, q.event_date, q.signa
 const SEED_MONITOR_SQL = `SELECT q.company, q.event_key, q.play_id, q.job_id, q.at FROM (
     SELECT a.company, a.event_key, a.monitor_id AS play_id, a.run_id AS job_id, a.at AS at, a.id AS id
     FROM monitor_alerts a WHERE a.user_id = ? AND a.kind IN ('new_company', 'new_signal') ORDER BY a.at DESC, a.id LIMIT ${SEED_MAX}) q ORDER BY q.at, q.id`
-type SeedPlay = { company: string; company_domain: string | null; event_date: string | null; signal_kind: string | null; job_id: string; play_id: string; at: number }
+type SeedPlay = { company: string; company_domain: string | null; event_date: string | null; event_date_proof: string | null; signal_kind: string | null; job_id: string; play_id: string; at: number }
 type SeedMonitor = { company: string; event_key: string; play_id: string; job_id: string; at: number }
 export function* seedPlayAlertsStep(t: Tx, tenantId: string, keysOf: (l: { company: string; company_domain: string | null }) => AlertKeys): TxBody<boolean> {
   if (yield* t.get(ALERT_ROW_SQL, [tenantId, SEEDED])) return false
   const plays = yield* t.all<SeedPlay>(SEED_PLAY_SQL, [tenantId])
   const mons = yield* t.all<SeedMonitor>(SEED_MONITOR_SQL, [tenantId])
   const items: { keys: AlertKeys; owner: Pick<PlayAlert, 'play_kind' | 'play_id' | 'job_id' | 'event_date' | 'signal_kind'>; at: number }[] = []
-  for (const r of plays) items.push({ keys: keysOf(r), owner: { play_kind: 'watch', play_id: r.play_id, job_id: r.job_id, event_date: r.event_date ?? null, signal_kind: r.signal_kind ?? null }, at: Number(r.at) })
+  for (const r of plays) items.push({ keys: keysOf(r), owner: { play_kind: 'watch', play_id: r.play_id, job_id: r.job_id, event_date: r.event_date ?? null, signal_kind: alertKindOf(r) }, at: Number(r.at) })
   for (const r of mons) {
     // the monitor's own event key: "<d:host | n:name>|<day>|<kind>"; the company key in it is the one the alert was raised under
     const [entity, day, kind] = String(r.event_key).split('|')

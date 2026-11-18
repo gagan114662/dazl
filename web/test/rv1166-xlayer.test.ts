@@ -115,8 +115,8 @@ test('P4 one run that returns the same event twice (two same-day postings) raise
 })
 
 // ---- POINTS 2 + 3: the two layers must AGREE ----------------------------------------------------------------------
-// Layer 2 is the tenant's alert record (#883 play_alerts): claimAlertStep PERSISTS the raw signal_kind and sameEventAs
-// compares raw signal_kinds. Layer 1 (above) collapses every graded kind of a board-dated lead to 'hiring'.
+// Layer 2 is the tenant's alert record (#883 play_alerts): weekly claims persist the normalized kind and sameEventAs
+// compares event kinds. Layer 1 (above) collapses every graded kind of a board-dated lead to 'hiring'.
 // So: a weekly play mails the posting under one graded kind, then the monitor finds THE SAME posting under another.
 // Layer 1 cannot help here (it has no row of its own for that event yet): only layer 2 decides.
 test('P2/P3 the two layers agree: a weekly play mailed the posting; the monitor must not alert it again after a relabel', async () => {
@@ -124,10 +124,10 @@ test('P2/P3 the two layers agree: a weekly play mailed the posting; the monitor 
   const w = await createWatch(db, A, Q, ICP, null, NOW - 3 * DAY)
   assert.ok(w.watch, JSON.stringify(w))
   await db.run('UPDATE watches SET created_at = ? WHERE id = ?', [NOW - 3 * DAY, w.watch.id])
-  // the weekly play mails Flexport: the record holds it with event_date 2026-11-12 and signal_kind 'job_board_presence'
+  // the weekly play mails Flexport: the record holds it with event_date 2026-11-12 and signal_kind 'hiring'
   await watchRun(db, w.watch.id, Q, NOW, [{ kind: 'job_board_presence', legacyStatus: 'verified' }])
   const held = await db.get<{ event_date: string; signal_kind: string }>("SELECT event_date, signal_kind FROM play_alerts WHERE tenant_id = ? AND entity_key = 'd:flexport.com'", [A])
-  assert.deepEqual(held, { event_date: D, signal_kind: 'job_board_presence' }, 'the mail pass claimed the company for this event')
+  assert.deepEqual(held, { event_date: D, signal_kind: 'hiring' }, 'the mail pass claimed the company for this event')
   // the monitor now returns the SAME posting; its grade moved to another hiring label
   const m = await createMonitor(db, A, { query: Q2 }, NOW)
   assert.ok('id' in m, JSON.stringify(m))
