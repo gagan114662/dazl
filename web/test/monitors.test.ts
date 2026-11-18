@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { sqliteDb, type Db } from '../lib/db/client.ts'
+import { migrateKeys } from '../lib/llm/key-store.ts'
 import { migrateMonitors, createMonitor, listMonitors, runDueMonitors, collectMonitorResults, setMonitorEnabled, deleteMonitor, MONITOR_LIMITS } from '../lib/monitors.ts'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migratePlans } from '../lib/plans.ts'
@@ -10,13 +11,14 @@ import { setPlan } from './helpers/plan-fixture.ts'
 const dbs = new WeakMap<Database.Database, Db>()
 const D = (db: Database.Database) => { let d = dbs.get(db); if (!d) dbs.set(db, d = sqliteDb(db)); return d }
 
-const setup = () => { const db = new Database(':memory:'); migrateScan(db); migratePlans(db); migrateConnectors(db); migrateMonitors(db); return db }
+// a monitor runs on the account's own AI key (#759): u1 and u2 have one
+const setup = () => { const db = new Database(':memory:'); migrateScan(db); migratePlans(db); migrateConnectors(db); migrateMonitors(db); migrateKeys(db); for (const t of ['u1', 'u2']) db.prepare("INSERT INTO tenant_llm_keys (tenant_id, vendor, ciphertext, last4, validated_at) VALUES (?, 'anthropic', 'x', '0000', 1)").run(t); return db }
 // Leads can only be inserted while the job is running (trigger), then the job is marked done. Each key is one company
 // with a verified, dated event from today (inside the default window), so it is a novel actionable event (#387).
 const insertLeads = (db: Database.Database, jobId: string, keys: string[]) => {
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status) VALUES (?, 'u1', 'b', 'i', 'l', 'q', 'running')").run(jobId)
   const today = new Date().toISOString().slice(0, 10)
-  for (const k of keys) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key, event_date, date_status, confidence) VALUES (lower(hex(randomblob(12))), ?, 'n', ?, 's', 'https://e.com', ?, ?, 'verified', 80)").run(jobId, k, k, today)
+  for (const k of keys) db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, dedup_key, event_date, date_status, event_date_proof, confidence) VALUES (lower(hex(randomblob(12))), ?, 'n', ?, 's', 'https://e.com', ?, ?, 'unverified', 'page_bound', 80)").run(jobId, k, k, today)
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(jobId)
 }
 
