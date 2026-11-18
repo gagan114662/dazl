@@ -48,11 +48,14 @@ export const isInboxFixtureAddress = (email: string): boolean => {
 // nothing is addressable for that tenant. Other tenants are unaffected. Code gate only.
 const isDesignatedTestTenant = (tenantId: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
-export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean => {
-  if (isInboxFixtureAddress(email)) return false
-  if (isDesignatedTestTenant(tenantId)) return testRecipientApproved(db, tenantId, email)
-  return !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
+export function recipientBlockReason(db: Database.Database, tenantId: string, email: string): 'fixture_recipient' | 'test_tenant_recipient' | 'personal_email' | null {
+  if (isInboxFixtureAddress(email)) return 'fixture_recipient'
+  if (isDesignatedTestTenant(tenantId)) return testRecipientApproved(db, tenantId, email) ? null : 'test_tenant_recipient'
+  return CONSUMER.has(norm(email).split('@')[1]) ? 'personal_email' : null
 }
+
+export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
+  recipientBlockReason(db, tenantId, email) === null
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -317,7 +320,8 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   // Same rule as the lead card's Approve (contact-route.ts deliverabilityBlocked). Not checked / catch-all do not block.
   if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
-  if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
+  const recipientBlock = recipientBlockReason(db, tenantId, to)
+  if (recipientBlock) throw new OutreachError(recipientBlock)
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
   return { lead, to, addressUrl, test }
 }
@@ -485,7 +489,8 @@ type StoredMsg = NonNullable<ReturnType<typeof getMsg>>
 function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg): void {
   if (isInboxFixtureAddress(pre.to_email)) throw new OutreachError('fixture_recipient')
   if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
-  if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
+  const recipientBlock = recipientBlockReason(db, tenantId, pre.to_email)
+  if (recipientBlock) throw new OutreachError(recipientBlock)
   if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
   if (!testFixtureSend(db,tenantId,pre) && currentnessHeld(db,tenantId,pre.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, pre) && !leadEvidenceEligible(db, tenantId, pre.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
@@ -582,7 +587,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     throw new OutreachError('converted')
   }
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
-  if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
+  const recipientBlock = recipientBlockReason(db, tenantId, m.to_email)
+  if (recipientBlock) release(recipientBlock)
   if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) release('lead_currentness_unconfirmed')
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')

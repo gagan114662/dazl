@@ -11,7 +11,7 @@ import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplac
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
-import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientBlockReason, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
 import { getMasterKey } from '../secrets.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
@@ -429,7 +429,8 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         out.skipped++; continue
       }
     }
-    if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue }
+    const recipientBlock = leadHeld(db, tenantId, s.lead_id) ? 'lead_ungraded' : recipientBlockReason(db, tenantId, s.to_email)
+    if (recipientBlock) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',recipientBlock,now); out.skipped++; continue }
     // Evidence re-checked at execution: a withdrawn confirmation stops the sequence
     // honestly before any unsent step goes out. Already-sent mail is never recalled.
     if (contactPurposeRestricted(db,tenantId,s.lead_id,s.to_email)) { out.skipped++; continue }
@@ -491,9 +492,10 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         skip('reply_sync_stale')
         continue
       }
-      if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) {
+      const recipientBlock = leadHeld(db, tenantId, s.lead_id) ? 'lead_ungraded' : recipientBlockReason(db, tenantId, s.to_email)
+      if (recipientBlock) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
-        stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped',recipientBlock,now); out.skipped++; continue
       }
       // Evidence re-checked again after the token await: a confirmation withdrawn during
       // the await must release the claim (back to approved, claimed_at NULL) and stop the
@@ -534,9 +536,10 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       // The recipient gate is also re-proved at this send boundary (after the last await): an allowlist
       // narrowed mid-tick - the designated test tenant may address only the approved test inbox - stops
       // the step and the sequence here, never at Gmail.
-      if (!recipientAllowed(db, tenantId, s.to_email)) {
+      const finalRecipientBlock = recipientBlockReason(db, tenantId, s.to_email)
+      if (finalRecipientBlock) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
-        stopSequenceForThread(db,tenantId,s.lead_id,'stopped','personal_email',now); out.skipped++; continue
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped',finalRecipientBlock,now); out.skipped++; continue
       }
       const raw = toBase64Url(buildMime({
         fromName: settings.sender_name, fromEmail: acct.email, to: s.to_email, subject: stepRow.subject,

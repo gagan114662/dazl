@@ -11,7 +11,7 @@ import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
 import { accountSendCount, anyUncertainSend, tableExists } from './send-budget.ts'
 import { recheckSendAuthority } from './send-authority.ts'
-import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, testFixtureSend, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, recipientBlockReason, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, testFixtureSend, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
 import { replySafetyStale } from './store.ts'
 
 export const WARM_MIN_DAYS = 30
@@ -137,7 +137,8 @@ function leadGates(db: Database.Database, tenantId: string, r: { lead_id: string
 export async function sendReopen(db: Database.Database, tenantId: string, threadId: string, d: Deps & { now?: number; claimedBy?: { won: boolean } } = {}): Promise<void> {
   const r = getReopen(db, tenantId, threadId)
   if (!r) throw new OutreachError('not_found')
-  if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
+  const recipientBlock = recipientBlockReason(db, tenantId, r.to_email)
+  if (recipientBlock) throw new OutreachError(recipientBlock)
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (r.status === 'sent') throw new OutreachError('already_sent')
   if (r.status === 'skipped') throw new OutreachError('final')
@@ -161,7 +162,8 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   let token: string
   let tokenGen: string
   try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) { throw new OutreachError(connectionGone(e) ? 'gmail_not_connected' : isConnectionReplaced(e, db, tenantId) ? 'connection_replaced' : 'gmail_reconnect_needed') }
-  if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
+  const finalRecipientBlock = recipientBlockReason(db, tenantId, r.to_email)
+  if (finalRecipientBlock) throw new OutreachError(finalRecipientBlock)
   if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
   leadGates(db, tenantId, r)

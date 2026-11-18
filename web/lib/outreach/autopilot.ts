@@ -381,7 +381,7 @@ export function newLeadsSql(scope = ''): string {
        AND ${LIFECYCLE_NOT_CONVERTED}
        AND NOT EXISTS (SELECT 1 FROM outreach_messages m WHERE m.tenant_id = ? AND m.lead_id = l.id)
        AND NOT EXISTS (SELECT 1 FROM autopilot_audit a WHERE a.tenant_id = ? AND a.lead_id = l.id AND a.action = 'skipped'
-         AND ((a.detail IN ('personal_email','not_sales_contact','suppressed','no_email_contact')
+         AND ((a.detail IN ('personal_email','test_tenant_recipient','fixture_recipient','not_sales_contact','suppressed','no_email_contact')
              AND NOT EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.lead_id = l.id AND e.tenant_id = a.tenant_id AND e.connector = 'sitecrawl' AND e.kind = 'email' AND e.retrieved_at > a.created_at))
            OR (a.detail IN ('error','offer_unreadable') AND a.created_at > ?)
            OR (a.detail NOT IN ('error','offer_unreadable') AND a.created_at > ? AND a.created_at > COALESCE(l.human_confirmed_at, 0))))

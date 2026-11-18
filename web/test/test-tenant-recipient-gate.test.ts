@@ -99,6 +99,16 @@ test('with no tenant designated, the test inbox is never addressable', () => {
   assert.equal(recipientAllowed(db, T, BUSINESS), true)
 })
 
+test('draft boundary: a company address reports the designated test-tenant restriction', () => {
+  const db = setup()
+  saveSettings(db, T, { sender_name: 'Pat Smith', postal_address: '1 King St W, Toronto ON M5H 1A1, Canada' })
+  const lead = addLead(db, T, BUSINESS)
+  designated(() => {
+    setTestAddresses(db, T, [TEST_INBOX])
+    assert.throws(() => createDraft(db, T, lead, 'Acme'), { code: 'test_tenant_recipient' })
+  })
+})
+
 test('send boundary: an approved draft to a business address is refused for the designated tenant', async () => {
   const db = setup()
   await connect(db, T)
@@ -108,7 +118,7 @@ test('send boundary: an approved draft to a business address is refused for the 
   designated(() => {
     setTestAddresses(db, T, [TEST_INBOX])
     // the shared pre-claim checks sendMessage runs refuse it as an address this tenant may not use
-    assert.equal(sendBlockReason(db, T, id, { skipAccount: true }), 'personal_email')
+    assert.equal(sendBlockReason(db, T, id, { skipAccount: true }), 'test_tenant_recipient')
   })
 })
 
@@ -148,7 +158,7 @@ test('send boundary: allowlist revocation during the token await stops the send 
     }) as unknown as typeof fetch
     await assert.rejects(
       sendMessage(db, T, id, { env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'gm1' } }) as never }),
-      /personal_email/,
+      /test_tenant_recipient/,
     )
     assert.equal(sent.length, 0)
   })
@@ -193,7 +203,7 @@ test('sequence step: allowlist revocation during the token await stops the step 
     const r = await runSequences(db, T, '', { ...d, now: NOW + 3 * 86400 }) // step 2: revoked mid-await (token call 2)
     assert.equal(r.sent, 0)
     assert.equal(sent.length, 1, 'the step after the revocation must never reach Gmail')
-    assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id = ?').get(seq) as { stop_reason: string }).stop_reason, 'personal_email')
+    assert.equal((db.prepare('SELECT stop_reason FROM sequences WHERE id = ?').get(seq) as { stop_reason: string }).stop_reason, 'test_tenant_recipient')
     assert.deepEqual(db.prepare('SELECT status, claimed_at FROM sequence_steps WHERE sequence_id = ? AND step = 2').get(seq), { status: 'approved', claimed_at: null })
   })
 })

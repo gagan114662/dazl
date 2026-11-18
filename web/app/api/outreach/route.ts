@@ -21,6 +21,7 @@ const MSG: Record<string, [number, string]> = {
   no_email_contact: [422, 'This lead has no published email address'],
   not_sales_contact: [422, 'The only published address is a recruitment, press, support, privacy or other restricted-purpose inbox - not a sales contact'],
   undeliverable: [422, 'This address cannot receive mail: its domain is invalid or a recorded mailbox check failed. Find another published contact.'],
+  test_tenant_recipient: [422, 'This test workspace can only email its approved test inbox.'],
   personal_email: [422, 'This is a personal email address (Gmail, Yahoo, etc.), so dazl will not email it'],
   fixture_recipient: [422, 'This is a test-only fixture contact (an .invalid address), so dazl will never email it'],
   lead_ungraded: [422, 'This lead could not be ICP-graded (scoring failed), so it cannot be emailed. Re-run the scan to grade it.'],

@@ -10,7 +10,7 @@ import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplac
 import { auditAt, autopilotAvailable, CONSENT_VERSION, DEFAULT_DAILY, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
-import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientBlockReason, testFixtureSend, unsubToken, type Deps } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
 import { displayStopReason } from './lifecycle.ts'
@@ -61,7 +61,8 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     if (cur.paused || !cur.enabled || !autopilotAvailable(flags) || !followupsEnabled(db, tenantId)) return stop('paused')
     if (tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND lead_id = ?").get(tenantId,t.lead_id)) continue // sequence enrollment owns this thread; never layer warm automation on it
     const skip = (why: string) => { out.skipped++; auditAt(db, tenantId, 'followup_skipped', why, t.lead_id, undefined, now) }
-    if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) { skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue }
+    const recipientBlock = leadHeld(db, tenantId, t.lead_id) ? 'lead_ungraded' : recipientBlockReason(db, tenantId, t.to_email)
+    if (recipientBlock) { skip(recipientBlock); continue }
     // A withdrawn lead confirmation stops the thread for good before any warm follow-up
     // quotes the revoked signal; re-confirming the lead does not resurrect a stopped thread.
     if (contactPurposeRestricted(db,tenantId,t.lead_id,t.to_email)) { skip('not_sales_contact'); continue }
@@ -100,9 +101,10 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) { db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent); if (isConnectionReplaced(e, db, tenantId)) return stop('connection_replaced'); pause(db, tenantId, 'gmail_reconnect_needed'); return stop('gmail_unavailable') }
     try {
       const raw = toBase64Url(buildMime({ fromName: settings.sender_name, fromEmail: acct.email, to: t.to_email, subject: orig.subject.startsWith('Re:') ? orig.subject : `Re: ${orig.subject}`, body: composeBody((await llmFollowupText(db, tenantId, t.followups_sent, { ...lead, lead_id: t.lead_id }, businessName, settings.booking_url, d)) ?? followupText(t.followups_sent, lead, businessName, settings.booking_url), settings, unsubUrl), messageId: `dazl.f${t.followups_sent}.${orig.id}@${acct.email.split('@')[1]}`, unsubscribeUrl: unsubUrl, date: new Date(now * 1000), inReplyTo: t.root_message_id }))
-      if (leadHeld(db,tenantId,t.lead_id) || !recipientAllowed(db,tenantId,t.to_email)) {
+      const recipientBlock = leadHeld(db, tenantId, t.lead_id) ? 'lead_ungraded' : recipientBlockReason(db, tenantId, t.to_email)
+      if (recipientBlock) {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
-        skip(leadHeld(db,tenantId,t.lead_id) ? 'lead_ungraded' : 'personal_email'); continue
+        skip(recipientBlock); continue
       }
       // Re-checked after the token await: withdrawal during the await deletes the claim
       // row (nothing stuck in 'sending') and stops the thread, never sends.

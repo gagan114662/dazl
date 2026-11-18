@@ -265,7 +265,7 @@ test('test bypass: exact operator tenant + exact inbox + exact list only; revoke
  assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'instinct114114@gmail.com'}),'Acme'),/personal_email/)
  process.env.OUTREACH_TEST_TENANT_ID='A'
  try {
-  assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'other@gmail.com'}),'Acme'),/personal_email/)
+  assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'other@gmail.com'}),'Acme'),/test_tenant_recipient/)
   const id=createDraft(db,'A',addLead(db,'A',{contact:'instinct114114@gmail.com'}),'Acme'); approve(db,'A',id)
   assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id=?').get(id) as {test:number}).test,1)
   setTestAddresses(db,'B',['instinct114114@gmail.com'])
