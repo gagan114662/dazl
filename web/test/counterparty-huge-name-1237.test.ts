@@ -20,3 +20,11 @@ test('realistic names keep their answers (written relationship still held, plain
   assert.equal(cp('Brightloop', 'https://linear.app/blog/x', 'Linear blog', 'Brightloop uses Linear for planning.'), 'source_owner:linear')
   assert.equal(cp('mika', 'https://finsmes.com/2026/09/x.html', 'mika raises', 'mika raised a seed round.'), null)
 })
+
+test('written relationships match whole long names and preserve word boundaries', () => {
+  const company = `${'a'.repeat(300)}b`
+  const url = 'https://linear.app/blog/x'
+  assert.equal(cp(company, url, 'Linear news', `${company} uses Linear.`), 'source_owner:linear')
+  assert.equal(cp(company, url, 'Linear news', `${company}c uses Linear.`), null)
+  assert.equal(cp(company, url, 'Linear news', `${company.slice(0, 300)} uses Linear.`), null)
+})

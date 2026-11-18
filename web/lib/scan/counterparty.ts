@@ -57,9 +57,8 @@ function sourceBrand(sourceUrl: string): { brand: string; ats: boolean } | null 
 const CUSTOMER_PATH = /(?:^|\/)(?:customers?|clients?|customer-stor(?:y|ies)|customer-success|case-stud(?:y|ies)|success-stor(?:y|ies)|testimonials?)(?:\/|$)/i
 const pathOf = (url: string): string => { try { return new URL(url).pathname } catch { return '' } }
 const reEsc = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-// #1237: a company or brand is capped at 300 characters before it becomes a pattern; V8 throws "Regular expression too large" near 50,000.
 const EDGE_MAX = 300
-const edge = (x: string) => `(?<![\\p{L}\\p{N}])${reEsc(x.slice(0, EDGE_MAX))}(?![\\p{L}\\p{N}])`
+const edge = (x: string) => `(?<![\\p{L}\\p{N}])${reEsc(x)}(?![\\p{L}\\p{N}])`
 const WORDS = (max: number) => `(?:[\\p{L}\\p{N}'-]+\\s+){0,${max}}?`
 const USE_VERB = 'use|uses|using|used|chose|chooses|chosen|picked|picks|selected|selects|switched to|switches to|moved to|moves to|migrated to|migrates to|runs on|run on|running on|adopted|adopts|adopting|standardi[sz]ed on|standardi[sz]es on|relies on|rely on|relied on|trusts|trusted|deployed|deploys|implemented|implements|rolled out|rolls out|partnered with|partners with|powered by|built on|builds on|built with|turned to|turns to|went live on'
 // a verb, a few words, then "to / on / onto / with <brand>": "moved its global payments to Stripe", "builds faster on Atlassian", "scaled support with Zendesk"
@@ -70,15 +69,24 @@ const sentencesOfPage = (t: string): string[] => t
   .replace(/\b([A-Z])\.(?=\s+[A-Z])/g, '$1')
   .split(/(?<=[.!?])\s+|\n+/).map(norm).filter(Boolean)
 function writtenRelationship(company: string, brand: string, title: string, text: string): boolean {
-  const co = edge(company), br = edge(brand)
+  // Long names must match literally without compiling the whole name into each pattern. The
+  // markers cannot occur in normalized source text. Letters at each end keep word boundaries.
+  const companyTerm = company.length > EDGE_MAX ? 'x\u0001x' : company
+  const brandTerm = brand.length > EDGE_MAX ? 'x\u0002x' : brand
+  const markLongNames = (sentence: string): string => {
+    if (companyTerm !== company) sentence = sentence.replaceAll(company, companyTerm)
+    if (brandTerm !== brand) sentence = sentence.replaceAll(brand, brandTerm)
+    return sentence
+  }
+  const co = edge(companyTerm), br = edge(brandTerm)
   const uses = new RegExp(`${co}[^]{0,80}?(?<![\\p{L}\\p{N}])(?:${USE_VERB})\\s+${WORDS(3)}${br}`
     + `|${co}[^]{0,40}?(?<![\\p{L}\\p{N}])(?:${MOVE_VERB})\\s+${WORDS(5)}(?:to|on|onto|with)\\s+${WORDS(1)}${br}`
     + `|${co}\\s+(?:is|are|was|became|becomes|is now|are now|has been|have been)\\s+(?:an?\\s+|the\\s+)?${WORDS(2)}${br}\\s+${WORDS(1)}(?:customers?|clients?|users?)(?![\\p{L}\\p{N}])`, 'u')
   const serves = new RegExp(`${br}\\s+${WORDS(2)}(?:${SERVE_VERB})\\s+${WORDS(3)}${co}|${br}\\s+(?:customers?|clients?)\\s+${WORDS(1)}${co}`, 'u')
   const list = /(?<![\p{L}\p{N}])(?:became|becomes|becoming|is now|are now|joined as|as)\s+(?:an?\s+|[\p{L}\p{N}-]+\s+)?customers?(?![\p{L}\p{N}])(?!\s+(?:support|service|success|demand|experience|engagement|data|relationships?|facing|centric|acquisition|retention|satisfaction|journeys?|feedback|base|care|needs|growth|wins?|stories)\b)/u
   // 1. the headline proper: a part of the title (between separators) that says the relationship itself
-  if (title.split(/\s+[|–—·-]\s+|:\s+/).map(norm).some(part => uses.test(part) || serves.test(part))) return true
-  const sentences = sentencesOfPage(text)
+  if (title.split(/\s+[|–—·-]\s+|:\s+/).map(part => markLongNames(norm(part))).some(part => uses.test(part) || serves.test(part))) return true
+  const sentences = sentencesOfPage(text).map(markLongNames)
   // 2. and 3. inside one sentence
   if (sentences.some(k => uses.test(k) || serves.test(k))) return true
   // 4. a customer list: the list sentence names the company, and the brand is in that sentence or the one before it
