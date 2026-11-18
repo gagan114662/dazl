@@ -13,6 +13,7 @@ import { FIRST_PLAY_MAX, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 import { trialCopy } from '../trial-copy.ts'
+import { paidVendorOn } from '../paid-vendors.ts'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-5'
 // Shown (and confirmed) when a payer's own key exists but which model it runs could not be read: priced as unknown, never as
@@ -175,7 +176,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   }
   const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
   for (const v of ['apollo', 'pdl']) {
-    const have = (i.enrichmentVendors ?? []).includes(v)
+    // Refs #1099: a saved key the paid-vendor policy keeps off makes no call, so it has no row in the estimate
+    const have = (i.enrichmentVendors ?? []).includes(v) && paidVendorOn(v as 'apollo' | 'pdl', env)
     if (!have) continue
     const u = num(env[`DAZL_PRICE_${v.toUpperCase()}_CREDIT_USD`]), n = enrichOff ? 0 : 8
     rows.push({ id: `${v}_credits`, label: v === 'apollo' ? 'Apollo enrichment' : 'People Data Labs enrichment', provider: v === 'apollo' ? 'Apollo' : 'People Data Labs', kind: 'enrichment', unit: 'credit', unit_usd: u === null ? 'your own plan; per-credit price not set' : money(u), units: { min: 0, max: n }, usd: enrichOff ? { min: 0, max: 0 } : u === null ? null : { min: 0, max: u * n }, capped: false, note: enrichOff ? 'Off: this run turns bring-your-own enrichment off' : 'Up to 8 companies, on your own credits' })
