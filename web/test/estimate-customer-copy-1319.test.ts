@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { customerView, estimateRun } from '../lib/scan/price-estimate.ts'
+import { compareActual, customerEstimateTotal, customerView, estimateRun } from '../lib/scan/price-estimate.ts'
 
 const FIRST5 = { first5: true }
 const shown = (v: ReturnType<typeof customerView>) => JSON.stringify(v)
@@ -45,4 +45,16 @@ test('#1319: the cost box renders the customer view, the clamped total and the t
   assert.match(src, /view\.rows\.map/); assert.doesNotMatch(src, /est\.rows\.map/)
   assert.match(src, /range\(view\.total\)/); assert.doesNotMatch(src, /range\(est\.total\)/)
   assert.match(src, /data-testid="estimate-trial-cap"/)
+})
+
+
+test('a completed trial scan shows the same capped projection as its confirmation; own-key projection is unchanged', () => {
+  const total = { min: 0.09, max: 0.66 }
+  const base = estimateRun({ budget: null, payer: 'trial', trialReserveUsd: 0.3, env: {} })
+  const est = { ...base, total, rows: [{ ...base.rows[0], kind: 'model' as const, usd: total }] }
+  const actual = { inputTokens: null, outputTokens: null, tokensComplete: false, reservedUsd: null, searches: null }
+  assert.deepEqual(customerEstimateTotal(est), { min: 0.09, max: 0.3 })
+  assert.deepEqual(compareActual(est, actual).estimate, customerView(est).total)
+  assert.match(compareActual(est, actual).summary, /\$0\.09-\$0\.30/)
+  assert.deepEqual(customerEstimateTotal({ ...est, payer: 'you' }), total)
 })
