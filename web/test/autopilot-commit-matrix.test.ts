@@ -19,7 +19,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GmailSendError } from '../lib/gmail/oauth.ts'
 import { approve, saveSettings, sendMessage, type Deps } from '../lib/outreach/service.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
-import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot, pause, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
+import { ATTESTATIONS, CONSENT_VERSION, disable, enable, migrateAutopilot, newLeadsSql, pause, recentAutopilotAudit, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateSchedulerRuns } from '../lib/ops/scheduler-runs.ts'
 
 const master = randomBytes(32)
@@ -673,6 +673,16 @@ test('#448 parity: a lead refused for a reason the user can clear is tried again
     assert.equal(r2.sent, 0)
     assert.equal(s2.calls.length, 0)
     assert.equal(audits(db).filter(a => a.action === 'skipped' && a.detail === 'personal_email').length, n) }
+})
+
+test('#1364 a refusal from the mutable test allowlist uses the bounded retry window', async () => {
+  const db = await setup()
+  const id = lead(db, 'a@one.example')
+  db.prepare("INSERT INTO autopilot_audit (id, tenant_id, lead_id, action, detail, created_at) VALUES ('test-recipient-skip','A',?,'skipped','test_tenant_recipient',?)").run(id, NOW + 1)
+  const candidates = db.prepare(newLeadsSql())
+  const eligible = (now: number) => candidates.all('A', now - DAY, 80, 'A', 'A', 'A', now - 600, now - 3600)
+  assert.deepEqual(eligible(NOW + 300), [])
+  assert.deepEqual(eligible(NOW + 3700), [{ id, contact: 'a@one.example' }])
 })
 
 test('#448 parity: a lead the draft path refuses is skipped once - one audit row over two passes, and the lower-scored leads behind it are reached', async () => {
