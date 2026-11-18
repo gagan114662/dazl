@@ -7,7 +7,7 @@ const range = (r: { min: number; max: number }) => r.min === r.max ? usd(r.min) 
 
 // The menu shown BEFORE a scan that can spend money: each provider/source with its unit price, the projected total as a range
 // with its assumptions, and the user's confirmation. A blocked estimate has no Run button, only what to change.
-export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query = '' }: { est: RunEstimate; busy: boolean; onConfirm: () => void; onCancel: () => void; query?: string }) {
+export default function EstimateConfirm({ est, busy, onConfirm, onCancel, cancelDisabled = false, query = '' }: { est: RunEstimate; busy: boolean; onConfirm: () => void; onCancel: () => void; cancelDisabled?: boolean; query?: string }) {
   const v = est.verdict
   // #1319: customer copy only (no env var names, model ids or never-run rows); a trial total is clamped to its per-scan cap
   const view = customerView(est)
@@ -46,7 +46,7 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
       <details className="mt-3 text-xs"><summary className="cursor-pointer">Assumptions</summary><ul className="list-disc ml-5 mt-1" data-testid="estimate-assumptions">{view.assumptions.map(a => <li key={a}>{a}</li>)}</ul></details>
       <div className="flex flex-wrap gap-2 mt-4">
         {v.ok && <button type="button" className="btn-primary" onClick={onConfirm} disabled={busy} data-testid="estimate-confirm-run">{busy ? 'Starting...' : `Confirm and run (about ${range(view.total)})`}</button>}
-        <button type="button" className="btn-ghost" onClick={onCancel} data-testid="estimate-cancel">{v.ok ? 'Cancel' : 'Change the request'}</button>
+        <button type="button" className="btn-ghost" onClick={onCancel} disabled={cancelDisabled} data-testid="estimate-cancel">{v.ok ? 'Cancel' : 'Change the request'}</button>
       </div>
     </section>
   )
