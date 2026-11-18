@@ -2,16 +2,18 @@
 
 Goal: dazl finds more qualified leads than Gojiberry, measured by the scoreboard, not by claims.
 
+<!-- omh:agent-instructions:begin -->
 ## Roles
 
-- **Builder (Claude):** writes code on branches, never on `main`. One focused change per branch. Every branch
-  message states: what changed, exact claims, what is NOT verified, and how to test it.
-- **Reviewer (Instinct):** reads every diff, runs the tests on Linux, runs live scans with the test key, tries to
-  break it. Posts findings on the GitHub pull request (or WhatsApp if GitHub is not possible). Instinct decides:
-  her review is the merge gate (there is no GitHub branch rule on `main` since 2026-10-26; the gate is this
-  process), and Instinct merges. The builder's work is done
-  when Instinct is satisfied, not when the builder says so.
-- **Owner (gagan):** product decisions (`docs/DECISIONS.md`). Has given Instinct merge rights.
+- **Builder (assigned coding agent):** implements one focused issue on a branch, self-checks it, and posts the
+  exact head, observed test results and remaining gaps. Never pushes directly to `main`, approves or merges.
+- **Reviewer and merger (Hermes only):** independently checks the issue's acceptance, posts the verdict and
+  performs the normal protected merge of the exact reviewed head. No second reviewer or council is required.
+  If Hermes authored the change, use a fresh independent review context; a same-account COMMENT is not a
+  formal GitHub approval and cannot satisfy a required eligible-review rule by itself.
+- **Release owner:** deploys the reviewed release and captures revision-bound live evidence. This policy does
+  not silently transfer deployment ownership.
+- **Owner (Gagan):** sets product decisions and authorization (`docs/DECISIONS.md`).
 
 ## The scoreboard is the definition of better
 
@@ -24,15 +26,23 @@ and counts QUALIFIED leads (verified + dated within 90 days + ICP fit >= 4/5 + e
 
 The v1 score does not yet prove buyer need, that the contact is the right decision-maker, or consent (see SCORE_LIMITS).
 
-## Flow (no waiting)
+## Short review and delivery flow
 
-1. Builder takes the top item of `docs/STATUS.md` "Next", works on a branch `b/<topic>`, pushes, asks for review.
-2. Builder does NOT wait: it starts the next item on a new branch while review runs. Review findings come first:
-   the builder fixes them on the same branch before starting anything new.
-3. Hermes-PC reviews and merges on GitHub. **Branches must not edit `docs/`** — no `docs/STATUS.md`,
-   no `docs/DECISIONS.md`. Builders put their STATUS line and any decision text in a PR comment; Hermes
-   writes `docs/STATUS.md` and `docs/DECISIONS.md` on `main` after the merge. (2026-11-13: every branch
-   appending to STATUS.md re-conflicted every other branch, costing ~90 min of CI per re-merge.)
+1. **Prove the issue.** Builder pins the acceptance criteria, adds an assertion-failing regression where
+   applicable, implements the repair and runs affected tests. Post the exact head, results and remaining gaps.
+2. **One Hermes review, then protected merge.** Hermes checks the real callers, the regression and relevant
+   positive/refusal controls against that issue; return one actionable list of blocking findings on the same
+   PR. Re-review only the repair or relevant base changes, not cleared unchanged code. Unrelated improvements
+   go to a follow-up issue. Merge only the exact reviewed head after the existing applicable required checks
+   pass; no force/admin bypass or protection edits. A blanket full-suite rerun is not an extra manual review
+   step: broader coverage runs when required by existing gates or the change's actual impact.
+3. **Deploy, verify, close.** The assigned release owner deploys the eligible artifact and checks the actual
+   customer journey. Record the deployed SHA, result and screenshot where applicable; Hermes or the owner
+   closes the issue only after live acceptance. A review, merge or passing test alone is not delivery.
+
+Builders repair review findings before taking unrelated work. General builders do not edit `docs/STATUS.md`
+or `docs/DECISIONS.md` on their branches; put updates in the PR for Hermes to record after the merge. An
+explicit owner-requested documentation change is an exception to the general no-docs branch rule.
 
 ## Parallel work (task graph, not a flat queue)
 
@@ -43,14 +53,13 @@ ready to start:
    targeting → retrieval → contacts → ranking order) stays serial. Only items touching unrelated code paths run
    as independent lanes.
 2. **One worktree per independent lane**, each on its own branch, against a shared brief file describing the
-   task and a shared test Postgres instance. This is the pattern that already worked on 2026-10-31 (one agent
-   per PR in its own worktree; a PR landed ~8 minutes after handoff with council + probe still run in full).
+   task and an isolated or safely shared test Postgres instance.
 3. **Serialize anything that adds a database migration.** Migrations must stay contiguous with no gaps. A lane
    that needs a new migration claims the next number from a single shared counter before starting, not after;
    a second lane needing one waits for the first to land. This is what broke #513 against #564 — two lanes each
    picked a migration number without checking the other.
-4. **The verify gate stays full, per lane.** Council review and CI green on the exact head, same as any other
-   change. Parallel lanes never skip or shorten review to go faster.
+4. **The same short review applies per lane.** One independent Hermes pass and the existing applicable
+   required checks on the exact head. Parallel work never bypasses protection or relevant safety coverage.
 5. **Show the graph, not just the queue.** When `docs/STATUS.md` is updated, state which items are running in
    parallel right now, which are blocked on what, and which are serialized behind a migration claim — not only
    a flat ordered list.
@@ -65,20 +74,20 @@ process here. Any agent (new, restarted, or scheduled) reads these three files f
 
 ## Cost
 
-Builder runs on Sonnet for code, Haiku for small chores; Opus only on request. A scheduled cloud builder runs every
-4 hours as a backstop and exits early if its last branch still has unresolved review findings.
+Use the owner's currently authorized account/provider and allowance. No additional reviewer-model account,
+mandatory council or paid fallback is a prerequisite for review. Preserve existing spending caps.
 
-## Design items (not built by the scheduled builder)
+## Policy and safety changes
 
-Changes to the evidence verifier, grading/scoring rules, product policy, spend guards or privacy are design items.
-The scheduled builder (Sonnet) writes a design note in `docs/design/<topic>.md`, opens a "DESIGN:" PR, marks the item
-"needs design" in STATUS.md and moves on. An interactive session (Opus) or the owner decides and implements;
-Instinct reviews as usual.
+Respect the recorded evidence, product, privacy and spending decisions. If a change expands authorization,
+obtain the owner's decision before implementation. Put necessary design context in the same issue or PR;
+there is no mandatory separate design PR or model-approval chain. Hermes checks the relevant safety controls
+within the same issue-scoped review.
 
 ## Closing issues
 
-A merged PR and a closed issue are not the same thing, and only the second one counts (see "done means Instinct's
-visible final acceptance", 2026-10-30).
+A merged PR and a closed issue are not the same thing. Completion means the deployed fix has passed the
+issue's live acceptance, with evidence recorded.
 
 - **Builders never use GitHub closing keywords** (`Closes`/`Fixes`/`Resolves #N`) in a PR body or a commit
   message. They write `Refs #N`. An issue closes only after the fix is deployed and verified live (owner comment
@@ -94,3 +103,4 @@ visible final acceptance", 2026-10-30).
   against it.** The next builder to touch it edits the issue body into an explicit `- [ ]` list of the specific
   remaining acceptance criteria (not "more work needed"), so partial PRs can check boxes instead of silently
   accumulating. See `docs/design/issue-closure-gate.md` for the audit that motivated this.
+<!-- omh:agent-instructions:end -->
