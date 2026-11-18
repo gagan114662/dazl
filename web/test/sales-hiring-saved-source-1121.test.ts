@@ -10,22 +10,23 @@ const quote = 'As a Sales Development Representative at Mercury, you\u0027ll be 
 const funding = 'Mercury raised a seed funding round in Toronto'
 const profile = { summary: request, who: ['Founder'], industries: [], sizes: [], where: ['Toronto'], signals: ['hiring SDR'], exclude: [], country: 'CA', language: 'en', window_days: 90 }
 
-async function savedSource(title: string, opts: { day?: string | null; org?: string; unreadable?: boolean } = {}) {
+async function savedSource(title: string, opts: { day?: string | null; org?: string; unreadable?: boolean; pageOnlyDate?: boolean } = {}) {
   const day = opts.day === undefined ? daysAgo(2) : opts.day
+  const postingQuote = opts.pageOnlyDate ? `On ${day}, Mercury hired a Sales Development Representative for its Toronto team.` : quote
   const source = opts.org ? posting.replace('/mercury/', '/othercorp/') : posting
   const x = await runFixture({
     request, modelIcp: profile, modelQueries: ['Toronto agencies hiring SDR'],
-    hits: [news, source].map(url => ({ url, title: 'Mercury', snippet: url === news ? funding : quote, date: daysAgo(2) })),
+    hits: [news, source].map(url => ({ url, title: 'Mercury', snippet: url === news ? funding : postingQuote, date: daysAgo(2) })),
     tfPages: {}, own: {},
     extraction: [
       { company: 'Mercury', signal: 'raised seed funding', source_url: news, score: 99, excerpt: funding, event_date: daysAgo(2) },
-      { company: 'Mercury', signal: 'hiring SDR', source_url: source, score: 98, excerpt: quote, event_date: day },
+      { company: 'Mercury', signal: 'hiring SDR', source_url: source, score: 98, excerpt: postingQuote, event_date: day },
     ],
     deps: { paidFallback: false, fetchPage: async (url: string) => url === source && opts.unreadable ? { fail: 'blocked' } : ({
       title: url === news ? 'Mercury funding' : title,
-      text: url === news ? `On ${daysAgo(2)}, ${funding}.` : `${title}. Toronto. ${quote}.`,
+      text: url === news ? `On ${daysAgo(2)}, ${funding}.` : `${title}. Toronto. ${postingQuote}.`,
       retrievedAt: Math.floor(Date.now() / 1000),
-      ...(url === source ? { board: { slug: opts.org ?? 'mercury', company: opts.org ? 'Othercorp' : 'Mercury', title }, postedAt: day } : {}),
+      ...(url === source ? { board: { slug: opts.org ?? 'mercury', company: opts.org ? 'Othercorp' : 'Mercury', title }, postedAt: opts.pageOnlyDate ? null : day } : {}),
     }) },
   })
   return { ...x, row: x.db.prepare('SELECT id, source_url, evidence_excerpt, review_reason FROM leads WHERE company = ?').get('Mercury') as { id: string; source_url: string; evidence_excerpt: string; review_reason: string | null } }
@@ -73,4 +74,14 @@ test('#1121 joined posting must be source-checked, own-company, dated within the
       assert.equal((x.db.prepare('SELECT COUNT(*) AS n FROM lead_enrichments WHERE lead_id = ? AND kind = ?').get(x.row.id, 'gate_passed') as { n: number }).n, 0, why)
     } finally { x.db.close() }
   }
+})
+
+test('#1121 alternate posting cannot use a page-only event date as its structured posting date', async () => {
+  const x = await savedSource('Sales Development Representative', { pageOnlyDate: true })
+  try {
+    assert.ok(x.row)
+    assert.equal(x.row.source_url, news)
+    assert.equal(x.row.review_reason, 'no_sales_hiring_evidence')
+    assert.equal((x.db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE lead_id = ? AND kind = 'hiring'").get(x.row.id) as { n: number }).n, 0)
+  } finally { x.db.close() }
 })
