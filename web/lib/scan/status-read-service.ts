@@ -3,7 +3,7 @@ import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verific
 import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
 import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readRefusedModelCalls, readLastActivity } from './status-reads.ts'
-import { compareActual, type RunEstimate } from './price-estimate.ts'
+import { compareActual, customerEstimateTotal, type RunEstimate } from './price-estimate.ts'
 import { readRunReport } from './run-report.ts'
 import { effectiveStatus, enrichState } from './enrichment.ts'
 import { emptyExtractionReason } from './extraction-note.ts'
@@ -48,14 +48,14 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   // Cost: what the user confirmed at the start, and only once the scan has ended, what was actually recorded beside it (reported tokens at the listed price; searches attempted). Absent for scans started before estimates existed.
   let cost: unknown = null
   try {
-    const est = saved.estimate ? JSON.parse(saved.estimate) as Pick<RunEstimate, 'total' | 'rows' | 'payer' | 'cap'> : null
+    const est = saved.estimate ? JSON.parse(saved.estimate) as Pick<RunEstimate, 'total' | 'rows' | 'payer' | 'cap' | 'trial_scan_cap_usd'> : null
     if (est) {
       const ended = job.status === 'done' || job.status === 'failed'
       const actual = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }) : null
       // Cost per verification pass: the scan's own verified counter as denominator, model cost as
       // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead
       // claim. Unknowns (running, unrecorded cost or count, zero passes) stay named, never 0/Infinity.
-      cost = { estimate: { total: est.total, payer: est.payer, cap: est.cap, rows: est.rows }, actual, per_verification_pass: costPerVerificationPass({ verified: job.verified, model_usd: actual?.model_usd ?? null, scanEnded: ended }), model_scope: COST_PER_PASS_SCOPE }
+      cost = { estimate: { total: customerEstimateTotal(est), payer: est.payer, cap: est.cap, rows: est.rows }, actual, per_verification_pass: costPerVerificationPass({ verified: job.verified, model_usd: actual?.model_usd ?? null, scanEnded: ended }), model_scope: COST_PER_PASS_SCOPE }
     }
   } catch { cost = null }
   const provider_issues = await readProviderIssues(db, tenantId, job.id)
