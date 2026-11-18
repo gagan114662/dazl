@@ -18,7 +18,11 @@ for (const row of rows) {
   // consolidated names are also known by their first part ("Nashville-Davidson" is Nashville, "Louisville/Jefferson County" is Louisville, "Boise City" is Boise)
   // ONLY for consolidated cities (SUMLEV 170, or a city-county name like "Macon-Bibb County" / "Lexington-Fayette urban county"): an ordinary
   // incorporated place keeps its whole name ("Winston-Salem", "Wilkes-Barre" are not "Winston" / "Barre"). A "... County" part is never a city alias.
-  const names = new Set([n]); if (c[0] === '170' || /[/-].*\bcounty\b/i.test(n)) for (const part of n.split(/[/-]/)) if (part.trim().length >= 3 && !/\bcounty\b/i.test(part)) names.add(part.trim())
+  const names = new Set([n])
+  if (c[0] === '170' || /[/-].*\bcounty\b/i.test(n)) {
+    const city = n.split(/[/-]/, 1)[0].trim()
+    if (city.length >= 3 && !/\bcounty\b/i.test(city)) names.add(city)
+  }
   for (const x of [...names]) if (/ City$/.test(x) && x.length > 8) names.add(x.replace(/ City$/, ''))
   for (const x of names) { const k = `${x}|${st}`; best.set(k, Math.max(best.get(k) ?? 0, pop)) }
 }

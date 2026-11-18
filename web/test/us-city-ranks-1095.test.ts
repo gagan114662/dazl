@@ -27,3 +27,14 @@ test('the generator imports no module the documented redirect truncates', () => 
   assert.ok(!/from '\.\.\/lib\/sources\/(jobboards|us-city-ranks)\.ts'/.test(g))
   assert.match(g, /from '\.\.\/lib\/sources\/us-states\.ts'/)
 })
+
+
+test('#1236 consolidated county names never become standalone cities', () => {
+  assert.deepEqual(bareUsCity('Davidson'), { city: 'Davidson', abbr: 'NC' })
+  assert.equal(bareUsCity('Silver Bow'), null)
+  for (const [city, abbr] of [
+    ['Nashville', 'TN'], ['Louisville', 'KY'], ['Lexington', 'KY'],
+    ['Macon', 'GA'], ['Athens', 'GA'], ['Augusta', 'GA'],
+    ['Butte', 'MT'], ['Hartsville', 'TN'], ['Boise', 'ID'],
+  ]) assert.deepEqual(bareUsCity(city), { city, abbr })
+})
