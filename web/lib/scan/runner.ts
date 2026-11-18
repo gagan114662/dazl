@@ -97,7 +97,7 @@ import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
-export interface LeadDraft extends Candidate {}
+export type LeadDraft = Candidate
 // The producing channel, known from the job row at write time. Monitor runs reuse query
 // jobs, so monitors stamp their kind when the run is recorded (see monitors.ts).
 export const sourceKind = (job: Job): 'watch' | 'csv' | 'query' =>
@@ -505,7 +505,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     if (confidence < MIN_CONFIDENCE) { const r = j === 'unclear' ? 'claim_unclear' : 'low_confidence'; drop(r); note(c, 'dropped', r); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt, ...(copy ? { evidence_origin: COPY_ORIGIN, own_fetch_failure: copy.failure, evidence_copy_sha256: copy.sha256, evidence_copy_page: copy.page } : {}) }
     const key = dedupKey(c)
-    quotes.set(key, [...(quotes.get(key) ?? []), { url: c.source_url, excerpt: c.excerpt, date: c.event_date }])
+    quotes.set(key, [...(quotes.get(key) ?? []), { url: c.source_url, excerpt: c.excerpt, date: c.event_date, dateProof: c.event_date_proof }])
     const prev = best.get(key)
     if (prev) drop('duplicate')
     if (!prev || lead.confidence > prev.confidence) { if (prev) note(bestSrc.get(key)!, 'dropped', 'duplicate'); best.set(key, lead); bestSrc.set(key, c); origin.set(lead, c) }
