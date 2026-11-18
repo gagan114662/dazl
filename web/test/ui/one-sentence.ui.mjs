@@ -4,10 +4,10 @@
 // the profile save, the scan start and its status): no live or paid scan, nothing sent. It proves:
 //   1. signed in -> the website is the ONLY thing typed: the brain builds, and the one-sentence box is already filled with
 //      the top suggestion from the profile, with 3 suggestions beside it;
-//   2. "Find my first leads" sends ONE POST /api/scan { query: that sentence, icp: the profile as read, mode: 'first5' };
+//   2. "Find my first leads" reviews an estimate, then confirmation sends POST /api/scan { query: that sentence, icp: the profile as read, mode: 'first5' };
 //   3. a live view shows which source is being read and the candidates found so far (from the status read's first5 block),
 //      then lead cards (company, signal, source link, date; "checking" while still being verified), then 5 ready;
-//   4. a picked suggestion starts at once; a typed sentence is sent as typed;
+//   4. a picked suggestion shows its estimate; a typed sentence is sent as typed;
 //   5. a short result (2 of 5) says so and offers the wider full search as a link to Plays, never as an automatic scan.
 // It prints two numbers: things typed before the first lead card, and seconds from sign-in to the first lead card.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -18,7 +18,9 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { onboardingEstimate } from '../helpers/onboarding-estimate.mjs'
 import { pickUiPort } from '../helpers/ui-port.mjs'
+const estimateOnly = process.env.FIRST_ESTIMATE_ONLY === '1'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -66,10 +68,11 @@ const ROWS = [row(LEADS[0], 'Priya Hartley, Managing partner', 'priya@hartleysha
 const OUTSIDE_ROW = row({ ...LEADS[0], id: '6'.repeat(24), company: 'Fenwick Payroll Partners', signal: 'Hiring a payroll manager for its Leeds office', source_url: 'https://www.fenwick.example/careers', event_date: '2026-10-19' }, 'Jo Fenwick, Managing partner', 'jo@fenwick.example')
 const b = await chromium.launch()
 async function run({ width, height, tag, how = 'cta', full = true, incomplete = false, outside = false, tz = 'UTC' }) {
-  const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], polls: 0 }
+  const st = { profile: { business_name: '', sells: '', website: '', buyer: null }, scanBodies: [], estimateBodies: [], polls: 0 }
   const ctx = await b.newContext({ viewport: { width, height }, timezoneId: tz })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
+  let replacementAck = null
   await ctx.route('**/*', async route => {
     const req = route.request(); const u = new URL(req.url()); const m = req.method(); const p = u.pathname
     if (u.origin !== base) return route.abort()
@@ -79,7 +82,17 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
     if (p === '/api/scan/icp-from-url') { await new Promise(r => setTimeout(r, 1200)); return json(READ) }
     if (p === '/api/settings/profile' && m === 'POST') { st.profile = { ...st.profile, ...JSON.parse(req.postData()) }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
-    if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return json({ job_id: J }) }
+    if (p === '/api/scan/estimate' && m === 'POST') { st.estimateBodies.push(JSON.parse(req.postData())); return json({ estimate: onboardingEstimate }) }
+    if (p === '/api/scan' && m === 'POST') {
+      const body = JSON.parse(req.postData())
+      if (tag === 'desktop' && !replacementAck) {
+        assert.equal(body.estimate_ack, onboardingEstimate.ack)
+        replacementAck = 'updated-onboarding-ack'
+        return json({ error: 'estimate_changed', estimate: { ...onboardingEstimate, ack: replacementAck, total: { min: 0.14, max: 0.28 } } }, 409)
+      }
+      assert.equal(body.estimate_ack, replacementAck ?? onboardingEstimate.ack)
+      st.scanBodies.push(body); return json({ job_id: J })
+    }
     if (p === '/api/scan/status') { const s = STEPS(full)[Math.min(st.polls++, 3)]; return json({ job_id: J, ...s }) }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3 } })
@@ -113,8 +126,28 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
   if (how === 'cta') await page.getByTestId('ready-cta').click()
   else if (how === 'chip') { query = (await chips.nth(1).innerText()).trim(); await chips.nth(1).click() }
   else { query = 'Accounting firms in Leeds hiring a payroll manager'; await type(box, query); await box.press('Enter') }
+  await page.getByTestId('estimate-confirm').waitFor()
+  assert.deepEqual(st.scanBodies, [], 'cost preview never starts a search')
+  assert.deepEqual(st.estimateBodies, [{ query, icp: READ.icp, mode: 'first5' }])
+  assert.equal(await page.getByTestId('estimate-total').textContent(), '$0.09 - $0.30')
+  await shot('estimate')
+  if (tag === 'mobile') {
+    await page.getByTestId('estimate-cancel').click()
+    assert.deepEqual(st.scanBodies, [], 'Cancel never starts a search')
+    await page.getByTestId('ready-cta').click()
+  }
+  await page.getByTestId('estimate-confirm-run').click()
+  if (tag === 'desktop') {
+    await page.getByText('$0.14 - $0.28', { exact: true }).waitFor()
+    assert.deepEqual(st.scanBodies, [], 'an updated estimate waits for another confirmation')
+    await page.getByTestId('estimate-confirm-run').click()
+  }
   await page.getByTestId('first-progress').waitFor({ timeout: 10000 })
-  assert.deepEqual(st.scanBodies, [{ query, icp: READ.icp, mode: 'first5' }], 'one scan: the sentence, the profile as read, the fast first scan')
+  assert.deepEqual(st.scanBodies, [{ estimate_ack: replacementAck ?? onboardingEstimate.ack, query, icp: READ.icp, mode: 'first5' }], 'one scan: the sentence, the profile as read, the fast first scan')
+  if (estimateOnly) {
+    await ctx.close()
+    return { typed, firstCardSeconds: null }
+  }
   // 3. Live: which source is read now, candidates so far.
   await page.waitForFunction(() => /^Reading News articles/.test(document.querySelector('[data-testid=live-now]')?.textContent ?? ''), null, { timeout: 10000 })
   if (how === 'cta' && !incomplete) await shot('2-live')
@@ -153,13 +186,16 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
   const out = await page.getByTestId('onboarding-screen').evaluate(e => e.scrollWidth <= e.clientWidth)
   assert.equal(out, true, `no horizontal overflow at ${width}px`)
   if (how === 'cta') { await page.waitForTimeout(300); await shot('4-leads'); if (process.env.SHOTS) await page.getByTestId('first-customers').screenshot({ path: path.join(process.env.SHOTS, `4-leads-card-${tag}.png`) }) }
-  assert.equal(writes.filter(w => w === 'POST /api/scan').length, 1, 'exactly one scan')
+  assert.equal(writes.filter(w => w === 'POST /api/scan').length, tag === 'desktop' ? 2 : 1, 'one acknowledged scan; desktop also made one refused request')
   await ctx.close()
   return { typed, firstCardSeconds }
 }
 try {
   const d = await run({ width: 1440, height: 900, tag: 'desktop', tz: 'America/Toronto' })
   const m = await run({ width: 390, height: 844, tag: 'mobile' })
+  if (estimateOnly) {
+    console.log('first-search estimate UI passed: desktop re-confirmation and 390px cancellation, capped preview, exactly one queued scan')
+  } else {
   const c = await run({ width: 1440, height: 900, tag: 'held', how: 'chip' })
   const t = await run({ width: 1440, height: 900, tag: 'held', how: 'typed', full: false })
   await run({ width: 1440, height: 900, tag: 'research', incomplete: true, tz: 'America/Toronto' })
@@ -171,6 +207,7 @@ try {
   console.log(`MEASURE things typed before the first lead card: ${d.typed} (desktop), ${m.typed} (390px), ${c.typed} (suggestion click)`)
   console.log(`MEASURE seconds from sign-in to the first lead card (seeded, stubbed timings): ${d.firstCardSeconds.toFixed(1)} desktop, ${m.firstCardSeconds.toFixed(1)} 390px`)
   console.log('one-sentence UI check passed: website is the only thing typed, sentence prefilled from the profile, one first5 scan, live source + candidates view, lead cards, ready / short result with a wider-search link')
+  }
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
