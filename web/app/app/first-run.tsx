@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from './trial-refusal-notice'
 import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
@@ -21,9 +21,11 @@ import { calendarDay } from '@/lib/day'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
+import type { RunEstimate } from '@/lib/scan/price-estimate'
+import EstimateConfirm from './leads/estimate-confirm'
 
 type Step = 'site' | 'building' | 'ready' | 'review' | 'brain' | 'ask'
-interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
+interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number; blocked?: string | null } | null }
 
 // Lists are separated by semicolons, as in Home's profile editor (lib/journey.ts), so an item that contains a comma
 // ("London, UK", "Head of Sales, EMEA") stays one item from the read to the scan.
@@ -63,6 +65,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // replaced when the profile changes, so the box never keeps a sentence built from an older profile.
   const [askIsSuggestion, setAskIsSuggestion] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [pendingEstimate, setPendingEstimate] = useState<{ est: RunEstimate; body: string; query: string; stay: boolean } | null>(null)
+  const scanRequestInFlight = useRef(false)
   // The source-backed research block from the website read (#379): carried untouched through the reviewed profile
   // into the scan, so the play keeps its provenance and per-offer corrections.
   const [research, setResearch] = useState<unknown>(null)
@@ -247,29 +251,58 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     } catch { setError('Could not reach the server. Try again.') } finally { setBusy(false) }
   }
 
-  // One scan from one sentence: the box, or a suggested play picked with one click (it goes in the box and starts at once).
+  // Freeze exactly what was estimated. A click or Enter reviews cost first; it never directly queues a scan.
   async function run(e: React.FormEvent) { e.preventDefault(); await start(ask) }
   async function start(sentence: string, stay = false) {
-    if (busy || sentence.trim().length < 3) return
+    const query = sentence.trim()
+    if (busy || pendingEstimate || scanRequestInFlight.current || query.length < 3) return
+    scanRequestInFlight.current = true
+    setError(''); setTrialRefused(null); setLinkNote(null); setBusy(true)
+    const body = JSON.stringify({ query, icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(stay ? { mode: 'first5' } : {}) })
+    try {
+      const r = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || !j.estimate?.ack) { setError('Could not get a price estimate, so nothing was started. Try again.'); return }
+      if (!j.estimate.verdict?.ok && j.estimate.verdict?.trial_refusal) { setTrialRefused({ reason: j.estimate.verdict.trial_refusal, query }); return }
+      setPendingEstimate({ est: j.estimate as RunEstimate, body, query, stay })
+    } catch { setError('Could not reach the server. No search started. Try again.') }
+    finally { scanRequestInFlight.current = false; setBusy(false) }
+  }
+
+  async function confirmStart() {
+    if (!pendingEstimate?.est.verdict.ok || scanRequestInFlight.current) return
+    const { est, body, query, stay } = pendingEstimate
+    scanRequestInFlight.current = true
     setError(''); setTrialRefused(null); setLinkNote(null); setBusy(true)
     try {
-      // The sentence and the profile from step 2, as the Leads page sends a reviewed profile. The server validates both;
-      // nothing here changes what a scan checks.
-      // From the ready screen the first play is the fast first scan (mode first5: the free sources only, the same
-      // extraction and checks as every scan), so the first leads come back quickly; a wider, full scan stays one click away.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(stay ? { mode: 'first5' } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...JSON.parse(body), estimate_ack: est.ack }) })
       const j = await r.json().catch(() => ({}))
+      if (((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) && j.estimate?.ack) {
+        setPendingEstimate({ ...pendingEstimate, est: j.estimate as RunEstimate }); return
+      }
+      setPendingEstimate(null)
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
-        if (stay) { setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim() }); return }
+        if (stay) { setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
       // #1095: never the raw code; the reason in words and the way forward (Link Google for a password account)
-      if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query: sentence.trim() }); return }
+      if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
-    } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
+    } catch { setPendingEstimate(null); setError('Could not confirm whether the search started. Check your leads before trying again.') }
+    finally { scanRequestInFlight.current = false; setBusy(false) }
   }
+
+  if (pendingEstimate) return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-[var(--canvas)] app-ui px-4 py-6">
+      <div className="mx-auto w-full max-w-2xl">
+        <p className="text-sm font-medium break-words" data-testid="first-run-estimate-query">{pendingEstimate.query}</p>
+        {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
+        <EstimateConfirm est={pendingEstimate.est} busy={busy} query={pendingEstimate.query} onConfirm={() => void confirmStart()} onCancel={() => { if (!scanRequestInFlight.current) setPendingEstimate(null) }} />
+      </div>
+    </div>
+  )
 
   // Website, building and ready are one full-screen flow (no menu, the brain behind it); editing the profile and the
   // play step stay as regular pages for anyone who wants them.
@@ -295,6 +328,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const f5NeedResearch = f5 && ready ? f5.leads.filter(l => !readyIds.has(l.id)).length : 0
     // The one sentence: what the user typed, else the top suggestion from the profile (so nothing has to be typed).
     const sentence = askIsSuggestion ? (ask || plays[0] || '') : ask
+    const googleRequired = !first && noPool && usage?.trial?.blocked === 'google_required'
     const candidatesSoFar = f5 ? f5.sources.reduce<number | null>((n, x) => x.candidates == null ? n : (n ?? 0) + x.candidates, null) : null
     const readingNow = f5?.sources.filter(x => x.state === 'running').map(x => sourceName(x.source)) ?? []
     const day = calendarDay // the same calendar day in every time zone
@@ -318,7 +352,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
           <div className="px-5 sm:px-10 py-5 flex items-center justify-between">
             <span className="text-xl font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></span>
             {step === 'review' && <button type="button" className="text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('ready')} data-testid="review-back">Back to your leads</button>}
-            {step === 'ready' && <button type="button" className="text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip to Home</button>}
+            {step === 'ready' && <button type="button" disabled={busy} className="text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip to Home</button>}
           </div>
           <div className="flex-1 flex items-center justify-center px-4 pb-16">
             {step === 'site' && <div className="w-full max-w-xl text-center" data-testid="site-step">
@@ -353,10 +387,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
               {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
-              {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
+              {(trialRefused || googleRequired) && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused?.reason ?? 'google_required'} query={trialRefused?.query ?? sentence} step="ready" /></div>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
                 <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
-                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 ? `${trialLeft} free search${trialLeft === 1 ? '' : 'es'} to start` : hasKey ? 'Runs on your own AI key' : 'Add your AI key to start'}</h2>
+                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 ? `${trialLeft} free search${trialLeft === 1 ? '' : 'es'} to start` : hasKey ? 'Runs on your own AI key' : googleRequired ? 'Link Google for your free searches' : 'Add your AI key to start'}</h2>
                   <ul className="mt-5 space-y-3 text-[15px]">
                     {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
                   </ul>
@@ -368,7 +402,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                   <div className="mt-auto pt-7">
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
                     {!first ? (noPool || poolUnknown ? null
-                      : <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3 || !!trialRefused} data-testid="ready-cta">{busy ? 'Starting...' : 'Find my first leads'}</button>)
+                      : <button type="submit" form="first-ask" className="btn-primary btn-lg w-full justify-center" disabled={busy || sentence.trim().length < 3 || !!trialRefused} data-testid="ready-cta">{busy ? 'Getting estimate...' : 'Find my first leads'}</button>)
                       // Reaching out is offered only for leads that passed every check; otherwise the button says what is there.
                       // With leads on the ready bar, reaching out starts here: review them one by one (the review step).
                       : (f5 ? f5Ready > 0 : first.status === 'done' && (ready?.length ?? 0) > 0) ? <button type="button" className="btn-primary btn-lg w-full justify-center" onClick={() => setStep('review')} data-testid="ready-cta">Start reaching out</button>
@@ -380,7 +414,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                         : readyLeads.length ? 'See what needs research'
                         : split && split.held.length ? 'Review held leads'
                         : 'View results'}</a>}
-                    <button type="button" className="w-full mt-3 text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('brain')}>Edit what dazl inferred</button>
+                    <button type="button" disabled={busy} className="w-full mt-3 text-sm text-[var(--ink-2)] hover:text-[var(--ink)]" onClick={() => setStep('brain')}>Edit what dazl inferred</button>
                   </div>
                 </section>
                 {/* On a phone this card comes first: the sentence, then the live view and the leads, are what to look at. */}
@@ -405,10 +439,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                       {([['Who', profile.who], ['Industry', profile.industries], ['Where', profile.where], ['Size', profile.sizes], ['Signals', profile.signals], ['Skip', profile.exclude]] as const).filter(([, v]) => v.length).map(([k, v]) => <div key={k} className="flex gap-2 min-w-0"><dt className="w-14 shrink-0 text-[var(--ink-3)] pt-0.5">{k}</dt><dd className="flex flex-wrap gap-1 min-w-0" data-testid={`criteria-${k.toLowerCase()}`}>{v.map(x => <span key={x} className="pill pill-plain whitespace-normal break-words">{x}</span>)}</dd></div>)}
                     </dl>
                     {/* One sentence. It starts as the top suggestion, so the website stays the only thing typed; a click on a
-                        suggestion starts that one at once. */}
+                        suggestion opens the estimate for that search. */}
                     <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); if (!noPool && !poolUnknown && !trialRefused) void start(sentence, true) }}>
                       <label className="block text-sm font-semibold" htmlFor="first-ask-input">Describe who you want in one sentence</label>
-                      <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} value={sentence} data-testid="first-ask"
+                      <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} disabled={busy} value={sentence} data-testid="first-ask"
                         onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
                     </form>
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
@@ -512,22 +546,22 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
         <div className="ask">
-          <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} />
-          <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>
+          <textarea id="ask" rows={2} disabled={busy} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} />
+          <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Getting estimate...' : 'Find leads'}</span></button>
         </div>
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
           {plays.map(p => <button type="button" key={p} disabled={busy || !!trialRefused} onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); void start(p) }} className="chip justify-between">{p}<Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
         </div>
         {needKey && !hasKey && <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} />}
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Back</button>
-          <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Edit profile</button>
+          <button type="button" disabled={busy} className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Back</button>
+          <button type="button" disabled={busy} className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Edit profile</button>
           <InfoTip label="The profile this search uses"><span aria-label="Search profile">Searched with your profile: {[profile.who.join(', '), profile.industries.join(', '), profile.where.length ? `in ${profile.where.join(', ')}` : 'any location', profile.sizes.join(', '), profile.exclude.length ? `skipping ${profile.exclude.join(', ')}` : ''].filter(Boolean).join(' · ')}.</span></InfoTip>
           {!needKey && !hasKey && trialLeft > 0 && <span className="pill pill-mint ml-auto" data-testid="trial-left">{trialLeft} free search{trialLeft === 1 ? '' : 'es'}</span>}
         </div>
       </form>}
 
-      <button type="button" className="min-h-11 px-2 text-xs text-[#666] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
+      <button type="button" disabled={busy} className="min-h-11 px-2 text-xs text-[#666] underline mt-6" onClick={() => setReady('home')}>Skip setup and show all options</button>
     </div>
   )
 }
