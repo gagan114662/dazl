@@ -23,6 +23,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { onboardingEstimate } from '../helpers/onboarding-estimate.mjs'
 import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
@@ -56,6 +57,7 @@ await ctx.route('**/*', async route => {
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: false, remaining: 0, cap: 3 } })
   if (p === '/api/scan/icp-from-url') return state.hasKey ? json({ icp: ICP, source: 'https://brightsmile.example/', sells: 'Online booking and reminders for dental practices' }) : json({ error: 'no_api_key' }, 400)
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
+  if (p === '/api/scan/estimate' && m === 'POST') return json({ estimate: onboardingEstimate })
   if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'c'.repeat(24) }, 202) }
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: { email: 'me@brightsmile.example', status: 'active', read_granted: false }, sender: state.sender, daily_cap: 20, sent_24h: 0 })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
@@ -69,7 +71,7 @@ const plays = () => page.getByRole('group', { name: 'Suggested plays' }).getByRo
 const sentence = () => page.getByLabel('Who do you want to find?')
 const cont = async () => { await page.getByRole('button', { name: 'Looks right, continue' }).click(); await page.getByText('Who do you want to find?').waitFor() }
 const back = async () => { await page.getByRole('button', { name: 'Back' }).click(); await page.getByText("Here's what we think you sell").waitFor() }
-const findLeads = async () => { await page.getByRole('button', { name: 'Find leads' }).click(); await page.waitForURL(/\/app\/leads\?job_id=/) }
+const findLeads = async () => { await page.getByRole('button', { name: 'Find leads' }).click(); await page.getByTestId('estimate-confirm-run').click(); await page.waitForURL(/\/app\/leads\?job_id=/) }
 const PROFILE = { summary: ICP.summary, who: ICP.who, industries: ICP.industries, sizes: [], where: ['Ohio'], signals: ICP.signals, exclude: [] }
 
 // Scenario 1: website -> inline key -> profile -> plays; then Back, change Ohio to NYC, continue, Find leads.
@@ -98,8 +100,8 @@ assert.deepEqual(await plays().allTextContents(), ['Practice owners in NYC - ope
 assert.equal(await sentence().inputValue(), '', 'nothing from the old profile is kept in the box')
 assert.match(await page.getByLabel('Search profile').textContent(), /in NYC/)
 // One click on a suggested play starts the scan and goes straight to its live progress.
-await plays().nth(1).click(); await page.waitForURL(/\/app\/leads\?job_id=/)
-assert.deepEqual(scanBodies, [{ query: 'Office managers in NYC - hiring front-desk staff', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the picked play and the edited profile')
+await plays().nth(1).click(); await page.getByTestId('estimate-confirm-run').click(); await page.waitForURL(/\/app\/leads\?job_id=/)
+assert.deepEqual(scanBodies, [{ estimate_ack: onboardingEstimate.ack, query: 'Office managers in NYC - hiring front-desk staff', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the picked play and the edited profile')
 
 // Scenario 2: every edited profile field reaches the request; a sentence the user typed survives Back/continue as typed.
 scanBodies.length = 0
@@ -123,7 +125,7 @@ await sentence().fill('Orthodontists in Austin opening a second office')
 await back(); await cont()
 assert.equal(await sentence().inputValue(), 'Orthodontists in Austin opening a second office', "the user's own sentence is kept")
 await findLeads()
-assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
+assert.deepEqual(scanBodies, [{ estimate_ack: onboardingEstimate.ack, query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
 
 // Scenario 3: full reload; the saved profile comes back from the real route, not from page memory.
 await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
