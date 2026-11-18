@@ -148,8 +148,16 @@ test('#1122 each outcome says what happened, in words that claim no more than th
   assert.deepEqual(guessed.unresolved, [{ value: 'No company website confirmed', label: `${T}not_confirmed`, source_url: BOARD }], 'searched and guessed sites tried, none confirmed')
   assert.deepEqual(why(await run({ ...base, company: 'Abc' })), ['no_site_linked'], 'a name too short to build or search a site from')
   const linked = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: html('<p><a href="https://restor-dental-ca.example/">Restor Dental</a> is hiring at 200 Bloor Street West, Toronto.</p>'), excerpt: 'Restor Dental is hiring at 200 Bloor Street West, Toronto',
+    findSites: async () => ['restordental.ca'], sites: { 'restor-dental-ca.example': { '/': ELSEWHERE_HOME('Restor Dental') }, 'restordental.ca': { '/': ELSEWHERE_HOME('Restor Dental') } } })
+  NOTHING(linked); assert.deepEqual(linked.searched, ['Restor Dental'], 'a failed linked candidate allows fallback, but both wrong-place sites remain refused'); assert.deepEqual(why(linked), ['linked_site_not_confirmed'])
+  assert.ok(linked.audit.some(a => a.lookup === 'restor-dental-ca.example' && /location mismatch/.test(a.status)))
+  assert.ok(linked.audit.some(a => a.lookup === 'restordental.ca' && /location mismatch/.test(a.status)))
+  // The old no-search assertion also hid this valid recovery: a different site must pass the SAME name/place checks.
+  const recovered = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: html('<p><a href="https://restor-dental-ca.example/">Restor Dental</a> is hiring at 200 Bloor Street West, Toronto.</p>'), excerpt: 'Restor Dental is hiring at 200 Bloor Street West, Toronto',
     findSites: async () => ['restordental.ca'], sites: { 'restor-dental-ca.example': { '/': ELSEWHERE_HOME('Restor Dental') }, 'restordental.ca': { '/': TORONTO_HOME('Restor Dental') } } })
-  NOTHING(linked); assert.deepEqual(linked.searched, [], 'a site the page itself links and that is refused ends it there: no search, no guess overrides the refusal'); assert.deepEqual(why(linked), ['linked_site_not_confirmed'])
+  assert.equal(recovered.domain, 'restordental.ca'); assert.deepEqual(recovered.basis, ['restordental.ca|name_probe'])
+  assert.deepEqual(recovered.searched, ['Restor Dental']); assert.deepEqual(recovered.unresolved, [])
+  assert.ok(recovered.audit.some(a => a.lookup === 'restor-dental-ca.example' && /location mismatch/.test(a.status)))
   const robots = await run({ ...base, company: 'Blocked Dental', evidence: plain('Blocked Dental'), robots: { 'blockeddental.com': 'User-agent: *\nDisallow: /' }, sites: { 'blockeddental.com': { '/': TORONTO_HOME('Blocked Dental') } } })
   NOTHING(robots); assert.deepEqual(why(robots), ['site_not_readable'])
   for (const c of ['no_site_linked', 'linked_site_not_confirmed', 'not_confirmed', 'own_site_refused_reading', 'own_site_needs_javascript', 'probe_limit_reached', 'time_budget', 'site_not_readable', 'site_not_read', 'not_checked']) {
@@ -272,7 +280,7 @@ test('#1122 review at 576f9c8c (blocker 2): a site named only in structured data
   const r = await run({ company: 'Restor Dental', evidenceUrl: BOARD, evidence: page, findSites: async () => [], sites: { 'restordental.ca': { '/': html(`<h1>Another Clinic</h1><p>Toronto, ON</p>${PROSE}`) }, 'smilesbyrestor.ca': { '/': TORONTO_HOME('Restor Dental'), '/contact': CONTACT('hello@smilesbyrestor.ca') } } })
   assert.equal(r.domain, 'smilesbyrestor.ca'); assert.deepEqual(r.emails, ['hello@smilesbyrestor.ca'])
   assert.ok(r.audit.some(a => a.lookup === 'restordental.ca' && a.status === 'name_mismatch'), 'the linked site was read first and refused')
-  assert.deepEqual(r.searched, [], 'a linked site that is refused still ends the search and the name guesses, as before')
+  assert.deepEqual(r.searched, [], 'the confirmed structured candidate avoids unnecessary external lookup')
 })
 
 test('#1122 review at 576f9c8c (blocker 1, the real qsdc.ca shape): a homepage larger than the stored page cap is read for its TEXT, so a place in its footer counts; nothing else is loosened', async () => {

@@ -1086,8 +1086,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const sourceOf = new Map<string, string>()   // 1328-F1: page that linked/named a site, when it is not the lead's original page
       const nowSec = Math.floor((deps.now ?? Date.now()) / 1000)
       let sites: string[] = []
-      // A site the cited page shows as a link (or the page's own domain) is "linked": if it is read and refused, resolution ends there, as
-      // before. A site named only in the page's structured data is a candidate: it is tried first, and its refusal stops nothing (#1122).
+      // A posting link is a candidate, not proof: if local candidates fail identity/read checks,
+      // the bounded official-site lookup may still find this company elsewhere (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
@@ -1110,13 +1110,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const fromSlug = board.slug ? slugDomains(board.slug, where).filter(notBlockedHost) : []
       // ATS employer identity is the first source, even when the posting also links a website.
       // Slug-derived hosts remain guesses: every homepage/place/refusal check still applies.
-      if (anchored && fromSlug.length && probed < MAX_PROBES_PER_SCAN) {
+      let lookupPending = false
+      if (anchored && probed < MAX_PROBES_PER_SCAN) {
+        // Reserve once for both slug probes and the fallback; linking a stale site must not suppress search.
         probed++
+        lookupPending = !!deps.findSites
         sites = [...new Set([...fromSlug, ...sites])]
         for (const d of fromSlug) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
       }
       let unresolved = anchored ? 'linked_site_not_confirmed' : 'not_confirmed'
-      let lookupPending = false
       let probeGuesses: string[] = []
       if (!anchored) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
