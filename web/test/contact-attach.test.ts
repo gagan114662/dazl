@@ -1,6 +1,7 @@
 // Before ANY contact or company record is attached to a lead it must agree with the lead on the company domain or on the city / state; on disagreement it is not
 // attached, a `contact_*` marker is recorded on the lead with the reason, and the other sources are still looked at. A same-name business in another state is the
 // case that failed live (a Pico Rivera, CA practice attached to a New York lead). Stubbed Apollo / PDL responses and invented companies: no network, no credits.
+import './paid-vendors-on.ts'   // first: runs as an operator who named the paid vendors (Refs #1099; the default-off proof is paid-vendors-*-1099)
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
