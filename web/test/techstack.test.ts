@@ -37,6 +37,7 @@ test('crawlSite reports the homepage stack alongside contacts', async () => {
 test('crawlJob stores tech hits as enrichments with the homepage as source', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://news.example/a',NULL,90,80,NULL)").run()
   const pages: Record<string, { body: string }> = {
     '/a': { body: html('<a href="https://stabyl.com">s</a>') },

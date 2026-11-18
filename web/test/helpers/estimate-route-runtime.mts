@@ -5,7 +5,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateScan } from '../../lib/scan/store.ts'
-import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
+import { defaultVendor, migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migrateTrial } from '../../lib/scan/trial.ts'
 import { migratePlatform } from '../../lib/db/platform-tables.ts'
@@ -274,7 +274,9 @@ test('OpenAI key under a spending limit: the estimate and POST /api/scan refuse 
   const db = setup(); const id = `E${++n}`
   saveKey(db, id, 'openai', 'sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' })
   const saved = process.env.DAZL_OPENAI_MODEL; delete process.env.DAZL_OPENAI_MODEL
-  const savedPv = process.env.DAZL_PAID_VENDORS; process.env.DAZL_PAID_VENDORS = 'openai' // own-key OpenAI is opt-in (#1099); production default stays off
+  assert.equal(defaultVendor(db, id, {}), null, 'OpenAI stays unusable without explicit operator opt-in')
+  assert.equal(defaultVendor(db, id, { DAZL_PAID_VENDORS: 'openai' }), 'openai', 'these synthetic positive cases explicitly opt in')
+  const paidVendors = process.env.DAZL_PAID_VENDORS; process.env.DAZL_PAID_VENDORS = 'openai'
   try {
     const limited = { query: Q, budget: { max_usd: 2, judge: false } }
     const e = await (await est(limited)).json() as { estimate: { verdict: { ok: boolean; reason: string; message: string; change: string[] } } }
@@ -290,7 +292,10 @@ test('OpenAI key under a spending limit: the estimate and POST /api/scan refuse 
     const a = `E${++n}`; saveKey(db, a, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id: a, business_name: 'Acme' })
     const ok = await (await est(limited)).json() as { estimate: { verdict: { reason: string | null } } }
     assert.notEqual(ok.estimate.verdict.reason, 'model_unpriced')
-  } finally { if (saved === undefined) delete process.env.DAZL_OPENAI_MODEL; else process.env.DAZL_OPENAI_MODEL = saved; if (savedPv === undefined) delete process.env.DAZL_PAID_VENDORS; else process.env.DAZL_PAID_VENDORS = savedPv }
+  } finally {
+    if (saved === undefined) delete process.env.DAZL_OPENAI_MODEL; else process.env.DAZL_OPENAI_MODEL = saved
+    if (paidVendors === undefined) delete process.env.DAZL_PAID_VENDORS; else process.env.DAZL_PAID_VENDORS = paidVendors
+  }
 })
 
 // ---- #851: the estimate (and so the confirmation and the start gate) prices the model the run will really call ----
@@ -305,7 +310,7 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
 const modelRowsOf = (e: Est) => e.estimate.rows.filter(r => r.kind === 'model')
 
 test('#851 OpenAI key, no limit: the route shows gpt-4.1 at its own listed price (not claude-sonnet-4-5), and the started job keeps that estimate', async () => {
-  await withEnv({ ...{ DAZL_OPENAI_MODEL: undefined }, DAZL_PAID_VENDORS: 'openai' }, async () => {
+  await withEnv({ DAZL_OPENAI_MODEL: undefined, DAZL_PAID_VENDORS: 'openai' }, async () => {
     const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
     const r = await est({ query: Q }); const e = await r.json() as Est
     assert.equal(r.status, 200)
@@ -323,7 +328,7 @@ test('#851 OpenAI key, no limit: the route shows gpt-4.1 at its own listed price
 })
 
 test('#851 a changed key model after confirmation is a changed estimate: 409 estimate_changed naming the new model, no job; the fresh confirmation runs', async () => {
-  await withEnv({ ...{ DAZL_OPENAI_MODEL: undefined }, DAZL_PAID_VENDORS: 'openai' }, async () => {
+  await withEnv({ DAZL_OPENAI_MODEL: undefined, DAZL_PAID_VENDORS: 'openai' }, async () => {
     const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
     const e = await (await est({ query: Q })).json() as Est
     process.env.DAZL_OPENAI_MODEL = 'gpt-4.1-2025-04-14'
@@ -336,7 +341,7 @@ test('#851 a changed key model after confirmation is a changed estimate: 409 est
 })
 
 test('#851 an own OpenAI key on a model the per-scan cap cannot price (DAZL_OPENAI_MODEL=gpt-4o), NO limit: the estimate refuses (no "remove the limit" advice) and POST /api/scan gives 422 model_unpriced with no job', async () => {
-  await withEnv({ ...{ DAZL_OPENAI_MODEL: 'gpt-4o' }, DAZL_PAID_VENDORS: 'openai' }, async () => {
+  await withEnv({ DAZL_OPENAI_MODEL: 'gpt-4o', DAZL_PAID_VENDORS: 'openai' }, async () => {
     const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
     const r0 = await est({ query: Q }); const e = await r0.json() as Est
     assert.equal(r0.status, 200)
