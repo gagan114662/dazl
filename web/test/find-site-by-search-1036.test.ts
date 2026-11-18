@@ -53,7 +53,7 @@ function seed() {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec('CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)')
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Harbor Dental','https://www.instagram.com/p/abc/',NULL,90,80,NULL,'Harbor Dental opened a new office in Austin','Harbor Dental opened a new office in Austin')").run()
-  db.exec('CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, icp TEXT)')
+  db.exec("CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT 't1', icp TEXT)")
   db.prepare('INSERT INTO scan_jobs (id, icp) VALUES (?, ?)').run('j1', JSON.stringify({ where: ['Austin, Texas'], who: ['Owner'] }))
   return db
 }

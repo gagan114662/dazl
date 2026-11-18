@@ -965,6 +965,8 @@ export function crawlEligibleHolds(): string[] {
 export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
+    // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
+    if (!db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
     const crawlBudgetMs = crawlBudgetBound(Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS))
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
@@ -985,7 +987,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const CRAWL_HOLD_LIST = crawlEligibleHolds()
     const CRAWL_HOLDS = CRAWL_HOLD_LIST.map(r => `'${r.replace(/'/g, "''")}'`).join(',')
     const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN (${CRAWL_HOLDS})) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
-    const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
+    const supplied = deps.leads?.filter(l => !!db.prepare('SELECT 1 FROM leads WHERE id = ? AND scan_job_id = ?').get(l.id, jobId))
+    const leads = (supplied ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { /* no ICP: evidence places only */ }
@@ -1093,7 +1096,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
       // #1122/#1037: a job-board posting that links no company site: the employer's ATS posting it links (same company slug) is read once,
       // and any site IT links or names becomes a candidate; then the slug's own domains join the name guesses below.
-      const board = !anchored ? jobBoardSlugs(l.company, ev?.finalUrl ?? l.source_url, ev?.body ?? '') : { slug: '', ats: [] as string[] }
+      const board = jobBoardSlugs(l.company, ev?.finalUrl ?? l.source_url, ev?.body ?? '')
       for (const a of board.ats) {
         if (anchored || deps.signal?.aborted) break
         let page: Awaited<ReturnType<typeof evidenceGet>> = null
@@ -1105,7 +1108,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (!structured.includes(o.site)) structured.push(o.site)
         }
       }
-      const fromSlug = board.slug ? slugDomains(board.slug, where) : []
+      const fromSlug = board.slug ? slugDomains(board.slug, where).filter(notBlockedHost) : []
+      // ATS employer identity is the first source, even when the posting also links a website.
+      // Slug-derived hosts remain guesses: every homepage/place/refusal check still applies.
+      if (anchored && fromSlug.length && probed < MAX_PROBES_PER_SCAN) {
+        probed++
+        sites = [...new Set([...fromSlug, ...sites])]
+        for (const d of fromSlug) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
+      }
       let unresolved = anchored ? 'linked_site_not_confirmed' : 'not_confirmed'
       let lookupPending = false
       let probeGuesses: string[] = []
@@ -1127,7 +1137,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           lookupPending = !!deps.findSites && !ownBlocked
           probeGuesses = guesses.filter(notBlockedHost)
           if (blockedHost && probeGuesses.length !== guesses.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 })
-          sites = [...new Set([...structured, ...fromSlug])].filter(notBlockedHost)
+          sites = [...new Set([...fromSlug, ...structured])].filter(notBlockedHost)
           if (!lookupPending) sites = [...new Set([...sites, ...probeGuesses])]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
@@ -1234,7 +1244,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (r.reason !== 'ok' && r.reason !== 'none_published') recordDomainUnresolved(db, tenantId, l, r.reason === 'robots_disallow' ? 'site_not_readable' : 'site_not_read', today, nowSec)   // only rules that FORBID reading are a refusal; rules that could not be fetched are just an unread site
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
-      if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
+      if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ? AND scan_job_id = ? AND EXISTS (SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?)').run(site, l.id, jobId, jobId, tenantId)
       if (r.reason === 'ok' || r.reason === 'none_published') { try { db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(l.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND) } catch { /* note only */ } }
       if (r.reason === 'ok' || r.reason === 'none_published') { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
       let n = 0
