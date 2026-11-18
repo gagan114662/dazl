@@ -152,7 +152,7 @@ export async function gradeBuyerIntent(
 
 // Replies share each platform's hourly budget with every other advanced feature.
 function platformCallsLastHour(db: Database.Database, tenantId: string, p: ReplyPlatform): number {
-  const r = db.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND (connector = ? OR connector LIKE ?) AND status <> 'no_session' AND created_at > CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, `adv:${p}`, `adv:${p}-%`) as { n: number }
+  const r = db.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND (connector = ? OR connector LIKE ?) AND status NOT IN ('no_session', 'credential_unreadable') AND created_at > CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, `adv:${p}`, `adv:${p}-%`) as { n: number }
   return r.n
 }
 
@@ -164,7 +164,7 @@ export interface RefreshResult {
   // honest backlog still keyword-only after the per-refresh cap - one click may not grade all.
   graded: number
   ungraded_remaining: number
-  platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'no_session' | 'rate_limited' | 'worker_error' | 'unsupported'>>
+  platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'no_session' | 'credential_unreadable' | 'rate_limited' | 'worker_error' | 'unsupported'>>
 }
 
 export async function refreshReplies(db: Database.Database, tenantId: string, deps: { worker?: WorkerFetch; fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {}): Promise<RefreshResult> {
@@ -193,15 +193,21 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
     // A platform this build cannot fetch is 'unsupported', never a silently successful read.
     if (!PLATFORM_SUPPORT[p].supported) { out.platforms[p] = 'unsupported'; continue }
     if (!hasConsent(db, tenantId, scopeFor(p))) { out.platforms[p] = 'no_consent'; continue }
+    const budget = maxCallsPerHour(p, env) - platformCallsLastHour(db, tenantId, p)
+    if (budget <= 0) { out.platforms[p] = 'rate_limited'; continue }
     const connector = `adv:${p}-replies`
-    const session = getEnabledCredential(db, tenantId, connectorId(p), deps.master)
+    let session: string | null
+    try { session = getEnabledCredential(db, tenantId, connectorId(p), deps.master) }
+    catch {
+      audit(db, { tenantId, connector, lookup: 'refresh', status: 'credential_unreadable', results: 0 })
+      out.platforms[p] = 'credential_unreadable'
+      continue
+    }
     if (!hasWorkerSession(session)) {
       audit(db, { tenantId, connector, lookup: 'refresh', status: 'no_session', results: 0 })
       out.platforms[p] = 'no_session'
       continue
     }
-    const budget = maxCallsPerHour(p, env) - platformCallsLastHour(db, tenantId, p)
-    if (budget <= 0) { out.platforms[p] = 'rate_limited'; continue }
     let anyError = false
     let anyUnsupported = false
     for (const q of queries.slice(0, budget)) {

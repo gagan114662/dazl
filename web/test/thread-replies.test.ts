@@ -259,3 +259,21 @@ test('#1094 sessionless reply refreshes leave room for a connected session', asy
   assert.equal((await refreshReplies(d, 't1', deps)).platforms.reddit, 'ok')
   assert.equal(calls, 1)
 })
+
+
+test('#1094 an unreadable stored credential does not block another platform', async () => {
+  const d = db()
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  d.prepare("UPDATE tenant_connectors SET ciphertext = 'unreadable' WHERE tenant_id = 't1' AND connector = 'adv:reddit'").run()
+  const calls: string[] = []
+  const worker = async ({ platform }: { platform: string }) => {
+    calls.push(platform)
+    return { items: [], unsupported: null }
+  }
+  const deps = { worker, master, now: NOW, env: { ...ENV_ON, ADVANCED_MAX_PER_HOUR: '1' } }
+  assert.equal((await refreshReplies(d, 't1', deps)).platforms.reddit, 'credential_unreadable')
+  d.prepare("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results) VALUES ('reddit-cap', 't1', 'adv:reddit', 'q', 'ok', 0)").run()
+  assert.equal((await refreshReplies(d, 't1', deps)).platforms.reddit, 'rate_limited')
+  assert.deepEqual(calls, ['x'])
+})
