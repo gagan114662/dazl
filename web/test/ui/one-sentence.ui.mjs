@@ -73,6 +73,9 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
   let replacementAck = null
+  let refuseEstimate = estimateOnly && tag === 'mobile'
+  let releaseConfirmation
+  const confirmHold = new Promise(resolve => { releaseConfirmation = resolve })
   await ctx.route('**/*', async route => {
     const req = route.request(); const u = new URL(req.url()); const m = req.method(); const p = u.pathname
     if (u.origin !== base) return route.abort()
@@ -82,12 +85,19 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
     if (p === '/api/scan/icp-from-url') { await new Promise(r => setTimeout(r, 1200)); return json(READ) }
     if (p === '/api/settings/profile' && m === 'POST') { st.profile = { ...st.profile, ...JSON.parse(req.postData()) }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
-    if (p === '/api/scan/estimate' && m === 'POST') { st.estimateBodies.push(JSON.parse(req.postData())); return json({ estimate: onboardingEstimate }) }
+    if (p === '/api/scan/estimate' && m === 'POST') {
+      if (refuseEstimate) {
+        refuseEstimate = false
+        return json({ error: 'profile_lossy', loss: [{ field: 'where', kind: 'too_many_items', limit: 10, actual: 11 }] }, 400)
+      }
+      st.estimateBodies.push(JSON.parse(req.postData())); return json({ estimate: onboardingEstimate })
+    }
     if (p === '/api/scan' && m === 'POST') {
       const body = JSON.parse(req.postData())
       if (tag === 'desktop' && !replacementAck) {
         assert.equal(body.estimate_ack, onboardingEstimate.ack)
         replacementAck = 'updated-onboarding-ack'
+        if (estimateOnly) await confirmHold
         return json({ error: 'estimate_changed', estimate: { ...onboardingEstimate, ack: replacementAck, total: { min: 0.14, max: 0.28 } } }, 409)
       }
       assert.equal(body.estimate_ack, replacementAck ?? onboardingEstimate.ack)
@@ -126,6 +136,12 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
   if (how === 'cta') await page.getByTestId('ready-cta').click()
   else if (how === 'chip') { query = (await chips.nth(1).innerText()).trim(); await chips.nth(1).click() }
   else { query = 'Accounting firms in Leeds hiring a payroll manager'; await type(box, query); await box.press('Enter') }
+  if (estimateOnly && tag === 'mobile') {
+    await page.getByText(/where: 11 entries, the limit is 10/).waitFor()
+    assert.equal(await page.getByTestId('estimate-confirm').count(), 0)
+    assert.deepEqual(st.scanBodies, [], 'a refused estimate never starts a search')
+    await page.getByTestId('ready-cta').click()
+  }
   await page.getByTestId('estimate-confirm').waitFor()
   assert.deepEqual(st.scanBodies, [], 'cost preview never starts a search')
   assert.deepEqual(st.estimateBodies, [{ query, icp: READ.icp, mode: 'first5' }])
@@ -135,9 +151,25 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
     await page.getByTestId('estimate-cancel').click()
     assert.deepEqual(st.scanBodies, [], 'Cancel never starts a search')
     await page.getByTestId('ready-cta').click()
+    if (estimateOnly) {
+      await page.getByTestId('estimate-confirm').waitFor()
+      await page.evaluate(() => {
+        history.pushState(history.state, '', location.href)
+        history.back()
+      })
+      await page.getByTestId('estimate-confirm').waitFor({ state: 'hidden' })
+      assert.deepEqual(st.scanBodies, [], 'Back dismisses an unconfirmed estimate without starting a search')
+      await page.getByTestId('ready-cta').click()
+    }
   }
   await page.getByTestId('estimate-confirm-run').click()
   if (tag === 'desktop') {
+    if (estimateOnly) {
+      await page.getByRole('button', { name: 'Starting...' }).waitFor()
+      assert.equal(await page.getByTestId('estimate-confirm-run').isDisabled(), true, 'no repeat confirmation while the request is in flight')
+      assert.equal(await page.getByTestId('estimate-cancel').isDisabled(), true, 'do not claim an in-flight confirmation can be undone')
+      releaseConfirmation()
+    }
     await page.getByText('$0.14 - $0.28', { exact: true }).waitFor()
     assert.deepEqual(st.scanBodies, [], 'an updated estimate waits for another confirmation')
     await page.getByTestId('estimate-confirm-run').click()
