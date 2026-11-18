@@ -116,3 +116,20 @@ test('a page fetch that never answers cannot stall the adapter: it is cut at the
 test('worst case adapter time is under the 25 s deadline: start budget + per-page limit', () => {
   assert.ok(jobBoardsLimits.budgetMs + jobBoardsLimits.pageMs < 25_000)
 })
+
+
+test('the adapter deadline aborts outstanding requests and records a timeout', async () => {
+  let requestSignal: AbortSignal | undefined
+  const http: SafeGet = (_url, options) => {
+    requestSignal = options?.signal
+    return new Promise(resolve => requestSignal?.addEventListener('abort', () => resolve(null), { once: true }))
+  }
+  const keepAlive = setTimeout(() => {}, 1_000)
+  try {
+    const result = await collectEvidenceReport(sel(['https://jobs.ashbyhq.com/zed']), Q, withHn(http), 50)
+    assert.equal(requestSignal?.aborted, true)
+    assert.deepEqual(result.runs, [{ collector: 'adapter:jobboards', status: 'timeout', evidence: null }])
+  } finally {
+    clearTimeout(keepAlive)
+  }
+})

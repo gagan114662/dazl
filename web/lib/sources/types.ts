@@ -21,7 +21,7 @@ export interface HttpResult { status: number; body: string; truncated?: boolean;
 export const looksLikeHtml = (body: string): boolean => /^\s*(<!doctype html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(body)
 export const statusNote = (status: number): string => status === 401 || status === 403 ? 'auth_or_blocked' : status === 429 ? 'throttled' : 'http_error'
 export const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
-export type SafeGet = (url: string, opts?: { accept?: string; headers?: Record<string, string> }) => Promise<HttpResult | null>
+export type SafeGet = (url: string, opts?: { accept?: string; headers?: Record<string, string>; signal?: AbortSignal }) => Promise<HttpResult | null>
 
 export interface AdapterInput {
   query: string
