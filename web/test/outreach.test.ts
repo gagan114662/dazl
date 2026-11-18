@@ -303,7 +303,8 @@ test('approval freezes lead signal context, preserving secondary signals and tes
   db.prepare("UPDATE leads SET signals='[\"hiring\",\"funding\"]',signal_kind='hiring',source_kind='query' WHERE id=?").run(lead)
   saveSettings(db,'A',{sender_name:'Pat',postal_address:'1 King St W, Toronto ON M5H 1A1'})
   const id=createDraft(db,'A',lead,'Seller'); approve(db,'A',id)
-  const row=db.prepare('SELECT signals_json,signal_kind,source_kind FROM outreach_signal_context WHERE message_id=?').get(id) as any
+  const row=db.prepare('SELECT signals_json,signal_kind,source_kind FROM outreach_signal_context WHERE message_id=?').get(id) as
+    { signals_json: string; signal_kind: string; source_kind: string } | undefined
   assert.deepEqual(row,{signals_json:'["hiring","funding"]',signal_kind:'hiring',source_kind:'query'})
 })
 
