@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
-import { hasConsent, hasWorkerSession, httpWorker, type WorkerFetch } from '../advanced/index.ts'
+import { hasConsent, hasWorkerSession, httpWorker, type WorkerFetch, type WorkerItem } from '../advanced/index.ts'
 import { PLATFORM_SUPPORT } from '../advanced/config.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
@@ -215,7 +215,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
       let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
       out.filtered += fresh.length - qualified.length
-      const graded: ({ title: string; quote: string } & typeof qualified[number] & { buyer_intent: string | null })[] = []
+      const graded: (WorkerItem & { buyer_intent: string | null })[] = []
       for (const it of qualified) {
         let buyer_intent: string | null = null
         if (gradesLeft > 0) {
