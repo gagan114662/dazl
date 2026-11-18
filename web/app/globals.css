@@ -182,11 +182,47 @@ body { font-size: 16px; line-height: 1.5; }
 @media (prefers-reduced-motion: reduce) { .brain-node { animation: brain-in .01s forwards; } }
 .app-ui .onb-card { background: #fff; border: 1px solid rgba(42,10,36,.09); border-radius: 12px; box-shadow: 0 1px 2px rgba(42,10,36,.04), 0 16px 40px -24px rgba(42,10,36,.25); }
 
-/* Marketing homepage: the app's canvas and tokens, 12px white cards, one dark accent. */
-.lp { overflow-x: clip; }
-.lp-h1 { font-size: clamp(2.6rem, 7vw, 4.5rem); font-weight: 700; line-height: 1.02; letter-spacing: -0.04em; color: var(--ink); }
-.lp-h2 { font-size: clamp(1.8rem, 4vw, 2.5rem); font-weight: 700; letter-spacing: -0.03em; }
-.lp-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(44,0,42,.04), 0 12px 32px -22px rgba(44,0,42,.22); }
+/* Public homepage only. Product routes use the shared app theme. */
+.lp {
+  --ink: #2b1826;
+  --ink-2: #63535d;
+  --ink-3: #6d5a66;
+  --line: #ede2e7;
+  --line-2: #d9c8d3;
+  background: #fdfaf8;
+  overflow-x: clip;
+}
+.lp-navbar { border-bottom: 1px solid var(--line); }
+.lp-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: .42rem;
+  min-height: 2.75rem;
+  font-size: 1.55rem;
+  font-weight: 680;
+  letter-spacing: -.075em;
+}
+.lp-wordmark span { color: #9a4863; font-size: 1.15rem; }
+.lp-hero { padding-top: clamp(3.25rem, 8vw, 7rem); padding-bottom: clamp(2.5rem, 5vw, 4.6rem); }
+.lp-h1, .lp-h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; color: var(--ink); }
+.lp-h1 { font-size: clamp(2.65rem, 8vw, 6.5rem); line-height: .99; letter-spacing: -.075em; }
+.lp-h1 em { color: #853b58; font-weight: inherit; }
+.lp-h2 { font-size: clamp(2.15rem, 5vw, 3.6rem); line-height: 1.1; letter-spacing: -.06em; }
+.lp-intro { max-width: 35rem; font-size: clamp(1rem, 2vw, 1.15rem); line-height: 1.65; }
+.lp .btn-primary, .lp .btn-ghost, .lp .btn-lg { border-radius: 999px; }
+.lp .btn-ghost { background: #fffaf8; border-color: var(--line-2); }
+.lp .btn-ghost:hover { background: #f5eaf0; }
+.lp-demo-section { max-width: 69rem; padding: 0 clamp(.9rem, 4vw, 2rem) 2rem; }
+.lp-demo-frame {
+  background: radial-gradient(ellipse at 50% 0%, #f3e3ec, #f8f1ed 63%);
+  border: 1px solid #efe0e8;
+  border-radius: clamp(1rem, 3vw, 2rem);
+  padding: clamp(.8rem, 4vw, 3rem);
+}
+.lp-demo-frame .lp-demo { max-width: 47rem; margin-inline: auto; }
+.lp-card { background: #fffefd; border: 1px solid var(--line); border-radius: 15px; box-shadow: 0 12px 28px -25px #57263f80; }
+.lp-step { border-top: 1px solid #d2b5c5; }
+.lp-pro { background: #f7edf3; border-color: #ead7e3; }
 .lp-url { font-size: 1.05rem; padding: .7rem .95rem; border: 1px solid var(--line-2); border-radius: 10px; min-height: 2.9rem; display: flex; align-items: center; }
 .lp-caret { display: inline-block; width: 2px; height: 1.15em; margin-left: 2px; background: var(--ink); animation: lp-blink 1s steps(1) infinite; }
 @keyframes lp-blink { 50% { opacity: 0; } }
