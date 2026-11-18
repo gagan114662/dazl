@@ -42,9 +42,9 @@ test('supported fixture is gated, idempotent, never confirms human evidence or a
   let network=0
   // The fixture tenant is the env-designated test tenant: its sends may address only the approved
   // test inbox, so the shared recipient gate refuses this synthetic-prospect draft first
-  // (personal_email). Evidence-withdrawal send refusal for ordinary tenants is covered in
+  // (test_tenant_recipient). Evidence-withdrawal send refusal for ordinary tenants is covered in
   // outreach.test.ts.
-  await assert.rejects(sendMessage(db,tenant,f.messageId!,{fetchImpl:(async()=>{network++;throw new Error('no network')}) as typeof fetch}),/personal_email/)
+  await assert.rejects(sendMessage(db,tenant,f.messageId!,{fetchImpl:(async()=>{network++;throw new Error('no network')}) as typeof fetch}),/test_tenant_recipient/)
   assert.equal(network,0)
   db.close()
 })
