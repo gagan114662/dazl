@@ -1,8 +1,8 @@
-// Production smoke check of the credential-form fallback with JavaScript DISABLED (the pre-hydration path):
+// Production-build smoke check of credential forms, including the unhydrated and hydrated sign-up paths.
 // a React onSubmit-only <form> without a method attribute natively submits GET, putting every field - passwords
 // included - into the URL query (server logs, browser history, proxy logs). Observed live on sign-up and sign-in.
-// With method="post" (refs #516) the native fallback is a harmless POST that 405s: no values in the URL, no echo,
-// no account mutation. Run:  cd web && npm run build && npm run test:smoke:authforms
+// With method="post" (refs #516), no credentials go in the URL. Native sign-in does not mutate the account;
+// native sign-up still creates an account (#1116). Run: cd web && npm run build && npm run test:smoke:authforms
 // Isolation as harness.mjs: throwaway database, server under the test network fence, off-host browser requests aborted.
 import { loadPlaywright, root, startServer } from './harness.mjs'
 import { createRequire } from 'node:module'
@@ -32,6 +32,7 @@ const CASES = [
 const srv = await startServer()
 const { base } = srv
 const failures = []
+const expectedSignups = [FIX.email]
 let browser
 try {
   browser = await chromium.launch()
@@ -95,6 +96,7 @@ try {
     await p2.waitForLoadState('domcontentloaded')
     const hydrated = await p2.evaluate(() => Object.keys(document.querySelector('form')).some(k => k.startsWith('__reactProps')))
     const email = `smoke-nohydrate-${width}@invalid.test`
+    expectedSignups.push(email)
     await p2.fill('input[name=name]', FIX.name); await p2.fill('input[name=email]', email); await p2.fill('input[name=password]', FIX.password)
     await Promise.all([p2.waitForURL(u => u.search === '?sent=1' || u.pathname.startsWith('/app'), { timeout: 15000 }).catch(() => {}), p2.click('button[type=submit]')])
     const landed = new URL(p2.url()), text = (await p2.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ')
@@ -104,30 +106,38 @@ try {
     if (process.env.SHOTS) await p2.screenshot({ path: `${process.env.SHOTS}/signup-no-hydration-${width}.png` })
     await c2.close()
   }
-  // With its script, the form still posts JSON and shows the same screen (the scripted path is unchanged).
-  {
-    const c3 = await browser.newContext({ viewport: { width: 1280, height: 844 } })
+  // #1116: with its script, a fresh visitor on desktop or a phone taps the form, posts JSON, and signs up.
+  for (const width of [1280, 390]) {
+    const mobile = width === 390
+    const email = `smoke-hydrated-${width}@invalid.test`
+    expectedSignups.push(email)
+    const c3 = await browser.newContext({ viewport: { width, height: 844 }, isMobile: mobile, hasTouch: mobile })
     await c3.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort())
     const p3 = await c3.newPage(); const types = []
     p3.on('request', r => { if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/auth/signup') types.push(r.headers()['content-type'] ?? '') })
     await p3.goto(base + '/sign-up', { waitUntil: 'networkidle' })
     await p3.waitForFunction(() => Object.keys(document.querySelector('form')).some(k => k.startsWith('__reactProps')), null, { timeout: 15000 })
-    await p3.fill('input[name=name]', FIX.name); await p3.fill('input[name=email]', 'smoke-hydrated@invalid.test'); await p3.fill('input[name=password]', FIX.password)
-    await p3.click('button[type=submit]')
+    await p3.fill('input[name=name]', FIX.name); await p3.fill('input[name=email]', email); await p3.fill('input[name=password]', FIX.password)
+    const submit = p3.locator('button[type=submit]')
+    if (mobile) {
+      if (await p3.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) failures.push('/sign-up overflows the mobile viewport')
+      await submit.tap()
+    } else await submit.click()
     await p3.waitForFunction(() => /Check your email/.test(document.body.innerText) || location.pathname.startsWith('/app'), null, { timeout: 15000 }).catch(() => {})
     const ok = types.length === 1 && types[0].includes('application/json') && (/Check your email/.test(await p3.locator('body').innerText()) || new URL(p3.url()).pathname.startsWith('/app'))
-    console.log(`${ok ? 'ok  ' : 'FAIL'} hydrated form posts JSON (${types.join(',')}) and finishes`)
-    if (!ok) failures.push('the hydrated sign-up form no longer posts JSON and finishes')
+    console.log(`${ok ? 'ok  ' : 'FAIL'} hydrated form at ${width}px posts JSON (${types.join(',')}) and finishes`)
+    if (!ok) failures.push(`the hydrated sign-up form did not post JSON exactly once and finish at ${width}px`)
     await c3.close()
   }
   const Database = require('better-sqlite3')
   const db = new Database(srv.dbPath, { readonly: true })
   const n = db.prepare('SELECT COUNT(*) AS c FROM users').get().c
-  const made = db.prepare('SELECT COUNT(*) AS c FROM users WHERE email = ?').get(FIX.email).c
+  const countByEmail = db.prepare('SELECT COUNT(*) AS c FROM users WHERE email = ?')
+  const wrongCount = expectedSignups.filter(email => countByEmail.get(email).c !== 1)
   db.close()
-  // the seeded user plus the one account the script-less sign-up made; the sign-in submit changed nothing
-  if (n !== 5 || made !== 1) failures.push(`expected the seeded user plus four sign-ups (no script, scripts failed at 2 widths, hydrated), one per address (${n} rows, ${made} for the no-script address)`)
-  console.log(`${n === 5 && made === 1 ? 'ok  ' : 'FAIL'} each sign-up made exactly one account (${n} users)`)
+  const accountsOk = n === expectedSignups.length + 1 && wrongCount.length === 0 // one seeded user
+  if (!accountsOk) failures.push(`expected the seeded user plus exactly one account per sign-up (${n} rows, wrong counts: ${wrongCount.join(', ') || 'none'})`)
+  console.log(`${accountsOk ? 'ok  ' : 'FAIL'} each sign-up made exactly one account (${n} users)`)
 } finally {
   await browser?.close()
   srv.stop()
