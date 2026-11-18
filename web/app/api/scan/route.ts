@@ -191,7 +191,7 @@ export async function POST(req: NextRequest) {
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
       if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))
       // Kept with the job so the finished scan can show actual against what was confirmed.
-      if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack }), jid)
+      if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, trial_scan_cap_usd: est.estimate.trial_scan_cap_usd, ack: est.estimate.ack }), jid)
       if (funded === 'trial') {
         db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(jid)
         recordTrialScan(db, user.tenantId, jid, ip)
