@@ -15,7 +15,7 @@ import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 export { salesHiringRequired, salesGateOr }
-import { norm, boardNamesCompany, companyKey } from './evidence.ts'
+import { norm, boardNamesCompany, companyKey, type Candidate } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding, signalsNotRequired, notRequiredLine } from '../search/page-class.ts'
@@ -209,7 +209,7 @@ export const affirmativeSalesHiring = (text: string | null, company?: string | n
 export const quoteNamesSalesHiring = (excerpt: string | null, signal: string | null, company?: string | null): boolean => { void signal; return affirmativeSalesHiring(excerpt, company) } // the VERIFIED quote only: the model's claim is not evidence
 
 const whereOf = (icp: string | null | undefined): string[] => { try { const j = icp ? JSON.parse(icp) as { where?: unknown } : null; return Array.isArray(j?.where) ? j!.where.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [] } catch { return [] } }
-export interface QuoteEvidence { url: string; excerpt: string; date: string | null }
+export interface QuoteEvidence { url: string; excerpt: string; date: string | null; dateProof?: Candidate['event_date_proof'] }
 const labelOf = (host: string) => { const l = host.replace(/^www\./, '').split('.'); return (l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l[l.length - 3] : l[l.length - 2] ?? '').replace(/[^a-z0-9]/g, '') }
 const registrable = (host: string) => { const l = host.replace(/^www\./, '').split('.'); return l.length >= 3 && /^(?:co|com|org|ac)$/.test(l[l.length - 2]) ? l.slice(-3).join('.') : l.slice(-2).join('.') }
 // Evidence from ANOTHER candidate that shares only the lead's NAME is usable only when it is identity-compatible: a third-party page (news, a directory) can be
@@ -356,7 +356,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const posting = others.find(q => {
           const ref = atsPostingRef(q.url), pk = postingKey(q.url), title = pk ? opts.postingTitles?.get(pk) : null
           const t = q.date ? Date.parse(q.date) : NaN
-          return !!ref && boardNamesCompany({ company: null, slug: ref.org }, companyKey(l.company)) && !!title && !!titleIsRole(title, roles) && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
+          return q.dateProof === 'ats_structured' && !!ref && boardNamesCompany({ company: null, slug: ref.org }, companyKey(l.company)) && !!title && !!titleIsRole(title, roles) && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
         })
         if (posting) {
           const title = opts.postingTitles!.get(postingKey(posting.url)!)!
