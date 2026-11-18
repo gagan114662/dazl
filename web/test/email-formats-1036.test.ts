@@ -65,6 +65,36 @@ test('#1036 learned-format click checks only its buyer, reserves once, and a sec
   s.db.close()
 })
 
+test('#1036 concurrent clicks for the same guessed address share the pending check without another provider call', async () => {
+  const s = seed(); twoConfirmed(s.db)
+  const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '2', EMAIL_VERIFY_MONTHLY_CAP: '2' }
+  let entered!: () => void, release!: () => void, calls = 0
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const fetchImpl = (async () => {
+    if (++calls === 1) { entered(); await hold }
+    return new Response(JSON.stringify({ status: 'valid', sub_status: '' }))
+  }) as typeof fetch
+  const lookup = () => findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+  const first = lookup()
+  try {
+    await Promise.race([started, first.then(() => { throw new Error('first lookup finished before entering the verifier') })])
+    const replay = await lookup()
+    assert.equal(replay.guess?.state, 'uncertain', 'the pending check is not verified yet')
+    assert.equal(replay.guess?.label, 'guessed, unverified')
+    assert.equal(calls, 1, 'deduplicated even with enough budget for a second call')
+    release()
+    assert.equal((await first).guess?.label, 'guessed, verified')
+    assert.equal((await lookup()).guess?.label, 'guessed, verified')
+    assert.equal(calls, 1)
+    assert.deepEqual((await mailboxCheckUsage(sqliteDb(s.db), 'A', env, NOW)).day, { used: 1, cap: 2, remaining: 1 })
+  } finally {
+    release()
+    await first.catch(() => {})
+    s.db.close()
+  }
+})
+
 for (const [status, shown] of [['catch-all', 'guessed, unverified'], ['invalid', undefined], ['do_not_mail', undefined]] as const) {
   test(`#1036 learned-format click: verifier ${status} never shows a checked or sendable guess`, async () => {
     const s = seed(); twoConfirmed(s.db)
