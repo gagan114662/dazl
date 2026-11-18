@@ -15,7 +15,7 @@ import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { releaseHeld } from './held-state.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 export { salesHiringRequired, salesGateOr }
-import { norm } from './evidence.ts'
+import { norm, boardNamesCompany, companyKey } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
 import { needsEventBeyondHiring, showsEventBeyondHiring, mentionsFunding, signalsNotRequired, notRequiredLine } from '../search/page-class.ts'
@@ -346,6 +346,23 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const ad = !title && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000 ? jobAdQuoteRole(l.evidence_excerpt, l.company, roles) : null
         if (ad) {
           setWhy.run((`Hiring for ${ad.term}: named in its own job ad${l.event_date ? `, dated ${l.event_date.slice(0, 10)}` : ''}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
+          passed++; passedIds.push(l.id); continue
+        }
+      }
+      // #1121: company dedup can retain a funding article instead of its verified job posting. The
+      // other posting still proves the requested vacancy, but only with its own date and the board
+      // title the verifier read (never a role merely mentioned in a different vacancy body).
+      if (roles.length && !or) {
+        const posting = others.find(q => {
+          const ref = atsPostingRef(q.url), pk = postingKey(q.url), title = pk ? opts.postingTitles?.get(pk) : null
+          const t = q.date ? Date.parse(q.date) : NaN
+          return !!ref && boardNamesCompany({ company: null, slug: ref.org }, companyKey(l.company)) && !!title && !!titleIsRole(title, roles) && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
+        })
+        if (posting) {
+          const title = opts.postingTitles!.get(postingKey(posting.url)!)!
+          const role = titleIsRole(title, roles)!
+          addEnrichment(db, job.user_id, l.id, { connector: 'scan:verified-posting', kind: 'hiring', value: `Open role on its job board: ${title} - posted ${posting.date}`.slice(0, 254), label: `Requested role: ${role.term}; ${posting.excerpt}`.slice(0, 200), confidence: 60, source_url: posting.url, source_date: posting.date!, retrieved_at: now })
+          setWhy.run((`Hiring for ${role.term}: ${title} in its verified job posting, dated ${posting.date}. This may relate to your offer; buying need is not verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
           passed++; passedIds.push(l.id); continue
         }
       }
