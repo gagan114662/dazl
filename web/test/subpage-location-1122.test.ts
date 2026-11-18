@@ -111,3 +111,26 @@ test('#1122 a first-party statement names the remote company’s home base', asy
   assert.equal(result.proof?.source_url, 'https://tapmango.com/about-us')
   assert.match(result.proof?.label ?? '', /Toronto home base/)
 })
+
+test('#1122 a company footer confirms a separately listed Toronto office beside US offices', async () => {
+  const home = html(`<h1>Trevant</h1>${PROSE}<footer><p>Corporate HQ</p><p>Kansas City</p><p>5440 West 110th Street, Overland Park, KS 66211</p><p>New York</p><p>300 Vesey St, New York, NY 10282</p><p>Toronto</p><p>320 Bay St. Toronto, Ontario, M5H 4A6</p></footer>`)
+  const result = await crawl({ 'trevant.com': { '/': home } }, 'Trevant', 'trevant.com')
+  assert.equal(result.domain, 'trevant.com')
+  assert.match(result.proof?.label ?? '', /320 Bay St.*Toronto/)
+})
+
+test('#1122 a homepage/footer customer address cannot establish the company’s Toronto location', async () => {
+  const home = html(`<h1>Trevant</h1><p>Our headquarters are in Kansas City, KS 66211.</p><footer><h2>Customer story</h2><p>Maple Bakery</p><p>320 Bay St. Toronto, Ontario, M5H 4A6</p></footer>`)
+  const result = await crawl({ 'trevant.com': { '/': home } }, 'Trevant', 'trevant.com')
+  assert.equal(result.domain, null)
+})
+
+test('#1122 company careers can confirm a market separately from an out-of-market HQ', async () => {
+  const home = html(`<h1>Levitate</h1><p>Our headquarters are in Raleigh, NC 27601.</p><a href="/careers">Careers</a>`)
+  const careers = (employer: string) => html(`<h1>Careers at Levitate</h1><h3>Raleigh, NC</h3><a href="https://job-boards.greenhouse.io/levitate/jobs/7777777">Accounts</a><h3>Toronto, ON</h3><a href="https://job-boards.greenhouse.io/${employer}/jobs/5209244008">Sales Development Representative</a>`)
+  const result = await crawl({ 'levitate.ai': { '/': home, '/careers': careers('levitate') } }, 'Levitate', 'levitate.ai')
+  assert.equal(result.domain, 'levitate.ai')
+  assert.equal(result.proof?.source_url, 'https://levitate.ai/careers')
+  const wrongEmployer = await crawl({ 'levitate.ai': { '/': home, '/careers': careers('differentcompany') } }, 'Levitate', 'levitate.ai')
+  assert.equal(wrongEmployer.domain, null)
+})

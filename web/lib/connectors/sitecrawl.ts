@@ -19,6 +19,7 @@ import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type Addr
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -644,7 +645,7 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 })
 const lastHit = new Map<string, number>()
 
-type LocationPage = { url: string; statements: string[]; offices: { heading: string; address: string; ownSection: boolean }[] }
+type LocationPage = { url: string; statements: string[]; offices: { heading: string; address: string; ownSection: boolean }[]; footerOffices: { heading: string; address: string }[]; hiringMarkets: { heading: string; employer: string }[] }
 type LocationProof = { url: string; excerpt: string }
 
 function subpageLocationFacts(url: string, body: string): LocationPage {
@@ -653,8 +654,11 @@ function subpageLocationFacts(url: string, body: string): LocationPage {
   const statements = [...visibleMarkup.matchAll(/<(p|address)\b[^>]*>([\s\S]{1,800}?)<\/\1\s*>/gi)]
     .map(m => plainText(m[2], 300)).filter(Boolean)
   const offices: LocationPage['offices'] = []
+  const footerOffices: LocationPage['footerOffices'] = []
+  const hiringMarkets: LocationPage['hiringMarkets'] = []
   const locationPath = /\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname)
-  if (locationPath) {
+  const careerPath = /\/(?:careers?|jobs)(?:\/|$)/i.test(new URL(url).pathname)
+  if (locationPath || careerPath) {
     const headings = [...visibleMarkup.matchAll(/<h([1-6])\b[^>]*>([\s\S]{1,500}?)<\/h\1\s*>/gi)]
     let ownSectionLevel = 0
     for (const [index, heading] of headings.entries()) {
@@ -664,11 +668,33 @@ function subpageLocationFacts(url: string, body: string): LocationPage {
       if (/^we are (?:conveniently )?located (?:in|at|on)\b/i.test(title)) statements.push(title)
       if (/^(?:where we are|our (?:offices|locations))$/i.test(title)) ownSectionLevel = level
       const start = heading.index + heading[0].length
-      const address = plainText(visibleMarkup.slice(start, Math.min(headings[index + 1]?.index ?? visibleMarkup.length, start + 2500)), 200)
-      if (address) offices.push({ heading: title, address, ownSection: ownSectionLevel > 0 })
+      const block = visibleMarkup.slice(start, Math.min(headings[index + 1]?.index ?? visibleMarkup.length, start + 2500))
+      const address = plainText(block, 200)
+      if (locationPath && address) offices.push({ heading: title, address, ownSection: ownSectionLevel > 0 })
+      if (careerPath && /^[\p{L} .’'-]+,\s*[\p{L} .’'-]+$/u.test(title)) {
+        for (const link of block.matchAll(/<a\b[^<>]*\bhref\s*=\s*["'](https:\/\/[^"']+)["']/gi)) {
+          const employer = atsPostingRef(link[1])?.org
+          if (employer) hiringMarkets.push({ heading: title, employer })
+        }
+      }
     }
   }
-  return { url, statements, offices }
+  if (new URL(url).pathname === '/') {
+    // A company footer may list each office as adjacent city and postal-address blocks.
+    const footer = /<footer\b[^<>]*>/i.exec(visibleMarkup)
+    if (footer) {
+      const start = footer.index + footer[0].length
+      const end = visibleMarkup.toLowerCase().indexOf('</footer', start)
+      const body = end < 0 ? '' : visibleMarkup.slice(start, Math.min(end, start + 50_000))
+      const blocks = [...body.matchAll(/<(p|h[1-6]|address)\b[^<>]*>([\s\S]{1,800}?)<\/\1\s*>/gi)].map(m => plainText(m[2], 200))
+      const officeStart = blocks.findIndex(block => /^(?:corporate hq|head office|our offices|our locations)$/i.test(block))
+      if (officeStart >= 0) for (let i = officeStart + 1; i + 1 < blocks.length; i++) {
+        if (FOREIGN_SUBJECT.test(blocks[i])) break
+        if (POSTAL_ADDRESS.test(blocks[i + 1]) && streetKeys(blocks[i + 1]).length) footerOffices.push({ heading: blocks[i], address: blocks[i + 1] })
+      }
+    }
+  }
+  return { url, statements, offices, footerOffices, hiringMarkets }
 }
 
 const OFFICE_CLAIM = /^(?:is |are )?(?:(?:headquartered|based|located) (?:in|at)|(?:office|headquarters)\s*[:,-])\s+/i
@@ -677,13 +703,18 @@ const HOME_BASE_CLAIM = /^we (?:are|work) remote-first with (?:a|our) ([\p{L} ,.
 const FOREIGN_SUBJECT = /\b(?:customer|client|partner|testimonial|service area)\b/i
 const POSTAL_ADDRESS = /\b(?:[A-Z]\d[A-Z]\s?\d[A-Z]\d|[A-Z]{2}\s+\d{5}(?:-\d{4})?)\b/i
 
-function subpageLocationProof(pages: LocationPage[], where: string[], company: string): LocationProof | undefined {
+function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean): LocationProof | undefined {
   if (!where.length) return undefined
   const key = norm(company)
   if (key.length < 3 || company.length > 160) return undefined
   const requestedPlaces = new Set(geoTerms(where).map(norm))
   const agrees = (fragment: string) => placeAgreement(fragment, where, company) === 'agrees' && !ownAddressElsewhere(fragment, where)
-  for (const { url, statements, offices } of pages) {
+  for (const { url, statements, offices, footerOffices, hiringMarkets } of pages) {
+    const footer = footerOffices.find(({ heading, address }) => requestedPlaces.has(norm(heading)) && !FOREIGN_SUBJECT.test(address) && agrees(address))
+    if (footer) return { url, excerpt: `${footer.heading}: ${footer.address}` }
+    const market = hiringMarkets.find(({ heading, employer }) => norm(employer) === key && agrees(heading))
+    if (market) return { url, excerpt: `employer's own hiring page lists ${market.heading}` }
+    if (alternateOfficeOnly || new URL(url).pathname === '/') continue
     for (const paragraph of statements) {
       for (const sentence of paragraph.split(/(?<=[.!?])\s+/)) {
         if (FOREIGN_SUBJECT.test(sentence)) continue
@@ -778,7 +809,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
     const found = new Map<string, Found>(); let pages = 1
-    const locationPages: LocationPage[] = []
+    const locationPages: LocationPage[] = [subpageLocationFacts(home.finalUrl, home.body)]
     onPage?.(home.body, home.finalUrl, home.status)
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
     for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
@@ -1276,8 +1307,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const guessed = basis === 'name_probe'
         const vHome = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
         const homeLocationOk = guessed ? probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places }) : placeConsistent(r.homeNorm, places)
-        locationProof = !unread(r) && basis !== 'evidence_own_domain' && !homeLocationOk && vHome === 'unconfirmed' && !firstPlaceLabel(r.homeText ?? '')
-          ? subpageLocationProof(r.locationPages ?? [], where, l.company)
+        const homeElsewhere = !!r.homeText && ownAddressElsewhere(r.homeText, where)
+        locationProof = !unread(r) && basis !== 'evidence_own_domain' && (!homeLocationOk || vHome === 'mismatch' || homeElsewhere)
+          ? siteLocationProof(r.locationPages ?? [], where, l.company, vHome !== 'unconfirmed' || !!firstPlaceLabel(r.homeText ?? ''))
           : undefined
         if (!unread(r) && !homeLocationOk && !locationProof && ((guessed && !recordNoGeo) || (!guessed && basis !== 'evidence_own_domain' && places.length > 0))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
@@ -1299,7 +1331,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
         if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
           const v = locationProof ? 'agrees' : vHome
-          if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
+          if (v === 'mismatch' || (!locationProof && homeElsewhere) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
             if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: (`contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
@@ -1336,7 +1368,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const proofPage = locationProof && db.prepare('SELECT fetched_at FROM crawl_pages WHERE tenant_id = ? AND scan_job_id = ? AND site = ? AND url = ?')
           .get(tenantId, jobId, site, locationProof.url) as { fetched_at: number } | undefined
         const checkedAt = proofPage?.fetched_at ?? Math.floor((deps.now ?? Date.now()) / 1000)
-        const proofLabel = locationProof ? `identity-check-v2: first-party office evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
+        const proofLabel = locationProof ? `identity-check-v2: first-party location evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
         addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: proofLabel.slice(0, 200), confidence: null, source_url: locationProof?.url ?? `https://${site}/`, source_date: new Date(checkedAt * 1000).toISOString().slice(0, 10), retrieved_at: checkedAt })
       }
       for (const t of r.tech ?? []) {
