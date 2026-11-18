@@ -55,7 +55,7 @@ export type WorkerOutcome = { items: WorkerItem[]; unsupported: string | null }
 // A supported fetch that failed, with the worker's reason. Each kind is audited as its own status
 // and never as a zero-result search: the platform rejected the session, throttled it, answered in
 // a shape the fetcher cannot read, or the request failed upstream.
-export const WORKER_FAILURES = ['auth_failed', 'throttled', 'schema_error', 'upstream_error'] as const
+export const WORKER_FAILURES = ['auth_failed', 'throttled', 'schema_error', 'upstream_error', 'no_session'] as const
 export type WorkerFailure = { failed: (typeof WORKER_FAILURES)[number] }
 export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session: string }) => Promise<WorkerOutcome | WorkerFailure | null>
 
@@ -63,6 +63,8 @@ export type WorkerFetch = (req: { platform: AdvPlatform; query: string; session:
 // The request carries one tenant's own session and nothing else: no tenant id, no DB access, no other keys.
 export function httpWorker(env: Record<string, string | undefined> = process.env, fetchImpl: typeof fetch = fetch): WorkerFetch {
   return async req => {
+    // Older workers can fall back to an operator cookie when a session is absent or too short.
+    if (req.session.trim().length < 10) return { failed: 'no_session' }
     try {
       const res = await fetchImpl(`${env.ADVANCED_WORKER_URL!.replace(/\/$/, '')}/fetch`, {
         method: 'POST',
@@ -189,10 +191,7 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
       out.push(...items)
       continue
     }
-    // X path 2 (worker): tenant's own session when stored; '' otherwise - the worker falls back to the
-    // throwaway sessions in its env (X_SESSION_COOKIE / REDDIT_SESSION_COOKIE),
-    // which the site owner placed there for the connector fetchers. A worker with
-    // neither answers no_session, which audits as worker_error here.
+    // Session-worker path: use the tenant's own credential. The HTTP transport refuses missing sessions.
     const session = (await readEnabledCredential(db, tenantId, id, deps.master)) || ''
     const r = await worker({ platform: p, query: q.slice(0, 300), session })
     if (r === null) { await skip('worker_error'); continue }
