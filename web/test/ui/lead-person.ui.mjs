@@ -17,6 +17,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { onboardingEstimate } from '../helpers/onboarding-estimate.mjs'
 import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
@@ -89,6 +90,7 @@ async function context(width, height) {
     if (p === '/api/scan/icp-from-url') return json(READ)
     if (p === '/api/settings/profile' && m === 'POST') { st.profile = { ...st.profile, ...JSON.parse(req.postData()) }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
+    if (p === '/api/scan/estimate' && m === 'POST') return json({ estimate: onboardingEstimate })
     if (p === '/api/scan' && m === 'POST') return json({ job_id: J })
     if (p === '/api/scan/status') { st.polls++; const done = st.polls >= 2; return json({ job_id: J, status: done ? 'done' : 'running', lead_count: 4, icp: READ.icp, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'B2B SaaS teams hiring their first SDR', first5: done ? F5 : { ...F5, state: 'finding', finding_more: true, verified: 0, leads: [] } }) }
     if (p === '/api/leads') return json({ job_id: J, status: 'done', hidden_count: 0, leads: [...LEADS, ...HELD] })
@@ -147,6 +149,7 @@ async function firstPlay(width, height, tag) {
   await page.getByRole('button', { name: 'Read my site' }).click()
   await page.getByTestId('ready-step').waitFor({ timeout: 20000 })
   await page.getByTestId('ready-cta').click()
+  await page.getByTestId('estimate-confirm-run').click()
   await page.getByTestId('first-lead-person').first().waitFor({ timeout: 30000 })
   const cards = page.getByTestId('first-lead'); assert.equal(await cards.count(), 4)
   for (const e of EXPECT) {
