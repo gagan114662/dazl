@@ -40,6 +40,13 @@ jobs:
           mkdir -p preview/budget
           SHOTS=preview/budget node test/ui/budget.ui.mjs | tee /tmp/budget-ui.out
           ! grep -q '^SKIP' /tmp/budget-ui.out
+      # #1095: first scan requires a capped estimate and consent (stubbed provider and local DB only).
+      - name: Rendered first-search quote and confirmation
+        run: |
+          set -o pipefail
+          mkdir -p preview/first-search
+          FIRST_ESTIMATE_ONLY=1 SHOTS=preview/first-search node test/ui/one-sentence.ui.mjs | tee /tmp/first-search.out
+          ! grep -q '^NOT RUN' /tmp/first-search.out
       # The #876 compiled-plan view on the Leads review step (stubbed: no network, model or key; screenshots at 1280 and 390 px into preview/plan-view). It must run, not skip.
       - name: Rendered query-plan view check
         run: |
