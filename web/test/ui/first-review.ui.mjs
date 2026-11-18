@@ -20,6 +20,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { onboardingEstimate } from '../helpers/onboarding-estimate.mjs'
 import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
@@ -85,6 +86,7 @@ async function run({ width, height, tag, drafted = [] }) {
     if (p === '/api/scan/icp-from-url') { await new Promise(r => setTimeout(r, 1200)); return json(READ) }
     if (p === '/api/settings/profile' && m === 'POST') { st.profile = { ...st.profile, ...JSON.parse(req.postData()) }; return json({ ok: true }) }
     if (p === '/api/settings/profile') return json(st.profile)
+    if (p === '/api/scan/estimate' && m === 'POST') return json({ estimate: onboardingEstimate })
     if (p === '/api/scan' && m === 'POST') { st.scanBodies.push(JSON.parse(req.postData())); return json({ job_id: J }) }
     if (p === '/api/scan/status') { const s = STEPS(true)[Math.min(st.polls++, 3)]; return json({ job_id: J, ...s }) }
     if (p === '/api/leads') return json({ leads: u.searchParams.get('job_id') === J ? ROWS : [], hidden_count: 0 })
@@ -115,6 +117,7 @@ async function run({ width, height, tag, drafted = [] }) {
   await page.getByRole('button', { name: 'Read my site' }).click()
   await page.getByTestId('ready-step').waitFor({ timeout: 20000 })
   await page.getByTestId('ready-cta').click() // the prefilled sentence: nothing typed
+  await page.getByTestId('estimate-confirm-run').click()
   await page.getByTestId('first-lead').first().waitFor({ timeout: 15000 })
   const toFirstLead = { seconds: (Date.now() - t0) / 1000, typed }
   await page.waitForFunction(() => document.querySelector('[data-testid=ready-cta]')?.textContent === 'Start reaching out', null, { timeout: 15000 })
@@ -181,7 +184,7 @@ async function run({ width, height, tag, drafted = [] }) {
   const drafts = page.getByTestId('review-drafts')
   assert.deepEqual([await drafts.textContent(), await drafts.getAttribute('href')], ['Review your 2 drafts', `/app/outreach?job_id=${J}`])
   // 4. Nothing sent; only these writes.
-  assert.deepEqual(writes, ['POST /api/scan/icp-from-url', 'POST /api/settings/profile', 'POST /api/scan', 'POST /api/outreach', 'POST /api/outreach', 'POST /api/outreach', 'PUT /api/outreach/settings'])
+  assert.deepEqual(writes, ['POST /api/scan/icp-from-url', 'POST /api/settings/profile', 'POST /api/scan/estimate', 'POST /api/scan', 'POST /api/outreach', 'POST /api/outreach', 'POST /api/outreach', 'PUT /api/outreach/settings'])
   assert.equal(await page.getByTestId('onboarding-screen').evaluate(e => e.scrollWidth <= e.clientWidth), true, `no horizontal overflow at ${width}px`)
   await page.waitForTimeout(200); await shot('7-ready-to-send')
   if (process.env.SHOTS) await page.getByTestId('send-setup').screenshot({ path: path.join(process.env.SHOTS, `7-setup-card-${tag}.png`) })
