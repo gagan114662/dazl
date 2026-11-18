@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto'
 import { migrateThreadReplies, setQueries, listQueries, looksLikeQuestion, isRelevantToQuery, refreshReplies, listThreads, dismissThread, draftReply, saveDraft, markDraft } from '../lib/replies/threads.ts'
 import { effectiveStepStatus, sequenceStepsView, migrateSequences } from '../lib/outreach/sequences.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
-import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateSpendPools } from '../lib/llm/spend-pool.ts'
@@ -17,9 +17,10 @@ const FRESH = '2026-10-21'
 const OLD = '2026-09-01'
 const item = (url: string, title: string, date: string | null) => ({ url, title, quote: 'Some quoted thread text long enough to be useful.', date, login_walled: false })
 
-function db() {
+function db(withSessions = true) {
   const d = new Database(':memory:')
   migrateConnectors(d); migrateAdvanced(d); migrateKeys(d); migrateThreadReplies(d); migrateSpendPools(d) // #846/#847: the account caps' store
+  if (withSessions) for (const platform of ['reddit', 'x']) saveCredential(d, 't1', `adv:${platform}`, `${platform}-own-session`, master)
   return d
 }
 
@@ -45,10 +46,10 @@ test('refresh: no consent means no worker calls; disabled means disabled', async
   setQueries(d, 't1', ['outbound tool'])
   let calls = 0
   const worker = async () => { calls++; return { items: [], unsupported: null } }
-  const r1 = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
+  const r1 = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })
   assert.equal(calls, 0)
   assert.equal(r1.platforms.reddit, 'no_consent')
-  const r2 = await refreshReplies(d, 't1', { worker, env: {}, now: NOW })
+  const r2 = await refreshReplies(d, 't1', { worker, master, env: {}, now: NOW })
   assert.equal(r2.platforms.reddit, 'disabled')
   assert.equal(calls, 0)
 })
@@ -64,7 +65,7 @@ test('refresh: keeps only fresh, on-topic question threads, dedupes by url, tena
     item('https://www.reddit.com/r/sales/comments/a4', 'Anyone use a tool for outbound?', null),
     item('https://x.com/founder/status/55', 'Best cold email software for a small team?', FRESH),
   ] })
-  const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
+  const r = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })
   // The X item asks about cold email software - a fresh question, but off-topic for the
   // "outbound tool" query, so the relevance gate filters it instead of presenting it.
   assert.equal(r.added, 1)
@@ -75,7 +76,7 @@ test('refresh: keeps only fresh, on-topic question threads, dedupes by url, tena
   const threads = listThreads(d, 't1')
   assert.equal(threads.length, 1)
   assert.ok(threads.every(t => t.date === FRESH && t.query === 'outbound tool'))
-  const again = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
+  const again = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })
   assert.equal(again.added, 0)
   assert.equal(listThreads(d, 't1').length, 1)
   assert.equal(listThreads(d, 't2').length, 0)
@@ -145,7 +146,7 @@ test('refresh: worker error reported per platform, nothing stored', async () => 
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  const r = await refreshReplies(d, 't1', { worker: async () => null, env: ENV_ON, now: NOW })
+  const r = await refreshReplies(d, 't1', { worker: async () => null, master, env: ENV_ON, now: NOW })
   assert.equal(r.added, 0)
   assert.equal(r.platforms.reddit, 'worker_error')
   const row = d.prepare("SELECT status FROM connector_audit WHERE connector = 'adv:reddit-replies'").get() as { status: string }
@@ -160,7 +161,7 @@ test('refresh: hourly budget is shared with other advanced features', async () =
   const ins = d.prepare("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results) VALUES (?, 't1', 'adv:reddit', 'q', 'ok', 1)")
   for (let i = 0; i < 10; i++) ins.run(`a${i}`)
   let calls = 0
-  const r = await refreshReplies(d, 't1', { worker: async () => { calls++; return { items: [], unsupported: null } }, env: ENV_ON, now: NOW })
+  const r = await refreshReplies(d, 't1', { worker: async () => { calls++; return { items: [], unsupported: null } }, master, env: ENV_ON, now: NOW })
   assert.equal(r.platforms.reddit, 'rate_limited')
   assert.equal(r.platforms.x, 'ok') // x has its own budget
   assert.equal(calls, 1) // only x was fetched; reddit was gated before any worker call
@@ -172,7 +173,7 @@ test('draft: not found, no key, then drafted on the tenant key with edit and mar
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), env: ENV_ON, now: NOW })
+  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), master, env: ENV_ON, now: NOW })
   const thread = listThreads(d, 't1')[0]
 
   assert.deepEqual(await draftReply(d, 't1', 'f'.repeat(24), { sells: '', website: '' }, { master }), { error: 'not_found' })
@@ -223,7 +224,7 @@ test('draft: unreadable stored key returns key_unreadable, never throws a 500', 
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), env: ENV_ON, now: NOW })
+  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a1', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), master, env: ENV_ON, now: NOW })
   const thread = listThreads(d, 't1')[0]
   saveKey(d, 't1', 'anthropic', 'sk-ant...1234', master)
   d.prepare("UPDATE tenant_llm_keys SET ciphertext = 'not-valid-ciphertext' WHERE tenant_id = 't1'").run()
@@ -234,7 +235,7 @@ test('draft: a key the provider rejects (401) returns key_rejected instead of th
   const d = db()
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['outbound tool'])
-  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a2', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), env: ENV_ON, now: NOW })
+  await refreshReplies(d, 't1', { worker: async () => ({ items: [item('https://www.reddit.com/r/sales/comments/a2', 'Anyone use a tool for outbound?', FRESH)], unsupported: null }), master, env: ENV_ON, now: NOW })
   const thread = listThreads(d, 't1')[0]
   saveKey(d, 't1', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   let calls = 0
@@ -242,4 +243,19 @@ test('draft: a key the provider rejects (401) returns key_rejected instead of th
   assert.deepEqual(await draftReply(d, 't1', thread.id, { sells: '', website: '' }, { master, fetchImpl }), { error: 'key_rejected' })
   assert.equal(calls, 1)
   assert.equal((d.prepare('SELECT count(*) c FROM reply_drafts').get() as { c: number }).c, 0)
+})
+
+
+test('#1094 sessionless reply refreshes leave room for a connected session', async () => {
+  const d = db(false)
+  acceptConsent(d, 't1', 'advanced')
+  setQueries(d, 't1', ['outbound tool'])
+  let calls = 0
+  const worker = async () => { calls++; return { items: [], unsupported: null } }
+  const deps = { worker, master, now: NOW, env: { ...ENV_ON, ADVANCED_MAX_PER_HOUR: '1' } }
+  for (let i = 0; i < 3; i++) assert.equal((await refreshReplies(d, 't1', deps)).platforms.reddit, 'no_session')
+  assert.equal(calls, 0)
+  saveCredential(d, 't1', 'adv:reddit', 'reddit-own-session', master)
+  assert.equal((await refreshReplies(d, 't1', deps)).platforms.reddit, 'ok')
+  assert.equal(calls, 1)
 })
