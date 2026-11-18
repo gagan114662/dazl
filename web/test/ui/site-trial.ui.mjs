@@ -148,6 +148,15 @@ try {
       assert.ok(!(await page.getByTestId('first-play').first().isDisabled()), 'a saved key re-enables the suggestion chips')
       await ctx.close()
     }
+    {
+      const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED }, { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 3, cap: 3, blocked: 'google_required' } })
+      await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
+      assert.match(await page.getByTestId('ready-plan').innerText(), /Link Google for your free searches/)
+      assert.match(await page.getByTestId('trial-refusal').innerText(), /Free scans need a Google account/)
+      assert.equal(await page.getByTestId('ready-cta').count(), 0)
+      assert.ok(!writes.includes('POST /api/scan'), 'linking guidance does not start a scan')
+      await ctx.close()
+    }
     // If /api/usage fails, the pool is unknown: no start path renders or fires (the CTA must not race a keyless submit).
     {
       const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED }, 'fail')
