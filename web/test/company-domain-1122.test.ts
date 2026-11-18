@@ -321,7 +321,7 @@ test('#1122 the REAL qsdc.ca pages (saved from the production box and from anoth
   const MAX = 800_000
   // what the crawl's fetch returns for a page: the body capped at 800 KB and, for a larger page, its whole visible text (rawGet at this head)
   const served = (html: string, withText: boolean) => (html.length > MAX && withText ? { body: html.slice(0, MAX), text: sc.plainText(html) } : { body: html.slice(0, MAX) })
-  for (const [variant, homeFile, withText, expected] of [['box', 'home-box.html.gz', true, 'qsdc.ca'], ['edge', 'home-edge.html.gz', true, 'qsdc.ca'], ['edge, stored body only (as on 576f9c8c)', 'home-edge.html.gz', false, null]] as [string, string, boolean, string | null][]) {
+  for (const [variant, homeFile, withText, expected] of [['box', 'home-box.html.gz', true, 'qsdc.ca'], ['edge', 'home-edge.html.gz', true, 'qsdc.ca'], ['edge, stored body only (as on 576f9c8c; since #1122 F1 the site\'s own contact page confirms Toronto)', 'home-edge.html.gz', false, 'qsdc.ca']] as [string, string, boolean, string | null][]) {
     const home = served(page(homeFile), withText), contact = served(page('contact-box.html.gz'), withText), robots = readFileSync(fx('robots.txt'), 'utf8')
     const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
     const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
