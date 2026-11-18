@@ -4,7 +4,7 @@ import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendin
 import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
 import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
-import { knownErrorCopy } from '@/lib/error-copy'
+import { knownErrorCopy, lossyProfileCopy } from '@/lib/error-copy'
 import InfoTip from './ui/info-tip'
 import { Icon } from './ui/icons'
 import { Avatar, Pill, Stepper } from './ui/bits'
@@ -67,6 +67,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [busy, setBusy] = useState(false)
   const [pendingEstimate, setPendingEstimate] = useState<{ est: RunEstimate; body: string; query: string; stay: boolean } | null>(null)
   const scanRequestInFlight = useRef(false)
+  const quoteEpoch = useRef(0)
   // The source-backed research block from the website read (#379): carried untouched through the reviewed profile
   // into the scan, so the play keeps its provenance and per-offer corrections.
   const [research, setResearch] = useState<unknown>(null)
@@ -105,7 +106,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   }
   // #1325 F1: the Google-return note is for one return, as on Leads: history movement (back/forward) drops it.
   useEffect(() => {
-    const drop = () => setLinkNote(null)
+    const drop = () => {
+      setLinkNote(null)
+      quoteEpoch.current++ // discard a pending preview after browser Back/Forward
+      if (!scanRequestInFlight.current) setPendingEstimate(null)
+    }
     window.addEventListener('popstate', drop)
     return () => window.removeEventListener('popstate', drop)
   }, [])
@@ -258,14 +263,22 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     if (busy || pendingEstimate || scanRequestInFlight.current || query.length < 3) return
     scanRequestInFlight.current = true
     setError(''); setTrialRefused(null); setLinkNote(null); setBusy(true)
+    const epoch = quoteEpoch.current
     const body = JSON.stringify({ query, icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(stay ? { mode: 'first5' } : {}) })
     try {
       const r = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const j = await r.json().catch(() => ({}))
-      if (!r.ok || !j.estimate?.ack) { setError('Could not get a price estimate, so nothing was started. Try again.'); return }
+      if (epoch !== quoteEpoch.current) return
+      if (!r.ok || !j.estimate?.ack) {
+        if (r.status === 400 && j.error === 'profile_lossy') setError(lossyProfileCopy({ loss: j.loss }))
+        else setError(knownErrorCopy(j.error) ?? (r.status === 401 ? 'Sign in again to get a price estimate. No search was started.'
+          : r.status === 429 ? 'Too many price requests. Wait a while and try again. No search was started.'
+          : 'Could not get a price estimate, so nothing was started. Try again.'))
+        return
+      }
       if (!j.estimate.verdict?.ok && j.estimate.verdict?.trial_refusal) { setTrialRefused({ reason: j.estimate.verdict.trial_refusal, query }); return }
       setPendingEstimate({ est: j.estimate as RunEstimate, body, query, stay })
-    } catch { setError('Could not reach the server. No search started. Try again.') }
+    } catch { if (epoch === quoteEpoch.current) setError('Could not reach the server. No search started. Try again.') }
     finally { scanRequestInFlight.current = false; setBusy(false) }
   }
 
@@ -289,7 +302,11 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // #1095: never the raw code; the reason in words and the way forward (Link Google for a password account)
       if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
-      setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
+      if (r.status === 400 && j.error === 'profile_lossy') { setError(lossyProfileCopy({ loss: j.loss })); return }
+      setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.`
+        : r.status === 401 ? 'Sign in again to start a search.'
+        : r.status === 429 ? 'Too many search requests. Wait a while and try again.'
+        : 'Could not start the search. Try again.'))
     } catch { setPendingEstimate(null); setError('Could not confirm whether the search started. Check your leads before trying again.') }
     finally { scanRequestInFlight.current = false; setBusy(false) }
   }
@@ -299,7 +316,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       <div className="mx-auto w-full max-w-2xl">
         <p className="text-sm font-medium break-words" data-testid="first-run-estimate-query">{pendingEstimate.query}</p>
         {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
-        <EstimateConfirm est={pendingEstimate.est} busy={busy} query={pendingEstimate.query} onConfirm={() => void confirmStart()} onCancel={() => { if (!scanRequestInFlight.current) setPendingEstimate(null) }} />
+        <EstimateConfirm est={pendingEstimate.est} busy={busy} cancelDisabled={busy} query={pendingEstimate.query} onConfirm={() => void confirmStart()} onCancel={() => { if (!scanRequestInFlight.current) setPendingEstimate(null) }} />
       </div>
     </div>
   )
@@ -387,7 +404,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
               {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
-              {(trialRefused || googleRequired) && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused?.reason ?? 'google_required'} query={trialRefused?.query ?? sentence} step="ready" /></div>}
+              {(trialRefused || googleRequired) && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused ? trialRefused.reason : 'google_required'} query={trialRefused?.query ?? sentence} step="ready" /></div>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
                 <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
                   <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 ? `${trialLeft} free search${trialLeft === 1 ? '' : 'es'} to start` : hasKey ? 'Runs on your own AI key' : googleRequired ? 'Link Google for your free searches' : 'Add your AI key to start'}</h2>
