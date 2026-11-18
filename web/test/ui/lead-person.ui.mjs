@@ -50,11 +50,12 @@ const LEADS = [
 ]
 // Held for review (not cards): the same line on the "Needs your review" rows. Invented rows: a held lead with a stored
 // search:people person, and one with nobody stored.
+const websiteCheck = domain => ({ connector: 'sitecrawl', kind: 'domain_check', value: `${domain}|identity_checked`, label: null, source_url: `https://${domain}/`, source_date: '2026-11-08', confidence: null })
 const HELD = [
-  lead('5'.repeat(24), 'Pagewake', [ppl('search:people', 'Marta Solberg, Regional Sales Director', 'https://www.linkedin.com/in/marta-solberg-test')], { review_reason: 'quote_unconfirmed' }),
-  lead('6'.repeat(24), 'Corvane', [], { review_reason: 'blocked_by_site' }),
+  lead('5'.repeat(24), 'Pagewake', [ppl('search:people', 'Marta Solberg, Regional Sales Director', 'https://www.linkedin.com/in/marta-solberg-test'), websiteCheck('pagewake.example')], { company_domain: 'pagewake.example', review_reason: 'quote_unconfirmed' }),
+  lead('6'.repeat(24), 'Corvane', [], { company_domain: 'corvane.example', review_reason: 'blocked_by_site' }),
   // someone else's customer: the company itself is in doubt, so its row names nobody (no line at all), even with a person stored
-  lead('7'.repeat(24), 'Meshgate', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'counterparty_signal' }),
+  lead('7'.repeat(24), 'Meshgate', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test'), websiteCheck('meshgate.example')], { company_domain: 'meshgate.example', review_reason: 'counterparty_signal' }),
   // no company (a person row, e.g. an imported commenter): no line either
   lead('8'.repeat(24), '', [ppl('search:people', 'Anders Smed, Head of Sales', 'https://www.linkedin.com/in/anders-smed-test')], { review_reason: 'quote_unconfirmed', name: 'Nobody Corp Person' }),
   // held when a free scan ran out of budget (its company may never have been checked): no line, even with a person stored
@@ -115,6 +116,9 @@ async function leadsPage(width, height, tag) {
   assert.doesNotMatch(await cards.filter({ hasText: 'Gramercy Cloud' }).getByTestId('lead-person').innerText(), /Pat Lee/, 'a former title is never the named person')
   // Held rows: each names its person or says none yet, exactly once, with the same link and basis.
   const held = page.getByTestId('review-row'); assert.equal(await held.count(), 7)
+  const websiteLinks = held.getByTestId('review-company-website')
+  assert.equal(await websiteLinks.count(), 1, 'only the checked website of the held company whose identity is not in doubt appears')
+  assert.equal(await websiteLinks.getAttribute('href'), 'https://pagewake.example')
   { const vx = held.filter({ hasText: 'Voxline' }).getByTestId('lead-person'); assert.match((await vx.innerText()).trim(), /^No buyer named: a search found people at a company with this name, but nothing confirms it is this company, so none is shown/, 'a name-only search match is never the row\'s person, and the row says why'); assert.doesNotMatch(await held.filter({ hasText: 'Voxline' }).innerText(), /Evan Other/) }
   assert.equal(await held.filter({ hasText: 'Suds Ledger POS' }).getByTestId('lead-person').count(), 0, 'a budget-held row shows no person line')
   assert.equal(await held.getByTestId('lead-person').count(), 3, 'only the three searchable held company rows carry a line')
