@@ -650,7 +650,7 @@ const lastHit = new Map<string, number>()
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; siteText?: string; siteNorm?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -713,6 +713,9 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
     const found = new Map<string, Found>(); let pages = 1
+    // #1122 F1: first-party pages beyond the homepage (about, leadership, careers, contact) often carry the only place the company names.
+    // Their text is kept so a positive location check can use it; refusals (mismatch, address conflict) still read the homepage only.
+    const subTexts: string[] = []
     onPage?.(home.body, home.finalUrl, home.status)
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
     for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
@@ -724,6 +727,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (!r || r.status >= 400) continue
       pages++
       onPage?.(r.body, r.finalUrl, r.status)
+      if (subTexts.join(' ').length < 60_000) subTexts.push((r.text ?? plainText(r.body)).replace(/\s+/g, ' ').trim().slice(0, 20_000))
       for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
@@ -745,7 +749,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
     const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, siteText: [homeText, ...subTexts].join(' ').slice(0, 90_000), siteNorm: norm([homePlain, ...subTexts].join(' ')), ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -1204,7 +1208,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // 1289-F4: the waiver is for a lead with NO place at all. When the lead's own evidence names a place ("Mercury in Austin, TX"), a same-name
         // public record is not enough: the homepage must still agree with that place, so a Chicago site is refused for an Austin lead.
         const recordNoGeo = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
-        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !(probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places }) || (r.siteText !== undefined && probeLocationAgrees(r.siteText, where, l, { homeNorm: r.siteNorm, places })))) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places) && !placeConsistent(r.siteNorm, places)))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
@@ -1223,7 +1227,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           continue
         }
         if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
-          const v = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
+          const vHome = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
+          // #1122 F1: a homepage that names no conflicting place is confirmed by the company's own about/leadership/careers pages.
+          const v = vHome !== 'agrees' && vHome !== 'mismatch' && r.siteText && placeAgreement(r.siteText, where, l.company) === 'agrees' ? 'agrees' : vHome
           if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
