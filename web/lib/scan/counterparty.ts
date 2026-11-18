@@ -68,6 +68,8 @@ const sentencesOfPage = (t: string): string[] => t
   .replace(/\b([A-Z])\.(?=\s+[A-Z])/g, '$1')
   .split(/(?<=[.!?])\s+|\n+/).map(norm).filter(Boolean)
 function writtenRelationship(company: string, brand: string, title: string, text: string): boolean {
+  // The complete name must fit in a bounded pattern. Truncating it could match another company.
+  if (company.length > 512 || brand.length > 253) return false
   const co = edge(company), br = edge(brand)
   const uses = new RegExp(`${co}[^]{0,80}?(?<![\\p{L}\\p{N}])(?:${USE_VERB})\\s+${WORDS(3)}${br}`
     + `|${co}[^]{0,40}?(?<![\\p{L}\\p{N}])(?:${MOVE_VERB})\\s+${WORDS(5)}(?:to|on|onto|with)\\s+${WORDS(1)}${br}`

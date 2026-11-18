@@ -129,3 +129,7 @@ test('the gaps are bounded: the brand must follow the verb closely, and the verb
 test('known and kept (as on main): a brand that is a common word is not told apart from the brand', () => {
   assert.equal(cp('Acme', 'https://ramp.com/blog/x', 'Ramp news', 'Acme is using the funds to ramp up hiring. Ramp news.'), 'source_owner:ramp')
 })
+
+test('#1237 an oversized company name cannot break counterparty classification', () => {
+  assert.equal(cp('b'.repeat(50_000), 'https://zapier.com/blog/hiring', 'Hiring announcement', 'The company announced new roles.'), null)
+})
