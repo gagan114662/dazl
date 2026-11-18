@@ -1,4 +1,4 @@
-import { US_CITY_RANKS } from './us-city-ranks.ts'
+import { US_CITY_RANKS, US_COUNTY_SHORT_NAMES } from './us-city-ranks.ts'
 import { STATES } from './us-states.ts'
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
@@ -143,15 +143,18 @@ function cityPlaceOf(cityIn: string, region: string): Place | null {
 // Springfield (MO 170,067 / MA 154,064 / IL 113,273) is ambiguous and names no place. Only for a profile that says it is US (country).
 let CITY_RANKS: Map<string, { city: string; abbr: string; pop: number }[]> | null = null
 const rankKey = (s: string) => s.toLowerCase().replace(/\./g, '').replace(/\bsaint\b/g, 'st').replace(/\s+/g, ' ').trim()
+const COUNTY_SHORT_NAMES = new Set(US_COUNTY_SHORT_NAMES.map(rankKey))
 export function bareUsCity(name: string): { city: string; abbr: string } | null {
   const raw = name.trim()
   if (!/^[A-Z][\p{L}.'-]*(?:\s+[A-Z][\p{L}.'-]*){0,3}$/u.test(raw)) return null   // one place name, not a phrase or a list
+  const key = rankKey(raw)
+  if (COUNTY_SHORT_NAMES.has(key)) return null
   if (!CITY_RANKS) {
     CITY_RANKS = new Map()
     for (const row of US_CITY_RANKS) { const [city, abbr, pop] = row.split('|'); const k = rankKey(city); const l = CITY_RANKS.get(k) ?? []; l.push({ city, abbr, pop: Number(pop) }); CITY_RANKS.set(k, l) }
     for (const l of CITY_RANKS.values()) l.sort((a, b) => b.pop - a.pop)
   }
-  const l = CITY_RANKS.get(rankKey(raw)); if (!l?.length) return null
+  const l = CITY_RANKS.get(key); if (!l?.length) return null
   if (l[1] && l[0].pop < 3 * l[1].pop) return null
   return { city: l[0].city, abbr: l[0].abbr }
 }
