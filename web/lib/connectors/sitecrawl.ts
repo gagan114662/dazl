@@ -714,7 +714,8 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
     const found = new Map<string, Found>(); let pages = 1
     // #1122 F1: first-party pages beyond the homepage (about, leadership, careers, contact) often carry the only place the company names.
-    // Their text is kept so a positive location check can use it; refusals (mismatch, address conflict) still read the homepage only.
+    // Their text is kept so a positive location check can use it, but ONLY when the homepage itself names no place (a homepage naming
+    // another city is never overridden by a subpage listing offices); refusals (mismatch, address conflict) still read the homepage only.
     const subTexts: string[] = []
     onPage?.(home.body, home.finalUrl, home.status)
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
@@ -1208,7 +1209,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // 1289-F4: the waiver is for a lead with NO place at all. When the lead's own evidence names a place ("Mercury in Austin, TX"), a same-name
         // public record is not enough: the homepage must still agree with that place, so a Chicago site is refused for an Austin lead.
         const recordNoGeo = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
-        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !(probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places }) || (r.siteText !== undefined && probeLocationAgrees(r.siteText, where, l, { homeNorm: r.siteNorm, places })))) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places) && !placeConsistent(r.siteNorm, places)))) {
+        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !(probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places }) || (r.siteText !== undefined && !firstPlaceLabel(r.homeText ?? '') && probeLocationAgrees(r.siteText, where, l, { homeNorm: r.siteNorm, places })))) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places) && !(r.siteText !== undefined && !firstPlaceLabel(r.homeText ?? '') && placeConsistent(r.siteNorm, places))))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
@@ -1229,7 +1230,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
           const vHome = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
           // #1122 F1: a homepage that names no conflicting place is confirmed by the company's own about/leadership/careers pages.
-          const v = vHome !== 'agrees' && vHome !== 'mismatch' && r.siteText && placeAgreement(r.siteText, where, l.company) === 'agrees' ? 'agrees' : vHome
+          const v = vHome !== 'agrees' && vHome !== 'mismatch' && r.siteText && !firstPlaceLabel(r.homeText ?? '') && placeAgreement(r.siteText, where, l.company) === 'agrees' ? 'agrees' : vHome
           if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
