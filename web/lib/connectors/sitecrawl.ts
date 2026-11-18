@@ -620,16 +620,19 @@ const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
 export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
-const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|careers?|our-practice|meet-the|providers|doctors|staff)/i
+const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
 export function contactPaths(homeHtml: string, home: URL): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
+  const linkedLocations = new Set<string>()
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
-    if (PAGE_HINT.test(u.pathname) && u.pathname.length < 60 && !/\.(pdf|jpg|png|zip)$/i.test(u.pathname) && !u.search) set.add(u.pathname)
+    if (!PAGE_HINT.test(u.pathname) || u.pathname.length >= 60 || /\.(pdf|jpg|png|zip)$/i.test(u.pathname) || u.search) continue
+    set.add(u.pathname)
+    if (/\/(?:locations?|offices?)(?:\/|$)/i.test(u.pathname)) linkedLocations.add(u.pathname)
   }
   for (const extra of ['/locations', '/our-team', '/careers']) set.add(extra) // after the page's own links: same cap, never ahead of them
-  return [...set].slice(0, 8)
+  return [...new Set(['/contact', '/contact-us', ...linkedLocations, ...set])].slice(0, 8)
 }
 
 // Abort-aware sleep: resolves early (to false) when the signal fires, so the
@@ -650,13 +653,15 @@ function subpageLocationFacts(url: string, body: string): LocationPage {
   const statements = [...visibleMarkup.matchAll(/<(p|address)\b[^>]*>([\s\S]{1,800}?)<\/\1\s*>/gi)]
     .map(m => plainText(m[2], 300)).filter(Boolean)
   const offices: LocationPage['offices'] = []
-  if (/\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname)) {
+  const locationPath = /\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname)
+  if (locationPath) {
     const headings = [...visibleMarkup.matchAll(/<h([1-6])\b[^>]*>([\s\S]{1,500}?)<\/h\1\s*>/gi)]
     let ownSectionLevel = 0
     for (const [index, heading] of headings.entries()) {
       const level = Number(heading[1])
       if (ownSectionLevel && level <= ownSectionLevel) ownSectionLevel = 0
-      const title = plainText(heading[2], 100)
+      const title = plainText(heading[2], 300)
+      if (/^we are (?:conveniently )?located (?:in|at|on)\b/i.test(title)) statements.push(title)
       if (/^(?:where we are|our (?:offices|locations))$/i.test(title)) ownSectionLevel = level
       const start = heading.index + heading[0].length
       const address = plainText(visibleMarkup.slice(start, Math.min(headings[index + 1]?.index ?? visibleMarkup.length, start + 2500)), 200)
@@ -667,7 +672,8 @@ function subpageLocationFacts(url: string, body: string): LocationPage {
 }
 
 const OFFICE_CLAIM = /^(?:is |are )?(?:(?:headquartered|based|located) (?:in|at)|(?:office|headquarters)\s*[:,-])\s+/i
-const FIRST_PERSON_OFFICE = /^our (?:[\p{L}-]+ )?(?:office|headquarters) (?:is|are) (?:in|at)\s+/iu
+const FIRST_PERSON_OFFICE = /^(?:our (?:[\p{L}-]+ )?(?:office|headquarters) (?:is|are) (?:in|at)|we are (?:conveniently )?located (?:in|at|on))\s+/iu
+const HOME_BASE_CLAIM = /^we (?:are|work) remote-first with (?:a|our) ([\p{L} ,.'’-]{2,64}) home base[.!]?$/iu
 const FOREIGN_SUBJECT = /\b(?:customer|client|partner|testimonial|service area)\b/i
 const POSTAL_ADDRESS = /\b(?:[A-Z]\d[A-Z]\s?\d[A-Z]\d|[A-Z]{2}\s+\d{5}(?:-\d{4})?)\b/i
 
@@ -684,7 +690,8 @@ function subpageLocationProof(pages: LocationPage[], where: string[], company: s
         const words = sentence.trim().split(/\s+/)
         const matchesCompany = words.slice(0, Math.min(10, words.length)).some((_, index) =>
           norm(words.slice(0, index + 1).join(' ')) === key && OFFICE_CLAIM.test(words.slice(index + 1).join(' ')))
-        if ((matchesCompany || FIRST_PERSON_OFFICE.test(sentence)) && agrees(sentence)) return { url, excerpt: sentence }
+        const homeBase = HOME_BASE_CLAIM.exec(sentence)?.[1]
+        if ((matchesCompany || FIRST_PERSON_OFFICE.test(sentence) || (homeBase && requestedPlaces.has(norm(homeBase)))) && agrees(sentence)) return { url, excerpt: sentence }
       }
     }
     for (const { heading, address, ownSection } of offices) {
@@ -783,7 +790,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (!r || r.status >= 400) continue
       pages++
       onPage?.(r.body, r.finalUrl, r.status)
-      if (new URL(r.finalUrl).hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
+      if (r.finalUrl.length <= 500 && new URL(r.finalUrl).hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
       for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
@@ -1325,10 +1332,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (r.reason === 'ok' || r.reason === 'none_published') {
         const basis = basisOf.get(site) ?? 'name_probe'
         addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (sourceOf.get(site) ?? ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
+        // Preserve the page that supplied positive office evidence and its own fetch time.
+        const proofPage = locationProof && db.prepare('SELECT fetched_at FROM crawl_pages WHERE tenant_id = ? AND scan_job_id = ? AND site = ? AND url = ?')
+          .get(tenantId, jobId, site, locationProof.url) as { fetched_at: number } | undefined
+        const checkedAt = proofPage?.fetched_at ?? Math.floor((deps.now ?? Date.now()) / 1000)
+        const proofLabel = locationProof ? `identity-check-v2: first-party office evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
+        addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: proofLabel.slice(0, 200), confidence: null, source_url: locationProof?.url ?? `https://${site}/`, source_date: new Date(checkedAt * 1000).toISOString().slice(0, 10), retrieved_at: checkedAt })
       }
-      // The identity check passed for this site (name on the homepage, and the place or street agreed or was not contradicted): record it,
-      // so the contact sweep and the score can tell this domain from a legacy name guess that only agrees with itself.
-      if (r.reason === 'ok' || r.reason === 'none_published') addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: (locationProof ? `identity-check-v2: first-party office evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees').slice(0, 200), confidence: null, source_url: (locationProof?.url ?? `https://${site}/`).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
       for (const t of r.tech ?? []) {
         const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++

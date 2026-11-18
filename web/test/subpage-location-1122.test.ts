@@ -28,7 +28,7 @@ async function crawl(sites: Record<string, Record<string, string>>, company = 'T
   }
   await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-11-18T12:00:00Z'), redirectOf: async () => null, findSites: async () => [domain] })
   const lead = db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }
-  const proof = db.prepare("SELECT source_url, label FROM lead_enrichments WHERE lead_id = ? AND kind = 'domain_check'").get('L1') as { source_url: string; label: string } | undefined
+  const proof = db.prepare("SELECT source_url, label, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind = 'domain_check'").get('L1') as { source_url: string; label: string; retrieved_at: number } | undefined
   db.close()
   return { domain: lead.company_domain, proof }
 }
@@ -68,6 +68,7 @@ test('#1122 an explicitly company-bound location retains the exact proof page', 
   assert.equal(result.domain, 'tapmango.com')
   assert.equal(result.proof?.source_url, 'https://tapmango.com/about-us')
   assert.match(result.proof?.label ?? '', /headquartered in Toronto/)
+  assert.equal(result.proof?.retrieved_at, Date.parse('2026-11-18T12:00:00Z') / 1000)
 })
 
 test('#1122 a Toronto office on a first-party contact page survives a separately listed US office', async () => {
@@ -82,7 +83,7 @@ test('#1122 a Toronto office on a first-party contact page survives a separately
 test('#1122 a company-named location entry is evaluated independently of other offices', async () => {
   const home = html('<h1>Burson</h1><a href="/locations">Locations</a>')
   const locations = html('<h1>Locations</h1><h4>Burson Atlanta</h4><p>150 Spring Street, Atlanta, GA 30303</p><h4>Burson Toronto</h4><p>155 Queens Quay E, Toronto, Canada, M5A 0W4</p><h4>Burson Ottawa</h4><p>45 O’Connor, Ottawa, Canada, K1P 1A4</p>')
-  const result = await crawl({ 'bursonglobal.com': { '/': home, '/locations': locations } }, 'Burson', 'bursonglobal.com')
+  const result = await crawl({ 'bursonglobal.com': { '/': home, '/contact': html('Contact us'), '/contact-us': html('Get in touch'), '/about': html('About Burson'), '/team': html('Our team'), '/locations': locations } }, 'Burson', 'bursonglobal.com')
   assert.equal(result.domain, 'bursonglobal.com')
   assert.equal(result.proof?.source_url, 'https://bursonglobal.com/locations')
   assert.match(result.proof?.label ?? '', /Toronto/)
@@ -101,4 +102,12 @@ test('#1122 a quoted first-person claim is not the company’s office', async ()
   const result = await crawl({ 'tapmango.com': { '/': HOME, '/about-us': contact } })
   assert.equal(result.domain, null)
   assert.equal(result.proof, undefined)
+})
+
+test('#1122 a first-party statement names the remote company’s home base', async () => {
+  const location = html('<h1>About TapMango</h1><p>We are remote-first with a Toronto home base. Explore open roles.</p>')
+  const result = await crawl({ 'tapmango.com': { '/': HOME, '/about-us': location } })
+  assert.equal(result.domain, 'tapmango.com')
+  assert.equal(result.proof?.source_url, 'https://tapmango.com/about-us')
+  assert.match(result.proof?.label ?? '', /Toronto home base/)
 })
