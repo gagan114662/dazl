@@ -1,0 +1,25 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { scanOutcome } from '../lib/scan/scan-outcome.ts'
+
+// #1157 line 3: an accounting_uncertain stop says exactly what is uncertain, and on a free scan that the free-scan count was not used
+// (lib/billing/trial-budget.ts releasedBeforeCost gives the attempt back).
+
+test('#1157 AC-1: a free (trial) scan stopped as accounting_uncertain says the free scan was not used up', () => {
+  for (const failed_sources of [undefined, ['search:tinyfish']]) {
+    const o = scanOutcome({ id: 'j', status: 'failed', error: 'accounting_uncertain', funded_by: 'trial', failed_sources } as never)
+    assert.match(o.detail ?? '', /This free scan does not count toward your free scans\./)
+  }
+})
+
+test('#1157 AC-2: an accounting_uncertain stop names exactly what is uncertain', () => {
+  for (const funded_by of ['trial', 'user']) {
+    const o = scanOutcome({ id: 'j', status: 'failed', error: 'accounting_uncertain', funded_by } as never)
+    assert.match(o.detail ?? '', /The only thing dazl cannot tell is whether the provider charged for that one step\./)
+  }
+})
+
+test('#1157 AC-3: a scan on your own AI key makes no free-scan claim', () => {
+  const o = scanOutcome({ id: 'j', status: 'failed', error: 'accounting_uncertain', funded_by: 'user' } as never)
+  assert.doesNotMatch(o.detail ?? '', /free scan/i)
+})
