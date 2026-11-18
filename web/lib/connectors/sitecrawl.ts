@@ -109,7 +109,7 @@ function inflateEitherWay(): Transform {
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
-    let hard: NodeJS.Timeout | undefined
+    let hard: NodeJS.Timeout | undefined = undefined
     const resolve = (v: { status: number; body: string; finalUrl: string; text?: string } | null | Promise<{ status: number; body: string; finalUrl: string; text?: string } | null>) => { clearTimeout(hard); resolveRaw(v as never) }
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
@@ -700,10 +700,9 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       }
     }
     const rob = await polite(`${origin}/robots.txt`, 0)
-    let robots: Robots
     if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
     if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
-    robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
+    const robots: Robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
     if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
     const home = await polite(`${origin}/`, robots.delayMs)
     if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
