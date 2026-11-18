@@ -1,7 +1,7 @@
 // In-process load benchmark for the scan runner and its shared SQLite database.
 //
 // What it measures, on the REAL code path (claim -> runJob -> verify -> finish):
-//   - queue drain throughput for synthetic trial-funded scan jobs
+//   - queue drain throughput for synthetic scans using mock tenant keys
 //   - per-job duration distribution
 //   - event-loop lag while sync better-sqlite3 reads/writes share one Node process
 //   - web-style read latency (status polls + lead lists) before and during the drain
@@ -10,13 +10,13 @@
 // fixed latency; provider rate limits, token costs and real page-fetch variance are
 // outside this harness. See load/README.md before quoting any number from it.
 //
-// Runs fully offline: DAZL_TRIAL_ANTHROPIC_KEY is a dummy string the mock ignores,
-// SITECRAWL is disabled, and fetchImpl is fenced. Run from the repo root:
+// Runs fully offline with mock tenant keys, crawl and news search disabled,
+// and fenced fetch. Run from the repo root:
 //   node --experimental-strip-types load/runner-bench.ts
 //
 // Knobs (env): LOAD_TENANTS=20 LOAD_JOBS_PER_TENANT=2 LOAD_READERS=8
 //   LOAD_PROVIDER_MS=800 LOAD_FETCH_MS=40 LOAD_BASELINE_S=8 LOAD_LEADS_PER_SCAN=5
-//   SCAN_MAX_CONCURRENT=3 LOAD_DB=<path> (default: mktemp file)
+//   SCAN_MAX_CONCURRENT=3 LOAD_DRAIN_TIMEOUT_S=600 LOAD_DB=<path> (default: mktemp file)
 
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -26,6 +26,7 @@ import { createRequire } from 'node:module'
 import { randomBytes } from 'node:crypto'
 
 process.env.SITECRAWL_ENABLED = '0'
+process.env.NEWS_SEARCH_ENABLED = '0'
 delete process.env.TINYFISH_API_KEY // TinyFish path stays disabled even if the shell exports a key
 // Each synthetic tenant gets its own stored (encrypted) key, the BYOK path: the trial path now needs TinyFish and
 // trial caps, which this offline bench never enables. The mock provider ignores the key; it never leaves the process.
@@ -38,6 +39,7 @@ const JOBS_PER_TENANT = num('LOAD_JOBS_PER_TENANT', 2)
 const READERS = num('LOAD_READERS', 8)
 const PROVIDER_MS = num('LOAD_PROVIDER_MS', 800)
 const FETCH_MS = num('LOAD_FETCH_MS', 40)
+const DRAIN_TIMEOUT_S = num('LOAD_DRAIN_TIMEOUT_S', 600)
 const BASELINE_S = num('LOAD_BASELINE_S', 8)
 const LEADS_PER_SCAN = num('LOAD_LEADS_PER_SCAN', 5)
 const TOTAL_JOBS = TENANTS * JOBS_PER_TENANT
@@ -62,16 +64,9 @@ async function main() {
   // Resolve the native driver against web/node_modules (this file lives outside web/).
   const require = createRequire(new URL('../web/package.json', import.meta.url))
   const Database = require('better-sqlite3') as typeof import('better-sqlite3').default
-  const { migrateScan, createQueryJob, getJob } = await import('../web/lib/scan/store.ts')
-  const { migrateTrial } = await import('../web/lib/scan/trial.ts')
-  const { migrateMemory } = await import('../web/lib/memory.ts')
-  const { migrateWatch } = await import('../web/lib/watch.ts')
-  const { migrateMonitors } = await import('../web/lib/monitors.ts')
-  const { migrateConnectors } = await import('../web/lib/connectors/store.ts')
-  const { migrateAutopilot } = await import('../web/lib/outreach/autopilot.ts')
-  const { migrateLedger } = await import('../web/lib/outreach/ledger.ts')
-  const { migrateSourceRuns } = await import('../web/lib/scan/source-runs.ts')
-  const { migrateKeys, saveKey } = await import('../web/lib/llm/key-store.ts')
+  const { createQueryJob, getJob } = await import('../web/lib/scan/store.ts')
+  const { migrateAllSqlite } = await import('../web/lib/db/sqlite-migrations.ts')
+  const { saveKey } = await import('../web/lib/llm/key-store.ts')
   const { kickRunner } = await import('../web/lib/scan/runner.ts')
   const { syntheticBatch, mockProvider, mockFetchPage, fencedFetch } = await import('./mock.ts')
 
@@ -79,10 +74,7 @@ async function main() {
   const dbPath = process.env.LOAD_DB ?? join(dir, 'bench.db')
   const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
-  // Mirrors the production schema path: the same migrate functions getScanDb chains,
-  // minus the ones behind next/headers. Plus the users table auth-db.ts creates.
-  db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT, business_name TEXT, sells TEXT, website TEXT, password_hash TEXT NOT NULL, salt TEXT NOT NULL, created_at INTEGER DEFAULT (unixepoch()))`)
-  for (const m of [migrateScan, migrateTrial, migrateMemory, migrateWatch, migrateMonitors, migrateConnectors, migrateAutopilot, migrateLedger, migrateSourceRuns, migrateKeys]) m(db)
+  migrateAllSqlite(db)
 
   const now = new Date()
   const tenants: string[] = []
@@ -164,8 +156,14 @@ async function main() {
   const drainStart = performance.now()
   const kicker = setInterval(() => { void kickRunner(db, deps) }, 300)
   void kickRunner(db, deps)
-  const isSettled = () => (db.prepare("SELECT count(*) AS n FROM scan_jobs WHERE status IN ('pending','running')").get() as { n: number }).n === 0
-  while (!isSettled()) await new Promise(res => setTimeout(res, 250))
+  const unsettled = db.prepare(`SELECT 1 FROM scan_jobs
+    WHERE status IN ('pending', 'running')
+       OR (status = 'done' AND enrich_started_at IS NOT NULL AND enrich_finished_at IS NULL)
+    LIMIT 1`)
+  const isSettled = () => !unsettled.get()
+  const deadline = drainStart + DRAIN_TIMEOUT_S * 1000
+  while (!isSettled() && performance.now() < deadline) await new Promise(res => setTimeout(res, 250))
+  const timedOut = !isSettled()
   clearInterval(kicker)
   const drainMs = performance.now() - drainStart
   lagBusy.disable()
@@ -196,7 +194,7 @@ async function main() {
     },
     web_read_ms: { idle: stats(readsIdle), during_drain: stats(readsBusy) },
     correctness: {
-      jobs_done: done.length, jobs_failed: failed.length,
+      jobs_done: done.length, jobs_failed: failed.length, drain_timed_out: timedOut,
       fail_reasons: failed.map(f => f.error),
       leads_written: leadRows,
       expected_leads: TOTAL_JOBS * LEADS_PER_SCAN,
@@ -204,7 +202,15 @@ async function main() {
     },
     caveat: 'Mocked provider at fixed latency. This measures the app/DB/runner path only, never provider or network capacity. Not a capacity claim.',
   }
-  console.log(JSON.stringify(report, null, 2))
+  const reportJson = JSON.stringify(report, null, 2)
+  if (timedOut) {
+    // The runner may still hold the database. Flush the report before ending the process.
+    console.error(`LOAD BENCH FAILED: queue did not drain within ${DRAIN_TIMEOUT_S}s`)
+    await new Promise<void>(resolve => process.stdout.write(reportJson + '\n', () => resolve()))
+    if (!process.env.LOAD_DB) rmSync(dir, { recursive: true, force: true })
+    process.exit(1)
+  }
+  console.log(reportJson)
   db.close()
   rmSync(dir, { recursive: true, force: true })
   // A drained queue is not a correct run if work failed or fixture leads disappeared.

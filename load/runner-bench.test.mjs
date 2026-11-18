@@ -10,7 +10,7 @@ const root=fileURLToPath(new URL('../',import.meta.url))
 const env={...process.env,LOAD_TENANTS:'1',LOAD_JOBS_PER_TENANT:'1',LOAD_READERS:'1',LOAD_PROVIDER_MS:'1',LOAD_FETCH_MS:'1',LOAD_BASELINE_S:'0.1'}
 // LOAD_DB must never steer this control to an existing store.
 delete env.LOAD_DB
-const run=(args=[])=>spawnSync(process.execPath,['--experimental-strip-types','--no-warnings',...args,'load/runner-bench.ts'],{cwd:root,env,encoding:'utf8',timeout:60000})
+const run=(args=[], overrides={})=>spawnSync(process.execPath,['--experimental-strip-types','--no-warnings',...args,'load/runner-bench.ts'],{cwd:root,env:{...env,...overrides},encoding:'utf8',timeout:60000})
 test('complete configured synthetic work is success, an empty failed task is not',()=>{
  const positive=run();assert.equal(positive.status,0,positive.stdout+positive.stderr)
  const p=JSON.parse(positive.stdout);assert.equal(p.correctness.jobs_done,1);assert.equal(p.correctness.leads_written,5)
@@ -22,4 +22,14 @@ test('complete configured synthetic work is success, an empty failed task is not
   const n=JSON.parse(negative.stdout);assert.equal(n.correctness.jobs_done,0);assert.equal(n.correctness.jobs_failed,1);assert.equal(n.correctness.leads_written,0);assert.equal(n.correctness.expected_leads,5)
   assert.match(negative.stderr,/completed-job and exact fixture-lead counts/)
  }finally{rmSync(dir,{recursive:true,force:true})}
+})
+
+
+test('a stalled drain reports failure and returns a machine-readable result', () => {
+ const runResult = run([], {LOAD_PROVIDER_MS: '10000', LOAD_DRAIN_TIMEOUT_S: '0.1'})
+ assert.equal(runResult.status, 1, runResult.stdout + runResult.stderr)
+ const report = JSON.parse(runResult.stdout)
+ assert.equal(report.correctness.drain_timed_out, true)
+ assert.equal(report.correctness.jobs_done, 0)
+ assert.match(runResult.stderr, /queue did not drain/)
 })
