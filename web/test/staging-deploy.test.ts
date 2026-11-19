@@ -190,21 +190,27 @@ if [ -e ${T}/unready-$sha ]; then echo starting > ${served}; else echo "$sha" > 
 // directory may not be inside or contain production's data directory.
 test('low disk: skip and alert (throttled), stop a build at the floor, never touch anything outside the staging root', async () => {
   const { execFileSync } = await import('node:child_process')
-  const { existsSync, readdirSync } = await import('node:fs')
+  const { existsSync, readdirSync, rmSync } = await import('node:fs')
   const T = mkdtempSync(path.join(tmpdir(), 'staging-disk-'))
   const root = path.join(T, 'root'), repo = path.join(T, 'repo'), alerts = path.join(T, 'alerts')
+  const bin = path.join(T, 'bin'), low = path.join(T, 'build-disk-low')
+  const available = 10_000_000_000
   const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_CONFIG_'))) as NodeJS.ProcessEnv
-  mkdirSync(path.join(repo, 'web'), { recursive: true }); mkdirSync(root)
+  mkdirSync(path.join(repo, 'web'), { recursive: true }); mkdirSync(root); mkdirSync(bin)
   execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv })
   writeFileSync(path.join(repo, 'web', 'package-lock.json'), '{}')
   execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', 'add', '-A'], { env: gitEnv })
   execFileSync('git', ['-C', repo, '-c', 'user.email=t@example.test', '-c', 'user.name=t', 'commit', '-qm', 'one'], { env: gitEnv })
   const env = path.join(T, 'env'); writeFileSync(env, good)
   writeFileSync(path.join(T, 'alert.sh'), `echo "$1" >> ${alerts}\n`)
-  const free = () => Number(execFileSync('df', ['-B1', '--output=avail', root], { encoding: 'utf8' }).trim().split('\n').at(-1))
+  // Only the stub build can drop this fixture's free space. Runner-wide disk activity cannot hide the drop.
+  writeFileSync(path.join(bin, 'df'), `#!/usr/bin/env bash
+echo Avail
+if [ -f ${JSON.stringify(low)} ]; then echo 1; else echo ${available}; fi
+`, { mode: 0o755 })
   const run = (over: Record<string, string>) => {
     const r = spawnSync('bash', [script], { encoding: 'utf8', env: {
-      PATH: process.env.PATH, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
+      PATH: `${bin}:${process.env.PATH}`, HOME: process.env.HOME, STAGING_ROOT: root, STAGING_ENV_FILE: env, STAGING_PORT: '1',
       STAGING_USER: execFileSync('id', ['-un'], { encoding: 'utf8' }).trim(), STAGING_REPO_URL: `file://${repo}`, STAGING_RESTART: 'true',
       STAGING_STOP: 'true', STAGING_MIGRATE: 'true', STAGING_BUILD: 'true', STAGING_HEALTH_TRIES: '1', STAGING_RECOVERY_ROOT: path.join(T, 'recovery'), STAGING_STATE_ROOT: path.join(T, 'state'), PROD_DB_PATH: prodDb, FIRST_RELEASE_BYTES: '1', STAGING_ALERT_CMD: `bash ${path.join(T, 'alert.sh')}`,
       ...over,
@@ -226,15 +232,16 @@ test('low disk: skip and alert (throttled), stop a build at the floor, never tou
   assert.equal(sent().length, 2, 'alerts again once the interval has passed')
 
   // 2. above the floor, but the release would not fit above it: skipped, alerted, nothing built
-  r = run({ MIN_FREE_BYTES: String(free() - 50_000_000), FIRST_RELEASE_BYTES: '200000000', DISK_RESERVE_BYTES: '0' })
+  r = run({ MIN_FREE_BYTES: String(available - 50_000_000), FIRST_RELEASE_BYTES: '200000000', DISK_RESERVE_BYTES: '0' })
   assert.equal(r.code, 0, r.out); assert.match(r.out, /ALERT low_disk_for_release: skipped [0-9a-f]{40}: \d+ bytes free, a release needs about 200000000/)
   assert.deepEqual(releases(), []); assert.equal(sent().at(-1).reason, 'low_disk_for_release'); assert.equal(sent().at(-1).needed_bytes, 200000000)
 
   // 3. the floor is reached while the build runs: stopped, release removed, alerted, exit 1, no live pointer created
-  r = run({ MIN_FREE_BYTES: String(free() - 40_000_000), DISK_RESERVE_BYTES: '0', STAGING_BUILD: 'head -c 80000000 /dev/zero > fill.bin && sleep 6' })
+  r = run({ MIN_FREE_BYTES: String(available - 40_000_000), DISK_RESERVE_BYTES: '0', STAGING_BUILD: `touch ${JSON.stringify(low)} && exec sleep 20` })
   assert.equal(r.code, 1, r.out); assert.match(r.out, /ALERT low_disk_during_build: stopped the build/)
   assert.deepEqual(releases(), [], 'the stopped release is removed'); assert.equal(existsSync(path.join(root, 'current')), false)
-  assert.equal(sent().at(-1).reason, 'low_disk_during_build')
+  assert.deepEqual([sent().at(-1).reason, sent().at(-1).free_bytes], ['low_disk_during_build', 1])
+  rmSync(low)
 
   // 4. enough disk again: deploys, and the low-disk throttles are cleared so the next low disk alerts at once
   r = run({ MIN_FREE_BYTES: '1' })
