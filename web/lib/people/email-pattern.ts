@@ -358,16 +358,30 @@ export type CandidateLabel = 'published' | 'guessed' | 'guessed, verified' | 'gu
 // company's own confirmed site, with the page). Read-only, and only tier 'published' with its page: a guessed row, of any
 // verification state, is never returned. The person is matched by the same name split the crawl used. Missing table
 // (flag never on) = nothing published, never an error. Kept in this module so it stays the only reader of the table.
-export function publishedCandidateFor(db: Database.Database, tenantId: string, leadId: string, fullName: string): { address: string; url: string } | null {
-  const want = splitName(fullName)
+export interface PublishedCandidateRow { person: string; address: string; source_url: string }
+export function publishedCandidateRowsForLeads(db: Database.Database, tenantId: string, leadIds: string[]): Record<string, PublishedCandidateRow[]> {
+  const out: Record<string, PublishedCandidateRow[]> = {}
+  if (!leadIds.length) return out
+  try {
+    const rows = db.prepare(`SELECT lead_id, person, address, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')}) AND tier = 'published' AND source_url IS NOT NULL ORDER BY address`).all(tenantId, ...leadIds) as (PublishedCandidateRow & { lead_id: string })[]
+    for (const { lead_id, ...row } of rows) (out[lead_id] ??= []).push(row)
+  } catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
+  return out
+}
+export function publishedNameKey(fullName: string): string | null {
+  const n = splitName(fullName)
+  return n ? `${n.first}|${n.last}` : null
+}
+export function selectPublishedCandidate(rows: PublishedCandidateRow[], fullName: string): { address: string; url: string } | null {
+  const want = publishedNameKey(fullName)
   if (!want) return null
-  let rows: { person: string; address: string; source_url: string | null }[]
-  try { rows = db.prepare("SELECT person, address, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'published' AND source_url IS NOT NULL ORDER BY address").all(tenantId, leadId) as typeof rows }
-  catch (e) { if (/no such table/i.test(String((e as Error)?.message))) return null; throw e }
-  const mine = rows.filter(r => { const n = splitName(r.person.split(',')[0] ?? ''); return !!n && n.first === want.first && n.last === want.last })
+  const mine = rows.filter(r => publishedNameKey(r.person.split(',')[0] ?? '') === want)
   // Two different printed addresses for the same person: which one is theirs is not settled, so neither is offered.
   if (new Set(mine.map(r => r.address)).size !== 1) return null
-  return { address: mine[0].address, url: mine[0].source_url! }
+  return { address: mine[0].address, url: mine[0].source_url }
+}
+export function publishedCandidateFor(db: Database.Database, tenantId: string, leadId: string, fullName: string): { address: string; url: string } | null {
+  return selectPublishedCandidate(publishedCandidateRowsForLeads(db, tenantId, [leadId])[leadId] ?? [], fullName)
 }
 // The only label a guessed address may carry. "verified" needs the check outcome AND its provenance; never "published".
 // 'published' needs tier 'published' AND the page it was printed on; a guess can never become 'published'.
