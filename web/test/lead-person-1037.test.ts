@@ -1,3 +1,4 @@
+import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 // #1037: every ready lead names the person to contact (name, title, LinkedIn or source) on the row itself, including on
 // the first play (first5) and free-trial scans, or says "No buyer named yet". TEST-ONLY fixtures: invented companies and
 // people, TinyFish stubbed, no network, no paid call, no LinkedIn access.
@@ -419,4 +420,16 @@ test('review: a job lost WHILE a search is in flight aborts that request (owners
   assert.ok(Date.now() - t0 < 5_000, 'did not wait out the transport timeout')
   assert.equal(started, 1); assert.equal(n, 0); assert.deepEqual(why, ['ownership_lost'])
   assert.equal((db.prepare("SELECT count(*) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c, 0)
+})
+
+
+test('Claude-only QA first play preserves verified public leads but disables people-search vendor', async () => {
+  const people: string[] = []
+  const r = await withEnv(TRIAL_ENV, () => runFixture(fx({ runBudget: qaClaudeOnlyBudget(FIRST5), fundedBy: 'trial', model: 'claude-sonnet-4-5' }, people)))
+  assert.equal(r.job.status, 'done', JSON.stringify(r.job))
+  assert.equal(r.calls.searches.length, 0)
+  assert.equal(people.length, 0)
+  assert.equal(stage(r)?.status, 'skipped')
+  assert.match(stage(r)?.reason ?? '', /Claude-only QA/)
+  assert.equal(rowPerson(r), null, 'the same public-source verified lead remains, without inventing a buyer')
 })

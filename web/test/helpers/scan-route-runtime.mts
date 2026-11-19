@@ -24,7 +24,7 @@ function setup() {
 }
 // The route rate-limits per user (10 scans per hour, shared table), so every request comes from a fresh user with a key.
 function as(db: Database.Database) {
-  const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' })
+  const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' }); return id
 }
 const post = (body: unknown) => POST(new NextRequest('http://localhost/api/scan', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': `10.0.0.${++n}` }, body: JSON.stringify(body) }))
 const rows = (db: Database.Database) => db.prepare('SELECT id, run_budget, status FROM scan_jobs').all() as { id: string; run_budget: string | null; status: string }[]
@@ -146,4 +146,34 @@ test('explicit seller decision captured with real admission and rolled back on s
  const db4=setup();as(db4)
  assert.equal((await post({query:Q,offer:'Booking',icp:p,research_decisions:[{...decision,action:'reject'}]})).status,400)
  assert.equal(rows(db4).length,0,'inconsistent action/visible fields rejected before admission')
+})
+
+
+test('versioned Claude-only first play restricts only its job and cannot be enabled by an arbitrary budget marker', async () => {
+  const db = setup()
+  as(db)
+  const qa = await post({ query: Q, mode: 'first5_claude_only_v1' })
+  assert.equal(qa.status, 202)
+  assert.equal((await qa.json()).provider_policy, 'claude_only_v1')
+  assert.deepEqual(JSON.parse(rows(db)[0].run_budget!), {
+    first5: true, paid_fallback: false, credit_enrichment: false, provider_policy: 'claude_only_v1', max_usd: 5,
+  })
+  const qaEstimate = JSON.parse((db.prepare('SELECT estimate FROM scan_jobs').get() as { estimate: string }).estimate)
+  assert.equal(qaEstimate.rows.some((r: { provider: string }) => r.provider === 'TinyFish'), false)
+  assert.ok(qaEstimate.cap.max_usd <= 5)
+  as(db)
+  for (const b of [{ query: Q, budget: { provider_policy: 'claude_only_v1' } },
+    { query: Q, mode: 'first5_claude_only_v1', budget: { max_usd: 100 } },
+    { query: Q, mode: 'first5_claude_only_v2' },
+    { business_name: 'Acme', industry: 'roofing', location: 'Toronto', mode: 'first5_claude_only_v1' }]) {
+    assert.equal((await post(b)).status, 400, JSON.stringify(b))
+  }
+  const other = await post({ query: Q, mode: 'first5', provider_policy: 'claude_only_v1' })
+  assert.equal(other.status, 202)
+  assert.equal((await other.json()).provider_policy, undefined)
+  assert.equal(JSON.parse(rows(db)[1].run_budget!).provider_policy, undefined)
+  const uid = as(db)
+  setUser({ id: uid, business_name: 'Acme', role: 'viewer' })
+  assert.equal((await post({ query: Q, mode: 'first5_claude_only_v1' })).status, 403)
+  assert.equal(rows(db).length, 2)
 })
