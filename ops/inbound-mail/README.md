@@ -112,7 +112,7 @@ dazl-inbound-mail` (one JSON line per event; never a key or a mail body).
    `INBOUND_BACKEND_KEY` in `/etc/dazl-inbound-mail/env` once the app route exists, then
    `python3 /opt/dazl-inbound-mail/receiver.py check-config` and switch on.
 2. Security group of the box: inbound TCP 25 from 0.0.0.0/0 (and ::/0 if the box has IPv6).
-3. DNS: `A mail.dazl.ai -> 13.59.40.96`, then `MX dazl.ai -> 10 mail.dazl.ai` (replacing Cloudflare's
+3. DNS: `A mail.dazl.ai -> 3.137.125.161`, then `MX dazl.ai -> 10 mail.dazl.ai` (replacing Cloudflare's
    `route*.mx.cloudflare.net` records), and the SPF record without `include:_spf.mx.cloudflare.net`.
 4. STARTTLS: add `mail.dazl.ai { respond 404 }` to the Caddyfile so Caddy gets the certificate, then
    `sudo systemctl start dazl-inbound-mail-cert.service`.
