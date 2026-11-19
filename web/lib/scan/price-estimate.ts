@@ -14,6 +14,7 @@ import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 import { trialCopy } from '../trial-copy.ts'
 import { paidVendorOn } from '../paid-vendors.ts'
+import { claudeSearchEstimate } from '../llm/claude-web-search-estimate.ts'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-5'
 // Shown (and confirmed) when a payer's own key exists but which model it runs could not be read: priced as unknown, never as
@@ -55,6 +56,7 @@ export interface RunEstimate {
 export interface EstimateInput {
   budget: RunBudget | null
   qaClaudeOnly?: boolean
+  qaNativeWebSearch?: boolean
   payer: 'you' | 'trial'
   model?: string                     // exact model id the run will use (the payer's key's configured model); omitted: DEFAULT_MODEL
   modelUnknown?: boolean             // the payer's key exists but its model could not be read: every model row is unpriced (#851)
@@ -136,6 +138,17 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const lo = modelCost(p, calls.min, c.inK.min, c.outK.min), hi = modelCost(p, calls.max, c.inK.max, c.outK.max)
     rows.push({ id: c.id, label: c.label, provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: modelUnit, units: calls, usd: lo === null || hi === null ? null : { min: lo, max: hi }, capped, note: off ? (c.optional === 'judge' ? 'Off: you skipped the judge' : 'Not a hiring request') : `${calls.min === calls.max ? calls.max : `${calls.min}-${calls.max}`} call(s), ${c.inK.min}-${c.inK.max}k tokens in, ${c.outK.min}-${c.outK.max}k out each` })
   }
+  const native = i.qaClaudeOnly === true && i.qaNativeWebSearch === true && i.payer === 'you'
+  if (native) {
+    // Pre-play menu estimate only. The real reservation counts the exact submitted prompt before the paid call.
+    const search = claudeSearchEstimate(8_000)
+    rows.push({
+      id: 'anthropic_native_web_search', label: 'Claude Web Search', provider: 'Anthropic', kind: 'search',
+      unit: 'search', unit_usd: '$0.01 per search plus model tokens', units: { min: 0, max: search.maxSearches },
+      usd: { min: 0, max: search.estimatedUsd }, capped,
+      note: 'Optional, one Anthropic Sonnet call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
+    })
+  }
   // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,
   // with or without a cap, exactly like a guarded provider already refused it.
   rows.push({ id: 'fallback_research', label: 'Web-search research fallback', provider: 'AI model web search', kind: 'unbounded', unit: 'research call', unit_usd: 'not priced: search-result tokens are not bounded', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false,
@@ -144,7 +157,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const fp = i.firstPlayPeopleSearches
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
   if (i.qaClaudeOnly) {
-    rows.push({ id: 'qa_public_sources', label: 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Claude-only QA: no TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
+    rows.push({ id: 'qa_public_sources', label: native ? 'Free public sources' : 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Claude-only QA: no TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
   } else if (b?.first5) {
     // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
     rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })
@@ -224,7 +237,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       message = trialBinds
         ? `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but the free trial stops each scan at ${money(eff)}.`
         : `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
-      change.push(`Raise the ${monthBinds ? 'monthly ' : ''}dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
+      if (!native) change.push(`Raise the ${monthBinds ? 'monthly ' : ''}dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       const judge = rows.find(r => r.id === 'judge')
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
@@ -265,11 +278,18 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       if (scanUnpriced) change.push('This is a dazl model configuration problem, not your request: try again later.')
     }
   }
+  if (native && ok) {
+    message = warning ? 'The run may stop early at the current estimated-spend limit.' : 'The estimated cost fits the current limit.'
+    warning = [warning?.replace('The worst case', 'The high estimate'), 'The budget stops new requests based on estimated reservations. Anthropic’s actual search-result token charges may exceed the estimate; this is not a hard billing limit.'].filter(Boolean).join(' ')
+  }
   const assumptions = [
     `Model: ${model}. Tokens per call are ranges chosen by dazl (typical to worst case), priced exactly as the spend guard prices a reservation.`,
     'Search and fetch counts are the per-scan caps the runner enforces; units used are usually lower.',
-    'The web-search research fallback and any provider retries cannot be bounded and are not in the total.',
-    trialCeil !== null ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
+    ...(native ? [
+      'Claude Web Search uses an estimated 8,000 initial prompt tokens in this preview. The actual pre-call reservation prices a count of the submitted prompt, a margin, capped output, and the tool fees plus estimated search-result tokens.',
+      'Only the listed Claude Web Search path is included; the generic web-search research fallback remains disabled.',
+    ] : ['The web-search research fallback and any provider retries cannot be bounded and are not in the total.']),
+    native ? 'This is a soft estimate, not a quote, a bill, or a hard billing limit.' : trialCeil !== null ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
     // #1095: a refused trial run is not paid by anyone: never claim the trial pays for it
     ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),

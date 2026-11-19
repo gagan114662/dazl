@@ -301,3 +301,22 @@ test('#381 the estimate states the adaptive round in its maxima wherever the rou
   for (const [why, note] of [['paid_fallback=false', sf({ paid_fallback: false })], ['a free-trial scan', sf(null, { trial: true })], ['first5', sf({ first5: true })]] as const)
     assert.ok(!/one more round/.test(note), `${why}: the round cannot run there, so the row does not state it: ${note}`)
 })
+
+test('explicit own-key native search opts into a soft reservation preview; legacy and trial estimates never show it', async () => {
+  const { estimateRun } = await import('../lib/scan/price-estimate.ts')
+  const { claudeSearchEstimate } = await import('../lib/llm/claude-web-search.ts')
+  const args = { payer: 'you' as const, budget: { first5: true, max_usd: 1 }, qaClaudeOnly: true }
+  const legacy = estimateRun(args)
+  const native = estimateRun({ ...args, qaNativeWebSearch: true })
+  const trial = estimateRun({ ...args, qaNativeWebSearch: true, payer: 'trial' })
+  const row = native.rows.find(r => r.id === 'anthropic_native_web_search')
+  assert.equal(row?.units.max, 2)
+  assert.equal(row?.usd?.max, claudeSearchEstimate(8_000).estimatedUsd)
+  assert.equal(row?.capped, true)
+  assert.match(native.verdict.warning ?? '', /not a hard billing limit/)
+  assert.equal(native.cap.max_usd, 1)
+  assert.notEqual(native.ack, legacy.ack)
+  assert.equal(legacy.rows.some(r => r.id === 'anthropic_native_web_search'), false)
+  assert.equal(trial.rows.some(r => r.id === 'anthropic_native_web_search'), false)
+  assert.equal(native.rows.some(r => r.provider === 'TinyFish'), false)
+})

@@ -39,7 +39,7 @@ const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'start','-p',String(port),'-H','127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i=0;i<100;i++){ try { await fetch(base+'/sign-in'); break } catch { await new Promise(r=>setTimeout(r,200)) } }
 const calls = []; const scanBodies = []; const realProfile = []
-const state = { hasKey: false, sender: null, oldFirstPlayServer: false }
+const state = { hasKey: false, sender: null, oldFirstPlayServer: false, searchResponse: null }
 const ICP = { summary: 'Independent dental practices with 2-10 chairs that are growing.', who: ['Practice owners', 'Office managers'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['Opened a new location', 'Hiring front-desk staff', 'Switched practice software'], exclude: [] }
 const b = await chromium.launch(process.env.DAZL_UI_CHROMIUM ? { executablePath: process.env.DAZL_UI_CHROMIUM } : {}); const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
 await ctx.addCookies([{ name:'dazl_session', value: token, url: base }])
@@ -58,8 +58,15 @@ await ctx.route('**/*', async route => {
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
   if (p === '/api/scan' && m === 'POST') {
     const body = JSON.parse(req.postData()); scanBodies.push(body)
-    if (state.oldFirstPlayServer) return json({ error: 'unknown_mode' }, 400)
-    return json({ job_id: 'c'.repeat(24), ...(body.mode === 'first5_claude_only_pinned_v2' ? { provider_policy: 'claude_only_v1', execution: 'local_once_v1' } : {}) }, 202)
+    assert.ok(body.mode === undefined || body.mode === 'first5', 'production onboarding never posts a QA mode')
+    if (body.budget) assert.equal(body.mode, 'first5', 'only an explicit first play can opt into Web Search')
+    if (state.oldFirstPlayServer && Object.hasOwn(body, 'budget')) return json({ error: 'invalid_budget' }, 400)
+    if (body.budget?.web_search === 'anthropic_estimated_v1') {
+      if (state.searchResponse === 'no-key') return json({ error: 'qa_search_requires_own_key' }, 400)
+      return json({ job_id: 'c'.repeat(24), provider_policy: 'claude_only_v1', execution: 'local_once_v1',
+        ...(state.searchResponse === 'confirmed' ? { web_search_policy: 'anthropic_estimated_v1' } : {}) }, 202)
+    }
+    return json({ job_id: 'c'.repeat(24) }, 202)
   }
   if (p === '/api/scan/status') return json({ status: 'running' })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: { email: 'me@brightsmile.example', status: 'active', read_granted: false }, sender: state.sender, daily_cap: 20, sent_24h: 0 })
@@ -140,31 +147,41 @@ const val = l => page.getByLabel(l).inputValue()
 assert.deepEqual({ sells: await val('What you sell'), who: await val('Who buys it'), roles: await val('Buyer roles'), industries: await val('Industries'), where: await val('Where'), signals: await val('Signs they need you now'), sizes: await val('Company sizes'), skip: await val('Skip') },
   { sells: 'Online booking and reminders for dental practices', who: 'Group dental practices opening new offices', roles: 'Practice owners; COO', industries: 'Dental; Orthodontics', where: 'Austin, TX', signals: 'Opened a new location', sizes: '10-50 employees', skip: 'Dental schools' })
 assert.ok(realProfile.includes('POST') && realProfile.filter(m => m === 'GET').length >= 3, 'the profile went through the real route')
-// Explicit restricted onboarding: no automatic profile or key check on entry/back/reload. The old server rejects
-// the versioned mode, and the UI must never fall back to an ordinary run. Only a deliberate retry can queue a scan.
-const beforeRestricted = calls.length
-scanBodies.length = 0
-await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
-await page.getByTestId('first-play-claude-only').click()
-await page.getByTestId('claude-only-active').waitFor()
-await page.getByRole('button', { name: 'Back', exact: true }).click()
-assert.equal(await page.getByRole('button', { name: 'Read my site' }).count(), 0)
-await page.reload({ waitUntil: 'networkidle' })
-await page.getByTestId('first-play-claude-only').click()
-assert.equal(await page.getByRole('button', { name: 'Read my site' }).count(), 0)
+// Claude Web Search is an additional, per-play opt-in; nothing starts by checking it or following a refusal.
+await page.goto(base + '/app?setup=brain', { waitUntil: 'networkidle' })
 await cont()
-await sentence().fill('Austin dental practices hiring a receptionist')
+await sentence().fill('Oxford accounting practices recruiting an office manager')
+const optIn = page.getByTestId('claude-search-opt-in')
+const startSearch = page.getByRole('button', { name: 'Find leads' })
+await optIn.waitFor()
+assert.equal(await optIn.isChecked(), false)
+scanBodies.length = 0
+await optIn.check()
+assert.equal(scanBodies.length, 0)
+await page.getByText(/actual Anthropic charges can vary/).waitFor()
 state.oldFirstPlayServer = true
-await page.getByRole('button', { name: 'Find leads' }).click()
-await page.getByRole('alert').filter({ hasText: 'Nothing started.' }).waitFor()
-assert.equal(scanBodies.length, 1, 'never retries as an ordinary first play')
-assert.equal(scanBodies[0].mode, 'first5_claude_only_pinned_v2')
+await startSearch.click()
+await page.getByRole('alert').filter({ hasText: 'does not support Claude Web Search' }).waitFor()
+assert.equal(scanBodies.length, 1, 'older server refuses, without starting or retrying an ordinary scan')
 state.oldFirstPlayServer = false
-await page.getByRole('button', { name: 'Find leads' }).click()
+await optIn.check()
+state.searchResponse = 'no-key'
+await startSearch.click()
+await page.getByRole('alert').filter({ hasText: 'cannot use the free trial' }).waitFor()
+assert.equal(await optIn.isChecked(), false)
+assert.equal(scanBodies.length, 2, 'key refusal does not submit a fallback')
+assert.deepEqual(scanBodies[1].budget, { web_search: 'anthropic_estimated_v1' })
+state.searchResponse = 'missing-policy'
+await optIn.check()
+await startSearch.click()
+await page.getByRole('alert').filter({ hasText: 'did not confirm the Claude Web Search policy' }).waitFor()
+assert.equal(scanBodies.length, 3, 'incomplete success never redirects or retries')
+assert.equal(await page.getByTestId('ready-step').count(), 0)
+state.searchResponse = 'confirmed'
+await optIn.check()
+await startSearch.click()
 await page.getByTestId('ready-step').waitFor()
-assert.deepEqual(scanBodies.map(b => b.mode), ['first5_claude_only_pinned_v2', 'first5_claude_only_pinned_v2'])
-assert.ok(!calls.slice(beforeRestricted).some(c => /(?:POST \/api\/scan\/icp|PUT \/api\/settings\/llm-key)/.test(c)), 'manual Claude-only setup opened no paid-capable profile or key endpoint')
-await shot('claude-only')
+assert.deepEqual(scanBodies.map(({ mode, budget }) => ({ mode, budget })), Array(4).fill({ mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } }))
 
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {

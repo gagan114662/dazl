@@ -18,7 +18,7 @@ import type { Job } from '@/lib/scan/runner'
 import { kickRunner, pickVendor } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { readSellerLine } from '@/lib/auth-db'
-import { isClaudeOnlyRequestMode, QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from '@/lib/scan/qa-provider-policy'
+import { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_NATIVE_WEB_SEARCH_POLICY, isClaudeOnlyRequestMode, QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from '@/lib/scan/qa-provider-policy'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '@/lib/people/people-search'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '@/lib/people/first-play-cap'
@@ -107,25 +107,30 @@ export async function POST(req: NextRequest) {
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not
   // strictly valid is rejected, never ignored, so a caller expecting a restricted run is never widened into a full one.
   const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
-  // mode 'first5': the fast first scan of a new account (free sources only); it takes no other budget so a caller never mixes the two.
+  // A first play accepts no caller-imposed budget controls; the exact native search
+  // option is a separate opt-in carried in the otherwise-rejected budget envelope.
   const first5 = isFirst5RequestMode(body?.mode)
-  const claudeOnly = isClaudeOnlyRequestMode(body?.mode)
+  const nativeSearch = isFirst5NativeSearchRequest(body?.mode, body?.budget)
+  const claudeOnly = nativeSearch || isClaudeOnlyRequestMode(body?.mode)
   if (body?.mode !== undefined && !first5) return NextResponse.json({ error: 'unknown_mode' }, { status: 400 })
-  if (first5 && budgetSupplied) return NextResponse.json({ error: 'invalid_budget', detail: 'mode first5 takes no budget' }, { status: 400 })
+  if (first5 && budgetSupplied && !nativeSearch) return NextResponse.json({ error: 'invalid_budget', detail: 'mode first5 only accepts the explicit Claude Web Search option' }, { status: 400 })
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
   if (!nb.ok) return NextResponse.json({ error: 'invalid_budget', detail: nb.error }, { status: 400 })
 
-  const runBudget = claudeOnly ? qaClaudeOnlyBudget(nb.value) : nb.value
+  const runBudget = claudeOnly ? qaClaudeOnlyBudget(nb.value, nativeSearch) : nb.value
   const db = getScanDb()
   if (claudeOnly && !strictLocalTopologySupported((await getDb()).kind)) {
     return NextResponse.json({ error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }, { status: 503 })
   }
   // Keyless accounts fall back to the shared trial key: 3 scans per account, throttled per IP
   // per day. With no trial configured, queuing a keyless job would hang forever and burn a scan.
+  const nativeKeyRefusal = () => NextResponse.json({ error: 'qa_search_requires_own_key', message: QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE }, { status: 409 })
+  if (nativeSearch && pickVendor(db, user.tenantId) !== 'anthropic') return nativeKeyRefusal()
   let funded: 'user' | 'trial' = 'user'
   let principal: { id: string; email: string } | null = null
   const ip = clientIp(req)
   if (!hasKey(db, user.tenantId)) {
+    if (nativeSearch) return nativeKeyRefusal()
     // The free trial belongs to the account that founded this workspace (its Google sign-in and email are what the
     // trial's abuse limits check), so only that account, acting in its own workspace, can draw on it.
     // The free trial belongs to the account that founded this workspace (its Google sign-in and email are what the
@@ -210,6 +215,7 @@ export async function POST(req: NextRequest) {
     // this process or in another process sharing the store serialize here, and exactly one sees the slot free. A refusal throws
     // before any write, so no job, no trial count, and (below) the linked reservation is released.
     launched = db.transaction(() => {
+      if (nativeSearch && pickVendor(db, user.tenantId) !== 'anthropic') { refused = nativeKeyRefusal(); throw new AdmissionRefused() }
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
@@ -225,7 +231,7 @@ export async function POST(req: NextRequest) {
       }
       return claudeOnly ? pinAdmittedStrictJob(db, user.tenantId, jid, runBudget) : null
     }).immediate()
-    if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION }, { status: 202 })
+    if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION, ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}) }, { status: 202 })
     after(() => kickRunner(db))
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
     return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0, firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 }, trial: funded === 'trial' }) } : { job_id }, { status: 202 })

@@ -15,7 +15,9 @@ import Database from 'better-sqlite3'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { anthropicProvider, openaiProvider } from '../lib/llm/provider.ts'
-import { SpendRefused } from '../lib/llm/spend-guard.ts'
+import { CLAUDE_SEARCH_MODEL, runClaudeWebSearch } from '../lib/llm/claude-web-search.ts'
+import { reserveNativeSearch } from '../lib/scan/native-search-reserve.ts'
+import { SpendGuard, SpendRefused } from '../lib/llm/spend-guard.ts'
 import { tfFetch, tfSearch, resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { apolloOrgEnrich, apolloPeopleSearch } from '../lib/enrich/apollo.ts'
 import { pdlPeopleSearch } from '../lib/enrich/pdl.ts'
@@ -37,6 +39,13 @@ const PAID: Record<string, { file: string; kind: SpendKind[] }> = {
   'https://api.peopledatalabs.com': { file: 'lib/enrich/pdl.ts', kind: ['pdl.people'] },
   'env:SCAN_RENDER_URL': { file: 'lib/scan/fetch-page.ts', kind: ['render'] },
 }
+// A second, exact endpoint/module pair with its own scan-cap-backed reservation adapter.
+// Unlike the claim-gated evaluator, this path must use reserveScanSpend before the paid send.
+const NATIVE_SEARCH = {
+  endpoint: 'https://api.anthropic.com/v1/messages', file: 'lib/llm/claude-web-search.ts',
+  gate: 'lib/scan/native-search-reserve.ts', kind: 'llm.anthropic.web_search' as const,
+}
+const inventoriedNativeSearch = (endpoint: string, rel: string) => endpoint === NATIVE_SEARCH.endpoint && rel === NATIVE_SEARCH.file
 // Files that may NAME a paid endpoint without calling it (labels, not requests).
 const NAMES_ONLY: Record<string, string> = {
   'lib/evals/trace.ts': 'maps recorded request URLs to labels for trace capture; makes no request',
@@ -111,7 +120,7 @@ function classify(sources: { rel: string; text: string }[]): { unknown: string[]
     const found = [...new Set([...[...text.matchAll(ENDPOINT)].map(m => m[0]), ...[...text.matchAll(ENV_ENDPOINT)].map(m => `env:${m[1]}`)])]
     for (const e of found) {
       if (rel === 'lib/scan/spend-cap.ts') continue // the gate's own documentation
-      if (PAID[e]) { if (PAID[e].file !== rel && CLAIM_GATED[e]?.file !== rel && !NAMES_ONLY[rel]) misplaced.push(`${e} in ${rel}`) }
+      if (PAID[e]) { if (PAID[e].file !== rel && CLAIM_GATED[e]?.file !== rel && !inventoriedNativeSearch(e, rel) && !NAMES_ONLY[rel]) misplaced.push(`${e} in ${rel}`) }
       else if (!FREE[e]) unknown.push(`${e} in ${rel}`)
     }
   }
@@ -121,7 +130,7 @@ function classify(sources: { rel: string; text: string }[]): { unknown: string[]
 test('inventory: every API endpoint and env-configured endpoint in lib/ and app/ is classified as paid (gated) or free', () => {
   const { unknown, misplaced } = classify(SOURCES)
   assert.deepEqual(unknown, [], 'classify each new endpoint here: PAID needs a reserveScanSpend gate in its transport')
-  assert.deepEqual(misplaced, [], 'a paid endpoint may only be called from its one gated module, or its one claim-gated runner')
+  assert.deepEqual(misplaced, [], 'a paid endpoint may only be called from an explicitly inventoried scan transport or claim-gated runner')
 })
 
 test('inventory: a claim-gated endpoint stays narrowly scoped - a second, unexpected file naming it still fails', () => {
@@ -164,7 +173,10 @@ test('inventory: each gated module reserves its kind before its request, and daz
     assert.ok(/reserveScanSpend\(/.test(src), `${p.file} (${e}) reserves on the scan cap`)
   }
   assert.deepEqual(SOURCES.filter(s => s.rel !== 'lib/scan/spend-cap.ts' && /cache_control/.test(s.text)).map(s => s.rel), [], 'a cache write would be billed above the reserved input price')
-  assert.deepEqual([...new Set(Object.values(PAID).flatMap(p => p.kind))].sort(), [...SPEND_KINDS].sort(), 'every spend kind has a transport')
+  const nativeGate = SOURCES.find(s => s.rel === NATIVE_SEARCH.gate)!.text
+  assert.match(nativeGate, /from '\.\/spend-cap\.ts'/, 'native search adapter imports the scan gate')
+  assert.ok(nativeGate.includes(`reserveScanSpend('${NATIVE_SEARCH.kind}',`), 'native search reserves its own spend kind')
+  assert.deepEqual([...new Set([...Object.values(PAID).flatMap(p => p.kind), NATIVE_SEARCH.kind])].sort(), [...SPEND_KINDS].sort(), 'every spend kind has a transport')
   // the runner opens the scan's context around the whole attempt, and autopilot (outreach, own guards) runs outside it
   const runner = SOURCES.find(s => s.rel === 'lib/scan/runner.ts')!.text
   // #846/#847: the same context carries the owner's day/month caps unless the runner's own PooledGuard reserves them
@@ -249,6 +261,44 @@ for (const t of TRANSPORTS) {
     } finally { delete process.env.SCAN_RENDER_URL }
   })
 }
+
+
+test('inventory: native Claude search is a single extra caller, not a host-wide exemption', () => {
+  const { endpoint, file } = NATIVE_SEARCH
+  const elsewhere = 'lib/llm/another-native-search.ts'
+  assert.deepEqual(classify([{ rel: file, text: endpoint }, { rel: elsewhere, text: endpoint }]), {
+    unknown: [], misplaced: [`${endpoint} in ${elsewhere}`],
+  })
+})
+
+test('native Claude search: durable hold before messages; cap refusal sends only the free token count', async () => {
+  for (const full of [false, true]) {
+    const s = scan()
+    try {
+      if (full) s.raw.prepare("UPDATE scan_jobs SET spend_cap_usd=0.001, spend_cap_reserved_usd=0.001 WHERE id='j1'").run()
+      const urls: string[] = []
+      const f: typeof fetch = async u => {
+        const url = String(u)
+        urls.push(url)
+        if (url === NATIVE_SEARCH.endpoint + '/count_tokens') return ok({ input_tokens: 500 })
+        assert.equal(url, NATIVE_SEARCH.endpoint)
+        const active = await scanSpendCalls(s.db, 'j1', A)
+        assert.deepEqual(active.map(c => [c.kind, c.status]), [[NATIVE_SEARCH.kind, 'reserved']])
+        return ok({
+          model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn', content: [],
+          usage: { input_tokens: 500, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } },
+        })
+      }
+      const run = () => runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), claudeOnly: true, accountLimits: null }, () =>
+        runClaudeWebSearch('fixture-key', 'Find public publisher sources', e => reserveNativeSearch([new SpendGuard(3)], e.estimatedUsd, () => {}), f))
+      if (full) await assert.rejects(run, (e: unknown) => e instanceof SpendRefused && e.reason === 'over_cap')
+      else await run()
+      assert.deepEqual(urls, [NATIVE_SEARCH.endpoint + '/count_tokens', ...(full ? [] : [NATIVE_SEARCH.endpoint])])
+      const rows = await scanSpendCalls(s.db, 'j1', A)
+      assert.deepEqual(rows.map(c => [c.kind, c.status, c.reason]), [[NATIVE_SEARCH.kind, full ? 'refused' : 'settled', full ? 'over_cap' : null]])
+    } finally { s.raw.close() }
+  }
+})
 
 test('pdl: the reservation for the size asked for settles to the profiles returned; a 404 is not billed; any other failure stays reserved (maybe billed)', async () => {
   const by: unknown[] = []

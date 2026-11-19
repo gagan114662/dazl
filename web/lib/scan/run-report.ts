@@ -28,6 +28,8 @@ export interface ReportParts {
   // The free news search's request truth (lib/search/news.ts): per-class failure counts, the non-200 statuses seen and the
   // per-query outcome classes. Counts and status codes only - never payloads, URLs or response bodies.
   news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number>; retried?: number; gave_up?: boolean } | null   // #1157: one retry after a backoff; gave_up = the retry failed too, so the remaining queries were not sent
+  // Native Anthropic Web Search has aggregate billed usage, not a per-result token breakdown.
+  native_web_search?: { estimated_usd: number; actual_usd: number | null; counted_prompt_tokens: number; assumed_result_tokens: number; assumed_tool_overhead_tokens: number; reported_input_tokens: number | null; reported_cache_read_tokens?: number; reported_cache_write_5m_tokens?: number; reported_cache_write_1h_tokens?: number; reported_output_tokens: number | null; searches: number | null; max_searches: number; max_output_tokens: number; expected_model: string; estimate_exceeded: boolean | null; soft_estimate: true }
   // Why the scan stopped when it did: the bounded stop code written as the job error, and the exact spend-refusal reason
   // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean. When an
   // earlier refusal names the stop but a later refusal also happened (e.g. the trailing research_unbounded), the later
@@ -86,6 +88,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
     news: p.news ?? null, stop: p.stop ?? null,
+    ...(p.native_web_search ? { native_web_search: p.native_web_search } : {}),
     source_skips: (p.source_skips ?? []).slice(0, 20).map(x => ({ source: cut(x.source, 80), status: cut(x.status, 120), reason: cut(x.reason, 300) })),
     capacity: p.capacity ?? null,
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
