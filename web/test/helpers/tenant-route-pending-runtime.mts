@@ -120,11 +120,11 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
 
   // Every 'session-scope' handler (takes no resource id; the tenant comes only from the session), called by B with an
   // empty JSON body: nothing of A's comes back and A's rows stay unchanged. B's own rows may change.
-  const { ROUTES } = await import('../tenant-isolation-manifest.ts')
+  const { ROUTES, routeFile } = await import('../tenant-isolation-manifest.ts')
   let swept = 0
   for (const r of ROUTES) {
     if (r.auth !== 'session' || r.crossTenant !== 'session-scope') continue
-    const mod = await import(`../../app/api/${r.path}/route.ts`) as Record<string, (q: NextRequest, c: unknown) => Promise<Response | undefined>>
+    const mod = await import(`../../app/api/${r.path}/${routeFile(r.path)}`) as Record<string, (q: NextRequest, c: unknown) => Promise<Response | undefined>>
     const body = r.method === 'GET' || r.method === 'DELETE' ? undefined : {}
     await asB(`${r.method} /api/${r.path} (session-scope sweep)`, () => mod[r.method](req(`/api/${r.path}`, r.method, body), { params: Promise.resolve({}) }), () => true)
     swept++

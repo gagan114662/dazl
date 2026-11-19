@@ -178,7 +178,15 @@ claim), on both engines, including two SQLite connections to one file as two ins
     - its included/excluded costs;
     - the "estimate" vs "reported" labels;
     - that the threshold/stop events a user sees match this enforcement.
-- **Operator removal of a failed or stale marker** is a manual store edit today.
+- **Operator removal of a failed or stale marker** is a manual store edit today. Never infer a marker's purpose
+  from a matching tenant, amount, or timestamp. Before native search holds had linked call IDs, a legacy marker
+  cannot safely be classified as native search by the app.
+- **Native Claude Web Search only:** future named-owner reservations share a typed marker ID with their exact
+  SQLite transport call. A different scan can proceed after both the call and terminal failed attempt have aged
+  past the stale-marker period, only if the pinned own-key search is still unresolved and fully reserved in the
+  old job and its original UTC day and month. Neither row is deleted or repriced; the old run still cannot
+  replay or settle from a delayed callback after losing ownership. A missing link, an active attempt, an unrelated
+  marker or a non-scan guard still blocks as before.
 
 ## A request that may have been billed is never re-run automatically (#363)
 

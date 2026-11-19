@@ -7,7 +7,6 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { approve, leadEvidenceState, testFixtureSend, OutreachError } from '@/lib/outreach/service'
 import { createSequence, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, acceptAutoSequencePolicy, revokeAutoSequencePolicy, AUTO_SEQUENCE_POLICY, AUTO_SEQUENCE_POLICY_TEXT, autoSequencePolicyAccepted, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
-import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
 import { getState } from '@/lib/outreach/autopilot'
@@ -22,7 +21,7 @@ export async function GET() {
   const campaigns = db.prepare('SELECT DISTINCT j.id,j.query FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id JOIN outreach_messages m ON m.lead_id = l.id AND m.tenant_id = j.user_id WHERE j.user_id = ? ORDER BY j.created_at DESC LIMIT 50').all(user.tenantId) as { id: string; query: string }[]
   const { scheduler, gates } = schedulerReadiness(db, user.tenantId)
   // scheduler/gates: configuration. freshness: whether the scheduler is actually making progress for this tenant (its own rows only).
-  return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), auto_policy: { version: AUTO_SEQUENCE_POLICY, text: AUTO_SEQUENCE_POLICY_TEXT, accepted: autoSequencePolicyAccepted(db, user.tenantId) }, test_fixture_available: fixtureAvailable(db,user.tenantId), status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
+  return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), auto_policy: { version: AUTO_SEQUENCE_POLICY, text: AUTO_SEQUENCE_POLICY_TEXT, accepted: autoSequencePolicyAccepted(db, user.tenantId) }, status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
 
 }
 export async function POST(req: NextRequest) {
@@ -43,8 +42,6 @@ export async function POST(req: NextRequest) {
       // AI rewriting must be a separate, explicitly priced user action.
       return NextResponse.json({ id })
     }
-    if (b?.action === 'create_test_fixture') return NextResponse.json(createSequenceTestFixture(db,user.tenantId))
-    if (b?.action === 'create_reply_stop_fixture') return NextResponse.json(createReplyStopTestFixture(db,user.tenantId))
     if (b?.action === 'resume') {
       // resuming an account that is not paused changes nothing, so it records nothing
       const before = getState(db, user.tenantId)
@@ -65,7 +62,7 @@ export async function POST(req: NextRequest) {
     if (b.action !== 'edit') await audit(user, req, { action: `sequence.${b.action}`, resource: 'sequence', id: b.id, summary: Number.isInteger(b.step) ? { step: b.step } : undefined })
     return NextResponse.json({ ok: true })
   } catch (e) {
-    if (e instanceof SequenceError || e instanceof OutreachError || e instanceof FixtureError) return NextResponse.json({ error: e.code }, { status: 400 })
+    if (e instanceof SequenceError || e instanceof OutreachError) return NextResponse.json({ error: e.code }, { status: 400 })
     throw e
   }
 }

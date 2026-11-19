@@ -116,8 +116,8 @@ export class PooledGuard extends SpendGuard {
   // Returns the time the reservation was made at, from the pool's own clock; that time travels with the reservation
   // (Reservation below), so its settle or release lands in exactly the windows it was reserved in.
   async reserveShared(usd: number, pendingId?: string): Promise<number> {
-    const at = this.pool.now()
-    try { await this.pool.reserve(usd, at, pendingId) } catch (e) { this.refused = true; throw e instanceof SpendRefused ? (e.reason === 'over_limit' ? new SpendRefused(this.label) : e) : new SpendRefused('reservation_not_saved') }
+    let at: number
+    try { at = await this.pool.reserve(usd, this.pool.now(), pendingId) } catch (e) { this.refused = true; throw e instanceof SpendRefused ? (e.reason === 'over_limit' ? new SpendRefused(this.label) : e) : new SpendRefused('reservation_not_saved') }
     this.reservedUsd += usd; this.calls++
     return at
   }
@@ -151,12 +151,14 @@ const pooled = (g: SpendGuard): g is PooledGuard => g instanceof PooledGuard
 // A flat dollar amount on every guard, all-or-nothing. Order: shared pools first (atomic in the store, may refuse), then
 // guards that save their reservation (a job guard), then in-memory ones. A refusal at any step releases what the earlier
 // steps reserved, so no partial reservation is left anywhere.
-export async function reserveAllUsd(guards: SpendGuard[], usd: number): Promise<Reservation> {
+export async function reserveAllUsd(guards: SpendGuard[], usd: number, nativePendingId?: string): Promise<Reservation> {
+  if (nativePendingId !== undefined && (!/^n[0-9a-z]{9}$/.test(nativePendingId) || guards.filter(g => pooled(g) && g.trackPending).length !== 1))
+    throw new SpendRefused('reservation_invalid')
   for (const g of guards) g.checkUsd(usd)
   const r: Reservation = { usd, guards: [...guards], at: new Map(), pending: new Map(), done: new Set(), settlement: null, settled: false }
   try {
     for (const p of guards.filter(pooled)) {
-      const id = p.trackPending ? randomBytes(5).toString('hex') : undefined
+      const id = p.trackPending ? nativePendingId ?? randomBytes(5).toString('hex') : undefined
       r.at.set(p, await p.reserveShared(usd, id))
       if (id) r.pending.set(p, id)
     }

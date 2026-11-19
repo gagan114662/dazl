@@ -16,7 +16,7 @@ import { NextRequest } from 'next/server'
 import { readFileSync } from 'node:fs'
 import { withJar, type Jar } from './pg-session-headers.ts'
 import { pgDb, setDb } from '../../lib/db/client.ts'
-import { ROUTES } from '../tenant-isolation-manifest.ts'
+import { ROUTES, routeFile } from '../tenant-isolation-manifest.ts'
 import { seedTenant, snapshot, tenantTables } from './tenant-seed.ts'
 import { TENANT_COLUMNS } from './tenant-tables.ts'
 
@@ -45,11 +45,11 @@ const NAMES = [...new Set([...KEYS, ...COLUMNS])].filter(k => k !== 'action')
 const withIds = (x: string, action?: string) => ({ ...Object.fromEntries(NAMES.map(k => [k, k.endsWith('ids') ? [x] : x])), ...(action ? { action } : {}) })
 const query = (x: string) => '?' + new URLSearchParams(Object.fromEntries(KEYS.map(k => [k, x]))).toString()
 // the actions a route's handler switches on, read from its source
-const actions = (path: string) => { const src = readFileSync(new URL(`../../app/api/${path}/route.ts`, import.meta.url), 'utf8'); return [...new Set([...src.matchAll(/case '([\w-]+)'|action === '([\w-]+)'/g)].map(m => m[1] ?? m[2]))] }
+const actions = (path: string) => { const src = readFileSync(new URL(`../../app/api/${path}/${routeFile(path)}`, import.meta.url), 'utf8'); return [...new Set([...src.matchAll(/case '([\w-]+)'|action === '([\w-]+)'/g)].map(m => m[1] ?? m[2]))] }
 const routes = ROUTES.filter(r => r.auth === 'session')
 const handlers = new Map<string, (...a: unknown[]) => Promise<Response>>()
 for (const r of routes) {
-  try { const m = await import(`../../app/api/${r.path}/route.ts`) as Record<string, (...a: unknown[]) => Promise<Response>>; if (m[r.method]) handlers.set(`${r.method} ${r.path}`, m[r.method]) } catch { /* recorded below as unloadable */ }
+  try { const m = await import(`../../app/api/${r.path}/${routeFile(r.path)}`) as Record<string, (...a: unknown[]) => Promise<Response>>; if (m[r.method]) handlers.set(`${r.method} ${r.path}`, m[r.method]) } catch { /* recorded below as unloadable */ }
 }
 // what the process logged while a call ran: a route that failed on the SQLite trap says so there
 let logged = ''

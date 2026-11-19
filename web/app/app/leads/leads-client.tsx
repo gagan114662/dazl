@@ -1111,7 +1111,7 @@ export default function LeadsClient() {
           {Object.keys(quality.drop_reasons).length > 0 && <InfoTip label="Why leads were dropped">Dropped: {Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')}.</InfoTip>}
         </p>
       )}
-      <VerificationFixture />
+      {process.env.NEXT_PUBLIC_DAZL_STAGING === '1' && <VerificationFixture />}
       {!jobId && pastJobs && pastJobs.length > 0 && (
         <section className="mb-6" aria-labelledby="your-plays">
           <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>

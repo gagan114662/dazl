@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { ROUTES } from '../tenant-isolation-manifest.ts'
+import { ROUTES, routeFile } from '../tenant-isolation-manifest.ts'
 
 const fetchCalls: string[] = []
 globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw new Error('Unexpected network call') }) as typeof fetch
@@ -30,7 +30,7 @@ test('every session route refuses an unauthenticated caller and changes nothing'
   const results: string[] = []
   const failures: string[] = []
   for (const r of ROUTES.filter(r => r.auth === 'session')) {
-    const mod = await import(`../../app/api/${r.path}/route.ts`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
+    const mod = await import(`../../app/api/${r.path}/${routeFile(r.path)}`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
     const handler = mod[r.method]
     assert.equal(typeof handler, 'function', `${r.method} /api/${r.path}: handler exported`)
     const url = `http://localhost/api/${r.path.replace(/\[[a-z]+\]/g, id)}?id=${id}&job_id=${id}&lead_id=${id}`

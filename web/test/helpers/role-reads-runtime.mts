@@ -18,7 +18,7 @@ import { writeKey } from '../../lib/llm/key-store.ts'
 import { saveCrmConfig } from '../../lib/crm/index.ts'
 import { writeCredential } from '../../lib/connectors/store.ts'
 import { rotateSecret } from '../../lib/calcom/index.ts'
-import { ROUTES } from '../tenant-isolation-manifest.ts'
+import { ROUTES, routeFile } from '../tenant-isolation-manifest.ts'
 import type { Role } from '../../lib/workspaces.ts'
 
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
@@ -61,7 +61,7 @@ test('no read returns a secret, a ciphertext or a capability URL; the Cal.com si
   const gets = ROUTES.filter(r => r.auth === 'session' && r.method === 'GET')
   for (const u of ['A', 'D', 'O', 'V']) {
     for (const r of gets) {
-      const mod = await import(`../../app/api/${r.path}/route.ts`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
+      const mod = await import(`../../app/api/${r.path}/${routeFile(r.path)}`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
       const url = `http://localhost/api/${r.path.replace(/\[[a-z]+\]/g, id)}?id=${id}&job_id=${id}&lead_id=${id}`
       const req = new NextRequest(url, { method: 'GET', headers: { host: 'localhost', origin: 'http://localhost' } })
       const text = await withJar(new Map([['dazl_session', tokens[u]]]), async () => {

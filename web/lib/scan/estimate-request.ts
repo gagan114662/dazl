@@ -8,7 +8,7 @@ import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
-import { ownerLimits, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
+import { ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
@@ -23,7 +23,7 @@ export type EstimateResult = { ok: true; estimate: RunEstimate } | { ok: false; 
 // fresh one is a call in flight, which a run waits for.
 async function pools(db: Db, tenantId: string, now = Math.floor(Date.now() / 1000)): Promise<{ day: number; month: number; unknown: boolean; unsettled: boolean }> {
   try {
-    const rows = await poolRows(db, tenantId), at = (w: 'day' | 'month') => Number(rows.find(r => r.period === periodOf(w, now))?.reserved_usd ?? 0)
+    const rows = await scanPoolRows(db, tenantId, now), at = (w: 'day' | 'month') => Number(rows.find(r => r.period === periodOf(w, now))?.reserved_usd ?? 0)
     const day = at('day'), month = at('month')
     const unsettled = rows.some(r => r.period.startsWith('p:') && Number(r.updated_at) <= now - PENDING_STALE_S)
     if (!Number.isFinite(day) || !Number.isFinite(month)) return { day: 0, month: 0, unknown: true, unsettled }

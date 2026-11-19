@@ -21,7 +21,9 @@ const securityHeaders = [
   },
 ]
 
+// The staging build alone registers route.staging.ts as an App Router handler.
 const nextConfig: NextConfig = {
+  pageExtensions: [...(process.env.DAZL_ENV === 'staging' ? ['staging.ts'] : []), 'tsx', 'ts', 'jsx', 'js'],
   poweredByHeader: false,
   deploymentId: process.env.NEXT_DEPLOYMENT_ID || buildCommit(),
   // The same ID for the chunk-load recovery guard, which is scoped to the build (lib/chunk-recovery.ts).
