@@ -1,4 +1,4 @@
-import { playName, type PlayIcp } from './play-card.ts'
+import { savedPlayTitle, type PlayIcp } from './play-card.ts'
 
 // The Plays page: the account's saved, repeating searches (weekly watches, lib/watch.ts, and scheduled monitors,
 // lib/monitors.ts) as one list, each with who it looks for, the signal, its schedule, last and next run and status.
@@ -79,7 +79,7 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
       : w.last_status === 'failed' ? { tone: 'failed', label: 'Live, last run failed' }
       : { tone: 'live', label: 'Live' }
     out.push({
-      id: w.id, kind: 'watch', name: playName(w.query, icp), sentence: w.query,
+      id: w.id, kind: 'watch', name: savedPlayTitle(w.query), sentence: w.query,
       audience: audienceOf(icp), signal: signalOf(icp), schedule: scheduleOf((w.interval_s ?? (w.auto ? 86400 : 604800)) / 3600),
       lastRun: w.last_run_at ? `${when(w.last_run_at)}${w.last_status === 'done' ? `, ${w.new_leads} new` : ''}` : 'Not run yet',
       lastHref: w.last_job_id ? `/app/leads?job_id=${w.last_job_id}` : null,
@@ -90,7 +90,7 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
   for (const m of monitors ?? []) {
     const icp = asIcp(m.icp ?? null), on = m.enabled === true || m.enabled === 1
     out.push({
-      id: m.id, kind: 'monitor', name: playName(m.query, icp), sentence: m.query,
+      id: m.id, kind: 'monitor', name: savedPlayTitle(m.query), sentence: m.query,
       audience: audienceOf(icp), signal: signalOf(icp), schedule: scheduleOf(m.interval_hours),
       lastRun: m.last_run_at ? `${when(m.last_run_at)}${m.last_new_count != null ? `, ${m.last_new_count} new` : ''}` : 'Not run yet',
       lastHref: m.last_job_id ? `/app/leads?job_id=${m.last_job_id}` : null,
@@ -99,5 +99,10 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
       active: on, note: null,
     })
   }
+  // Short titles come from each play's own search. If two distinct requests share the first
+  // words, show the full requests rather than borrowing titles from either saved profile.
+  const full = (p: SavedPlay) => savedPlayTitle(p.sentence, true)
+  const colliding = out.filter(p => out.some(o => o.name === p.name && full(o) !== full(p)))
+  for (const p of colliding) p.name = full(p)
   return out
 }

@@ -28,7 +28,8 @@ import { lockAlertsStep, releaseRunAlertsStep, seedPlayAlertsStep, VISIBLE_LEAD 
 import { alertKeysOf } from './monitor-events.ts'
 import { sendSystemMail } from './system-mail.ts'
 import { ENRICH_STALE_S } from './scan/enrichment.ts'
-import { playName, type PlayIcp } from './play-card.ts'
+import { savedPlayTitle } from './play-card.ts'
+import { createHash } from 'node:crypto'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
 import { isFirstPlayRepeatStep } from './play-funding.ts'
@@ -60,11 +61,16 @@ export function oneLine(v: unknown, max: number): string {
   const clean = (s.toWellFormed ? s.toWellFormed() : s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean
 }
-const asIcp = (raw: string | null): PlayIcp | null => { try { const v = raw ? JSON.parse(raw) : null; return v && typeof v === 'object' && !Array.isArray(v) ? v as PlayIcp : null } catch { return null } }
 
 // daily: the play is the first play's automatic repeat, which runs every day (lib/play-cadence.ts); otherwise weekly
-export function composePlayRunMail(o: { userId: string; to: string; jobId: string; query: string; icp: string | null; total: number; leads: { company: unknown; signal: unknown }[]; base: string; daily?: boolean }): PlayRunMail {
-  const name = oneLine(playName(o.query, asIcp(o.icp)), 80) || 'your play'
+export function composePlayRunMail(o: { userId: string; to: string; jobId: string; watchId?: string; query: string; icp?: string | null; total: number; leads: { company: unknown; signal: unknown }[]; base: string; daily?: boolean }): PlayRunMail {
+  // One message has no sibling list for collision detection. Keep the same short query title in the
+  // subject and body; if it omits words, a stable suffix distinguishes searches with the same opening.
+  const full = oneLine(savedPlayTitle(o.query, true), 600)
+  const title = oneLine(savedPlayTitle(o.query), 80)
+  const shorter = title.toLowerCase() !== full.toLowerCase()
+  const name = !title ? 'your play' : shorter
+    ? `${oneLine(title, 69)} [${createHash('sha256').update(o.watchId ?? full).digest('hex').slice(0, 8)}]` : title
   const n = o.total, s = n === 1 ? '' : 's'
   const lines = o.leads.slice(0, MAIL_LIST_MAX).map(l => {
     const company = oneLine(l.company, 120) || 'A company', why = oneLine(l.signal, 200)
@@ -93,7 +99,7 @@ function* claimRun(t: Tx, d: Due, fence: Fence, base: string, now: number): TxBo
   const claim = yield* t.run('INSERT INTO watch_seen (watch_id, seen_key) VALUES (?, ?) ON CONFLICT (watch_id, seen_key) DO NOTHING', [d.watch_id, mailClaimKey(d.job_id)])
   if (claim.changes !== 1) return null // another tick or instance has it
   // read under the claim: a play paused or deleted since the list was read mails nothing (the claim stays: once only)
-  const w = yield* t.get<{ query: string; icp: string | null; active: number }>('SELECT query, icp, active FROM watches WHERE id = ? AND user_id = ?', [d.watch_id, d.user_id])
+  const w = yield* t.get<{ query: string; active: number }>('SELECT query, active FROM watches WHERE id = ? AND user_id = ?', [d.watch_id, d.user_id])
   if (!w || Number(w.active) !== 1) return null
   const to = (yield* t.get<{ email: string }>(TO_SQL, [d.user_id, d.user_id]))?.email
   if (typeof to !== 'string' || !to.includes('@') || /[\r\n]/.test(to)) return null
@@ -103,7 +109,7 @@ function* claimRun(t: Tx, d: Due, fence: Fence, base: string, now: number): TxBo
   if (!(total > 0)) return null
   const leads = yield* t.all<{ company: unknown; signal: unknown }>(NEW_LEADS_SQL, [d.job_id, MAIL_LIST_MAX])
   const daily = yield* isFirstPlayRepeatStep(t, d.user_id, d.watch_id)
-  return composePlayRunMail({ userId: d.user_id, to, jobId: d.job_id, query: w.query, icp: w.icp, total, leads, base, daily })
+  return composePlayRunMail({ userId: d.user_id, to, jobId: d.job_id, watchId: d.watch_id, query: w.query, total, leads, base, daily })
 }
 
 // Returns how many emails went out (or into the outbox). One run's failure is recorded and skipped; a lost lease stops

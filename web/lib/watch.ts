@@ -87,7 +87,7 @@ export async function listWatches(db: Db, userId: string) {
   return Promise.all(rows.map(async w => {
     // the watch's own jobs only (scan_jobs.user_id), newest first; same-second ties in insertion order
     const last = await db.get<{ id: string; status: string; finished_at: number | null }>('SELECT id, status, finished_at FROM scan_jobs WHERE watch_id = ? AND user_id = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1', [w.id, userId])
-    const newCount = last ? Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM leads WHERE scan_job_id = ? AND watch_new = 1', [last.id]))!.n) : 0
+    const newCount = last ? Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM leads l WHERE l.scan_job_id = ? AND l.watch_new = 1 AND ${VISIBLE_LEAD}`, [last.id]))!.n) : 0
     // #1042: the automatic repeat of the account's first play (lib/play-repeat.ts: its only job older than the watch)
     const auto = !!(await db.get('SELECT 1 AS x FROM scan_jobs WHERE watch_id = ? AND user_id = ? AND created_at < ? LIMIT 1', [w.id, userId, w.created_at]))
     // #1042: a run the free plan's daily cap skipped, until the play runs again (lib/play-cadence.ts)

@@ -50,3 +50,22 @@ test('no saved profile, a bad profile or no lists: nothing invented', () => {
   assert.equal(savedPlays(null, [monitor({ icp: '{not json' })], UTC, T)[0].audience, null)
   assert.deepEqual(savedPlays(null, null), [])
 })
+
+test('#1123: two plays saved with the same profile get their own titles, from their own searches', () => {
+  const shared = { summary: 'United States founders', where: ['United States'], signals: ['hiring'] }
+  const ps = savedPlays([
+    watch({ id: '1'.repeat(24), query: 'United States founders hiring', icp: shared }),
+    watch({ id: '2'.repeat(24), query: 'Marketing and lead-gen agencies in the US and Canada posting about outbound or lead generation pain', icp: shared }),
+  ], [], UTC, T)
+  assert.notEqual(ps[0].name, ps[1].name)
+  assert.match(ps[1].name, /agencies/i)
+  const single = savedPlays([watch({ query: ps[1].sentence, icp: shared })], [], UTC, T)[0]
+  assert.equal(single.name, ps[1].name, 'removing an unrelated play never restores a stale profile title')
+})
+
+test('#1123: distinct requests with the same short title still show the distinguishing words', () => {
+  const common = 'Find local businesses actively looking for'
+  const ps = savedPlays([watch({ query: common + ' dental software' }), watch({ id: 'z', query: common + ' payroll software' })], [], UTC, T)
+  assert.match(ps[0].name, /dental software/)
+  assert.match(ps[1].name, /payroll software/)
+})
