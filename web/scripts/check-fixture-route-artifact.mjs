@@ -1,6 +1,6 @@
-// Fails closed on missing build metadata. Check the assembled route registry, not source or runtime env.
+// Fails closed on missing build metadata. Check the assembled artifact, not source or runtime env.
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 const [variant, dist = '.next'] = process.argv.slice(2)
@@ -18,5 +18,27 @@ for (const p of ['/api/leads/ranking-fixture', '/api/leads/tech-fixture', '/api/
     assert.ok(!Object.values(routes).includes(p) && !(key in modules), `fixture route shipped to production: ${p}`)
     assert.ok(!existsSync(join(dist, 'server/app', p)), `fixture module shipped to production: ${p}`)
   }
+}
+if (variant === 'production') {
+  // These literals are unique to the staging sequence creators, not their shared availability guard.
+  // Route metadata alone cannot catch code bundled through an otherwise ordinary route or client chunk.
+  const fixturePayloads = [
+    'dazl sequence test - step 1 of 3',
+    'dazl sequence test - reply stop check - step 1 of 2',
+    'test-only-sequence-fixture',
+    'This follow-up should never be sent.',
+  ]
+  function checkChunks(dir) {
+    for (const entry of readdirSync(join(dist, dir), { withFileTypes: true })) {
+      const relative = join(dir, entry.name)
+      if (entry.isDirectory()) checkChunks(relative)
+      else if (entry.isFile() && /\.[cm]?js$/.test(entry.name)) {
+        const chunk = readFileSync(join(dist, relative))
+        assert.ok(!fixturePayloads.some(marker => chunk.includes(marker)), `fixture payload shipped to production: ${relative}`)
+      }
+    }
+  }
+  checkChunks('server')
+  checkChunks('static')
 }
 console.log(`Fixture route artifact verified: ${variant}`)
