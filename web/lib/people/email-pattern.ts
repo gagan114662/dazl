@@ -269,7 +269,7 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   migrateEmailGuess(db)
   const nowS = Math.floor((opts.now ?? Date.now()) / 1000)
   const vname = verifier.name.slice(0, 40)
-  const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' AND (? IS NULL OR address = ?) ORDER BY address").all(tenantId, leadId, opts.address ?? null, opts.address ?? null) as { address: string }[]
+  const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' AND (CAST(? AS TEXT) IS NULL OR address = ?) ORDER BY address").all(tenantId, leadId, opts.address ?? null, opts.address ?? null) as { address: string }[]
   for (const { address } of rows) {
     if (opts.signal?.aborted || (opts.alive && !opts.alive())) { run.aborted = true; break }
     // The reservation (#849 inventory: every provider call is reserved before it is made): refused = no call.

@@ -153,6 +153,13 @@ jobs:
           set -o pipefail
           SHOTS=preview/key-inline node test/ui/key-inline-save.ui.mjs | tee /tmp/ki.out
           ! grep -q '^NOT RUN' /tmp/ki.out
+      # Claude-only first play: fixture server only. Fail if the explicit-mode browser regression skips.
+      - name: Claude-only first-play opt-in (no paid setup or silent fallback)
+        run: |
+          set -o pipefail
+          mkdir -p preview/onboarding
+          SHOTS=preview/onboarding node test/ui/onboarding.ui.mjs | tee /tmp/onboarding-claude.out
+          grep -q '^onboarding UI check passed:' /tmp/onboarding-claude.out
       # Refs #919: exact production entry/progress labels with all-off, trial, no-key and enrichment-only fixtures.
       - name: Truthful discovery availability at desktop and mobile (no live sources)
         run: |

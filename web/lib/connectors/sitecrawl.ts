@@ -1,3 +1,4 @@
+import { listedProfileLabel, listedProfileUrl, profileFromListedLabel } from '../people/site-profile.ts'
 import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
@@ -472,7 +473,7 @@ const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|dir
 export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
-const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
+const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -622,18 +623,76 @@ export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
-export function contactPaths(homeHtml: string, home: URL): string[] {
+const BUYER_DIRECTORY_PATH = /\/(?:[^/]*-)?(?:team|leadership|management|people|staff|executives)(?:[-/]|$)/i
+function sameCompanyPage(target: URL, base: URL): boolean {
+  return target.protocol === 'https:' && !target.username && !target.password && !target.port && target.hostname.replace(/^www\./, '') === base.hostname.replace(/^www\./, '')
+}
+export function contactPaths(homeHtml: string, home: URL, preferBuyers = false): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
-  const linkedLocations = new Set<string>()
+  const linkedLocations = new Set<string>(), linkedBuyers = new Set<string>()
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
     if (!PAGE_HINT.test(u.pathname) || u.pathname.length >= 60 || /\.(pdf|jpg|png|zip)$/i.test(u.pathname) || u.search) continue
     set.add(u.pathname)
+    if (sameCompanyPage(u, home) && BUYER_DIRECTORY_PATH.test(u.pathname)) linkedBuyers.add(u.pathname)
     if (/\/(?:locations?|offices?)(?:\/|$)/i.test(u.pathname)) linkedLocations.add(u.pathname)
   }
   for (const extra of ['/locations', '/our-team', '/careers']) set.add(extra) // after the page's own links: same cap, never ahead of them
-  return [...new Set(['/contact', '/contact-us', ...linkedLocations, ...set])].slice(0, 8)
+  return [...new Set([...(preferBuyers ? [...linkedBuyers].slice(0, 1) : []), '/contact', '/contact-us', ...linkedLocations, ...set])].slice(0, 8)
+}
+
+// Follow one named person's exact first-party bio link, from a directory that the company
+// listed itself. Never treat the directory link as proof of a role.
+type BuyerBio = { path: string; name: string; expectedValue?: string }
+function linkedBuyerBio(html: string, page: URL, listed: Map<string, string> | null = null): BuyerBio | null {
+  const clean = cutBlocks(html)
+  if (!clean || !BUYER_DIRECTORY_PATH.test(page.pathname)) return null
+  // A directory that mixes former/current people is ambiguous without a scoped DOM section.
+  if (FORMER_SECTION.test(plainText(clean))) return null
+  for (const m of clean.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]{1,250}?)<\/a\s*>/gi)) {
+    const name = plainText(m[2], 80)
+    if (!NAME_LINE.test(name) || looksLikeJobTitle(name)) continue
+    const expectedValue = listed?.get(name)
+    if (listed && !expectedValue) continue
+    let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), page) } catch { continue }
+    if (!sameCompanyPage(u, page) || u.search || u.hash || u.pathname.length > 140) continue
+    const directory = page.pathname.replace(/\/+$/, '')
+    if (!u.pathname.startsWith(directory + '/') || u.pathname.slice(directory.length + 1).replace(/\/+$/, '').includes('/')) continue
+    const slug = name.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    if (slug.split('-').length < 2 || u.pathname.slice(directory.length + 1).replace(/\/+$/, '').toLowerCase() !== slug) continue
+    return { path: u.pathname, name, ...(expectedValue ? { expectedValue } : {}) }
+  }
+  return null
+}
+
+// A profile is metadata for an already accepted bio, never identity/title proof by
+// itself. Scope to one article with one exact heading and an explicitly named link;
+// no page-wide social icons, cross-card links, guessed slugs, or LinkedIn fetch.
+function linkedBioProfile(html: string, name: string): string | null {
+  // This optional extraction never processes an oversized/ambiguous document.
+  if (html.length > 32_768) return null
+  const stripped = cutBlocks(html)
+  if (!stripped) return null
+  const clean = stripped.replace(/<!--[^]*?(?:-->|$)|<(script|style|noscript|template)\b[^>]*>[^]*?(?:<\/\1\s*>|$)/gi, '')
+  const articles = [...clean.matchAll(/<article\b[^>]*>((?:(?!<article\b)[\s\S])*?)<\/article\s*>/gi)]
+  if (articles.length !== 1 || (clean.match(/<article\b/gi)?.length ?? 0) !== 1) return null
+  const body = articles[0][1]
+  const headings = [...body.matchAll(/<h[1-4]\b[^>]*>([\s\S]*?)<\/h[1-4]\s*>/gi)]
+  if (headings.length !== 1 || plainText(headings[0][1], 120) !== name) return null
+  const anchors = [...body.matchAll(/<a\b([^>]+)>([\s\S]*?)<\/a\s*>/gi)]
+  const profiles: { url: string; named: boolean }[] = []
+  for (const a of anchors) {
+    const href = /(?:^|\s)href\s*=\s*["']([^"']+)["']/i.exec(a[1])?.[1]
+    const url = href && listedProfileUrl(href)
+    if (!url) continue
+    const aria = /(?:^|\s)aria-label\s*=\s*["']([^"']+)["']/i.exec(a[1])?.[1]
+    const explicit = `${name} on LinkedIn`
+    const text = plainText(a[2], 160)
+    const label = aria ? plainText(aria, 160) : ''
+    profiles.push({ url, named: text === explicit || ((text === '' || text === 'LinkedIn') && label === explicit) })
+  }
+  return profiles.length === 1 && profiles[0].named ? listedProfileLabel(profiles[0].url) : null
 }
 
 // Abort-aware sleep: resolves early (to false) when the signal fires, so the
@@ -746,7 +805,7 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -808,11 +867,14 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
-    const found = new Map<string, Found>(); let pages = 1
+    const found = new Map<string, Found>(); let pages = 1, buyerPages = 0
     const locationPages: LocationPage[] = [subpageLocationFacts(home.finalUrl, home.body)]
     onPage?.(home.body, home.finalUrl, home.status)
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
-    for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
+    const homePage = new URL(home.finalUrl)
+    const paths: ({ path: string } & Partial<Pick<BuyerBio, 'name' | 'expectedValue'>>)[] = contactPaths(home.body, homePage, !!buyerRoles).map(path => ({ path }))
+    let queuedBio = false
+    for (const { path: p, name, expectedValue } of paths) {
       if (stopped()) { stoppedBy = 'aborted'; break }
       if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
       if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
@@ -820,9 +882,40 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       const r = await polite(origin + p, robots.delayMs)
       if (!r || r.status >= 400) continue
       pages++
+      const page = new URL(r.finalUrl)
+      const buyerPage = sameCompanyPage(page, homePage) && PEOPLE_PAGE.test(page.pathname)
+      // A redirected bio provides no contact, location or person evidence.
+      if (name && (!buyerPage || page.pathname.replace(/\/+$/, '') !== p.replace(/\/+$/, ''))) continue
       onPage?.(r.body, r.finalUrl, r.status)
-      if (r.finalUrl.length <= 500 && new URL(r.finalUrl).hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
-      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+      if (r.finalUrl.length <= 500 && page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
+      if (buyerPage) buyerPages++
+      // Require the exact directory name, and preserve extractPeople's role/anti-quote rules.
+      const people = extractPeople(r.body, r.finalUrl, buyerRoles)
+      const boundPeople = people.filter(f => !name || f.value.split(', ')[0] === name)
+      // When a directory already named the buyer, the bio cannot change their role or add a second identity.
+      if (expectedValue && (boundPeople.length !== 1 || boundPeople[0].value !== expectedValue)) continue
+      if (name && buyerRoles && boundPeople.length === 1 && buyerTitle(titleOf(boundPeople[0]), buyerRoles)) {
+        const label = linkedBioProfile(r.body, name)
+        if (label) boundPeople[0] = { ...boundPeople[0], label }
+      }
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...boundPeople]) {
+        const key = f.kind + f.value
+        if (!found.has(key) || (expectedValue === f.value && f.kind === 'person' && profileFromListedLabel(f.label))) found.set(key, f)
+      }
+      if (buyerRoles && buyerPage && !name && !queuedBio) {
+        // With a populated directory, spend the one bio slot only on an existing role match with a unique exact name.
+        const listed = new Map<string, string>()
+        for (const person of people) {
+          const listedName = person.value.split(', ')[0]
+          if (buyerTitle(titleOf(person), buyerRoles) && people.filter(x => x.value.split(', ')[0] === listedName).length === 1) listed.set(listedName, person.value)
+        }
+        const bio = linkedBuyerBio(r.body, page, people.length === 0 ? null : listed)
+        if (bio && !paths.some(x => x.path === bio.path)) {
+          // Reserve at most one slot, without exceeding MAX_PAGES or the existing deadline.
+          queuedBio = true
+          paths.splice(paths.findIndex(x => x.path === p) + 1, 0, bio)
+        }
+      }
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
@@ -843,7 +936,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
     const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], buyerPages, reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -1059,7 +1152,7 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
@@ -1380,11 +1473,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       techBranch(db, tenantId, jobId, l.id, site, r, Math.floor((deps.now ?? Date.now()) / 1000), deps.env)
       // A guessed site passed the name AND location checks, but the evidence never linked it: say so on every contact.
       const guessed = (basisOf.get(site) ?? 'name_probe') === 'name_probe'
+      let named = 0
       for (const f of r.found) {
-        const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source` : f.label
+        const baseLabel = guessed && profileFromListedLabel(f.label) ? 'listed with this title on this company page, not verified as current staff' : f.label
+        const label = guessed ? `${baseLabel}; site found by name search and location match, not linked from the source` : f.label
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
+        if (f.kind === 'person' && (!buyerRoles || buyerTitle(titleOf(f), buyerRoles))) named++
       }
+      if ((r.reason === 'ok' || r.reason === 'none_published') && r.buyerPages) deps.onBuyerRead?.({ site, pages: r.buyerPages, stored: named })
       // #1036: a buyer the crawl named on this site whose OWN personal address the site prints (the published tier recordEmailGuesses
       // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
       // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this

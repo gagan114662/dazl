@@ -2002,9 +2002,16 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // than FIRST_PLAY_TRIAL_KEEP of that reserve is left, so the checks after it (buyer fit) are never starved by it.
     const firstPlay = !!deps.first5 || !!trial
     const peopleCap = firstPlay ? firstPlayPeopleCap() : null
-    if (claudeOnly) trace.note('people_search', 'skipped', 'Claude-only QA: public company crawl only; TinyFish was not called')
+    const firstPartyNote = trace.stages.find(s => s.stage === 'first_party_people')
+    const noteFirstPartyPeople = (publicProfiles: string, skippedReason: string) => {
+      // An empty/missing record is not evidence that a company page was actually inspected.
+      if (firstPartyNote && (firstPartyNote.status === 'ok' || firstPartyNote.status === 'attempted_no_result' || firstPartyNote.status === 'failed')) {
+        trace.note('people_search', firstPartyNote.status, firstPartyNote.reason, { ...firstPartyNote.detail, lane: 'first_party', public_profiles: publicProfiles })
+      } else trace.note('people_search', 'skipped', skippedReason)
+    }
+    if (claudeOnly) noteFirstPartyPeople('not_called_claude_only', 'Claude-only QA: no confirmed company buyer page inspected; TinyFish was not called')
     else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
-    else if (!peopleSearchEnabled()) trace.note('people_search', 'skipped', 'TinyFish search is not configured (TINYFISH_API_KEY / TINYFISH_ENABLED): no profile search can run')
+    else if (!peopleSearchEnabled()) noteFirstPartyPeople('not_configured', 'No first-party buyer-page read; TinyFish public profile search is not configured')
     else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
     else try {
       const stopped: { why: string | null } = { why: null }
@@ -2271,7 +2278,17 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else {
       // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
       const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
-      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      const firstParty = new Map<string, { pages: number; stored: number }>()
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}),
+        onBuyerRead: ({ site, pages, stored }) => {
+          const earlier = firstParty.get(site)
+          firstParty.set(site, { pages: Math.max(earlier?.pages ?? 0, pages), stored: Math.max(earlier?.stored ?? 0, stored) })
+        } })
+      const detail = { sites_read: firstParty.size, pages_read: 0, people_stored: 0 }
+      for (const { pages, stored } of firstParty.values()) { detail.pages_read += pages; detail.people_stored += stored }
+      if (firstParty.size > 0) trace.note('first_party_people', detail.people_stored ? 'ok' : postCtrl.signal.aborted ? 'failed' : 'attempted_no_result',
+        detail.people_stored ? 'Named buyers listed on confirmed company pages' : postCtrl.signal.aborted ? 'Company-page search stopped at its time budget' : 'Company pages inspected; no role-qualified buyer found', detail)
+      noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
     }
