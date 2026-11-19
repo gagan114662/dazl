@@ -39,7 +39,7 @@ const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'start','-p',String(port),'-H','127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i=0;i<100;i++){ try { await fetch(base+'/sign-in'); break } catch { await new Promise(r=>setTimeout(r,200)) } }
 const calls = []; const scanBodies = []; const realProfile = []
-const state = { hasKey: false, sender: null, oldFirstPlayServer: false }
+const state = { hasKey: false, sender: null, oldFirstPlayServer: false, searchResponse: null }
 const ICP = { summary: 'Independent dental practices with 2-10 chairs that are growing.', who: ['Practice owners', 'Office managers'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['Opened a new location', 'Hiring front-desk staff', 'Switched practice software'], exclude: [] }
 const b = await chromium.launch(process.env.DAZL_UI_CHROMIUM ? { executablePath: process.env.DAZL_UI_CHROMIUM } : {}); const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
 await ctx.addCookies([{ name:'dazl_session', value: token, url: base }])
@@ -59,6 +59,11 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan' && m === 'POST') {
     const body = JSON.parse(req.postData()); scanBodies.push(body)
     if (state.oldFirstPlayServer) return json({ error: 'unknown_mode' }, 400)
+    if (body.mode === 'first5_claude_only_search_v3') {
+      if (state.searchResponse === 'no-key') return json({ error: 'qa_search_requires_own_key' }, 400)
+      return json({ job_id: 'c'.repeat(24), provider_policy: 'claude_only_v1', execution: 'local_once_v1',
+        ...(state.searchResponse === 'confirmed' ? { web_search_policy: 'anthropic_estimated_v1' } : {}) }, 202)
+    }
     return json({ job_id: 'c'.repeat(24), ...(body.mode === 'first5_claude_only_pinned_v2' ? { provider_policy: 'claude_only_v1', execution: 'local_once_v1' } : {}) }, 202)
   }
   if (p === '/api/scan/status') return json({ status: 'running' })
@@ -165,6 +170,36 @@ await page.getByTestId('ready-step').waitFor()
 assert.deepEqual(scanBodies.map(b => b.mode), ['first5_claude_only_pinned_v2', 'first5_claude_only_pinned_v2'])
 assert.ok(!calls.slice(beforeRestricted).some(c => /(?:POST \/api\/scan\/icp|PUT \/api\/settings\/llm-key)/.test(c)), 'manual Claude-only setup opened no paid-capable profile or key endpoint')
 await shot('claude-only')
+
+// Claude Web Search is an additional, per-play opt-in; nothing starts by checking it or following a refusal.
+await page.goto(base + '/app?setup=brain', { waitUntil: 'networkidle' })
+await cont()
+await sentence().fill('Oxford accounting practices recruiting an office manager')
+const optIn = page.getByTestId('claude-search-opt-in')
+const startSearch = page.getByRole('button', { name: 'Find leads' })
+await optIn.waitFor()
+assert.equal(await optIn.isChecked(), false)
+scanBodies.length = 0
+await optIn.check()
+assert.equal(scanBodies.length, 0)
+await page.getByText(/actual Anthropic charges can vary/).waitFor()
+state.searchResponse = 'no-key'
+await startSearch.click()
+await page.getByRole('alert').filter({ hasText: 'cannot use the free trial' }).waitFor()
+assert.equal(await optIn.isChecked(), false)
+assert.equal(scanBodies.length, 1, 'key refusal does not submit a fallback')
+assert.equal(scanBodies[0].mode, 'first5_claude_only_search_v3')
+state.searchResponse = 'missing-policy'
+await optIn.check()
+await startSearch.click()
+await page.getByRole('alert').filter({ hasText: 'did not confirm the Claude Web Search policy' }).waitFor()
+assert.equal(scanBodies.length, 2, 'incomplete success never redirects or retries')
+assert.equal(await page.getByTestId('ready-step').count(), 0)
+state.searchResponse = 'confirmed'
+await optIn.check()
+await startSearch.click()
+await page.getByTestId('ready-step').waitFor()
+assert.deepEqual(scanBodies.map(body => body.mode), Array(3).fill('first5_claude_only_search_v3'))
 
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {

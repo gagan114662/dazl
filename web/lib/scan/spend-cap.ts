@@ -90,13 +90,13 @@ export function scanCapConfig(env: Env = process.env): CapConfig {
   return { ok: true, capCad, fxCadPerUsd, capUsd: Math.min(capCad / fxCadPerUsd, HARD_CAP_USD) }
 }
 
-export type SpendKind = 'llm.anthropic' | 'llm.openai' | 'tinyfish.search' | 'tinyfish.fetch' | 'apollo.org' | 'apollo.people' | 'pdl.people' | 'render'
-export const SPEND_KINDS: readonly SpendKind[] = ['llm.anthropic', 'llm.openai', 'tinyfish.search', 'tinyfish.fetch', 'apollo.org', 'apollo.people', 'pdl.people', 'render']
+export type SpendKind = 'llm.anthropic' | 'llm.anthropic.web_search' | 'llm.openai' | 'tinyfish.search' | 'tinyfish.fetch' | 'apollo.org' | 'apollo.people' | 'pdl.people' | 'render'
+export const SPEND_KINDS: readonly SpendKind[] = ['llm.anthropic', 'llm.anthropic.web_search', 'llm.openai', 'tinyfish.search', 'tinyfish.fetch', 'apollo.org', 'apollo.people', 'pdl.people', 'render']
 
 // TinyFish's documented free allowance per UTC day (see the header).
 export const TINYFISH_FREE_SEARCHES_PER_DAY = 12_000
 export const TINYFISH_FREE_URLS_PER_DAY = 1_000
-const UNIT_PRICE_ENV: Record<Exclude<SpendKind, 'llm.anthropic' | 'llm.openai'>, string[]> = {
+const UNIT_PRICE_ENV: Record<Exclude<SpendKind, 'llm.anthropic' | 'llm.anthropic.web_search' | 'llm.openai'>, string[]> = {
   'tinyfish.search': ['DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD', 'DAZL_TRIAL_TINYFISH_SEARCH_USD'],
   'tinyfish.fetch': ['DAZL_SCAN_PRICE_TINYFISH_FETCH_USD', 'DAZL_TRIAL_TINYFISH_FETCH_USD'],
   'apollo.org': ['DAZL_SCAN_PRICE_APOLLO_ORG_USD'],
@@ -239,7 +239,7 @@ export function runWithTenantSpend<T>(db: DbLike, tenantId: string, fn: () => Pr
 export type UncappedReason = 'offline_eval' | 'test'
 const uncappedStore = new AsyncLocalStorage<UncappedReason>()
 export function runWithoutAccountSpend<T>(reason: UncappedReason, fn: () => Promise<T>): Promise<T> { return uncappedStore.run(reason, fn) }
-const isModel = (kind: string) => kind === 'llm.anthropic' || kind === 'llm.openai'
+const isModel = (kind: string) => kind === 'llm.anthropic' || kind === 'llm.anthropic.web_search' || kind === 'llm.openai'
 // #1167: the account windows a paid step of a scan is counted on. A model call: the scan's accountLimits (null = the runner's own PooledGuard
 // already counts it for an operator-named account, so it is never counted twice). Every OTHER priced step (TinyFish search / fetch past the
 // free allowance, render, the BYOK Apollo / PDL lookups): the same windows, or the named account's own entry when the runner guards its
@@ -320,6 +320,8 @@ const newId = () => randomBytes(10).toString('hex')
 // recorded as the refusal.
 export async function reserveScanSpend(kind: SpendKind, cost: () => number): Promise<SpendHold | null> {
   const ctx = store.getStore()
+  const nativeSearch = kind === 'llm.anthropic.web_search'
+  if (nativeSearch && (!ctx?.claudeOnly || asDb(ctx.db).kind !== 'sqlite')) throw new SpendRefused('qa_provider_disabled')
   // Outside a scan: a model call needs an account context (or the named escape hatch); a non-model step is counted on the account's windows
   // when it runs inside one (#1167), and is otherwise bounded by its own vendor caps (TinyFish's tenant / global daily caps).
   if (!ctx) return isModel(kind) ? reserveAccountSpend(kind, cost) : accountStore.getStore() ? reserveAccountSpend(kind, cost) : null
@@ -348,6 +350,10 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   try {
     refused = await db.tx(function* (t: Tx): TxBody<string | null> {
       let why = early
+      // Native search is pinned to SQLite. This transaction uses BEGIN IMMEDIATE, so distinct jobs
+      // for the same tenant cannot both slip past an in-flight or maybe-billed native search.
+      if (!why && nativeSearch && (yield* t.get("SELECT 1 FROM scan_spend_calls WHERE user_id = ? AND kind = ? AND status = 'reserved' LIMIT 1", [ctx.tenantId, kind])))
+        why = 'native_search_accounting_pending'
       // #1167: the account limit already refused a step of this attempt, or (for a step that is not itself counted on the windows)
       // a window is already at its cap: nothing more is sent. A named account's windows are its own entry's (ownerLimits).
       if (!why && accountStopped.has(ctx)) why = OWNER_POOL_LIMIT_REASON

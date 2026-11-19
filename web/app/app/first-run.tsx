@@ -24,6 +24,9 @@ import type { SourceProgress } from '@/lib/scan/progress'
 
 import { PINNED_FIRST5_CLAUDE_ONLY_MODE } from '@/lib/scan/qa-provider-policy'
 
+const CLAUDE_SEARCH_MODE = 'first5_claude_only_search_v3'
+const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
+
 const CLAUDE_ONLY_SESSION = 'dazl.onboarding.claude-only.v1'
 const CLAUDE_ONLY_COPY = 'Claude only · public sources. No paid profile setup. Dazl caps scan reservations at US$5 or less. Some leads may not have a named contact.'
 
@@ -53,8 +56,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [usage, setUsage] = useState<Usage | null>(null)
   const [step, setStep] = useState<Step>('site')
   const [claudeOnly, setClaudeOnly] = useState(false)
+  const [claudeSearch, setClaudeSearch] = useState(false)
   const chooseClaudeOnly = (enabled: boolean) => {
     setClaudeOnly(enabled)
+    setClaudeSearch(false)
     try {
       if (enabled) window.sessionStorage.setItem(CLAUDE_ONLY_SESSION, '1')
       else window.sessionStorage.removeItem(CLAUDE_ONLY_SESSION)
@@ -97,7 +102,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // The first play started from the ready screen, watched in place: its status and, once done, its ready leads.
   // f5: the fast first scan's view (lib/scan/first5.ts, served by the status route for a mode=first5 job): live
   // per-source progress, candidates so far and the verified leads. null for a job without it (then the leads read is used).
-  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string } | null>(null)
+  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string; claudeSearch: boolean } | null>(null)
 
   // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read). The saved profile's
   // research block comes back too: reopening the editor (?setup=brain) must keep every Add/Dismiss, hold and answer it
@@ -262,23 +267,45 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     } catch { setError('Could not reach the server. Try again.') } finally { setBusy(false) }
   }
 
+  // Consent is per play, not inherited from the saved Claude-only setup.
+  const claudeSearchOption = claudeOnly && (
+    <label className="mt-3 flex items-start gap-2 text-sm text-[var(--ink-2)]">
+      <input type="checkbox" className="mt-1" checked={claudeSearch} disabled={busy}
+        onChange={e => { setClaudeSearch(e.target.checked); setError('') }} data-testid="claude-search-opt-in" />
+      <span><strong>Use Claude Web Search for this play</strong><br />
+        Uses your own Anthropic key, not your free trial. No paid third-party APIs.
+        Target cost is under US$5; actual Anthropic charges can vary and may exceed that estimate.
+      </span>
+    </label>
+  )
+
   // One scan from one sentence: the box, or a suggested play picked with one click (it goes in the box and starts at once).
   async function run(e: React.FormEvent) { e.preventDefault(); await start(ask) }
   async function start(sentence: string, stay = false) {
     if (busy || sentence.trim().length < 3) return
+    const useClaudeSearch = claudeOnly && claudeSearch
+    setClaudeSearch(false)
     setError(''); setTrialRefused(null); setLinkNote(null); setBusy(true)
     try {
       // The sentence and the profile from step 2, as the Leads page sends a reviewed profile. The server validates both;
       // nothing here changes what a scan checks.
       // From the ready screen the first play is the fast first scan (mode first5: the free sources only, the same
       // extraction and checks as every scan), so the first leads come back quickly; a wider, full scan stays one click away.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(claudeOnly ? { mode: PINNED_FIRST5_CLAUDE_ONLY_MODE } : stay ? { mode: 'first5' } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(claudeOnly ? { mode: useClaudeSearch ? CLAUDE_SEARCH_MODE : PINNED_FIRST5_CLAUDE_ONLY_MODE } : stay ? { mode: 'first5' } : {}) }) })
       const j = await r.json().catch(() => ({}))
+      if (useClaudeSearch && r.ok && (!j.job_id || j.provider_policy !== 'claude_only_v1'
+        || j.execution !== 'local_once_v1' || j.web_search_policy !== CLAUDE_SEARCH_POLICY)) {
+        return setError('The server did not confirm the Claude Web Search policy. Check your scan history before trying again.')
+      }
+      if (useClaudeSearch && j.error === 'qa_search_requires_own_key') {
+        return setError('Claude Web Search requires your own Anthropic key in Settings and cannot use the free trial. Nothing started.')
+      }
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
-        if (stay || claudeOnly) { if (claudeOnly) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim() }); return }
+        if (stay || claudeOnly) { if (claudeOnly) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim(), claudeSearch: useClaudeSearch }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
+      if (useClaudeSearch && j.error === 'unknown_mode') return setError('This server does not support Claude Web Search for first play yet. Nothing started.')
       if (claudeOnly && j.error === 'unknown_mode') return setError('This server does not support Claude-only first play yet. Nothing started.')
       if (claudeOnly && (j.error === 'qa_isolation_unavailable' || j.error === 'qa_local_busy')) return setError(j.message || 'The Claude-only worker could not start. Nothing started.')
       if (claudeOnly && j.error === 'qa_provider_disabled') return setError('Claude-only first play requires a Claude key or an eligible free trial. Nothing started.')
@@ -372,7 +399,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
                 <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready to contact.` : f5Found && ready ? `dazl found ${f5Found} lead${f5Found === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (ready?.length ? `dazl found ${ready.length} lead${ready.length === 1 ? '' : 's'} ready to contact.` : readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
-              {claudeOnly && <p className="text-sm mt-4 text-center" data-testid="claude-only-active">{CLAUDE_ONLY_COPY}</p>}
+              {claudeOnly && <p className="text-sm mt-4 text-center" data-testid="claude-only-active">{claudeSearch || first?.claudeSearch ? 'Claude Web Search · No paid profile setup. Some leads may not have a named contact.' : CLAUDE_ONLY_COPY}</p>}
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
               {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
               {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
@@ -433,6 +460,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                       <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} value={sentence} data-testid="first-ask"
                         onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
                     </form>
+                    {claudeSearchOption}
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
                     <div className="mt-2 flex flex-col gap-2">
                       {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy || noPool || poolUnknown || !!trialRefused} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); if (!noPool && !poolUnknown) void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
@@ -465,7 +493,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     </li>)}
                   </ul>}
                   {f5 && !f5Live && f5Found === 0 && <p className="text-sm text-[var(--ink-2)] mt-4" data-testid="f5-message">{f5.message}</p>}
-                  {f5 && !f5Live && f5.can_continue && f5.next && <a className="btn-ghost btn-sm mt-4 inline-flex" href={`/app/leads?q=${encodeURIComponent(first!.query)}`} data-testid="search-wider">{f5.next.label}</a>}
+                  {!first?.claudeSearch && f5 && !f5Live && f5.can_continue && f5.next && <a className="btn-ghost btn-sm mt-4 inline-flex" href={`/app/leads?q=${encodeURIComponent(first!.query)}`} data-testid="search-wider">{f5.next.label}</a>}
                   {!f5 && active && <div className="mt-4" data-testid="first-progress"><Stepper steps={[
                     { label: 'Read your brain and play', state: first!.status === 'pending' ? 'live' : 'done', note: first!.status === 'pending' ? 'Queued' : undefined },
                     { label: 'Search and read sources', state: first!.status === 'running' ? 'live' : first!.status === 'pending' ? 'todo' : 'done', note: first!.status === 'running' ? 'Searching...' : undefined },
@@ -534,7 +562,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
       {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
-        {claudeOnly && <p className="text-xs text-[#555]" data-testid="claude-only-active">{CLAUDE_ONLY_COPY}</p>}
+        {claudeOnly && <p className="text-xs text-[#555]" data-testid="claude-only-active">{claudeSearch ? 'Claude Web Search · No paid profile setup. Some leads may not have a named contact.' : CLAUDE_ONLY_COPY}</p>}
+        {claudeSearchOption}
         <div className="ask">
           <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} />
           <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>

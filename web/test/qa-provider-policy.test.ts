@@ -31,3 +31,18 @@ test('pinned strict mode refuses PG or a queue-managed topology rather than bypa
   assert.equal(strictLocalTopologySupported('sqlite', { DAZL_SCAN_SHARED_QUEUE: '1' }), false)
   assert.equal(strictLocalTopologySupported('sqlite', { DAZL_QUEUE_TENANTS: 'a-tenant' }), false)
 })
+
+test('native search requires exact new mode and a strict pinned first-play budget', async () => {
+  const { NATIVE_SEARCH_FIRST5_CLAUDE_ONLY_MODE: v3, QA_NATIVE_WEB_SEARCH_POLICY: marker, QA_LOCAL_EXECUTION: execution, qaClaudeOnlyNativeSearchJob } = await import('../lib/scan/qa-provider-policy.ts')
+  assert.equal(isFirst5RequestMode(v3), true)
+  const forged = JSON.stringify({ first5: true, web_search_policy: marker })
+  for (const mode of [undefined, FIRST5_CLAUDE_ONLY_MODE, PINNED_FIRST5_CLAUDE_ONLY_MODE, 'first5']) assert.equal(JSON.parse(qaClaudeOnlyBudget(forged, mode)).web_search_policy, undefined)
+  const raw = qaClaudeOnlyBudget(forged, v3)
+  const b = JSON.parse(raw)
+  assert.equal(b.web_search_policy, marker)
+  assert.equal(qaClaudeOnlyNativeSearchJob(raw), false)
+  assert.equal(qaClaudeOnlyNativeSearchJob(JSON.stringify({ ...b, execution })), true)
+  for (const tampered of [{ web_search_policy: true }, { first5: false }, { paid_fallback: true }, { credit_enrichment: true }, { execution: '' }]) {
+    assert.equal(qaClaudeOnlyNativeSearchJob(JSON.stringify({ ...b, execution, ...tampered })), false)
+  }
+})
