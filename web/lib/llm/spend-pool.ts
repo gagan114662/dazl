@@ -124,7 +124,7 @@ function provenLegacyHold(rows: PoolRow[], legacy: LegacyProof[]): (NativeHoldPr
   return { id: p.id, period: marker.period, scan_job_id: p.scan_job_id, created_at: p.created_at, reserve_usd: p.reserve_usd, run_budget: p.run_budget }
 }
 
-function expiredNativePeriods(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string, legacy: LegacyProof[]): Set<string> {
+function fullyRetainedExpiredMarkers(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string, legacy: LegacyProof[]): Set<string> {
   const windowAmounts = new Map(rows.map(r => [r.period, r.reserved_usd]))
   const due = new Map<string, number>(), proven = new Map<string, { job: string; windows: [string, string] }>()
   const old = provenLegacyHold(rows, legacy)
@@ -158,28 +158,31 @@ export async function scanPoolRows(d: DbLike, owner: string, now: number): Promi
   if (db.kind !== 'sqlite') return rows
   const legacy = onlyFailedLegacyMarker(rows) ? await db.all<LegacyProof>(legacyFailedNativeCalls, [owner, cutoff, cutoff]).catch(() => []) : []
   const linked = anyStaleNative(rows, cutoff) ? await db.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)).catch(() => []) : []
-  const ignored = expiredNativePeriods(rows, linked, '', legacy)
-  return rows.filter(r => !ignored.has(r.period))
+  const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, '', legacy)
+  return rows.filter(r => !retainedNonBlocking.has(r.period))
 }
 
 // Once terminal provenance exists, even a delayed legacy callback may not release or reprice its pool hold.
 function* assertLegacySettlementAllowed(t: Tx, owner: string, period: string, now: number): TxBody<void> {
   if (t.kind !== 'sqlite' || !legacyMarker.test(period)) return
-  try {
-    // Unlike admission, this check must still reject a late callback if an unrelated new marker
-    // is present, or if retention has removed the old scan job but left its attested call.
-    const sealed = yield* t.get("SELECT 1 FROM scan_spend_calls WHERE user_id = ? AND kind = 'llm.anthropic.web_search' AND status = 'reserved' AND reason = ? LIMIT 1",
-      [owner, 'native_legacy_link:' + period])
-    if (sealed) throw new SpendRefused('ownership_lost')
-    const rows = yield* t.all<PoolRow>(allPoolRows, [owner])
-    if (onlyFailedLegacyMarker(rows)?.period !== period) return
-    const legacy = yield* t.all<LegacyProof>(legacyFailedNativeCalls, [owner, now, now])
-    if (provenLegacyHold(rows, legacy)?.period === period) throw new SpendRefused('ownership_lost')
-  } catch (e) {
-    if (e instanceof SpendRefused) throw e
-    // Other callers can use a pre-native engine schema with no scan report/ledger tables. No positive evidence
-    // here is never a reason to alter their existing settlement contract.
-  }
+  // Old native proof and seals apply only to failed marker rows. Normal pending generic work, including a
+  // provider-refused call whose reserve is kept, must not require the scan schema to settle its own hold.
+  const failed = yield* t.get('SELECT 1 FROM tenant_spend_pools WHERE tenant_id = ? AND period = ? AND updated_at = 0 AND calls = 0 AND reported_usd = 0 AND reserved_usd > 0',
+    [owner, period])
+  if (!failed) return
+  // Some SQLite Db clients legitimately contain only the owner pool. A seal or native report cannot exist there.
+  // A yielded SQL statement failure aborts Db.tx; inspect schema before referencing an optional table.
+  const tables = new Set((yield* t.all<{ name: string }>('PRAGMA table_list')).map(row => row.name))
+  if (!tables.has('scan_spend_calls')) return
+  // Unlike admission, reject a sealed late callback even if another marker now exists or its job was removed.
+  const sealed = yield* t.get("SELECT 1 FROM scan_spend_calls WHERE user_id = ? AND kind = 'llm.anthropic.web_search' AND status = 'reserved' AND reason = ? LIMIT 1",
+    [owner, 'native_legacy_link:' + period])
+  if (sealed) throw new SpendRefused('ownership_lost')
+  if (!['scan_jobs', 'scan_run_report', 'scan_source_runs', 'scan_model_calls'].every(table => tables.has(table))) return
+  const rows = yield* t.all<PoolRow>(allPoolRows, [owner])
+  if (onlyFailedLegacyMarker(rows)?.period !== period) return
+  const legacy = yield* t.all<LegacyProof>(legacyFailedNativeCalls, [owner, now, now])
+  if (provenLegacyHold(rows, legacy)?.period === period) throw new SpendRefused('ownership_lost')
 }
 
 export interface SharedPool {
@@ -267,11 +270,11 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
             if (anyStaleNative(rows, cutoff)) {
               try { linked = yield* t.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)) } catch { /* no provenance: do not ignore the marker */ }
             }
-            const cleared = expiredNativePeriods(rows, linked, scanJobId!, legacy)
+            const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, scanJobId!, legacy)
             const proved = provenLegacyHold(rows, legacy)
-            if (proved && cleared.has(proved.period)) legacySeal = proved
+            if (proved && retainedNonBlocking.has(proved.period)) legacySeal = proved
             let oldest = Infinity
-            for (const p of rows) if (p.period.startsWith('p:') && !cleared.has(p.period)) oldest = Math.min(oldest, Number(p.updated_at))
+            for (const p of rows) if (p.period.startsWith('p:') && !retainedNonBlocking.has(p.period)) oldest = Math.min(oldest, Number(p.updated_at))
             if (oldest !== Infinity) throw new SpendRefused(oldest <= nowS - PENDING_STALE_S ? 'accounting_unsettled' : 'busy')
           }
           for (const [w, limit] of ws) {

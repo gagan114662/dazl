@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { bothEngines } from './helpers/engines.ts'
-import { sharedPool, poolRows, periodOf, ownerLimits } from '../lib/llm/spend-pool.ts'
+import { sharedPool, poolRows, periodOf, ownerLimits, migrateSpendPools } from '../lib/llm/spend-pool.ts'
 import { PooledGuard, SpendGuard, SpendRefused, reserveAllUsd, settleAll } from '../lib/llm/spend-guard.ts'
 import { pgDb, sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateScan } from '../lib/scan/store.ts'
@@ -232,4 +232,23 @@ bothEngines('a failed settle moves no local total; the retry moves each guard on
     // A settled to 0.6 + delta, B's 0.4 still outstanding, on every guard and in the store.
     for (const [got, label] of [[job.reservedUsd, 'job'], [saved, 'job saved'], [pool.reservedUsd, 'pooled local'], [(await reserved(db, owner))['d:2026-10-29'], 'store']] as [number, string][]) near(got, 1 + delta, `${what}: ${label} after retry`)
   }
+})
+
+test('a generic SQLite owner pool with no scan tables can settle and exhaust its own failed markers', async () => {
+  const raw = new Database(':memory:')
+  try {
+    migrateSpendPools(raw)
+    const db = sqliteDb(raw)
+    assert.equal(raw.prepare("SELECT 1 FROM sqlite_master WHERE name='scan_spend_calls'").get(), undefined)
+    const p = sharedPool(db, 'simple-owner', { day: 1, month: 2 }, () => T0, 0)
+    const a = 'abcdef0123', b = '0123abcdef'
+    await p.reserve(0.2, T0, a); await p.markFailed(a)
+    await p.settle(-0.1, 0.1, T0, a)
+    await p.reserve(0.2, T0, b); await p.markFailed(b)
+    await p.exhaust(T0, b)
+    const rows = await poolRows(db, 'simple-owner')
+    assert.deepEqual(rows.map(r => [r.period, Math.round(r.reserved_usd * 10) / 10, r.reported_usd]), [
+      [periodOf('day', T0), 1, 0.1], [periodOf('month', T0), 0.3, 0.1],
+    ])
+  } finally { raw.close() }
 })
