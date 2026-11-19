@@ -43,6 +43,11 @@ export function playName(query: string | null, icp: PlayIcp | null): string {
   return cap(words.slice(0, 6).join(' ') + (words.length > 6 ? '...' : ''))
 }
 
+// Saved searches derive their identity from the request, never the profile shared by other plays.
+export function savedPlayTitle(query: string, full = false): string {
+  return full ? query.replace(/\s+/g, ' ').trim() : playName(query, null)
+}
+
 export type PlayStatus = 'live' | 'paused' | 'running' | 'done' | 'failed'
 // Status chip and the Pace row. A weekly watch on the same request makes the play Live (or Paused); with the watch list
 // read and none for it, it ran once. `watches === null` means the list could not be read: the schedule is then unknown,
