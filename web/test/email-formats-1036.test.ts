@@ -1,11 +1,15 @@
 // #1036: learned company email formats (per tenant, from addresses already confirmed), the honest guessed-address labels, and the
-// mailbox-check counter. Synthetic SQLite, invented companies and people, no provider, no network, no key.
+// mailbox-check counter. Synthetic data and no providers; one SQL-compatibility check uses loopback Postgres.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import pg from 'pg'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { pgRejects, sqlSitesIn } from '../lib/db/sql-audit.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { findWorkEmail, workEmailPageRead, workEmailsFor } from '../lib/people/work-email.ts'
@@ -14,6 +18,7 @@ import { reserveVerifySlot, VerifySlotRefused } from '../lib/people/email-patter
 import { mailboxCheckUsage } from '../lib/people/verify-usage.ts'
 import { guessCopy, type GuessShown } from '../lib/people/work-email-eligible.ts'
 import { PRIVACY } from '../lib/legal/policy.ts'
+import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 
 const NOW = 1_800_000_000
 const SITE = 'harbordental.example'
@@ -363,4 +368,23 @@ test('#1036 review c0a39f1d: the Leads page read carries every lead\'s stored gu
   assert.match(panel, /if \(!lazy && !hasInitial\) load\(\)/, 'no per-lead GET on mount when the page already read')
   assert.match(panel, /if \(initialGuesses !== seenGuesses\) \{ setSeenGuesses\(initialGuesses\); if \(Array\.isArray\(initialGuesses\)\) setGuesses\(guessMap\(initialGuesses\)\) \}/, 'a re-read list replaces the guesses, adjusted while rendering')
   assert.match(readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8'), /guesses: workEmailPage\.guesses\?\.\[leadId\] \?\? NO_GUESSES/)
+})
+
+
+test('Postgres prepares the exact production SQL for selecting unchecked work-email candidates', { skip: pgSkip }, async () => {
+  const root = join(import.meta.dirname, '..')
+  const sites = sqlSitesIn(join(root, 'lib', 'people', 'email-pattern.ts'), root)
+    .filter(site => site.sql.startsWith('SELECT address FROM email_candidates WHERE tenant_id =') && site.sql.includes("verification = 'none'"))
+  assert.equal(sites.length, 1, 'the production candidate selector must be part of this test')
+  assert.equal(sites[0].dynamic, false, "the production candidate selector must be statically auditable")
+  const schema = await freshSchema()
+  const pool = new pg.Pool({ connectionString: PG_URL, max: 1, options: `-c search_path=${schema.schema}` })
+  try {
+    await runPgMigrations(pool)
+    const client = await pool.connect()
+    try {
+      const rejects = await pgRejects(client, sites)
+      assert.deepEqual(rejects.map(reject => reject.error), [])
+    } finally { client.release() }
+  } finally { await pool.end(); await schema.drop() }
 })
