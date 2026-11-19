@@ -68,8 +68,9 @@ export function personalAddresses(html: string, site: string, trackCase = false)
     if (trackCase) {
       const start = m.index, end = start + m[0].length
       const left = html.slice(Math.max(0, start - 1), start)
-      const right = html.slice(end, end + 2)
-      if ((left && !/[\s>]/u.test(left)) || (right && !/^(?:[\s<]|[.,;!?](?:[\s<]|$))/u.test(right))) continue
+      const right = html.slice(end, end + 3)
+      const parenthesized = left === '(' && /^\)(?:[\s<]|[.,;!?](?:[\s<]|$)|$)/u.test(right)
+      if (!parenthesized && ((left && !/[\s>]/u.test(left)) || (right && !/^(?:[\s<]|[.,;!?](?:[\s<]|$))/u.test(right)))) continue
     }
     const local = m[1].toLowerCase(), domain = m[2].toLowerCase()
     if (!sameSite(domain, site) || ROLE.test(local.replace(/[._-]/g, ''))) continue

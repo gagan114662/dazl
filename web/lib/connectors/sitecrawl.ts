@@ -774,6 +774,26 @@ function publishedDisplayOffice(pages: LocationPage[], where: string[], company:
   const postal = country === 'CA' ? ca : gb
   const key = norm(company)
   const placeNames = new Set(geoTerms(where).map(norm))
+  const regionGroups = country === 'CA' ? [
+    ['AB', 'Alberta'], ['BC', 'British Columbia'], ['MB', 'Manitoba'], ['NB', 'New Brunswick'],
+    ['NL', 'Newfoundland and Labrador'], ['NS', 'Nova Scotia'], ['NT', 'Northwest Territories'], ['NU', 'Nunavut'],
+    ['ON', 'Ontario'], ['PE', 'Prince Edward Island'], ['QC', 'Quebec', 'Québec'], ['SK', 'Saskatchewan'], ['YT', 'Yukon'],
+  ] : [['England'], ['Northern Ireland'], ['Scotland'], ['Wales']]
+  const regionOf = (value: string) => regionGroups.findIndex(names => names.some(name => norm(name) === norm(value)))
+  const preciseRegions = (value: string) => new Set(value.split(',').map(part => regionOf(part.trim())).filter(i => i >= 0))
+  const requestedRegions = preciseRegions(where.join(','))
+  const officeHeading = (heading: string, address: string) => {
+    const qualified = /^([^,]+),\s*([^,]+)$/.exec(heading)
+    if (!qualified) return placeNames.has(norm(heading))
+    if (!placeNames.has(norm(qualified[1])) || placeAgreement(heading, where, company) !== 'agrees') return false
+    const region = regionOf(qualified[2])
+    // Postal shape establishes country, not province or nation. Require an unambiguous region in the
+    // postal address itself rather than treating the heading as a second standalone place match.
+    if (region < 0) return placeNames.has(norm(heading))
+    const addressRegions = preciseRegions(address.replace(postal, ','))
+    return addressRegions.size === 1 && addressRegions.has(region) &&
+      (requestedRegions.size === 0 || (requestedRegions.size === 1 && requestedRegions.has(region)))
+  }
   const office = (text: string) => !FOREIGN_SUBJECT.test(text) && postal.test(text) && streetKeys(text).length > 0 &&
     placeAgreement(text, where, company) === 'agrees' && !ownAddressElsewhere(text, where)
   const declaresOwner = (text: string) => {
@@ -785,7 +805,7 @@ function publishedDisplayOffice(pages: LocationPage[], where: string[], company:
       OFFICE_CLAIM.test(words.slice(i+1).join(' ')))
   }
   return key.length >= 3 && pages.some(p => p.statements.some(s => office(s) && declaresOwner(s)) ||
-    p.offices.some(o => o.ownSection && placeNames.has(norm(o.heading)) && office(o.address)))
+    p.offices.some(o => o.ownSection && officeHeading(o.heading, o.address) && office(o.address)))
 }
 
 function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean): LocationProof | undefined {
@@ -1207,8 +1227,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const leads = (supplied ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
+    try {
+      const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null } | undefined
+      const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null
+      if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string')
+    } catch { /* no ICP: evidence places only */ }
+    // The display-only importer is optional. A missing policy must not erase ordinary crawl geography.
     let publishedDisplayOnly = false
-    try { const j = db.prepare('SELECT icp, run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null; run_budget: string | null } | undefined; publishedDisplayOnly = qaClaudeOnlyJob(j?.run_budget); const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { /* no ICP: evidence places only */ }
+    if (deps.nativeOnly && !deps.leads) {
+      try {
+        const j = db.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { run_budget: string | null } | undefined
+        publishedDisplayOnly = qaClaudeOnlyJob(j?.run_budget)
+      } catch { /* no policy: no display import */ }
+    }
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
     // One crawl per site per run. Another lead on the same domain is NOT skipped: its own identity check runs against the cached homepage
     // text (same name test, per lead), and it reuses the pages already read, so no extra fetch and no extra budget. Only when the first lead's
@@ -1219,7 +1250,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const localsBySite = new Map<string, Set<string>>()
     const displaySeenBySite = new Map<string, Map<string, { address: string; url: string; ctx: AddressContext[]; literalLocals?: Set<string> }>>()
-    const displayCountry = publishedDisplayOnly && deps.nativeOnly && !deps.leads ? publishedDisplayCountry(where) : null
+    const displayCountry = publishedDisplayOnly ? publishedDisplayCountry(where) : null
     if (displayCountry) withdrawPublishedDisplay(db, tenantId, leads.map(l => l.id))
     const seenBySite = new Map<string, Map<string, { address: string; url: string; ctx?: AddressContext[] }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
@@ -1245,7 +1276,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
       const onPage = (html: string, url: string, status: number) => {
         if (displayCountry && status === 200) {
-          const visible = html.replace(/<!--[\s\S]*?(?:-->|$)|<(script|style|noscript|svg|template|blockquote)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+          // Display-only observations require the literal address; do not decode obfuscation here.
+          // An opaque token prevents both joining fragments and treating a partial token as a whole address.
+          const visible = html.replace(/<!--[\s\S]*?(?:-->|$)|<(script|style|noscript|svg|template|blockquote)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '\uFFFC')
           for (const a of personalAddresses(visible, cand, true)) {
             if (displaySeen.size >= 200) break
             displaySeen.set(`${url}|${a.address}`, { address: a.address, url, ctx: addressContexts(visible, a.at), literalLocals: a.literalLocals })

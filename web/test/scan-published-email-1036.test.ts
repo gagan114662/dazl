@@ -95,6 +95,37 @@ test('strict Toronto and UK crawls record a visibly co-published name/email sole
       assert.equal((enrichmentsForLeads(db, 'T', [lead])[lead] ?? []).some(e => e.kind === 'email' && e.value === 'maya@bluebonnetrealty.com'), false)
       assert.deepEqual(db.prepare('SELECT address FROM email_candidates WHERE lead_id=?').all(lead), [])
       const teamPage = pages['/team'], homePage = pages['/']
+      pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', '(maya@bluebonnetrealty.com)')
+      await run(); verify()
+      pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', '(ümaya@bluebonnetrealty.com)')
+      await run(); assert.deepEqual(saved(), [], 'Paired punctuation must not permit a truncated EAI local part')
+      pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', 'maya [at] bluebonnetrealty [dot] com')
+      await run(); assert.deepEqual(saved(), [], 'Reconstructed addresses do not qualify as literal evidence')
+      for (const hidden of ['<!-- split -->', '<script>0</script>']) {
+        for (const splitAddress of [`ma${hidden}ya@bluebonnetrealty.com`, `ü${hidden}maya@bluebonnetrealty.com`]) {
+          pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', splitAddress)
+          await run(); assert.deepEqual(saved(), [], 'Hidden markup must never join fragments or delimit a partial address')
+        }
+      }
+      pages['/team'] = teamPage
+      {
+        const canada = location === 'Toronto, Canada'
+        pages['/'] = html(`<p>Bluebonnet Realty has been serving its local community and helping businesses and families for many years.</p><a href="/team">Our Team</a><a href="/contact">Contact</a>`)
+        const contact = pages['/contact']
+        const postal = canada ? address : '100 Example Road, London, England NW1 6XE, UK'
+        const office = (heading: string, section = 'Our offices', publishedPostal = postal) => html(`<h2>${section}</h2><h3>${heading}</h3><address>${publishedPostal}</address>`)
+        const matchingHeading = canada ? 'Toronto, ON' : 'London, England'
+        pages['/contact'] = office(matchingHeading)
+        await run(); verify()
+        const mismatched = canada ? ['Toronto, TX', 'Toronto, BC', 'Toronto, Quebec'] : ['London, Scotland', 'London, Wales']
+        for (const markup of [...mismatched.map(heading => office(heading)), office(matchingHeading, 'Client offices'),
+          office(matchingHeading, 'Our offices', canada ? '100 Example Ave, Toronto M5V 2T6, Canada' : address)]) {
+          pages['/contact'] = markup
+          await run(); assert.deepEqual(saved(), [], 'Neither another jurisdiction nor a client office qualifies')
+        }
+        pages['/contact'] = contact
+        pages['/'] = homePage
+      }
       for (const prefix of ['ü', '😀', '&#252;']) {
         pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', `${prefix}maya@bluebonnetrealty.com`)
         await run(); assert.deepEqual(saved(), [], 'Never parse an address as an ASCII suffix of an internationalized local part')
