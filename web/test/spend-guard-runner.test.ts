@@ -15,7 +15,9 @@ import { migrateEvents } from '../lib/events/store.ts'
 import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import { GRADING_FAILED_WHY } from '../lib/scan/score.ts'
+import { heldFitLabel, ICP_BUDGET_WHY } from '../lib/scan/scoring-budget.ts'
+import { readScanStatus } from '../lib/scan/status-read-service.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -105,9 +107,18 @@ test('#850: when the refused call is lead grading (extraction reported no usage)
   assert.ok(control.calls.maxTokens.includes(2500), 'fixture precondition: with usage reported, grading runs')
   const x = await run('{"max_usd":5}', 'claude-sonnet-4-5', true, false, false, null, 'ok', m => m === 300, true)
   assert.ok(!x.calls.maxTokens.includes(2500), 'the grading call was refused, not sent')
-  const leads = x.db.prepare('SELECT fit, why FROM leads').all() as { fit: number | null; why: string | null }[]
+  const leads = x.db.prepare('SELECT fit, intent, action, why FROM leads').all() as { fit: number | null; intent: number | null; action: number | null; why: string | null }[]
   assert.ok(leads.length > 0, 'fixture precondition: the scan stored leads')
-  for (const l of leads) { assert.equal(l.fit, 0); assert.ok(l.why?.includes(GRADING_FAILED_WHY), l.why ?? 'no why') }
+  const { id } = x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }
+  const status = await readScanStatus(sqliteDb(x.db), 'A', id)
+  assert.deepEqual(status?.scoring_budget_holds, [{ stage: 'icp_grading', reason: 'over_limit', requested_max_usd: 5 }])
+  for (const l of leads) {
+    assert.equal(l.fit, 0)
+    assert.equal(l.intent, null)
+    assert.equal(l.action, null)
+    assert.ok(l.why?.includes(ICP_BUDGET_WHY), l.why ?? 'no why')
+    assert.equal(heldFitLabel(l.fit, l.intent, l.why), 'Not graded (spending limit)')
+  }
 })
 
 test('a retry after a failed attempt is not allowed in budget mode: attempts never multiply the spend', async () => {

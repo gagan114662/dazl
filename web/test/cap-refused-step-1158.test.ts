@@ -33,7 +33,7 @@ bothEngines('#1158 historical cost line reports recorded paid refusals without i
   assert.match(copy, /1 page fetch(?:es)? refused by the applicable per-scan spending cap/)
   assert.match(copy, /1 web search(?:es)? refused by this run’s spending limit/)
   assert.doesNotMatch(copy, /raising|0\.093|ownership|render|12 paid/)
-  assert.deepEqual(s.scoring_budget_holds, [])
   assert.equal(await readScanStatus(db, 'B', id), undefined)
   assert.match(emptyLeadsMessage('done', 0, 1, 0, 0, s.scoring_budget_holds.some(h => h.stage === 'icp_grading'))!, /1 lower-fit lead/)
+  assert.deepEqual(s.scoring_budget_holds, [])
 })
