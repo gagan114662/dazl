@@ -31,13 +31,15 @@ export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup
       res => {
         const status = res.statusCode ?? 0
         if (status >= 300 && status < 400) { res.resume(); const loc = res.headers.location; return resolve(typeof loc === 'string' && loc ? { status, body: '', location: loc } : { status, body: '' }) }
+        const type = res.headers['content-type']
+        const meta = typeof type === 'string' ? { contentType: type } : {}
         const chunks: Buffer[] = []
         let n = 0
         res.on('data', (c: Buffer) => {
           n += c.length
-          if (n > MAX_BYTES) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), truncated: true }) } else chunks.push(c)
+          if (n > MAX_BYTES) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8'), truncated: true, ...meta }) } else chunks.push(c)
         })
-        res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8') }))
+        res.on('end', () => resolve({ status, body: Buffer.concat(chunks).toString('utf8'), ...meta }))
         res.on('error', () => resolve(null))
         res.on('close', () => resolve(null)) // no-op once already settled
       },

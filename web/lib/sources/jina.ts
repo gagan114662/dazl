@@ -10,8 +10,18 @@ import { classifyThin, htmlToText } from '../scan/fetch-page.ts'
 const WINDOW_MS = 60 * 60 * 1000
 const MAX_CALLS = Number(process.env.SOURCES_JINA_PER_HOUR || 120)
 const PER_SCAN = 3
+const MAX_CACHED_QUOTES = 128
 const calls: number[] = []
 const cache = new Map<string, { at: number; items: Evidence[] }>()
+
+function rememberQuote(key: string, val: { at: number; items: Evidence[] }) {
+  cache.delete(key)
+  if (cache.size >= MAX_CACHED_QUOTES) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+  cache.set(key, val)
+}
 
 export function resetJinaState() { calls.length = 0; cache.clear() }
 
@@ -63,8 +73,9 @@ export const jinaAdapter: SourceAdapter = {
   async collect({ keywords, pages = [], http, note }) {
     const out: Evidence[] = []
     const viaJina = paidVendorOn('jina')
+    const terms = [...new Set(keywords.map(k => k.trim().toLowerCase()).filter(Boolean))].sort()
     for (const page of pages.slice(0, PER_SCAN)) {
-      const cacheKey = (viaJina ? 'jina:' : 'direct:') + page
+      const cacheKey = JSON.stringify([viaJina ? 'jina' : 'direct', page, terms])
       const hit = cache.get(cacheKey)
       if (hit && Date.now() - hit.at < 15 * 60 * 1000) { out.push(...hit.items); continue }
       if (!viaJina) {
@@ -72,15 +83,15 @@ export const jinaAdapter: SourceAdapter = {
         if (!r) { note?.('unreachable'); continue }
         if (r.status !== 200) { note?.(statusNote(r.status)); continue }
         if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
-        if (!looksLikeHtml(r.body)) { note?.('malformed'); continue }
+        if (!/^(text\/html|application\/xhtml\+xml)$/i.test(r.contentType?.split(';', 1)[0]?.trim() ?? '') || !looksLikeHtml(r.body)) { note?.('malformed'); continue }
         const { text, title, published } = htmlToText(r.body)
         // a bot wall or a JS-only shell is not a reading of the page (the verifier's fetch refuses the same pages)
         const thin = classifyThin(r.body, text)
         if (thin) { note?.(thin === 'blocked' ? 'challenge' : 'js_required'); continue }
-        const quote = pickQuote(text, keywords)
+        const quote = pickQuote(text, terms)
         if (quote.length < 20) { note?.('no_readable_text'); continue }
         const items = [{ source: 'web', url: page, title: title || page, quote, date: published }]
-        cache.set(cacheKey, { at: Date.now(), items })
+        rememberQuote(cacheKey, { at: Date.now(), items })
         out.push(...items)
         continue
       }
@@ -96,10 +107,10 @@ export const jinaAdapter: SourceAdapter = {
       // is not a reading of the page; a page with no readable passage is noted, never a silent nothing.
       if (!isReaderEnvelope(r.body)) { note?.(looksLikeHtml(r.body) ? 'challenge' : 'malformed'); continue }
       const { title, published, content } = parseReader(r.body)
-      const quote = pickQuote(content, keywords)
+      const quote = pickQuote(content, terms)
       if (quote.length < 20) { note?.('no_readable_text'); continue }
       const items = [{ source: 'web', url: page, title: title || page, quote, date: published }]
-      cache.set(cacheKey, { at: now, items })
+      rememberQuote(cacheKey, { at: now, items })
       out.push(...items)
     }
     return out

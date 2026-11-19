@@ -17,7 +17,7 @@ test('web pages source: read directly by dazl, never through r.jina.ai, unless J
   const PAGE = 'https://kestreldental.example/news/second-office'
   const html = '<html><head><title>Kestrel Dental opens a second office</title></head><body><p>Kestrel Dental opened its second dental office in Brooklyn this month, with six new chairs.</p></body></html>'
   const asked: string[] = []
-  const http = async (url: string) => { asked.push(url); return url === PAGE ? { status: 200, body: html } : null }
+  const http = async (url: string) => { asked.push(url); return url === PAGE ? { status: 200, body: html, contentType: 'text/html' } : null }
   await withProcessEnv('', async () => {
     resetJinaState()
     assert.match(jinaAdapter.label, /read directly by dazl/)
@@ -27,7 +27,7 @@ test('web pages source: read directly by dazl, never through r.jina.ai, unless J
     // a bot wall is noted, never a quote (council review)
     resetJinaState(); const notes: string[] = []
     const wall = '<html><head><title>Just a moment...</title></head><body>Checking your browser before accessing kestreldental.example. This process is automatic. Please enable JavaScript and cookies to continue.</body></html>'
-    const walled = await jinaAdapter.collect({ query: 'q', keywords: ['dental'], feeds: [], pages: [PAGE], http: async () => ({ status: 200, body: wall }), note: c => notes.push(c) })
+    const walled = await jinaAdapter.collect({ query: 'q', keywords: ['dental'], feeds: [], pages: [PAGE], http: async () => ({ status: 200, body: wall, contentType: 'text/html' }), note: c => notes.push(c) })
     assert.deepEqual(walled, []); assert.ok(notes.length === 1 && ['challenge', 'js_required'].includes(notes[0]), JSON.stringify(notes))
   })
   await withProcessEnv('jina', async () => {
