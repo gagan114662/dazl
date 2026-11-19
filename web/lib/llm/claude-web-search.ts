@@ -1,3 +1,5 @@
+import { LLM_TIMEOUT_MS } from './provider.ts'
+
 // Dedicated opt-in Claude-owned search. No generic research activation, credentials or side effects at import.
 export const CLAUDE_SEARCH_MODEL = 'claude-sonnet-4-5-20250929'
 export const CLAUDE_SEARCH_MAX_USES = 2
@@ -7,7 +9,7 @@ const INITIAL_TOKEN_FACTOR = 1.2 // Anthropic calls count_tokens an estimate; th
 const ASSUMED_TOOL_OVERHEAD = 1_000 // count_tokens rejects server tools; local allowance for the uncounted tool prompt.
 const USD_PER_SEARCH = 0.01
 const MICROS = 1_000_000
-export const CLAUDE_SEARCH_TIMEOUT_MS = 150_000
+const CLAUDE_SEARCH_TIMEOUT_MS = Math.min(150_000, LLM_TIMEOUT_MS)
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
 const MAX_PROMPT_BYTES = 24_000
 const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
