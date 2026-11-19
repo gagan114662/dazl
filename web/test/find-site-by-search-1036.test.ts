@@ -79,6 +79,21 @@ test('crawlJob: no site linked -> the searched host is read and recorded with th
   assert.ok((db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'email'").all() as { value: string }[]).some(r => r.value === 'hello@harbordental.example'))
 })
 
+test('crawlJob: native automatic crawl retains tenant-owned ICP geography without the optional display policy column', async () => {
+  const db = seed()
+  try {
+    const hr = 'harbordental.example'
+    const asked: string[][] = []
+    await crawlJob(db, 't1', 'j1', {
+      get: siteGet({ [hr]: HOME('Harbor Dental') }), gapMs: 0, env: {}, nativeOnly: true,
+      findSites: async (_company, where) => { asked.push(where); return [hr] },
+    })
+    assert.deepEqual(asked, [['Austin, Texas']])
+    assert.deepEqual(domains(db), [`${hr}|name_probe`])
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'published_work_email_display'").get(), undefined)
+  } finally { db.close() }
+})
+
 test('crawlJob: a searched host that is another company (name absent) or the right name in another place is refused; without findSites nothing changes', async () => {
   const db = seed()
   await crawlJob(db, 't1', 'j1', { get: siteGet({ 'zenith.example': HOME('Zenith Plumbing') }), gapMs: 0, env: {}, findSites: async () => ['zenith.example'] })

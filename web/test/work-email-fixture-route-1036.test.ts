@@ -14,6 +14,7 @@ test('#1036 staging work-email fixture and strict-origin published-only route: s
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /(?:#|ℹ) pass 4\b/); assert.match(r.stdout, /(?:#|ℹ) fail 0/)
+  assert.match(r.stdout, /(?:#|ℹ) pass 5\b/); assert.match(r.stdout, /(?:#|ℹ) fail 0/)
   assert.match(r.stdout, /strict-origin work email route serves published-only GET\/POST/)
+  assert.match(r.stdout, /Canada and UK named first-party email is display only/)
 })

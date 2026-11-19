@@ -35,6 +35,7 @@ import { SpendRefused } from '../llm/spend-guard.ts'
 import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { guessFromLearnedFormat, guessFor, guessesForLeads, type GuessView } from './email-formats.ts'
+import { publishedDisplayCountry, publishedDisplayRows } from './published-display.ts'
 import { splitName, emailGuessEnabled, publishedCandidateFor, publishedCandidateRowsForLeads, publishedNameKey, selectPublishedCandidate, type PublishedCandidateRow, verifyCandidates, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
@@ -157,11 +158,13 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
     const strict = owned.filter(l => qaClaudeOnlyJob(l.run_budget))
     const strictIds = strict.map(l => l.id)
     const enriched = enrichmentsForLeads(db, tenantId, strictIds)
-    const candidates = publishedCandidateRowsForLeads(db, tenantId, strictIds)
-    for (const l of strict) {
+    const projected = strict.map(l => ({ l, ctx: workEmailTargetContext(l, enriched[l.id] ?? [], now) }))
+    const idsFor = (country: 'CA' | 'GB' | null) => projected.filter(r => r.ctx && publishedDisplayCountry(r.ctx.where) === country).map(r => r.l.id)
+    const candidates = { ...publishedCandidateRowsForLeads(db, tenantId, idsFor(null)),
+      ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
+    for (const { l, ctx } of projected) {
       out[l.id] = []
       if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
-      const ctx = workEmailTargetContext(l, enriched[l.id] ?? [], now)
       if (!ctx) continue
       out[l.id] = ctx.people.map(person => strictPublishedRow(targetKey(person), person.name, ctx, candidates[l.id] ?? [], now)).filter(r => r.status === 'published')
     }
@@ -223,7 +226,7 @@ function strictPublishedRow(target: string, name: string, ctx: NonNullable<Retur
     } catch { return false }
   }
   const pub = candidate && candidate.address.length <= 254 && PUBLISHED_EMAIL_RE.test(candidate.address) && sameSite(domainOf(candidate.address), ctx.site) && firstParty(candidate.url) ? candidate : null
-  return { target, status: pub ? 'published' : 'not_found', provider: pub ? 'site' : null, address: pub?.address.toLowerCase() ?? null,
+  return { target, status: pub ? 'published' : 'not_found', provider: pub ? 'site' : null, address: (pub && (publishedDisplayCountry(ctx.where) ? pub.address : pub.address.toLowerCase())) || null,
     source_url: pub?.url ?? null, checked_at: null, updated_at: now,
     detail: pub ? 'printed on the company website' : matches > 1
       ? 'Multiple eligible people share this name. The company publication does not distinguish them; no broker or mailbox check ran.'
@@ -338,7 +341,9 @@ async function lookupWorkEmail(
   const person = ctx.people.find(p => targetKey(p) === target)
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
   if (derived.publishedOnly) {
-    const row = strictPublishedRow(target, person.name, ctx, publishedCandidateRowsForLeads(db, tenantId, [lead.id])[lead.id] ?? [], now)
+    const country = publishedDisplayCountry(ctx.where)
+    const candidates = country ? publishedDisplayRows(db, tenantId, country, [lead.id]) : publishedCandidateRowsForLeads(db, tenantId, [lead.id])
+    const row = strictPublishedRow(target, person.name, ctx, candidates[lead.id] ?? [], now)
     return { status: row.status, row, replayed: false }
   }
   migrateWorkEmail(db)

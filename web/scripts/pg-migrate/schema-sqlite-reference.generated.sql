@@ -672,6 +672,16 @@ CREATE TABLE preview_claims (
     claimed_at INTEGER
   );
 
+CREATE TABLE published_work_email_display (
+    tenant_id TEXT NOT NULL,
+    lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    jurisdiction TEXT NOT NULL CHECK (jurisdiction IN ('CA','GB')),
+    person TEXT NOT NULL CHECK (length(person) <= 120),
+    address TEXT NOT NULL CHECK (length(address) <= 254),
+    source_url TEXT NOT NULL CHECK (length(source_url) <= 500),
+    PRIMARY KEY (tenant_id, lead_id, person, address)
+  );
+
 CREATE TABLE rate_limits (
       key TEXT PRIMARY KEY CHECK (length(key) <= 300),
       count INTEGER NOT NULL,
@@ -1602,6 +1612,8 @@ CREATE TRIGGER tomb_play_alerts BEFORE INSERT ON play_alerts BEGIN SELECT NEW.te
 
 CREATE TRIGGER tomb_play_research_sources BEFORE INSERT ON play_research_sources BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_published_work_email_display BEFORE INSERT ON published_work_email_display BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_reopen_messages BEFORE INSERT ON reopen_messages BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_reply_drafts BEFORE INSERT ON reply_drafts BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1803,6 +1815,8 @@ CREATE TRIGGER tomb_upd_outreach_signal_context BEFORE UPDATE OF tenant_id ON ou
 CREATE TRIGGER tomb_upd_play_alerts BEFORE UPDATE OF tenant_id ON play_alerts BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_play_research_sources BEFORE UPDATE OF tenant_id ON play_research_sources BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_published_work_email_display BEFORE UPDATE OF tenant_id ON published_work_email_display BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_reopen_messages BEFORE UPDATE OF tenant_id ON reopen_messages BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

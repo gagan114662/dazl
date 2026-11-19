@@ -62,3 +62,84 @@ test('nothing for an address in another person\'s card, for a first-name address
   const ca = await scan({}, TEAM, ['Toronto, ON'], `<html><body>${PROSE}<p>Bluebonnet Realty, 100 Example Ave, Toronto, ON M5V 2T6, Canada</p><a href="/team">Our Team</a><a href="/contact">Contact</a></body></html>`)
   assert.ok(!ca.emails.some(e => e.value === 'maya@bluebonnetrealty.com'), 'a non-US site keeps no personal address, so none is shown')
 })
+
+test('strict Toronto and UK crawls record a visibly co-published name/email solely in the display table', async () => {
+  const { qaClaudeOnlyBudget } = await import('../lib/scan/qa-provider-policy.ts')
+  const { workEmailPageRead } = await import('../lib/people/work-email.ts')
+  for (const [location, address] of [
+    ['Toronto, Canada', '100 Example Ave, Toronto, ON M5V 2T6, Canada'],
+    ['London, UK', '100 Example Road, London NW1 6XE, UK'],
+  ]) {
+    const db = new Database(':memory:'); migrateAllSqlite(db)
+    try {
+      const team = c3('Maya Thornton', '', OWNER) + '<p>Maya Thornton: maya@bluebonnetrealty.com</p>'
+      const pages = page(team)
+      pages['/'] = html(`<p>Bluebonnet Realty has been serving its local community and helping businesses and families for many years.</p><p>Bluebonnet Realty, ${address}</p><a href="/team">Our Team</a><a href="/contact">Contact</a>`)
+      const job = createJob(db, 'T', { business_name: 'Seller', industry: 'proptech', location })
+      db.prepare("UPDATE scan_jobs SET status='running',icp=?,run_budget=? WHERE id=?").run(JSON.stringify({ ...ICP, where: [location] }), qaClaudeOnlyBudget(null), job)
+      const lead = 'c'.repeat(24)
+      db.prepare('INSERT INTO leads (id,scan_job_id,company,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?)').run(lead, job, 'Bluebonnet Realty', 'Active broker', 'https://bluebonnetrealty.com/', 'Bluebonnet Realty, a local real estate firm', 90, 80)
+      const get: Get = async url => {
+        assert.equal(new URL(url).hostname, 'bluebonnetrealty.com')
+        const p = pages[new URL(url).pathname]
+        return { status: p === undefined ? 404 : 200, body: p ?? '', finalUrl: url }
+      }
+      const run = () => crawlJob(db, 'T', job, { get, gapMs: 0, env: {}, nativeOnly: true })
+      const saved = () => db.prepare('SELECT address,source_url FROM published_work_email_display WHERE tenant_id=? AND lead_id=?').all('T', lead)
+      const view = () => workEmailPageRead(db, 'T', [{ id: lead }]).lookups[lead]
+      const verify = () => {
+        assert.deepEqual(saved(), [{ address: 'maya@bluebonnetrealty.com', source_url: 'https://bluebonnetrealty.com/team' }], location)
+        assert.equal(view()[0]?.address, 'maya@bluebonnetrealty.com')
+      }
+      await run(); verify()
+      assert.equal((enrichmentsForLeads(db, 'T', [lead])[lead] ?? []).some(e => e.kind === 'email' && e.value === 'maya@bluebonnetrealty.com'), false)
+      assert.deepEqual(db.prepare('SELECT address FROM email_candidates WHERE lead_id=?').all(lead), [])
+      const teamPage = pages['/team'], homePage = pages['/']
+      pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', '(maya@bluebonnetrealty.com)')
+      await run(); verify()
+      pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', '(ümaya@bluebonnetrealty.com)')
+      await run(); assert.deepEqual(saved(), [], 'Paired punctuation must not permit a truncated EAI local part')
+      pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', 'maya [at] bluebonnetrealty [dot] com')
+      await run(); assert.deepEqual(saved(), [], 'Reconstructed addresses do not qualify as literal evidence')
+      for (const hidden of ['<!-- split -->', '<script>0</script>']) {
+        for (const splitAddress of [`ma${hidden}ya@bluebonnetrealty.com`, `ü${hidden}maya@bluebonnetrealty.com`]) {
+          pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', splitAddress)
+          await run(); assert.deepEqual(saved(), [], 'Hidden markup must never join fragments or delimit a partial address')
+        }
+      }
+      pages['/team'] = teamPage
+      {
+        const canada = location === 'Toronto, Canada'
+        pages['/'] = html(`<p>Bluebonnet Realty has been serving its local community and helping businesses and families for many years.</p><a href="/team">Our Team</a><a href="/contact">Contact</a>`)
+        const contact = pages['/contact']
+        const postal = canada ? address : '100 Example Road, London, England NW1 6XE, UK'
+        const office = (heading: string, section = 'Our offices', publishedPostal = postal) => html(`<h2>${section}</h2><h3>${heading}</h3><address>${publishedPostal}</address>`)
+        const matchingHeading = canada ? 'Toronto, ON' : 'London, England'
+        pages['/contact'] = office(matchingHeading)
+        await run(); verify()
+        const mismatched = canada ? ['Toronto, TX', 'Toronto, BC', 'Toronto, Quebec'] : ['London, Scotland', 'London, Wales']
+        for (const markup of [...mismatched.map(heading => office(heading)), office(matchingHeading, 'Client offices'),
+          office(matchingHeading, 'Our offices', canada ? '100 Example Ave, Toronto M5V 2T6, Canada' : address)]) {
+          pages['/contact'] = markup
+          await run(); assert.deepEqual(saved(), [], 'Neither another jurisdiction nor a client office qualifies')
+        }
+        pages['/contact'] = contact
+        pages['/'] = homePage
+      }
+      for (const prefix of ['ü', '😀', '&#252;']) {
+        pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', `${prefix}maya@bluebonnetrealty.com`)
+        await run(); assert.deepEqual(saved(), [], 'Never parse an address as an ASCII suffix of an internationalized local part')
+        assert.deepEqual(view(), [])
+      }
+      pages['/team'] = teamPage
+      await run(); verify()
+      pages['/'] = html(`<p>Bluebonnet Realty hires remotely in ${location} and serves customers across this region.</p><a href="/team">Our Team</a><a href="/contact">Contact</a>`)
+      await run(); assert.deepEqual(saved(), [], 'A service or hiring market is not the issuer’s office')
+      pages['/'] = homePage
+      await run(); verify()
+      await crawlJob(db, 'T', job, { get: async () => null, gapMs: 0, env: {}, nativeOnly: true })
+      assert.deepEqual(saved(), [], 'An unsuccessful selected recrawl withdraws the former observation')
+      assert.deepEqual(view(), [])
+    } finally { db.close() }
+  }
+})

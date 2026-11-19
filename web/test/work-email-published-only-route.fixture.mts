@@ -114,3 +114,54 @@ test('strict-origin work email route serves published-only GET/POST without expo
     for (const [k, v] of Object.entries(envBefore)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   }
 })
+
+test('Canada and UK named first-party email is display only, never an outreach route or ordinary cached result', async () => {
+  const { recordPublishedDisplay } = await import('../lib/people/published-display.ts')
+  const { draftBlockReason } = await import('../lib/outreach/service.ts')
+  const db = build(); setUser(A); setEnv(false)
+  const calls = fetches
+  try {
+    for (const [location, expected] of [['Toronto, Canada', true], ['London, UK', true], ['Sydney, Australia', false], ['Toronto', false]] as const) {
+      const site = 'harbordental.example', target = 'Dana Lee|Practice Manager', lead = randomBytes(12).toString('hex')
+      const email = `dana.lee@${site}`, bio = `https://${site}/team`, now = Math.floor(Date.now() / 1000)
+      const job = createJob(db, 'A', { business_name: 'Seller', industry: 'dental', location })
+      db.prepare("UPDATE scan_jobs SET status='running', icp=?, run_budget=? WHERE id=?").run(JSON.stringify({ who: ['Practice Manager'], where: [location] }), qaClaudeOnlyBudget(null), job)
+      db.prepare("INSERT INTO leads (id,scan_job_id,name,company,company_domain,signal,source_url,confidence,evidence_excerpt) VALUES (?,?,'','Harbor Dental',?,'hiring',?,80,'Hiring assistant at Harbor Dental')").run(lead, job, site, bio)
+      const add = db.prepare("INSERT INTO lead_enrichments (id,lead_id,tenant_id,connector,kind,value,label,source_url,source_date,retrieved_at) VALUES (?,?,'A','sitecrawl',?,?,?,?,'2026-11-19',?)")
+      add.run(randomBytes(12).toString('hex'), lead, 'domain', `${site}|evidence_own_domain`, 'domain-basis-v1:evidence_own_domain', bio, now)
+      add.run(randomBytes(12).toString('hex'), lead, 'person', 'Dana Lee, Practice Manager', null, bio, now)
+      const matches = [{ value: 'Dana Lee, Practice Manager', url: bio }]
+      const context = [{ tight: `Dana Lee: ${email}`, wide: `Dana Lee: ${email}`, attr: false, text: true }]
+      const page = (url: string, ctx = context) => [{ address: email, url, ctx }]
+      const slots = () => (db.prepare("SELECT count(*) n FROM published_work_email_display WHERE lead_id=?").get(lead) as { n: number }).n
+      const params = { params: Promise.resolve({ lead }) }
+      const endpoint = `http://localhost/api/leads/${lead}/work-email`
+      const get = async () => (await (await WE_GET(new NextRequest(endpoint), params)).json()).lookups
+      const post = async () => (await (await WE_POST(new NextRequest(endpoint, { method: 'POST', body: JSON.stringify({ target }), headers: hdr }), params)).json()).status
+      recordPublishedDisplay(db, 'B', lead, site, [location], matches, page(bio)); assert.equal(slots(), 0)
+      recordPublishedDisplay(db, 'A', lead, site, [location], matches, page(`http://${site}/team`)); assert.equal(slots(), 0)
+      recordPublishedDisplay(db, 'A', lead, site, [location], matches, page(`https://${site}/other`)); assert.equal(slots(), 0)
+      recordPublishedDisplay(db, 'A', lead, site, [location], matches, page(bio, [{ ...context[0], tight: email }])); assert.equal(slots(), 0)
+      recordPublishedDisplay(db, 'A', lead, site, [location], [...matches, { ...matches[0], value: 'Dana Lee, Director' }], page(bio)); assert.equal(slots(), 0)
+      recordPublishedDisplay(db, 'A', lead, site, [location], matches, [{ ...page(bio)[0], literalLocals: new Set(['dana.lee', 'Dana.Lee']) }]); assert.equal(slots(), 0)
+      recordPublishedDisplay(db, 'A', lead, site, [location], matches, page(bio)); assert.equal(slots(), expected ? 1 : 0)
+      assert.equal((await get()).length, expected ? 1 : 0)
+      assert.equal(workEmailPageRead(db, 'A', [{ id: lead }]).lookups[lead].length, expected ? 1 : 0)
+      assert.equal(await post(), expected ? 'published' : 'not_found')
+      if (expected) assert.equal((await get())[0].source_url, bio)
+      assert.equal((db.prepare("SELECT count(*) n FROM email_candidates WHERE lead_id=?").get(lead) as { n: number }).n, 0)
+      assert.equal((db.prepare("SELECT count(*) n FROM work_email_lookups WHERE lead_id=?").get(lead) as { n: number }).n, 0)
+      assert.equal((db.prepare("SELECT count(*) n FROM lead_enrichments WHERE lead_id=? AND kind='email'").get(lead) as { n: number }).n, 0)
+      db.prepare("UPDATE leads SET human_confirmed_at=?, human_confirmed_from='test_review' WHERE id=?").run(now, lead)
+      assert.equal(draftBlockReason(db, 'A', lead), 'no_email_contact')
+      db.prepare("UPDATE scan_jobs SET run_budget=NULL WHERE id=?").run(job)
+      assert.deepEqual(await get(), [])
+      db.prepare("UPDATE scan_jobs SET run_budget=? WHERE id=?").run(qaClaudeOnlyBudget(null), job)
+      db.prepare("INSERT INTO suppressions (tenant_id,email,reason) VALUES ('A',?,'manual')").run(email)
+      assert.deepEqual(await get(), [])
+      assert.equal(await post(), 'not_found')
+      db.prepare("DELETE FROM suppressions WHERE tenant_id='A' AND email=?").run(email)
+    }
+    assert.equal(fetches, calls)
+  } finally { db.close() }
+})

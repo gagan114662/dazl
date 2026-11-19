@@ -87,6 +87,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/people/email-formats.ts': 1,
   'lib/people/email-pattern.ts': 2,
   'lib/people/people-search.ts': 0,
+  'lib/people/published-display.ts': 0,
   'lib/people/sec-officers.ts': 0,
   'lib/people/work-email.ts': 0,
   'lib/queue/sqlite.ts': 0,
