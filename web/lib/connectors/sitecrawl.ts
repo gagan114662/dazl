@@ -19,7 +19,7 @@ import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, 
 import { publishedDisplayCountry, recordPublishedDisplay, withdrawPublishedDisplay } from '../people/published-display.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
-import { revealEmails } from '../people/email-reveal.ts'
+import { revealDisplayEmails, revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
@@ -1276,12 +1276,27 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
       const onPage = (html: string, url: string, status: number) => {
         if (displayCountry && status === 200) {
-          // Display-only observations require the literal address; do not decode obfuscation here.
+          // Decode only explicit published spellings in visible text on this display-only lane.
           // An opaque token prevents both joining fragments and treating a partial token as a whole address.
           const visible = html.replace(/<!--[\s\S]*?(?:-->|$)|<(script|style|noscript|svg|template|blockquote)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '\uFFFC')
-          for (const a of personalAddresses(visible, cand, true)) {
-            if (displaySeen.size >= 200) break
-            displaySeen.set(`${url}|${a.address}`, { address: a.address, url, ctx: addressContexts(visible, a.at), literalLocals: a.literalLocals })
+          const thisPage = new Map<string, { address: string; url: string; ctx: AddressContext[]; literalLocals?: Set<string> }>()
+          const retain = (markup: string, offsets?: ReadonlySet<number>) => {
+            for (const a of personalAddresses(markup, cand, true, offsets)) {
+              const key = `${url}|${a.address}`, had = thisPage.get(key)
+              if (!had && thisPage.size >= 200) break
+              const mergedLocals = new Set([...(had?.literalLocals ?? []), ...(a.literalLocals ?? [])])
+              // addressContexts is capped at 12 per spelling mode. Keep both bounded sets so a
+              // conflicting decoded name cannot be hidden by twelve earlier literal copies.
+              const ctx = [...(had?.ctx ?? []), ...addressContexts(markup, a.at)]
+              thisPage.set(key, { address: a.address, url, ctx, literalLocals: mergedLocals })
+            }
+          }
+          retain(visible)
+          const revealed = revealDisplayEmails(visible)
+          if (revealed.offsets.size) retain(revealed.html, revealed.offsets)
+          for (const [key, evidence] of thisPage) {
+            if (!displaySeen.has(key) && displaySeen.size >= 200) continue
+            displaySeen.set(key, evidence)
           }
         }
         html = revealEmails(html) // #1036: decode Cloudflare-protected / bracketed addresses in place, so `at` and contexts line up

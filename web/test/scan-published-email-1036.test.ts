@@ -72,7 +72,9 @@ test('strict Toronto and UK crawls record a visibly co-published name/email sole
   ]) {
     const db = new Database(':memory:'); migrateAllSqlite(db)
     try {
-      const team = c3('Maya Thornton', '', OWNER) + '<p>Maya Thornton: maya@bluebonnetrealty.com</p>'
+      // Independent same-page role evidence; the obfuscated spelling itself does not establish a person.
+      const employee = '<script type="application/ld+json">{"@type":"Organization","employee":{"@type":"Person","name":"Maya Thornton","jobTitle":"Owner"}}</script>'
+      const team = employee + c3('Maya Thornton', '', OWNER) + '<p>Maya Thornton: maya@bluebonnetrealty.com</p>'
       const pages = page(team)
       pages['/'] = html(`<p>Bluebonnet Realty has been serving its local community and helping businesses and families for many years.</p><p>Bluebonnet Realty, ${address}</p><a href="/team">Our Team</a><a href="/contact">Contact</a>`)
       const job = createJob(db, 'T', { business_name: 'Seller', industry: 'proptech', location })
@@ -99,8 +101,50 @@ test('strict Toronto and UK crawls record a visibly co-published name/email sole
       await run(); verify()
       pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', '(ümaya@bluebonnetrealty.com)')
       await run(); assert.deepEqual(saved(), [], 'Paired punctuation must not permit a truncated EAI local part')
-      pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', 'maya [at] bluebonnetrealty [dot] com')
-      await run(); assert.deepEqual(saved(), [], 'Reconstructed addresses do not qualify as literal evidence')
+      const replaceEmail = (shown: string) => teamPage.replace('maya@bluebonnetrealty.com', shown)
+      const protect = (address: string) => {
+        const hex = Buffer.from([91, ...Buffer.from(address).map(byte => byte ^ 91)]).toString('hex')
+        return `<span class="__cf_email__" data-cfemail="${hex}">[email protected]</span>`
+      }
+      const bracket = 'maya [at] bluebonnetrealty [dot] com'
+      const cf = protect('maya@bluebonnetrealty.com')
+      for (const shown of [bracket, cf]) {
+        pages['/team'] = replaceEmail(shown)
+        await run(); assert.notEqual(saved().length, 0, shown); verify()
+        assert.deepEqual(db.prepare('SELECT address FROM email_candidates WHERE lead_id=?').all(lead), [])
+        assert.equal((enrichmentsForLeads(db, 'T', [lead]) ?? {})[lead]?.some(e => e.kind === 'email' && e.value === 'maya@bluebonnetrealty.com') ?? false, false)
+      }
+      for (const shown of [`ü${bracket}`, `ü${cf}`, 'ma<!-- split -->ya [at] bluebonnetrealty [dot] com',
+        'maya [at] bluebonnetrealty<script>0</script> [dot] com', `<span hidden>${cf}</span>`,
+        `<template data-sample=">">${cf}</template>`, `<span style="display: none">${cf}</span>`, `<span aria-hidden="true">${bracket}</span>`, `<!-- ${cf} -->`, `<script>${cf}</script>`,
+        `<span style="display&#58;none">${cf}</span>`, `<span aria-hidden="&#116;rue">${bracket}</span>`,
+        `<details><summary>Contact</summary>${bracket}</details>`, `<iframe>${cf}</iframe>`,
+        `<textarea>Contact ${bracket}</textarea>`,
+        '<span data-email="maya [at] bluebonnetrealty [dot] com">Contact</span>',
+        protect('maya@lookalike.example'), cf.replace('class="__cf_email__"', 'class="__cf_email__" title="Maya Ortiz"'),
+        cf.replace('[email protected]', '<em>[email protected]</em>'),
+        cf.replace('span', 'a').replace('</span>', '</a>'),
+        'maya at bluebonnetrealty dot com']) {
+        pages['/team'] = replaceEmail(shown)
+        await run(); assert.deepEqual(saved(), [], shown)
+      }
+      for (const wrapped of [`<dialog>Maya Thornton: ${cf}</dialog>`, `<title>Maya Thornton: ${bracket}</title>`,
+        `<p style="opacity:0">Maya Thornton: ${cf}</p>`, `<p style="color:blue">Maya Thornton: ${bracket}</p>`]) {
+        pages['/team'] = teamPage.replace('<p>Maya Thornton: maya@bluebonnetrealty.com</p>', wrapped)
+        await run(); assert.deepEqual(saved(), [], wrapped)
+      }
+      // Each fake outer close is text to the browser; it must not escape the opaque root.
+      for (const raw of ['textarea', 'iframe', 'plaintext']) {
+        pages['/team'] = teamPage.replace('<p>Maya Thornton: maya@bluebonnetrealty.com</p>',
+          `<div><${raw}></div>Maya Thornton: ${bracket}</${raw}>`)
+        await run(); assert.deepEqual(saved(), [], raw)
+      }
+      pages['/team'] = replaceEmail(`<span class="hidd&#101;n">${cf}</span>`)
+      await run(); assert.deepEqual(saved(), [], 'entity-bearing hidden class is opaque')
+      for (const shown of [bracket, cf]) {
+        pages['/team'] = replaceEmail(shown).replace('Maya Thornton:', 'Maya Ortiz:')
+        await run(); assert.deepEqual(saved(), [], 'a different named person cannot supply this mailbox')
+      }
       for (const hidden of ['<!-- split -->', '<script>0</script>']) {
         for (const splitAddress of [`ma${hidden}ya@bluebonnetrealty.com`, `ü${hidden}maya@bluebonnetrealty.com`]) {
           pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', splitAddress)
@@ -137,6 +181,15 @@ test('strict Toronto and UK crawls record a visibly co-published name/email sole
       await run(); assert.deepEqual(saved(), [], 'A service or hiring market is not the issuer’s office')
       pages['/'] = homePage
       await run(); verify()
+      {
+        const staff = '<script type="application/ld+json">{"@type":"Organization","employee":[{"@type":"Person","name":"Maya Thornton","jobTitle":"Owner"},{"@type":"Person","name":"Jordan Ortiz","jobTitle":"Owner"}]}</script>'
+        const copies = '<p>Maya Thornton: maya@bluebonnetrealty.com</p>'.repeat(12)
+        const expanded = teamPage.replace(employee, staff).replace('<p>Maya Thornton: maya@bluebonnetrealty.com</p>', copies)
+        pages['/team'] = expanded
+        await run(); assert.equal(saved().length, 1, 'literal-only control retained')
+        pages['/team'] = expanded.replace('</body>', `<p>${'We provide updated property information for our clients. '.repeat(10)}</p><p>Jordan Ortiz: ${bracket}</p></body>`)
+        await run(); assert.deepEqual(saved(), [], 'the first 12 literal contexts must never crowd out the late decoded employee')
+      }
       await crawlJob(db, 'T', job, { get: async () => null, gapMs: 0, env: {}, nativeOnly: true })
       assert.deepEqual(saved(), [], 'An unsuccessful selected recrawl withdraws the former observation')
       assert.deepEqual(view(), [])

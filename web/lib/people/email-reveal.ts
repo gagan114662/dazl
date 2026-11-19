@@ -12,13 +12,14 @@
 const ADDRESS = /^[a-z0-9._%+-]{1,64}@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}$/i
 
 // Cloudflare's scheme: hex pairs; the first pair is the key, every following byte XOR key is one character (UTF-8 bytes).
-export function decodeCfEmail(hex: string): string | null {
+export function decodeCfEmail(hex: string, strictDisplay = false): string | null {
   if (!/^(?:[0-9a-f]{2}){3,300}$/i.test(hex)) return null
   const key = parseInt(hex.slice(0, 2), 16)
   const bytes: number[] = []
   for (let i = 2; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16) ^ key)
   let out: string
-  try { out = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(bytes)) } catch { return null }
+  try { out = new TextDecoder('utf-8', { fatal: true, ignoreBOM: strictDisplay }).decode(new Uint8Array(bytes)) } catch { return null }
+  if (strictDisplay) return ADDRESS.test(out) ? out : null
   out = out.trim()
   // A protected href may carry "?subject=..." after the address; the address is what the visitor's mail app receives.
   const addr = out.split('?')[0]
@@ -56,4 +57,88 @@ export function revealEmails(html: string): string {
     })
   }
   return out
+}
+
+// Display-only: decode one whole, visible spelling, never an HTML attribute/href or fragments.
+const DISPLAY_CF = /<span\s+(?:class\s*=\s*["']__cf_email__["']\s+data-cfemail\s*=\s*["']([0-9a-f]{6,600})["']|data-cfemail\s*=\s*["']([0-9a-f]{6,600})["']\s+class\s*=\s*["']__cf_email__["'])\s*>\[\s*email(?:&#160;|&nbsp;|&#xa0;|\u00a0|\s)+protected\s*\]<\/span\s*>/gi
+const DISPLAY_TAG = /<\/?[A-Za-z][\w:-]*(?:[^<>"']|"[^"]*"|'[^']*')*>/g
+const DISPLAY_INVISIBLE = new Set('script style noscript svg template blockquote head title details dialog iframe textarea xmp plaintext noembed noframes object canvas select'.split(' '))
+const DISPLAY_RAW = new Set('script style title iframe textarea xmp plaintext noembed noframes'.split(' '))
+const DISPLAY_VOID = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '))
+const DISPLAY_OPAQUE = '\uFFFC'
+const displayHidden = (tag: string) => {
+  if (/\s(?:hidden|inert)(?=\s|=|\/?>)/i.test(tag)) return true
+  // Only a literal false is an affirmative visible state. Entity/CSS escape decoding is intentionally unsupported.
+  const values = (key: string) => [...tag.matchAll(new RegExp(`\\s${key}(?=\\s|=|/?>)(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+)))?`, 'gi'))]
+    .map(m => m[1] ?? m[2] ?? m[3] ?? '')
+  if (values('aria-hidden').some(value => value.toLowerCase() !== 'false')) return true
+  if (values('class').some(value => /[&\\]|(?:^|\s)(?:hidden|hide|sr-only|visually-hidden|d-none)(?:\s|$)/i.test(value))) return true
+  // No CSS interpreter: even seemingly benign inline style is outside the optional decode lane.
+  return values('style').length > 0
+}
+const leftDisplay = (left: string) => /[ \t\r\n(]$/u.test(left)
+const rightDisplay = (right: string) => /^(?:[\s<)]|[.,;!?](?:[\s<]|$)|$)/u.test(right)
+
+export function revealDisplayEmails(visible: string): { html: string; offsets: Set<number> } {
+  const offsets = new Set<number>()
+  if (visible.length > 512_000 || !/data-cfemail|[[({]\s*at\s*[\])}]/i.test(visible)) return { html: visible, offsets }
+  // Optionally hide markup without joining text nodes; known hidden ancestors are opaque.
+  const tags = [...visible.matchAll(DISPLAY_TAG)]
+  const clouds = new Map([...visible.matchAll(DISPLAY_CF)].map(m => [m.index, m]))
+  const out: string[] = []
+  const open: { name: string; hidden: boolean }[] = []
+  let from = 0, hidden = false, length = 0, raw = ''
+  const push = (part: string) => { out.push(part); length += part.length }
+  const appendText = (end: number) => {
+    if (end <= from) return
+    if (hidden) { push(DISPLAY_OPAQUE); return }
+    const text = visible.slice(from, end)
+    if (text.length > 8_192) { push(text); return }
+    // Only one text node; line/tab/control boundaries can't assemble an address across records.
+    let shortened = 0
+    push(text.replace(BRACKETED, (whole, local: string, host: string, tld: string, offset: number) => {
+      if (!leftDisplay(text.slice(Math.max(0, offset - 1), offset)) || !rightDisplay(visible.slice(from + offset + whole.length, from + offset + whole.length + 3)) ||
+          /[\r\n\t<>&\uFFFC]/u.test(whole)) return whole
+      const addr = `${local}@${host.replace(DOT, '.')}.${tld}`
+      if (!ADDRESS.test(addr)) return whole
+      offsets.add(length + offset - shortened)
+      shortened += whole.length - addr.length
+      return addr
+    }))
+  }
+  for (const tag of tags) {
+    if (tag.index < from) continue
+    const name = /^<\/?([\w:-]+)/.exec(tag[0])![1].toLowerCase()
+    const closing = tag[0].startsWith('</')
+    // In HTML raw/RCDATA elements, fake tags (including a parent's closing tag) are text.
+    // Plaintext has no closing delimiter. Other raw roots exit only at their own end tag.
+    if (raw && (raw === 'plaintext' || !closing || raw !== name)) continue
+    if (raw) raw = ''
+    appendText(tag.index)
+    const cloud = clouds.get(tag.index)
+    if (cloud && !hidden && leftDisplay(visible.slice(Math.max(from, tag.index - 1), tag.index)) &&
+        rightDisplay(visible.slice(tag.index + cloud[0].length, tag.index + cloud[0].length + 3))) {
+      const address = decodeCfEmail(cloud[1] ?? cloud[2], true)
+      if (address) { offsets.add(length); push(address); from = tag.index + cloud[0].length; continue }
+    }
+    if (closing) {
+      const last = open.findLastIndex(item => item.name === name)
+      // No attempt to reproduce HTML error recovery across an opaque ancestor.
+      if (last >= 0 && open.slice(last + 1).some(item => item.hidden)) return { html: visible, offsets: new Set() }
+      if (last >= 0) open.length = last
+      const parentHidden = open.at(-1)?.hidden ?? false
+      push(hidden || parentHidden ? DISPLAY_OPAQUE : tag[0])
+      hidden = parentHidden
+    } else {
+      const ownHidden = hidden || DISPLAY_INVISIBLE.has(name) || displayHidden(tag[0])
+      if (!DISPLAY_VOID.has(name)) open.push({ name, hidden: ownHidden })
+      if (DISPLAY_RAW.has(name)) raw = name
+      if (open.length > 96) return { html: visible, offsets: new Set() }
+      push(ownHidden ? DISPLAY_OPAQUE : tag[0])
+      hidden = open.at(-1)?.hidden ?? false
+    }
+    from = tag.index + tag[0].length
+  }
+  appendText(visible.length)
+  return { html: out.join(''), offsets }
 }

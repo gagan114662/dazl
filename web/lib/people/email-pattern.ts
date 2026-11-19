@@ -60,9 +60,11 @@ export function personalLocals(html: string, site: string): string[] {
 // the site printed it, never rebuilt onto another domain.
 // at: where the address is printed on the page (its first 12 places, with the printed length), recorded in this ONE pass so nothing
 // ever searches the page again per address (#1036: a staff directory prints 1,500 of them).
-export function personalAddresses(html: string, site: string, trackCase = false): { local: string; address: string; at: { i: number; len: number }[]; literalLocals?: Set<string> }[] {
+export function personalAddresses(html: string, site: string, trackCase = false, selectedOffsets?: ReadonlySet<number>): { local: string; address: string; at: { i: number; len: number }[]; literalLocals?: Set<string> }[] {
   const out = new Map<string, { local: string; address: string; at: { i: number; len: number }[]; literalLocals?: Set<string> }>()
   for (const m of html.matchAll(/([A-Z0-9._%+-]{2,64})@([A-Z0-9.-]+\.[A-Z]{2,})/gi)) {
+    // Select decoded offsets before occurrence capping: literal hits must not take their slots.
+    if (selectedOffsets && !selectedOffsets.has(m.index)) continue
     // The legacy ASCII extractor predates EAI. The display-only reader never accepts a
     // substring of a larger Unicode local-part/domain token or a malformed punctuation run.
     if (trackCase) {
