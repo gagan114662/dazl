@@ -350,9 +350,16 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   try {
     refused = await db.tx(function* (t: Tx): TxBody<string | null> {
       let why = early
-      // Native search is pinned to SQLite. This transaction uses BEGIN IMMEDIATE, so distinct jobs
-      // for the same tenant cannot both slip past an in-flight or maybe-billed native search.
-      if (!why && nativeSearch && (yield* t.get("SELECT 1 FROM scan_spend_calls WHERE user_id = ? AND kind = ? AND status = 'reserved' LIMIT 1", [ctx.tenantId, kind])))
+      // SQLite's immediate transaction serializes active reservations. An old play's possibly billed
+      // amount stays fully reserved against its job and account windows; it is not an indefinite
+      // mutex for a separately admitted play. Never replay a job with its own unresolved request.
+      if (!why && nativeSearch && (yield* t.get(
+        `SELECT 1 FROM scan_spend_calls s
+         WHERE s.user_id = ? AND s.kind = ? AND s.status = 'reserved'
+           AND (s.scan_job_id = ? OR EXISTS (
+             SELECT 1 FROM scan_jobs j WHERE j.id = s.scan_job_id AND j.user_id = s.user_id
+               AND j.status = 'running' AND j.attempts = s.attempt))
+         LIMIT 1`, [ctx.tenantId, kind, ctx.jobId])))
         why = 'native_search_accounting_pending'
       // #1167: the account limit already refused a step of this attempt, or (for a step that is not itself counted on the windows)
       // a window is already at its cap: nothing more is sent. A named account's windows are its own entry's (ownerLimits).

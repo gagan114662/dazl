@@ -49,10 +49,13 @@ export async function reserveNativeSearch(guards: SpendGuard[], usd: number, che
     },
     async rejected(status: number) {
       return once(async () => {
-        // A documented provider rejection stops the attempt. Keep the estimate instead of assuming no bill.
-        await transport.settle(null)
+        // Only the provider's authenticated, pre-generation rate-limit envelope takes the zero-usage path.
+        // Other known refusals keep the estimate without blocking a later independent attempt.
+        const actual = status === 429 ? 0 : null
+        await transport.settle(actual)
+        if (spendAttemptUncertain()) throw new SpendAccountingFailed(new Error('native search rejection settlement unavailable'))
         transport.rejected(status)
-        await settleAll(g, 0, null, held)
+        await settleAll(g, actual === 0 ? -usd : 0, actual, held)
       })
     },
     async uncertain() { return once(stop) },

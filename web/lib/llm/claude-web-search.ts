@@ -55,7 +55,7 @@ export function parseClaudeSearchUsage(response: unknown): ClaudeSearchUsage | n
   return { inputTokens: input, outputTokens: output, cacheReadTokens: read, cacheWrite5mTokens: write5m, cacheWrite1hTokens: write1h, searches, usd }
 }
 
-export type ClaudeSearchFailure = 'invalid_input' | 'count_failed' | 'reservation_missing' | 'request_uncertain' | 'key_rejected' | 'usage_uncertain' | 'provider_limit_violation'
+export type ClaudeSearchFailure = 'invalid_input' | 'count_failed' | 'reservation_missing' | 'request_uncertain' | 'rate_limited' | 'key_rejected' | 'usage_uncertain' | 'provider_limit_violation'
 export class ClaudeSearchError extends Error {
   readonly code: ClaudeSearchFailure
   constructor(code: ClaudeSearchFailure) { super(code); this.code = code }
@@ -109,6 +109,25 @@ export async function runClaudeWebSearch(
     // Authentication/permission refusal is known, but that does not mean the vendor billed zero.
     await hold.rejected(r.status)
     throw new ClaudeSearchError('key_rejected')
+  }
+  if (r.status === 429) {
+    // The dedicated, non-streaming Anthropic endpoint documents this as a request rejection.
+    // Match its error envelope + request ID, not a proxy's bare status or an in-band tool error.
+    let limited = false
+    try {
+      const body = obj(await r.json()), err = obj(body.error), requestId = r.headers.get('request-id')
+      const reason = obj(err.details).error_code
+      limited = body.type === 'error' && err.type === 'rate_limit_error' &&
+        typeof err.message === 'string' && !!err.message && !('usage' in body) && !('content' in body) &&
+        (reason === undefined || reason === 'ramp_limit_exceeded') &&
+        !!requestId && /^req_[a-zA-Z0-9]+$/.test(requestId) && body.request_id === requestId
+    } catch { /* unreadable error still may have been billed */ }
+    if (limited) {
+      await hold.rejected(429)
+      throw new ClaudeSearchError('rate_limited')
+    }
+    await hold.uncertain()
+    throw new ClaudeSearchError('request_uncertain')
   }
   let json: unknown
   try {

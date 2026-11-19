@@ -17,7 +17,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = NATIVE_SEARCH_FIRST5_CLAUDE_ONLY_MODE
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -42,7 +42,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     saveKey(db, 'workspace', 'anthropic', 'sk-ant-workspace-fixture', master)
     const raw = qaClaudeOnlyBudget(JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false }), mode)
     const job = db.transaction(() => {
-      createQueryJob(db, 'workspace', { id: 'job', query: q, runBudget: raw, icp: JSON.stringify({ summary: q, who: [], industries: ['Roofing'], sizes: [], where: ['London, UK'], signals: [], exclude: [] }) })
+      createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: [], industries, sizes: [], where, signals, exclude: [] }) })
+      if (query === null) db.exec("UPDATE scan_jobs SET query=NULL WHERE id='job'") // legacy/non-query row: never open native discovery
       if (trial) db.exec("UPDATE scan_jobs SET funded_by='trial' WHERE id='job'")
       return pinAdmittedStrictJob(db, 'workspace', 'job', raw)
     }).immediate()
@@ -58,6 +59,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (!native) return Response.json({ model: CLAUDE_SEARCH_MODEL, content: [{ type: 'text', text: '[]' }], usage: { input_tokens: 100, output_tokens: 15 } })
       const held = db.prepare("SELECT reserve_usd FROM scan_spend_calls WHERE scan_job_id='job' AND status='reserved'").all()
       assert.deepEqual(held, [{ reserve_usd: claudeSearchEstimate(count).estimatedUsd }], 'durable search reserve exists at time of send')
+      if (rateLimited && sequence.filter(x => x === 'native-send').length === 1)
+        return Response.json({ type: 'error', error: { type: 'rate_limit_error', message: 'Rate limit exceeded' }, request_id: 'req_fixture' }, { status: 429, headers: { 'request-id': 'req_fixture' } })
       if (interrupted) throw Error('offline fixture response dropped')
       return Response.json({
         model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn',
@@ -72,9 +75,10 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     })
     const end = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(job.id)
     const ledger = db.prepare('SELECT status, reason, reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id=? ORDER BY rowid').all(job.id)
+    const jobSpend = db.prepare('SELECT spend_reserved_usd, spend_cap_reserved_usd FROM scan_jobs WHERE id=?').get(job.id)
     const pool = db.prepare('SELECT period,reserved_usd,reported_usd FROM tenant_spend_pools WHERE tenant_id=? ORDER BY period').all('workspace')
     let second
-    if (interrupted) {
+    if (interrupted || rateLimited) {
       const id = 'next-play'
       const next = db.transaction(() => {
         createQueryJob(db, 'workspace', { id, query: q, runBudget: raw, icp: JSON.stringify({ summary: q, who: [], industries: ['Roofing'], sizes: [], where: ['London, UK'], signals: [], exclude: [] }) })
@@ -83,7 +87,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       await runJob(db, next, { master, fetchImpl: io, score: false, ground: false, judge: null })
       second = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(id)
     }
-    return { status, sequence, messages, denied, end, ledger, pool, second }
+    return { status, sequence, messages, denied, end, ledger, jobSpend, pool, second }
   } finally {
     globalThis.fetch = previousFetch
     for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
@@ -103,8 +107,23 @@ test('pinned V3 uses one counted, budgeted native request with workspace key and
   assert.deepEqual(x.denied, [])
 })
 
-test('legacy V2, trial-funded V3 and V3 without strict first5 never request native web search', async () => {
-  for (const options of [{ mode: v2 }, { trial: true }, { first5: false }]) {
+test('#1392 native discovery includes profile-only geography, services and signals before URL fetch', async () => {
+  const query = 'Find distributors'
+  const where = ['Utrecht, Netherlands', 'Gent, Belgium']
+  const industries = ['Refrigerated logistics']
+  const signals = ['New distribution facility', 'Public warehouse expansion']
+  const x = await simulate({ query, where, industries, signals })
+  const [native] = x.messages.filter(m => Array.isArray(m.body.tools))
+  assert.ok(native)
+  const prompt = (native.body.messages as { content: string }[])[0].content
+  const data = JSON.parse(prompt.slice(prompt.indexOf('Request: ') + 'Request: '.length))
+  assert.deepEqual(data, { query, where, industries, signals })
+  assert.doesNotMatch(prompt, /Toronto|London|roofing/)
+  assert.deepEqual(x.denied, [])
+})
+
+test('legacy V2, trial-funded V3, V3 without strict first5 and legacy no-query rows never request native web search', async () => {
+  for (const options of [{ mode: v2 }, { trial: true }, { first5: false }, { query: null }]) {
     const x = await simulate(options)
     assert.equal(x.messages.some(m => Array.isArray(m.body.tools)), false, JSON.stringify(x))
     assert.deepEqual(x.denied, [])
@@ -131,10 +150,23 @@ test('known actual overage is settled in full and stops before any publisher or 
   }
 })
 
-test('unknown native search billing stops the current run and refuses the next job for the same workspace', async () => {
+test('unknown native search billing stops the old play without permanently blocking a separately admitted play', async () => {
   const x = await simulate({ interrupted: true })
   assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
-  assert.deepEqual(x.second, { status: 'failed', error: 'native_search_accounting_pending' })
-  assert.deepEqual(x.sequence, ['native-count', 'native-send', 'native-count'])
+  assert.deepEqual(x.second, { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(x.sequence, ['native-count', 'native-send', 'native-count', 'native-send'])
   assert.deepEqual(x.ledger, [{ status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null }])
+})
+
+test('authenticated 429 stops this play, reverses all reservations and lets a separate play send once', async () => {
+  const x = await simulate({ rateLimited: true })
+  assert.deepEqual(x.end, { status: 'failed', error: 'provider_rate_limited' })
+  assert.deepEqual(x.sequence.slice(0, 4), ['native-count', 'native-send', 'native-count', 'native-send'])
+  assert.deepEqual(x.ledger, [{ status: 'settled', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: 0 }])
+  assert.deepEqual(x.jobSpend, { spend_reserved_usd: 0, spend_cap_reserved_usd: 0 })
+  for (const row of x.pool as { reserved_usd: number; reported_usd: number }[]) {
+    assert.equal(row.reserved_usd, 0)
+    assert.equal(row.reported_usd, 0)
+  }
+  assert.equal(x.sequence.filter(x => x === 'native-send').length, 2)
 })

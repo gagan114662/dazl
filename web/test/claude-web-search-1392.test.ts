@@ -107,3 +107,21 @@ test('network/status/usage uncertainty retains reservation, no retry or candidat
     assert.equal(n, 2)
   }
 })
+
+test('an Anthropic request-limit rejection releases via the typed 429 callback; ambiguous 429s retain the hold, no retries', async () => {
+  for (const [body, requestId, expected] of [
+    [{ type: 'error', error: { type: 'rate_limit_error', message: 'Rate limit exceeded' }, request_id: 'req_fixture' }, 'req_fixture', 'rejected:429'],
+    [{ type: 'error', error: { type: 'rate_limit_error', message: 'Rate limit exceeded' }, request_id: 'req_fixture' }, '', 'uncertain'],
+    [{ type: 'error', error: { type: 'api_error', message: 'Other' }, request_id: 'req_fixture' }, 'req_fixture', 'uncertain'],
+    ['gateway rate limiting', 'req_fixture', 'uncertain'],
+  ] as const) {
+    const log: string[] = []
+    let n = 0
+    await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(log), async () => {
+      if (++n === 1) return Response.json({ input_tokens: counted })
+      return Response.json(body, { status: 429, headers: { 'request-id': requestId } })
+    }), code(expected === 'uncertain' ? 'request_uncertain' : 'rate_limited'))
+    assert.equal(n, 2)
+    assert.deepEqual(log, [expected])
+  }
+})
