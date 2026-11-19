@@ -1,0 +1,24 @@
+name: Verify Dazl Elastic IP host key
+on:
+  push:
+    branches: [ziggy/eip-ssh-proof-20261119]
+    paths: ['.github/workflows/dazl-eip-host-key-proof.yml']
+permissions: {}
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Match public SSH ED25519 key to the trusted EC2 console
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="$(mktemp)"
+          trap 'rm -f "$f"' EXIT
+          timeout 15s ssh-keyscan -T 8 -t ed25519 3.137.125.161 > "$f"
+          test "$(wc -l < "$f")" -eq 1
+          test "$(awk '{print $1 " " $2}' "$f")" = '3.137.125.161 ssh-ed25519'
+          actual="$(ssh-keygen -E sha256 -lf "$f" | awk '{print $2}')"
+          test "$actual" = 'SHA256:2sz5Y6JdfAc6zAMMuJmOJDvYfds7vb64frknnAGfzss'
+          printf 'Verified EC2 ED25519: %s\n' "$actual"
+          cat "$f"
