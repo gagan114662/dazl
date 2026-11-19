@@ -8,17 +8,22 @@ import type { HttpResult, SafeGet } from './types.ts'
 const MAX_BYTES = 1_000_000
 const TIMEOUT_MS = Number(process.env.SOURCES_TIMEOUT_MS || 10_000)
 
+// Hostnames also require the existing guarded DNS lookup at connect time.
+export function publicSourceHttps(url: URL, testAnyPort = false): boolean {
+  if (url.protocol !== 'https:' || url.username || url.password || (!testAnyPort && url.port && url.port !== '443')) return false
+  // Node bypasses DNS lookup for literal IPs. Only the explicit nonstandard-port
+  // in-process fixture can bypass this check.
+  const host = url.hostname.replace(/^\[|\]$/g, '')
+  return !!(testAnyPort && url.port && url.port !== '443') || !isIP(host) || isPublicIp(host)
+}
+
 // timeoutMs/lookup injectable for tests. Absolute timer: the socket timeout is inactivity-only.
 export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, testAnyPort = false): SafeGet => (rawUrl, opts = {}) =>
   new Promise<HttpResult | null>(resolveRaw => {
     if (opts.signal?.aborted) return resolveRaw(null)
     let url: URL
     try { url = new URL(rawUrl) } catch { return resolveRaw(null) }
-    if (url.protocol !== 'https:' || url.username || url.password || (!testAnyPort && url.port && url.port !== '443')) return resolveRaw(null)
-    // Node can connect to literal IPs without calling the supplied DNS lookup.
-    // Only the in-process deadline fixture on an explicit nonstandard port bypasses this.
-    const host = url.hostname.replace(/^\[|\]$/g, '')
-    if (!(testAnyPort && url.port && url.port !== '443') && isIP(host) && !isPublicIp(host)) return resolveRaw(null)
+    if (!publicSourceHttps(url, testAnyPort)) return resolveRaw(null)
     const resolve = (v: HttpResult | null) => { clearTimeout(hard); resolveRaw(v) }
     const req = https.request(
       url,

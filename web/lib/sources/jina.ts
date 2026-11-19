@@ -1,4 +1,5 @@
-import { looksLikeHtml, statusNote, type Evidence, type SourceAdapter } from './types.ts'
+import { publicSourceHttps } from './http.ts'
+import { looksLikeHtml, statusNote, type Evidence, type SafeGet, type SourceAdapter } from './types.ts'
 import { paidVendorOn } from '../paid-vendors.ts'
 import { classifyThin, htmlToText } from '../scan/fetch-page.ts'
 
@@ -35,6 +36,25 @@ export function pickQuote(content: string, keywords: string[]): string {
 
 export const isReaderEnvelope = (body: string): boolean => !looksLikeHtml(body) && /^Markdown Content:\s*$/m.test(body) && /^(Title|URL Source):/m.test(body)
 
+const DIRECT_REDIRECTS = new Set([301, 302, 303, 307, 308])
+async function directRead(page: string, http: SafeGet) {
+  let current: URL
+  try { current = new URL(page) } catch { return null }
+  const seen = new Set<string>()
+  for (let hops = 0; hops <= 3; hops++) {
+    current.hash = ''
+    if (!publicSourceHttps(current) || seen.has(current.href)) return null
+    seen.add(current.href)
+    // Every hop uses the same guarded getter, including its per-request DNS
+    // validation and the adapter's overall cancellation deadline.
+    const r = await http(current.href)
+    if (!r || !DIRECT_REDIRECTS.has(r.status) || !r.location || r.truncated) return r
+    if (hops === 3) return null
+    try { current = new URL(r.location, current) } catch { return null }
+  }
+  return null
+}
+
 export const jinaAdapter: SourceAdapter = {
   id: 'web',
   // Refs #1099 (lib/paid-vendors.ts): Jina Reader is a third-party service, used only when the operator named 'jina' in DAZL_PAID_VENDORS;
@@ -48,7 +68,7 @@ export const jinaAdapter: SourceAdapter = {
       const hit = cache.get(cacheKey)
       if (hit && Date.now() - hit.at < 15 * 60 * 1000) { out.push(...hit.items); continue }
       if (!viaJina) {
-        const r = await http(page)
+        const r = await directRead(page, http)
         if (!r) { note?.('unreachable'); continue }
         if (r.status !== 200) { note?.(statusNote(r.status)); continue }
         if (r.truncated) { note?.('oversize'); continue } // never parse a prefix
