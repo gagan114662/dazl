@@ -160,6 +160,7 @@ jobs:
           mkdir -p preview/onboarding
           SHOTS=preview/onboarding node test/ui/onboarding.ui.mjs | tee /tmp/onboarding-claude.out
           grep -q '^onboarding UI check passed:' /tmp/onboarding-claude.out
+          ! grep -q '^NOT RUN' /tmp/onboarding-claude.out
       # Refs #919: exact production entry/progress labels with all-off, trial, no-key and enrichment-only fixtures.
       - name: Truthful discovery availability at desktop and mobile (no live sources)
         run: |
