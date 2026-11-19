@@ -448,15 +448,15 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number, nati
       const actual = typeof actualUsd === 'number' && Number.isFinite(actualUsd) && actualUsd >= 0 ? actualUsd : null
       const write = () => db.tx(function* (t: Tx): TxBody<void> {
         const persisted = [actual === null ? 'kept' : 'settled', actual, now(), id, ctx.tenantId, ctx.jobId]
-        // A linked native hold may become nonblocking to a different scan only after terminal expiry.
+        // A terminal native hold may become nonblocking to a different scan only after terminal expiry.
         // A delayed response from the old worker cannot settle it after that terminal transition.
-        const r = nativeOwnerHold !== undefined
+        const r = nativeSearch
           ? yield* t.run(`UPDATE scan_spend_calls SET status = ?, actual_usd = ?, settled_at = ?
               WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved' AND attempt = ?
                 AND EXISTS (SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ? AND status = 'running'
                   AND attempts = ? AND claimed_at IS NOT NULL)`, [...persisted, attempt, ctx.jobId, ctx.tenantId, attempt])
           : yield* t.run("UPDATE scan_spend_calls SET status = ?, actual_usd = ?, settled_at = ? WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved'", persisted)
-        if (nativeOwnerHold !== undefined && r.changes !== 1) throw new SpendRefused('ownership_lost')
+        if (nativeSearch && r.changes !== 1) throw new SpendRefused('ownership_lost')
         // Lock order (#846 review R3): the account's pool rows BEFORE the scan_jobs row, as reserve takes them, so a settle
         // and a parallel reservation of the same scan can never wait on each other in a cycle (a Postgres deadlock).
         // scan_spend_calls above is this hold's own row: no other transaction locks it.
@@ -486,7 +486,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number, nati
           captureError(e, { source: 'worker', where: 'scan-spend-cap:settle', tenantId: ctx.tenantId, ref: ctx.jobId })
           // Caller must not move its linked owner reservation if the transport settlement never committed,
           // including delayed work resumed outside the old attempt's async context.
-          if (nativeOwnerHold !== undefined) throw e
+          if (nativeSearch) throw e
         }
       }
     },
