@@ -371,7 +371,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   }
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
-  const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
+  const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; board?: Page['board']; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
   for (const { c: cIn, page } of fetched) {
     // #460: an event day counts only when the FETCHED page states it for THIS company and THIS event (the same sentence as the quote, or a sentence naming the company and
     // describing the same event), or when a public job board's own structured publish date for exactly this posting URL was collected (structuredDates: Greenhouse
@@ -493,12 +493,12 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
       toReview(c, 'counterparty_signal'); continue
     }
     { const pk = page.board?.title ? postingKey(c.source_url) : null; if (pk) postingTitles.set(pk, page.board!.title!) }
-    passed.push({ c, v }); note(c, 'passed', null)
+    passed.push({ c, v, board: page.board }); note(c, 'passed', null)
   }
 
   // semantic check, small and bounded: at most MAX_LEADS calls
   const verdicts = await Promise.all(passed.map(({ c, v }) => (judge ? judge(c, v.passage) : Promise.resolve<Judgement | null>(null))))
-  passed.forEach(({ c, v, copy }, i) => {
+  passed.forEach(({ c, v, copy, board }, i) => {
     const j = verdicts[i]
     if (j === 'contradicts') { drop('contradicted'); note(c, 'dropped', 'contradicted'); return }
     // Cap by source class: a content farm that copied the quote never outranks the company's own page.
@@ -506,7 +506,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     if (confidence < MIN_CONFIDENCE) { const r = j === 'unclear' ? 'claim_unclear' : 'low_confidence'; drop(r); note(c, 'dropped', r); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt, ...(copy ? { evidence_origin: COPY_ORIGIN, own_fetch_failure: copy.failure, evidence_copy_sha256: copy.sha256, evidence_copy_page: copy.page } : {}) }
     const key = dedupKey(c)
-    quotes.set(key, [...(quotes.get(key) ?? []), { url: c.source_url, excerpt: c.excerpt, date: c.event_date, dateProof: c.event_date_proof }])
+    quotes.set(key, [...(quotes.get(key) ?? []), { url: c.source_url, excerpt: c.excerpt, date: c.event_date, dateProof: c.event_date_proof, ...(board ? { board } : {}) }])
     const prev = best.get(key)
     if (prev) drop('duplicate')
     if (!prev || lead.confidence > prev.confidence) { if (prev) note(bestSrc.get(key)!, 'dropped', 'duplicate'); best.set(key, lead); bestSrc.set(key, c); origin.set(lead, c) }
