@@ -60,16 +60,27 @@ export function personalLocals(html: string, site: string): string[] {
 // the site printed it, never rebuilt onto another domain.
 // at: where the address is printed on the page (its first 12 places, with the printed length), recorded in this ONE pass so nothing
 // ever searches the page again per address (#1036: a staff directory prints 1,500 of them).
-export function personalAddresses(html: string, site: string): { local: string; address: string; at: { i: number; len: number }[] }[] {
-  const out = new Map<string, { local: string; address: string; at: { i: number; len: number }[] }>()
+export function personalAddresses(html: string, site: string, trackCase = false): { local: string; address: string; at: { i: number; len: number }[]; literalLocals?: Set<string> }[] {
+  const out = new Map<string, { local: string; address: string; at: { i: number; len: number }[]; literalLocals?: Set<string> }>()
   for (const m of html.matchAll(/([A-Z0-9._%+-]{2,64})@([A-Z0-9.-]+\.[A-Z]{2,})/gi)) {
+    // The legacy ASCII extractor predates EAI. The display-only reader never accepts a
+    // substring of a larger Unicode local-part/domain token or a malformed punctuation run.
+    if (trackCase) {
+      const start = m.index, end = start + m[0].length
+      const left = html.slice(Math.max(0, start - 1), start)
+      const right = html.slice(end, end + 2)
+      if ((left && !/[\s>]/u.test(left)) || (right && !/^(?:[\s<]|[.,;!?](?:[\s<]|$))/u.test(right))) continue
+    }
     const local = m[1].toLowerCase(), domain = m[2].toLowerCase()
     if (!sameSite(domain, site) || ROLE.test(local.replace(/[._-]/g, ''))) continue
     const address = `${local}@${domain}`
     if (address.length > 254) continue
     const had = out.get(address)
-    if (!had) out.set(address, { local, address, at: [{ i: m.index, len: m[0].length }] })
-    else if (had.at.length < 12) had.at.push({ i: m.index, len: m[0].length })
+    if (!had) out.set(address, { local, address, at: [{ i: m.index, len: m[0].length }], ...(trackCase ? { literalLocals: new Set([m[1]]) } : {}) })
+    else {
+      if (had.at.length < 12) had.at.push({ i: m.index, len: m[0].length })
+      if (had.literalLocals && had.literalLocals.size < 2) had.literalLocals.add(m[1])
+    }
   }
   return [...out.values()]
 }
@@ -128,7 +139,7 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 //   - and the name token must not occur anywhere else, as any word in any case, in that same attribute or text node, in the text
 //     around a text-node place, or in the attribute / text node of ANY other place the address is printed ("Maya Ortiz", "maya",
 //     "Michael Jordan" for jordan@). Otherwise it is nobody's.
-export interface AddressContext { tight: string; wide: string; attr: boolean }
+export interface AddressContext { tight: string; wide: string; attr: boolean; text?: boolean }
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').split(/[^a-z]+/).filter(Boolean)
 // This person's own name, matched on the RAW text: first and last separated by spaces only (a middle INITIAL allowed, nothing else:
@@ -147,6 +158,10 @@ function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean
   let found = false
   const rest = raw.replace(own, () => { found = true; return ' | ' })
   return { rest: nameWords(rest), found }
+}
+// Attribution for the display-only importer requires the actual name beside the literal printed address.
+export function sameNamedPublication(n: Name, ctx: AddressContext[] | undefined): boolean {
+  return !!ctx?.some(c => c.text && withoutOwnName(c.tight, n).found)
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined): boolean {
   if (!ctx?.length) return false

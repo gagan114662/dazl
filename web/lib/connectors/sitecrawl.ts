@@ -16,6 +16,8 @@ import { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN } from './domain-unreso
 export { DOMAIN_UNRESOLVED_KIND, DOMAIN_UNRESOLVED_TOKEN, domainUnresolvedWords } from './domain-unresolved.ts'
 import { detectTech, observability, type Observability, type TechHit } from './techstack.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
+import { publishedDisplayCountry, recordPublishedDisplay, withdrawPublishedDisplay } from '../people/published-display.ts'
+import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
@@ -764,6 +766,28 @@ const FOREIGN_SUBJECT = /\b(?:customer|client|partner|testimonial|service area)\
 const FOREIGN_FOOTER_SECTION = /\b(?:customers|clients|partners|testimonials|service areas)\b/i
 const POSTAL_ADDRESS = /\b(?:[A-Z]\d[A-Z]\s?\d[A-Z]\d|[A-Z]{2}\s+\d{5}(?:-\d{4})?)\b/i
 
+// Display-only named email needs the issuer's own matching postal office, not a service-area mention
+// or a job-vacancy market. Keep this gate separate from the ordinary domain-identity discovery.
+function publishedDisplayOffice(pages: LocationPage[], where: string[], company: string, country: 'CA' | 'GB'): boolean {
+  const ca = /\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b/i
+  const gb = /\b(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b/i
+  const postal = country === 'CA' ? ca : gb
+  const key = norm(company)
+  const placeNames = new Set(geoTerms(where).map(norm))
+  const office = (text: string) => !FOREIGN_SUBJECT.test(text) && postal.test(text) && streetKeys(text).length > 0 &&
+    placeAgreement(text, where, company) === 'agrees' && !ownAddressElsewhere(text, where)
+  const declaresOwner = (text: string) => {
+    if (FIRST_PERSON_OFFICE.test(text)) return true
+    const comma = /^([^,:]+)[,:]\s*(\d)/.exec(text)
+    if (comma && norm(comma[1]) === key) return true
+    const words = text.trim().split(/\s+/)
+    return words.slice(0, Math.min(10, words.length)).some((_, i) => norm(words.slice(0, i+1).join(' ')) === key &&
+      OFFICE_CLAIM.test(words.slice(i+1).join(' ')))
+  }
+  return key.length >= 3 && pages.some(p => p.statements.some(s => office(s) && declaresOwner(s)) ||
+    p.offices.some(o => o.ownSection && placeNames.has(norm(o.heading)) && office(o.address)))
+}
+
 function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean): LocationProof | undefined {
   if (!where.length) return undefined
   const key = norm(company)
@@ -1091,7 +1115,7 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
     const lastLt = win.lastIndexOf('<'); if (lastLt > win.lastIndexOf('>')) win = win.slice(0, lastLt) // ... and at its end
     const wide = win.replace(/<[^>]*>/g, tag => tag.length < 12 || !/alt=|title=|aria-label=|data-/i.test(tag) ? ' ' : ` ${[...tag.matchAll(/\b(?:alt|title|aria-label|data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' | ')} `)
       .replace(/\s+/g, ' ').slice(0, 900)
-    out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-') })
+    out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-'), ...(inAttr ? {} : { text: true }) })
   }
   return out
 }
@@ -1183,7 +1207,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const leads = (supplied ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
-    try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { /* no ICP: evidence places only */ }
+    let publishedDisplayOnly = false
+    try { const j = db.prepare('SELECT icp, run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null; run_budget: string | null } | undefined; publishedDisplayOnly = qaClaudeOnlyJob(j?.run_budget); const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { /* no ICP: evidence places only */ }
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
     // One crawl per site per run. Another lead on the same domain is NOT skipped: its own identity check runs against the cached homepage
     // text (same name test, per lead), and it reuses the pages already read, so no extra fetch and no extra budget. Only when the first lead's
@@ -1193,6 +1218,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const siteRead = new Map<string, Crawled>()
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const localsBySite = new Map<string, Set<string>>()
+    const displaySeenBySite = new Map<string, Map<string, { address: string; url: string; ctx: AddressContext[]; literalLocals?: Set<string> }>>()
+    const displayCountry = publishedDisplayOnly && deps.nativeOnly && !deps.leads ? publishedDisplayCountry(where) : null
+    if (displayCountry) withdrawPublishedDisplay(db, tenantId, leads.map(l => l.id))
     const seenBySite = new Map<string, Map<string, { address: string; url: string; ctx?: AddressContext[] }>>() // email finder: printed addresses + page
     // The scan's buyer roles (ICP "who"), so the 3 people kept per site are the ones the seller wants to reach.
     let buyerRoles: string | undefined
@@ -1210,10 +1238,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
       const seen = new Map<string, { address: string; url: string; ctx?: AddressContext[] }>(); seenBySite.set(cand, seen)
+      const displaySeen = new Map<string, { address: string; url: string; ctx: AddressContext[]; literalLocals?: Set<string> }>()
+      if (displayCountry) displaySeenBySite.set(cand, displaySeen)
       // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
       // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
       const onPage = (html: string, url: string, status: number) => {
+        if (displayCountry && status === 200) {
+          const visible = html.replace(/<!--[\s\S]*?(?:-->|$)|<(script|style|noscript|svg|template|blockquote)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+          for (const a of personalAddresses(visible, cand, true)) {
+            if (displaySeen.size >= 200) break
+            displaySeen.set(`${url}|${a.address}`, { address: a.address, url, ctx: addressContexts(visible, a.at), literalLocals: a.literalLocals })
+          }
+        }
         html = revealEmails(html) // #1036: decode Cloudflare-protected / bracketed addresses in place, so `at` and contexts line up
         recordCrawlPage(db, tenantId, jobId, cand, url, status, Math.floor((deps.now ?? Date.now()) / 1000))
         // #1036: printed personal addresses are always collected (the published tier is a fact, not a guess); only guessing is flagged.
@@ -1450,6 +1487,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ? AND scan_job_id = ? AND EXISTS (SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?)').run(site, l.id, jobId, jobId, tenantId)
       if (r.reason === 'ok' || r.reason === 'none_published') { try { db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(l.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND) } catch { /* note only */ } }
       if (r.reason === 'ok' || r.reason === 'none_published') { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
+      if (displayCountry && (r.reason === 'ok' || r.reason === 'none_published') && publishedDisplayOffice(r.locationPages ?? [], where, l.company, displayCountry)) {
+        try { recordPublishedDisplay(db, tenantId, l.id, site, where, r.found.filter(f => f.kind === 'person'), [...(displaySeenBySite.get(site)?.values() ?? [])]) } catch { /* never affects the crawl */ }
+      }
       let n = 0
       // Provenance of the domain choice. One row per (domain, basis), so a later scan that reaches the same domain a weaker way adds a row
       // instead of being swallowed by the first. For link bases source_url is the cited page holding the link; for name_probe it is only the
