@@ -8,6 +8,10 @@ jobs:
   fingerprint:
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2]
     steps:
       - name: Match public SSH ED25519 key to the trusted EC2 console
         shell: bash
@@ -15,7 +19,9 @@ jobs:
           set -euo pipefail
           f="$(mktemp)"
           trap 'rm -f "$f"' EXIT
-          timeout 15s ssh-keyscan -T 8 -t ed25519 3.137.125.161 > "$f"
+          if ! timeout 22s ssh-keyscan -T 15 -t ed25519 3.137.125.161 > "$f"; then
+            if ! test -s "$f"; then echo 'No host key received from 3.137.125.161:22'; exit 1; fi
+          fi
           test "$(wc -l < "$f")" -eq 1
           test "$(awk '{print $1 " " $2}' "$f")" = '3.137.125.161 ssh-ed25519'
           actual="$(ssh-keygen -E sha256 -lf "$f" | awk '{print $2}')"
