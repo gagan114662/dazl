@@ -169,23 +169,21 @@ export const TIMING_UNCONFIRMED_NOTE = 'Event timing is unconfirmed. Review the 
 // case-insensitive ('Act Now' and 'ACT NOW' assert the same urgency); NOW stays case-sensitive.
 export const URGENCY_PHRASE = /\burgent(?:ly)?\b|\bright now\b|\bimmediately\b|\basap\b|\bact now\b|\bneeds? this now\b/i
 // Free-form model prose is not proof of current timing. Keep this vocabulary independent of industry and geography.
-const TIMING_ASSERTION = /\b(?:currently|recently|now|timely)\b|\btrigger\b[^.!?]{0,80}\b(?:is\s+(?:still\s+)?live|remains\s+live)\b|\bjust\s+(?:(?:have|has|had)\s+)?(?:opened|raised|announced|hired|closed|launched|expanded|started|signed|secured|acquired|posted|published|moved|added|released|completed)\b/i
-const RATIONALE_SENTENCES = new Intl.Segmenter('en', { granularity: 'sentence' })
+const TIMING_ASSERTION = /\b(?:currently|recently|now|timely)\b|\b(?:(?:is|are)\s+(?:still\s+)?live|remains?\s+live)\b|\bjust\s+(?:(?:have|has|had)\s+)?(?:opened|raised|announced|hired|closed|launched|expanded|started|signed|secured|acquired|posted|published|moved|added|released|completed)\b/i
 export const NOW_SHOUT = /\bNOW\b/
 export const isUrgencyClaim = (text: string): boolean => URGENCY_PHRASE.test(text) || NOW_SHOUT.test(text)
 // The seller-specific fit / use-case rationale, read apart from timing status (#377). scoreLeads appends the timing note
 // to a neutral rationale; this returns the rationale without it, so the Leads card can say why the company fits while the
 // timing badge and holds say whether NOW is proven. Demoted prose and legacy warning-only rows are not fit reasons.
-// If timing is unconfirmed, remove unsupported timing and urgency sentences without discarding independent fit reasoning.
+// Free-form sentences are not independently sourced: dropping a recognized timing sentence can leave another
+// sentence implying the same event. Suppress the whole rationale under a timing hold, not just matched text.
 export function fitRationale(storedWhy: string | null | undefined, timing: 'proof_backed' | 'unconfirmed'): string | null {
   let t = (storedWhy ?? '').trim()
   if (!t || t.startsWith(`${TIMING_UNCONFIRMED_NOTE} Model rationale, unverified:`)) return null
   t = t.split(TIMING_UNCONFIRMED_NOTE).join(' ').replace(/\s+/g, ' ').trim()
   if (!t || /^event timing (?:is|and)\b/i.test(t)) return null
-  if (timing === 'proof_backed') return t
-  const fit = Array.from(RATIONALE_SENTENCES.segment(t), ({ segment }) => segment.trim())
-    .filter(sentence => !isUrgencyClaim(sentence) && !TIMING_ASSERTION.test(sentence)).join(' ')
-  return fit || null
+  if (timing !== 'proof_backed' && (isUrgencyClaim(t) || TIMING_ASSERTION.test(t))) return null
+  return t
 }
 export interface ScoreTimingOpts { windowDays?: number | null; now?: Date }
 export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], fetchImpl?: typeof fetch, opts: ScoreTimingOpts = {}): Promise<LeadScore[] | null> {

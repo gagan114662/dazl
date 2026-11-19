@@ -6,18 +6,14 @@ import { fitRationale } from '../lib/scan/score.ts'
 
 const LIVE = 'Queen Street Dental Centre is a dental clinic in Toronto hiring a dental receptionist (front-desk staff per ICP). The hiring trigger is live based on the job posting evidence. Lead with their receptionist hiring as a prompt.'
 
-test('#377 unproven timing: the "trigger is live" sentence is stripped, fit reasoning kept', () => {
-  const out = fitRationale(LIVE, 'unconfirmed')
-  assert.ok(out, 'fit reasoning must survive')
-  assert.doesNotMatch(out!, /trigger is live/i)
-  assert.match(out!, /dental clinic in Toronto/)
-  assert.match(out!, /Lead with their receptionist hiring/)
+test('#377 unproven timing: an explicitly live trigger suppresses related claims across the rationale', () => {
+  assert.equal(fitRationale(LIVE, 'unconfirmed'), null)
 })
 
-test('#377 unproven timing: currently / recently / now / just sentences are dropped', () => {
+test('#377 unproven timing: currently / recently / now / just assertions suppress mixed prose', () => {
   for (const s of ['They are currently hiring SDRs.', 'They recently raised a Series A.', 'They need a CRM now.', 'The company just opened a second office.', 'This is a timely moment to reach out.']) {
     const out = fitRationale(`Acme sells B2B software to dentists. ${s}`, 'unconfirmed')
-    assert.equal(out, 'Acme sells B2B software to dentists.', s)
+    assert.equal(out, null, s)
   }
 })
 
@@ -36,8 +32,16 @@ test('#377 neutral fit stays intact across geographies and sectors', () => {
     'The Auckland roofing contractor handles commercial roofs.',
     'The Montreal accountant specializes in inventory finance.',
   ]) {
-    assert.equal(fitRationale(`${fit} The procurement trigger remains live. They just signed a lease.`, 'unconfirmed'), fit)
+    assert.equal(fitRationale(fit, 'unconfirmed'), fit)
   }
   const neutral = 'The buyer needs not just a starter plan but regional coverage.'
   assert.equal(fitRationale(neutral, 'unconfirmed'), neutral)
+})
+
+test('#377 a separate urgency sentence invalidates the whole held rationale', () => {
+  for (const rationale of [
+    'Acme fits dental clinics. The hiring campaign is live. Reach out ASAP.',
+    'Acme fits dental clinics. The hiring campaign is live.',
+    'Acme fits dental clinics. The hiring campaign is accepting applications. Reach out ASAP.',
+  ]) assert.equal(fitRationale(rationale, 'unconfirmed'), null)
 })

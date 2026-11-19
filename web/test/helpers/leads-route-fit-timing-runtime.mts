@@ -64,9 +64,9 @@ async function get(j: string) {
 }
 const NOTE = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
 
-test('a proven dated current event outranks an undated equal-fit twin; both keep their fit rationale', async () => {
+test('a dated event outranks its undated twin without letting unsupported timing leak into fit', async () => {
   const db = seed(); const j = job(db)
-  const dated = ins(db, j, 'Dated Dental', 70, 'Fits: multi-location dental group. The expansion trigger is live.', daysAgoISO(5), 'page_bound', null)
+  const dated = ins(db, j, 'Dated Dental', 70, 'Fits: multi-location dental group. The expansion campaign is live. Contact ASAP.', daysAgoISO(5), 'page_bound', null)
   // the undated twin has a fresher publication date and a higher raw score: neither may upgrade it
   const undated = ins(db, j, 'Undated Dental', 71, `Fits: growing dental group. ${NOTE}`, null, null, daysAgoISO(1))
   const rows = await get(j)
@@ -75,7 +75,7 @@ test('a proven dated current event outranks an undated equal-fit twin; both keep
   assert.equal(a.timing, 'proof_backed'); assert.equal(a.intent, 4)
   assert.equal(b.timing, 'unconfirmed'); assert.equal(b.intent, 0); assert.equal(b.stored_intent, 4, 'stored grade preserved')
   assert.equal(a.timing_proof_gap, 'domain_unconfirmed', 'a score-backed date is not an active proof binding')
-  assert.equal(a.fit_rationale, 'Fits: multi-location dental group.', 'an unsupported timing claim cannot reappear through fit rationale')
+  assert.equal(a.fit_rationale, null, 'a held rationale is not safe to split into independently sourced claims')
   assert.equal(b.fit_rationale, 'Fits: growing dental group.', 'the timing note is kept apart from the fit rationale')
   assert.equal(b.currentness_held, true); assert.equal(b.timing_proof_gap, 'timing_unproven')
 })
