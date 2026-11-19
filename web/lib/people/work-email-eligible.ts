@@ -193,7 +193,8 @@ export function guessCopy(g: GuessShown): { checked: boolean; chip: string; head
   return { checked: false, chip: 'guessed, unverified', headline: 'Guessed work email, not verified', note: `Built from the company's address format; nothing confirmed that this mailbox exists.${why} Do not send to it unverified; dazl does not draft to it.`, learned }
 }
 
-export function workEmailCostNote(p: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean }): string {
+export function workEmailCostNote(p: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; publishedOnly?: boolean }): string {
+  if (p.publishedOnly) return 'Published work email only for this scan. No broker lookup or mailbox check.'
   // #1036: the free first step (an address the company website prints for this person) runs with no key at all.
   if (!p.apollo && !p.pdl) return 'Free: checks whether the company website prints this person\'s own address. No Apollo or People Data Labs key is set, so nothing else is looked up (add your own key in Settings > Enrichment). US contacts only.'
   const parts = [p.apollo ? 'up to 1 credit on your Apollo key' : null, p.pdl ? `${p.apollo ? 'then, only if Apollo has none, ' : ''}1 People Data Labs credit, only on a match` : null].filter(Boolean)

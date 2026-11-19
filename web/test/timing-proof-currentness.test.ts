@@ -146,7 +146,7 @@ test('route seam: two equal-fit companies rank apart only when proof supports it
   const result = spawnSync(process.execPath, [
     '--experimental-strip-types', '--import', './test/helpers/net-fence.ts',
     '--loader', './test/helpers/scan-route-loader.mjs',
-    '--test', './test/helpers/leads-route-fit-timing-runtime.mts',
+    '--test', '--test-reporter=tap', './test/helpers/leads-route-fit-timing-runtime.mts',
   ], { cwd: path.resolve(fileURLToPath(new URL('../', import.meta.url))), env, encoding: 'utf8', timeout: 90000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)

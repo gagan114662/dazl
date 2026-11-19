@@ -28,3 +28,16 @@ test('#377 unproven timing: rationale made only of timing claims gives null', ()
 test('#377 proof-backed timing keeps the model wording unchanged', () => {
   assert.equal(fitRationale(LIVE, 'proof_backed'), LIVE)
 })
+
+
+test('#377 neutral fit stays intact across geographies and sectors', () => {
+  for (const fit of [
+    'The Utrecht logistics supplier provides refrigerated storage.',
+    'The Auckland roofing contractor handles commercial roofs.',
+    'The Montreal accountant specializes in inventory finance.',
+  ]) {
+    assert.equal(fitRationale(`${fit} The procurement trigger remains live. They just signed a lease.`, 'unconfirmed'), fit)
+  }
+  const neutral = 'The buyer needs not just a starter plan but regional coverage.'
+  assert.equal(fitRationale(neutral, 'unconfirmed'), neutral)
+})

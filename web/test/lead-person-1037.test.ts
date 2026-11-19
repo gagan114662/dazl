@@ -1,3 +1,4 @@
+import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 // #1037: every ready lead names the person to contact (name, title, LinkedIn or source) on the row itself, including on
 // the first play (first5) and free-trial scans, or says "No buyer named yet". TEST-ONLY fixtures: invented companies and
 // people, TinyFish stubbed, no network, no paid call, no LinkedIn access.
@@ -5,6 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { leadPerson, leadPersonLine, NO_BUYER } from '../lib/people/lead-person.ts'
+import { identityOf } from '../lib/scan/opportunity.ts'
 import { tiedLabel } from '../lib/people/company-tie.ts'
 import { LABEL, findPeople, firstPlayPeopleCap, peopleTraceMessage, peopleTraceStatus, FIRST_PLAY_MAX, MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
@@ -419,4 +421,74 @@ test('review: a job lost WHILE a search is in flight aborts that request (owners
   assert.ok(Date.now() - t0 < 5_000, 'did not wait out the transport timeout')
   assert.equal(started, 1); assert.equal(n, 0); assert.deepEqual(why, ['ownership_lost'])
   assert.equal((db.prepare("SELECT count(*) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c, 0)
+})
+
+
+test('Claude-only QA first play preserves verified public leads but disables people-search vendor', async () => {
+  const people: string[] = []
+  const r = await withEnv(TRIAL_ENV, () => runFixture(fx({ runBudget: qaClaudeOnlyBudget(FIRST5), fundedBy: 'trial', model: 'claude-sonnet-4-5' }, people)))
+  assert.equal(r.job.status, 'done', JSON.stringify(r.job))
+  assert.equal(r.calls.searches.length, 0)
+  assert.equal(people.length, 0)
+  assert.equal(stage(r)?.status, 'skipped')
+  assert.match(stage(r)?.reason ?? '', /Claude-only QA/)
+  assert.equal(rowPerson(r), null, 'the same public-source verified lead remains, without inventing a buyer')
+})
+
+for (const strict of [false, true]) test('FIRST PLAY ' + (strict ? 'Claude-only with TinyFish configured' : 'with TinyFish off') + ' measures an actual same-company buyer-page read and displays the buyer', async () => {
+  const people: string[] = [], hits: string[] = []
+  const companyHost = 'brightloop.com'
+  const ownCitation = 'https://brightloop.com/seed-round'
+  const fixture = fx({}, people)
+  const base: Fixture = { ...fixture, own: { [ownCitation]: page }, extraction: fixture.extraction.map(row => ({ ...row, source_url: ownCitation })),
+    deps: { ...fixture.deps, newsHttp: async () => ({ status: 200, body: gdelt.replace(NEWS, ownCitation) }) } }
+  const crawlGet = async (url: string) => {
+    hits.push(url)
+    const u = new URL(url)
+    if (u.hostname !== companyHost) return null
+    const prose = '<p>We are a growing software company that helps our customers communicate safely, find support and work together every single day.</p>'
+    const html: Record<string, string> = {
+      '/robots.txt': 'User-agent: *\nAllow: /',
+      '/seed-round': '<h1>Brightloop raises seed round</h1><p>' + QUOTE + '</p>',
+      '/': '<h1>Brightloop</h1><p>Brightloop is headquartered in London, UK.</p><a href="/company/our-team">Meet our team</a>',
+      '/company/our-team': prose + '<h3><a href="/company/our-team/jane-quinn">Jane Quinn</a></h3>',
+      '/company/our-team/jane-quinn': prose + '<article><h1>Jane Quinn</h1><p>Founder</p><a href="https://www.linkedin.com/in/janeq-example">Jane Quinn on LinkedIn</a></article>',
+    }
+    return (u.pathname in html) ? { status: 200, body: html[u.pathname], finalUrl: url } : null
+  }
+  const r = await withEnv({ ...(strict ? TRIAL_ENV : { TINYFISH_ENABLED: '0' }), SIGNALS_ENRICH: '0', SITECRAWL_ENABLED: '1' }, () =>
+    runFixture({ ...base, ...(strict ? { runBudget: qaClaudeOnlyBudget(FIRST5), fundedBy: 'trial', model: 'claude-sonnet-4-5' } : { tinyfishOff: true }), deps: { ...base.deps, crawlGet } }))
+  assert.equal(people.length, 0)
+  const st = stage(r)
+  assert.equal(st?.status, 'ok', JSON.stringify({ st, hits }))
+  assert.equal(st?.detail?.lane, 'first_party')
+  assert.equal(st?.detail?.public_profiles, strict ? 'not_called_claude_only' : 'not_configured')
+  assert.equal(r.calls.searches.length, 0)
+  assert.ok(Number(st?.detail?.pages_read) >= 2)
+  assert.equal(st?.detail?.people_stored, 1)
+  const lead = r.db.prepare("SELECT id, contact FROM leads WHERE company = 'Brightloop' AND review_reason IS NULL").get() as { id: string; contact: string | null }
+  assert.ok(lead, 'the verifier kept the lead')
+  const rows = r.db.prepare('SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(lead.id) as Parameters<typeof identityOf>[1]
+  const identity = identityOf(lead, rows)
+  assert.equal(identity?.state, 'fact', JSON.stringify({ identity, rows }))
+  const buyer = leadPerson(rows as Parameters<typeof leadPerson>[0], 'Founder', undefined, identity)
+  assert.equal(buyer?.source, 'https://brightloop.com/company/our-team/jane-quinn')
+  assert.equal(buyer?.linkedin, 'https://www.linkedin.com/in/janeq-example')
+  assert.ok(!hits.some(url => new URL(url).hostname.endsWith('linkedin.com')), 'profile link retained without requesting LinkedIn')
+  assert.equal(leadPersonLine(buyer), 'Jane Quinn · Founder')
+})
+
+test('linked profile metadata preserves the independent company source and fails closed if authority is lost', () => {
+  const now = Date.UTC(2026, 10, 19)
+  const evidence = 'https://brightloop.com/company/our-team/jane-quinn'
+  const profile = 'https://www.linkedin.com/in/janeq-example'
+  const row = { kind: 'person', value: 'Jane Quinn, Founder', label: 'sitecrawl-profile-v1: ' + profile, connector: 'sitecrawl', source_url: evidence, retrieved_at: now / 1000 }
+  const identified = { state: 'fact' as const, site: 'brightloop.com', text: 'company site' }
+  const unconfirmed = { ...identified, state: 'unconfirmed' as const }
+  assert.deepEqual(leadPerson([row], 'Founder', now, identified), { name: 'Jane Quinn', title: 'Founder', linkedin: profile, source: evidence, via: 'the company website (listed with this title)', current: true })
+  assert.equal(leadPerson([row], 'Founder', now, unconfirmed)?.linkedin, null)
+  assert.equal(leadPerson([row], 'Founder', now, { ...identified, site: 'other.example' })?.linkedin, null)
+  assert.equal(leadPerson([{ ...row, retrieved_at: 1 }], 'Founder', now, identified)?.linkedin, null)
+  assert.equal(leadPerson([{ ...row, connector: 'import:other' }], 'Founder', now, identified)?.linkedin, null)
+  assert.equal(leadPerson([{ ...row, label: 'sitecrawl-profile-v1: https://www.linkedin.com.bad.test/in/wrong-url' }], 'Founder', now, identified)?.linkedin, null)
 })

@@ -66,7 +66,7 @@ const NOTE = 'Event timing is unconfirmed. Review the source before treating thi
 
 test('a proven dated current event outranks an undated equal-fit twin; both keep their fit rationale', async () => {
   const db = seed(); const j = job(db)
-  const dated = ins(db, j, 'Dated Dental', 70, 'Fits: multi-location dental group.', daysAgoISO(5), 'page_bound', null)
+  const dated = ins(db, j, 'Dated Dental', 70, 'Fits: multi-location dental group. The expansion trigger is live.', daysAgoISO(5), 'page_bound', null)
   // the undated twin has a fresher publication date and a higher raw score: neither may upgrade it
   const undated = ins(db, j, 'Undated Dental', 71, `Fits: growing dental group. ${NOTE}`, null, null, daysAgoISO(1))
   const rows = await get(j)
@@ -74,7 +74,8 @@ test('a proven dated current event outranks an undated equal-fit twin; both keep
   const [a, b] = rows
   assert.equal(a.timing, 'proof_backed'); assert.equal(a.intent, 4)
   assert.equal(b.timing, 'unconfirmed'); assert.equal(b.intent, 0); assert.equal(b.stored_intent, 4, 'stored grade preserved')
-  assert.equal(a.fit_rationale, 'Fits: multi-location dental group.')
+  assert.equal(a.timing_proof_gap, 'domain_unconfirmed', 'a score-backed date is not an active proof binding')
+  assert.equal(a.fit_rationale, 'Fits: multi-location dental group.', 'an unsupported timing claim cannot reappear through fit rationale')
   assert.equal(b.fit_rationale, 'Fits: growing dental group.', 'the timing note is kept apart from the fit rationale')
   assert.equal(b.currentness_held, true); assert.equal(b.timing_proof_gap, 'timing_unproven')
 })
@@ -90,7 +91,8 @@ test('without proof, a model or publication date changes nothing: equal-fit twin
 
 test('the durable timing-proof record never reaches the Leads payload: only the human timing state does', async () => {
   const db = seed(); const j = job(db)
-  const id = ins(db, j, 'Proven Dental', 70, 'Fits: multi-location dental group.', daysAgoISO(5), 'page_bound', null)
+  const fit = 'Fits: multi-location dental group. The expansion trigger is live.'
+  const id = ins(db, j, 'Proven Dental', 70, fit, daysAgoISO(5), 'page_bound', null)
   // the current evidence the proof is bound to (#914): an own-domain company site, a named owner and a mailbox published on it
   const site = (kind: string, value: string, url: string, label: string | null = null) => addEnrichment(db, 'A', id, { connector: 'sitecrawl', kind, value, label, confidence: null, source_url: url, source_date: daysAgoISO(0), retrieved_at: Math.floor(Date.now() / 1000) })
   site('domain', 'provendental.test|evidence_own_domain', 'https://provendental.test/news', 'domain-basis-v1:evidence_own_domain')
@@ -101,6 +103,7 @@ test('the durable timing-proof record never reaches the Leads payload: only the 
   const body = await res.text()
   const [row] = (JSON.parse(body) as { leads: (Row & { enrichments: { connector: string; kind: string; value: string }[] })[] }).leads
   assert.equal(row.timing_proof_gap, null, 'the proof stands'); assert.equal(row.currentness_held, false)
+  assert.equal(row.fit_rationale, fit)
   assert.ok(row.enrichments.some(e => e.connector === 'scan:actionable'), 'user-facing enrichments are still listed')
   assert.ok(!row.enrichments.some(e => e.kind === 'timing_proof' || e.connector === 'scan:timing-proof'), 'no proof record in the enrichment list')
   assert.doesNotMatch(body, /timing-proof:v|\\"state\\":\\"proven\\"|scan:timing-proof/, 'no raw proof JSON anywhere in the payload')

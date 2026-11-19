@@ -9,9 +9,9 @@ test('POST /api/scan budget: validation before queueing, persistence with the jo
   const result = spawnSync(process.execPath, [
     '--experimental-strip-types', '--import', './test/helpers/net-fence.ts',
     '--loader', './test/helpers/scan-route-loader.mjs',
-    '--test', './test/helpers/scan-route-runtime.mts',
+    '--test', '--test-reporter=tap', './test/helpers/scan-route-runtime.mts',
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 8/); assert.match(result.stdout, /# fail 0/)
+  assert.match(result.stdout, /# pass 12\b/); assert.match(result.stdout, /# fail 0/)
 })
