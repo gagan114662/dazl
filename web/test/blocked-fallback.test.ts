@@ -42,9 +42,13 @@ async function run(o: Opt) {
   // Keep the real queue, queries, replies and assertions; skip only its wall-clock delay.
   // news-search.test.ts asserts the real spacing, retry, and adaptive backoff contract.
   const realTimeout = globalThis.setTimeout
+  let paced = 0
   const mockTimeout = ((fn: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
-    const sleepFrames = new Error().stack?.split('\n').slice(2, 5) ?? []
-    const newsPacing = sleepFrames[0]?.includes('at sleep ') && sleepFrames[0].includes('/lib/search/news.ts:')
+    const frames = new Error().stack?.split('\n').slice(1) ?? []
+    // Node 22 may omit the inferred function name in this frame. The fixture
+    // distinguishes the news module by source location, not display name.
+    const newsPacing = frames.some(frame => /[\\/]lib[\\/]search[\\/]news\.ts:\d/.test(frame))
+    if (newsPacing) paced++
     return realTimeout(fn, newsPacing ? 0 : delay, ...args)
   }) as typeof setTimeout
   globalThis.setTimeout = mockTimeout
@@ -54,7 +58,7 @@ async function run(o: Opt) {
   const rows = sourceRuns(x.db, 'A', jobId) as { collector: string; status: string }[]
   const fb = lead ? x.db.prepare("SELECT value, source_url FROM lead_enrichments WHERE lead_id = ? AND connector = 'scan:fallback'").get(lead.id) as { value: string; source_url: string } | undefined : undefined
   const res = (runReportFor(x.db, 'A', jobId) as { resolution?: { leads: { company: string; reasons: string[]; fallbacks: string[] }[] } }[]).findLast(r => r.resolution)?.resolution?.leads.find(l => l.company === 'Clera')
-  return { x, lead, rows, fb, res, newsCalls }
+  return { x, lead, rows, fb, res, newsCalls, paced }
 }
 const state = (l?: { review_reason: string | null }) => (!l ? 'none' : l.review_reason === null ? 'verifier-passed' : `held:${l.review_reason}`)
 
@@ -105,7 +109,9 @@ test('JOINED EVIDENCE, stale funding: the funding is dated 200 days ago (window 
   assert.notEqual(state(r.lead), 'verifier-passed', JSON.stringify([r.lead, r.rows])); assert.match(state(r.lead), /^held:/)
 })
 test('JOINED EVIDENCE, positive control: London funding 10 days ago + a London sales job -> verifier-passed (not scoreboard-qualified); inside the window at 80 days too, out at 100', async () => {
-  assert.equal(state((await run({ board: true })).lead), 'verifier-passed')
+  const fresh = await run({ board: true })
+  assert.equal(state(fresh.lead), 'verifier-passed')
+  assert.ok(fresh.paced > 0, 'the fake news transport did not use wall-clock rate waits')
   assert.equal(state((await run({ board: true, fundDays: 80 })).lead), 'verifier-passed')
   assert.match(state((await run({ board: true, fundDays: 100 })).lead), /^held:/)
 })
