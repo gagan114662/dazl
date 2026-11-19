@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { POST, DELETE } from '../../app/api/outreach/inbox/fixture/route.ts'
+import { POST, DELETE } from '../../app/api/outreach/inbox/fixture/route.staging.ts'
 import { GET as INBOX } from '../../app/api/outreach/inbox/route.ts'
 import { fixtureIds } from '../../lib/outreach/inbox-fixture.ts'
 

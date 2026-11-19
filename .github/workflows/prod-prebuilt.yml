@@ -46,6 +46,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.sha.outputs.sha }}
+          # Only explicit rebuilds need history to prove the selected commit predates fixture isolation.
+          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && inputs.sha != '' && '0' || '1' }}
           persist-credentials: false
       # The tools come from THIS workflow's own commit, never from the commit being built: a commit from before
       # ops/prod existed (every release older than #1061) must still be rebuildable for a rollback.
@@ -64,11 +66,25 @@ jobs:
           PUBLIC_BASE_URL: https://dazl.ai
           NEXT_TELEMETRY_DISABLED: '1'
           SHA: ${{ steps.sha.outputs.sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+          REQUESTED_SHA: ${{ inputs.sha }}
         run: |
           test -z "${DAZL_ENV:-}"   # a production build is never a staging build (staging adds noindex at build time)
           npm ci --no-audit --no-fund --loglevel=error
           echo "$SHA" > .build-commit
           NODE_OPTIONS=--max-old-space-size=4096 npx next build
+          if [[ -f scripts/check-fixture-route-artifact.mjs ]]; then
+            node scripts/check-fixture-route-artifact.mjs production
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$REQUESTED_SHA" == "$SHA" && "$SHA" != "$WORKFLOW_SHA" && "$SHA" =~ ^[0-9a-f]{40}$ ]] &&
+               [[ "$(git rev-parse HEAD)" == "$SHA" ]] &&
+               git merge-base --is-ancestor "$SHA" 3353710ffa1a44c1f2b4e3ed1ff1358f01894b62; then
+            # That pinned main commit and its ancestors predate the fixture-isolation policy. This only
+            # restores explicit rebuilds of those old artifacts; publishing and deployment gates are unchanged.
+            echo "Historical rollback rebuild: $SHA predates the production fixture artifact checker"
+          else
+            echo "Production fixture artifact checker missing for $SHA" >&2
+            exit 1
+          fi
           rm -rf .next/cache
           test -f .next/BUILD_ID
           node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"

@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { ROLES, can } from '../../lib/workspaces.ts'
-import { ROUTES } from '../tenant-isolation-manifest.ts'
+import { ROUTES, routeFile } from '../tenant-isolation-manifest.ts'
 
 const fetchCalls: string[] = []
 globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw new Error('Unexpected network call') }) as typeof fetch
@@ -25,7 +25,7 @@ function snapshot(db: Database.Database): string {
 const id = 'aaaaaaaaaaaaaaaaaaaaaaaa'
 // crm POST checks freshness only for saving or removing its key, so the sweep asks to save
 const call = async (r: { path: string; method: string }) => {
-  const mod = await import(`../../app/api/${r.path}/route.ts`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
+  const mod = await import(`../../app/api/${r.path}/${routeFile(r.path)}`) as Record<string, (req: NextRequest, ctx: unknown) => Promise<Response>>
   const url = `http://localhost/api/${r.path.replace(/\[[a-z]+\]/g, id)}?id=${id}&job_id=${id}&lead_id=${id}`
   const body = r.method === 'GET' || r.method === 'DELETE' ? undefined : JSON.stringify({ id, job_id: id, lead_id: id, action: r.path === 'crm' ? 'save' : 'send' })
 

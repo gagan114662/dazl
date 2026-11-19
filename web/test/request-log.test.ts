@@ -58,7 +58,7 @@ test('the route list matches the route files under app/ (add new routes to lib/o
     for (const f of readdirSync(dir)) {
       const p = path.join(dir, f)
       if (statSync(p).isDirectory()) walk(p)
-      else if ((f === 'route.ts' && p.includes('/app/api/')) || (f === 'page.tsx' && p.includes('/app/app'))) found.push('/' + path.relative(root, dir))
+      else if (((f === 'route.ts' || f === 'route.staging.ts') && p.includes('/app/api/')) || (f === 'page.tsx' && p.includes('/app/app'))) found.push('/' + path.relative(root, dir))
     }
   }
   walk(path.join(root, 'api')); walk(path.join(root, 'app'))
