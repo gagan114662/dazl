@@ -7,6 +7,7 @@ const INITIAL_TOKEN_FACTOR = 1.2 // Anthropic calls count_tokens an estimate; th
 const ASSUMED_TOOL_OVERHEAD = 1_000 // count_tokens rejects server tools; local allowance for the uncounted tool prompt.
 const USD_PER_SEARCH = 0.01
 const MICROS = 1_000_000
+export const CLAUDE_SEARCH_TIMEOUT_MS = 150_000
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
 const MAX_PROMPT_BYTES = 24_000
 const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
@@ -99,7 +100,7 @@ export async function runClaudeWebSearch(
   try {
     r = await fetchImpl(MESSAGE, {
       method: 'POST', headers, body: JSON.stringify({ ...countPayload, tools, max_tokens: CLAUDE_SEARCH_MAX_OUTPUT }),
-      signal: AbortSignal.timeout(150_000), redirect: 'error',
+      signal: AbortSignal.timeout(CLAUDE_SEARCH_TIMEOUT_MS), redirect: 'error',
     })
   } catch {
     await hold.uncertain()

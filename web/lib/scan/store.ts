@@ -1,4 +1,5 @@
 import { migrateScanSpendCap } from './spend-cap.ts'
+import { CLAUDE_SEARCH_TIMEOUT_MS } from '../llm/claude-web-search.ts'
 import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
 import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
 import { RENDER_TIMEOUT_MS } from './fetch-page.ts'
@@ -26,7 +27,7 @@ import { ENRICH_STALE_S } from './enrichment.ts'
 // (reserved) call path: the longest a reserve can stay open is its path's full timeout (currently the 150s LLM call, vs 35s
 // render, 20s TinyFish, 15s enrich lookups). A new paid path with a longer timeout RAISES the floor automatically once its
 // constant is listed here.
-export const MAX_PAID_CALL_MS = Math.max(LLM_TIMEOUT_MS, RENDER_TIMEOUT_MS, TINYFISH_TIMEOUT_MS, APOLLO_TIMEOUT_MS, PDL_TIMEOUT_MS)
+export const MAX_PAID_CALL_MS = Math.max(LLM_TIMEOUT_MS, CLAUDE_SEARCH_TIMEOUT_MS, RENDER_TIMEOUT_MS, TINYFISH_TIMEOUT_MS, APOLLO_TIMEOUT_MS, PDL_TIMEOUT_MS)
 // #1157: the floor is ONE call plus a margin, not two calls. The window is renewed at every reserve and every settle, so it has to
 // outlive a single open call; 45 s covers the settle write and clock skew. The 2x it replaced made the DEFAULT window 20 min: a scan
 // whose process died (a SIGKILL, an out-of-memory kill, a crash) sat 'running' for 20 minutes with no progress, then failed. The

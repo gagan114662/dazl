@@ -32,12 +32,17 @@ test('pinned strict mode refuses PG or a queue-managed topology rather than bypa
   assert.equal(strictLocalTopologySupported('sqlite', { DAZL_QUEUE_TENANTS: 'a-tenant' }), false)
 })
 
-test('native search requires exact new mode and a strict pinned first-play budget', async () => {
-  const { NATIVE_SEARCH_FIRST5_CLAUDE_ONLY_MODE: v3, QA_NATIVE_WEB_SEARCH_POLICY: marker, QA_LOCAL_EXECUTION: execution, qaClaudeOnlyNativeSearchJob } = await import('../lib/scan/qa-provider-policy.ts')
-  assert.equal(isFirst5RequestMode(v3), true)
+test('native search requires the exact production first-play option and a strict pinned first-play budget', async () => {
+  const { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_POLICY: marker, QA_LOCAL_EXECUTION: execution, qaClaudeOnlyNativeSearchJob } = await import('../lib/scan/qa-provider-policy.ts')
+  assert.equal(isFirst5RequestMode('first5_claude_only_search_v3'), false)
+  assert.equal(isFirst5NativeSearchRequest('first5', { web_search: marker }), true)
+  for (const m of [undefined, FIRST5_CLAUDE_ONLY_MODE, PINNED_FIRST5_CLAUDE_ONLY_MODE, 'first5_claude_only_search_v3'])
+    assert.equal(isFirst5NativeSearchRequest(m, { web_search: marker }), false)
+  for (const b of [undefined, {}, [marker], { web_search: false }, { web_search: marker, max_usd: 5 }, { web_search_policy: marker }])
+    assert.equal(isFirst5NativeSearchRequest('first5', b), false)
   const forged = JSON.stringify({ first5: true, web_search_policy: marker })
-  for (const mode of [undefined, FIRST5_CLAUDE_ONLY_MODE, PINNED_FIRST5_CLAUDE_ONLY_MODE, 'first5']) assert.equal(JSON.parse(qaClaudeOnlyBudget(forged, mode)).web_search_policy, undefined)
-  const raw = qaClaudeOnlyBudget(forged, v3)
+  assert.equal(JSON.parse(qaClaudeOnlyBudget(forged)).web_search_policy, undefined)
+  const raw = qaClaudeOnlyBudget(forged, true)
   const b = JSON.parse(raw)
   assert.equal(b.web_search_policy, marker)
   assert.equal(qaClaudeOnlyNativeSearchJob(raw), false)

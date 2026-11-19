@@ -5,15 +5,20 @@ export const QA_SPEND_MAX_USD = 5
 // Older servers reject this mode as unknown instead of running the ordinary first play.
 export const FIRST5_CLAUDE_ONLY_MODE = 'first5_claude_only_v1'
 export const PINNED_FIRST5_CLAUDE_ONLY_MODE = 'first5_claude_only_pinned_v2'
-export const NATIVE_SEARCH_FIRST5_CLAUDE_ONLY_MODE = 'first5_claude_only_search_v3'
 export const QA_NATIVE_WEB_SEARCH_POLICY = 'anthropic_estimated_v1'
 export const QA_NATIVE_WEB_SEARCH_MAX_USES = 2
 export const QA_NATIVE_WEB_SEARCH_RESULT_TOKENS = 25_000
 export const QA_NATIVE_WEB_SEARCH_FEE_USD = 0.01
 export const QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE = 'Claude Web Search requires your workspace’s own active Anthropic key. Nothing was started.'
-export const isClaudeOnlyNativeSearchRequestMode = (mode: unknown): boolean => mode === NATIVE_SEARCH_FIRST5_CLAUDE_ONLY_MODE
+// A production first-play option. Older servers reject *any* first5 request budget instead
+// of silently interpreting a newly opted-in play as an ordinary scan.
+export function isFirst5NativeSearchRequest(mode: unknown, budget: unknown): boolean {
+  if (mode !== 'first5' || !budget || typeof budget !== 'object' || Array.isArray(budget)) return false
+  const b = budget as Record<string, unknown>
+  return Object.keys(b).length === 1 && Object.hasOwn(b, 'web_search') && b.web_search === QA_NATIVE_WEB_SEARCH_POLICY
+}
 export const QA_LOCAL_EXECUTION = 'local_once_v1'
-export const isClaudeOnlyRequestMode = (mode: unknown): boolean => mode === FIRST5_CLAUDE_ONLY_MODE || mode === PINNED_FIRST5_CLAUDE_ONLY_MODE || isClaudeOnlyNativeSearchRequestMode(mode)
+export const isClaudeOnlyRequestMode = (mode: unknown): boolean => mode === FIRST5_CLAUDE_ONLY_MODE || mode === PINNED_FIRST5_CLAUDE_ONLY_MODE
 export const isFirst5RequestMode = (mode: unknown): boolean => mode === 'first5' || isClaudeOnlyRequestMode(mode)
 
 export function qaPinnedLocalJob(raw: string | null | undefined): boolean {
@@ -31,12 +36,12 @@ export function qaClaudeOnlyJob(raw: string | null | undefined): boolean {
   try { return JSON.parse(raw)?.provider_policy === QA_CLAUDE_ONLY } catch { return false }
 }
 
-// Only the exact server-admitted request mode can mint this marker; ignore markers from raw budgets.
-export function qaClaudeOnlyBudget(raw: string | null, mode?: unknown): string {
+// Ignore raw budget markers. Only the server-validated first-play option can mint one.
+export function qaClaudeOnlyBudget(raw: string | null, nativeSearch = false): string {
   const budget = raw ? JSON.parse(raw) : {}
   delete budget.web_search_policy
   return JSON.stringify({ ...budget, provider_policy: QA_CLAUDE_ONLY, paid_fallback: false, credit_enrichment: false,
-    ...(isClaudeOnlyNativeSearchRequestMode(mode) ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}),
+    ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}),
     max_usd: Math.min(budget.max_usd ?? QA_SPEND_MAX_USD, QA_SPEND_MAX_USD) })
 }
 

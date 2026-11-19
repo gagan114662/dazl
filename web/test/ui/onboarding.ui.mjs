@@ -58,13 +58,14 @@ await ctx.route('**/*', async route => {
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
   if (p === '/api/scan' && m === 'POST') {
     const body = JSON.parse(req.postData()); scanBodies.push(body)
-    if (state.oldFirstPlayServer) return json({ error: 'unknown_mode' }, 400)
-    if (body.mode === 'first5_claude_only_search_v3') {
+    assert.equal(body.mode, 'first5', 'production onboarding never posts a QA mode')
+    if (state.oldFirstPlayServer && Object.hasOwn(body, 'budget')) return json({ error: 'invalid_budget' }, 400)
+    if (body.budget?.web_search === 'anthropic_estimated_v1') {
       if (state.searchResponse === 'no-key') return json({ error: 'qa_search_requires_own_key' }, 400)
       return json({ job_id: 'c'.repeat(24), provider_policy: 'claude_only_v1', execution: 'local_once_v1',
         ...(state.searchResponse === 'confirmed' ? { web_search_policy: 'anthropic_estimated_v1' } : {}) }, 202)
     }
-    return json({ job_id: 'c'.repeat(24), ...(body.mode === 'first5_claude_only_pinned_v2' ? { provider_policy: 'claude_only_v1', execution: 'local_once_v1' } : {}) }, 202)
+    return json({ job_id: 'c'.repeat(24) }, 202)
   }
   if (p === '/api/scan/status') return json({ status: 'running' })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: { email: 'me@brightsmile.example', status: 'active', read_granted: false }, sender: state.sender, daily_cap: 20, sent_24h: 0 })
@@ -109,7 +110,7 @@ assert.equal(await sentence().inputValue(), '', 'nothing from the old profile is
 assert.match(await page.getByLabel('Search profile').textContent(), /in NYC/)
 // One click on a suggested play starts the scan and goes straight to its live progress.
 await plays().nth(1).click(); await page.waitForURL(/\/app\/leads\?job_id=/)
-assert.deepEqual(scanBodies, [{ query: 'Office managers in NYC - hiring front-desk staff', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the picked play and the edited profile')
+assert.deepEqual(scanBodies, [{ query: 'Office managers in NYC - hiring front-desk staff', mode: 'first5', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the picked play and the edited profile')
 
 // Scenario 2: every edited profile field reaches the request; a sentence the user typed survives Back/continue as typed.
 scanBodies.length = 0
@@ -133,7 +134,7 @@ await sentence().fill('Orthodontists in Austin opening a second office')
 await back(); await cont()
 assert.equal(await sentence().inputValue(), 'Orthodontists in Austin opening a second office', "the user's own sentence is kept")
 await findLeads()
-assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
+assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', mode: 'first5', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
 
 // Scenario 3: full reload; the saved profile comes back from the real route, not from page memory.
 await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
@@ -145,32 +146,6 @@ const val = l => page.getByLabel(l).inputValue()
 assert.deepEqual({ sells: await val('What you sell'), who: await val('Who buys it'), roles: await val('Buyer roles'), industries: await val('Industries'), where: await val('Where'), signals: await val('Signs they need you now'), sizes: await val('Company sizes'), skip: await val('Skip') },
   { sells: 'Online booking and reminders for dental practices', who: 'Group dental practices opening new offices', roles: 'Practice owners; COO', industries: 'Dental; Orthodontics', where: 'Austin, TX', signals: 'Opened a new location', sizes: '10-50 employees', skip: 'Dental schools' })
 assert.ok(realProfile.includes('POST') && realProfile.filter(m => m === 'GET').length >= 3, 'the profile went through the real route')
-// Explicit restricted onboarding: no automatic profile or key check on entry/back/reload. The old server rejects
-// the versioned mode, and the UI must never fall back to an ordinary run. Only a deliberate retry can queue a scan.
-const beforeRestricted = calls.length
-scanBodies.length = 0
-await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
-await page.getByTestId('first-play-claude-only').click()
-await page.getByTestId('claude-only-active').waitFor()
-await page.getByRole('button', { name: 'Back', exact: true }).click()
-assert.equal(await page.getByRole('button', { name: 'Read my site' }).count(), 0)
-await page.reload({ waitUntil: 'networkidle' })
-await page.getByTestId('first-play-claude-only').click()
-assert.equal(await page.getByRole('button', { name: 'Read my site' }).count(), 0)
-await cont()
-await sentence().fill('Austin dental practices hiring a receptionist')
-state.oldFirstPlayServer = true
-await page.getByRole('button', { name: 'Find leads' }).click()
-await page.getByRole('alert').filter({ hasText: 'Nothing started.' }).waitFor()
-assert.equal(scanBodies.length, 1, 'never retries as an ordinary first play')
-assert.equal(scanBodies[0].mode, 'first5_claude_only_pinned_v2')
-state.oldFirstPlayServer = false
-await page.getByRole('button', { name: 'Find leads' }).click()
-await page.getByTestId('ready-step').waitFor()
-assert.deepEqual(scanBodies.map(b => b.mode), ['first5_claude_only_pinned_v2', 'first5_claude_only_pinned_v2'])
-assert.ok(!calls.slice(beforeRestricted).some(c => /(?:POST \/api\/scan\/icp|PUT \/api\/settings\/llm-key)/.test(c)), 'manual Claude-only setup opened no paid-capable profile or key endpoint')
-await shot('claude-only')
-
 // Claude Web Search is an additional, per-play opt-in; nothing starts by checking it or following a refusal.
 await page.goto(base + '/app?setup=brain', { waitUntil: 'networkidle' })
 await cont()
@@ -183,23 +158,29 @@ scanBodies.length = 0
 await optIn.check()
 assert.equal(scanBodies.length, 0)
 await page.getByText(/actual Anthropic charges can vary/).waitFor()
+state.oldFirstPlayServer = true
+await startSearch.click()
+await page.getByRole('alert').filter({ hasText: 'does not support Claude Web Search' }).waitFor()
+assert.equal(scanBodies.length, 1, 'older server refuses, without starting or retrying an ordinary scan')
+state.oldFirstPlayServer = false
+await optIn.check()
 state.searchResponse = 'no-key'
 await startSearch.click()
 await page.getByRole('alert').filter({ hasText: 'cannot use the free trial' }).waitFor()
 assert.equal(await optIn.isChecked(), false)
-assert.equal(scanBodies.length, 1, 'key refusal does not submit a fallback')
-assert.equal(scanBodies[0].mode, 'first5_claude_only_search_v3')
+assert.equal(scanBodies.length, 2, 'key refusal does not submit a fallback')
+assert.deepEqual(scanBodies[1].budget, { web_search: 'anthropic_estimated_v1' })
 state.searchResponse = 'missing-policy'
 await optIn.check()
 await startSearch.click()
 await page.getByRole('alert').filter({ hasText: 'did not confirm the Claude Web Search policy' }).waitFor()
-assert.equal(scanBodies.length, 2, 'incomplete success never redirects or retries')
+assert.equal(scanBodies.length, 3, 'incomplete success never redirects or retries')
 assert.equal(await page.getByTestId('ready-step').count(), 0)
 state.searchResponse = 'confirmed'
 await optIn.check()
 await startSearch.click()
 await page.getByTestId('ready-step').waitFor()
-assert.deepEqual(scanBodies.map(body => body.mode), Array(3).fill('first5_claude_only_search_v3'))
+assert.deepEqual(scanBodies.map(({ mode, budget }) => ({ mode, budget })), Array(4).fill({ mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } }))
 
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {

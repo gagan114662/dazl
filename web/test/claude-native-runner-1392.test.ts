@@ -5,7 +5,7 @@ import Database from 'better-sqlite3'
 import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from '../lib/llm/claude-web-search.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { NATIVE_SEARCH_FIRST5_CLAUDE_ONLY_MODE, PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
+import { PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { runJob } from '../lib/scan/runner.ts'
 import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
 
@@ -14,7 +14,7 @@ const count = 1500
 const q = 'Find commercial roofers in London, UK'
 const url = 'https://public.example/official-company-page'
 const api = 'https://api.anthropic.com/v1/messages'
-const v3 = NATIVE_SEARCH_FIRST5_CLAUDE_ONLY_MODE
+const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
 async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
@@ -40,7 +40,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
   try {
     migrateAllSqlite(db)
     saveKey(db, 'workspace', 'anthropic', 'sk-ant-workspace-fixture', master)
-    const raw = qaClaudeOnlyBudget(JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false }), mode)
+    const raw = qaClaudeOnlyBudget(JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false }), mode === v3)
     const job = db.transaction(() => {
       createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: [], industries, sizes: [], where, signals, exclude: [] }) })
       if (query === null) db.exec("UPDATE scan_jobs SET query=NULL WHERE id='job'") // legacy/non-query row: never open native discovery
