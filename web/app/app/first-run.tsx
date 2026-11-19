@@ -274,7 +274,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // Older servers reject all first5 budgets. Use that boundary to refuse rather than accidentally start
       // an ordinary scan on a server that does not understand the opt-in.
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, mode: 'first5',
+        query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions,
+        // Ready's quick play and an explicit Web Search opt-in use first5. Unselected Ask/Play keeps the full scan.
+        ...(stay || useClaudeSearch ? { mode: 'first5' } : {}),
         ...(useClaudeSearch ? { budget: { web_search: CLAUDE_SEARCH_POLICY } } : {}),
       }) })
       const j = await r.json().catch(() => ({}))

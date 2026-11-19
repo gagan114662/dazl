@@ -37,7 +37,18 @@ function scenario(o: Opt) {
   return { f, newsCalls }
 }
 async function run(o: Opt) {
-  const { f, newsCalls } = scenario(o); const x = await runFixture(f)
+  const { f, newsCalls } = scenario(o)
+  // Every GDELT reply in this fixture comes from scenario.newsHttp, never the network.
+  // Keep the real queue, queries, replies and assertions; skip only its wall-clock delay.
+  // news-search.test.ts asserts the real spacing, retry, and adaptive backoff contract.
+  const realTimeout = globalThis.setTimeout
+  const mockTimeout = ((fn: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    const sleepFrames = new Error().stack?.split('\n').slice(2, 5) ?? []
+    const newsPacing = sleepFrames[0]?.includes('at sleep ') && sleepFrames[0].includes('/lib/search/news.ts:')
+    return realTimeout(fn, newsPacing ? 0 : delay, ...args)
+  }) as typeof setTimeout
+  globalThis.setTimeout = mockTimeout
+  const x = await runFixture(f).finally(() => { globalThis.setTimeout = realTimeout })
   const jobId = (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
   const lead = x.db.prepare("SELECT id, review_reason, confidence, source_url FROM leads WHERE company = 'Clera'").get() as { id: string; review_reason: string | null; confidence: number | null; source_url: string } | undefined
   const rows = sourceRuns(x.db, 'A', jobId) as { collector: string; status: string }[]

@@ -1,40 +1,13 @@
 import { LLM_TIMEOUT_MS } from './provider.ts'
+import { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, USD_PER_SEARCH, MICROS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate } from './claude-web-search-estimate.ts'
+export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
 
-// Dedicated opt-in Claude-owned search. No generic research activation, credentials or side effects at import.
-export const CLAUDE_SEARCH_MODEL = 'claude-sonnet-4-5-20250929'
-export const CLAUDE_SEARCH_MAX_USES = 2
-export const CLAUDE_SEARCH_MAX_OUTPUT = 3_000
-export const CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH = 25_000
-const INITIAL_TOKEN_FACTOR = 1.2 // Anthropic calls count_tokens an estimate; the extra margin is local, not a hard bound.
-const ASSUMED_TOOL_OVERHEAD = 1_000 // count_tokens rejects server tools; local allowance for the uncounted tool prompt.
-const USD_PER_SEARCH = 0.01
-const MICROS = 1_000_000
 const CLAUDE_SEARCH_TIMEOUT_MS = Math.min(150_000, LLM_TIMEOUT_MS)
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
 const MAX_PROMPT_BYTES = 24_000
 const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
 const obj = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
 const arr = (v: unknown): unknown[] => Array.isArray(v) ? v : []
-const roundedUp = (usd: number) => Math.ceil(usd * MICROS) / MICROS
-
-export interface ClaudeSearchEstimate {
-  readonly model: typeof CLAUDE_SEARCH_MODEL
-  readonly countedInputTokens: number
-  readonly assumedSearchInputTokens: number
-  readonly assumedToolOverheadTokens: number
-  readonly maxOutputTokens: number
-  readonly maxSearches: number
-  readonly estimatedUsd: number // soft: Anthropic has no request-level billed-input ceiling for server-side search
-  readonly hard: false
-}
-
-export function claudeSearchEstimate(countedInputTokens: number): ClaudeSearchEstimate {
-  if (!count(countedInputTokens) || countedInputTokens === 0 || countedInputTokens > 200_000) throw new ClaudeSearchError('count_failed')
-  const assumedSearchInputTokens = CLAUDE_SEARCH_MAX_USES * CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH
-  const estimatedUsd = roundedUp(((Math.ceil(countedInputTokens * INITIAL_TOKEN_FACTOR) + ASSUMED_TOOL_OVERHEAD + assumedSearchInputTokens) * 3 + CLAUDE_SEARCH_MAX_OUTPUT * 15) / MICROS + CLAUDE_SEARCH_MAX_USES * USD_PER_SEARCH)
-  return { model: CLAUDE_SEARCH_MODEL, countedInputTokens, assumedSearchInputTokens, assumedToolOverheadTokens: ASSUMED_TOOL_OVERHEAD, maxOutputTokens: CLAUDE_SEARCH_MAX_OUTPUT, maxSearches: CLAUDE_SEARCH_MAX_USES, estimatedUsd, hard: false }
-}
-
 export interface ClaudeSearchUsage {
   inputTokens: number; outputTokens: number; cacheReadTokens: number
   cacheWrite5mTokens: number; cacheWrite1hTokens: number; searches: number; usd: number
@@ -58,11 +31,6 @@ export function parseClaudeSearchUsage(response: unknown): ClaudeSearchUsage | n
   return { inputTokens: input, outputTokens: output, cacheReadTokens: read, cacheWrite5mTokens: write5m, cacheWrite1hTokens: write1h, searches, usd }
 }
 
-export type ClaudeSearchFailure = 'invalid_input' | 'count_failed' | 'reservation_missing' | 'request_uncertain' | 'rate_limited' | 'key_rejected' | 'usage_uncertain' | 'provider_limit_violation'
-export class ClaudeSearchError extends Error {
-  readonly code: ClaudeSearchFailure
-  constructor(code: ClaudeSearchFailure) { super(code); this.code = code }
-}
 export interface ClaudeSearchHold {
   settle(actualUsd: number, usage: ClaudeSearchUsage): Promise<void> | void
   uncertain(): Promise<void> | void

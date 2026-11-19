@@ -58,7 +58,8 @@ await ctx.route('**/*', async route => {
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
   if (p === '/api/scan' && m === 'POST') {
     const body = JSON.parse(req.postData()); scanBodies.push(body)
-    assert.equal(body.mode, 'first5', 'production onboarding never posts a QA mode')
+    assert.ok(body.mode === undefined || body.mode === 'first5', 'production onboarding never posts a QA mode')
+    if (body.budget) assert.equal(body.mode, 'first5', 'only an explicit first play can opt into Web Search')
     if (state.oldFirstPlayServer && Object.hasOwn(body, 'budget')) return json({ error: 'invalid_budget' }, 400)
     if (body.budget?.web_search === 'anthropic_estimated_v1') {
       if (state.searchResponse === 'no-key') return json({ error: 'qa_search_requires_own_key' }, 400)
@@ -110,7 +111,7 @@ assert.equal(await sentence().inputValue(), '', 'nothing from the old profile is
 assert.match(await page.getByLabel('Search profile').textContent(), /in NYC/)
 // One click on a suggested play starts the scan and goes straight to its live progress.
 await plays().nth(1).click(); await page.waitForURL(/\/app\/leads\?job_id=/)
-assert.deepEqual(scanBodies, [{ query: 'Office managers in NYC - hiring front-desk staff', mode: 'first5', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the picked play and the edited profile')
+assert.deepEqual(scanBodies, [{ query: 'Office managers in NYC - hiring front-desk staff', icp: { ...PROFILE, where: ['NYC'] } }], 'exactly one request: the picked play and the edited profile')
 
 // Scenario 2: every edited profile field reaches the request; a sentence the user typed survives Back/continue as typed.
 scanBodies.length = 0
@@ -134,7 +135,7 @@ await sentence().fill('Orthodontists in Austin opening a second office')
 await back(); await cont()
 assert.equal(await sentence().inputValue(), 'Orthodontists in Austin opening a second office', "the user's own sentence is kept")
 await findLeads()
-assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', mode: 'first5', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
+assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
 
 // Scenario 3: full reload; the saved profile comes back from the real route, not from page memory.
 await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })

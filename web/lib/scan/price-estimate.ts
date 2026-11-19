@@ -14,7 +14,7 @@ import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 import { trialCopy } from '../trial-copy.ts'
 import { paidVendorOn } from '../paid-vendors.ts'
-import { claudeSearchEstimate } from '../llm/claude-web-search.ts'
+import { claudeSearchEstimate } from '../llm/claude-web-search-estimate.ts'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-5'
 // Shown (and confirmed) when a payer's own key exists but which model it runs could not be read: priced as unknown, never as
