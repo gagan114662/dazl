@@ -79,7 +79,7 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
       : w.last_status === 'failed' ? { tone: 'failed', label: 'Live, last run failed' }
       : { tone: 'live', label: 'Live' }
     out.push({
-      id: w.id, kind: 'watch', name: playName(w.query, icp), sentence: w.query,
+      id: w.id, kind: 'watch', name: playName(w.query, null), sentence: w.query,
       audience: audienceOf(icp), signal: signalOf(icp), schedule: scheduleOf((w.interval_s ?? (w.auto ? 86400 : 604800)) / 3600),
       lastRun: w.last_run_at ? `${when(w.last_run_at)}${w.last_status === 'done' ? `, ${w.new_leads} new` : ''}` : 'Not run yet',
       lastHref: w.last_job_id ? `/app/leads?job_id=${w.last_job_id}` : null,
@@ -90,7 +90,7 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
   for (const m of monitors ?? []) {
     const icp = asIcp(m.icp ?? null), on = m.enabled === true || m.enabled === 1
     out.push({
-      id: m.id, kind: 'monitor', name: playName(m.query, icp), sentence: m.query,
+      id: m.id, kind: 'monitor', name: playName(m.query, null), sentence: m.query,
       audience: audienceOf(icp), signal: signalOf(icp), schedule: scheduleOf(m.interval_hours),
       lastRun: m.last_run_at ? `${when(m.last_run_at)}${m.last_new_count != null ? `, ${m.last_new_count} new` : ''}` : 'Not run yet',
       lastHref: m.last_job_id ? `/app/leads?job_id=${m.last_job_id}` : null,
@@ -99,8 +99,10 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
       active: on, note: null,
     })
   }
-  // #1123: two plays saved from the same profile would share its title; each such play is named from its own search
-  const same = (p: SavedPlay) => out.some(o => o !== p && o.name === p.name && o.sentence.trim() !== p.sentence.trim())
-  for (const p of out.filter(same)) p.name = playName(p.sentence, null)
+  // Short titles come from each play's own search. If two distinct requests share the first
+  // words, show the full requests rather than borrowing titles from either saved profile.
+  const full = (p: SavedPlay) => p.sentence.replace(/\s+/g, ' ').trim()
+  const colliding = out.filter(p => out.some(o => o.name === p.name && full(o) !== full(p)))
+  for (const p of colliding) p.name = full(p)
   return out
 }

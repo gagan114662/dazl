@@ -18,7 +18,7 @@ import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmiss
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
 import { captureError } from './ops/errors.ts'
 import { alertKeysOf, migrateMonitorEvents } from './monitor-events.ts'
-import { ALERT_ROW_SQL, alertHolderStep, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, lockAlertsStep, migratePlayAlerts, seedPlayAlertsStep, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
+import { ALERT_ROW_SQL, alertHolderStep, alertKindOf, claimAlertStep, heldElsewhere, holderOf, learnAlertKeysStep, lockAlertsStep, migratePlayAlerts, seedPlayAlertsStep, VISIBLE_LEAD, type PlayAlert } from './play-alerts.ts'
 import { cappedRunBudget, DAY_S, PLAY_SKIPPED, freeCapApplies, FREE_DAILY_RUNS, scansTodayStep, skipNotice, skipWatchRunStep, watchIntervalS, WEEK_S } from './play-cadence.ts'
 
 export const MAX_WATCHES = 3
@@ -87,7 +87,6 @@ export async function listWatches(db: Db, userId: string) {
   return Promise.all(rows.map(async w => {
     // the watch's own jobs only (scan_jobs.user_id), newest first; same-second ties in insertion order
     const last = await db.get<{ id: string; status: string; finished_at: number | null }>('SELECT id, status, finished_at FROM scan_jobs WHERE watch_id = ? AND user_id = ? ORDER BY created_at DESC, insert_seq DESC LIMIT 1', [w.id, userId])
-    // #1123: only the leads the Leads list shows (VISIBLE_LEAD), the same rule as the play's "new" pill and its email
     const newCount = last ? Number((await db.get<{ n: number }>(`SELECT count(*) AS n FROM leads l WHERE l.scan_job_id = ? AND l.watch_new = 1 AND ${VISIBLE_LEAD}`, [last.id]))!.n) : 0
     // #1042: the automatic repeat of the account's first play (lib/play-repeat.ts: its only job older than the watch)
     const auto = !!(await db.get('SELECT 1 AS x FROM scan_jobs WHERE watch_id = ? AND user_id = ? AND created_at < ? LIMIT 1', [w.id, userId, w.created_at]))
@@ -186,10 +185,10 @@ export function writeWatchLeads(db: Db, watchId: string, jobId: string): Promise
 // Idempotent: a second pass over the same run keeps what the run holds and clears nothing more. Returns the number of
 // leads that stay new. The watch is read through its tenant, under the tenant's claim lock, so a job of another tenant
 // or of a play deleted meanwhile claims nothing.
-const SHOWN_SQL = `SELECT l.id, l.company, l.company_domain, l.event_date, l.signal_kind, l.watch_new FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+const SHOWN_SQL = `SELECT l.id, l.company, l.company_domain, l.event_date, l.event_date_proof, l.signal_kind, l.watch_new FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
   WHERE l.scan_job_id = ? AND j.watch_id = ? AND j.user_id = ? AND ${VISIBLE_LEAD} ORDER BY l.score DESC, l.id`
 const CLEAR_NEW_SQL = 'UPDATE leads SET watch_new = 0 WHERE id = ?'
-type AlertLead = WatchLead & { event_date: string | null; signal_kind: string | null; watch_new: number }
+type AlertLead = WatchLead & { event_date: string | null; event_date_proof: string | null; signal_kind: string | null; watch_new: number }
 export function* claimWatchAlertsStep(t: Tx, watchId: string, jobId: string, now: number): TxBody<number> {
   const tenant = (yield* t.get<{ user_id: string }>(WATCH_TENANT_SQL, [watchId]))?.user_id
   if (!tenant) return 0 // the play was deleted: nothing of it is mailed or listed any more
@@ -200,7 +199,7 @@ export function* claimWatchAlertsStep(t: Tx, watchId: string, jobId: string, now
   for (const l of yield* t.all<AlertLead>(SHOWN_SQL, [jobId, watchId, tenant])) {
     const keys = alertKeysOf(l)
     if (Number(l.watch_new) !== 1) { yield* learnAlertKeysStep(t, tenant, keys, jobId, now); continue }
-    const held = yield* claimAlertStep(t, { tenantId: tenant, keys, playKind: 'watch', playId: watchId, jobId, eventDate: l.event_date ?? null, signalKind: l.signal_kind ?? null, now })
+    const held = yield* claimAlertStep(t, { tenantId: tenant, keys, playKind: 'watch', playId: watchId, jobId, eventDate: l.event_date ?? null, signalKind: alertKindOf(l), now })
     if (heldElsewhere(held, jobId)) yield* t.run(CLEAR_NEW_SQL, [l.id])
     else kept++
   }

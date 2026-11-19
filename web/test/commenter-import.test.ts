@@ -1,3 +1,4 @@
+import './paid-vendors-on.ts'   // first: runs as an operator who named the paid vendors (Refs #1099; the default-off proof is paid-vendors-*-1099)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'

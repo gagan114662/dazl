@@ -7,6 +7,7 @@
 // try does not count; a CSV import never does). Within FIRST_PLAY_WINDOW_S of it finishing, if the account has no saved
 // play at all (no watch, no monitor), the scheduler tick (app/api/internal/tick) creates ONE daily watch for it:
 //   - the play's own sentence and the profile the run actually used (scan_jobs.icp after the run), its per-run budget;
+//   - explicit single-scan provider policies do not opt in to subsequent scheduled work;
 //   - its first scheduled run one day after the first play finished (REPEAT_INTERVAL_S), so "next search tomorrow";
 //   - the first play's leads are remembered by the watch (lib/watch.ts watchLeadsStep), so the next run marks only
 //     companies the account has not been shown as new;
@@ -37,6 +38,7 @@ const noFence: Fence = function* () { /* not fenced */ }
 const FIRST_DONE = `j.status = 'done' AND j.query IS NOT NULL AND j.csv_domain IS NULL`
 const CANDIDATES_SQL = `SELECT j.id, j.user_id, j.query, j.icp, j.run_budget, j.created_at, j.finished_at FROM scan_jobs j
   WHERE ${FIRST_DONE} AND j.watch_id IS NULL AND j.finished_at >= ?
+    AND replace(coalesce(j.run_budget, ''), '"provider_policy"', '') = coalesce(j.run_budget, '')
     AND NOT EXISTS (SELECT 1 FROM scan_jobs e WHERE e.user_id = j.user_id AND e.id <> j.id AND e.status = 'done' AND e.query IS NOT NULL AND e.csv_domain IS NULL
       AND (e.created_at < j.created_at OR (e.created_at = j.created_at AND e.insert_seq < j.insert_seq)))
     AND NOT EXISTS (SELECT 1 FROM watches w WHERE w.user_id = j.user_id)
@@ -59,12 +61,25 @@ export function repeatIcp(raw: string | null): string | null {
   try { const icp = normalizeIcp(JSON.parse(raw)); return icp ? JSON.stringify(icp) : null } catch { return null }
 }
 
+// Canonical budget JSON is prefiltered in SQL so one-off jobs do not starve the limited scheduler batch.
+// Check the stored object again inside the transaction: stale/unknown policy versions, escaped keys, and
+// unreadable budget JSON do not authorize an automatic repeat.
+function allowsAutomaticRepeat(raw: string | null): boolean {
+  if (raw === null) return true
+  try {
+    const budget: unknown = JSON.parse(raw)
+    return budget !== null && typeof budget === 'object' && !Array.isArray(budget) && !Object.hasOwn(budget, 'provider_policy')
+  } catch { return false }
+}
+
 function* createRepeat(t: Tx, c: Candidate, now: number, fence: Fence): TxBody<string | null> {
   yield* fence(t)
   if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('watch_activate:' || ?, 0)) AS x", [c.user_id])
   // re-read under the lock: the person may have saved a play, or another tick created the repeat, in between
   if (yield* t.get('SELECT 1 AS x FROM watches WHERE user_id = ? LIMIT 1', [c.user_id])) return null
   if (yield* t.get('SELECT 1 AS x FROM monitors WHERE user_id = ? LIMIT 1', [c.user_id])) return null
+  const current = yield* t.get<{ run_budget: string | null }>("SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ? AND watch_id IS NULL AND status = 'done'", [c.id, c.user_id])
+  if (!current || !allowsAutomaticRepeat(current.run_budget)) return null
   const icp = repeatIcp(c.icp)
   const query = typeof c.query === 'string' ? c.query.trim().slice(0, 600) : ''
   if (!icp || query.length < 3) return null
@@ -72,7 +87,7 @@ function* createRepeat(t: Tx, c: Candidate, now: number, fence: Fence): TxBody<s
   const link = yield* t.run("UPDATE scan_jobs SET watch_id = ? WHERE id = ? AND user_id = ? AND watch_id IS NULL AND status = 'done'", [id, c.id, c.user_id])
   if (link.changes !== 1) return null
   const next = firstRepeatAt(Number(c.finished_at), now)
-  yield* t.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, last_run_at, run_budget, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, c.user_id, query, icp, next, Number(c.created_at), c.run_budget ?? null, now])
+  yield* t.run('INSERT INTO watches (id, user_id, query, icp, next_run_at, last_run_at, run_budget, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, c.user_id, query, icp, next, Number(c.created_at), current.run_budget, now])
   yield* watchLeadsStep(t, id, c.id)
   // #883: the first play's own leads were shown to the account as that play's results, so the repeat holds them in the
   // tenant's alert record: another play that finds one of these companies later does not mail it as new

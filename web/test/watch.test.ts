@@ -4,6 +4,8 @@ import Database from 'better-sqlite3'
 import { sqliteDb, type Db } from '../lib/db/client.ts'
 import { migrateScan, listLeads } from '../lib/scan/store.ts'
 import { migrateWatch, createWatch, listWatches, watchAction, seenKey, markWatchLeads, runDueWatches, MAX_WATCHES } from '../lib/watch.ts'
+import { playRuns } from '../lib/play-runs.ts'
+import { playNew } from '../lib/play-now.ts'
 import { migratePlans } from '../lib/plans.ts'
 import { migrateKeys } from '../lib/llm/key-store.ts'
 const dbs = new WeakMap<Database.Database, Db>()
@@ -162,4 +164,10 @@ test('#1123: a watch\'s new_leads counts only the leads the Leads list shows, th
   db.prepare("UPDATE leads SET fit = 1 WHERE company = 'Beta'").run() // a poor fit: hidden from Leads
   db.prepare("UPDATE leads SET quarantined_at = 1 WHERE company = 'Gamma'").run() // quarantined: hidden from Leads
   assert.equal((await listWatches(D(db), 'u'))[0].new_leads, 1)
+  db.prepare("UPDATE scan_jobs SET status = 'done', finished_at = 1800000000 WHERE id = ?").run(job)
+  const history = await playRuns(D(db), 'u', 'watch', w.id)
+  assert.equal(history?.runs[0]?.new_leads, 1, '"Show runs" applies the same visibility rule')
+  const feed = await playNew(D(db), 'u', 'watch', w.id, 0, 1800000001)
+  assert.equal(feed?.total, 1, 'the new-leads pill uses the same population for this one run')
+  assert.deepEqual(feed?.items.map(item => item.company), ['Alpha'])
 })

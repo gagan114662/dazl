@@ -131,10 +131,10 @@ export async function atsHiring(company: string, domain: string | null, fetchImp
 // Post-scan pass over a job's verified leads. Bounded, parallel within a lead,
 // never throws into the runner. Audited per connector for the settings page.
 // #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
-export async function enrichJobSignals(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean; alive?: () => boolean } = {}): Promise<void> {
+export async function enrichJobSignals(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean; thirdPartyReader?: false; alive?: () => boolean } = {}): Promise<void> {
   return runWithTenantSpend(db, tenantId, () => enrichJobSignalsCounted(db, tenantId, jobId, deps))
 }
-async function enrichJobSignalsCounted(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean; alive?: () => boolean } = {}): Promise<void> {
+async function enrichJobSignalsCounted(db: Database.Database, tenantId: string, jobId: string, deps: { fetchImpl?: typeof fetch; creditEnrichment?: boolean; thirdPartyReader?: false; alive?: () => boolean } = {}): Promise<void> {
   if (process.env.SIGNALS_ENRICH === '0') return
   const fetchImpl = deps.fetchImpl ?? fetch
   const leads = (listLeads(db, tenantId, jobId, MAX_LEADS) as { id: string; company: string; company_domain: string | null }[]).filter(l => l.company)
@@ -142,7 +142,7 @@ async function enrichJobSignalsCounted(db: Database.Database, tenantId: string, 
   const news = process.env.SIGNALS_FUNDING_RSS === '0' ? [] : await fundingNews(fetchImpl).catch(() => [])
   const job = db.prepare('SELECT query, icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { query: string | null; icp: string | null } | undefined
   const requestedRoles = requestedHiringRoles(job?.query, job?.icp)
-  const jinaLeft = { n: 2 }
+  const jinaLeft = { n: deps.thirdPartyReader === false ? 0 : 2 }
   let funding = 0, hiring = 0, rounds = 0, gtm = 0, officers = 0
   const today = new Date().toISOString().slice(0, 10)
   const now = Math.floor(Date.now() / 1000)

@@ -47,7 +47,7 @@ import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
-import { runStatus } from '@/lib/run-status'
+import { historyStatus, runTone, type CampaignRun } from '@/lib/run-status'
 import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
 import { outcomeOwnCopy, scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
@@ -94,8 +94,20 @@ interface CommenterBatch { batch_id: string; context: string; total: number; not
 const onlyNameOnlyRows = (rows: Parameters<typeof contactsFromEnrichments>[0] | undefined, roles: string): boolean => onlyNameOnly(contactsFromEnrichments(rows ?? [], roles))
 function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }) {
   return p
-    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
+    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : null}{p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
     : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+}
+
+function ReviewCompanyWebsite({ lead }: { lead: Lead }) {
+  const name = lead.company || lead.name
+  if (!lead.company || lead.quarantined_at || !peopleSearchable(lead.review_reason)) return <div className="font-medium">{name}</div>
+  const domain = lead.company_domain?.trim().toLowerCase().replace(/^www\./, '')
+  const checked = domain && lead.enrichments?.some(row => row.connector === 'sitecrawl' && row.kind === 'domain_check' && row.value.toLowerCase() === `${domain}|identity_checked`)
+  const unresolved = lead.enrichments?.find(row => row.connector === 'sitecrawl' && row.kind === 'domain_unresolved')
+  return <>
+    <div className="font-medium">{checked ? <a className="underline" href={`https://${domain}`} target="_blank" rel="noopener noreferrer nofollow" data-testid="review-company-website">{name}</a> : name}</div>
+    {!checked && unresolved && <div className="text-xs text-[var(--ink-2)]">No company website confirmed: {domainUnresolvedText(unresolved.label)}.</div>}
+  </>
 }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
@@ -644,11 +656,14 @@ export default function LeadsClient() {
     const r = await fetch('/api/watch').catch(() => null)
     if (r?.ok) { const j = await r.json(); setWatches(j.watches ?? []) }
   }
-  useEffect(() => { void loadWatches() }, [status])
+  useEffect(() => { queueMicrotask(() => { void loadWatches() }) }, [status])
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setStatus('loading') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) {
+      passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'
+      queueMicrotask(() => { setJobId(id); setStatus('loading') })
+    }
   }, [])
   // The address bar names the job on screen. A fresh scan started from an older scan's URL used to leave that old
   // job_id in the bar, so a refresh, copy or reopen showed the old result. Rewrite it in place (no navigation, no
@@ -669,10 +684,17 @@ export default function LeadsClient() {
     await loadWatches()
   }
   const [pastJobs, setPastJobs] = useState<JobSummary[] | null>(null)
+  // #1136: each past scan's current status (the Campaigns card's: leads as they stand now), by scan id; 'failed' = the read
+  // failed, so the cards say their counts are as recorded when the scan finished
+  const [currentRuns, setCurrentRuns] = useState<Map<string, CampaignRun> | 'failed' | null>(null)
   // History: a returning user picks a past scan explicitly - nothing autoselects, so an
   // older job or a test fixture can never silently become the default view.
   useEffect(() => {
     if (jobId) return
+    // a read that hangs is a failed read (the cards then say they are as recorded), never a page stuck on "checking"
+    void fetch('/api/campaigns?view=history', { signal: AbortSignal.timeout(20000) }).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+      .then(j => { if (!Array.isArray(j?.campaigns)) throw new Error('shape'); setCurrentRuns(new Map((j.campaigns as CampaignRun[]).map(c => [c.id, c]))) })
+      .catch(() => setCurrentRuns('failed'))
     void fetch('/api/scan/jobs').then(r => r.ok ? r.json() : null).then(j => { if (j) {
       const jobs: JobSummary[] = j.jobs ?? []
       setPastJobs(jobs)
@@ -694,7 +716,7 @@ export default function LeadsClient() {
     // ?q= (Home's "Widen to 180 days" / "Add a city") only prefills the box; nothing runs until Find leads. A prefilled
     // sentence differs from the last one, so the last reviewed profile is not reused for it.
     const prefill = new URLSearchParams(window.location.search).get('q')
-    if (prefill) setQuery(prefill.slice(0, 600))
+    if (prefill) queueMicrotask(() => setQuery(prefill.slice(0, 600)))
     void fetch('/api/scan/latest').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
@@ -1093,15 +1115,21 @@ export default function LeadsClient() {
       {!jobId && pastJobs && pastJobs.length > 0 && (
         <section className="mb-6" aria-labelledby="your-plays">
           <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
+          {/* always mounted, so the failure is announced when it is filled in */}
+          <div role="status" className="text-sm">{currentRuns === 'failed' && <p className="mb-3" data-testid="history-recorded">Showing each scan as it was when it finished: its current counts could not be loaded. Refresh to retry.</p>}</div>
           <div className="grid gap-3 md:grid-cols-2">
           {pastJobs.map(j => {
             // What the scan record says it ended as (lib/scan/scan-outcome.ts), with its one next step beside it.
             const o = scanOutcome(j)
-            // The run's state in the same words as Campaigns and the campaign page (lib/run-status.ts).
-            const run = runStatus(o, j.lead_count), pill = run.tag
-            const tone: Tone = o.kind === 'leads' ? 'mint' : o.kind === 'review_only' ? 'lav' : run.group === 'running' ? 'peach' : run.group === 'technical' ? 'pink' : 'grey'
+            // The run's state in the same words as its Campaigns card, counted from the leads as they stand now (#1136,
+            // lib/run-status.ts historyStatus); a scan Campaigns does not list keeps what it recorded
+            const h = historyStatus(j, currentRuns instanceof Map ? currentRuns.get(j.id) : undefined)
+            // until the current counts arrive, no verdict at all: never the scan-time "N need your review" for a moment
+            const pending = currentRuns === null && o.kind !== 'running' && o.kind !== 'enriching'
+            const run = h.run, pill = pending ? 'Checking...' : run.tag
+            const tone: Tone = pending ? 'grey' : runTone(run)
             return (
-              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind}>
+              <div key={j.id} className="card p-4 sm:p-5 flex flex-col" data-testid="past-scan" data-outcome={o.kind} data-current={pending ? 'pending' : h.current ? 'yes' : 'recorded'}>
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <a href={`/app/leads?job_id=${j.id}`} className="block min-w-0">
                     <span className="text-xs text-[var(--ink-3)]">Play</span>
@@ -1115,11 +1143,11 @@ export default function LeadsClient() {
                 <dl className="mb-3">
                   <div className="kv"><dt>Last run</dt><dd>{new Date(j.created_at * 1000).toLocaleDateString()}</dd></div>
                   <div className="kv"><dt>Leads</dt><dd><span className="font-semibold">{j.lead_count}</span> saved</dd></div>
-                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]">{o.label}{o.detail && <InfoTip><span data-testid="outcome-detail">{o.detail}</span></InfoTip>}</dd></div>
+                  <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]" data-testid="past-scan-result">{pending ? 'Counting its leads as they are now...' : <>{run.label}{run.detail && <InfoTip><span data-testid="outcome-detail">{run.detail}</span></InfoTip>}{!h.current && <span className="block text-xs text-[var(--ink-3)]" data-testid="as-recorded">As recorded when the scan finished{currentRuns instanceof Map ? ' (Campaigns does not list this scan)' : ''}.</span>}</>}</dd></div>
                 </dl>
                 <div className="mt-auto flex flex-wrap gap-2">
                   <a className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.id}`}>Open</a>
-                  {o.next && <a className="btn-ghost btn-sm" href={o.next.href} data-testid="next-step">{o.next.text}</a>}
+                  {!pending && h.next && (h.next.href ? <a className="btn-ghost btn-sm" href={h.next.href} data-testid="next-step">{h.next.text}</a> : <span className="text-xs text-[var(--ink-2)] self-center" data-testid="next-step">{h.next.text}</span>)}
                 </div>
               </div>
             )
@@ -1256,7 +1284,7 @@ export default function LeadsClient() {
                   <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
                   <span className="text-gray-500">via {peopleSourceText(p)}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && (p.currency === 'verified_current' || p.verified.reason) ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
                   {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
-                  {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
+                  {p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                 </div>
               )
               return (
@@ -1405,7 +1433,7 @@ export default function LeadsClient() {
           <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
-                <div className="font-medium">{l.company || l.name}</div>
+                <ReviewCompanyWebsite lead={l} />
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
@@ -1424,7 +1452,7 @@ export default function LeadsClient() {
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
                 <QualifyPreview leadId={l.id} allowRun={l.source_kind === 'hiring_feed'} sourceBlocked={['blocked_by_site','login_required'].includes(l.review_reason ?? '')} />
                 {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
-                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}"{l.evidence_excerpt}"</div>
+                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}&quot;{l.evidence_excerpt}&quot;</div>
                 )}
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
                 {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">

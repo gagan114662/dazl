@@ -1,4 +1,5 @@
 import type { Db } from './db/client.ts'
+import { VISIBLE_LEAD } from './play-alerts.ts'
 
 // #351: the runs of one saved play (a weekly watch or a scheduled monitor), newest first, each with its own results in
 // Leads (/app/leads?job_id=). A play's runs are separate scans; this is how the Plays page reaches them, not only the
@@ -17,7 +18,7 @@ export async function playRuns(db: Db, userId: string, kind: PlayKind, id: strin
     const rows = await db.all<{ job_id: string; at: number; status: string; leads: number; new_leads: number }>(
       `SELECT j.id AS job_id, j.created_at AS at, j.status,
               (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id) AS leads,
-              (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id AND l.watch_new = 1) AS new_leads
+              (SELECT count(*) FROM leads l WHERE l.scan_job_id = j.id AND l.watch_new = 1 AND ${VISIBLE_LEAD}) AS new_leads
        FROM scan_jobs j WHERE j.watch_id = ? AND j.user_id = ? ORDER BY j.created_at DESC, j.insert_seq DESC LIMIT ?`, [id, userId, PLAY_RUNS_LIMIT + 1])
     // watch_new is marked when a run finishes (lib/watch.ts), so an unfinished run has no "new" count yet
     return page(rows.map(r => ({ ...r, leads: Number(r.leads), new_leads: r.status === 'done' ? Number(r.new_leads) : null })))
