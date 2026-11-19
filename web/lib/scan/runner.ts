@@ -2042,7 +2042,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
     let heldByGate: Map<string, string> = new Map()
     try {
-      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, postingTitles: outcome.postingTitles, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
+      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, postingTitles: outcome.postingTitles, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet(process.env, claudeOnly)) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
       trace.note('sales_hiring_gate', g.required ? 'ok' : 'skipped', g.required ? null : 'the request does not need sales-hiring proof', g.required ? { checked: g.checked, passed: g.passed, held: g.demoted } : undefined)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'error'
@@ -2271,7 +2271,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else {
       // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
       const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
-      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
     }

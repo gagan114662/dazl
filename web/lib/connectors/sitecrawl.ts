@@ -182,7 +182,7 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
     } catch { return null }
   }
 }
-export const defaultGet = (env: Record<string, string | undefined> = process.env): Get => (env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal))
+export const defaultGet = (env: Record<string, string | undefined> = process.env, nativeOnly = false): Get => (!nativeOnly && env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal))
 
 // ---- robots.txt: parsed by robots-parser (MIT, the parser Crawlee uses). We obey the group for our own token and for "dazl". ----
 export interface Robots { allows: (path: string, site?: string) => boolean; delayMs: number }
@@ -1059,7 +1059,7 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
@@ -1068,9 +1068,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const crawlBudgetMs = crawlBudgetBound(Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS))
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
     // own 40s per-call bound (outer deadline does not reach it yet - tracked).
-    const get = deps.get ?? (deps.signal && !deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL
+    const get = deps.get ?? (deps.signal && (deps.nativeOnly || (!deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL))
       ? (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal ?? deps.signal)
-      : defaultGet(deps.env))
+      : defaultGet(deps.env, deps.nativeOnly))
     // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
     // Held leads whose evidence page could not be READ (blocked_by_site / needs_javascript) get the same identity attempt as the
     // date/quote classes: a blocked article says nothing about the company's own site. This never re-fetches the blocked evidence
@@ -1135,7 +1135,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
       }
       const reading = (async () => {
-        const r = await crawlSite(cand, hostGet, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
+        const r = await crawlSite(cand, hostGet, deps.gapMs, company, !deps.nativeOnly && (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
         siteRead.set(cand, r)
         return r
       })()
