@@ -44,7 +44,8 @@ export const jinaAdapter: SourceAdapter = {
     const out: Evidence[] = []
     const viaJina = paidVendorOn('jina')
     for (const page of pages.slice(0, PER_SCAN)) {
-      const hit = cache.get(page)
+      const cacheKey = (viaJina ? 'jina:' : 'direct:') + page
+      const hit = cache.get(cacheKey)
       if (hit && Date.now() - hit.at < 15 * 60 * 1000) { out.push(...hit.items); continue }
       if (!viaJina) {
         const r = await http(page)
@@ -59,7 +60,7 @@ export const jinaAdapter: SourceAdapter = {
         const quote = pickQuote(text, keywords)
         if (quote.length < 20) { note?.('no_readable_text'); continue }
         const items = [{ source: 'web', url: page, title: title || page, quote, date: published }]
-        cache.set(page, { at: Date.now(), items })
+        cache.set(cacheKey, { at: Date.now(), items })
         out.push(...items)
         continue
       }
@@ -78,7 +79,7 @@ export const jinaAdapter: SourceAdapter = {
       const quote = pickQuote(content, keywords)
       if (quote.length < 20) { note?.('no_readable_text'); continue }
       const items = [{ source: 'web', url: page, title: title || page, quote, date: published }]
-      cache.set(page, { at: now, items })
+      cache.set(cacheKey, { at: now, items })
       out.push(...items)
     }
     return out

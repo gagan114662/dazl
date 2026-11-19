@@ -7,7 +7,7 @@ export type ChannelStatus = 'live' | 'worker' | 'soon'
 export interface Channel { id: string; name: string; tier: Tier; status: ChannelStatus; note: string; platform?: 'x' | 'reddit' | 'instagram' | 'facebook' | 'linkedin' | 'xiaohongshu' | 'bilibili' }
 
 export const CHANNELS: Channel[] = [
-  { id: 'web', name: 'Web pages (Jina Reader)', tier: 0, status: 'live', note: 'On. Add page URLs in a scan under Sources. Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.' },
+  { id: 'web', name: 'Web pages', tier: 0, status: 'live', note: 'On. Add page URLs in a scan under Sources. Dazl reads pages directly by default. If the operator enables Jina Reader, the URLs are shared with that service.' },
   { id: 'youtube', name: 'YouTube', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Uses the official YouTube Data API when the operator has set a key (free daily quota), otherwise public Piped instances, which are third-party services that receive the search keywords.' },
   { id: 'github', name: 'GitHub', tier: 0, status: 'live', note: 'On. Public repos and issues. Pick it in a scan under Sources. No key.' },
   { id: 'rss', name: 'RSS', tier: 0, status: 'live', note: 'On. Add feed URLs in a scan under Sources. No key.' },

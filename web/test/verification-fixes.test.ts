@@ -36,6 +36,7 @@ test('emptyLeadsMessage: done scan whose leads all need review says so instead o
 test('emptyLeadsMessage: not done yet, and never shown over a non-empty list', () => {
   assert.equal(emptyLeadsMessage('pending', 0, 0), 'This scan is queued and has not started yet. Leads appear here after it runs.')
   assert.equal(emptyLeadsMessage('running', 0, 0), 'This scan is still running. Leads appear here when it finishes.')
+  assert.equal(emptyLeadsMessage('enriching', 0, 0, 3), 'This scan is finishing contact and fit checks. Ready leads will appear here when those checks finish.')
   assert.equal(emptyLeadsMessage('done', 3, 2), null)
 })
 

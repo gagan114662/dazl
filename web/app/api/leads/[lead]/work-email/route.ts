@@ -3,10 +3,11 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
-import { findWorkEmail, workEmailProviders, workEmailsFor } from '@/lib/people/work-email'
+import { findWorkEmail, workEmailProviders, workEmailsFor, strictPublishedWorkEmailsForLeads, PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS } from '@/lib/people/work-email'
 import { guessesForLead } from '@/lib/people/email-formats'
 import { isWorkEmailFixtureLead } from '@/lib/people/work-email-eligible'
 import { captureError } from '@/lib/ops/errors'
+import { qaClaudeOnlyJob } from '@/lib/scan/qa-provider-policy'
 import { requestIdOf } from '@/lib/ops/request-log'
 
 // #1036 Find work email for one buyer named on a lead (lib/people/work-email.ts). GET: the lead's stored lookups and which
@@ -20,8 +21,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ lea
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!LEAD_ID.test(lead)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const db = getScanDb()
-  const own = db.prepare('SELECT l.company, l.source_kind FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId) as { company: string; source_kind: string | null } | undefined
+  const own = db.prepare('SELECT l.company, l.source_kind, j.run_budget FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId) as { company: string; source_kind: string | null; run_budget: string | null } | undefined
   if (!own) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (qaClaudeOnlyJob(own.run_budget)) return NextResponse.json({ providers: PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS,
+    lookups: strictPublishedWorkEmailsForLeads(db, user.tenantId, [lead])[lead] ?? [], guesses: [] })
   // The test-only work-email fixture lead never calls Apollo and runs its saved PDL key regardless of the Apollo-gated opt-in
   // (lib/people/work-email.ts), so the panel states exactly that.
   const providers = workEmailProviders(db, user.tenantId)

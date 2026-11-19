@@ -1,11 +1,15 @@
 // #1036: learned company email formats (per tenant, from addresses already confirmed), the honest guessed-address labels, and the
-// mailbox-check counter. Synthetic SQLite, invented companies and people, no provider, no network, no key.
+// mailbox-check counter. Synthetic data and no providers; one SQL-compatibility check uses loopback Postgres.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import pg from 'pg'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { pgRejects, sqlSitesIn } from '../lib/db/sql-audit.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { findWorkEmail, workEmailPageRead, workEmailsFor } from '../lib/people/work-email.ts'
@@ -14,6 +18,7 @@ import { reserveVerifySlot, VerifySlotRefused } from '../lib/people/email-patter
 import { mailboxCheckUsage } from '../lib/people/verify-usage.ts'
 import { guessCopy, type GuessShown } from '../lib/people/work-email-eligible.ts'
 import { PRIVACY } from '../lib/legal/policy.ts'
+import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 
 const NOW = 1_800_000_000
 const SITE = 'harbordental.example'
@@ -44,6 +49,76 @@ const twoConfirmed = (db: Database.Database, tenant = 'A') => {
   published(db, tenant, 'other-lead', 'Sue Ray, Partner', `sue.ray@${SITE}`, `https://${SITE}/about`)
 }
 const DANA = 'Dana Lee|Practice Manager'
+
+// The click must use the existing shared mailbox budget for only its selected target.
+test('#1036 learned-format click checks only its buyer, reserves once, and a second buyer stops at the shared daily cap', async () => {
+  const s = seed(); twoConfirmed(s.db)
+  const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '1', EMAIL_VERIFY_MONTHLY_CAP: '2' }
+  guessFromLearnedFormat(s.db, 'A', s.lead, { name: 'Owen Park', title: 'Owner' }, SITE, [], env)
+  const calls: string[] = []
+  const fetchImpl = (async (u: RequestInfo | URL) => { const url = new URL(String(u)); assert.equal(url.hostname, 'api.zerobounce.net'); calls.push(url.searchParams.get('email')!); return new Response(JSON.stringify({ status: 'valid', sub_status: '' })) }) as typeof fetch
+  const one = await findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+  assert.equal(one.guess?.label, 'guessed, verified'); assert.deepEqual(calls, [`dana.lee@${SITE}`])
+  assert.equal(guessFor(s.db, 'A', s.lead, 'Owen Park', env)?.state, 'not_checked', 'another stored unchecked guess was not checked by this click')
+  const two = await findWorkEmail(s.db, 'A', s.lead, 'Owen Park|Owner', { env, now: NOW, fetchImpl })
+  assert.equal(two.guess?.label, 'guessed, unverified'); assert.equal(calls.length, 1)
+  const usage = await mailboxCheckUsage(sqliteDb(s.db), 'A', env, NOW)
+  assert.deepEqual(usage.day, { used: 1, cap: 1, remaining: 0 }); assert.equal(usage.state, 'day_spent')
+  await findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+  assert.equal((await findWorkEmail(s.db, 'B', s.lead, DANA, { env, now: NOW, fetchImpl })).status, 'lead_not_found')
+  assert.equal(calls.length, 1, 'replay and another tenant make no call')
+  s.db.close()
+})
+
+test('#1036 concurrent clicks for the same guessed address share the pending check without another provider call', async () => {
+  const s = seed(); twoConfirmed(s.db)
+  const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '2', EMAIL_VERIFY_MONTHLY_CAP: '2' }
+  let entered!: () => void, release!: () => void, calls = 0
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const fetchImpl = (async () => {
+    if (++calls === 1) { entered(); await hold }
+    return new Response(JSON.stringify({ status: 'valid', sub_status: '' }))
+  }) as typeof fetch
+  const lookup = () => findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+  const first = lookup()
+  try {
+    await Promise.race([started, first.then(() => { throw new Error('first lookup finished before entering the verifier') })])
+    const replay = await lookup()
+    assert.equal(replay.guess?.state, 'uncertain', 'the pending check is not verified yet')
+    assert.equal(replay.guess?.label, 'guessed, unverified')
+    assert.equal(calls, 1, 'deduplicated even with enough budget for a second call')
+    release()
+    assert.equal((await first).guess?.label, 'guessed, verified')
+    assert.equal((await lookup()).guess?.label, 'guessed, verified')
+    assert.equal(calls, 1)
+    assert.deepEqual((await mailboxCheckUsage(sqliteDb(s.db), 'A', env, NOW)).day, { used: 1, cap: 2, remaining: 1 })
+  } finally {
+    release()
+    await first.catch(() => {})
+    s.db.close()
+  }
+})
+
+for (const [status, shown] of [['catch-all', 'guessed, unverified'], ['invalid', undefined], ['do_not_mail', undefined]] as const) {
+  test(`#1036 learned-format click: verifier ${status} never shows a checked or sendable guess`, async () => {
+    const s = seed(); twoConfirmed(s.db)
+    const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '1' }
+    const fetchImpl = (async () => new Response(JSON.stringify({ status, sub_status: status === 'do_not_mail' ? 'spam_trap' : '' }))) as typeof fetch
+    const result = await findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+    assert.equal(result.guess?.label, shown)
+    assert.equal((s.db.prepare('SELECT contact FROM leads WHERE id = ?').get(s.lead) as { contact: string | null }).contact, null)
+    s.db.close()
+  })
+}
+
+test('#1036 learned-format click obeys off, missing verifier, zero daily and monthly caps without any request', async () => {
+  for (const env of [{}, ON, { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only' }, { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '1', EMAIL_VERIFY_MONTHLY_CAP: '0' }]) {
+    const s = seed(); twoConfirmed(s.db); let calls = 0
+    const result = await findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl: (async () => { calls++; throw new Error('must not call') }) as typeof fetch })
+    assert.notEqual(result.guess?.label, 'guessed, verified'); assert.equal(calls, 0); s.db.close()
+  }
+})
 
 test('#1036 learned format: two confirmed addresses of different people teach a high-confidence format with their pages; one teaches a low one; the evidence is kept', () => {
   const s = seed(); twoConfirmed(s.db)
@@ -293,4 +368,23 @@ test('#1036 review c0a39f1d: the Leads page read carries every lead\'s stored gu
   assert.match(panel, /if \(!lazy && !hasInitial\) load\(\)/, 'no per-lead GET on mount when the page already read')
   assert.match(panel, /if \(initialGuesses !== seenGuesses\) \{ setSeenGuesses\(initialGuesses\); if \(Array\.isArray\(initialGuesses\)\) setGuesses\(guessMap\(initialGuesses\)\) \}/, 'a re-read list replaces the guesses, adjusted while rendering')
   assert.match(readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8'), /guesses: workEmailPage\.guesses\?\.\[leadId\] \?\? NO_GUESSES/)
+})
+
+
+test('Postgres prepares the exact production SQL for selecting unchecked work-email candidates', { skip: pgSkip }, async () => {
+  const root = join(import.meta.dirname, '..')
+  const sites = sqlSitesIn(join(root, 'lib', 'people', 'email-pattern.ts'), root)
+    .filter(site => site.sql.startsWith('SELECT address FROM email_candidates WHERE tenant_id =') && site.sql.includes("verification = 'none'"))
+  assert.equal(sites.length, 1, 'the production candidate selector must be part of this test')
+  assert.equal(sites[0].dynamic, false, "the production candidate selector must be statically auditable")
+  const schema = await freshSchema()
+  const pool = new pg.Pool({ connectionString: PG_URL, max: 1, options: `-c search_path=${schema.schema}` })
+  try {
+    await runPgMigrations(pool)
+    const client = await pool.connect()
+    try {
+      const rejects = await pgRejects(client, sites)
+      assert.deepEqual(rejects.map(reject => reject.error), [])
+    } finally { client.release() }
+  } finally { await pool.end(); await schema.drop() }
 })

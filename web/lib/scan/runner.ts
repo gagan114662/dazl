@@ -1,3 +1,4 @@
+import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
 import { counterpartySignal } from './counterparty.ts'
 import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
@@ -49,7 +50,7 @@ import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } 
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
-import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
@@ -97,7 +98,7 @@ import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
-export interface LeadDraft extends Candidate {}
+export type LeadDraft = Candidate
 // The producing channel, known from the job row at write time. Monitor runs reuse query
 // jobs, so monitors stamp their kind when the run is recorded (see monitors.ts).
 export const sourceKind = (job: Job): 'watch' | 'csv' | 'query' =>
@@ -505,7 +506,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     if (confidence < MIN_CONFIDENCE) { const r = j === 'unclear' ? 'claim_unclear' : 'low_confidence'; drop(r); note(c, 'dropped', r); return }
     const lead: VerifiedLead = { ...c, contact: v.contact, confidence, date_status: v.dateStatus, retrieved_at: v.retrievedAt, ...(copy ? { evidence_origin: COPY_ORIGIN, own_fetch_failure: copy.failure, evidence_copy_sha256: copy.sha256, evidence_copy_page: copy.page } : {}) }
     const key = dedupKey(c)
-    quotes.set(key, [...(quotes.get(key) ?? []), { url: c.source_url, excerpt: c.excerpt, date: c.event_date }])
+    quotes.set(key, [...(quotes.get(key) ?? []), { url: c.source_url, excerpt: c.excerpt, date: c.event_date, dateProof: c.event_date_proof }])
     const prev = best.get(key)
     if (prev) drop('duplicate')
     if (!prev || lead.confidence > prev.confidence) { if (prev) note(bestSrc.get(key)!, 'dropped', 'duplicate'); best.set(key, lead); bestSrc.set(key, c); origin.set(lead, c) }
@@ -797,6 +798,7 @@ export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
     case 'accounting_uncertain': case 'accounting_unsettled': case 'reservation_not_saved':
     case 'reservation_invalid': case 'ledger_unavailable': case 'busy': return 'spend_accounting_unavailable'
     case 'ownership_lost': case 'scan_not_found': case 'scan_not_active': return 'ownership_lost'   // the run no longer owns an active job row
+    case 'qa_provider_disabled': return 'qa_provider_disabled'
     case 'cap_config_invalid': case 'kind_unknown': case 'account_limits_missing': return 'spend_config_invalid'
     case 'provider_rejected': return 'provider_rejected'
     case 'units_invalid': case 'price_invalid': case 'price_unknown': case 'cost_invalid': return 'spend_config_invalid'
@@ -833,7 +835,7 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
     finish(db, job, 'failed', 'key_rejected', null, null, ledger)
     return 'failed'
   }
-  if (job.attempts >= MAX_ATTEMPTS) {
+  if (job.attempts >= MAX_ATTEMPTS || qaPinnedLocalJob(job.run_budget)) {
     finish(db, job, 'failed', err.message.slice(0, 200), null, null, ledger)
     return 'failed'
   }
@@ -1275,17 +1277,20 @@ export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}
 // before the request and is refused past the cap (CAD 5, DAZL_SCAN_CAP_CAD can only lower it; so can the request's own
 // run_budget.max_usd).
 async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
-  const requestMaxUsd = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+  const claudeOnly = qaClaudeOnlyJob(job.run_budget)
+  const requested = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
+  const requestMaxUsd = claudeOnly ? Math.min(requested ?? QA_SPEND_MAX_USD, QA_SPEND_MAX_USD) : requested
   // #846/#847: the owner's day/month caps. An owner the operator named, on a query job, is reserved by the runner's own
   // PooledGuard (runJobCapped); every other scan's model calls reserve the owner's caps at the transport, with this cap.
   // CSV jobs included (XHawk on #1154): a named account's CSV scan takes the same PooledGuard, so its unsettled-accounting marker stops it too
   const pooledByRunner = ownerLimits(job.user_id) !== null
-  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
 }
 
 async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
   let trialGuard: SpendGuard | null = null
+  const claudeOnly = qaClaudeOnlyJob(job.run_budget)
   const ledger = new SourceRunLedger()
   ledger.attach(db, job.id, job.attempts)   // live per-source progress for the status route
   const budget = job.csv_domain ? null : deps.jobBudgetMs ?? scanJobBudgetMs()
@@ -1298,6 +1303,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
   // it, and the job crash-looped in 'running' forever instead of failing visibly.
   const read = vendor && job.funded_by !== 'trial' ? readKey(db, job.user_id, vendor, deps.master) : { key: null, unreadable: false }
   const key = job.funded_by === 'trial' ? op?.key ?? null : read.key // only ever this job's owner
+  if (claudeOnly && vendor !== 'anthropic') {
+    finish(db, job, 'failed', 'qa_provider_disabled', null, null, ledger)
+    return 'failed'
+  }
   if (read.unreadable) {
     finish(db, job, 'failed', 'key_unreadable')
     return 'failed'
@@ -1379,7 +1388,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // MISSION v2 (LEAD_ENGINE=research): the research engine (lib/research/scan-job.ts) runs instead of the discovery below when every stage
     // exists and the profile names a place and a category; otherwise (null) this scan runs the old engine unchanged. Its model calls go through
     // this job's own spend guards, meter and accounting flags; its searches through the queued research search inside this scan's caps.
-    if (icpForSources && vendor === 'anthropic' && researchEngineOn()) {
+    if (!claudeOnly && icpForSources && vendor === 'anthropic' && researchEngineOn()) {
       const modelFor = (m: string): Provider => {
         const p = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(m), c => ledger.model(c))
         return spendLimit === null ? flagAccounting(db, job, p, vendor) : flagAccounting(db, job, guardProvider(p, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
@@ -1465,7 +1474,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       if (leads && leads.length === 0) leads = null
       if (diag.trace.events.length > 0 || diag.info.query_source) ledger.stats('search:tinyfish', { ...summarizeTrace(diag.trace), ...diag.info })
     }
-    if (job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) await runTinyfishStage()
+    if (claudeOnly && tinyfishEnabled()) ledger.record('search:tinyfish', 'skipped_hold')
+    if (!claudeOnly && job.query && icpForSources && complete && tinyfishEnabled() && !deps.first5) await runTinyfishStage()
     const verifierFetch = new Map<string, FetchOutcome>() // verify_provenance (diagnostic only)
     const audit: CandidateAudit[] = [] // run report: the fate of every candidate the verifier saw (instrumentation only)
     const markDropped = (rows: { company: string; name: string; source_url: string }[], reason: string) => { for (const r of rows) { const k = `${dedupKey(r)}|${r.source_url}`; const e = audit.find(a => a.key === k && a.outcome !== 'dropped'); if (e) { e.outcome = 'dropped'; e.reason = reason } } } // a later gate removed a row the verifier had passed
@@ -1531,7 +1541,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       playCaps = { searches: n, fetches: fetchesFor(n) }
     }
     let keepRefused = false
-    if (!leads && !budgetRefused && deps.first5 && job.query && icpForSources && complete && tinyfishEnabled() && playCaps.searches > 0) {
+    if (!claudeOnly && !leads && !budgetRefused && deps.first5 && job.query && icpForSources && complete && tinyfishEnabled() && playCaps.searches > 0) {
       // Every paid step of a trial fallback (query planning, TinyFish search / page reads, extraction) also passes a guard at the
       // 75% line for as long as the fallback runs, so its model calls cannot reach into the kept quarter either (xhawk review).
       const keep = trial && trialGuard ? new SpendGuard(trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP), trialGuard.reservedUsd) : null
@@ -1541,6 +1551,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0 // #1082
       if (capacityUnits.searches > 0 || capacityUnits.fetches > 0) ledger.report({ capacity: { ...capacityUnits } })
       ledger.report({ queries: st.queries, query_source: st.query_source ?? null, search: { attempted: st.searches_attempted, ok: st.searches_ok, hits_raw: st.hits_raw, hits_unique_urls: st.hits_unique_urls, hits_complete: st.hits_complete }, urls: diag.urls, evidence: { items: st.evidence_items ?? null, with_page_text: st.evidence_with_page_text ?? null, snippet_only: st.evidence_snippet_only ?? null }, extracted_candidates: st.extracted_candidates ?? null, extraction: st.extraction ?? null })
+    }
+    if (!leads && claudeOnly) {
+      if (trialGuard?.refused || keepRefused) throw new SpendRefused(TRIAL_BUDGET_REASON)
+      const limit = budgetRefused ? budgetRefusal! : earlierLimitRefusal(db, job)
+      if (limit) throw new SpendRefused(limit)
+      // No paid fallback: still give public job boards and selected public sources their normal chance.
+      leads = []
     }
     if (!leads) {
       // a trial whose budget refused a step stops with what it has (finishTrialBudget, via the catch below)
@@ -1645,7 +1662,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         }
         // Advanced connectors (opt-in tier, own flag, consent and session). A page behind a login is never
         // verified by us: it goes to "needs review" as is, shown to the user and never emailed.
-        if (sel.advanced?.length && !trial) {
+        if (!claudeOnly && sel.advanced?.length && !trial) {
           assertOwned(db, job)
           const adv = await collectAdvanced(db, job.user_id, job.id, sel.advanced as AdvPlatform[], job.query!, { master: deps.master, worker: deps.advancedWorker, xQuery: xSearchQuery(icpForSources) || undefined })
           for (const collector of new Set(adv.map(i => i.source))) ledger.record(collector, 'ok', adv.filter(i => i.source === collector).length)
@@ -1669,7 +1686,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // skips the sources block entirely, and the collector never ran). Same consent, session
     // and rate budget as the Reddit fetcher; posts become candidates like any other evidence
     // and keep their competitor tag so the badge can be applied after verification.
-    if (complaints.length === 0 && job.query && icpForSources && complete && !trial) {
+    if (!claudeOnly && complaints.length === 0 && job.query && icpForSources && complete && !trial) {
       try {
         assertOwned(db, job)
         complaints = await collectCompetitorComplaints(db, job.user_id, job.id, { master: deps.master, worker: deps.advancedWorker })
@@ -1691,7 +1708,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // LinkedIn people (#192): buyer-role matches and competitor engagers through an injected, reviewed transport (deps.linkedinTransport) or, only when its own flag and tenant
     // allowlist allow it, the owner-authorised signed-in session transport (competitor posts -> commenters / reactors, read-only). With neither, nothing is requested. Same gates
     // as every LinkedIn call; candidates are login-walled, so they land in the review lane. A stop (throttled / challenge / logged out / caps) is recorded on the scan, visibly.
-    if (job.query && icpForSources && complete && !trial) {
+    if (!claudeOnly && job.query && icpForSources && complete && !trial) {
       try {
         assertOwned(db, job)
         // The session transport: only with its own flag, ONE allowlisted tenant and a named throwaway account. A flag that is on but misconfigured is recorded, not silent.
@@ -1947,7 +1964,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // firstPlayPeopleCap(), and never into the last FIRST_PLAY_TRIAL_KEEP of the reserve (left for the checks after it).
     // A search reserved but not made stays reserved: the trial ledger over-counts, never under.
     let trialPeoplePrepaid = 0
-    if (trial && trialGuard && !trialGuard.refused && process.env.PEOPLE_SEARCH_ENABLED !== '0' && peopleSearchEnabled()) {
+    if (!claudeOnly && trial && trialGuard && !trialGuard.refused && process.env.PEOPLE_SEARCH_ENABLED !== '0' && peopleSearchEnabled()) {
       // One search per distinct company (the pass searches each company once), at most the cap.
       // The leads the pass can search (searchable-holds.ts searchableCompanyCount): a row it can never search reserves nothing. It may still
       // search fewer (a lead the crawl names first, a request with no buyer role): the reserve over-counts then, never under.
@@ -1985,8 +2002,16 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // than FIRST_PLAY_TRIAL_KEEP of that reserve is left, so the checks after it (buyer fit) are never starved by it.
     const firstPlay = !!deps.first5 || !!trial
     const peopleCap = firstPlay ? firstPlayPeopleCap() : null
-    if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
-    else if (!peopleSearchEnabled()) trace.note('people_search', 'skipped', 'TinyFish search is not configured (TINYFISH_API_KEY / TINYFISH_ENABLED): no profile search can run')
+    const firstPartyNote = trace.stages.find(s => s.stage === 'first_party_people')
+    const noteFirstPartyPeople = (publicProfiles: string, skippedReason: string) => {
+      // An empty/missing record is not evidence that a company page was actually inspected.
+      if (firstPartyNote && (firstPartyNote.status === 'ok' || firstPartyNote.status === 'attempted_no_result' || firstPartyNote.status === 'failed')) {
+        trace.note('people_search', firstPartyNote.status, firstPartyNote.reason, { ...firstPartyNote.detail, lane: 'first_party', public_profiles: publicProfiles })
+      } else trace.note('people_search', 'skipped', skippedReason)
+    }
+    if (claudeOnly) noteFirstPartyPeople('not_called_claude_only', 'Claude-only QA: no confirmed company buyer page inspected; TinyFish was not called')
+    else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
+    else if (!peopleSearchEnabled()) noteFirstPartyPeople('not_configured', 'No first-party buyer-page read; TinyFish public profile search is not configured')
     else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
     else try {
       const stopped: { why: string | null } = { why: null }
@@ -2024,7 +2049,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // (its own quote, or a dated posting on a public job board bound to its domain). Before autopilot, so nothing is drafted on a half proof.
     let heldByGate: Map<string, string> = new Map()
     try {
-      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, postingTitles: outcome.postingTitles, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet()) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
+      const g = await (deps.salesHiringGate ?? applySalesHiringGate)(db, job, deps.fetchImpl ?? fetch, { quotes: outcome.quotes, postingTitles: outcome.postingTitles, careersGet: sitecrawlEnabled() ? (deps.crawlGet ?? defaultGet(process.env, claudeOnly)) : undefined }); reconcileRunReport(db, job.id, job.attempts, g.demotions)
       trace.note('sales_hiring_gate', g.required ? 'ok' : 'skipped', g.required ? null : 'the request does not need sales-hiring proof', g.required ? { checked: g.checked, passed: g.passed, held: g.demoted } : undefined)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'error'
@@ -2088,7 +2113,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // A job that carries a budget never starts autopilot: its model drafting and sends are outside the budget (run-budget.ts).
     // Autopilot's drafting and sends are outreach work under their own guards (docs/spend-safety.md), not this scan's
     // spend: it runs outside the scan's spend context, so the hard per-scan cap neither counts nor refuses it.
-    if (jobStartsAutopilot(job) && !trial) try { await outsideScanSpend(() => (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '')) } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
+    if (!claudeOnly && jobStartsAutopilot(job) && !trial) try { await outsideScanSpend(() => (deps.autopilot ?? runAutopilot)(db, job.user_id, (db.prepare('SELECT business_name FROM users WHERE id = ?').get(job.user_id) as { business_name?: string } | undefined)?.business_name ?? '')) } catch (e) { { const m = e instanceof Error ? e.message : 'error'; if (!m.includes('no such table')) console.error('autopilot failed', m) } }
     if (trialGuard?.refused) holdTrialBudget(db, job)
     return 'done'
     } finally { endEnrichment(db, job.id, job.attempts); ledger.flushModelCalls(db, job.id, job.attempts) }
@@ -2098,7 +2123,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
   } finally {
     trialCharges.delete(job)
     // the run's paid work is over (scan, enrichment, buyer fit): the trial ledger may count what it recorded
-    if (job.funded_by === 'trial') await settleTrialReservation(db, job.id, job.attempts)
+    if (job.funded_by === 'trial') {
+      if (qaPinnedLocalJob(job.run_budget)) await settlePinnedTrialReservation(db, job.user_id, job.id, job.attempts)
+      else await settleTrialReservation(db, job.id, job.attempts)
+    }
   }
 }
 
@@ -2253,7 +2281,17 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else {
       // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
       const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
-      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(findSites ? { findSites } : {}) }); noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
+      const firstParty = new Map<string, { pages: number; stored: number }>()
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}),
+        onBuyerRead: ({ site, pages, stored }) => {
+          const earlier = firstParty.get(site)
+          firstParty.set(site, { pages: Math.max(earlier?.pages ?? 0, pages), stored: Math.max(earlier?.stored ?? 0, stored) })
+        } })
+      const detail = { sites_read: firstParty.size, pages_read: 0, people_stored: 0 }
+      for (const { pages, stored } of firstParty.values()) { detail.pages_read += pages; detail.people_stored += stored }
+      if (firstParty.size > 0) trace.note('first_party_people', detail.people_stored ? 'ok' : postCtrl.signal.aborted ? 'failed' : 'attempted_no_result',
+        detail.people_stored ? 'Named buyers listed on confirmed company pages' : postCtrl.signal.aborted ? 'Company-page search stopped at its time budget' : 'Company pages inspected; no role-qualified buyer found', detail)
+      noteFromAudit(trace, db, job.user_id, job.id, 'crawl', 'sitecrawl')
       // #389: the technology branch's own ledger (sitecrawl.ts techBranch): ran and observed, ran with nothing comparable, errored, or disabled
       noteTech(trace, auditSummary(db, job.user_id, job.id, TECH_AUDIT))
     }
@@ -2262,13 +2300,14 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // leads, never part of verification; failures are silent.
     const enrichFetch = (url: string, init?: RequestInit) => (deps.fetchImpl ?? fetch)(url, { ...init, signal: AbortSignal.any([init?.signal, postCtrl.signal].filter((x): x is AbortSignal => Boolean(x))) })
     if (process.env.SIGNALS_ENRICH === '0') trace.note('signals', 'skipped', 'SIGNALS_ENRICH=0')
-    else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
+    else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, ...(qaClaudeOnlyJob(job.run_budget) ? { thirdPartyReader: false } : {}), alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else notePaidEnrichment(trace, db, job.user_id, job.id)
     // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, under its OWN short budget
     // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
     // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
-    if (emailGuessEnabled()) {
+    if (qaClaudeOnlyJob(job.run_budget)) trace.note('email_verify', 'skipped', 'Claude-only QA: mailbox verifier was not called')
+    else if (emailGuessEnabled()) {
       const verifier = verifierFromEnv(process.env, deps.fetchImpl)
       if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
       else if (!postFinishAliveStrict(db, job)) trace.note('email_verify', 'skipped', 'the scan was cancelled or taken over (or its state could not be read): nothing was sent')
@@ -2327,7 +2366,7 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
        error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') THEN 'accounting_uncertain' ELSE 'timeout' END,
        finished_at = ?, claimed_at = NULL
      WHERE id = ? AND status = 'running' AND attempts = ?
-       AND (attempts >= ? OR EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved'))`)
+       AND (attempts >= ? OR ? = 1 OR EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved'))`)
   const queueHere = !process.env.DATABASE_URL
   for (const [job, token] of inFlightSet()) {
     try {
@@ -2338,12 +2377,13 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
         // process instead of ending accounting_uncertain with everything it found lost (the staging scan #1157 was filed for).
         db.prepare(SETTLE_FREE_ORPHANS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
         db.prepare(KEEP_MODEL_CALLS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
-        const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
+        const pinned = qaPinnedLocalJob(job.run_budget)
+        const c = pinned ? 0 : upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
         if (c === 1 && token !== null && queueHere) {
           db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
             .run(now, job.id, token)
         }
-        if (c === 0 && end.run(now, job.id, job.attempts, MAX_ATTEMPTS).changes === 1) {
+        if (c === 0 && end.run(now, job.id, job.attempts, MAX_ATTEMPTS, pinned ? 1 : 0).changes === 1) {
           // a trial scan's reservation is settled as the reaper settles it; the queue claim is closed by its token, so
           // the account's next scan is claimable at once
           try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now) } catch (e) { if (!/no such table/i.test((e as Error).message)) throw e } // a store with no trial tables has nothing to settle; anything else rolls this scan's ending back (the lease reaper then does both)

@@ -6,7 +6,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { jinaAdapter, resetJinaState } from '../lib/sources/jina.ts'
-import { fundingRoundFor } from '../lib/signals/funding-round.ts'
 
 async function withProcessEnv<T>(v: string | undefined, fn: () => Promise<T> | T): Promise<T> {
   const had = process.env.DAZL_PAID_VENDORS
@@ -37,15 +36,21 @@ test('web pages source: read directly by dazl, never through r.jina.ai, unless J
     assert.deepEqual(asked, [`https://r.jina.ai/${PAGE}`])
   })
 })
-test('funding round: the article is read by dazl itself, never sent to r.jina.ai, unless Jina is named', async () => {
-  const item = { company: 'Kestrel Pay', title: 'Kestrel Pay raises funding', url: 'https://news.example/kestrel-pay-raise', date: '2026-11-04', amount: null, stage: null }
-  const realFetch = globalThis.fetch
+
+test('an opted-in reader cache cannot supply article evidence to the default path', async () => {
+  const PAGE = 'https://kestreldental.example/cached-article'
   const asked: string[] = []
-  globalThis.fetch = (async (u: RequestInfo | URL) => { asked.push(String(u)); return new Response('Title: x\n\nMarkdown Content:\nKestrel Pay raised a $5M seed round.', { status: 200 }) }) as typeof fetch
-  try {
-    await withProcessEnv('', async () => { await fundingRoundFor('Kestrel Pay', [item as never]) })
-    assert.ok(!asked.some(u => u.includes('r.jina.ai')), JSON.stringify(asked))
-    await withProcessEnv('jina', async () => { await fundingRoundFor('Kestrel Pay', [item as never]) })
-    assert.ok(asked.some(u => u.includes('r.jina.ai')), 'control: named, Jina Reader is asked')
-  } finally { globalThis.fetch = realFetch }
+  const markdown = 'Title: Cached page\n\nMarkdown Content:\nKestrel Dental opened its second dental office in Brooklyn this month, with six new chairs.'
+  const http = async (url: string) => {
+    asked.push(url)
+    return url.startsWith('https://r.jina.ai/') ? { status: 200, body: markdown } : { status: 403, body: '' }
+  }
+  const input = { query: 'q', keywords: ['dental'], feeds: [], pages: [PAGE], http }
+  resetJinaState()
+  await withProcessEnv('jina', async () => {
+    assert.equal((await jinaAdapter.collect(input)).length, 1)
+    assert.equal((await jinaAdapter.collect(input)).length, 1, 'opted-in cache stays useful')
+  })
+  await withProcessEnv(undefined, async () => assert.deepEqual(await jinaAdapter.collect(input), []))
+  assert.deepEqual(asked, ['https://r.jina.ai/' + PAGE, PAGE])
 })

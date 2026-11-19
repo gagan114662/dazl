@@ -6,7 +6,7 @@ const PORT = 18931
 const TOKEN = 'test-token-0123456789abcdef'
 
 const withServer = async (fn) => {
-  const proc = spawn('node', ['server.js'], { env: { ...process.env, PORT: String(PORT), ADVANCED_WORKER_TOKEN: TOKEN }, stdio: 'ignore' })
+  const proc = spawn('node', ['server.js'], { env: { ...process.env, PORT: String(PORT), ADVANCED_WORKER_TOKEN: TOKEN, X_SESSION_COOKIE: 'operator-test-cookie' }, stdio: 'ignore' })
   await new Promise(r => setTimeout(r, 600))
   try { await fn() } finally { proc.kill() }
 }
@@ -22,6 +22,14 @@ test('health is open; fetch needs the bearer token; bad bodies are 400s; unknown
 
     const bad = await fetch(`http://127.0.0.1:${PORT}/fetch`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: '{"platform":"reddit"}' })
     assert.equal(bad.status, 400)
+
+    const missingSession = await fetch(`http://127.0.0.1:${PORT}/fetch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ platform: 'x', query: 'hiring founders' }),
+    })
+    assert.equal(missingSession.status, 400)
+    assert.equal((await missingSession.json()).outcome, 'no_session')
 
     const unknown = await fetch(`http://127.0.0.1:${PORT}/fetch`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ platform: 'instagram', query: 'hiring founders', session: 'a'.repeat(20) }) })
     assert.equal(unknown.status, 200)

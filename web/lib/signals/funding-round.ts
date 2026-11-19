@@ -1,16 +1,20 @@
 // Funding-round signal: recent Series A/B (and seed) raises from free news RSS feeds,
 // matched to a scan's verified leads by company name. Discovery is plain RSS/Atom XML -
-// no scraping. Jina Reader (lib/scrape/jina.ts, a third-party service the URL is sent to)
-// is only called for the article page when the feed item itself lacks the amount or
-// stage, and only for public https URLs, capped per scan; failures fall back to what
-// the feed already said. Crunchbase is never touched (its terms prohibit scraping).
+// a direct public article read only fills missing amount/stage, with no render fallback.
+// Jina Reader is used only by explicit operator opt-in. Reads are capped per scan;
+// failures keep the feed fields. Crunchbase is never touched.
 import { parseFeed } from '../sources/rss.ts'
 import { nameTokens } from './index.ts'
 import { scrapePage } from '../scrape/jina.ts'
 import { paidVendorOn } from '../paid-vendors.ts'
 import { fetchPageDetailed, isFail } from '../scan/fetch-page.ts'
-// the page's text through dazl's own guarded fetch (public hosts only, size and time capped); a failed read throws, as Jina's did
-const readOwn = async (url: string): Promise<string> => { const p = await fetchPageDetailed(url); if (isFail(p)) throw new Error(p.fail); return p.text }
+
+// fetchPageDetailed defaults to a potentially paid renderer for blocked and JS-only pages.
+// This signal's default path may contact only the publisher, not the rendering service.
+async function readFundingArticleDirect(url: string): Promise<string> {
+  const page = await fetchPageDetailed(url, async () => null)
+  return isFail(page) ? '' : page.text
+}
 
 const TIMEOUT = 8000
 const WINDOW_DAYS = 60
@@ -85,8 +89,7 @@ export async function fundingNews(fetchImpl: typeof fetch = fetch, feeds: string
 }
 
 // Latest matching raise for a lead's company. When the feed item lacks the amount or
-// stage, ONE page read per item (capped per scan; dazl's own fetch, Jina Reader only when named: Refs #1099) reads the article page for it.
-// Jina failure or rate limit just means the feed-only fields stand - never a hard error.
+// stage, at most one capped article read fills it. Blocked or failed reads keep feed-only fields.
 export async function fundingRoundFor(
   company: string,
   news: RoundItem[],
@@ -102,8 +105,7 @@ export async function fundingRoundFor(
     if (budget.n > 0) {
       budget.n--
       try {
-        // Refs #1099 (lib/paid-vendors.ts): Jina Reader only when the operator named 'jina'; by default dazl's own fetch reads the page
-        const md = await (deps.jina ?? (paidVendorOn('jina') ? scrapePage : readOwn))(hit.url)
+        const md = await (deps.jina ?? (paidVendorOn('jina') ? scrapePage : readFundingArticleDirect))(hit.url)
         const body = extractRaise(md.replace(/\s+/g, ' ').slice(0, 4000))
         amount = amount ?? body?.amount ?? null
         stage = stage ?? body?.stage ?? null

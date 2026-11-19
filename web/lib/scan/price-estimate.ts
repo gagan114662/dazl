@@ -13,6 +13,7 @@ import { FIRST_PLAY_MAX, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 import { trialCopy } from '../trial-copy.ts'
+import { paidVendorOn } from '../paid-vendors.ts'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-5'
 // Shown (and confirmed) when a payer's own key exists but which model it runs could not be read: priced as unknown, never as
@@ -53,6 +54,7 @@ export interface RunEstimate {
 }
 export interface EstimateInput {
   budget: RunBudget | null
+  qaClaudeOnly?: boolean
   payer: 'you' | 'trial'
   model?: string                     // exact model id the run will use (the payer's key's configured model); omitted: DEFAULT_MODEL
   modelUnknown?: boolean             // the payer's key exists but its model could not be read: every model row is unpriced (#851)
@@ -141,7 +143,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const tfSearch = num(env.DAZL_PRICE_TINYFISH_SEARCH_USD), tfFetch = num(env.DAZL_PRICE_TINYFISH_FETCH_USD)
   const fp = i.firstPlayPeopleSearches
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
-  if (b?.first5) {
+  if (i.qaClaudeOnly) {
+    rows.push({ id: 'qa_public_sources', label: 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Claude-only QA: no TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
+  } else if (b?.first5) {
     // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
     rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })
     // #1037 item 1: when free news cannot serve the play, a capped TinyFish lead search runs instead (runner.ts, firstPlayLeadCaps):
@@ -175,7 +179,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   }
   const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
   for (const v of ['apollo', 'pdl']) {
-    const have = (i.enrichmentVendors ?? []).includes(v)
+    // Refs #1099: a saved key the paid-vendor policy keeps off makes no call, so it has no row in the estimate
+    const have = (i.enrichmentVendors ?? []).includes(v) && paidVendorOn(v as 'apollo' | 'pdl', env)
     if (!have) continue
     const u = num(env[`DAZL_PRICE_${v.toUpperCase()}_CREDIT_USD`]), n = enrichOff ? 0 : 8
     rows.push({ id: `${v}_credits`, label: v === 'apollo' ? 'Apollo enrichment' : 'People Data Labs enrichment', provider: v === 'apollo' ? 'Apollo' : 'People Data Labs', kind: 'enrichment', unit: 'credit', unit_usd: u === null ? 'your own plan; per-credit price not set' : money(u), units: { min: 0, max: n }, usd: enrichOff ? { min: 0, max: 0 } : u === null ? null : { min: 0, max: u * n }, capped: false, note: enrichOff ? 'Off: this run turns bring-your-own enrichment off' : 'Up to 8 companies, on your own credits' })

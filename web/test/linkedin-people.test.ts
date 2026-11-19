@@ -6,12 +6,14 @@ import { collectLinkedInPeople, linkedinQueries, gatesOpen, profileKey, MAX_ITEM
 import { writeConsent } from '../lib/advanced/index.ts'
 import { setCompetitors } from '../lib/signals/competitor-reddit.ts'
 import { collectAdvanced } from '../lib/advanced/index.ts'
+import { writeCredential } from '../lib/connectors/store.ts'
 import { requestsInWindow, reserveRequest } from '../lib/advanced/request-budget.ts'
 import { pgDb } from '../lib/db/client.ts'
 import type { Db } from '../lib/db/client.ts'
 
 const ICP = { who: ['HR manager'], where: ['Ohio'], industries: ['SaaS'] }
 const ENV = { ADVANCED_CONNECTORS: '1', ADVANCED_LINKEDIN: '1', ADVANCED_LINKEDIN_PEOPLE: '1' }
+const master = Buffer.alloc(32, 1)
 const ADV_ENV = { ...ENV, ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }   // the existing advanced post search also needs its worker settings
 const NOW = Math.floor(Date.now() / 1000)   // audit rows are stamped by the database clock
 const person = (id: string) => ({ url: `https://www.linkedin.com/in/${id}/`, title: id, quote: `${id} comments on a competitor post`, date: '2026-10-20' })
@@ -241,11 +243,12 @@ bothEngines('review: a transport error is reported as an incomplete read (onInco
 
 bothEngines('review: while the designated session is reserved for the transport, the older un-paced /fetch LinkedIn reader does not use the same cookie', async ({ db }) => {
   await ready(db); const seen: string[] = []
+  await writeCredential(db, 'A', 'adv:linkedin', 'session-for-tenant-A', master)
   const reserved = { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'A' }
-  assert.deepEqual(await collectAdvanced(db, 'A', 'j', ['linkedin'], 'payroll help', { worker: advWorker(seen), env: reserved, now: NOW }), [])
+  assert.deepEqual(await collectAdvanced(db, 'A', 'j', ['linkedin'], 'payroll help', { worker: advWorker(seen), master, env: reserved, now: NOW }), [])
   assert.deepEqual(seen, [], 'no worker call with the designated cookie')
   assert.ok((await audits(db)).includes('linkedin:session_transport_owns_cookie'))
-  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'payroll help', { worker: advWorker(seen), env: { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'B' }, now: NOW })
+  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'payroll help', { worker: advWorker(seen), master, env: { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'B' }, now: NOW })
   assert.equal(seen.length, 1, 'another tenant is not affected')
 })
 
@@ -261,11 +264,12 @@ bothEngines('COOLDOWN MID-RUN: a run in flight when another run is throttled sen
 
 bothEngines('COOLDOWN: the advanced post search (collectAdvanced) also refuses LinkedIn inside a people-reader cooldown, with no reservation and no worker call', async ({ db }) => {
   await ready(db); await db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES ('stop-1', 'A', 'adv:linkedin', 'x', 'stopped_challenge', 0, ?)", [Math.floor(Date.now() / 1000)])
+  for (const tenant of ['A', 'B']) await writeCredential(db, tenant, 'adv:linkedin', `session-for-tenant-${tenant}`, master)
   let worker = 0
-  const out = await collectAdvanced(db, 'A', 'j', ['linkedin'], 'q', { env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } })
+  const out = await collectAdvanced(db, 'A', 'j', ['linkedin'], 'q', { master, env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } })
   assert.deepEqual(out, []); assert.equal(worker, 0, 'the worker is not called'); assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin'), 0, 'no budget spent')
   assert.ok((await audits(db)).includes('linkedin:cooldown'))
   // Control: another tenant, or this tenant after the cooldown, is not blocked.
-  await ready(db, 'B'); await collectAdvanced(db, 'B', 'j', ['linkedin'], 'q', { env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 1, 'control: an unaffected tenant reaches the worker')
-  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'q', { env: ADV_ENV, now: Math.floor(Date.now() / 1000) + COOLDOWN_S + 60, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 2, 'control: after the cooldown it runs again')
+  await ready(db, 'B'); await collectAdvanced(db, 'B', 'j', ['linkedin'], 'q', { master, env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 1, 'control: an unaffected tenant reaches the worker')
+  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'q', { master, env: ADV_ENV, now: Math.floor(Date.now() / 1000) + COOLDOWN_S + 60, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 2, 'control: after the cooldown it runs again')
 })
