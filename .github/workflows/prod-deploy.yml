@@ -55,7 +55,7 @@ jobs:
         env:
           H: ${{ secrets.PROD_HOST }}
           U: ${{ secrets.PROD_USER }}
-          CMD: ${{ secrets.PROD_DEPLOY_CMD || 'sudo /home/ubuntu/dazl-ops/ops/prod/deploy-prod.sh' }}
+          CMD: ${{ secrets.PROD_DEPLOY_CMD || 'sudo /usr/local/lib/dazl-prod/deploy-prod.sh' }}
           SHA: ${{ inputs.sha }}
         run: ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$U@$H" "$CMD $SHA"
       - name: Deployment smoke (health sha + public pages; NOT a feature check)
