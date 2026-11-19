@@ -69,6 +69,7 @@ jobs:
           npm ci --no-audit --no-fund --loglevel=error
           echo "$SHA" > .build-commit
           NODE_OPTIONS=--max-old-space-size=4096 npx next build
+          node scripts/check-fixture-route-artifact.mjs production
           rm -rf .next/cache
           test -f .next/BUILD_ID
           node -e "for (const m of ['pg','better-sqlite3','next']) require.resolve(m)"

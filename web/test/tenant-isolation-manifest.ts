@@ -141,6 +141,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'outreach/sequences', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'outreach/sequences', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'send' },
+  { path: 'outreach/sequences/fixture', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'send' },
+  { path: 'outreach/sequences/fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'send' },
   { path: 'outreach/settings', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'outreach/settings', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'outreach/usage', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
@@ -225,3 +227,12 @@ export const ROUTES: RouteEntry[] = [
   { path: 'workspace/members', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'members', fresh: true },
   { path: 'workspace/switch', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/workspace-members-runtime.mts' }, role: 'read' },
 ]
+
+// Fixture handlers stay part of the authorization sweep even though only the staging build routes to them.
+export function routeFile(path: string): string {
+  return STAGING_FIXTURE_ROUTES.has(path) ? 'route.staging.ts' : 'route.ts'
+}
+
+const STAGING_FIXTURE_ROUTES = new Set([
+  'leads/ranking-fixture', 'leads/tech-fixture', 'leads/verification-fixture', 'outreach/inbox/fixture', 'outreach/sequences/fixture',
+])

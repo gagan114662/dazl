@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { POST, DELETE } from '../../app/api/leads/tech-fixture/route.ts'
+import { POST, DELETE } from '../../app/api/leads/tech-fixture/route.staging.ts'
 
 let fetches = 0
 globalThis.fetch = (async () => { fetches++; throw new Error('Unexpected network call') }) as typeof fetch
