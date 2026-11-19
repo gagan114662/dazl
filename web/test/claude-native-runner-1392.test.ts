@@ -5,7 +5,7 @@ import Database from 'better-sqlite3'
 import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from '../lib/llm/claude-web-search.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
+import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { runJob } from '../lib/scan/runner.ts'
 import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
 
@@ -15,7 +15,7 @@ const q = 'Find commercial roofers in London, UK'
 const url = 'https://public.example/official-company-page'
 const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
-const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
+const v2 = 'persisted-strict-non-native-job'
 
 async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')

@@ -401,3 +401,21 @@ test('#851 an own key whose model cannot be read (null, blank, wrong type) is UN
   const t = await estimateForBody({ query: Q }, { db, tenantId: 'T851', hasOwnKey: false, model: 'gpt-4.1', enrichmentVendors: [] })
   assert.ok(t.ok); assert.ok(t.estimate.rows.filter(x => x.kind === 'model').every(x => /\(claude-sonnet-4-5\)$/.test(x.unit_usd)))
 })
+
+test('#1398 retired QA request modes refuse submission and estimate without creating work', async () => {
+  const db = setup()
+  const counts = () => ['scan_jobs', 'trial_scans', 'scan_spend_calls', 'tenant_spend_pools'].map(name => {
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)) return null
+    return (db.prepare('SELECT count(*) AS n FROM ' + name).get() as { n: number }).n
+  })
+  for (const mode of ['first5_claude_only_v1', 'first5_claude_only_pinned_v2', 'first5_claude_only_search_v3', 'claude_only_v1']) {
+    for (const call of [scan, est]) {
+      as(db)
+      const before = counts()
+      const r = await call({ query: Q, mode })
+      assert.equal(r.status, 400, mode)
+      assert.equal((await r.json()).error, 'unknown_mode', mode)
+      assert.deepEqual(counts(), before, mode)
+    }
+  }
+})

@@ -1,10 +1,7 @@
-// Explicit versioned request mode and its server-written policy. This can only narrow the caller's own scan.
+// Server-written policy stays readable for existing pinned jobs and for rollback.
 export const QA_CLAUDE_ONLY = 'claude_only_v1'
 export const QA_SPEND_MAX_USD = 5
 
-// Older servers reject this mode as unknown instead of running the ordinary first play.
-export const FIRST5_CLAUDE_ONLY_MODE = 'first5_claude_only_v1'
-export const PINNED_FIRST5_CLAUDE_ONLY_MODE = 'first5_claude_only_pinned_v2'
 export const QA_NATIVE_WEB_SEARCH_POLICY = 'anthropic_estimated_v1'
 export const QA_NATIVE_WEB_SEARCH_MAX_USES = 2
 export const QA_NATIVE_WEB_SEARCH_RESULT_TOKENS = 25_000
@@ -18,8 +15,8 @@ export function isFirst5NativeSearchRequest(mode: unknown, budget: unknown): boo
   return Object.keys(b).length === 1 && Object.hasOwn(b, 'web_search') && b.web_search === QA_NATIVE_WEB_SEARCH_POLICY
 }
 export const QA_LOCAL_EXECUTION = 'local_once_v1'
-export const isClaudeOnlyRequestMode = (mode: unknown): boolean => mode === FIRST5_CLAUDE_ONLY_MODE || mode === PINNED_FIRST5_CLAUDE_ONLY_MODE
-export const isFirst5RequestMode = (mode: unknown): boolean => mode === 'first5' || isClaudeOnlyRequestMode(mode)
+// Retired public mode strings must fail closed, never widen into ordinary work.
+export const isFirst5RequestMode = (mode: unknown): boolean => mode === 'first5'
 
 export function qaPinnedLocalJob(raw: string | null | undefined): boolean {
   if (!qaClaudeOnlyJob(raw)) return false

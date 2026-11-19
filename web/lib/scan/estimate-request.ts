@@ -5,7 +5,7 @@ import { cleanText } from '../validate.ts'
 import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
-import { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
+import { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { ownerLimits, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
@@ -44,7 +44,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   if (first5 && supplied && !qaNativeWebSearch) return { ok: false, status: 400, error: 'invalid_budget', detail: 'mode first5 only accepts the explicit Claude Web Search option' }
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(supplied ? b.budget : undefined, supplied)
   if (!nb.ok) return { ok: false, status: 400, error: 'invalid_budget', detail: nb.error }
-  const qaClaudeOnly = qaNativeWebSearch || isClaudeOnlyRequestMode(b.mode)
+  const qaClaudeOnly = qaNativeWebSearch
   if (qaClaudeOnly && !strictLocalTopologySupported(ctx.db.kind)) return { ok: false, status: 503, error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }
   if (qaNativeWebSearch && (!ctx.hasOwnKey || ctx.model !== anthropicProvider.configuredModel!())) return { ok: false, status: 409, error: 'qa_search_requires_own_key', message: QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE }
   const qaCap = qaClaudeOnly ? scanCapConfig() : null
