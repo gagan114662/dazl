@@ -120,13 +120,14 @@ test('no drift: for every X_VIA_SEARCH / key setting, "available" with no sessio
     try {
       const env = { ...ADV_ON, ...extra }
       let workerCalls = 0
-      const worker: WorkerFetch = async () => { workerCalls++; return null }   // no session anywhere: the worker answers no_session = worker_error
+      const worker: WorkerFetch = async () => { workerCalls++; return null }
       const fetchImpl = (async () => new Response(JSON.stringify({ results: [{ url: 'https://x.com/acme/status/12345', title: 't', snippet: 'we are dumping our current sales tool, it never works', date: '2026-10-20' }] }), { status: 200 })) as unknown as typeof fetch
       const out = await collectAdvanced(raw, 'A', 'j1', ['x'], 'sales software alternatives', { worker, master, env, fetchImpl })
       const status = (recentAudit(raw, 'A', 10) as { connector: string; status: string }[]).find(r => r.connector === 'adv:x')?.status
       const scanReadX = status === 'ok' && out.length > 0
       assert.equal(scanReadX, want, `${name}: scan audit ${status}`)
-      assert.equal(workerCalls, want ? 0 : 1, `${name}: worker path iff not the operator index`)
+      assert.equal(workerCalls, 0, `${name}: no session means no worker request`)
+      if (!want) assert.equal(status, 'no_session', name)
       assert.equal(row(await tenantCapabilities(db, 'A', env), 'adv:x').availability === 'available', scanReadX, `${name}: report and scan disagree`)
     } finally { raw.close() }
   }

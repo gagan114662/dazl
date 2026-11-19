@@ -5,7 +5,7 @@ import { migrateThreadReplies, setQueries, listThreads, refreshReplies } from '.
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateSequences } from '../lib/outreach/sequences.ts'
-import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { randomBytes } from 'node:crypto'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
@@ -25,6 +25,7 @@ async function setup(sells = 'Sales prospecting software for B2B sales teams') {
   migrateThreadReplies(d); migrateOutreach(d); migrateScan(d); migrateSequences(d); migrateConnectors(d); migrateAdvanced(d); migrateKeys(d)
   const master = randomBytes(32)
   saveKey(d, 't1', 'anthropic', 'sk-test', master)
+  for (const platform of ['reddit', 'x']) saveCredential(d, 't1', `adv:${platform}`, `${platform}-own-session`, master)
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['cold email software'])
   const auth = getAuthDb()
@@ -75,10 +76,12 @@ test('provider error: thread stored keyword-matched only (buyer_intent NULL), ne
 test('no AI key: no grading calls, keyword behavior unchanged', async () => {
   const d = new Database(':memory:')
   migrateThreadReplies(d); migrateOutreach(d); migrateScan(d); migrateSequences(d); migrateConnectors(d); migrateAdvanced(d); migrateKeys(d)
+  const master = randomBytes(32)
+  saveCredential(d, 't1', 'adv:reddit', 'reddit-own-session', master)
   acceptConsent(d, 't1', 'advanced')
   setQueries(d, 't1', ['cold email software'])
   const worker = async () => ({ unsupported: null, items: [CANDIDATES[1]] }) // internship thread passes the keyword gate
-  const r = await refreshReplies(d, 't1', { worker, env: ENV_ON, now: NOW })
+  const r = await refreshReplies(d, 't1', { worker, master, env: ENV_ON, now: NOW })
   assert.equal(r.added, 1) // keyword-only storage, honestly labelled (buyer_intent NULL)
   assert.equal(listThreads(d, 't1')[0].buyer_intent, null)
 })
