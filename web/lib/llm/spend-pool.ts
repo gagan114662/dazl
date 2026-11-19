@@ -16,6 +16,7 @@
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { SpendRefused } from './spend-guard.ts'
 import { qaClaudeOnlyNativeSearchJob } from '../scan/qa-provider-policy.ts'
+import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from './claude-web-search-estimate.ts'
 
 export type PoolWindow = 'day' | 'month'
 export interface PoolLimits { day?: number | null; month?: number | null }
@@ -55,8 +56,10 @@ const expiredNativeScanHolds = `
   SELECT p.period, s.scan_job_id, s.created_at, s.reserve_usd, j.run_budget
   FROM scan_spend_calls s
   JOIN scan_jobs j ON j.id = s.scan_job_id AND j.user_id = s.user_id
-  JOIN tenant_spend_pools p ON p.tenant_id = s.user_id AND p.period = 'p:' || s.id
-  WHERE p.tenant_id = ? AND p.period LIKE 'p:n%' AND p.updated_at <= ?
+  JOIN tenant_spend_pools p ON p.tenant_id = s.user_id
+    AND ((p.period LIKE 'p:n%' AND p.period = 'p:' || s.id)
+      OR (p.period LIKE 'p:%' AND s.reason = 'native_legacy_link:' || p.period))
+  WHERE p.tenant_id = ? AND p.updated_at <= ?
     AND s.kind = 'llm.anthropic.web_search'
     AND s.status = 'reserved' AND s.actual_usd IS NULL AND s.settled_at IS NULL
     AND s.reserve_usd > 0 AND p.reserved_usd = s.reserve_usd AND p.reported_usd = 0 AND p.calls = 0 AND s.created_at <= ?
@@ -68,11 +71,69 @@ const expiryArgs = (owner: string, cutoff: number) => [owner, cutoff, cutoff, cu
 const allPoolRows = `SELECT tenant_id, period, reserved_usd, reported_usd, calls, updated_at FROM tenant_spend_pools WHERE tenant_id = ? ORDER BY period`
 
 interface NativeHoldProof { period: string; scan_job_id: string; created_at: number; reserve_usd: number; run_budget: string | null }
-function expiredNativePeriods(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string): Set<string> {
+const legacyMarker = /^p:[0-9a-f]{10}$/
+const legacyFailedNativeCalls = `
+  SELECT s.id, s.scan_job_id, s.created_at, s.reserve_usd, j.created_at AS job_created_at, j.run_budget, j.estimate, r.report
+  FROM scan_spend_calls s JOIN scan_jobs j ON j.id = s.scan_job_id AND j.user_id = s.user_id
+  LEFT JOIN scan_run_report r ON r.job_id = j.id AND r.attempt = s.attempt
+  WHERE s.user_id = ? AND s.kind = 'llm.anthropic.web_search' AND s.status = 'reserved' AND s.reason IS NULL
+    AND s.actual_usd IS NULL AND s.settled_at IS NULL AND s.reserve_usd > 0
+    AND s.attempt = 1 AND j.attempts = 1 AND j.funded_by = 'user'
+    AND j.status = 'failed' AND j.error = 'accounting_uncertain' AND j.claimed_at IS NULL
+    AND s.created_at <= ? AND j.created_at <= s.created_at AND j.finished_at >= s.created_at AND j.finished_at <= ?
+    AND j.spend_cap_reserved_usd >= s.reserve_usd AND j.spend_reserved_usd >= s.reserve_usd
+    AND NOT EXISTS (SELECT 1 FROM scan_spend_calls rival WHERE rival.user_id = s.user_id AND rival.id <> s.id
+      AND LENGTH(rival.id) = 20 AND rival.kind = s.kind AND rival.status = 'reserved' AND rival.reason IS NULL)
+    AND EXISTS (SELECT 1 FROM scan_source_runs a WHERE a.job_id = j.id AND a.attempt = s.attempt
+      AND a.collector = 'search:anthropic_web' AND a.status = 'error' AND a.inserted_count = 0)
+    AND EXISTS (SELECT 1 FROM scan_model_calls c WHERE c.job_id = j.id AND c.tenant_id = j.user_id AND c.attempt = s.attempt
+      AND c.stage = 'native_web_search' AND c.method = 'research' AND c.model_served IS NULL
+      AND c.outcome = 'error' AND c.input_tokens IS NULL AND c.output_tokens IS NULL)
+  ORDER BY s.created_at DESC LIMIT 2`
+interface LegacyProof extends Omit<NativeHoldProof, 'period'> { id: string; job_created_at: number; estimate: string | null; report: string | null }
+const onlyFailedLegacyMarker = (rows: PoolRow[]) => {
+  const old = rows.filter(r => legacyMarker.test(r.period))
+  return old.length === 1 && Number(old[0].updated_at) === 0 && old[0].calls === 0 && old[0].reported_usd === 0 && old[0].reserved_usd > 0 ? old[0] : null
+}
+const validEpoch = (n: number) => Number.isSafeInteger(n) && n >= 0 && n <= 253402300799
+function provenLegacyHold(rows: PoolRow[], legacy: LegacyProof[]): (NativeHoldProof & { id: string }) | null {
+  const marker = onlyFailedLegacyMarker(rows)
+  // Never infer from same tenant, amount, timestamps or even a reaped native call alone.
+  if (!marker || legacy.length !== 1) return null
+  const p = legacy[0]
+  if (!/^[0-9a-f]{20}$/.test(p.id) || p.reserve_usd !== marker.reserved_usd ||
+      !validEpoch(p.created_at) || !validEpoch(p.job_created_at) || p.job_created_at > p.created_at ||
+      periodOf('day', p.job_created_at) !== periodOf('day', p.created_at) ||
+      !qaClaudeOnlyNativeSearchJob(p.run_budget)) return null
+  try {
+    // The saved month cap is named-owner-only. The strict local pin runs in the same deployment process as
+    // admission, so that branch used a tracked owner pool. The old runner writes its estimate into the report
+    // only after both holds are durable. It records known actual USD before settlement; the only path that
+    // could remove the marker despite a reserved transport row therefore cannot have this unknown-actual receipt.
+    // A naked reaper never writes this receipt. The old owner pool cannot create another marker until its own
+    // marker settles; no automatic path replaces a failed, unknown-actual marker.
+    const est = JSON.parse(p.estimate ?? 'null')
+    const report = JSON.parse(p.report ?? 'null')?.native_web_search
+    if (est?.payer !== 'you' || !Number.isFinite(est?.cap?.month_cap_usd) || est.cap.month_cap_usd <= 0 ||
+        !report || report.actual_usd !== null || report.reported_input_tokens !== null ||
+        report.reported_output_tokens !== null || report.searches !== null || report.estimate_exceeded !== null ||
+        report.soft_estimate !== true || report.expected_model !== CLAUDE_SEARCH_MODEL ||
+        report.estimated_usd !== p.reserve_usd ||
+        claudeSearchEstimate(report.counted_prompt_tokens).estimatedUsd !== p.reserve_usd) return null
+  } catch { return null }
+  return { id: p.id, period: marker.period, scan_job_id: p.scan_job_id, created_at: p.created_at, reserve_usd: p.reserve_usd, run_budget: p.run_budget }
+}
+
+function fullyRetainedExpiredMarkers(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string, legacy: LegacyProof[]): Set<string> {
   const windowAmounts = new Map(rows.map(r => [r.period, r.reserved_usd]))
   const due = new Map<string, number>(), proven = new Map<string, { job: string; windows: [string, string] }>()
-  for (const p of proofs) {
-    if (!nativeMarker.test(p.period) || !Number.isSafeInteger(p.created_at) || p.created_at < 0 || p.created_at > 253402300799 ||
+  const old = provenLegacyHold(rows, legacy)
+  const candidates = [...proofs, ...(old ? [old] : [])]
+  const multiplicity = new Map<string, number>()
+  for (const p of candidates) multiplicity.set(p.period, (multiplicity.get(p.period) ?? 0) + 1)
+  for (const p of candidates) {
+    if (multiplicity.get(p.period) !== 1) continue
+    if ((!nativeMarker.test(p.period) && !legacyMarker.test(p.period)) || !validEpoch(p.created_at) ||
         !Number.isFinite(p.reserve_usd) || p.reserve_usd <= 0 || !qaClaudeOnlyNativeSearchJob(p.run_budget)) continue
     // This is the exact reservation epoch of the outer owner pool, not the later transport clock.
     const windows: [string, string] = [periodOf('day', p.created_at), periodOf('month', p.created_at)]
@@ -86,16 +147,42 @@ function expiredNativePeriods(rows: PoolRow[], proofs: NativeHoldProof[], nextJo
   }
   return expired
 }
-const anyStaleNative = (rows: PoolRow[], cutoff: number) => rows.some(r => nativeMarker.test(r.period) && Number(r.updated_at) <= cutoff)
+const anyStaleNative = (rows: PoolRow[], cutoff: number) =>
+  rows.some(r => (nativeMarker.test(r.period) || legacyMarker.test(r.period)) && Number(r.updated_at) <= cutoff)
 
 // Use this only to admit a different scan. The exact holds and both original reserved window amounts remain in storage.
 export async function scanPoolRows(d: DbLike, owner: string, now: number): Promise<PoolRow[]> {
   const db = asDb(d)
   const rows = await poolRows(db, owner)
   const cutoff = now - PENDING_STALE_S
-  if (db.kind !== 'sqlite' || !anyStaleNative(rows, cutoff)) return rows
-  const ignored = expiredNativePeriods(rows, await db.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)), '')
-  return rows.filter(r => !ignored.has(r.period))
+  if (db.kind !== 'sqlite') return rows
+  const legacy = onlyFailedLegacyMarker(rows) ? await db.all<LegacyProof>(legacyFailedNativeCalls, [owner, cutoff, cutoff]).catch(() => []) : []
+  const linked = anyStaleNative(rows, cutoff) ? await db.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)).catch(() => []) : []
+  const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, '', legacy)
+  return rows.filter(r => !retainedNonBlocking.has(r.period))
+}
+
+// Once terminal provenance exists, even a delayed legacy callback may not release or reprice its pool hold.
+function* assertLegacySettlementAllowed(t: Tx, owner: string, period: string, now: number): TxBody<void> {
+  if (t.kind !== 'sqlite' || !legacyMarker.test(period)) return
+  // Old native proof and seals apply only to failed marker rows. Normal pending generic work, including a
+  // provider-refused call whose reserve is kept, must not require the scan schema to settle its own hold.
+  const failed = yield* t.get('SELECT 1 FROM tenant_spend_pools WHERE tenant_id = ? AND period = ? AND updated_at = 0 AND calls = 0 AND reported_usd = 0 AND reserved_usd > 0',
+    [owner, period])
+  if (!failed) return
+  // Some SQLite Db clients legitimately contain only the owner pool. A seal or native report cannot exist there.
+  // A yielded SQL statement failure aborts Db.tx; inspect schema before referencing an optional table.
+  const tables = new Set((yield* t.all<{ name: string }>('PRAGMA table_list')).map(row => row.name))
+  if (!tables.has('scan_spend_calls')) return
+  // Unlike admission, reject a sealed late callback even if another marker now exists or its job was removed.
+  const sealed = yield* t.get("SELECT 1 FROM scan_spend_calls WHERE user_id = ? AND kind = 'llm.anthropic.web_search' AND status = 'reserved' AND reason = ? LIMIT 1",
+    [owner, 'native_legacy_link:' + period])
+  if (sealed) throw new SpendRefused('ownership_lost')
+  if (!['scan_jobs', 'scan_run_report', 'scan_source_runs', 'scan_model_calls'].every(table => tables.has(table))) return
+  const rows = yield* t.all<PoolRow>(allPoolRows, [owner])
+  if (onlyFailedLegacyMarker(rows)?.period !== period) return
+  const legacy = yield* t.all<LegacyProof>(legacyFailedNativeCalls, [owner, now, now])
+  if (provenLegacyHold(rows, legacy)?.period === period) throw new SpendRefused('ownership_lost')
 }
 
 export interface SharedPool {
@@ -171,14 +258,23 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
           // SQLite already holds its write lock: check the existing reservation before raising any new window
           // amount (a new reservation must not supply apparent proof of an old charge remaining held).
           const checkTerminalNative = t.kind === 'sqlite' && !!scanJobId
+          let legacySeal: ReturnType<typeof provenLegacyHold> = null
           if (checkTerminalNative) {
             const rows = yield* t.all<PoolRow>(allPoolRows, [owner])
             const cutoff = nowS - PENDING_STALE_S
-            const cleared = anyStaleNative(rows, cutoff)
-              ? expiredNativePeriods(rows, yield* t.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)), scanJobId!)
-              : new Set<string>()
+            let legacy: LegacyProof[] = []
+            if (onlyFailedLegacyMarker(rows)) {
+              try { legacy = yield* t.all<LegacyProof>(legacyFailedNativeCalls, [owner, cutoff, cutoff]) } catch { /* no provenance: do not ignore the marker */ }
+            }
+            let linked: NativeHoldProof[] = []
+            if (anyStaleNative(rows, cutoff)) {
+              try { linked = yield* t.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)) } catch { /* no provenance: do not ignore the marker */ }
+            }
+            const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, scanJobId!, legacy)
+            const proved = provenLegacyHold(rows, legacy)
+            if (proved && retainedNonBlocking.has(proved.period)) legacySeal = proved
             let oldest = Infinity
-            for (const p of rows) if (p.period.startsWith('p:') && !cleared.has(p.period)) oldest = Math.min(oldest, Number(p.updated_at))
+            for (const p of rows) if (p.period.startsWith('p:') && !retainedNonBlocking.has(p.period)) oldest = Math.min(oldest, Number(p.updated_at))
             if (oldest !== Infinity) throw new SpendRefused(oldest <= nowS - PENDING_STALE_S ? 'accounting_unsettled' : 'busy')
           }
           for (const [w, limit] of ws) {
@@ -194,6 +290,13 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
           if (!checkTerminalNative) {
             const open = yield* t.get<{ oldest: number | string }>("SELECT MIN(updated_at) AS oldest FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'p:%' HAVING COUNT(*) > 0", [owner])
             if (open) throw new SpendRefused(Number(open.oldest) <= nowS - PENDING_STALE_S ? 'accounting_unsettled' : 'busy')
+          }
+          // Persist the exact association only after the new distinct reservation passes every check. Reports
+          // age out; the original hold is not deleted, adjusted, settled, or moved to a different window.
+          if (legacySeal) {
+            const link = yield* t.run("UPDATE scan_spend_calls SET reason = ? WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved' AND reason IS NULL",
+              ['native_legacy_link:' + legacySeal.period, legacySeal.id, owner, legacySeal.scan_job_id])
+            if (link.changes !== 1) throw new SpendRefused('accounting_unsettled')
           }
           if (marker) yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)', [owner, marker, usd, nowS])
           return true
@@ -223,6 +326,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       // Every window row must exist (the reservation created it): a settle that changes nothing throws and rolls back
       // the windows already moved, so it is never a silent no-op.
       await db.tx(function* (t: Tx): TxBody<void> {
+        if (marker) yield* assertLegacySettlementAllowed(t, owner, marker, nowS)
         if (marker && (yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [owner, marker])).changes !== 1) return
         if (delta === 0 && rep === 0) return
         for (const [w] of ws) {
@@ -238,6 +342,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       const at = Number.isFinite(reservedAtS) ? reservedAtS : nowS
       const marker = pendingId === undefined ? null : pendingPeriod(pendingId)
       await db.tx(function* (t: Tx): TxBody<void> {
+        if (marker) yield* assertLegacySettlementAllowed(t, owner, marker, nowS)
         if (marker && (yield* t.run('DELETE FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [owner, marker])).changes !== 1) return
         for (const [w, limit] of ws.slice(0, 1)) {
           const r = yield* t.run('UPDATE tenant_spend_pools SET reserved_usd = CASE WHEN reserved_usd < ? THEN ? ELSE reserved_usd END, updated_at = ? WHERE tenant_id = ? AND period = ?',
