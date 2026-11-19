@@ -17,6 +17,7 @@ import { runEnded, runNowMessage } from '../lib/play-new-view.ts'
 import { noteOf, savedPlays } from '../lib/saved-plays.ts'
 import { setTransportForTests } from '../lib/system-mail.ts'
 import { LeaseLost } from '../lib/shared/lease.ts'
+import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 
 const DAY = 86400
 const NOW = Math.floor(Date.now() / 1000)
@@ -87,6 +88,35 @@ bothEngines('#1042 (a) a new account\'s first finished play gets ONE daily repea
   assert.deepEqual(await repeatFirstPlays(db, { now: NOW + 60 }), [])
   assert.equal((await watchesOf(db, A)).length, 1)
   assert.equal(await isFirstPlayRepeat(db, A, w.id), true)
+})
+
+bothEngines('single-scan Claude policy does not auto-enroll a repeat, consume later spend, or replace the first play', async ({ db }) => {
+  for (const [t, e] of [[A, 'a@a.example'], [B, 'b@b.example'], [C, 'c@c.example']] as const) await account(db, t, e)
+  const strict = await scan(db, A, NOW - 3600)
+  const uncertain = await scan(db, B, NOW - 3500)
+  const standard = await scan(db, C, NOW - 3400)
+  await scan(db, A, NOW - 1700, { query: 'A later ordinary play' })
+  const setBudget = (id: string, budget: string) => db.run('UPDATE scan_jobs SET run_budget = ? WHERE id = ?', [budget, id])
+  await setBudget(strict, qaClaudeOnlyBudget('{"first5":true}'))
+  await setBudget(standard, '{"first5":true,"paid_fallback":false}')
+  // Valid legacy JSON with an escaped policy-key spelling, then unknown and malformed shapes: never infer repeat consent.
+  const blocked = ['{"pr' + String.fromCharCode(92) + 'u006fvider_policy":null}', '{"provider_policy":"unknown_v2"}', '{"provider_policy":', '{invalid']
+  for (const budget of blocked) {
+    await setBudget(uncertain, budget)
+    const before = (await watchesOf(db, C)).length
+    const made = await repeatFirstPlays(db, { now: NOW })
+    assert.equal(made.length, 1 - before)
+    assert.equal((await watchesOf(db, A)).length, 0)
+    assert.equal((await watchesOf(db, B)).length, 0)
+    assert.equal((await watchesOf(db, C)).length, 1, 'ordinary valid first5 still auto-enrolls')
+    assert.equal((await jobsOf(db, A)).every(j => j.watch_id === null), true, 'the later play is not substituted for the first')
+  }
+  await giveKey(db, A); await giveKey(db, B); await giveKey(db, C)
+  await runDueWatches(db, { now: NOW + 2 * DAY, env: NO_TRIAL })
+  assert.equal((await jobsOf(db, A)).length, 2, 'no follow-on scan queued for the strict tenant')
+  assert.equal((await jobsOf(db, B)).length, 1)
+  assert.equal((await jobsOf(db, C)).length, 2, 'normal scheduled job still queues')
+  assert.equal((await outbox(db)).length, 0)
 })
 
 bothEngines('#1042 (a) never re-created once the person deletes or pauses it, and never added beside a play they saved', async ({ db }) => {
