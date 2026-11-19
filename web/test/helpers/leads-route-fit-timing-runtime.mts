@@ -64,15 +64,16 @@ async function get(j: string) {
 }
 const NOTE = 'Event timing is unconfirmed. Review the source before treating this as a current buying need.'
 
-test('a dated event outranks its undated twin without letting unsupported timing leak into fit', async () => {
+test('a source-dated event with an unconfirmed company domain gets no timing rank boost', async () => {
   const db = seed(); const j = job(db)
   const dated = ins(db, j, 'Dated Dental', 70, 'Fits: multi-location dental group. The expansion campaign is live. Contact ASAP.', daysAgoISO(5), 'page_bound', null)
   // the undated twin has a fresher publication date and a higher raw score: neither may upgrade it
   const undated = ins(db, j, 'Undated Dental', 71, `Fits: growing dental group. ${NOTE}`, null, null, daysAgoISO(1))
   const rows = await get(j)
-  assert.deepEqual(rows.map(r => r.id), [dated, undated], 'proof-backed timing ranks the dated company first')
-  const [a, b] = rows
-  assert.equal(a.timing, 'proof_backed'); assert.equal(a.intent, 4)
+  assert.deepEqual(rows.map(r => r.id), [undated, dated], 'unconfirmed association does not outrank the higher raw score')
+  const [b, a] = rows
+  assert.equal(a.timing, 'unconfirmed'); assert.equal(a.intent, 0); assert.equal(a.stored_intent, 4)
+  assert.equal(a.currentness_held, true)
   assert.equal(b.timing, 'unconfirmed'); assert.equal(b.intent, 0); assert.equal(b.stored_intent, 4, 'stored grade preserved')
   assert.equal(a.timing_proof_gap, 'domain_unconfirmed', 'a score-backed date is not an active proof binding')
   assert.equal(a.fit_rationale, null, 'a held rationale is not safe to split into independently sourced claims')
@@ -104,6 +105,7 @@ test('the durable timing-proof record never reaches the Leads payload: only the 
   const [row] = (JSON.parse(body) as { leads: (Row & { enrichments: { connector: string; kind: string; value: string }[] })[] }).leads
   assert.equal(row.timing_proof_gap, null, 'the proof stands'); assert.equal(row.currentness_held, false)
   assert.equal(row.fit_rationale, fit)
+  assert.equal(row.timing, 'proof_backed'); assert.equal(row.intent, 4)
   assert.ok(row.enrichments.some(e => e.connector === 'scan:actionable'), 'user-facing enrichments are still listed')
   assert.ok(!row.enrichments.some(e => e.kind === 'timing_proof' || e.connector === 'scan:timing-proof'), 'no proof record in the enrichment list')
   assert.doesNotMatch(body, /timing-proof:v|\\"state\\":\\"proven\\"|scan:timing-proof/, 'no raw proof JSON anywhere in the payload')

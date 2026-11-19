@@ -41,8 +41,10 @@ export async function GET(req: NextRequest) {
   // #386: a lookalike scan labels each lead's fit to the supplied customers from the lead's own evidence, apart from intent:
   // "with event" only when the existing timing proof backs a current event, never from the lookalike fit itself.
   const la = lookalikeOf(job)
-  const safeLeads = leads.map(l => { const t = surfaceStoredIntent(l, timingOpts); const tr = timingUnconfirmedReason(l, timingOpts)
+  const safeLeads = leads.map(l => { const tr = timingUnconfirmedReason(l, timingOpts)
     const gap = timingProofGap(getScanDb(), user.tenantId, l.id)
+    // A readable day may be real while its association with this company is not.
+    const t = gap === "domain_unconfirmed" ? { intent: 0, timing: "unconfirmed" as const } : surfaceStoredIntent(l, timingOpts)
     return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), window_missed:tr === 'out_of_window',
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
