@@ -23,12 +23,22 @@ export interface Name { first: string; last: string }
 
 const ascii = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z]/g, '')
 // "Dr. Ana María López-Pérez" -> { first: 'ana', last: 'lopezperez' }. Needs a first and a last name of 2+ letters.
+const nameParts = (full: string) => full.replace(/^(dr|mr|ms|mrs|prof)\.?\s+/i, '').split(/\s+/).filter(Boolean)
 export function splitName(full: string): Name | null {
-  const words = full.replace(/^(dr|mr|ms|mrs|prof)\.?\s+/i, '').split(/\s+/).filter(Boolean)
+  const words = nameParts(full)
   if (words.length < 2) return null
   const first = ascii(words[0]), last = ascii(words[words.length - 1])
   return first.length >= 2 && last.length >= 2 ? { first, last } : null
 }
+
+// A malformed raw first/surname is not evidence for the letters left after normalization.
+const META_NAME_TOKEN = /[\[\]()+*?.\\|^${}]/
+function malformedPublishedName(full: string): boolean {
+  const words = nameParts(full)
+  return [words[0], words.at(-1)].some(t => t !== undefined && META_NAME_TOKEN.test(t.normalize('NFKC')))
+}
+// Name is structural at runtime; validate before interpolating any token.
+const canonicalName = (n: Name) => typeof n?.first === 'string' && typeof n.last === 'string' && /^[a-z]{2,}$/.test(n.first) && /^[a-z]{2,}$/.test(n.last)
 
 export function localFor(f: Format, n: Name): string {
   switch (f) {
@@ -149,7 +159,7 @@ function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean
   return { rest: nameWords(rest), found }
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined): boolean {
-  if (!ctx?.length) return false
+  if (!ctx?.length || !canonicalName(n)) return false
   let paired = false
   for (const c of ctx) {
     const tight = withoutOwnName(c.tight, n)
@@ -162,6 +172,7 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
   return paired
 }
 export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name]): { address: string; url: string } | null {
+  if (!canonicalName(name)) return null
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
   const single = new Set([localFor('first', name), localFor('last', name)])
   const all = people.some(p => nameKey(p) === nameKey(name)) ? people : [...people, name]
@@ -368,17 +379,22 @@ export function publishedCandidateRowsForLeads(db: Database.Database, tenantId: 
   } catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
   return out
 }
-export function publishedNameKey(fullName: string): string | null {
+// Lossy comparison key is usable only to find ambiguity, never to accept a raw malformed name.
+export function publishedNameCollisionKey(fullName: string): string | null {
   const n = splitName(fullName)
   return n ? `${n.first}|${n.last}` : null
+}
+export function publishedNameKey(fullName: string): string | null {
+  return malformedPublishedName(fullName) ? null : publishedNameCollisionKey(fullName)
 }
 export function selectPublishedCandidate(rows: PublishedCandidateRow[], fullName: string): { address: string; url: string } | null {
   const want = publishedNameKey(fullName)
   if (!want) return null
-  const mine = rows.filter(r => publishedNameKey(r.person.split(',')[0] ?? '') === want)
-  // Two different printed addresses for the same person: which one is theirs is not settled, so neither is offered.
-  if (new Set(mine.map(r => r.address)).size !== 1) return null
-  return { address: mine[0].address, url: mine[0].source_url }
+  const mine = rows.map(row => ({ row, name: row.person.split(',')[0] ?? '' })).filter(x => publishedNameCollisionKey(x.name) === want)
+  // Malformed historical identities cannot supply an address, but still veto discordant evidence.
+  if (new Set(mine.map(x => x.row.address)).size !== 1) return null
+  const valid = mine.find(x => publishedNameKey(x.name) === want)?.row
+  return valid ? { address: valid.address, url: valid.source_url } : null
 }
 export function publishedCandidateFor(db: Database.Database, tenantId: string, leadId: string, fullName: string): { address: string; url: string } | null {
   return selectPublishedCandidate(publishedCandidateRowsForLeads(db, tenantId, [leadId])[leadId] ?? [], fullName)
@@ -404,24 +420,34 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 // Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
 // `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
 // printed address, so no address is ever filed under the wrong person.
-export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string; ctx?: AddressContext[] }[] } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
+export function recordEmailGuesses(db: Database.Database, tenantId: string, leadId: string, site: string, locals: string[], people: string[], ctx: { env?: Record<string, string | undefined>; homeText?: string; where?: string[]; seen?: { address: string; url: string; ctx?: AddressContext[] }[]; onMalformedNames?: (count: number) => void } = {}): { format: Format | null; confidence: Confidence | null; candidates: number; published: number; ambiguous: number } | null {
   const us = usEvidence(ctx.homeText, ctx.where)
-  const seenAll = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
-  const namesAll = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
-  const pubAll = namesAll.map(x => ({ ...x, pub: publishedFor(x.name, seenAll, namesAll.map(n => n.name)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
+  const parsed = people.map(person => {
+    const raw = person.split(',')[0] ?? ''
+    return { person, name: splitName(raw), malformed: malformedPublishedName(raw) }
+  })
+  const rejected = parsed.filter(x => x.malformed)
+  if (rejected.length) ctx.onMalformedNames?.(rejected.length)
+  const names = parsed.filter((x): x is { person: string; name: Name; malformed: false } => !x.malformed && !!x.name)
+  const allNames = names.map(x => x.name)
+  // Rejecting a malformed identity must not free its possible mailbox for a different named person.
+  const blockedLocals = new Set(rejected.flatMap(({ name }) => name ? FORMATS.map(f => localFor(f, name)) : []))
+  const usableLocals = locals.filter(local => !blockedLocals.has(local))
+  const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site) && !blockedLocals.has(x.address.split('@')[0]))
+  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
   // The published tier first, flag on or off (one insert for both paths). US-only like every recorded address (DECISIONS 2026-10-26):
   // a non-US site records nothing, so no non-US person's address is ever kept at rest.
   let pubWritten = 0
-  if (pubAll.length && us.us) {
+  if (published.length && us.us) {
     migrateEmailGuess(db)
     const ins = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
-    for (const x of pubAll) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
+    for (const x of published) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
   }
   if (!emailGuessEnabled(ctx.env ?? process.env)) {
-    if (!pubWritten && !(pubAll.length && us.us)) return null
+    if (!pubWritten && !(published.length && us.us)) return null
     const n = pubWritten
-    const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
-    return { format: null, confidence: null, candidates: 0, published: n, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
+    const ambiguousLocals = new Set([...usableLocals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
+    return { format: null, confidence: null, candidates: 0, published: n, ambiguous: new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
   }
   if (!us.us) {
     // This crawl no longer shows the company in the US: guesses recorded on earlier US evidence lose it, so none of them can be
@@ -435,13 +461,9 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   // Only addresses on the site this crawl read: a basis from one site never vouches for guesses made on another.
   try { db.prepare("UPDATE email_candidates SET country_basis = ? WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND country_basis IS NULL AND lower(address) LIKE ?").run(us.basis, tenantId, leadId, `%@${site.toLowerCase()}`) }
   catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
-  const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
-  const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
-  const allNames = names.map(x => x.name)
-  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
-  const ambiguousLocals = new Set([...locals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
+  const ambiguousLocals = new Set([...usableLocals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
   const ambiguous = new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size
-  const pattern = rankPattern(locals, allNames)
+  const pattern = rankPattern(usableLocals, allNames)
   if (!pattern && !published.length) return null
   migrateEmailGuess(db)
   const pub = pubWritten; let n = 0 // the published rows were written above, before the US check
@@ -468,7 +490,7 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   for (const x of names) {
     if (hasPub.has(nameKey(x.name))) continue
     const l = localFor(pattern.format, x.name)
-    if (guessOwners.get(l)!.size > 1 || ambiguousLocals.has(l)) continue
+    if (guessOwners.get(l)!.size > 1 || ambiguousLocals.has(l) || blockedLocals.has(l)) continue
     n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format, us.basis, pattern.confidence).changes
   }
   return { format: pattern.format, confidence: pattern.confidence, candidates: n, published: pub, ambiguous }

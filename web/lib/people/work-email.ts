@@ -35,7 +35,7 @@ import { SpendRefused } from '../llm/spend-guard.ts'
 import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { guessFromLearnedFormat, guessFor, guessesForLeads, type GuessView } from './email-formats.ts'
-import { splitName, emailGuessEnabled, publishedCandidateFor, publishedCandidateRowsForLeads, publishedNameKey, selectPublishedCandidate, type PublishedCandidateRow, verifyCandidates, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
+import { splitName, emailGuessEnabled, publishedCandidateFor, publishedCandidateRowsForLeads, publishedNameKey, publishedNameCollisionKey, selectPublishedCandidate, type PublishedCandidateRow, verifyCandidates, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -214,7 +214,7 @@ function workEmailTargetContext(lead: LeadRow, rows: Enrichment[], now: number) 
 function strictPublishedRow(target: string, name: string, ctx: NonNullable<ReturnType<typeof workEmailTargetContext>>, candidates: PublishedCandidateRow[], now: number): WorkEmailRow {
   const key = publishedNameKey(name)
   // Candidate matching uses only normalized first/last, not title. Never give that address to two eligible title keys.
-  const matches = key ? ctx.people.filter(p => publishedNameKey(p.name) === key).length : 0
+  const matches = key ? ctx.people.filter(p => publishedNameCollisionKey(p.name) === key).length : 0
   const candidate = matches === 1 ? selectPublishedCandidate(candidates, name) : null
   const firstParty = (url: string) => {
     try {
