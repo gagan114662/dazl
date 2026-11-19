@@ -139,31 +139,6 @@ test('keyless: a stale estimate_ack returns 409 with NO job and NO reservation; 
   })
 })
 
-test('first-run wizard: the exact first5 profile and decision payload can be estimated and acknowledged without paid calls before admission', async () => {
-  await keyless(async (db, uid) => {
-    const icp = { summary: 'Clinic buyers', who: ['clinic managers'], industries: [], sizes: [], where: ['New York, NY'], signals: [], exclude: [],
-      research: { v: 1, site: 'seller.example', offers: [{ i: 'booking', n: 'Booking' }], hyps: [{ i: 'booking:persona:1', o: 'booking', k: 'persona', t: 'clinic managers', s: 'reviewed', u: null, q: null, at: null }], q: null, ans: null } }
-    const body = { query: Q, icp, mode: 'first5', research_decisions: [{ offer: 'booking', hypothesis: 'booking:persona:1', action: 'confirm' }] }
-    const r = await est(body); assert.equal(r.status, 200)
-    const { estimate } = await r.json() as { estimate: { ack: string; payer: string; trial_scan_cap_usd: number; verdict: { ok: boolean } } }
-    assert.deepEqual([estimate.payer, estimate.trial_scan_cap_usd, estimate.verdict.ok], ['trial', 0.3, true])
-    assert.equal(jobs(db).length, 0); assert.equal(reservations(db).length, 0)
-    const accepted = await scan({ ...body, estimate_ack: estimate.ack })
-    assert.equal(accepted.status, 202, await accepted.clone().text())
-    const job = jobs(db)[0]
-    assert.equal(JSON.parse(job.estimate!).ack, estimate.ack)
-    assert.equal(reservations(db)[0].job_id, job.id)
-    assert.deepEqual(db.prepare('SELECT job_id, action, text FROM seller_decisions').get(), { job_id: job.id, action: 'confirm', text: 'clinic managers' })
-    db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job.id)
-    db.prepare("UPDATE scan_jobs SET status = 'done', finished_at = unixepoch() WHERE id = ?").run(job.id)
-    writeModelCalls(db, uid, job.id, 1, [{ stage: 'extraction', method: 'complete', model_requested: 'claude-sonnet-4-5', model_served: 'claude-sonnet-4-5', input_tokens: 40_000, output_tokens: 7_000, outcome: 'ok', max_tokens: 4000, prompt_chars: 100 }])
-    const result = await STATUS(new NextRequest(`http://localhost/api/scan/status?job_id=${job.id}&passive=1`, { headers: { host: 'localhost' } }))
-    const { cost } = await result.json() as { cost: { estimate: { total: { max: number } }; actual: { model_usd: number; summary: string } } }
-    assert.ok(cost.estimate.total.max <= 0.3)
-    assert.ok(Math.abs(cost.actual.model_usd - 0.225) < 1e-9, 'recorded usage is not a projection or a charge')
-  })
-})
-
 test('keyless: an over-budget request returns 402 over_budget with no job and no reservation; a corrected retry runs', async () => {
   await keyless(async db => {
     const bad = await scan({ query: Q, budget: { max_usd: 0.02 } }); assert.equal(bad.status, 402); assert.equal((await bad.json() as { error: string }).error, 'over_budget')

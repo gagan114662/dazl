@@ -54,6 +54,7 @@ export interface RunEstimate {
 }
 export interface EstimateInput {
   budget: RunBudget | null
+  qaClaudeOnly?: boolean
   payer: 'you' | 'trial'
   model?: string                     // exact model id the run will use (the payer's key's configured model); omitted: DEFAULT_MODEL
   modelUnknown?: boolean             // the payer's key exists but its model could not be read: every model row is unpriced (#851)
@@ -142,7 +143,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const tfSearch = num(env.DAZL_PRICE_TINYFISH_SEARCH_USD), tfFetch = num(env.DAZL_PRICE_TINYFISH_FETCH_USD)
   const fp = i.firstPlayPeopleSearches
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
-  if (b?.first5) {
+  if (i.qaClaudeOnly) {
+    rows.push({ id: 'qa_public_sources', label: 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Claude-only QA: no TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
+  } else if (b?.first5) {
     // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
     rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })
     // #1037 item 1: when free news cannot serve the play, a capped TinyFish lead search runs instead (runner.ts, firstPlayLeadCaps):

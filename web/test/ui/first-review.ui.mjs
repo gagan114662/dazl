@@ -20,7 +20,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { onboardingEstimate } from '../helpers/onboarding-estimate.mjs'
+import { onboardingEstimate } from './onboarding-estimate.fixture.mjs'
 import { pickUiPort } from '../helpers/ui-port.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))

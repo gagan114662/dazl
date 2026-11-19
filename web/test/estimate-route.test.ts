@@ -9,9 +9,9 @@ test('POST /api/scan/estimate and the 402/409 gates on POST /api/scan (real hand
   const result = spawnSync(process.execPath, [
     '--experimental-strip-types', '--import', './test/helpers/net-fence.ts',
     '--loader', './test/helpers/scan-route-loader.mjs',
-    '--test', '--test-reporter=tap', './test/helpers/estimate-route-runtime.mts',
+    '--test', '--test-reporter=tap', './test/helpers/estimate-route-runtime.mts', './test/first-search-estimate.fixture.mts',
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 29/); assert.match(result.stdout, /# fail 0/)
+  assert.match(result.stdout, /# pass 30\b/); assert.match(result.stdout, /# fail 0/)
 })
