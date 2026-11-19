@@ -11,7 +11,7 @@ try { esbuild = require('esbuild'); ({ chromium } = require('playwright')) } cat
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const bundle = await esbuild.build({
   stdin: { contents: `import React from 'react'; import { createRoot } from 'react-dom/client'; import LeadsClient from '@/app/app/leads/leads-client'; createRoot(document.getElementById('root')).render(<LeadsClient />)`, resolveDir: root, loader: 'tsx' },
-  bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'error', alias: { '@': root }, define: { 'process.env.NODE_ENV': '"development"' },
+  bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'error', alias: { '@': root }, define: { 'process.env.NODE_ENV': '"development"', 'process.env.NEXT_PUBLIC_DAZL_STAGING': '""' },
   plugins: [{ name: 'node-shims', setup(b) { b.onResolve({ filter: /^node:crypto$/ }, () => ({ path: 'crypto-shim', namespace: 'shim' })); b.onLoad({ filter: /.*/, namespace: 'shim' }, () => ({ contents: 'export const createHash = () => ({ update() { return this }, digest() { return "shim" } }); export const randomBytes = () => { throw new Error("crypto-shim: randomBytes must never execute in a browser fixture - bundling only") }', loader: 'js' })) } }],
 })
 const js = bundle.outputFiles[0].text
