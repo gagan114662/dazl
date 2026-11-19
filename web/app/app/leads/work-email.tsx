@@ -8,7 +8,7 @@ import { guessCopy, mergeLookups, workEmailCopy, workEmailCostNote, PENDING_POLL
 // Rows from the server are MERGED by updated_at (mergeLookups): a slow first read never erases a newer result, and a
 // lookup another tab has in flight ('pending') is re-read every PENDING_POLL_MS until it finishes or becomes retryable.
 type Lookup = ShownLookup
-type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean }
+type Providers = { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck?: boolean; publishedOnly?: boolean }
 const guessKey = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase()
 const isGuess = (x: unknown): x is GuessShown => !!x && typeof x === 'object' && typeof (x as GuessShown).person === 'string' && typeof (x as GuessShown).address === 'string'
 const guessMap = (list: unknown): Record<string, GuessShown> => { const n: Record<string, GuessShown> = {}; if (Array.isArray(list)) for (const x of list) if (isGuess(x)) n[guessKey(x.person)] = x; return n }

@@ -10,11 +10,10 @@ const TIMEOUT_MS = Number(process.env.SOURCES_TIMEOUT_MS || 10_000)
 export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, testAnyPort = false): SafeGet => (rawUrl, opts = {}) =>
   new Promise<HttpResult | null>(resolveRaw => {
     if (opts.signal?.aborted) return resolveRaw(null)
-    let hard: NodeJS.Timeout | undefined
-    const resolve = (v: HttpResult | null) => { clearTimeout(hard); resolveRaw(v) }
     let url: URL
-    try { url = new URL(rawUrl) } catch { return resolve(null) }
-    if (url.protocol !== 'https:' || url.username || url.password || (!testAnyPort && url.port && url.port !== '443')) return resolve(null)
+    try { url = new URL(rawUrl) } catch { return resolveRaw(null) }
+    if (url.protocol !== 'https:' || url.username || url.password || (!testAnyPort && url.port && url.port !== '443')) return resolveRaw(null)
+    const resolve = (v: HttpResult | null) => { clearTimeout(hard); resolveRaw(v) }
     const req = https.request(
       url,
       { method: 'GET', lookup: lookup as never, timeout: timeoutMs, signal: opts.signal, headers: { 'user-agent': 'dazl-sources/1.0 (+https://dazl.ai)', accept: opts.accept ?? '*/*', 'accept-encoding': 'identity', ...opts.headers } },
@@ -32,7 +31,7 @@ export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup
         res.on('close', () => resolve(null)) // no-op once already settled
       },
     )
-    hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
+    const hard = setTimeout(() => { req.destroy(new Error('timeout')); resolve(null) }, timeoutMs)
     req.on('timeout', () => req.destroy(new Error('timeout')))
     req.on('error', () => resolve(null))
     req.end()
