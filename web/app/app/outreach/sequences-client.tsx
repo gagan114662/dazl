@@ -9,7 +9,7 @@ type Analytics = { sent: number; delivered: number; replied: number; bounced: nu
 type Freshness = { scheduler: 'never_ran'|'running'|'fresh'|'stale'|'crashed'; state: 'healthy'|'idle'|'stale'|'blocked'|'held'; reasons: string[]; holds: string[]; work: { kind: string; last_success_at: number|null; consecutive_failures: number }[]; oldest_due: { due_at: number; overdue_s: number }|null }
 const ago = (t: number) => { const m = Math.max(0, Math.round((Date.now() / 1000 - t) / 60)); return m < 1 ? 'just now' : m < 120 ? `${m} min ago` : `${Math.round(m / 60)} h ago` }
 type AutoPolicy = { version: string; text: string[]; accepted: boolean }
-type Data = { freshness?: Freshness; gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'configured_on'|'operator_off'|'kill_switch'|'paused'; sequences: Sequence[]; test_addresses: string[]; test_fixture_available?: boolean; auto_policy?: AutoPolicy; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
+type Data = { freshness?: Freshness; gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'configured_on'|'operator_off'|'kill_switch'|'paused'; sequences: Sequence[]; test_addresses: string[]; auto_policy?: AutoPolicy; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 const COPY: Record<string,string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   reading_not_enabled:'Enable reply reading in Settings before approving a sequence. Without it, sequences cannot stop on replies.',
@@ -28,6 +28,7 @@ const COPY: Record<string,string> = {
 }
 export default function SequencesClient() {
   const [data,setData]=useState<Data|null>(null)
+  const [fixtureAvailable,setFixtureAvailable]=useState(false)
   const [addresses,setAddresses]=useState('')
   const [note,setNote]=useState('')
   const [busy,setBusy]=useState(false)
@@ -36,12 +37,16 @@ export default function SequencesClient() {
     const r=await fetch('/api/outreach/sequences')
     if (!r.ok) throw new Error('Could not load sequences.')
     const j=await r.json() as Data;setData(j);setAddresses(j.test_addresses.join('\n'))
+    if (process.env.NEXT_PUBLIC_DAZL_STAGING === '1') {
+      const availability = await fetch('/api/outreach/sequences/fixture').then(r => r.ok ? r.json() : null).catch(() => null)
+      setFixtureAvailable(availability?.available === true)
+    }
   }
-  useEffect(()=>{void load().catch(e=>setNote(String(e.message)))},[])
-  async function action(body: Record<string,unknown>) {
+  useEffect(()=>{void Promise.resolve().then(load).catch(e=>setNote(String(e.message)))},[])
+  async function action(body: Record<string,unknown>, target = '/api/outreach/sequences') {
     setBusy(true);setNote('')
     try {
-      const r=await fetch('/api/outreach/sequences',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+      const r=await fetch(target,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
       const j=await r.json()
       if (!r.ok) {setNote(COPY[j.error]??`Could not complete this action (${j.error ?? r.status}).`);return}
       setEdit(null);await load()
@@ -75,13 +80,13 @@ export default function SequencesClient() {
       <label className="block mt-2">Your test email addresses, one per line<textarea className="field w-full mt-1" rows={3} value={addresses} onChange={e=>setAddresses(e.target.value)}/></label>
       <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'test_addresses',addresses:addresses.split(/\s+/).filter(Boolean)})}>Save test inbox list</button>
     </details>
-    {data?.test_fixture_available&&<div className="mt-4 text-sm border border-yellow-300/40 rounded p-3">
+    {process.env.NEXT_PUBLIC_DAZL_STAGING==='1'&&fixtureAvailable&&<div className="mt-4 text-sm border border-yellow-300/40 rounded p-3">
       <p className="font-medium">Own-inbox sequence test</p>
       <p className="text-xs text-[#555] mt-1">Creates the approved three-step verification set addressed only to your allowlisted test inbox. It is labelled test-only, is not a real prospect, and nothing sends until you review the exact words and approve the set here.</p>
-      <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_test_fixture'})}>Create the test-only sequence fixture</button>
+      <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_test_fixture'}, '/api/outreach/sequences/fixture')}>Create the test-only sequence fixture</button>
       <p className="font-medium mt-3">Reply-stop check</p>
       <p className="text-xs text-[#555] mt-1">Creates a separate two-step test set for verifying that a reply stops a live sequence before the next step. Same rules: test-only, allowlisted inbox only, nothing sends until you review the exact words and approve.</p>
-      <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_reply_stop_fixture'})}>Create the reply-stop test fixture</button>
+      <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_reply_stop_fixture'}, '/api/outreach/sequences/fixture')}>Create the reply-stop test fixture</button>
     </div>}
     {note&&<p role="status" className="text-sm mt-3 text-[#555]">{note}</p>}
     {data?.sequences.map(s=>{
@@ -107,7 +112,7 @@ export default function SequencesClient() {
     })}
     <button disabled={busy} className="btn-ghost text-xs mt-4" onClick={()=>void action({action:'resume'})}>Resume after resolving unknown sends</button>
     <h2 className="text-lg font-semibold mt-8">Campaign analytics</h2>
-    <p className="text-xs text-[#555] mt-1">A campaign is a scan. "No bounce reported" is sent minus recorded permanent bounces, not confirmed delivery. Opens and bookings are not tracked.</p>
+    <p className="text-xs text-[#555] mt-1">A campaign is a scan. &quot;No bounce reported&quot; is sent minus recorded permanent bounces, not confirmed delivery. Opens and bookings are not tracked.</p>
     {data?.campaigns.map(c=><div key={c.id} className="card p-3 mt-3 text-sm"><p className="font-medium">{c.query||c.id}</p><p className="text-xs text-[#555] mt-2">Sent {c.analytics.sent} / No bounce reported {c.analytics.delivered} / Replied {c.analytics.replied} / Bounced {c.analytics.bounced} / Opt-outs {c.analytics.optOuts}</p></div>)}
   </section>
 }

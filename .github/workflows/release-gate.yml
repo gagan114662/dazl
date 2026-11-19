@@ -186,6 +186,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run build
+      - run: node scripts/check-fixture-route-artifact.mjs production
       - id: pack
         name: Deterministic zero-native artifact (.next + .build-commit), sha256, per-file manifest
         run: |
@@ -303,6 +304,7 @@ jobs:
         env:
           DAZL_ENV: staging
           PUBLIC_BASE_URL: ${{ env.STAGING_PUBLIC_BASE }}
+      - run: node scripts/check-fixture-route-artifact.mjs staging
       - id: pack
         name: Deterministic zero-native artifact (.next + .build-commit), sha256, per-file manifest
         run: |

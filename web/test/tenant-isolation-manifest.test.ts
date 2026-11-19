@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { ROUTES } from './tenant-isolation-manifest.ts'
+import { ROUTES, routeFile } from './tenant-isolation-manifest.ts'
 import { ACTIONS, ROLES, can } from '../lib/workspaces.ts'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
@@ -18,7 +18,7 @@ const PENDING_MAX = 0
 function routeFiles(dir: string): string[] {
   return readdirSync(dir).flatMap(n => {
     const p = path.join(dir, n)
-    return statSync(p).isDirectory() ? routeFiles(p) : n === 'route.ts' ? [p] : []
+    return statSync(p).isDirectory() ? routeFiles(p) : (n === 'route.ts' || n === 'route.staging.ts') ? [p] : []
   })
 }
 
@@ -34,7 +34,7 @@ test('the manifest lists exactly the route handlers that exist', () => {
 
 test('every session route calls requireUser; every public route says what authenticates it', () => {
   for (const r of ROUTES) {
-    const src = readFileSync(path.join(web, 'app/api', r.path, 'route.ts'), 'utf8')
+    const src = readFileSync(path.join(web, 'app/api', r.path, routeFile(r.path)), 'utf8')
     if (r.auth === 'session') assert.match(src, /requireUser\(\)/, `${r.method} /api/${r.path}`)
     else assert.ok(r.note.length > 5, `${r.method} /api/${r.path}: public route needs a note`)
   }
@@ -56,7 +56,7 @@ test('every session handler that does more than read checks its role first, for 
   for (const r of ROUTES) {
     if (r.auth !== 'session') continue
     assert.ok(r.role in ACTIONS, `${r.method} /api/${r.path}: unknown action ${r.role}`)
-    const src = readFileSync(path.join(web, 'app/api', r.path, 'route.ts'), 'utf8')
+    const src = readFileSync(path.join(web, 'app/api', r.path, routeFile(r.path)), 'utf8')
     const start = src.search(new RegExp(`export (?:async )?function ${r.method}\\b`))
     const next = src.slice(start + 1).search(/\nexport /)
     const body = src.slice(start, next === -1 ? undefined : start + 1 + next)

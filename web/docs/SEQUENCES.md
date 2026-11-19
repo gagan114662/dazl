@@ -80,7 +80,7 @@ proof of delivery. Opens and bookings are not measured. No tracking pixel.
 
 The operator-designated test tenant (OUTREACH_TEST_TENANT_ID) can create a fixed
 three-step verification set addressed only to its allowlisted own test inbox via
-POST /api/outreach/sequences with action=create_test_fixture (button on the
+Staging only: POST /api/outreach/sequences/fixture with action=create_test_fixture (button on the
 Sequences page, shown only when the gate passes). The three step texts are fixed
 constants in lib/outreach/test-fixture.ts, approved word-for-word by the owner;
 no LLM or template touches them. The fixture lead claims no verification
