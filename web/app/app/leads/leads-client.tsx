@@ -94,8 +94,20 @@ interface CommenterBatch { batch_id: string; context: string; total: number; not
 const onlyNameOnlyRows = (rows: Parameters<typeof contactsFromEnrichments>[0] | undefined, roles: string): boolean => onlyNameOnly(contactsFromEnrichments(rows ?? [], roles))
 function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }) {
   return p
-    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
+    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : null}{p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
     : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+}
+
+function ReviewCompanyWebsite({ lead }: { lead: Lead }) {
+  const name = lead.company || lead.name
+  if (!lead.company || lead.quarantined_at || !peopleSearchable(lead.review_reason)) return <div className="font-medium">{name}</div>
+  const domain = lead.company_domain?.trim().toLowerCase().replace(/^www\./, '')
+  const checked = domain && lead.enrichments?.some(row => row.connector === 'sitecrawl' && row.kind === 'domain_check' && row.value.toLowerCase() === `${domain}|identity_checked`)
+  const unresolved = lead.enrichments?.find(row => row.connector === 'sitecrawl' && row.kind === 'domain_unresolved')
+  return <>
+    <div className="font-medium">{checked ? <a className="underline" href={`https://${domain}`} target="_blank" rel="noopener noreferrer nofollow" data-testid="review-company-website">{name}</a> : name}</div>
+    {!checked && unresolved && <div className="text-xs text-[var(--ink-2)]">No company website confirmed: {domainUnresolvedText(unresolved.label)}.</div>}
+  </>
 }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
@@ -644,11 +656,14 @@ export default function LeadsClient() {
     const r = await fetch('/api/watch').catch(() => null)
     if (r?.ok) { const j = await r.json(); setWatches(j.watches ?? []) }
   }
-  useEffect(() => { void loadWatches() }, [status])
+  useEffect(() => { queueMicrotask(() => { void loadWatches() }) }, [status])
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setStatus('loading') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) {
+      passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'
+      queueMicrotask(() => { setJobId(id); setStatus('loading') })
+    }
   }, [])
   // The address bar names the job on screen. A fresh scan started from an older scan's URL used to leave that old
   // job_id in the bar, so a refresh, copy or reopen showed the old result. Rewrite it in place (no navigation, no
@@ -701,7 +716,7 @@ export default function LeadsClient() {
     // ?q= (Home's "Widen to 180 days" / "Add a city") only prefills the box; nothing runs until Find leads. A prefilled
     // sentence differs from the last one, so the last reviewed profile is not reused for it.
     const prefill = new URLSearchParams(window.location.search).get('q')
-    if (prefill) setQuery(prefill.slice(0, 600))
+    if (prefill) queueMicrotask(() => setQuery(prefill.slice(0, 600)))
     void fetch('/api/scan/latest').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
@@ -1269,7 +1284,7 @@ export default function LeadsClient() {
                   <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
                   <span className="text-gray-500">via {peopleSourceText(p)}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && (p.currency === 'verified_current' || p.verified.reason) ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
                   {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
-                  {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
+                  {p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                 </div>
               )
               return (
@@ -1418,7 +1433,7 @@ export default function LeadsClient() {
           <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
-                <div className="font-medium">{l.company || l.name}</div>
+                <ReviewCompanyWebsite lead={l} />
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
@@ -1437,7 +1452,7 @@ export default function LeadsClient() {
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
                 <QualifyPreview leadId={l.id} allowRun={l.source_kind === 'hiring_feed'} sourceBlocked={['blocked_by_site','login_required'].includes(l.review_reason ?? '')} />
                 {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
-                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}"{l.evidence_excerpt}"</div>
+                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}&quot;{l.evidence_excerpt}&quot;</div>
                 )}
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
                 {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">

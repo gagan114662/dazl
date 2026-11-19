@@ -22,6 +22,11 @@ import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
 
+import { FIRST5_CLAUDE_ONLY_MODE } from '@/lib/scan/qa-provider-policy'
+
+const CLAUDE_ONLY_SESSION = 'dazl.onboarding.claude-only.v1'
+const CLAUDE_ONLY_COPY = 'Claude only · public sources. No paid profile setup. Dazl caps scan reservations at US$5 or less. Some leads may not have a named contact.'
+
 type Step = 'site' | 'building' | 'ready' | 'review' | 'brain' | 'ask'
 interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
 
@@ -47,6 +52,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState<'loading' | 'wizard' | 'home'>('loading')
   const [usage, setUsage] = useState<Usage | null>(null)
   const [step, setStep] = useState<Step>('site')
+  const [claudeOnly, setClaudeOnly] = useState(false)
+  const chooseClaudeOnly = (enabled: boolean) => {
+    setClaudeOnly(enabled)
+    try {
+      if (enabled) window.sessionStorage.setItem(CLAUDE_ONLY_SESSION, '1')
+      else window.sessionStorage.removeItem(CLAUDE_ONLY_SESSION)
+    } catch { /* this page still retains the explicit choice; no automatic submit after navigation */ }
+  }
   const [website, setWebsite] = useState('')
   const [bizName, setBizName] = useState('')
   const [sells, setSells] = useState('')
@@ -112,6 +125,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null),
       loadUsage(),
     ]).then(([jobs, profile]) => {
+      try { setClaudeOnly(window.sessionStorage.getItem(CLAUDE_ONLY_SESSION) === '1') } catch { /* no stored choice */ }
       if (profile) {
         setWebsite(String(profile.website ?? '')); setSells(String(profile.sells ?? '')); setBizName(String(profile.business_name ?? ''))
         if (profile.buyer) fillBuyer(profile.buyer)
@@ -180,6 +194,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // can edit it any time; nothing is asked up front) and opens the ready screen.
   async function readSite(e?: React.FormEvent) {
     e?.preventDefault(); setError('')
+    if (claudeOnly) { setStep('brain'); return } // restricted setup is manual; do not send the paid-capable request
     const url = normalizeWebsite(website)
     if (!url) return setError('Enter your website, like acme.com.')
     setBusy(true); setFacts([]); setShown(0); setStep('building')
@@ -257,15 +272,18 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // nothing here changes what a scan checks.
       // From the ready screen the first play is the fast first scan (mode first5: the free sources only, the same
       // extraction and checks as every scan), so the first leads come back quickly; a wider, full scan stays one click away.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(stay ? { mode: 'first5' } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(claudeOnly ? { mode: FIRST5_CLAUDE_ONLY_MODE } : stay ? { mode: 'first5' } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
-        if (stay) { setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim() }); return }
+        if (stay || claudeOnly) { if (claudeOnly) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim() }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
+      if (claudeOnly && j.error === 'unknown_mode') return setError('This server does not support Claude-only first play yet. Nothing started.')
+      if (claudeOnly && j.error === 'qa_provider_disabled') return setError('Claude-only first play requires a Claude key or an eligible free trial. Nothing started.')
       // #1095: never the raw code; the reason in words and the way forward (Link Google for a password account)
       if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query: sentence.trim() }); return }
+      if (claudeOnly && (j.error === 'no_api_key' || j.error === 'trial_exhausted')) return setError('Use an already configured Claude key or an eligible free trial. This mode does not check or add keys during setup.')
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
@@ -326,14 +344,16 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <p className="text-[var(--ink-2)] mt-3">dazl learns your business from it and finds your first leads.</p>
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
               {linkNote && <p className={`text-sm mt-4 ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
-              {linkNote && trialRefused && <div className="mt-4 text-left" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="site" text="Link Google to this account to read your site free (no card)." /></div>}
-              {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); void loadUsage().then(() => readSite()) }} /></div>}
-              <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
+              {!claudeOnly && linkNote && trialRefused && <div className="mt-4 text-left" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="site" text="Link Google to this account to read your site free (no card)." /></div>}
+              {!claudeOnly && needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); void loadUsage().then(() => readSite()) }} /></div>}
+              {!claudeOnly && <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
                 <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} />
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
-              </form>
+              </form>}
               <div className="mt-5 flex flex-col items-center gap-2 text-sm text-[var(--ink-2)]">
-                <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
+                {!claudeOnly && <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" disabled={busy} onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>}
+                <button type="button" className="min-h-11 px-2 font-medium hover:text-[var(--ink)]" disabled={busy} data-testid="first-play-claude-only" onClick={() => { chooseClaudeOnly(true); setError(''); setNeedKey(false); setTrialRefused(null); setFreeRead(null); setStep('brain') }}>Set up manually for a Claude-only first play</button>
+                {claudeOnly && <button type="button" className="min-h-11 px-2 text-xs underline" onClick={() => chooseClaudeOnly(false)}>Switch to standard setup</button>}
                 <button type="button" className="min-h-11 px-2 text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
               </div>
             </div>}
@@ -351,6 +371,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
                 <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready to contact.` : f5Found && ready ? `dazl found ${f5Found} lead${f5Found === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (ready?.length ? `dazl found ${ready.length} lead${ready.length === 1 ? '' : 's'} ready to contact.` : readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
+              {claudeOnly && <p className="text-sm mt-4 text-center" data-testid="claude-only-active">{CLAUDE_ONLY_COPY}</p>}
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
               {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
               {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
@@ -364,7 +385,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                       does not promise a search this account cannot start (the server fails closed, but the button
                       must not rely on that). A trial account (trialLeft > 0) keeps the plain CTA. */}
                   {poolUnknown && !first && <p className="mt-5 text-sm text-[var(--ink-2)]">Could not check your search allowance. <button type="button" className="underline" data-testid="usage-retry" onClick={() => void loadUsage()}>Try again</button></p>}
-                  {!hasKey && (needKey || noPool) && !poolUnknown && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} /></div>}
+                  {!claudeOnly && !hasKey && (needKey || noPool) && !poolUnknown && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
                     {!first ? (noPool || poolUnknown ? null
@@ -479,16 +500,17 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ask" /></div>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
-        <h2 className="text-xl font-semibold">{freeRead ? `We read ${freeRead.site} - here is what the page itself says` : 'Here\'s what we think you sell and who buys it'}</h2>
-        <p className="text-[#555]">{freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself, or add your AI key for the full automatic read.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.`}</p>
-        {freeRead && <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-3" data-testid="free-site-read">
+        <h2 className="text-xl font-semibold">{claudeOnly ? 'Describe your business yourself' : freeRead ? `We read ${freeRead.site} - here is what the page itself says` : 'Here\'s what we think you sell and who buys it'}</h2>
+        <p className="text-[#555]">{claudeOnly ? 'Enter your targeting by hand. Setup does not call an AI provider.' : freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself, or add your AI key for the full automatic read.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.`}</p>
+        {claudeOnly && <p className="text-xs text-[#555]" data-testid="claude-only-active">{CLAUDE_ONLY_COPY}</p>}
+        {!claudeOnly && freeRead && <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-3" data-testid="free-site-read">
           {freeRead.facts.length === 0
             ? <p className="text-[#555]">The page did not state a title or description in readable HTML.</p>
             : <ul className="flex flex-col gap-2">{freeRead.facts.map((fact, i) => <li key={i}><span className="text-xs uppercase tracking-wide text-[#666]">{fact.kind === 'title' ? 'Page title' : 'Page description'}</span><br />{fact.text} <a className="underline text-xs" href={fact.source} target="_blank" rel="noreferrer">source</a></li>)}</ul>}
         </div>}
         {/* #1095: a password account is told how to link Google (the free read's guard), never "sign in with Google" */}
-        {freeRead && !hasKey && freeRead.trial === 'google_required' && <div className="mb-1" data-testid="site-read-trial-refusal"><TrialRefusalNotice reason="google_required" query="" step="site" text="Link Google to this account to read your site free (no card)." /></div>}
-        {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on your own Anthropic or OpenAI key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
+        {!claudeOnly && freeRead && !hasKey && freeRead.trial === 'google_required' && <div className="mb-1" data-testid="site-read-trial-refusal"><TrialRefusalNotice reason="google_required" query="" step="site" text="Link Google to this account to read your site free (no card)." /></div>}
+        {!claudeOnly && freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on your own Anthropic or OpenAI key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#666]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
@@ -511,6 +533,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
       {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
+        {claudeOnly && <p className="text-xs text-[#555]" data-testid="claude-only-active">{CLAUDE_ONLY_COPY}</p>}
         <div className="ask">
           <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} />
           <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>
@@ -518,7 +541,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
           {plays.map(p => <button type="button" key={p} disabled={busy || !!trialRefused} onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); void start(p) }} className="chip justify-between">{p}<Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
         </div>
-        {needKey && !hasKey && <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} />}
+        {!claudeOnly && needKey && !hasKey && <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} />}
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Back</button>
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Edit profile</button>

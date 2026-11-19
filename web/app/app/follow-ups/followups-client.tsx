@@ -32,23 +32,27 @@ const WHO = 'min-w-0 @xl:flex-1 [overflow-wrap:anywhere]'
 const SIDE = 'text-xs text-[#555] min-w-0 [overflow-wrap:anywhere] @xl:text-right @xl:shrink-0 @xl:w-56'
 const STOPPED: Record<string, string> = { replied: 'They replied again - the sequence stops for you to handle', bounced: 'The address bounced', unsubscribed: 'They unsubscribed', manual: 'Stopped by you', domain_unconfirmed: 'The website is not confirmed as the right company. This thread is stopped and confirming it later does not restart it. Check the lead on the Leads page and start a new draft if you still want to write',
  evidence_withdrawn: 'Lead confirmation withdrawn - re-confirm the lead on the Leads page to contact them again' }
+const unixNow = () => Math.floor(Date.now() / 1000)
 const day = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
 export default function FollowupsClient() {
   const [data, setData] = useState<Overview | null>(null)
+  const [observedAt, setObservedAt] = useState(0)
   const [error, setError] = useState('')
   const [warm, setWarm] = useState<Warm[]>([])
   const [reopens, setReopens] = useState<Warm[]>([])
   const [warmMsg, setWarmMsg] = useState('')
-  const loadWarm = () => fetch('/api/outreach/reopen').then(r => r.ok ? r.json() : null).then(j => { if (j) { setWarm(j.warm); setReopens(j.reopens) } }).catch(() => {})
+  const loadWarm = () => fetch('/api/outreach/reopen').then(r => r.ok ? r.json() : null).then(j => { if (j) { setObservedAt(unixNow()); setWarm(j.warm); setReopens(j.reopens) } }).catch(() => {})
   useEffect(() => { void loadWarm() }, [])
   async function reopenAction(action: string, threadId: string, body?: string) {
-    setWarmMsg('')
+    const showNote = (message: string) => { setObservedAt(unixNow()); setWarmMsg(message) }
+    showNote('')
     let r: Response
-    try { r = await fetch('/api/outreach/reopen', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, thread_id: threadId, ...(body !== undefined ? { body } : {}) }) }) } catch { setWarmMsg('Could not reach the server. Reload before trying again.'); return }
+    try { r = await fetch('/api/outreach/reopen', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, thread_id: threadId, ...(body !== undefined ? { body } : {}) }) }) } catch { showNote('Could not reach the server. Reload before trying again.'); return }
     const j = await r.json().catch(() => ({}))
     if (!r.ok) {
       const known: Record<string, string> = {
+        test_tenant_recipient: 'This test workspace can only email its approved test inbox.',
         suppressed: 'That address unsubscribed or bounced.',
         already_created: 'A re-open already exists for this thread.',
         send_uncertain: 'This send may already have gone out. Check your Gmail Sent folder before doing anything else.',
@@ -66,16 +70,17 @@ export default function FollowupsClient() {
         not_uncertain: 'This re-open is no longer waiting on a result.',
         already_uncertain: 'An earlier send has an unknown result. Check your Gmail Sent folder first.',
       }
-      setWarmMsg(typeof j.error === 'string' && known[j.error] ? known[j.error] : 'Could not do that')
+      showNote(typeof j.error === 'string' && known[j.error] ? known[j.error] : 'Could not do that')
       void loadWarm() // the row may have changed under this page: drop stale controls
       return
     }
-    setWarm(j.warm); setReopens(j.reopens)
+    setObservedAt(unixNow()); setWarm(j.warm); setReopens(j.reopens)
   }
   useEffect(() => {
     void fetch('/api/outreach/followups').then(async r => {
       if (!r.ok) { setError(r.status === 401 ? 'Sign in first.' : 'Could not load follow-ups'); return }
-      setData(await r.json())
+      const overview = await r.json() as Overview
+      setObservedAt(unixNow()); setData(overview)
     }).catch(() => setError('Could not load follow-ups'))
   }, [])
 
@@ -117,7 +122,7 @@ export default function FollowupsClient() {
                 </div>
                 <div className={SIDE}>
                   {t.followups_sent} of 2 sent
-                  {t.next_due_at && <div>{t.next_due_at <= Math.floor(Date.now() / 1000) ? 'next one due now' : `next one ${day(t.next_due_at)}`}</div>}
+                  {t.next_due_at && <div>{t.next_due_at <= observedAt ? 'next one due now' : `next one ${day(t.next_due_at)}`}</div>}
                   {!t.next_due_at && t.scheduled_at && t.hold && <div data-testid="thread-held">held: {HOLD[t.hold] ?? t.hold}<br /><span className="text-[#999]">schedule said {day(t.scheduled_at)}</span></div>}
                 </div>
               </div>

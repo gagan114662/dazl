@@ -13,7 +13,7 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateSequences, setTestAddresses } from '../lib/outreach/sequences.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { approve, createDraft, recipientAllowed, saveSettings, sendBlockReason, sendMessage, TEST_INBOX, type Deps } from '../lib/outreach/service.ts'
+import { approve, approveBlockReason, createDraft, recipientAllowed, saveSettings, sendBlockReason, sendMessage, TEST_INBOX, type Deps } from '../lib/outreach/service.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, migrateAutopilot } from '../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
@@ -107,6 +107,24 @@ test('draft boundary: a company address reports the designated test-tenant restr
     setTestAddresses(db, T, [TEST_INBOX])
     assert.throws(() => createDraft(db, T, lead, 'Acme'), { code: 'test_tenant_recipient' })
   })
+})
+
+test('approval boundary: removing the approved test inbox leaves the draft unapproved', async () => {
+  const db = setup()
+  await connect(db, T)
+  saveSettings(db, T, { sender_name: 'Pat Smith', postal_address: '1 King St W, Toronto ON M5H 1A1, Canada' })
+  designated(() => {
+    setTestAddresses(db, T, [TEST_INBOX])
+    const id = createDraft(db, T, addLead(db, T, TEST_INBOX), 'Acme')
+    assert.equal(approveBlockReason(db, T, id), null)
+    setTestAddresses(db, T, [])
+    assert.equal(approveBlockReason(db, T, id), 'test_tenant_recipient')
+    assert.throws(() => approve(db, T, id), { code: 'test_tenant_recipient' })
+    assert.deepEqual(db.prepare('SELECT status, approved_hash FROM outreach_messages WHERE id = ?').get(id), {
+      status: 'draft', approved_hash: null,
+    })
+  })
+  db.close()
 })
 
 test('send boundary: an approved draft to a business address is refused for the designated tenant', async () => {

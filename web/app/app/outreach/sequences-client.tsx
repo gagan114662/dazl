@@ -11,6 +11,7 @@ const ago = (t: number) => { const m = Math.max(0, Math.round((Date.now() / 1000
 type AutoPolicy = { version: string; text: string[]; accepted: boolean }
 type Data = { freshness?: Freshness; gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'configured_on'|'operator_off'|'kill_switch'|'paused'; sequences: Sequence[]; test_addresses: string[]; test_fixture_available?: boolean; auto_policy?: AutoPolicy; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 const COPY: Record<string,string> = {
+  test_tenant_recipient: 'This test workspace can only email its approved test inbox.',
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   reading_not_enabled:'Enable reply reading in Settings before approving a sequence. Without it, sequences cannot stop on replies.',
   sender_identity_missing:'Add your sender name and mailing address in the form at the top of this page.',
@@ -26,6 +27,11 @@ const COPY: Record<string,string> = {
   domain_unconfirmed:'The website behind this sequence is not confirmed as the right company. Confirm it on the Leads page. That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
   lead_evidence_withdrawn:'The lead confirmation behind this sequence was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
 }
+async function readSequences(): Promise<Data> {
+  const r = await fetch('/api/outreach/sequences')
+  if (!r.ok) throw new Error('Could not load sequences.')
+  return await r.json() as Data
+}
 export default function SequencesClient() {
   const [data,setData]=useState<Data|null>(null)
   const [addresses,setAddresses]=useState('')
@@ -33,11 +39,16 @@ export default function SequencesClient() {
   const [busy,setBusy]=useState(false)
   const [edit,setEdit]=useState<{id:string;step:number;subject:string;body:string}|null>(null)
   async function load() {
-    const r=await fetch('/api/outreach/sequences')
-    if (!r.ok) throw new Error('Could not load sequences.')
-    const j=await r.json() as Data;setData(j);setAddresses(j.test_addresses.join('\n'))
+    const j = await readSequences()
+    setData(j); setAddresses(j.test_addresses.join('\n'))
   }
-  useEffect(()=>{void load().catch(e=>setNote(String(e.message)))},[])
+  useEffect(() => {
+    let current = true
+    void readSequences().then(j => {
+      if (current) { setData(j); setAddresses(j.test_addresses.join('\n')) }
+    }).catch(e => { if (current) setNote(String(e.message)) })
+    return () => { current = false }
+  }, [])
   async function action(body: Record<string,unknown>) {
     setBusy(true);setNote('')
     try {
@@ -88,7 +99,7 @@ export default function SequencesClient() {
       const state=data.status[s.lead_id]
       const label=s.status==='active'?`Step ${state?.step??1} sent / awaiting step ${(state?.step??1)+1}`:s.status
       return <article key={s.id} className="card p-4 mt-4 text-sm">
-        <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${s.stop_reason==='evidence_withdrawn'?'lead confirmation withdrawn':s.stop_reason==='policy_stop'?'stopped by policy':s.stop_reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
+        <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{s.stop_reason?` (${s.stop_reason==='evidence_withdrawn'?'lead confirmation withdrawn':s.stop_reason==='policy_stop'?'stopped by policy':s.stop_reason==='test_tenant_recipient'?'approved test inbox only':s.stop_reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>
         {s.currentness_held&&<p className="text-xs border-l-2 border-black pl-3 mt-2">Held: event timing and current need are unconfirmed. Unsent steps will not run. Sequence status and original words are preserved.</p>}
         {s.evidence_state==='human'&&['draft','approved'].includes(s.status)&&<p className="text-xs text-[#333] border-l-2 border-[#111] pl-3 mt-2">Lead confirmed by you - dazl did not verify the quote. Approving this set approves your own confirmation, not a dazl verification; withdrawing it stops unsent steps.</p>}
         {s.evidence_state==='unverified'&&['draft','approved'].includes(s.status)&&<p className="text-xs text-[#111] font-medium border-l-2 border-[#111] pl-3 mt-2">Lead confirmation withdrawn - this set cannot be approved or send further steps unless you re-confirm the lead or dazl verifies it.</p>}
@@ -107,7 +118,7 @@ export default function SequencesClient() {
     })}
     <button disabled={busy} className="btn-ghost text-xs mt-4" onClick={()=>void action({action:'resume'})}>Resume after resolving unknown sends</button>
     <h2 className="text-lg font-semibold mt-8">Campaign analytics</h2>
-    <p className="text-xs text-[#555] mt-1">A campaign is a scan. "No bounce reported" is sent minus recorded permanent bounces, not confirmed delivery. Opens and bookings are not tracked.</p>
+    <p className="text-xs text-[#555] mt-1">A campaign is a scan. &quot;No bounce reported&quot; is sent minus recorded permanent bounces, not confirmed delivery. Opens and bookings are not tracked.</p>
     {data?.campaigns.map(c=><div key={c.id} className="card p-3 mt-3 text-sm"><p className="font-medium">{c.query||c.id}</p><p className="text-xs text-[#555] mt-2">Sent {c.analytics.sent} / No bounce reported {c.analytics.delivered} / Replied {c.analytics.replied} / Bounced {c.analytics.bounced} / Opt-outs {c.analytics.optOuts}</p></div>)}
   </section>
 }

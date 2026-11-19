@@ -114,3 +114,113 @@ test('crawlSite keeps people separate: a person-only site stays none_published a
     assert.deepEqual(ldp({ '@type': 'Person', name: 'Dana Lee', jobTitle: 'Owner', worksFor: { '@type': 'Organization', employee: dana } }), [])
   })
 }
+
+test('#1037 prioritizes a real company directory and reads one linked bio within the existing page budget', async () => {
+  const pages: Record<string, string> = {
+    '/robots.txt': 'User-agent: *\nAllow: /',
+    '/': '<title>Northstar Systems</title><a href="/about/company/management">Leadership</a><a href="/contact">Contact</a>',
+    '/about/company/management': PROSE + '<h3><a href="/about/company/management/jane-quinn">Jane Quinn</a></h3><h3><a href="/about/company/management/rohan-silva">Rohan Silva</a></h3>',
+    '/about/company/management/jane-quinn': PROSE + '<h1>Jane Quinn</h1><p>Founder</p>',
+    '/about/company/management/rohan-silva': PROSE + '<h1>Rohan Silva</h1><p>Founder</p>',
+    '/contact': '<a href="mailto:info@northstar.example">Email</a>',
+  }
+  const hits: string[] = []
+  let wrongName = false, otherSite = false, refuseBio = false, former = false
+  const bio = '/about/company/management/jane-quinn'
+  const get: Get = async u => {
+    const path = new URL(u).pathname; hits.push(path)
+    let body = pages[path]
+    if (path === bio && wrongName) body = body.replace('Jane Quinn', 'Lara White')
+    if (path === '/robots.txt' && refuseBio) body += '\nDisallow: ' + bio
+    if (path === '/about/company/management' && former) body = '<h2>Former staff</h2>' + body
+    return { status: body ? 200 : 404, body: body ?? '', finalUrl: path === bio && otherSite ? 'https://elsewhere.example' + bio : u }
+  }
+  const run = () => crawlSite('northstar.example', get, 0, 'Northstar Systems', false, undefined, undefined, 'Founder')
+  const result = await run()
+  assert.deepEqual(hits.slice(0, 4), ['/robots.txt', '/', '/about/company/management', bio])
+  assert.equal(hits.includes('/about/company/management/rohan-silva'), false)
+  assert.ok(result.pages <= 5)
+  assert.ok(result.buyerPages && result.buyerPages >= 2)
+  assert.deepEqual(result.found.filter(p => p.kind === 'person').map(p => [p.value, p.url]), [['Jane Quinn, Founder', 'https://northstar.example' + bio]])
+  assert.equal(result.found.find(p => p.kind === 'email')?.value, 'info@northstar.example')
+  for (const scenario of ['wrongName', 'otherSite', 'refuseBio', 'former']) {
+    hits.length = 0
+    wrongName = scenario === 'wrongName'; otherSite = scenario === 'otherSite'
+    refuseBio = scenario === 'refuseBio'; former = scenario === 'former'
+    const unable = await run()
+    assert.equal(unable.found.some(p => p.kind === 'person'), false, scenario)
+    if (refuseBio || former) assert.equal(hits.includes(bio), false, scenario)
+  }
+})
+
+test('#1122 records only an explicitly named LinkedIn link in the accepted same-person company bio, as metadata', async () => {
+  const host = 'northstar.example', bio = '/management/jane-quinn'
+  let links = ''
+  const fetched: string[] = []
+  const get: Get = async url => {
+    assert.equal(new URL(url).hostname, host, 'LinkedIn is never fetched')
+    fetched.push(url)
+    const pages: Record<string, string> = {
+      '/robots.txt': 'User-agent: *\nAllow: /',
+      '/': '<title>Northstar Systems</title><a href="/management">Leadership</a>',
+      '/management': PROSE + '<h3><a href="/management/jane-quinn">Jane Quinn</a></h3>',
+      [bio]: '<article>' + PROSE + '<h1>Jane Quinn</h1><p>Founder</p>' + links + '</article>',
+    }
+    const body = pages[new URL(url).pathname]
+    return { status: body ? 200 : 404, body: body ?? '', finalUrl: url }
+  }
+  const run = async () => {
+    const got = await crawlSite(host, get, 0, 'Northstar Systems', false, undefined, undefined, 'Founder')
+    return got.found.find(f => f.kind === 'person')
+  }
+  const articleLink = (url: string, label: string) => '<a href="' + url + '">' + label + '</a>'
+  const profile = 'https://www.linkedin.com/in/janeq-example'
+  links = articleLink(profile, 'Jane Quinn on LinkedIn')
+  assert.deepEqual(await run(), { kind: 'person', value: 'Jane Quinn, Founder', url: 'https://' + host + bio, label: 'sitecrawl-profile-v1: ' + profile })
+  links = '<a href="' + profile + '" aria-label="Jane Quinn on LinkedIn">LinkedIn</a>'
+  assert.equal((await run())?.label, 'sitecrawl-profile-v1: ' + profile)
+  for (const unsafe of [
+    articleLink(profile, 'Molly Wyatt on LinkedIn'),
+    articleLink('https://www.linkedin.com/company/northstar', 'Jane Quinn on LinkedIn'),
+    articleLink('https://www.linkedin.com.evil.example/in/janeq-example', 'Jane Quinn on LinkedIn'),
+    articleLink('https://www.linkedin.com@elsewhere.example/in/janeq-example', 'Jane Quinn on LinkedIn'),
+    articleLink(profile, 'LinkedIn'),
+    '</article><article><h2>Molly Wyatt</h2>' + articleLink(profile, 'Jane Quinn on LinkedIn'),
+    articleLink(profile, 'Jane Quinn on LinkedIn') + articleLink('https://www.linkedin.com/in/other-example', 'LinkedIn'),
+    '<script>' + articleLink(profile, 'Jane Quinn on LinkedIn') + '</script>',
+  ]) {
+    links = unsafe
+    assert.equal((await run())?.label.startsWith('sitecrawl-profile-v1:'), false, unsafe)
+  }
+  assert.ok(fetched.some(x => x.endsWith(bio)))
+})
+
+test('#1122 follows one role-matched bio even when the company directory already names people', async () => {
+  const host = 'northstar.example', team = '/management', bio = team + '/jane-quinn'
+  const hits: string[] = [], profile = 'https://www.linkedin.com/in/janeq-example'
+  let bioTitle = 'Founder'
+  const get: Get = async u => {
+    const url = new URL(u)
+    assert.equal(url.hostname, host)
+    hits.push(url.pathname)
+    const pages: Record<string, string> = {
+      '/robots.txt': 'User-agent: *\nAllow: /',
+      '/': '<title>Northstar Systems</title><a href="/management">Leadership</a>',
+      [team]: PROSE + '<script type="application/ld+json">{"@type":"Organization","name":"Northstar Systems","employees":[{"@type":"Person","name":"Rohan Silva","jobTitle":"Chief Technology Officer"},{"@type":"Person","name":"Jane Quinn","jobTitle":"Founder"}]}</script>' + '<h3><a href="/management/rohan-silva">Rohan Silva</a></h3><p>Chief Technology Officer</p><h3><a href="/management/jane-quinn">Jane Quinn</a></h3><p>Founder</p>',
+      [bio]: '<article>' + PROSE + '<h1>Jane Quinn</h1><p>' + bioTitle + '</p><a href="' + profile + '">Jane Quinn on LinkedIn</a></article>',
+    }
+    const body = pages[url.pathname]
+    return { status: body ? 200 : 404, body: body ?? '', finalUrl: u }
+  }
+  const run = () => crawlSite(host, get, 0, 'Northstar Systems', false, undefined, undefined, 'Founder')
+  const result = await run()
+  assert.ok(hits.includes(bio))
+  assert.ok(!hits.includes(team + '/rohan-silva'))
+  assert.ok(result.pages <= 5)
+  assert.deepEqual(result.found.find(p => p.value === 'Jane Quinn, Founder'), { kind: 'person', value: 'Jane Quinn, Founder', url: 'https://' + host + bio, label: 'sitecrawl-profile-v1: ' + profile })
+  bioTitle = 'Head of Sales'
+  const changed = await run()
+  assert.equal(changed.found.find(f => f.value === 'Jane Quinn, Founder')?.url, 'https://' + host + team)
+  assert.ok(!changed.found.some(f => f.label.startsWith('sitecrawl-profile-v1:')))
+  assert.ok(!changed.found.some(f => f.value === 'Jane Quinn, Head of Sales'), 'a conflicting title must not be added from the follow-up')
+})

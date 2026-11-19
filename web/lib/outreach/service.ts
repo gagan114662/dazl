@@ -407,7 +407,7 @@ export function skip(db: Database.Database, tenantId: string, id: string): void 
   if (r.changes !== 1) throw new OutreachError(getMsg(db, tenantId, id) ? 'not_skippable' : 'not_found')
 }
 
-// Every check approve makes before its write transaction, in the same order. Throws OutreachError on the first refusal.
+// Checks shared by the read-only preview and the approval write. Throws OutreachError on the first refusal.
 function approveChecks(db: Database.Database, tenantId: string, id: string, sequenceSet: boolean, skipAccount = false) {
   if (!sequenceSet && tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND message_id = ? AND status NOT IN ('stopped','done')").get(tenantId, id)) throw new OutreachError('approve_sequence_set')
   const m = getMsg(db, tenantId, id)
@@ -417,6 +417,8 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) throw new OutreachError('not_sales_contact')
+  const recipientBlock = recipientBlockReason(db, tenantId, m.to_email)
+  if (recipientBlock) throw new OutreachError(recipientBlock)
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, m) && !leadEvidenceEligible(db, tenantId, m.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   return m
@@ -434,9 +436,10 @@ export function approveBlockReason(db: Database.Database, tenantId: string, id: 
 }
 
 export function approve(db: Database.Database, tenantId: string, id: string, sequenceSet = false): void {
-  const m = approveChecks(db, tenantId, id, sequenceSet)
   db.transaction(() => {
-    // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
+    // Read current approval state and recipient policy under the same write lock as the approval.
+    const m = approveChecks(db, tenantId, id, sequenceSet)
+    // The identity review uses the same lock, so a withdrawal cannot slip in here.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
     db.prepare("UPDATE outreach_messages SET status = 'approved', approved_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft'").run(hash(m.to_email, m.subject, m.body), id, tenantId)
