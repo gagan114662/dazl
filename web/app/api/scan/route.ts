@@ -8,15 +8,17 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, budgetedIcp, icpLoss, normalizeIcp } from '@/lib/scan/icp'
 import { applyReviewedDraft } from '@/lib/scan/seller-research'
-import { countActiveJobs, createJob, createQueryJob } from '@/lib/scan/store'
+import { countActiveJobs, createJob, createQueryJob, pinAdmittedStrictJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
 import { planQuota, readPlan, scansThisMonth } from '@/lib/plans'
 import { getDb } from '@/lib/db/client'
 import { normalizeSources } from '@/lib/sources'
+import { reserveStrictLocalSlot, runStrictLocalJob } from '@/lib/scan/strict-local-launch'
+import type { Job } from '@/lib/scan/runner'
 import { kickRunner, pickVendor } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { readSellerLine } from '@/lib/auth-db'
-import { FIRST5_CLAUDE_ONLY_MODE, QA_CLAUDE_ONLY, isFirst5RequestMode, qaClaudeOnlyBudget } from '@/lib/scan/qa-provider-policy'
+import { isClaudeOnlyRequestMode, QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from '@/lib/scan/qa-provider-policy'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '@/lib/people/people-search'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '@/lib/people/first-play-cap'
@@ -107,7 +109,7 @@ export async function POST(req: NextRequest) {
   const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
   // mode 'first5': the fast first scan of a new account (free sources only); it takes no other budget so a caller never mixes the two.
   const first5 = isFirst5RequestMode(body?.mode)
-  const claudeOnly = body?.mode === FIRST5_CLAUDE_ONLY_MODE
+  const claudeOnly = isClaudeOnlyRequestMode(body?.mode)
   if (body?.mode !== undefined && !first5) return NextResponse.json({ error: 'unknown_mode' }, { status: 400 })
   if (first5 && budgetSupplied) return NextResponse.json({ error: 'invalid_budget', detail: 'mode first5 takes no budget' }, { status: 400 })
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
@@ -115,6 +117,9 @@ export async function POST(req: NextRequest) {
 
   const runBudget = claudeOnly ? qaClaudeOnlyBudget(nb.value) : nb.value
   const db = getScanDb()
+  if (claudeOnly && !strictLocalTopologySupported((await getDb()).kind)) {
+    return NextResponse.json({ error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }, { status: 503 })
+  }
   // Keyless accounts fall back to the shared trial key: 3 scans per account, throttled per IP
   // per day. With no trial configured, queuing a keyless job would hang forever and burn a scan.
   let funded: 'user' | 'trial' = 'user'
@@ -169,6 +174,7 @@ export async function POST(req: NextRequest) {
   let reservation: string | null = null
   let job_id: string | null = null
   let refused = null as Response | null
+  let releaseLocalSlot: (() => void) | null = null
   if (funded === 'trial') {
     const a = principal ? await admitTrialScan(await getDb(), principal) : { ok: false as const, reason: 'not_configured' as const }
     if (!a.ok) return NextResponse.json({ error: 'trial_unavailable', reason: a.reason }, { status: 402 })
@@ -176,6 +182,21 @@ export async function POST(req: NextRequest) {
   }
   // From here a reservation exists with no job: any throw before the job is linked releases it, so an error can never leave an attempt and budget consumed with no run.
   try {
+    let launched: Job | null = null
+    if (claudeOnly) {
+      releaseLocalSlot = reserveStrictLocalSlot()
+      if (!releaseLocalSlot) {
+        refused = NextResponse.json({ error: 'qa_local_busy', message: 'The Claude-only worker is busy. Nothing was started.' }, { status: 503 })
+        throw new AdmissionRefused()
+      }
+      const release = releaseLocalSlot
+      after(async () => {
+        const job = launched
+        launched = null
+        try { if (job) await runStrictLocalJob(db, job) }
+        finally { release() }
+      })
+    }
     const sel = body?.sources ? normalizeSources(body.sources) : null
     // The job id is fixed FIRST and the trial reservation is linked to it BEFORE the job exists; then the job, its estimate, its funding mark and the trial count are written in ONE
     // transaction. So there is never a pending job that a background worker could claim without its estimate / funding / trial count, and a failure at any step rolls the job back entirely and
@@ -188,7 +209,7 @@ export async function POST(req: NextRequest) {
     // that creates the job, taken IMMEDIATE so it holds the database write lock from its first statement: concurrent requests in
     // this process or in another process sharing the store serialize here, and exactly one sees the slot free. A refusal throws
     // before any write, so no job, no trial count, and (below) the linked reservation is released.
-    db.transaction(() => {
+    launched = db.transaction(() => {
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
@@ -202,12 +223,14 @@ export async function POST(req: NextRequest) {
         db.prepare("UPDATE scan_jobs SET funded_by = 'trial' WHERE id = ?").run(jid)
         recordTrialScan(db, user.tenantId, jid, ip)
       }
+      return claudeOnly ? pinAdmittedStrictJob(db, user.tenantId, jid, runBudget) : null
     }).immediate()
+    if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION }, { status: 202 })
     after(() => kickRunner(db))
-    if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY }, { status: 202 })
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
     return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0, firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 }, trial: funded === 'trial' }) } : { job_id }, { status: 202 })
   } catch (e) {
+    releaseLocalSlot?.()
     if (reservation) await releaseTrialReservation(await getDb(), user.tenantId, reservation, job_id ?? undefined).catch(() => { /* stays at its full reserve (never less than it could spend) */ })
     if (e instanceof AdmissionRefused && refused) return refused
     throw e
