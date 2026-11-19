@@ -28,9 +28,11 @@ export function jobBoardSlugs(company: string, sourceUrl: string, html = ''): { 
   const fits = (raw: string) => { let s = raw.toLowerCase(); for (let i = 0; i < 2; i++) s = s.replace(SLUG_TAIL, ''); return norm(s.replace(/-/g, ' ')) === want }
   const ats: string[] = []
   let slug = ''
+  // A direct ATS source already identifies its employer; do not fetch that same page twice.
+  for (const re of ATS_SLUG) { const x = re.exec(sourceUrl); if (x && fits(x[1])) { slug = x[1].toLowerCase(); break } }
   for (const m of html.matchAll(/href\s*=\s*["'](https?:\/\/[^"'#\s]+)["']/gi)) {
     const u = m[1].replace(/&amp;/g, '&')
-    for (const re of ATS_SLUG) { const x = re.exec(u); if (x && fits(x[1])) { if (!ats.includes(u) && ats.length < 2) ats.push(u); slug ||= x[1].toLowerCase(); break } }
+    for (const re of ATS_SLUG) { const x = re.exec(u); if (x && fits(x[1])) { if (u !== sourceUrl && !ats.includes(u) && ats.length < 2) ats.push(u); slug ||= x[1].toLowerCase(); break } }
   }
   // the aggregator's own paths: /companies/<slug> or /jobs/<slug>-<title>-<id>, where the slug is exactly the company's name
   try {

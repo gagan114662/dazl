@@ -78,6 +78,7 @@ test('CRAWLER: two same-name sites - the Pico Rivera, CA homepage (other street 
   const { crawlJob } = await import('../lib/connectors/sitecrawl.ts')
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec('CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)')
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   const ex = 'Smile Avenue Dental is opening a second practice at 57 W 57th St, New York'
   db.prepare("INSERT INTO leads VALUES ('wrong','j1','Smile Avenue Dental','https://news.example/wrong',NULL,90,80,NULL,'opened a new practice',?),('right','j1','Smile Avenue Dental','https://news.example/right',NULL,90,70,NULL,'opened a new practice',?)").run(ex, ex)
   const html = (b: string) => `<html><body>${b}</body></html>`
