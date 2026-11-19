@@ -10,7 +10,7 @@ const quote = 'As a Sales Development Representative at Mercury, you\u0027ll be 
 const funding = 'Mercury raised a seed funding round in Toronto'
 const profile = { summary: request, who: ['Founder'], industries: [], sizes: [], where: ['Toronto'], signals: ['hiring SDR'], exclude: [], country: 'CA', language: 'en', window_days: 90 }
 
-async function savedSource(title: string, opts: { day?: string | null; org?: string; unreadable?: boolean; pageOnlyDate?: boolean } = {}) {
+async function savedSource(title: string, opts: { day?: string | null; org?: string; unreadable?: boolean; pageOnlyDate?: boolean; employer?: string } = {}) {
   const day = opts.day === undefined ? daysAgo(2) : opts.day
   const postingQuote = opts.pageOnlyDate ? `On ${day}, Mercury hired a Sales Development Representative for its Toronto team.` : quote
   const source = opts.org ? posting.replace('/mercury/', '/othercorp/') : posting
@@ -26,7 +26,7 @@ async function savedSource(title: string, opts: { day?: string | null; org?: str
       title: url === news ? 'Mercury funding' : title,
       text: url === news ? `On ${daysAgo(2)}, ${funding}.` : `${title}. Toronto. ${postingQuote}.`,
       retrievedAt: Math.floor(Date.now() / 1000),
-      ...(url === source ? { board: { slug: opts.org ?? 'mercury', company: opts.org ? 'Othercorp' : 'Mercury', title }, postedAt: opts.pageOnlyDate ? null : day } : {}),
+      ...(url === source ? { board: { slug: opts.org ?? 'mercury', company: opts.employer ?? (opts.org ? 'Othercorp' : 'Mercury'), title }, postedAt: opts.pageOnlyDate ? null : day } : {}),
     }) },
   })
   return { ...x, row: x.db.prepare('SELECT id, source_url, evidence_excerpt, review_reason FROM leads WHERE company = ?').get('Mercury') as { id: string; source_url: string; evidence_excerpt: string; review_reason: string | null } }
@@ -83,5 +83,16 @@ test('#1121 alternate posting cannot use a page-only event date as its structure
     assert.equal(x.row.source_url, news)
     assert.equal(x.row.review_reason, 'no_sales_hiring_evidence')
     assert.equal((x.db.prepare("SELECT COUNT(*) AS n FROM lead_enrichments WHERE lead_id = ? AND kind = 'hiring'").get(x.row.id) as { n: number }).n, 0)
+  } finally { x.db.close() }
+})
+
+test('#1121 matching board slug and quote cannot override the posting record’s stated employer', async () => {
+  const x = await savedSource('Sales Development Representative', { employer: 'Fictional Birchford Systems' })
+  try {
+    assert.ok(x.row)
+    assert.equal(x.row.source_url, news, 'the genuine primary source remains saved')
+    assert.equal(x.row.review_reason, 'no_sales_hiring_evidence')
+    const kinds = x.db.prepare("SELECT kind FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'gate_passed')").all(x.row.id)
+    assert.deepEqual(kinds, [], 'no wrong-employer hiring receipt or pass marker is saved')
   } finally { x.db.close() }
 })
