@@ -6,6 +6,10 @@ import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from '../lib/llm/claude-web
 import { saveKey } from '../lib/llm/key-store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
+import { sqliteLeadsRead } from '../lib/db/leads-read.ts'
+import { scanOutcome, shouldLoadScanLeads } from '../lib/scan/scan-outcome.ts'
+import { reviewAction } from '../lib/scan/review-action.ts'
+import { draftBlockReason } from '../lib/outreach/service.ts'
 import { runJob } from '../lib/scan/runner.ts'
 import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
 
@@ -13,11 +17,13 @@ const master = randomBytes(32)
 const count = 1500
 const q = 'Find commercial roofers in London, UK'
 const url = 'https://public.example/official-company-page'
+const free = 'https://public.example/london-roofing-expansion'
+const freeQuote = 'Brightline Roofing opened a new London commercial roofing office to support its rapidly growing service area.'
 const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, freeLead = false, interrupted = false, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; freeLead?: boolean; interrupted?: boolean; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -56,7 +62,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (target.endsWith('/count_tokens')) assert.equal('tools' in body, false, 'Anthropic count_tokens rejects server tools')
       sequence.push(native ? target.endsWith('/count_tokens') ? 'native-count' : 'native-send' : 'model')
       if (target.endsWith('/count_tokens')) return Response.json({ input_tokens: count })
-      if (!native) return Response.json({ model: CLAUDE_SEARCH_MODEL, content: [{ type: 'text', text: '[]' }], usage: { input_tokens: 100, output_tokens: 15 } })
+      if (!native) return Response.json({ model: CLAUDE_SEARCH_MODEL, content: [{ type: 'text', text: freeLead ? JSON.stringify([{ company: 'Brightline Roofing', name: '', contact: 'sales@brightline.example', signal: 'Opened a new London office', source_url: free, excerpt: freeQuote, score: 95 }]) : '[]' }], usage: { input_tokens: 100, output_tokens: 15 } })
       const held = db.prepare("SELECT reserve_usd FROM scan_spend_calls WHERE scan_job_id='job' AND status='reserved'").all()
       assert.deepEqual(held, [{ reserve_usd: claudeSearchEstimate(count).estimatedUsd }], 'durable search reserve exists at time of send')
       if (rateLimited && sequence.filter(x => x === 'native-send').length === 1)
@@ -70,10 +76,19 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     }
     globalThis.fetch = io
     const status = await runJob(db, job, {
-      master, fetchImpl: io, score: false, ground: false, judge: null,
-      fetchPage: async page => { sequence.push('publisher-page'); assert.equal(page, url); return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: 'Published evidence about a commercial roofing company. '.repeat(8) } },
+      master, fetchImpl: io, score: freeLead ? undefined : false, ground: freeLead ? undefined : false, judge: freeLead ? undefined : null,
+      ...(freeLead ? { newsHttp: async () => ({ status: 200, body: JSON.stringify({ articles: [{ url: free, title: 'Brightline Roofing opens its London office' }] }) }) } : {}),
+
+      fetchPage: async page => { if (freeLead && page === free) { sequence.push('free-page'); return { title: 'Brightline Roofing opens its London office', retrievedAt: 1_700_000_000, text: freeQuote.repeat(4) } }; sequence.push('publisher-page'); assert.equal(page, url); return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: 'Published evidence about a commercial roofing company. '.repeat(8) } },
     })
     const end = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(job.id)
+    const read = sqliteLeadsRead(db)
+    const visibleJob = await read.getJob('workspace', job.id)
+    const visible = await read.listLeads('workspace', job.id) as { id: string; review_reason: string | null }[]
+    const otherVisible = await read.listLeads('other-workspace', job.id)
+    const retained = db.prepare('SELECT id, company, source_url, contact, review_reason, confidence FROM leads WHERE scan_job_id=?').all(job.id)
+    const draftBlock = visible.map(l => draftBlockReason(db, 'workspace', l.id))
+    const counts = db.prepare('SELECT candidates, verified, needs_review FROM scan_jobs WHERE id=?').get(job.id)
     const ledger = db.prepare('SELECT status, reason, reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id=? ORDER BY rowid').all(job.id)
     const jobSpend = db.prepare('SELECT spend_reserved_usd, spend_cap_reserved_usd FROM scan_jobs WHERE id=?').get(job.id)
     const pool = db.prepare('SELECT period,reserved_usd,reported_usd FROM tenant_spend_pools WHERE tenant_id=? ORDER BY period').all('workspace')
@@ -87,7 +102,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       await runJob(db, next, { master, fetchImpl: io, score: false, ground: false, judge: null })
       second = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(id)
     }
-    return { status, sequence, messages, denied, end, ledger, jobSpend, pool, second }
+    return { status, sequence, messages, denied, end, visibleJob, visible, otherVisible, retained, draftBlock, counts, ledger, jobSpend, pool, second }
   } finally {
     globalThis.fetch = previousFetch
     for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
@@ -169,4 +184,30 @@ test('authenticated 429 stops this play, reverses all reservations and lets a se
     assert.equal(row.reported_usd, 0)
   }
   assert.equal(x.sequence.filter(x => x === 'native-send').length, 2)
+})
+
+test('overage saves prior public-source candidates as research and starts no later paid step', async () => {
+  const x = await simulate({ overage: true, freeLead: true })
+  assert.deepEqual(x.end, { status: 'failed', error: 'native_search_estimate_exceeded' })
+  assert.ok(x.sequence.includes('free-page'))
+  assert.ok(x.sequence.includes('model'))
+  assert.deepEqual(x.sequence.slice(-2), ['native-count', 'native-send'])
+  assert.deepEqual(x.denied, [])
+  const { id, ...row } = x.retained[0] as Record<string, unknown>
+  assert.equal(typeof id, 'string')
+  assert.deepEqual(row, { company: 'Brightline Roofing', source_url: free, contact: null, review_reason: 'native_search_estimate_exceeded', confidence: null })
+  assert.equal(x.retained.length, 1)
+  assert.deepEqual(x.counts, { candidates: 1, verified: 0, needs_review: 1 })
+  assert.equal(x.visibleJob!.status, 'failed')
+  assert.equal(shouldLoadScanLeads(x.visibleJob!.status, x.visibleJob!.error), true)
+  assert.equal(shouldLoadScanLeads('failed', 'no_candidates'), false)
+  assert.equal(shouldLoadScanLeads('failed', 'accounting_uncertain'), false)
+  const outcome = scanOutcome(x.visibleJob!)
+  assert.equal(outcome.next?.text, 'View saved research')
+  assert.match(outcome.detail!, /saved as research only/)
+  assert.deepEqual(x.visible.map(l => l.id), [id])
+  assert.deepEqual(x.otherVisible, [])
+  assert.equal(reviewAction({ review_reason: x.visible[0].review_reason }).label, 'Keep as research')
+  assert.deepEqual(x.draftBlock, ['lead_currentness_unconfirmed'])
+  assert.equal((x.ledger.at(-1) as { actual_usd: number }).actual_usd, 0.313)
 })

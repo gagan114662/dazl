@@ -712,6 +712,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   if (out) excludeSupplied(job, out)
   const leads = out?.leads ?? []
   const review = out?.review ?? []
+  const recordResultCounts = status === 'done' || (!!out && error === 'native_search_estimate_exceeded')
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
   // IMMEDIATE: the ownership read then the writes in one deferred transaction fail at once with SQLITE_BUSY (snapshot upgrade, busy_timeout does not apply) if another process committed in between.
   return db.transaction((): boolean => {
@@ -730,7 +731,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
          finished_at = CASE WHEN ? = 'pending' THEN NULL ELSE CAST(strftime('%s','now') AS INTEGER) END WHERE id = ?`,
-    ).run(status, error, candidates, status === 'done' ? leads.length : null, status === 'done' ? review.length : null, dropped, out ? JSON.stringify(out.dropped) : null, status, job.id)
+    ).run(status, error, candidates, recordResultCounts ? leads.length : null, recordResultCounts ? review.length : null, dropped, out ? JSON.stringify(out.dropped) : null, status, job.id)
     return true
   }).immediate()
 }
@@ -1601,7 +1602,32 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const est = found.estimate, usage = found.usage
         const over = usage.usd > est.estimatedUsd + 1e-9
         if (spendAttemptUncertain() || !usage) { ledger.record(source, 'error:usage_unknown'); finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }
-        if (over) { ledger.record(source, 'partial_hold:estimate_exceeded'); finish(db, job, 'failed', 'native_search_estimate_exceeded', null, null, ledger); return 'failed' }
+        if (over) {
+          const reason = 'native_search_estimate_exceeded'
+          ledger.record(source, 'partial_hold:estimate_exceeded')
+          // The billed usage was already settled. Do not visit native results, verify with a model,
+          // grade, enrich, or send. Earlier public-source candidates are still worth keeping as
+          // research only, not ready or confirmable leads: their required checks did not finish.
+          const prior = await forget(dropSupplied(job, leads ?? [], audit))
+          let memory = deps.memory ?? null
+          if (deps.memory === undefined) { try { memory = getMemory(db, job.user_id) } catch { /* table may predate this deploy */ } }
+          const excluded = memory ? prior.filter(l => isExcluded(memory, l)) : []
+          const seen = new Set<string>()
+          const review: ReviewLead[] = []
+          let duplicates = 0
+          for (const l of prior) {
+            if (excluded.includes(l)) continue
+            const k = dedupKey(l)
+            if (seen.has(k)) { duplicates++; continue }
+            seen.add(k)
+            review.push({ ...l, contact: null, review_reason: reason })
+          }
+          markDropped(excluded, 'excluded')
+          const dropped = { ...fbCounts, ...(excluded.length ? { excluded: excluded.length } : {}), ...(duplicates ? { duplicate: duplicates } : {}) }
+          ledger.report({ dropCounts: dropped })
+          finish(db, job, 'failed', reason, { leads: [], review, dropped }, (leads ?? []).length, ledger)
+          return 'failed'
+        }
         const pages = []
         for (const url of found.citedUrls.slice(0, 5)) {
           assertOwned(db, job)

@@ -88,6 +88,11 @@ export function outcomeOwnCopy(o: unknown): string | null {
   return typeof x.detail === 'string' && x.detail ? `${x.label}. ${x.detail}` : x.label
 }
 
+// A failed scan normally has no results. This exact stop can keep earlier candidates as research.
+export function shouldLoadScanLeads(status: string, error: string | null): boolean {
+  return status === 'done' || status === 'enriching' || (status === 'failed' && error === 'native_search_estimate_exceeded')
+}
+
 export function scanOutcome(j: ScanRecord): ScanOutcome {
   const o = baseOutcome(j), partial = j.partial_sources ?? []
   if (partial.length === 0 || !PARTIAL_KINDS.includes(o.kind)) return o
@@ -137,7 +142,12 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
       case 'provider_rejected': return { kind: 'stopped', label: 'Stopped - the AI provider refused a request', detail: 'The provider answered a request with a refusal. dazl did not retry it automatically, and it does not claim the request was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.', next: { text: 'Start a new scan', href: NEW_SCAN } }
       case 'native_search_accounting_pending': return { kind: 'stopped', label: 'Claude Web Search did not start', detail: 'A previous search for this workspace has not settled. Dazl did not send another search that could add charges.', next: null }
       case 'native_search_provider_limit': return { kind: 'stopped', label: 'Stopped after an unexpected Claude Web Search response', detail: 'Claude reported more searches or output than requested. Dazl recorded the usage and did not start any more paid steps.', next: null }
-      case 'native_search_estimate_exceeded': return { kind: 'stopped', label: 'Stopped after Claude Web Search exceeded its estimate', detail: 'Dazl did not start any more paid steps after the search. Anthropic bills for actual usage. We did not determine whether matching leads exist.', next: null }
+      case 'native_search_estimate_exceeded': {
+        const saved = (j.needs_review ?? 0) > 0
+        return { kind: 'stopped', label: 'Stopped after Claude Web Search exceeded its estimate',
+          detail: `Dazl did not start any more paid steps after the search. Anthropic bills for actual usage. ${saved ? 'Earlier public-source candidates were saved as research only; their checks did not finish.' : 'We did not determine whether matching leads exist.'}`,
+          next: saved ? { text: 'View saved research', href: open } : null }
+      }
       case 'accounting_uncertain': { const o: ScanOutcome = { kind: 'stopped', label: 'Stopped after an interruption - a paid step may already have been billed', detail: `The scan was interrupted while a paid step was in flight, so dazl did not run it again automatically: that could bill the same step twice. The only thing dazl cannot tell is whether the provider charged for that one step. The step stays counted against your limits. Nothing was concluded about whether leads exist. Starting a new scan runs paid steps again and may be charged again.${j.funded_by === 'trial' ? ' This free scan does not count toward your free scans.' : ''}`, next: { text: 'Start a new scan', href: NEW_SCAN } }
         // An outage that names its source keeps that naming (never a bare interruption) and still says a paid step may have been billed.
         return sourcesFailed(j) ? { ...o, kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error; a paid step may already have been billed` } : o }
