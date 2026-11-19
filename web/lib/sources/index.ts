@@ -1,5 +1,5 @@
 import { jobBoardsAdapter } from './jobboards.ts'
-import type { AdapterInput, Evidence, SourceAdapter } from './types.ts'
+import type { AdapterInput, Evidence, SafeGet, SourceAdapter } from './types.ts'
 import { githubAdapter } from './github.ts'
 import { rssAdapter } from './rss.ts'
 import { jinaAdapter } from './jina.ts'
@@ -45,12 +45,17 @@ export async function collectEvidenceReport(sel: SourceSelection, query: string,
   const runs = new Map<string, AdapterRun>()
   const tallies = new Map<string, NonNullable<AdapterInput['tally']>>()
   let settled = false
+  const deadline = new AbortController()
+  const boundedHttp: SafeGet = (url, options) => {
+    const signal = options?.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal
+    return signal.aborted ? Promise.resolve(null) : http(url, { ...options, signal })
+  }
   const run = Promise.all(sel.adapters.map(async id => {
     const notes: Record<string, number> = {}
     const tally: NonNullable<AdapterInput['tally']> = {}
     tallies.set(id, tally)
     const q = queryFor[id] ?? query   // #1095: one source may read the request with more context (the job boards: the profile's place); the others keep the request
-    const input: AdapterInput = { query: q, keywords: keywordsFor(q), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
+    const input: AdapterInput = { query: q, keywords: keywordsFor(q), feeds: sel.feeds, pages: sel.pages ?? [], discovered, companies, tally, http: boundedHttp, page, note: code => { notes[code] = (notes[code] ?? 0) + 1 } }
     try {
       const items = await ADAPTERS[id].collect(input)
       const partial = Object.keys(notes).some(k => k !== 'out_of_coverage')
@@ -60,7 +65,14 @@ export async function collectEvidenceReport(sel: SourceSelection, query: string,
     } catch { if (!settled) runs.set(id, { collector: `adapter:${id}`, status: 'error', evidence: null }) }
   }))
   let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<void>(res => { timer = setTimeout(res, timeoutMs); timer.unref?.() })
+  const timeout = new Promise<void>(resolve => {
+    timer = setTimeout(() => {
+      settled = true
+      deadline.abort()
+      resolve()
+    }, timeoutMs)
+    timer.unref?.()
+  })
   await Promise.race([run, timeout]); settled = true; clearTimeout(timer)
   // A source that did not finish by the deadline is reported as 'timeout'; sources that finished keep their items.
   // Late results never mutate the report (settled gate above).

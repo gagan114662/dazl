@@ -23,6 +23,7 @@ export interface PersonContact {
 // Connectors whose people are history, not current buyers. An SEC Form D names officers AS OF the filing: that is research, not an outreach target.
 import { looksLikeJobTitle } from './job-title-name.ts'
 import { contactCurrency, type ContactCurrency, type Currency, type SiteIdentity } from './currency.ts'
+import { profileFromListedLabel } from './site-profile.ts'
 import { companyTied, NAME_ONLY_SOURCE } from './company-tie.ts'
 
 export const HISTORICAL_CONNECTORS = new Set(['signals:sec-form-d'])
@@ -157,7 +158,8 @@ export function contactsFromEnrichments(rows: ContactEnrichment[], icpText: stri
         title,
         currency: verified.currency,
         verified,
-        linkedin: r.kind === 'contact' ? r.source_url || null : PROFILE_URL.test(r.source_url) ? r.source_url : null,
+        linkedin: r.kind === 'contact' ? r.source_url || null : PROFILE_URL.test(r.source_url) ? r.source_url :
+          r.connector === 'sitecrawl' && verified.basis === 'first_party_page' ? profileFromListedLabel(r.label) : null,
         connector: r.connector ?? r.label ?? 'enrichment',
         ...(r.connector && HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}),
         ...(r.connector === 'search:people' && !companyTied(r.label) ? { nameOnly: true } : {}),

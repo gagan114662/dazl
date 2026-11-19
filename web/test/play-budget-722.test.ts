@@ -104,3 +104,22 @@ test('AC-4 an unpriced model under a play max_usd fails closed; a play without m
     assert.equal(reserved(open), null, 'no play budget: nothing charged to the play')
   } finally { open.close() }
 })
+
+test('follow-up distinguishes no lead association from an unresolved lead ID or malformed saved budget', async () => {
+  const raw = setup(JSON.stringify({ max_usd: 0.05 }), 0)
+  try {
+    const f = fake('claude-haiku-4-5')
+    const deps = { master, providers: f.providers }
+    const run = (candidate: typeof lead | Omit<typeof lead, 'lead_id'>) => llmFollowupText(raw, 'A', 0, candidate, 'Acme', null, deps)
+    assert.equal(await run({ ...lead, lead_id: 'missing-owned-lead' }), null)
+    for (const runBudget of ['[]', 'true', 'not-json', '']) {
+      raw.prepare("UPDATE scan_jobs SET run_budget = ? WHERE id = 'play'").run(runBudget)
+      assert.equal(await run(lead), null)
+    }
+    assert.equal(f.calls.n, 0)
+    assert.equal(reserved(raw), 0)
+    // Legacy calls without a lead binding still have the ordinary workspace spending guard.
+    assert.ok(await run({ company: lead.company, name: lead.name, signal: lead.signal, source_url: lead.source_url }))
+    assert.equal(f.calls.n, 1)
+  } finally { raw.close() }
+})

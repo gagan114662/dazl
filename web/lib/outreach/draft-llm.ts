@@ -80,14 +80,19 @@ function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps): {
 // writes its own total on that row while it runs. A lead with no play, or a play without max_usd (or a CSV import),
 // is unchanged: only the owner's day/month pool applies, as before. Qualification is not covered by this slice.
 export function chargePlayBudget(db: Database.Database, tenantId: string, leadId: string | null | undefined, model: string | undefined, promptBytes: number, maxOut: number): boolean {
-  if (!leadId) return true
+  if (leadId == null) return true
   let row: { id: string; run_budget: string | null; csv_domain: string | null } | undefined
   try {
     row = db.prepare('SELECT j.id, j.run_budget, j.csv_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as typeof row
   } catch { return false } // unreadable play: refuse the paid call rather than spend unbounded
-  if (!row || row.csv_domain || !row.run_budget) return true
+  if (!row) return false // an explicit lead association must resolve under this tenant
+  if (row.csv_domain || row.run_budget === null) return true
   let max: unknown
-  try { max = (JSON.parse(row.run_budget) as { max_usd?: unknown } | null)?.max_usd } catch { return false }
+  try {
+    const saved: unknown = JSON.parse(row.run_budget)
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return false
+    max = (saved as { max_usd?: unknown }).max_usd
+  } catch { return false }
   if (max === undefined || max === null) return true
   if (typeof max !== 'number' || !Number.isFinite(max) || max <= 0) return false
   let usd: number

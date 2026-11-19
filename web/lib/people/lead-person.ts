@@ -61,7 +61,7 @@ export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date
       const src = p.source ?? (p.linkedin && !linkedin ? p.linkedin : null)
       const source = src && SOURCE.test(src) ? src : null
       if (!linkedin && !source) continue // no link the user can check: not shown as the lead's person
-      return { name, title, linkedin, source: linkedin ? null : source, via: peopleSourceText(p), current: p.currency === 'verified_current' }
+      return { name, title, linkedin, source, via: peopleSourceText(p), current: p.currency === 'verified_current' }
     }
     return null
   } catch { return null }

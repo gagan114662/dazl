@@ -1,9 +1,11 @@
 import type Database from 'better-sqlite3'
 import { sequenceAnalytics } from './sequences.ts'
 import { evidenceStateOf } from './evidence-state.ts'
-import { currentnessHeld, leadWindowHeld } from './currentness.ts'
-import { requiredGateHeld } from '../scan/held-state.ts'
+import { currentnessHeld, leadWindowHeld, windowHeld } from './currentness.ts'
+import { requiredGateHeld, requiredGateHeldForJob } from '../scan/held-state.ts'
+import type { Db } from '../db/client.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
+import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
 
 // One row per search (a scan job is a campaign, as in the Outreach analytics): discovery -> qualification -> contact ->
@@ -34,10 +36,16 @@ export interface Campaign {
   next: { label: string; href: string | null }
 }
 
+// GET /api/campaigns?limit: 1-20, else the default 10. 20 = the Leads history's own size (lib/scan/store-db.ts listJobs), so the
+// history (#1136) gets the current status of every scan it lists; never more (each row reads its leads' holds).
+export function campaignsLimit(v: string | null): number {
+  const n = Number(v ?? '')
+  return v !== null && v.trim() !== '' && Number.isInteger(n) && n >= 1 ? Math.min(n, 20) : 10
+}
 export function listCampaigns(db: Database.Database, tenantId: string, limit = 10): Campaign[] {
   const jobs = db.prepare(`SELECT id, query, status, error, created_at, candidates FROM scan_jobs
     WHERE user_id = ? AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
-    ORDER BY created_at DESC LIMIT ?`).all(tenantId, limit) as { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null }[]
+    ORDER BY created_at DESC, insert_seq DESC LIMIT ?`).all(tenantId, limit) as { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null }[]
   return jobs.map(j => {
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
@@ -141,4 +149,59 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   if (research > 0) return { label: `${plural(research, 'research-only lead', 'research-only leads')}: checking ${research === 1 ? 'it' : 'them'} cannot make ${research === 1 ? 'it' : 'them'} ready. Change the search`, href: `/app/leads?q=${encodeURIComponent(c.query)}` }
   if (c.discovery.leads === 0) return { label: 'No leads from this search. Try a broader one', href: '/app/leads' }
   return { label: 'Nothing waiting on you', href: null }
+}
+
+// The Leads history's current split (#1136, HIST-BATCH; Hermes-PC finding 2 / XHawk High): for the scans the history lists, only what the
+// card's pill, label and next step need - discovery.leads and the qualification split listQual / currentRun read - in a bounded number
+// of queries whatever the scan or lead count (the jobs, their leads, which scans have emails, and 3 gate reads per scan: at most 63 for the 20 scans the history lists), never the full per-lead /
+// per-message campaign pipeline above. Same verdicts as listCampaigns (pinned by test/leads-history-1136.test.ts):
+//  - needsReview / research: reviewIsActionable over window_held (windowHeld, pure) and gate_held (requiredGateHeldForJob, the campaign page's batch reader);
+//  - heldResearch: a source-checked / confirmed lead held by its window, an uncheckable cause or a failed required check. Each of those
+//    already makes currentnessHeld true, so this needs no per-lead timing-proof read; `held` (any timing hold) is not read by the card
+//    and is not computed here (0).
+// next: the Campaigns card's own nextAction where it needs no outreach read (see below); otherwise "Open its campaign". A scan id that is not this tenant's own non-test search is left out (its card keeps its record).
+export type HistoryCampaign = Pick<Campaign, 'id' | 'query' | 'status' | 'error' | 'created_at' | 'qualification' | 'next'> & { discovery: { leads: number } }
+export async function historyCampaigns(db: Database.Database, adb: Db, tenantId: string, jobIds: string[], now: Date = new Date()): Promise<HistoryCampaign[]> {
+  const ids = [...new Set(jobIds)].slice(0, 20)
+  if (!ids.length) return []
+  const qs = ids.map(() => '?').join(',')
+  const jobs = db.prepare(`SELECT id, query, status, error, created_at FROM scan_jobs
+    WHERE user_id = ? AND id IN (${qs}) AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
+    ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number }[]
+  if (!jobs.length) return []
+  type Row = { id: string; scan_job_id: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null }
+  const jq = jobs.map(() => '?').join(',')
+  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, l.event_date, j.query, j.icp
+    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${jq})`).all(tenantId, ...jobs.map(j => j.id)) as Row[]
+  // the required-check verdict per listed scan (requiredGateHeldForJob: the campaign page's own reader, 3 reads per scan whatever its lead count)
+  const gate = new Set<string>()
+  for (const id of new Set(rows.map(r => r.scan_job_id))) for (const l of await requiredGateHeldForJob(adb, tenantId, id)) gate.add(l)
+  // which listed scans have any email at all (one grouped read; test sends included, so "none" is certain)
+  const mailed = new Set((db.prepare(`SELECT DISTINCT l.scan_job_id AS id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id IN (${jq})`).all(tenantId, tenantId, ...jobs.map(j => j.id)) as { id: string }[]).map(r => r.id))
+  const byJob = new Map<string, Row[]>()
+  for (const r of rows) { const a = byJob.get(r.scan_job_id) ?? []; a.push(r); byJob.set(r.scan_job_id, a) }
+  return jobs.map(j => {
+    const all = byJob.get(j.id) ?? []
+    const live = all.filter(r => r.quarantined_at === null)
+    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = 0, unverified = 0, heldResearch = 0, heldResearchSourceChecked = 0
+    for (const r of live) {
+      const st = evidenceStateOf(r), win = windowHeld(r, now), gh = gate.has(r.id)
+      if (st === 'machine') sourceChecked++
+      else if (st === 'human') confirmedByYou++
+      else if (r.review_reason) { if (reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh })) needsReview++; else research++ }
+      else if (gh) research++
+      else unverified++
+      if (st !== 'unverified' && (win || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gh)) { heldResearch++; if (st === 'machine') heldResearchSourceChecked++ }
+    }
+    const qualification = { sourceChecked, confirmedByYou, needsReview, research, unverified, held: 0, heldResearch, heldResearchSourceChecked, rejected: all.length - live.length }
+    const base = { id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at, discovery: { leads: all.length }, qualification }
+    // The full card's next action exactly, wherever it needs no outreach read: a review a check can resolve comes first in nextAction; and a run
+    // where nothing passed (after listQual) and no email was ever written has no drafts, approvals, replies, draftable or timing-reviewable
+    // leads, so nextAction over zero outreach is the card's own step. Otherwise the campaign page holds the pipeline's next action.
+    const q = listQual(qualification)
+    const exact = needsReview > 0 || (q.sourceChecked + q.confirmedByYou === 0 && !mailed.has(j.id))
+    const next = exact ? nextAction({ ...base, discovery: { candidates: null, leads: all.length }, contact: { withContact: 0, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }, 0)
+      : { label: 'Open its campaign', href: `/app/campaigns/${j.id}` }
+    return { ...base, next }
+  })
 }

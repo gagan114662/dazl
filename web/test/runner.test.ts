@@ -7,8 +7,9 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { anthropicProvider, openaiProvider, ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import { cancelJob, migrateScan, createJob, createQueryJob, getJob, listLeads, reapStaleJobs } from '../lib/scan/store.ts'
-import { migrateConnectors } from '../lib/connectors/store.ts'
-import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
+import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
+import { migrateAdvanced, acceptConsent, type WorkerFetch } from '../lib/advanced/index.ts'
+import { connectorId } from '../lib/advanced/config.ts'
 import { migrateCompetitors, setCompetitors, COMPLAINT_CONNECTOR } from '../lib/signals/competitor-reddit.ts'
 import { buildPrompt, claimKeyedJob, parseLeads, runJob } from '../lib/scan/runner.ts'
 
@@ -57,13 +58,18 @@ test('competitor complaints run even when the scan selected no sources, and the 
   const db = setup()
   migrateConnectors(db); migrateAdvanced(db); migrateCompetitors(db)
   acceptConsent(db, 'A', 'advanced')
+  const redditSession = 'fixture-reddit-session'
+  saveCredential(db, 'A', connectorId('reddit'), redditSession, master)
   await setCompetitors(sqliteDb(db), 'A', ['Salesforce'])
   const savedEnv = { ...process.env }
   Object.assign(process.env, { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' })
   const complaintUrl = 'https://www.reddit.com/r/saas/comments/xyz/salesforce_alternatives'
   // No `sources` on the job: the sources block is skipped entirely; complaints must still run.
   const id = createQueryJob(db, 'A', { query: 'teams unhappy with their crm', icp: JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }) } as never)
-  const worker = async () => ({ items: [{ url: complaintUrl, title: 'Salesforce is terrible, alternatives?', quote: QUOTE, date: new Date().toISOString().slice(0, 10), login_walled: false }], unsupported: null })
+  const worker: WorkerFetch = async ({ session }) => {
+    assert.equal(session, redditSession)
+    return { items: [{ url: complaintUrl, title: 'Salesforce is terrible, alternatives?', quote: QUOTE, date: new Date().toISOString().slice(0, 10), login_walled: false }], unsupported: null }
+  }
   const cLead = () => lead(complaintUrl, { signal: "complained about Salesforce" })
   const prov = fake(ok([cLead()], [complaintUrl]))
   prov.anthropic.complete = async (_k,prompt) => prompt.startsWith('You check one claim') ? 'supports' : "Here: " + JSON.stringify([cLead()])

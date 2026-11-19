@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { randomBytes } from 'node:crypto'
 import { audit, getEnabledCredential } from '../connectors/store.ts'
-import { hasConsent, httpWorker, type WorkerFetch } from '../advanced/index.ts'
+import { hasConsent, hasWorkerSession, httpWorker, type WorkerFetch, type WorkerItem } from '../advanced/index.ts'
 import { PLATFORM_SUPPORT } from '../advanced/config.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { readKey, keyStatus } from '../llm/key-store.ts'
@@ -152,7 +152,7 @@ export async function gradeBuyerIntent(
 
 // Replies share each platform's hourly budget with every other advanced feature.
 function platformCallsLastHour(db: Database.Database, tenantId: string, p: ReplyPlatform): number {
-  const r = db.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND (connector = ? OR connector LIKE ?) AND created_at > CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, `adv:${p}`, `adv:${p}-%`) as { n: number }
+  const r = db.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE tenant_id = ? AND (connector = ? OR connector LIKE ?) AND status NOT IN ('no_session', 'credential_unreadable') AND created_at > CAST(strftime('%s','now') AS INTEGER) - 3600").get(tenantId, `adv:${p}`, `adv:${p}-%`) as { n: number }
   return r.n
 }
 
@@ -164,7 +164,7 @@ export interface RefreshResult {
   // honest backlog still keyword-only after the per-refresh cap - one click may not grade all.
   graded: number
   ungraded_remaining: number
-  platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'rate_limited' | 'worker_error' | 'unsupported'>>
+  platforms: Partial<Record<ReplyPlatform, 'ok' | 'disabled' | 'no_consent' | 'no_session' | 'credential_unreadable' | 'rate_limited' | 'worker_error' | 'unsupported'>>
 }
 
 export async function refreshReplies(db: Database.Database, tenantId: string, deps: { worker?: WorkerFetch; fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number } = {}): Promise<RefreshResult> {
@@ -195,8 +195,19 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
     if (!hasConsent(db, tenantId, scopeFor(p))) { out.platforms[p] = 'no_consent'; continue }
     const budget = maxCallsPerHour(p, env) - platformCallsLastHour(db, tenantId, p)
     if (budget <= 0) { out.platforms[p] = 'rate_limited'; continue }
-    const session = getEnabledCredential(db, tenantId, connectorId(p), deps.master) || ''
     const connector = `adv:${p}-replies`
+    let session: string | null
+    try { session = getEnabledCredential(db, tenantId, connectorId(p), deps.master) }
+    catch {
+      audit(db, { tenantId, connector, lookup: 'refresh', status: 'credential_unreadable', results: 0 })
+      out.platforms[p] = 'credential_unreadable'
+      continue
+    }
+    if (!hasWorkerSession(session)) {
+      audit(db, { tenantId, connector, lookup: 'refresh', status: 'no_session', results: 0 })
+      out.platforms[p] = 'no_session'
+      continue
+    }
     let anyError = false
     let anyUnsupported = false
     for (const q of queries.slice(0, budget)) {
@@ -210,7 +221,7 @@ export async function refreshReplies(db: Database.Database, tenantId: string, de
       const fresh = items.filter(i => i.date && new Date(i.date).getTime() >= cutoff && looksLikeQuestion(i.title))
       let qualified = fresh.filter(i => isRelevantToQuery(q, i.title, i.quote))
       out.filtered += fresh.length - qualified.length
-      const graded: ({ title: string; quote: string } & typeof qualified[number] & { buyer_intent: string | null })[] = []
+      const graded: (WorkerItem & { buyer_intent: string | null })[] = []
       for (const it of qualified) {
         let buyer_intent: string | null = null
         if (gradesLeft > 0) {

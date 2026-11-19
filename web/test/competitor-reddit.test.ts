@@ -3,9 +3,10 @@ import { sqliteDb } from '../lib/db/client.ts'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateCompetitors, setCompetitors, listCompetitors, readCompetitorsStrict, collectCompetitorComplaints, badgeComplaintLeads, complaintQuery, COMPLAINT_CONNECTOR, COMPLAINT_CONNECTOR_X } from '../lib/signals/competitor-reddit.ts'
-import { migrateConnectors } from '../lib/connectors/store.ts'
+import { migrateConnectors, saveCredential } from '../lib/connectors/store.ts'
 import { migrateAdvanced, acceptConsent } from '../lib/advanced/index.ts'
 
+const master = Buffer.alloc(32, 1)
 const ENV_ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'https://w.example', ADVANCED_WORKER_TOKEN: 't' } as Record<string,string>
 
 function db() {
@@ -45,6 +46,7 @@ test('collect: fresh posts only, tagged with the competitor, per-competitor audi
   const d = db()
   await setCompetitors(sqliteDb(d), 't1', ['Acme'])
   acceptConsent(d, 't1', 'advanced')
+  for (const platform of ['reddit', 'x']) saveCredential(d, 't1', `adv:${platform}`, `${platform}-own-session`, master)
   const recent = new Date(Date.now() - 5 * 86400_000).toISOString().slice(0, 10)
   const old = new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 10)
   const worker = async (req: { platform: string }) => ({ unsupported: null, items: req.platform === 'reddit' ? [
@@ -53,7 +55,7 @@ test('collect: fresh posts only, tagged with the competitor, per-competitor audi
   ] : [
     { url: 'https://x.com/kai/status/11', title: 'kai on X', quote: 'Acme doubled our bill overnight, switching away soon.', date: recent, login_walled: false },
   ] })
-  const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker, env: ENV_ON })
+  const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker, master, env: ENV_ON })
   assert.equal(out.length, 2)
   assert.equal(out[0].complaint_of, 'Acme')
   assert.equal(out[0].source, COMPLAINT_CONNECTOR)
@@ -81,6 +83,7 @@ test('collect: the post author the worker captured rides on the complaint item; 
   const d = db()
   await setCompetitors(sqliteDb(d), 't1', ['Acme'])
   acceptConsent(d, 't1', 'advanced')
+  for (const platform of ['reddit', 'x']) saveCredential(d, 't1', `adv:${platform}`, `${platform}-own-session`, master)
   const recent = new Date(Date.now() - 5 * 86400_000).toISOString().slice(0, 10)
   const worker = async (req: { platform: string }) => ({ unsupported: null, items: req.platform === 'reddit' ? [
     { url: 'https://www.reddit.com/r/saas/c', title: 'Acme pricing is wild', quote: 'Acme doubled our bill overnight, need an alternative.', date: recent, login_walled: false, author: { name: 'maya-c', headline: null, company: null, url: null } },
@@ -88,7 +91,7 @@ test('collect: the post author the worker captured rides on the complaint item; 
   ] : [
     { url: 'https://x.com/kai/status/12', title: 'kai on X', quote: 'Acme keeps raising prices and support never answers.', date: recent, login_walled: false, author: { name: 'Kai Lund', headline: 'Founder building payroll tools', company: null, url: 'https://tallyline.example' } },
   ] })
-  const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker, env: ENV_ON })
+  const out = await collectCompetitorComplaints(d, 't1', 'j1', { worker, master, env: ENV_ON })
   assert.equal(out.length, 3)
   assert.deepEqual(out[0].author, { name: 'maya-c', headline: null, company: null, url: null })
   assert.equal(out[1].author, undefined, 'no author on the source: none on the item (never inferred)')
@@ -101,4 +104,24 @@ test('readCompetitorsStrict: a genuinely empty list is [], an UNREADABLE one is 
   assert.deepEqual(await readCompetitorsStrict(sqliteDb(d), 't1'), [], 'table exists, no rows: genuinely empty')
   d.exec('ALTER TABLE tenant_competitors RENAME TO tenant_competitors_gone')
   assert.equal(await readCompetitorsStrict(sqliteDb(d), 't1'), null, 'unreadable exclusion state reads as unknown, not empty')
+})
+
+
+test('#1094 missing sessions leave the competitor lookup budget available after connecting', async () => {
+  const d = db()
+  const tenant = 't1'
+  await setCompetitors(sqliteDb(d), tenant, ['Acme'])
+  acceptConsent(d, tenant, 'advanced')
+  const platforms: string[] = []
+  const worker = async ({ platform }: { platform: string }) => {
+    platforms.push(platform)
+    return { items: [], unsupported: null }
+  }
+  const env = { ...ENV_ON, ADVANCED_MAX_PER_HOUR: '1' }
+  for (let i = 0; i < 3; i++) await collectCompetitorComplaints(d, tenant, 'j1', { worker, master, env })
+  assert.deepEqual(platforms, [])
+  assert.equal((d.prepare("SELECT COUNT(*) AS n FROM connector_audit WHERE status = 'no_session'").get() as { n: number }).n, 6)
+  saveCredential(d, tenant, 'adv:reddit', 'reddit-own-session', master)
+  await collectCompetitorComplaints(d, tenant, 'j2', { worker, master, env })
+  assert.deepEqual(platforms, ['reddit'])
 })

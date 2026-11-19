@@ -142,7 +142,7 @@ function seed() {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec('CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)')
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Mercury','https://job-boards.greenhouse.io/mercury/jobs/5555',NULL,90,80,NULL,'Mercury is hiring a Sales Development Representative','Mercury is hiring a Sales Development Representative')").run()
-  db.exec('CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, icp TEXT)')
+  db.exec("CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT 't1', icp TEXT)")
   db.prepare('INSERT INTO scan_jobs (id, icp) VALUES (?, ?)').run('j1', JSON.stringify({ who: ['Head of Sales'] }))
   return db
 }
@@ -237,7 +237,7 @@ test('1289-F2 crawlJob: the marked company passes; the unmarked "Group" company 
   const add = db.prepare("INSERT INTO leads VALUES (?,'j1',?,?,NULL,90,80,NULL,?,?)")
   add.run('l1', 'Harbor Dental', 'https://job-boards.greenhouse.io/harbordental/jobs/1', 'Harbor Dental is hiring a Sales Development Representative', 'Harbor Dental is hiring a Sales Development Representative')
   add.run('l2', 'Harbor Dental Group', 'https://job-boards.greenhouse.io/harbordentalgroup/jobs/2', 'Harbor Dental Group is hiring a Sales Development Representative', 'Harbor Dental Group is hiring a Sales Development Representative')
-  db.exec('CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, icp TEXT)')
+  db.exec("CREATE TABLE IF NOT EXISTS scan_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL DEFAULT 't1', icp TEXT)")
   db.prepare('INSERT INTO scan_jobs (id, icp) VALUES (?, ?)').run('j1', JSON.stringify({ who: ['Head of Sales'] }))
   const { db: jdb, job } = scan()
   const findSites = freeSiteFinderFor(jdb, job, { env: {}, freeSiteClock: fast, freeSiteFetch: publicData({ wikidata: { 'Harbor Dental': [{ id: 'Q7', label: 'Harbor Dental', site: 'https://harbordental.com/' }] } }) })!

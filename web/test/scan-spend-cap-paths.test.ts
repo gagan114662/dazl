@@ -168,7 +168,10 @@ test('inventory: each gated module reserves its kind before its request, and daz
   // the runner opens the scan's context around the whole attempt, and autopilot (outreach, own guards) runs outside it
   const runner = SOURCES.find(s => s.rel === 'lib/scan/runner.ts')!.text
   // #846/#847: the same context carries the owner's day/month caps unless the runner's own PooledGuard reserves them
-  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  assert.match(runner, /const claudeOnly = qaClaudeOnlyJob\(job\.run_budget\)/, 'restricted mode is derived from the saved job policy')
+  assert.match(runner, /const requested = job\.csv_domain \? null : parseRunBudget\(job\.run_budget\)\?\.max_usd \?\? null/, 'ordinary requested ceilings and CSV behavior are unchanged')
+  assert.match(runner, /const requestMaxUsd = claudeOnly \? Math\.min\(requested \?\? QA_SPEND_MAX_USD, QA_SPEND_MAX_USD\) : requested/, 'strict adds only a lower ceiling; ordinary requests keep their existing limit')
+  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, claudeOnly, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
   // XHawk on #1154: CSV jobs of a named account take the same PooledGuard (its unsettled-accounting marker stops them too)
   assert.match(runner, /const pooledByRunner = ownerLimits\(job\.user_id\) !== null/)
   assert.match(runner, /const owner = ownerLimits\(job\.user_id\)\n/)

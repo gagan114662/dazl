@@ -5,7 +5,8 @@ import { cleanText } from '../validate.ts'
 import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
-import { scanModelPrice } from './spend-cap.ts'
+import { isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
+import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { ownerLimits, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
@@ -36,13 +37,19 @@ export async function keyedModel(db: Db, tenantId: string): Promise<string | nul
 }
 export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: string; hasOwnKey: boolean; /** why this keyless account would be refused a trial run now (the estimate route reads it; POST /api/scan refuses at confirm time on its own) */ trialRefusal?: string | null; trialUsed?: number | null; /** what is left of this trial account's dollar allowance (display only) */ trialAllowance?: { left_usd: number; total_usd: number } | null; enrichmentVendors: string[]; /** the model the run's own key would use (provider.configuredModel()), when known */ model?: string | null }): Promise<EstimateResult> {
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
-  const first5 = b.mode === 'first5'
-  if (b.mode !== undefined && b.mode !== 'first5') return { ok: false, status: 400, error: 'unknown_mode' }
+  const first5 = isFirst5RequestMode(b.mode)
+  if (b.mode !== undefined && !first5) return { ok: false, status: 400, error: 'unknown_mode' }
   const supplied = 'budget' in b
   if (first5 && supplied) return { ok: false, status: 400, error: 'invalid_budget', detail: 'mode first5 takes no budget' }
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(supplied ? b.budget : undefined, supplied)
   if (!nb.ok) return { ok: false, status: 400, error: 'invalid_budget', detail: nb.error }
+  const qaClaudeOnly = isClaudeOnlyRequestMode(b.mode)
+  if (qaClaudeOnly && !strictLocalTopologySupported(ctx.db.kind)) return { ok: false, status: 503, error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }
+  const qaCap = qaClaudeOnly ? scanCapConfig() : null
+  if (qaCap && !qaCap.ok) return { ok: false, status: 503, error: 'spend_config_invalid', detail: 'The QA scan cap cannot be verified. Nothing was started.' }
+  const budget = qaClaudeOnly ? { ...JSON.parse(qaClaudeOnlyBudget(nb.value)), max_usd: Math.min(nb.budget?.max_usd ?? Infinity, qaCap?.capUsd ?? 0) } : nb.budget
   const query = cleanText(b.query, MAX_QUERY)
+  if (qaClaudeOnly && query.length < 3) return { ok: false, status: 400, error: 'invalid_mode', detail: 'Claude-only first play requires a search query.' }
   // #917: the same refusal POST /api/scan applies, so a profile is never priced and confirmed only to be refused at run time.
   const lost = b.icp && typeof b.icp === 'object' ? icpLoss(b.icp) : []
   if (lost.length) return { ok: false, status: 400, error: 'profile_lossy', message: 'Part of this profile would be cut or ignored. Fix the listed fields - nothing was dropped silently.', loss: lost }
@@ -58,9 +65,9 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   // An account the operator named has its own day/month pool guard (and the other window at the deployment default, #847).
   // Every other account's default caps (#846/#847) are reserved at the transport and are not shown here yet.
   const named = ownerLimits(ctx.tenantId)
-  const limited = !ctx.hasOwnKey || nb.budget?.max_usd != null || named !== null
+  const limited = !ctx.hasOwnKey || budget?.max_usd != null || named !== null
   const estimate = estimateRun({
-    budget: nb.budget, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
+    budget, qaClaudeOnly, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
     model: ctx.hasOwnKey ? own ?? undefined : anthropicModel, modelUnknown: ctx.hasOwnKey && own === null, limited, pricedAlternative: anthropicModel, priceModel: scanModelPrice,
     hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
     // #1037: the people step the run itself will take (runner.ts: off when people search cannot run, else the first-play cap).

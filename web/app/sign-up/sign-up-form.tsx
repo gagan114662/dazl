@@ -85,10 +85,13 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
           <input name="business_name" type="text" placeholder="Company (optional)" autoComplete="organization"
             className="field" />
           </label>
-          <label className="flex flex-col gap-1 text-sm text-[#333]">Password
-          <input name="password" type="password" required placeholder="Password (10+ characters, letters and numbers)" minLength={10} autoComplete="new-password"
-            className="field" />
-          </label>
+          <div className="flex flex-col gap-1">
+            <label className="flex flex-col gap-1 text-sm text-[#333]">Password
+              <input name="password" type="password" required minLength={10} autoComplete="new-password"
+                aria-describedby="signup-password-rules" className="field" />
+            </label>
+            <p id="signup-password-rules" className="text-xs text-[#555]">Use at least 10 characters, including a letter and a number.</p>
+          </div>
           <button type="submit" disabled={loading}
             className="flex items-center justify-center gap-2 bg-white text-[#111] border border-black/25 hover:bg-gray-50 px-6 py-3 rounded font-medium transition text-sm mt-1 disabled:opacity-50">
             {loading ? 'Creating account…' : 'Create your account'}

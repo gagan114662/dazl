@@ -25,7 +25,7 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   deploymentId: process.env.NEXT_DEPLOYMENT_ID || buildCommit(),
   // The same ID for the chunk-load recovery guard, which is scoped to the build (lib/chunk-recovery.ts).
-  env: { NEXT_PUBLIC_DAZL_BUILD: process.env.NEXT_DEPLOYMENT_ID || buildCommit() || '' },
+  env: { NEXT_PUBLIC_DAZL_BUILD: process.env.NEXT_DEPLOYMENT_ID || buildCommit() || '', NEXT_PUBLIC_DAZL_STAGING: process.env.DAZL_ENV === 'staging' ? '1' : '' },
   cacheComponents: true,
   partialPrefetching: true,
   async headers() {

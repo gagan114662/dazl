@@ -18,14 +18,6 @@ import { fetchX } from './lib/x.js'
 const PORT = Number(process.env.PORT || 8787)
 const TOKEN = process.env.ADVANCED_WORKER_TOKEN || ''
 const HANDLERS = { reddit: fetchReddit, x: fetchX }
-// Operator-level throwaway sessions, used only when the requesting tenant did not
-// supply its own session cookie. Never logged; /health exposes booleans only.
-const OPERATOR_SESSIONS = {
-  x: process.env.X_SESSION_COOKIE || '',
-  reddit: process.env.REDDIT_SESSION_COOKIE || '',
-  linkedin: process.env.LINKEDIN_SESSION_COOKIE || '',
-}
-
 const VERSION = '0.3.0'
 
 // Maps a fetcher's thrown error to the app's typed-failure outcomes
@@ -52,8 +44,7 @@ export function createWorkerServer(handlers = HANDLERS, token = TOKEN) {
   return http.createServer(async (req, res) => {
     try {
       if (req.method === 'GET' && req.url === '/health') {
-        const operator_sessions = Object.fromEntries(Object.entries(OPERATOR_SESSIONS).map(([k, v]) => [k, Boolean(v)]))
-        return send(res, 200, { ok: true, platforms: supported, operator_sessions, version: VERSION })
+        return send(res, 200, { ok: true, platforms: supported, version: VERSION })
       }
       if (req.method !== 'POST' || req.url !== '/fetch') return send(res, 404, { error: 'not_found' })
       if (!tokenOk(req.headers.authorization)) return send(res, 401, { error: 'unauthorized' })
@@ -67,10 +58,7 @@ export function createWorkerServer(handlers = HANDLERS, token = TOKEN) {
       try { body = JSON.parse(raw) } catch { return send(res, 400, { error: 'bad_json' }) }
       const { platform, query, session } = body || {}
       if (typeof query !== 'string' || query.trim().length < 2) return send(res, 400, { error: 'bad_query' })
-      // Tenant session wins; otherwise fall back to the operator throwaway session.
-      // Only 400 when neither exists - otherwise every sessionless tenant would error.
-      const useSession = (typeof session === 'string' && session.length >= 10) ? session : (OPERATOR_SESSIONS[platform] || '')
-      if (!useSession) return send(res, 400, { error: 'no_session' })
+      if (typeof session !== 'string' || session.trim().length < 10) return send(res, 400, { error: 'no_session', outcome: 'no_session' })
 
       const handler = handlers[platform]
       // Unknown or not-yet-built platforms are an explicit 'unsupported' outcome: the app audits
@@ -79,7 +67,7 @@ export function createWorkerServer(handlers = HANDLERS, token = TOKEN) {
 
       let items
       try {
-        items = await handler({ query: query.slice(0, 300), session: useSession })
+        items = await handler({ query: query.slice(0, 300), session })
       } catch (e) {
         // A platform failing must never look like a zero-result search: answer the typed failure.
         const { code, outcome } = classifyFetchError(e instanceof Error ? e.message : 'error')

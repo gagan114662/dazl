@@ -31,10 +31,9 @@ test('gates: no consent, flag off, then success, with audit and per-tenant isola
   const run = (t: string, env = ON, p: 'reddit' | 'linkedin' = 'reddit') => collectAdvanced(db, t, 'j1', [p], 'q', { worker, master, env })
   assert.equal((await run('A')).length, 0)
   acceptConsent(db, 'A', 'advanced'); assert.equal(hasConsent(db, 'A', 'advanced'), true)
-  // No tenant session: the worker is still called with '' - it falls back to the
-  // operator throwaway session from its env.
-  assert.equal((await run('A')).length, 1)
-  assert.deepEqual(seen, [{ platform: 'reddit', query: 'q', session: '' }])
+  // Missing credentials never spend a call, including repeated scans before connecting.
+  for (let i = 0; i < 12; i++) assert.equal((await run('A')).length, 0)
+  assert.deepEqual(seen, [])
   saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-123', master)
   assert.equal((await run('A', {})).length, 0) // flag off
   assert.equal((await run('B')).length, 0) // other tenant never consented: gate still stops the call
@@ -44,7 +43,7 @@ test('gates: no consent, flag off, then success, with audit and per-tenant isola
   assert.equal((await run('A', ON, 'linkedin')).length, 0) // linkedin flag off
   assert.equal((await run('A', { ...ON, ADVANCED_LINKEDIN: '1' }, 'linkedin')).length, 1)
   const st = (recentAudit(db, 'A', 50) as { status: string }[]).map(a => a.status)
-  assert.ok(st.includes('no_consent') && st.includes('disabled') && st.includes('ok'))
+  assert.ok(st.includes('no_consent') && st.includes('no_session') && st.includes('disabled') && st.includes('ok'))
 })
 
 test('rate limit: per user per hour, kill switch stops calls', async () => {
@@ -88,6 +87,8 @@ test('xSearchQuery: intent words first, stopwords dropped, short and deduped', a
 test('x gets the keyword query and audit shows it; reddit keeps the raw query', async () => {
   const { xSearchQuery } = await import('../lib/advanced/index.ts')
   const db = setup(); acceptConsent(db, 'A', 'advanced')
+  saveCredential(db, 'A', 'adv:x', 'x-session-of-tenant-A', master)
+  saveCredential(db, 'A', 'adv:reddit', 'reddit-session-of-tenant-A', master)
   const seen: { platform: string; query: string }[] = []
   const worker: WorkerFetch = async r => { seen.push(r); return { items: [item], unsupported: null } }
   const raw = 'founders of recently funded B2B startups who are hiring their first sales rep'

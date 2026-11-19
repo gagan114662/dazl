@@ -268,3 +268,25 @@ bothEngines('scan spend cap: a saved run budget refusal is over_cap, and the out
   assert.equal(o.label, 'Stopped by its spending cap - not an empty search')
   assert.doesNotMatch(`${o.detail} ${o.next?.text}`, /fixed|larger budget|narrower/i)
 })
+
+
+bothEngines('Claude-only QA transport: other vendors cannot reserve even at zero; normal tenant unchanged', async ({ db }) => {
+  await job(db, 'qa-job', A)
+  await job(db, 'ordinary-job', B)
+  const kindList = ['llm.openai', 'tinyfish.search', 'tinyfish.fetch', 'render', 'apollo.org', 'pdl.people'] as const
+  const qa = ctx(db, 'qa-job', A, { claudeOnly: true, requestMaxUsd: 0.25 })
+  await runWithScanSpend(qa, async () => {
+    for (const kind of kindList) await assert.rejects(reserveScanSpend(kind, () => 0), refusedWith('qa_provider_disabled'))
+    const hold = await reserveScanSpend('llm.anthropic', () => 0.2)
+    assert.ok(hold)
+    await assert.rejects(reserveScanSpend('llm.anthropic', () => 0.06), refusedWith('over_cap'))
+    await hold.settle(0.2)
+  })
+  const calls = await scanSpendCalls(db, 'qa-job', A)
+  assert.equal(calls.filter(c => c.status === 'settled').length, 1)
+  assert.equal(calls.filter(c => c.reason === 'qa_provider_disabled').length, kindList.length)
+  assert.ok(near((await scanSpendRow(db, 'qa-job', A))!.spend_cap_reserved_usd, 0.2))
+  const normal = await runWithScanSpend(ctx(db, 'ordinary-job', B), () => reserveScanSpend('tinyfish.search', () => 0.01))
+  assert.ok(normal)
+  await normal.settle(0.01)
+})

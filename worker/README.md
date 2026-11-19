@@ -2,11 +2,8 @@
 
 Runs the session-cookie platforms (X and Reddit today) for dazl scans. The dazl app
 calls this worker over HTTP with one tenant's own session cookie per request; the
-worker holds no database, no tenant id and no persisted tenant credentials. It does
-hold its own configured secrets: the ADVANCED_WORKER_TOKEN bearer the app
-authenticates with, and any operator throwaway session cookies
-(X_SESSION_COOKIE, REDDIT_SESSION_COOKIE, LINKEDIN_SESSION_COOKIE) that are used
-only when a request carries no tenant session (see Operator sessions below).
+worker holds no database, tenant IDs, or persisted tenant credentials. The
+ADVANCED_WORKER_TOKEN bearer authenticates requests from the app.
 
 ## Account-ban and platform-terms risk (read before enabling)
 
@@ -104,16 +101,10 @@ dazl.ai server side (the Next.js app env), so the app gates open and calls the w
 `npm test` - parser contracts (item shape matches what the dazl app validates) and
 the HTTP auth/validation surface. No live platform calls in tests.
 
-## Operator sessions (env)
+## Tenant sessions
 
-If the request carries no tenant session, the worker falls back to these env vars:
-
-- `X_SESSION_COOKIE` - `auth_token=...; ct0=...` for a throwaway X account
-- `REDDIT_SESSION_COOKIE` - reddit_session cookie value
-- `LINKEDIN_SESSION_COOKIE` - li_at cookie value (reserved; no LinkedIn handler yet)
-
-`/health` reports `operator_sessions` as booleans only. Values are never logged.
-With neither a tenant session nor an env session, /fetch answers 400 `no_session`.
+Requests without a usable tenant session return HTTP 400 with `outcome: "no_session"`.
+The app records the refusal and can still use public sources that require no session.
 
 ## X fetcher rotation knobs
 

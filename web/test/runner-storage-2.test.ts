@@ -96,7 +96,7 @@ test('advanced connectors: the same gates, sessions, budget and audit rows from 
       // consent and sessions as the settings routes store them (made on a scratch SQLite handle, copied in)
       const scratch = new Database(':memory:'); migrateAllSqlite(scratch)
       acceptConsent(scratch, A, 'advanced'); acceptConsent(scratch, B, 'advanced')
-      saveCredential(scratch, A, 'adv:reddit', 'reddit-of-A', master); saveCredential(scratch, B, 'adv:reddit', 'reddit-of-B', master); saveCredential(scratch, B, 'adv:x', 'x-of-B', master)
+      saveCredential(scratch, A, 'adv:reddit', 'reddit-of-A', master); saveCredential(scratch, B, 'adv:reddit', 'reddit-of-B', master); saveCredential(scratch, A, 'adv:x', 'x-session-of-A', master); saveCredential(scratch, B, 'adv:x', 'x-session-of-B', master)
       for (const r of scratch.prepare('SELECT * FROM advanced_consent').all() as Record<string, string | number>[]) await st.db.run('INSERT INTO advanced_consent (tenant_id, scope, version, accepted_at) VALUES (?, ?, ?, ?)', [r.tenant_id, r.scope, r.version, r.accepted_at])
       for (const r of scratch.prepare('SELECT * FROM tenant_connectors').all() as Record<string, string | number>[]) await st.db.run('INSERT INTO tenant_connectors (tenant_id, connector, ciphertext, last4, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?)', [r.tenant_id, r.connector, r.ciphertext, r.last4, r.enabled, r.created_at])
       scratch.close()

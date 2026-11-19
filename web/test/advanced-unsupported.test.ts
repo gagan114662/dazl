@@ -20,6 +20,7 @@ test('unsupported platform: audited unsupported without consent, worker or budge
   let calls = 0
   const worker: WorkerFetch = async () => { calls++; return { items: [], unsupported: null } }
   acceptConsent(db, 'A', 'advanced')
+  saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-1234', master)
   saveCredential(db, 'A', 'adv:facebook', 'session-of-tenant-A-1234', master)
   const out = await collectAdvanced(db, 'A', 'j1', ['facebook', 'xiaohongshu', 'reddit'], 'q', { worker, master, env: ON })
   assert.deepEqual(out, [])
@@ -32,6 +33,7 @@ test('unsupported platform: audited unsupported without consent, worker or budge
 
 test('version skew: a worker refusal is audited unsupported, never empty or worker_error', async () => {
   const db = setup(); acceptConsent(db, 'A', 'advanced')
+  saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-1234', master)
   const worker: WorkerFetch = async () => ({ items: [], unsupported: 'not implemented by the worker' })
   const out = await collectAdvanced(db, 'A', 'j1', ['reddit'], 'q', { worker, master, env: ON })
   assert.deepEqual(out, [])
@@ -70,6 +72,7 @@ test('over the wire: the real worker reports unsupported for facebook, with no i
 test('failed platform calls: auth, throttling and schema failures are audited distinctly, never empty', async () => {
   for (const failed of ['auth_failed', 'throttled', 'schema_error', 'upstream_error'] as const) {
     const db = setup(); acceptConsent(db, 'A', 'advanced')
+    saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-1234', master)
     const worker: WorkerFetch = async () => ({ failed })
     const out = await collectAdvanced(db, 'A', 'j1', ['reddit'], 'q', { worker, master, env: ON })
     assert.deepEqual(out, [])
@@ -79,7 +82,7 @@ test('failed platform calls: auth, throttling and schema failures are audited di
 
 test('httpWorker: a non-200 worker reply keeps its known failure outcome; anything else is worker_error (null)', async () => {
   const reply = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
-  const call = (f: typeof fetch) => httpWorker({ ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }, f)({ platform: 'reddit', query: 'q', session: 's' })
+  const call = (f: typeof fetch) => httpWorker({ ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }, f)({ platform: 'reddit', query: 'q', session: 'session-of-tenant-A-1234' })
   assert.deepEqual(await call(reply(502, { error: 'fetch_failed', outcome: 'throttled' })), { failed: 'throttled' })
   assert.deepEqual(await call(reply(502, { error: 'fetch_failed', outcome: 'auth_failed' })), { failed: 'auth_failed' })
   assert.equal(await call(reply(502, { error: 'fetch_failed', outcome: 'empty' })), null)
@@ -91,7 +94,7 @@ test('httpWorker: a non-200 worker reply keeps its known failure outcome; anythi
 // carries an error field or has no item list is worker_error. Neither is ever audited as a zero-result search.
 test('httpWorker: a 200 worker reply with a failure outcome, an error field or no item list is never an empty search', async () => {
   const reply = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch
-  const call = (f: typeof fetch) => httpWorker({ ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }, f)({ platform: 'reddit', query: 'q', session: 's' })
+  const call = (f: typeof fetch) => httpWorker({ ADVANCED_WORKER_URL: 'http://w', ADVANCED_WORKER_TOKEN: 't' }, f)({ platform: 'reddit', query: 'q', session: 'session-of-tenant-A-1234' })
   assert.deepEqual(await call(reply(200, { items: [], outcome: 'auth_failed' })), { failed: 'auth_failed' })
   assert.deepEqual(await call(reply(200, { items: [], outcome: 'throttled' })), { failed: 'throttled' })
   assert.deepEqual(await call(reply(200, { error: 'fetch_failed', outcome: 'schema_error' })), { failed: 'schema_error' })
@@ -106,6 +109,7 @@ test('httpWorker: a 200 worker reply with a failure outcome, an error field or n
   // And the scan audits it by that reason.
   for (const [body, want] of [[{ items: [], outcome: 'auth_failed' }, 'auth_failed'], [{}, 'worker_error'], [{ items: [], error: 'boom' }, 'worker_error'], [{ items: [] }, 'empty']] as const) {
     const db = setup(); acceptConsent(db, 'A', 'advanced')
+    saveCredential(db, 'A', 'adv:reddit', 'session-of-tenant-A-1234', master)
     const out = await collectAdvanced(db, 'A', 'j1', ['reddit'], 'q', { worker: httpWorker(ON, reply(200, body)), master, env: ON })
     assert.deepEqual(out, [])
     assert.deepEqual(statuses(db, 'A'), [`adv:reddit:${want}`], JSON.stringify(body))
@@ -157,4 +161,19 @@ test('over the wire: a 200 login-wall or rate-limit answer from the platform is 
       assert.deepEqual(statuses(db, 'A'), [`adv:${platform}:${want}`], `${platform} ${JSON.stringify(body)}`)
     } finally { child.kill(); await new Promise(r => child.exitCode !== null || child.signalCode !== null ? r(null) : child.once('exit', r)) }
   }
+})
+
+
+test('#1094: the worker transport never forwards a tenant without a usable session', async () => {
+  let requests = 0
+  const worker = httpWorker(ON, async () => {
+    requests++
+    return Response.json({ items: [] })
+  })
+  for (const session of ['', 'short', '          ']) {
+    assert.deepEqual(await worker({ platform: 'reddit', query: 'hiring sales', session }), { failed: 'no_session' })
+  }
+  assert.equal(requests, 0)
+  assert.deepEqual(await worker({ platform: 'reddit', query: 'hiring sales', session: 'session-of-tenant-A-1234' }), { items: [], unsupported: null })
+  assert.equal(requests, 1)
 })
