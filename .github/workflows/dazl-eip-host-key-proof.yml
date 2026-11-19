@@ -8,23 +8,20 @@ jobs:
   fingerprint:
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    strategy:
-      fail-fast: false
-      matrix:
-        attempt: [1, 2]
     steps:
-      - name: Match public SSH ED25519 key to the trusted EC2 console
+      - name: Report the public SSH handshake and compare ED25519
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           f="$(mktemp)"
-          trap 'rm -f "$f"' EXIT
-          if ! timeout 22s ssh-keyscan -T 15 -t ed25519 3.137.125.161 > "$f"; then
-            if ! test -s "$f"; then echo 'No host key received from 3.137.125.161:22'; exit 1; fi
-          fi
-          test "$(wc -l < "$f")" -eq 1
-          test "$(awk '{print $1 " " $2}' "$f")" = '3.137.125.161 ssh-ed25519'
-          actual="$(ssh-keygen -E sha256 -lf "$f" | awk '{print $2}')"
-          test "$actual" = 'SHA256:2sz5Y6JdfAc6zAMMuJmOJDvYfds7vb64frknnAGfzss'
-          printf 'Verified EC2 ED25519: %s\n' "$actual"
-          cat "$f"
+          k="$(mktemp)"
+          trap 'rm -f "$f" "$k"' EXIT
+          rc=0
+          ssh-keyscan -v -T 15 -t ed25519 3.137.125.161 > "$f" || rc=$?
+          printf 'keyscan exit %s; returned lines %s\n' "$rc" "$(wc -l < "$f")"
+          awk '($1=="3.137.125.161" || $1=="[3.137.125.161]:22") && $2=="ssh-ed25519" && NF==3 {print "3.137.125.161", $2, $3}' "$f" | sort -u > "$k"
+          if [ "$(wc -l < "$k")" -ne 1 ]; then echo 'Did not receive exactly one parseable ED25519 public key'; exit 1; fi
+          fp="$(ssh-keygen -E sha256 -lf "$k" | awk '{print $2}')"
+          if [ "$fp" != "SHA256:2sz5Y6JdfAc6zAMMuJmOJDvYfds7vb64frknnAGfzss" ]; then echo 'ED25519 did not match trusted AWS fingerprint'; exit 1; fi
+          printf 'Verified EC2 ED25519: %s\n' "$fp"
+          cat "$k"
