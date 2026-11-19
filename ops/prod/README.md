@@ -13,7 +13,9 @@ for byte, so what runs is a reviewed file in this repository (NEVER-AGAIN #1, #2
 | `legacy-v1/deploy-prod.sh` | the old v1 script from #1061. **Not what runs on the box. Never install it**: it refuses to run unless a test sets a variable. Kept only so `test_prod_prebuilt.py` can exercise `pull-release.sh` end to end. |
 
 **Changing a deploy script:** edit it here, review the diff, install it on the box, copy the installed file back, and update
-`PINNED` in `test_prod_v2.py`. `check-installed.sh` on the box then prints `installed = repo` for all three.
+`PINNED` in `test_prod_v2.py`. `check-installed.sh` on the box then prints `installed = repo` for all five.
+
+**New-host provisioning:** before using the workflow fallback `sudo /usr/local/lib/dazl-prod/deploy-prod.sh`, provision the reviewed deploy script and its four siblings (`pull-release.sh`, `run-release.sh`, `check-pages.py`, `check-hydration.mjs`) in `/usr/local/lib/dazl-prod`, owned by root and not writable by the deploy account. Run `ops/prod/check-installed.sh` from the reviewed checkout to verify all five. The run environment is managed separately; do not overwrite it when installing scripts or pulling a release.
 
 **What the tests cannot run:** v2's happy path (the blue/green switch) needs the real host: systemd, `ss`, `/proc` cgroups, Caddy,
 and a guard that reads the real `/etc/caddy/Caddyfile`. `test_prod_v2.py` runs the refusals v2 makes before it changes anything.
