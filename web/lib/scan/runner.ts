@@ -1,4 +1,4 @@
-import { qaClaudeOnlyJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
+import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
 import { counterpartySignal } from './counterparty.ts'
 import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
@@ -50,7 +50,7 @@ import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } 
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
-import { settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
@@ -835,7 +835,7 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
     finish(db, job, 'failed', 'key_rejected', null, null, ledger)
     return 'failed'
   }
-  if (job.attempts >= MAX_ATTEMPTS) {
+  if (job.attempts >= MAX_ATTEMPTS || qaPinnedLocalJob(job.run_budget)) {
     finish(db, job, 'failed', err.message.slice(0, 200), null, null, ledger)
     return 'failed'
   }
@@ -2123,7 +2123,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
   } finally {
     trialCharges.delete(job)
     // the run's paid work is over (scan, enrichment, buyer fit): the trial ledger may count what it recorded
-    if (job.funded_by === 'trial') await settleTrialReservation(db, job.id, job.attempts)
+    if (job.funded_by === 'trial') {
+      if (qaPinnedLocalJob(job.run_budget)) await settlePinnedTrialReservation(db, job.user_id, job.id, job.attempts)
+      else await settleTrialReservation(db, job.id, job.attempts)
+    }
   }
 }
 
@@ -2363,7 +2366,7 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
        error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved') THEN 'accounting_uncertain' ELSE 'timeout' END,
        finished_at = ?, claimed_at = NULL
      WHERE id = ? AND status = 'running' AND attempts = ?
-       AND (attempts >= ? OR EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved'))`)
+       AND (attempts >= ? OR ? = 1 OR EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved'))`)
   const queueHere = !process.env.DATABASE_URL
   for (const [job, token] of inFlightSet()) {
     try {
@@ -2374,12 +2377,13 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
         // process instead of ending accounting_uncertain with everything it found lost (the staging scan #1157 was filed for).
         db.prepare(SETTLE_FREE_ORPHANS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
         db.prepare(KEEP_MODEL_CALLS_JOB_SQL).run(now, job.user_id, job.id, job.attempts)
-        const c = upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
+        const pinned = qaPinnedLocalJob(job.run_budget)
+        const c = pinned ? 0 : upd.run(job.id, job.attempts, MAX_ATTEMPTS).changes
         if (c === 1 && token !== null && queueHere) {
           db.prepare("UPDATE work_queue SET status = 'pending', not_before = ?, claimed_at = NULL, lease_expires_at = NULL, claim_token = NULL WHERE id = ? AND kind = 'scan' AND status = 'claimed' AND claim_token = ?")
             .run(now, job.id, token)
         }
-        if (c === 0 && end.run(now, job.id, job.attempts, MAX_ATTEMPTS).changes === 1) {
+        if (c === 0 && end.run(now, job.id, job.attempts, MAX_ATTEMPTS, pinned ? 1 : 0).changes === 1) {
           // a trial scan's reservation is settled as the reaper settles it; the queue claim is closed by its token, so
           // the account's next scan is claimable at once
           try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now) } catch (e) { if (!/no such table/i.test((e as Error).message)) throw e } // a store with no trial tables has nothing to settle; anything else rolls this scan's ending back (the lease reaper then does both)

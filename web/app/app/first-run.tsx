@@ -22,7 +22,7 @@ import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
 
-import { FIRST5_CLAUDE_ONLY_MODE } from '@/lib/scan/qa-provider-policy'
+import { PINNED_FIRST5_CLAUDE_ONLY_MODE } from '@/lib/scan/qa-provider-policy'
 
 const CLAUDE_ONLY_SESSION = 'dazl.onboarding.claude-only.v1'
 const CLAUDE_ONLY_COPY = 'Claude only · public sources. No paid profile setup. Dazl caps scan reservations at US$5 or less. Some leads may not have a named contact.'
@@ -272,7 +272,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // nothing here changes what a scan checks.
       // From the ready screen the first play is the fast first scan (mode first5: the free sources only, the same
       // extraction and checks as every scan), so the first leads come back quickly; a wider, full scan stays one click away.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(claudeOnly ? { mode: FIRST5_CLAUDE_ONLY_MODE } : stay ? { mode: 'first5' } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(claudeOnly ? { mode: PINNED_FIRST5_CLAUDE_ONLY_MODE } : stay ? { mode: 'first5' } : {}) }) })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
@@ -280,6 +280,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
       if (claudeOnly && j.error === 'unknown_mode') return setError('This server does not support Claude-only first play yet. Nothing started.')
+      if (claudeOnly && (j.error === 'qa_isolation_unavailable' || j.error === 'qa_local_busy')) return setError(j.message || 'The Claude-only worker could not start. Nothing started.')
       if (claudeOnly && j.error === 'qa_provider_disabled') return setError('Claude-only first play requires a Claude key or an eligible free trial. Nothing started.')
       // #1095: never the raw code; the reason in words and the way forward (Link Google for a password account)
       if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query: sentence.trim() }); return }

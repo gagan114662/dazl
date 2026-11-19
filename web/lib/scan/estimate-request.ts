@@ -5,7 +5,7 @@ import { cleanText } from '../validate.ts'
 import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
-import { FIRST5_CLAUDE_ONLY_MODE, isFirst5RequestMode, qaClaudeOnlyBudget } from './qa-provider-policy.ts'
+import { isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { ownerLimits, PENDING_STALE_S, periodOf, poolRows } from '../llm/spend-pool.ts'
@@ -43,7 +43,8 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   if (first5 && supplied) return { ok: false, status: 400, error: 'invalid_budget', detail: 'mode first5 takes no budget' }
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(supplied ? b.budget : undefined, supplied)
   if (!nb.ok) return { ok: false, status: 400, error: 'invalid_budget', detail: nb.error }
-  const qaClaudeOnly = b.mode === FIRST5_CLAUDE_ONLY_MODE
+  const qaClaudeOnly = isClaudeOnlyRequestMode(b.mode)
+  if (qaClaudeOnly && !strictLocalTopologySupported(ctx.db.kind)) return { ok: false, status: 503, error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }
   const qaCap = qaClaudeOnly ? scanCapConfig() : null
   if (qaCap && !qaCap.ok) return { ok: false, status: 503, error: 'spend_config_invalid', detail: 'The QA scan cap cannot be verified. Nothing was started.' }
   const budget = qaClaudeOnly ? { ...JSON.parse(qaClaudeOnlyBudget(nb.value)), max_usd: Math.min(nb.budget?.max_usd ?? Infinity, qaCap?.capUsd ?? 0) } : nb.budget

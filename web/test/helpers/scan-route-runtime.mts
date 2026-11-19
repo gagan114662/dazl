@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
+import { flushAfter } from './status-route-next-server-shim.mjs'
 import { setScanDb, setUser } from './tenant-route-db.ts'
-import { migrateScan } from '../../lib/scan/store.ts'
+import { createQueryJob, migrateScan, reapStaleRunningJobs, STALE_RUNNING_S } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migratePlatform } from '../../lib/db/platform-tables.ts'
@@ -29,6 +30,23 @@ function as(db: Database.Database) {
 const post = (body: unknown) => POST(new NextRequest('http://localhost/api/scan', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': `10.0.0.${++n}` }, body: JSON.stringify(body) }))
 const rows = (db: Database.Database) => db.prepare('SELECT id, run_budget, status FROM scan_jobs').all() as { id: string; run_budget: string | null; status: string }[]
 const Q = 'Independent dental practices hiring a receptionist in New York in the past 90 days'
+
+test('only the accepting request callback runs the pinned job, never an ordinary queued job', async () => {
+  const db = setup()
+  const tenant = as(db)
+  const r = await post({ query: Q, mode: 'first5_claude_only_pinned_v2' })
+  assert.equal(r.status, 202)
+  const { job_id: pinned } = await r.json() as { job_id: string }
+  const queued = createQueryJob(db, as(db), { query: Q })
+  db.prepare('DELETE FROM tenant_llm_keys WHERE tenant_id = ?').run(tenant)
+  // The real runner terminalizes a revoked key before any provider call.
+  await flushAfter()
+  assert.deepEqual(db.prepare('SELECT status,error,attempts FROM scan_jobs WHERE id=?').get(pinned),
+    { status: 'failed', error: 'qa_provider_disabled', attempts: 1 })
+  assert.equal(rows(db).find(j => j.id === queued)?.status, 'pending')
+  await flushAfter() // no callback remains to run this claim again
+  assert.equal(rows(db).find(j => j.id === pinned)?.status, 'failed')
+})
 
 test('no budget: today\'s behaviour - 202 with only job_id, run_budget null', async () => {
   const db = setup()
@@ -155,8 +173,9 @@ test('versioned Claude-only first play restricts only its job and cannot be enab
   const qa = await post({ query: Q, mode: 'first5_claude_only_v1' })
   assert.equal(qa.status, 202)
   assert.equal((await qa.json()).provider_policy, 'claude_only_v1')
+  assert.equal(rows(db)[0].status, 'running', 'strict submit atomically claims before after() will run')
   assert.deepEqual(JSON.parse(rows(db)[0].run_budget!), {
-    first5: true, paid_fallback: false, credit_enrichment: false, provider_policy: 'claude_only_v1', max_usd: 5,
+    first5: true, paid_fallback: false, credit_enrichment: false, provider_policy: 'claude_only_v1', max_usd: 5, execution: 'local_once_v1',
   })
   const qaEstimate = JSON.parse((db.prepare('SELECT estimate FROM scan_jobs').get() as { estimate: string }).estimate)
   assert.equal(qaEstimate.rows.some((r: { provider: string }) => r.provider === 'TinyFish'), false)
@@ -176,4 +195,37 @@ test('versioned Claude-only first play restricts only its job and cannot be enab
   setUser({ id: uid, business_name: 'Acme', role: 'viewer' })
   assert.equal((await post({ query: Q, mode: 'first5_claude_only_v1' })).status, 403)
   assert.equal(rows(db).length, 2)
+})
+
+test('pinned API v2 never returns to pending; rollback-compatible cleanup preserves ordinary work', async () => {
+  const db = setup()
+  const strict = as(db)
+  const r = await post({ query: Q, mode: 'first5_claude_only_pinned_v2' })
+  assert.equal(r.status, 202)
+  const { job_id: strictId, execution } = await r.json() as { job_id: string; execution: string }
+  assert.equal(execution, 'local_once_v1')
+  const standard = as(db)
+  const ordinary = await post({ query: Q, mode: 'first5' })
+  assert.equal(ordinary.status, 202)
+  const ordinaryId = (await ordinary.json() as { job_id: string }).job_id
+  db.prepare("UPDATE scan_jobs SET status='running',attempts=1,claimed_at=1 WHERE id=? AND user_id=?").run(ordinaryId, standard)
+  assert.equal(rows(db).find(j => j.id === strictId)?.status, 'running')
+  assert.throws(() => db.prepare("UPDATE scan_jobs SET run_budget=NULL WHERE id=? AND user_id=?").run(strictId, strict), /immutable/)
+  db.prepare("UPDATE scan_jobs SET claimed_at=? WHERE id=?").run(Math.floor(Date.now()/1000) - STALE_RUNNING_S - 60, strictId)
+  reapStaleRunningJobs(db)
+  assert.deepEqual(db.prepare("SELECT status,attempts,error FROM scan_jobs WHERE id=?").get(strictId), { status: 'failed', attempts: 1, error: 'timeout' })
+  assert.equal(rows(db).find(j => j.id === ordinaryId)?.status, 'pending')
+})
+
+test('unsupported local isolation refuses before creating a job', async () => {
+  const db = setup()
+  as(db)
+  const saved = process.env.DAZL_SCAN_SHARED_QUEUE
+  process.env.DAZL_SCAN_SHARED_QUEUE = '1'
+  try {
+    const r = await post({ query: Q, mode: 'first5_claude_only_pinned_v2' })
+    assert.equal(r.status, 503)
+    assert.equal((await r.json()).error, 'qa_isolation_unavailable')
+    assert.equal(rows(db).length, 0)
+  } finally { if (saved === undefined) delete process.env.DAZL_SCAN_SHARED_QUEUE; else process.env.DAZL_SCAN_SHARED_QUEUE = saved }
 })
