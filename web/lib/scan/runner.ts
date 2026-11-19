@@ -1341,7 +1341,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // flight up to its deadline rather than stopping, and stops (budget_stopped) on one that never settled.
     // The pool guard's label is its typed refusal reason: a pool refusal reports owner_pool_limit, never the per-run
     // budget's over_limit, so the stop provenance says WHICH numeric control refused (#1006).
-    const poolGuard = owner ? new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000)) : null
+    const poolGuard = owner ? new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000, job.id)) : null
     if (poolGuard) poolGuard.label = OWNER_POOL_LIMIT_REASON
     const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(poolGuard ? [poolGuard] : [])]
     const spendLimit = spendGuards.length ? 1 : null
@@ -1621,7 +1621,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         }
         ledger.record(source, found.outcome === 'unavailable' || (found.citedUrls.length > 0 && !items.length) ? 'unavailable' : found.outcome === 'partial' ? 'partial' : nativeCandidates > 0 ? 'ok' : found.citedUrls.length ? 'no_candidates' : 'empty', items.length)
       } catch (e) {
-        ledger.record(source, e instanceof SpendRefused ? 'skipped_hold' : 'error')
+        // Closed diagnostic codes only: no response, provider message, URL or credentials in source stats.
+        ledger.record(source, e instanceof SpendRefused ? 'skipped_hold'
+          : e instanceof ClaudeSearchError ? `error:${e.diagnostic ?? e.code}` : 'error')
         if (e instanceof ClaudeSearchError) {
           if (paidPrepared && !actualRecorded) ledger.model({ stage: 'native_web_search', method: 'research', model_requested: CLAUDE_SEARCH_MODEL, model_served: null, input_tokens: null, output_tokens: null, outcome: 'error', max_tokens: null, prompt_chars: searchPrompt.length })
           if (spendAttemptUncertain()) { finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }

@@ -69,7 +69,7 @@ test('count request includes the fixed prompt, not server tools; reserve before 
     assert.deepEqual(log, ['count', 'reserve:0.2234', 'send', 'settle:0.229400'])
     assert.deepEqual(calls.map(c => c.url), ['https://api.anthropic.com/v1/messages/count_tokens', 'https://api.anthropic.com/v1/messages'])
     const sizing = calls[0].body as object
-    assert.deepEqual(calls[1].body, { ...sizing, max_tokens: 3000, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
+    assert.deepEqual(calls[1].body, { ...sizing, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
     assert.deepEqual(sizing, { model: CLAUDE_SEARCH_MODEL, messages: [{ role: 'user', content: prompt }] })
     assert.deepEqual(result.citedUrls, ['https://court.example/proof/'])
     assert.equal(result.outcome, stop === 'end_turn' ? 'ok' : 'partial')
@@ -124,4 +124,88 @@ test('an Anthropic request-limit rejection releases via the typed 429 callback; 
     assert.equal(n, 2)
     assert.deepEqual(log, [expected])
   }
+})
+
+// Synthetic identifiers/urls and numbers; built from the Anthropic Messages + Web Search response schemas.
+const fullStandardResponse = {
+  id: 'msg_fixture', type: 'message', role: 'assistant', model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn',
+  stop_sequence: null, stop_details: null, container: null, diagnostics: null,
+  content: [
+    { type: 'server_tool_use', id: 'srvtoolu_fixture', name: 'web_search', input: { query: 'roofing' } },
+    { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_fixture', content: [
+      { type: 'web_search_result', title: 'Company news', url: 'https://roof.example/news', page_age: null, encrypted_content: 'fixture' },
+    ] },
+    { type: 'text', text: 'Published company news.', citations: [
+      { type: 'web_search_result_location', url: 'https://roof.example/news', title: 'Company news', encrypted_index: 'fixture', cited_text: 'Published company news.' },
+    ] },
+  ],
+  usage: {
+    input_tokens: 8_000, output_tokens: 200, output_tokens_details: { thinking_tokens: 0 },
+    cache_read_input_tokens: 500, cache_creation_input_tokens: 1500,
+    cache_creation: { ephemeral_5m_input_tokens: 1_000, ephemeral_1h_input_tokens: 500 },
+    server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 },
+    service_tier: 'standard', speed: 'standard', inference_geo: 'global',
+  },
+}
+
+test('supported standard-only request settles a full documented-shape web-search response', async () => {
+  const marks: string[] = []
+  let calls = 0
+  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (url, init) => {
+    const body = JSON.parse(String(init?.body))
+    calls++
+    if (String(url).endsWith('/count_tokens')) {
+      assert.equal('service_tier' in body, false)
+      return Response.json({ input_tokens: counted })
+    }
+    // Mirrors vendor auto-tier behavior for an eligible existing Priority Tier customer.
+    const service_tier = body.service_tier === 'standard_only' ? 'standard' : 'priority'
+    return Response.json({ ...fullStandardResponse, usage: { ...fullStandardResponse.usage, service_tier } })
+  })
+  assert.equal(calls, 2)
+  assert.deepEqual(result.citedUrls, ['https://roof.example/news'])
+  assert.deepEqual(marks, ['settle:0.043900'])
+})
+
+test('unexpected returned model, tier or nullable critical counters stay held despite a complete tool result', async () => {
+  for (const body of [
+    { ...fullStandardResponse, model: 'claude-sonnet-4-6' },
+    { ...fullStandardResponse, usage: { ...fullStandardResponse.usage, service_tier: 'priority' } },
+    { ...fullStandardResponse, usage: { ...fullStandardResponse.usage, cache_read_input_tokens: null } },
+    { ...fullStandardResponse, usage: { ...fullStandardResponse.usage, server_tool_use: null } },
+  ]) {
+    let calls = 0
+    const marks: string[] = []
+    await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(marks), async () => {
+      return Response.json(++calls === 1 ? { input_tokens: counted } : body)
+    }), code('usage_uncertain'))
+    assert.equal(calls, 2)
+    assert.deepEqual(marks, ['uncertain'])
+  }
+})
+
+test('native paid transport abort leaves the reservation held and does not retry', async t => {
+  const deadlines: number[] = []
+  const timedOut = new AbortController()
+  t.mock.method(AbortSignal, 'timeout', (ms: number) => {
+    deadlines.push(ms)
+    return timedOut.signal
+  })
+  const marks: string[] = []
+  let calls = 0
+  await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+    if (++calls === 1) return Response.json({ input_tokens: counted })
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal
+      assert.ok(signal)
+      assert.equal(signal, timedOut.signal)
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      timedOut.abort(new DOMException('offline timeout', 'TimeoutError'))
+    })
+  }), e => (e as { code?: string; diagnostic?: string }).code === 'request_uncertain' &&
+    (e as { diagnostic?: string }).diagnostic === 'timeout')
+  assert.equal(calls, 2)
+  assert.equal(deadlines[0], 20_000)
+  assert.ok(deadlines[1] > 0 && deadlines[1] <= 150_000)
+  assert.deepEqual(marks, ['uncertain'])
 })

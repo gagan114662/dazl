@@ -15,6 +15,7 @@
 // On the Db layer (both engines). Tenant scope: every statement is keyed by the owner id it was given.
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { SpendRefused } from './spend-guard.ts'
+import { qaClaudeOnlyNativeSearchJob } from '../scan/qa-provider-policy.ts'
 
 export type PoolWindow = 'day' | 'month'
 export interface PoolLimits { day?: number | null; month?: number | null }
@@ -45,8 +46,56 @@ function pendingMarks(d: object, owner: string): Set<string> {
   return set
 }
 const pendingPeriod = (id: string) => {
-  if (!/^[0-9a-f]{10}$/.test(id)) throw new Error('spend pool: invalid pending id')
+  if (!/^(?:[0-9a-f]{10}|n[0-9a-z]{9})$/.test(id)) throw new Error('spend pool: invalid pending id')
   return `p:${id}`
+}
+
+const nativeMarker = /^p:n[0-9a-z]{9}$/
+const expiredNativeScanHolds = `
+  SELECT p.period, s.scan_job_id, s.created_at, s.reserve_usd, j.run_budget
+  FROM scan_spend_calls s
+  JOIN scan_jobs j ON j.id = s.scan_job_id AND j.user_id = s.user_id
+  JOIN tenant_spend_pools p ON p.tenant_id = s.user_id AND p.period = 'p:' || s.id
+  WHERE p.tenant_id = ? AND p.period LIKE 'p:n%' AND p.updated_at <= ?
+    AND s.kind = 'llm.anthropic.web_search'
+    AND s.status = 'reserved' AND s.actual_usd IS NULL AND s.settled_at IS NULL
+    AND s.reserve_usd > 0 AND p.reserved_usd = s.reserve_usd AND p.reported_usd = 0 AND p.calls = 0 AND s.created_at <= ?
+    AND s.attempt = 1 AND j.attempts = 1 AND j.funded_by = 'user'
+    AND j.status = 'failed' AND j.error = 'accounting_uncertain' AND j.claimed_at IS NULL
+    AND j.finished_at >= s.created_at AND j.finished_at <= ?
+    AND j.spend_cap_reserved_usd >= s.reserve_usd AND j.spend_reserved_usd >= s.reserve_usd`
+const expiryArgs = (owner: string, cutoff: number) => [owner, cutoff, cutoff, cutoff]
+const allPoolRows = `SELECT tenant_id, period, reserved_usd, reported_usd, calls, updated_at FROM tenant_spend_pools WHERE tenant_id = ? ORDER BY period`
+
+interface NativeHoldProof { period: string; scan_job_id: string; created_at: number; reserve_usd: number; run_budget: string | null }
+function expiredNativePeriods(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string): Set<string> {
+  const windowAmounts = new Map(rows.map(r => [r.period, r.reserved_usd]))
+  const due = new Map<string, number>(), proven = new Map<string, { job: string; windows: [string, string] }>()
+  for (const p of proofs) {
+    if (!nativeMarker.test(p.period) || !Number.isSafeInteger(p.created_at) || p.created_at < 0 || p.created_at > 253402300799 ||
+        !Number.isFinite(p.reserve_usd) || p.reserve_usd <= 0 || !qaClaudeOnlyNativeSearchJob(p.run_budget)) continue
+    // This is the exact reservation epoch of the outer owner pool, not the later transport clock.
+    const windows: [string, string] = [periodOf('day', p.created_at), periodOf('month', p.created_at)]
+    for (const w of windows) due.set(w, (due.get(w) ?? 0) + p.reserve_usd)
+    proven.set(p.period, { job: p.scan_job_id, windows })
+  }
+  const expired = new Set<string>()
+  for (const [period, p] of proven) {
+    // Count all old obligations in a shared bucket, even for a caller asking about one of those old jobs.
+    if (p.job !== nextJob && p.windows.every(w => (windowAmounts.get(w) ?? -Infinity) + EPS >= due.get(w)!)) expired.add(period)
+  }
+  return expired
+}
+const anyStaleNative = (rows: PoolRow[], cutoff: number) => rows.some(r => nativeMarker.test(r.period) && Number(r.updated_at) <= cutoff)
+
+// Use this only to admit a different scan. The exact holds and both original reserved window amounts remain in storage.
+export async function scanPoolRows(d: DbLike, owner: string, now: number): Promise<PoolRow[]> {
+  const db = asDb(d)
+  const rows = await poolRows(db, owner)
+  const cutoff = now - PENDING_STALE_S
+  if (db.kind !== 'sqlite' || !anyStaleNative(rows, cutoff)) return rows
+  const ignored = expiredNativePeriods(rows, await db.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)), '')
+  return rows.filter(r => !ignored.has(r.period))
 }
 
 export interface SharedPool {
@@ -55,11 +104,10 @@ export interface SharedPool {
   // The pool's clock (epoch seconds): the one time source for which day and month a reservation lands in.
   now(): number
   // pendingId: also write a pending-settlement marker (period 'p:<id>') that only this reservation's settle or exhaust
-  // removes. One unsettled call per owner: while any marker of the owner exists, every reservation (any guard, path or
-  // instance) is refused. A fresh marker (a call in flight) is waited on for up to busyWaitMs, then 'busy'; a stale one
-  // (a crash) or one marked failed refuses with 'accounting_unsettled' until an operator clears it. The marker carries no
-  // cost of its own: clearing it leaves every reservation in the windows as it is.
-  reserve(usd: number, nowS?: number, pendingId?: string, busyUntilMs?: number): Promise<void>
+  // removes. A fresh marker is waited on for up to busyWaitMs, then 'busy'; a stale/failed marker refuses with
+  // 'accounting_unsettled'. A different SQLite scan can proceed past an expired, provably linked terminal native
+  // hold only. This does not remove that marker or release any reserved dollars; all other callers stay fenced.
+  reserve(usd: number, nowS?: number, pendingId?: string, busyUntilMs?: number): Promise<number>
   // delta moves the reservation (negative releases what the call did not use); reportedUsd adds the vendor's figure.
   // reservedAtS is when the reservation was made: it settles in the windows it was reserved in.
   // With pendingId the marker is removed in the same transaction; a marker already gone means this reservation was
@@ -85,7 +133,7 @@ function windows(limits: PoolLimits): [PoolWindow, number][] {
   return out
 }
 
-export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000), busyWaitMs = BUSY_WAIT_MS): SharedPool {
+export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000), busyWaitMs = BUSY_WAIT_MS, scanJobId?: string): SharedPool {
   const db = asDb(d)
   const ws = windows(limits)
   for (const [, v] of ws) if (!(Number.isFinite(v) && v > 0)) throw new Error('spend pool limit must be a positive number')
@@ -113,13 +161,26 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
     flushFailed: flush,
     async reserve(usd, nowS = clock(), pendingId, busyUntil = Date.now() + busyWaitMs) {
       if (!(Number.isFinite(usd) && usd >= 0)) throw new SpendRefused('reservation_invalid')
-      if (ws.length === 0 || (usd === 0 && !pendingId)) return
+      if (ws.length === 0 || (usd === 0 && !pendingId)) return nowS
       // A known accounting failure this process could not record yet: record it first, or refuse.
       if (marks.size > 0 && !(await flush())) throw new SpendRefused('accounting_unsettled')
       const marker = pendingId === undefined ? null : pendingPeriod(pendingId)
       let ok: boolean
       try {
         ok = await db.tx(function* (t: Tx): TxBody<boolean> {
+          // SQLite already holds its write lock: check the existing reservation before raising any new window
+          // amount (a new reservation must not supply apparent proof of an old charge remaining held).
+          const checkTerminalNative = t.kind === 'sqlite' && !!scanJobId
+          if (checkTerminalNative) {
+            const rows = yield* t.all<PoolRow>(allPoolRows, [owner])
+            const cutoff = nowS - PENDING_STALE_S
+            const cleared = anyStaleNative(rows, cutoff)
+              ? expiredNativePeriods(rows, yield* t.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)), scanJobId!)
+              : new Set<string>()
+            let oldest = Infinity
+            for (const p of rows) if (p.period.startsWith('p:') && !cleared.has(p.period)) oldest = Math.min(oldest, Number(p.updated_at))
+            if (oldest !== Infinity) throw new SpendRefused(oldest <= nowS - PENDING_STALE_S ? 'accounting_unsettled' : 'busy')
+          }
           for (const [w, limit] of ws) {
             const period = periodOf(w, nowS)
             yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 0, 0, 0, ?) ON CONFLICT (tenant_id, period) DO NOTHING', [owner, period, nowS])
@@ -130,8 +191,10 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
           // Checked under the window row locks (Postgres: held to commit; SQLite: one writer), so a racing reservation
           // has either committed its marker (seen here) or waits for this one. Any unsettled marker of the owner refuses:
           // a stale or failed one until it is cleared, a fresh one (a call in flight) for now.
-          const open = yield* t.get<{ oldest: number | string }>("SELECT MIN(updated_at) AS oldest FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'p:%' HAVING COUNT(*) > 0", [owner])
-          if (open) throw new SpendRefused(Number(open.oldest) <= nowS - PENDING_STALE_S ? 'accounting_unsettled' : 'busy')
+          if (!checkTerminalNative) {
+            const open = yield* t.get<{ oldest: number | string }>("SELECT MIN(updated_at) AS oldest FROM tenant_spend_pools WHERE tenant_id = ? AND period LIKE 'p:%' HAVING COUNT(*) > 0", [owner])
+            if (open) throw new SpendRefused(Number(open.oldest) <= nowS - PENDING_STALE_S ? 'accounting_unsettled' : 'busy')
+          }
           if (marker) yield* t.run('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)', [owner, marker, usd, nowS])
           return true
         })
@@ -145,6 +208,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
         throw new SpendRefused('reservation_not_saved')
       }
       if (!ok) throw new SpendRefused('over_limit')
+      return nowS
     },
     async settle(deltaUsd, reportedUsd, reservedAtS, pendingId) {
       const nowS = clock()
@@ -186,7 +250,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
 }
 
 export async function poolRows(d: DbLike, owner: string): Promise<PoolRow[]> {
-  return asDb(d).all<PoolRow>('SELECT tenant_id, period, reserved_usd, reported_usd, calls, updated_at FROM tenant_spend_pools WHERE tenant_id = ? ORDER BY period', [owner])
+  return asDb(d).all<PoolRow>(allPoolRows, [owner])
 }
 
 // Spend caps (#846 / #847): every account is capped per UTC day and per UTC month, never unlimited. Each window's

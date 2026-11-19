@@ -12,13 +12,15 @@ const count = (v: unknown): v is number => typeof v === 'number' && Number.isSaf
 const roundedUp = (usd: number) => Math.ceil(usd * MICROS) / MICROS
 
 export type ClaudeSearchFailure = 'invalid_input' | 'count_failed' | 'reservation_missing' | 'request_uncertain' | 'rate_limited' | 'key_rejected' | 'usage_uncertain' | 'provider_limit_violation'
+type ClaudeSearchDiagnostic = 'transport' | 'timeout' | 'http_error' | 'response_unreadable'
 const claudeSearchFailure = Symbol('Claude search failure')
 // Keep our handling specific without adding a new externally reported error class.
 export class ClaudeSearchError {
   readonly code: ClaudeSearchFailure
-  constructor(code: ClaudeSearchFailure) {
+  readonly diagnostic?: ClaudeSearchDiagnostic
+  constructor(code: ClaudeSearchFailure, diagnostic?: ClaudeSearchDiagnostic) {
     this.code = code
-    return Object.assign(new Error(code), { code, [claudeSearchFailure]: true })
+    return Object.assign(new Error(code), { code, diagnostic, [claudeSearchFailure]: true })
   }
   static [Symbol.hasInstance](error: unknown): boolean {
     return error instanceof Error && (error as Error & { [claudeSearchFailure]?: boolean })[claudeSearchFailure] === true

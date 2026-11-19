@@ -67,14 +67,16 @@ export async function runClaudeWebSearch(
   const hold = await reserve(estimate)
   if (!hold) throw new ClaudeSearchError('reservation_missing')
   let r: Response
+  const signal = AbortSignal.timeout(CLAUDE_SEARCH_TIMEOUT_MS)
   try {
     r = await fetchImpl(MESSAGE, {
-      method: 'POST', headers, body: JSON.stringify({ ...countPayload, tools, max_tokens: CLAUDE_SEARCH_MAX_OUTPUT }),
-      signal: AbortSignal.timeout(CLAUDE_SEARCH_TIMEOUT_MS), redirect: 'error',
+      // The estimate/parser only support standard rates; the API default can select legacy Priority.
+      method: 'POST', headers, body: JSON.stringify({ ...countPayload, tools, max_tokens: CLAUDE_SEARCH_MAX_OUTPUT, service_tier: 'standard_only' }),
+      signal, redirect: 'error',
     })
   } catch {
     await hold.uncertain()
-    throw new ClaudeSearchError('request_uncertain')
+    throw new ClaudeSearchError('request_uncertain', signal.aborted ? 'timeout' : 'transport')
   }
   if (r.status === 401 || r.status === 403) {
     // Authentication/permission refusal is known, but that does not mean the vendor billed zero.
@@ -98,15 +100,18 @@ export async function runClaudeWebSearch(
       throw new ClaudeSearchError('rate_limited')
     }
     await hold.uncertain()
-    throw new ClaudeSearchError('request_uncertain')
+    throw new ClaudeSearchError('request_uncertain', 'http_error')
+  }
+  if (!r.ok) {
+    await hold.uncertain()
+    throw new ClaudeSearchError('request_uncertain', 'http_error')
   }
   let json: unknown
   try {
-    if (!r.ok) throw new ClaudeSearchError('request_uncertain')
     json = await r.json()
   } catch {
     await hold.uncertain()
-    throw new ClaudeSearchError('request_uncertain')
+    throw new ClaudeSearchError('request_uncertain', signal.aborted ? 'timeout' : 'response_unreadable')
   }
   const usage = parseClaudeSearchUsage(json)
   if (!usage) { await hold.uncertain(); throw new ClaudeSearchError('usage_uncertain') }
