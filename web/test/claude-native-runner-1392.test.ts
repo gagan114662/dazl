@@ -17,7 +17,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; uncertainResponse?: 'http' | 'body' | 'usage'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -62,6 +62,9 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (rateLimited && sequence.filter(x => x === 'native-send').length === 1)
         return Response.json({ type: 'error', error: { type: 'rate_limit_error', message: 'Rate limit exceeded' }, request_id: 'req_fixture' }, { status: 429, headers: { 'request-id': 'req_fixture' } })
       if (interrupted) throw Error('offline fixture response dropped')
+      if (uncertainResponse === 'http') return new Response('raw-response-sentinel', { status: 529 })
+      if (uncertainResponse === 'body') return new Response('raw-response-sentinel')
+      if (uncertainResponse === 'usage') return Response.json({ model: CLAUDE_SEARCH_MODEL, content: 'raw-response-sentinel', usage: {} })
       return Response.json({
         model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn',
         content: [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
@@ -87,7 +90,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       await runJob(db, next, { master, fetchImpl: io, score: false, ground: false, judge: null })
       second = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(id)
     }
-    return { status, sequence, messages, denied, end, ledger, jobSpend, pool, second }
+    const nativeStatus = db.prepare("SELECT status FROM scan_source_runs WHERE job_id=? AND collector='search:anthropic_web'").get(job.id)
+    return { status, sequence, messages, denied, end, ledger, jobSpend, pool, second, nativeStatus }
   } finally {
     globalThis.fetch = previousFetch
     for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
@@ -102,7 +106,7 @@ test('pinned V3 uses one counted, budgeted native request with workspace key and
   assert.deepEqual(native.map(m => m.url), [api + '/count_tokens', api])
   assert.deepEqual(native.map(m => m.key), ['sk-ant-workspace-fixture', 'sk-ant-workspace-fixture'])
   assert.equal('tools' in native[0].body, false)
-  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
+  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
   assert.deepEqual(x.sequence.slice(0, 3), ['native-count', 'native-send', 'publisher-page'])
   assert.deepEqual(x.denied, [])
 })
@@ -154,8 +158,20 @@ test('unknown native search billing stops the old play without permanently block
   const x = await simulate({ interrupted: true })
   assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
   assert.deepEqual(x.second, { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(x.nativeStatus, { status: 'error:transport' })
   assert.deepEqual(x.sequence, ['native-count', 'native-send', 'native-count', 'native-send'])
   assert.deepEqual(x.ledger, [{ status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null }])
+})
+
+test('post-send failure diagnostics distinguish response paths without releasing unknown spend', async () => {
+  for (const [uncertainResponse, reason] of [['http', 'http_error'], ['body', 'response_unreadable'], ['usage', 'usage_uncertain']] as const) {
+    const x = await simulate({ uncertainResponse })
+    assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
+    assert.deepEqual(x.sequence, ['native-count', 'native-send'])
+    assert.deepEqual(x.nativeStatus, { status: `error:${reason}` })
+    assert.deepEqual(x.ledger, [{ status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null }])
+    assert.doesNotMatch(JSON.stringify(x.nativeStatus), /raw-response-sentinel/)
+  }
 })
 
 test('authenticated 429 stops this play, reverses all reservations and lets a separate play send once', async () => {

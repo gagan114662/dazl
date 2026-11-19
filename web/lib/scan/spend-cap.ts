@@ -318,9 +318,12 @@ const newId = () => randomBytes(10).toString('hex')
 // a hold, or SpendRefused (recorded) when the cost cannot be stated, the setting is malformed, the job is not this
 // tenant's running attempt, or the reservation would pass the cap. `cost` is a function so a pricing failure is
 // recorded as the refusal.
-export async function reserveScanSpend(kind: SpendKind, cost: () => number): Promise<SpendHold | null> {
+export async function reserveScanSpend(kind: SpendKind, cost: () => number, nativeOwnerHold?: { id: string; bookedAt: number }): Promise<SpendHold | null> {
   const ctx = store.getStore()
   const nativeSearch = kind === 'llm.anthropic.web_search'
+  if (nativeOwnerHold && (!nativeSearch || !/^n[0-9a-z]{9}$/.test(nativeOwnerHold.id) ||
+      !Number.isSafeInteger(nativeOwnerHold.bookedAt) || nativeOwnerHold.bookedAt < 0 ||
+      nativeOwnerHold.bookedAt > 253402300799 || ctx?.accountLimits !== null)) throw new SpendRefused('reservation_invalid')
   if (nativeSearch && (!ctx?.claudeOnly || asDb(ctx.db).kind !== 'sqlite')) throw new SpendRefused('qa_provider_disabled')
   // Outside a scan: a model call needs an account context (or the named escape hatch); a non-model step is counted on the account's windows
   // when it runs inside one (#1167), and is otherwise bounded by its own vendor caps (TinyFish's tenant / global daily caps).
@@ -333,7 +336,9 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   if ((ctx as { accountLimits?: unknown }).accountLimits === undefined) throw new SpendRefused('account_limits_missing')
   const db = asDb(ctx.db)
   const now = ctx.clock ?? (() => Math.floor(Date.now() / 1000))
-  const at = now()
+  const transportTime = now()
+  if (nativeOwnerHold && nativeOwnerHold.bookedAt > transportTime) throw new SpendRefused('reservation_invalid')
+  const at = nativeOwnerHold?.bookedAt ?? transportTime
   let usd = 0
   let early: string | null = null
   const cap = effectiveCapUsd(ctx)
@@ -344,7 +349,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
     if (!early && !(typeof usd === 'number' && Number.isFinite(usd) && usd >= 0)) { early = 'cost_invalid'; usd = 0 }
   }
   if (!SPEND_KINDS.includes(kind)) { early = 'kind_unknown'; kind = String(kind).slice(0, 32) as SpendKind }
-  const id = newId()
+  const id = nativeOwnerHold?.id ?? newId()
   const attempt = Number.isSafeInteger(ctx.attempt) ? ctx.attempt : -1
   let refused: string | null
   try {
@@ -363,6 +368,9 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
         why = 'native_search_accounting_pending'
       // #1167: the account limit already refused a step of this attempt, or (for a step that is not itself counted on the windows)
       // a window is already at its cap: nothing more is sent. A named account's windows are its own entry's (ownerLimits).
+      if (!why && nativeOwnerHold && !(yield* t.get(
+        'SELECT 1 FROM tenant_spend_pools WHERE tenant_id = ? AND period = ? AND updated_at = ? AND reserved_usd = ? AND calls = 0 AND reported_usd = 0',
+        [ctx.tenantId, 'p:' + nativeOwnerHold.id, nativeOwnerHold.bookedAt, usd]))) why = 'reservation_invalid'
       if (!why && accountStopped.has(ctx)) why = OWNER_POOL_LIMIT_REASON
       // a free step moves no window but is still refused once a window is at its cap (an account at its limit sends nothing)
       const acct = ctx.accountLimits ?? tenantLimits(ctx.tenantId)
@@ -439,8 +447,16 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
       done = true
       const actual = typeof actualUsd === 'number' && Number.isFinite(actualUsd) && actualUsd >= 0 ? actualUsd : null
       const write = () => db.tx(function* (t: Tx): TxBody<void> {
-        const r = yield* t.run('UPDATE scan_spend_calls SET status = ?, actual_usd = ?, settled_at = ? WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = \'reserved\'',
-          [actual === null ? 'kept' : 'settled', actual, now(), id, ctx.tenantId, ctx.jobId])
+        const persisted = [actual === null ? 'kept' : 'settled', actual, now(), id, ctx.tenantId, ctx.jobId]
+        // A linked native hold may become nonblocking to a different scan only after terminal expiry.
+        // A delayed response from the old worker cannot settle it after that terminal transition.
+        const r = nativeOwnerHold !== undefined
+          ? yield* t.run(`UPDATE scan_spend_calls SET status = ?, actual_usd = ?, settled_at = ?
+              WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved' AND attempt = ?
+                AND EXISTS (SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ? AND status = 'running'
+                  AND attempts = ? AND claimed_at IS NOT NULL)`, [...persisted, attempt, ctx.jobId, ctx.tenantId, attempt])
+          : yield* t.run("UPDATE scan_spend_calls SET status = ?, actual_usd = ?, settled_at = ? WHERE id = ? AND user_id = ? AND scan_job_id = ? AND status = 'reserved'", persisted)
+        if (nativeOwnerHold !== undefined && r.changes !== 1) throw new SpendRefused('ownership_lost')
         // Lock order (#846 review R3): the account's pool rows BEFORE the scan_jobs row, as reserve takes them, so a settle
         // and a parallel reservation of the same scan can never wait on each other in a cycle (a Postgres deadlock).
         // scan_spend_calls above is this hold's own row: no other transaction locks it.
@@ -468,6 +484,9 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
           // maybe-billed call. No further paid request in this attempt, and the scan ends accounting_uncertain, not done.
           uncertainAttempts.add(ctx)
           captureError(e, { source: 'worker', where: 'scan-spend-cap:settle', tenantId: ctx.tenantId, ref: ctx.jobId })
+          // Caller must not move its linked owner reservation if the transport settlement never committed,
+          // including delayed work resumed outside the old attempt's async context.
+          if (nativeOwnerHold !== undefined) throw e
         }
       }
     },
