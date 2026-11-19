@@ -26,14 +26,21 @@ jobs:
       # ops/staging has no __init__.py, so discovery over ops never reaches it (#907/#908 tests): its own step.
       - name: Ops staging tests (ops/staging/test_*.py)
         run: python3 -m unittest discover -s ops/staging -p 'test_*.py'
-      # ops/prod (the production deploy from a prebuilt build, #907) has no __init__.py either: its own step.
-      - name: Ops prod tests (ops/prod/test_*.py)
-        run: python3 -m unittest discover -s ops/prod -p 'test_*.py'
-      # ops/session-worker (the session worker's unit and install script, #1037) has no __init__.py either: its own step. It boots the
-      # worker from session-worker/ at the checked-out commit, so Node 22 is needed.
+      # Ops browser checks and the worker use Node 22, just like release-gate.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # ops/prod (the production deploy from a prebuilt build, #907) has no __init__.py either: its own step.
+      - name: Ops prod tests (ops/prod/test_*.py)
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/dazl-preflight-browser
+        run: |
+          set -euo pipefail
+          npx --yes playwright@1.63.0 install --with-deps --only-shell chromium
+          browser="$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -name chrome-headless-shell -print -quit)"
+          [ -x "$browser" ] || { echo '::error::Pinned Chromium headless shell was not installed'; exit 1; }
+          HYDRATION_CHECK_BROWSER="$browser" python3 -m unittest discover -s ops/prod -p 'test_*.py'
+      # ops/session-worker (the session worker's unit and install script, #1037) has no __init__.py either: its own step.
       - name: Ops session-worker tests (ops/session-worker/test_*.py)
         run: python3 -m unittest discover -s ops/session-worker -p 'test_*.py'
       # ops/inbound-mail (the AWS-only inbound mail receiver, #1111) is not a package either: its own step. aiosmtpd is
