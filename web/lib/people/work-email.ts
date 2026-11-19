@@ -27,15 +27,15 @@
 // Nothing here creates a contact, a draft or a send: drafting stays on published addresses only (#899 boundary).
 import type Database from 'better-sqlite3'
 import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
-import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential } from '../connectors/store.ts'
+import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential, type Enrichment } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
 import { refundCredits, reserveCredits, settleCredits, CreditRefused, type CreditHold, type CreditProvider } from '../enrich/credit-pool.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
-import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
+import { guessFromLearnedFormat, guessFor, guessesForLeads, type GuessView } from './email-formats.ts'
+import { splitName, emailGuessEnabled, publishedCandidateFor, publishedCandidateRowsForLeads, publishedNameKey, selectPublishedCandidate, type PublishedCandidateRow, verifyCandidates, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -44,6 +44,7 @@ import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, s
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
 import { stagingFakePdl } from '../enrich/pdl.ts'
 import { runWithTenantSpend } from '../scan/spend-cap.ts'
+import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
 // DAZL_ENV=staging; the fake ZeroBounce needs the same plus its own flag), so neither a real People Data Labs key nor the
@@ -134,13 +135,44 @@ export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by
 export function workEmailPageRead(db: Database.Database, tenantId: string, leads: { id: string; company?: string | null; source_kind?: string | null }[], env: Record<string, string | undefined> = process.env): WorkEmailPageRead {
   const providers = workEmailProviders(db, tenantId, env)
   const providers_by_lead: Record<string, WorkEmailProviders> = {}
-  for (const l of leads) if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false }
-  return { providers, providers_by_lead, lookups: workEmailsForLeads(db, tenantId, leads.map(l => l.id)), guesses: guessesForLeads(db, tenantId, leads.map(l => l.id), env) }
+  const ids = [...new Set(leads.map(l => l.id).filter(id => /^[a-f0-9]{24}$/.test(id)))]
+  const strictLookups = strictPublishedWorkEmailsForLeads(db, tenantId, ids)
+  for (const l of leads) {
+    if (Object.hasOwn(strictLookups, l.id)) providers_by_lead[l.id] = PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS
+    else if (isWorkEmailFixtureLead(l)) providers_by_lead[l.id] = { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false }
+  }
+  const ordinary = ids.filter(id => !Object.hasOwn(strictLookups, id))
+  const lookups = ordinary.length ? workEmailsForLeads(db, tenantId, ordinary) : {}
+  return { providers, providers_by_lead, lookups: { ...lookups, ...strictLookups }, guesses: guessesForLeads(db, tenantId, ordinary, env) }
+}
+
+// Strict GET and page preload reconstruct the same response as POST, with no cached lookup rows.
+// Fetch owned lead provenance, people/site data, and published candidates in bounded batches.
+export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantId: string, leadIds: string[], now = Math.floor(Date.now() / 1000)): Record<string, WorkEmailRow[]> {
+  const ids = [...new Set(leadIds.filter(id => /^[a-f0-9]{24}$/.test(id)))]
+  const out: Record<string, WorkEmailRow[]> = {}
+  for (let i = 0; i < ids.length; i += 200) {
+    const part = ids.slice(i, i + 200)
+    const owned = db.prepare(`SELECT ${LEAD_COLS} FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.id IN (${part.map(() => '?').join(',')})`).all(tenantId, ...part) as LeadRow[]
+    const strict = owned.filter(l => qaClaudeOnlyJob(l.run_budget))
+    const strictIds = strict.map(l => l.id)
+    const enriched = enrichmentsForLeads(db, tenantId, strictIds)
+    const candidates = publishedCandidateRowsForLeads(db, tenantId, strictIds)
+    for (const l of strict) {
+      out[l.id] = []
+      if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
+      const ctx = workEmailTargetContext(l, enriched[l.id] ?? [], now)
+      if (!ctx) continue
+      out[l.id] = ctx.people.map(person => strictPublishedRow(targetKey(person), person.name, ctx, candidates[l.id] ?? [], now)).filter(r => r.status === 'published')
+    }
+  }
+  return out
 }
 
 // Which of the tenant's own keys a lookup would use (presence only: no key is decrypted here).
 // mailboxCheck (#1036): the free-tier mailbox check can run at all here (flag, key and both caps set), so the UI offers it.
-export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck: boolean }
+export interface WorkEmailProviders { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; mailboxCheck: boolean; publishedOnly?: boolean }
+export const PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS: WorkEmailProviders = { apollo: false, pdl: false, pdlNeedsOptIn: false, mailboxCheck: false, publishedOnly: true }
 export function workEmailProviders(db: Database.Database, tenantId: string, env: Record<string, string | undefined> = process.env): WorkEmailProviders {
   const saved = new Set((db.prepare("SELECT connector FROM tenant_connectors WHERE tenant_id = ? AND enabled = 1 AND ciphertext <> '' AND connector IN ('enrich:apollo','enrich:pdl')").all(tenantId) as { connector: string }[]).map(r => r.connector))
   const apollo = saved.has('enrich:apollo'), pdlSaved = saved.has('enrich:pdl')
@@ -164,7 +196,39 @@ export type FindWorkEmailResult =
   | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string; guess?: GuessView | null }
   | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean; guess?: GuessView | null }
 
-interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null }
+interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null; run_budget: string | null }
+
+const LEAD_COLS = 'l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, l.review_reason, j.icp, j.run_budget'
+const eligibleWorkEmailLead = (lead: LeadRow) => !lead.quarantined_at && !NON_COMPANY_REVIEW.includes(lead.review_reason ?? '') && workEmailLeadEligible(lead)
+
+function workEmailTargetContext(lead: LeadRow, rows: Enrichment[], now: number) {
+  const identity = identityOf({ id: lead.id, contact: lead.contact }, rows)
+  if (!siteSettled(identity)) return null
+  let icp: { who?: unknown; where?: unknown } = {}
+  try { const p = lead.icp ? JSON.parse(lead.icp) : null; if (p && typeof p === 'object' && !Array.isArray(p)) icp = p } catch { icp = {} }
+  const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  const icpText = strs(icp.who).join('; ')
+  return { site: identity.site, icpText, where: strs(icp.where), people: workEmailTargets(rows, icpText, now * 1000, identity) }
+}
+
+function strictPublishedRow(target: string, name: string, ctx: NonNullable<ReturnType<typeof workEmailTargetContext>>, candidates: PublishedCandidateRow[], now: number): WorkEmailRow {
+  const key = publishedNameKey(name)
+  // Candidate matching uses only normalized first/last, not title. Never give that address to two eligible title keys.
+  const matches = key ? ctx.people.filter(p => publishedNameKey(p.name) === key).length : 0
+  const candidate = matches === 1 ? selectPublishedCandidate(candidates, name) : null
+  const firstParty = (url: string) => {
+    try {
+      const u = new URL(url)
+      return url.length <= 500 && u.protocol === 'https:' && !u.username && !u.password && !u.port && sameSite(u.hostname, ctx.site)
+    } catch { return false }
+  }
+  const pub = candidate && candidate.address.length <= 254 && PUBLISHED_EMAIL_RE.test(candidate.address) && sameSite(domainOf(candidate.address), ctx.site) && firstParty(candidate.url) ? candidate : null
+  return { target, status: pub ? 'published' : 'not_found', provider: pub ? 'site' : null, address: pub?.address.toLowerCase() ?? null,
+    source_url: pub?.url ?? null, checked_at: null, updated_at: now,
+    detail: pub ? 'printed on the company website' : matches > 1
+      ? 'Multiple eligible people share this name. The company publication does not distinguish them; no broker or mailbox check ran.'
+      : 'No address for this buyer was printed on the company website. This scan permits only published addresses; no broker or mailbox check ran.' }
+}
 
 const isUS = (c: string | null) => !!c && /^(?:united states(?: of america)?|usa?|u\.s\.a?\.?)$/i.test(c.trim())
 const domainOf = (address: string) => (address.split('@')[1] ?? '').toLowerCase()
@@ -221,7 +285,7 @@ const failText = (e: unknown, P: string) => {
 
 type FindDeps = { fetchImpl?: typeof fetch; master?: Buffer; env?: Record<string, string | undefined>; now?: number }
 // What the lookup worked out about the person (filled by lookupWorkEmail), so the guess is built from exactly the same derivation.
-interface Derived { foreign?: boolean; person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
+interface Derived { publishedOnly?: boolean; foreign?: boolean; person?: { name: string; title: string | null }; site?: string; others?: ReturnType<typeof splitName>[] }
 // #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
 export async function findWorkEmail(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
   return runWithTenantSpend(db, tenantId, () => findWorkEmailCounted(db, tenantId, leadId, target, deps))
@@ -232,10 +296,18 @@ async function findWorkEmailCounted(db: Database.Database, tenantId: string, lea
   // Only where nothing was found: a found address (published, verified, found-not-checked) is never replaced or joined by a guess.
   // US only (docs/DECISIONS.md 2026-10-26): a play that names another country gets published addresses only, so no guess either. The paid
   // path refuses such a play AFTER its no-key return, so a keyless workspace must be stopped here, not by that check.
-  if ((r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site || derived.foreign !== false) return r
+  if (derived.publishedOnly || (r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site || derived.foreign !== false) return r
   let guess: GuessView | null = null
-  try { guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), deps.env ?? process.env) }
-  catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+  try {
+    const env = deps.env ?? process.env
+    guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), env)
+    if (guess) {
+      // The click can create a guess after the scan's verifier pass. Check only this target's address,
+      // using the same reservation and caps; a replay never rechecks a finished candidate.
+      await verifyCandidates(db, tenantId, leadId, verifierFromEnv(env, deps.fetchImpl), { env, address: guess.address, ...(deps.now === undefined ? {} : { now: deps.now * 1000 }) })
+      guess = guessFor(db, tenantId, leadId, derived.person.name, env)
+    }
+  } catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
   return guess ? { ...r, guess } : r
 }
 
@@ -243,10 +315,9 @@ async function lookupWorkEmail(
   db: Database.Database, tenantId: string, leadId: string, target: unknown,
   deps: FindDeps, derived: Derived,
 ): Promise<FindWorkEmailResult> {
-  migrateWorkEmail(db)
   const now = deps.now ?? Math.floor(Date.now() / 1000)
   if (typeof target !== 'string' || !target || target.length > TARGET_KEY_MAX) return { status: 'not_eligible', detail: 'no such person on this lead' }
-  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, l.review_reason, j.icp
+  const lead = db.prepare(`SELECT ${LEAD_COLS}
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
   if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
   // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
@@ -259,19 +330,29 @@ async function lookupWorkEmail(
   // provider: Apollo is skipped for it below), so no real key is ever charged for a synthetic person.
   const fixture = isWorkEmailFixtureLead(lead)
   if (fixture && !(fixtureAvailable(db, tenantId) && workEmailFixtureFakesOn(deps.env ?? process.env))) return { status: 'not_eligible', detail: 'this test-only fixture lead is looked up only on staging with the fake People Data Labs and the fake ZeroBounce' }
+  derived.publishedOnly = qaClaudeOnlyJob(lead.run_budget)
+  if (derived.publishedOnly && fixture) return { status: 'not_eligible', detail: 'a strict-origin result must come from the company website' }
   const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
-  const site = identityOf({ id: lead.id, contact: lead.contact }, rows)
-  if (!siteSettled(site)) return { status: 'site_unsettled', detail: "the company's website is not settled yet, so an address on it cannot be checked" }
-  let icp: { who?: unknown; where?: unknown } = {}
-  try { const p = lead.icp ? JSON.parse(lead.icp) : null; if (p && typeof p === 'object' && !Array.isArray(p)) icp = p } catch { icp = {} }
-  const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
-  const icpText = strs(icp.who).join('; ')
-  derived.foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].some(c => c !== 'US')
-  const person = workEmailTargets(rows, icpText, now * 1000, site).find(p => targetKey(p) === target)
+  const ctx = workEmailTargetContext(lead, rows, now)
+  if (!ctx) return { status: 'site_unsettled', detail: "the company's website is not settled yet, so an address on it cannot be checked" }
+  const person = ctx.people.find(p => targetKey(p) === target)
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
+  if (derived.publishedOnly) {
+    const row = strictPublishedRow(target, person.name, ctx, publishedCandidateRowsForLeads(db, tenantId, [lead.id])[lead.id] ?? [], now)
+    return { status: row.status, row, replayed: false }
+  }
+  migrateWorkEmail(db)
+  const foreign = [...new Set(ctx.where.flatMap(w => countriesIn(w)))].filter(c => c !== 'US')
+  derived.foreign = foreign.length > 0
+  const icpText = ctx.icpText
+  const site = { site: ctx.site }
+  const published = () => {
+    const pub = publishedCandidateFor(db, tenantId, lead.id, person.name)
+    return pub && sameSite(domainOf(pub.address), site.site) ? pub : null
+  }
   const want: WantPerson = { ...queryName(person.name)!, title: person.title, linkedin: person.linkedin }
   derived.person = { name: person.name, title: person.title }; derived.site = site.site
-  derived.others = workEmailTargets(rows, icpText, now * 1000, site).map(p => splitName(p.name))
+  derived.others = ctx.people.map(p => splitName(p.name))
 
   const read = () => db.prepare(`SELECT ${ROW_COLS} FROM work_email_lookups WHERE tenant_id = ? AND lead_id = ? AND target = ?`).get(tenantId, lead.id, target) as WorkEmailRow | undefined
   const prior = read()
@@ -294,8 +375,8 @@ async function lookupWorkEmail(
   const done = (replayed = false): FindWorkEmailResult => { const r = read()!; return { status: r.status, row: shownRow(r, now), replayed } }
 
   // 1. Free: the person's own address printed on the confirmed site.
-  const pub = publishedCandidateFor(db, tenantId, lead.id, person.name)
-  if (pub && sameSite(domainOf(pub.address), site.site)) {
+  const pub = published()
+  if (pub) {
     save('published', { provider: 'site', address: pub.address.toLowerCase(), source_url: pub.url.slice(0, 500), detail: 'printed on the company website' })
     return done()
   }
@@ -320,7 +401,6 @@ async function lookupWorkEmail(
     if (notes.length) { save('error', { detail: notes.join('; ') }); return done() }
     return { status: 'no_key', detail: 'no Apollo or People Data Labs key saved' }
   }
-  const foreign = [...new Set(strs(icp.where).flatMap(w => countriesIn(w)))].filter(c => c !== 'US')
   if (foreign.length) { save('not_us', { detail: `this play's area names ${foreign.join(', ')}; outside the US only published addresses are used, so no paid lookup ran` }); return done() }
 
   // Durable claim BEFORE any paid call: a fresh row, or a retry of a failed/uncertain/stale one. Losing the race = busy.

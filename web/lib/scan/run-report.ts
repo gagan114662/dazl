@@ -12,6 +12,7 @@ const ownFetchOf = (m: Map<string, string> | undefined, url: string): string | n
 export interface CandidateAudit { key: string; company: string; url: string; outcome: 'passed' | 'review' | 'dropped'; reason: string | null; evidence_origin?: string | null }
 export interface UrlRecord { url: string; hit_date: string | null; walled: boolean; selected: boolean; tinyfish_text_chars: number | null; own_fetch: string | null }
 export interface ReportParts {
+  scoring_budget_holds?: import('./scoring-budget.ts').ScoreBudgetHold[]
   // #1082: units the platform's fair share of the operator search budget left out (the run's results are thinner)
   capacity?: { searches: number; fetches: number }
   queries?: string[]; query_source?: string | null
@@ -85,7 +86,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     candidates: fates.slice(0, MAX_CANDIDATES),
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
-    news: p.news ?? null, stop: p.stop ?? null,
+    news: p.news ?? null, stop: p.stop ?? null, ...(p.scoring_budget_holds?.length ? { scoring_budget_holds: p.scoring_budget_holds } : {}),
     source_skips: (p.source_skips ?? []).slice(0, 20).map(x => ({ source: cut(x.source, 80), status: cut(x.status, 120), reason: cut(x.reason, 300) })),
     capacity: p.capacity ?? null,
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },

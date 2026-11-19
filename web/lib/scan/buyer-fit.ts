@@ -11,6 +11,8 @@ import type { Provider } from '../llm/provider.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { norm } from './evidence.ts'
 import { WHY_MAX } from './score.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
+import { BUYER_BUDGET_WHY, scoreBudgetReason, type ScoreBudgetReason } from './scoring-budget.ts'
 import { HIRING } from '../search/direct-queries.ts'
 
 export const MAX_LEADS = 5
@@ -60,7 +62,7 @@ export function confirmsFit(a: FitAnswer | undefined, homepage: string): boolean
 }
 
 type LeadRow = { id: string; company: string; signal: string; source_url: string; fit: number | null; why: string | null; company_domain: string | null }
-export interface BuyerFitDeps { fetchPage?: (url: string) => Promise<Page | FetchFail | null>; fetchImpl?: typeof fetch }
+export interface BuyerFitDeps { fetchPage?: (url: string) => Promise<Page | FetchFail | null>; fetchImpl?: typeof fetch; onBudgetHold?: (reason: ScoreBudgetReason) => void; alive?: () => boolean }
 
 // Returns how many leads were capped. Never throws: a failure caps (fail closed) and is reported in why.
 export async function applyBuyerFitGate(db: Database.Database, jobId: string, provider: Provider, apiKey: string, icpText: string, deps: BuyerFitDeps = {}): Promise<{ checked: number; confirmed: number; capped: number }> {
@@ -81,15 +83,22 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
     items.push({ n: items.length + 1, company: l.company, homepage: page.text, lead: l })
   }
   if (items.length === 0) return { checked: hiring.length, confirmed: 0, capped }
+  if (deps.alive?.() === false) return { checked: hiring.length, confirmed: 0, capped }
   let answers = new Map<number, FitAnswer>()
+  let budgetReason: ScoreBudgetReason | null = null
   try {
     if (!provider.complete) throw new Error('no completion')
     answers = parseBuyerFit(await provider.complete(apiKey, buyerFitPrompt(icpText, items), deps.fetchImpl, 600))
-  } catch { /* fail closed below */ }
+  } catch (e) { budgetReason = e instanceof SpendRefused ? scoreBudgetReason(e.reason) : null }
+  if (deps.alive?.() === false) return { checked: hiring.length, confirmed: 0, capped }
+  if (budgetReason) deps.onBudgetHold?.(budgetReason)
   let confirmed = 0
   for (const it of items) {
     const a = answers.get(it.n)
-    if (confirmsFit(a, it.homepage)) {
+    if (budgetReason) {
+      cap.run(FIT_CAP, `${BUYER_BUDGET_WHY} ${it.lead.why ?? ''}`.trim().slice(0, WHY_MAX), it.lead.id)
+      capped++
+    } else if (confirmsFit(a, it.homepage)) {
       confirmed++
       note.run(`Company site confirms fit: "${a!.quote}". ${it.lead.why ?? ''}`.trim().slice(0, WHY_MAX), it.lead.id)
     } else {

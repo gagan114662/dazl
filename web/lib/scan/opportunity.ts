@@ -1,3 +1,4 @@
+import { heldFitLabel } from './scoring-budget.ts'
 // Opportunity card (owner direction, issue #204): every lead reads as one decision, not a list of fields.
 //   why this business - which profile criteria the grading matched
 //   why now           - the dated event, its date status and the actual source
@@ -97,8 +98,8 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   const match = parseMatch(l.icp_match)
   const matched = match ? CRITERIA.filter(([k]) => match[k] === 'match').map(([, n]) => n) : []
   const unknown = match ? CRITERIA.filter(([k]) => match[k] === 'unknown').map(([, n]) => n) : CRITERIA.map(([, n]) => n)
-  const whyThisBusiness = l.fit == null ? 'Not graded against your profile yet.'
-    : matched.length ? `Fits your profile (${l.fit}/5): matches ${matched.join(', ')}.` : `Graded ${l.fit}/5 against your profile; no single criterion confirmed.`
+  const whyThisBusiness = heldFitLabel(l.fit, l.intent, l.why) ?? (l.fit == null ? 'Not graded against your profile yet.'
+    : matched.length ? `Fits your profile (${l.fit}/5): matches ${matched.join(', ')}.` : `Graded ${l.fit}/5 against your profile; no single criterion confirmed.`)
 
   const ageDays = l.event_date ? Math.floor((now.getTime() - Date.parse(`${l.event_date}T00:00:00Z`)) / 86_400_000) : null
   // date_status 'verified' is a legacy nearby-year verdict, not proof the page dates the EVENT; same wording as the lead

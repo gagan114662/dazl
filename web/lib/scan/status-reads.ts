@@ -1,5 +1,6 @@
 // Scan-status domain reads over ONE injected store. No getDb, raw handle, reaper, runner or provider calls.
 import type { Db } from '../db/client.ts'
+import { scoreBudgetReason, type ScoreBudgetReason } from './scoring-budget.ts'
 import { modelUsageOf, type ModelCall } from './model-usage.ts'
 
 // PG returns BIGINT columns as strings; preserve NULL (unknown), and normalize only schema-known numeric columns.
@@ -38,12 +39,19 @@ export async function readRefusedModelCalls(db: Db, tenantId: string, jobId: str
     return Number(r.sent ?? 0) > 0 ? null : Number(r.n ?? 0)
   } catch { return null }
 }
-// #1158: how many paid steps this run's own spending limit refused, and that limit. Owner-scoped, read only; unreadable = 0 / null.
-export async function readCapRefusals(db: Db, tenantId: string, jobId: string): Promise<{ refusals: number; cap_usd: number | null }> {
+// #1158: the legacy job-wide counter includes non-limit reasons and earlier attempts.
+export async function readPaidLimitRefusals(db: Db, tenantId: string, jobId: string, attempt: number) {
   try {
-    const r = await db.get<{ n: number | string | null; cap: number | string | null }>('SELECT spend_cap_refusals AS n, spend_cap_usd AS cap FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
-    return { refusals: Number(r?.n ?? 0) || 0, cap_usd: r?.cap == null ? null : Number(r.cap) }
-  } catch { return { refusals: 0, cap_usd: null } }
+    const rows = await db.all<{ kind: string; reason: string; n: string | number }>(
+      `SELECT kind, reason, COUNT(*) AS n FROM scan_spend_calls
+       WHERE user_id = ? AND scan_job_id = ? AND attempt = ? AND status = 'refused'
+       GROUP BY kind, reason`, [tenantId, jobId, attempt])
+    return rows.flatMap(row => {
+      const reason: ScoreBudgetReason | null = scoreBudgetReason(row.reason)
+      const count = Number(row.n)
+      return reason && Number.isSafeInteger(count) && count > 0 ? [{ kind: row.kind, reason, count }] : []
+    })
+  } catch { return null }
 }
 export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null; /** the row was read: reserved_usd null then means the column is empty, not that the read failed */ read: boolean }> {
   try {

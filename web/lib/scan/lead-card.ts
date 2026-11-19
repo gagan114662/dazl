@@ -1,3 +1,4 @@
+import { heldFitLabel } from './scoring-budget.ts'
 // The compact lead card on Leads: company, contact, one line on why it fits, source + date, Approve / Reject.
 // Reads stored fields only; nothing is inferred. Everything else stays in the card's Details.
 // "Approve" creates a draft for review (POST /api/outreach), which never sends; createDraft re-checks every gate on the
@@ -47,7 +48,7 @@ export function approveState(l: CardLead): ApproveState {
   if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead. Check the source under Needs your review first.' }
   if (l.window_held) return { ok: false, reason: 'Outside the time window you asked for, or its date is unknown. Research only.' }
   if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return { ok: false, reason: 'Not verified. Check the source first.' }
-  if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
+  if (l.fit === 0 && l.intent === null) return { ok: false, reason: heldFitLabel(l.fit, l.intent, l.why) ?? 'Graded as not a fit for your profile.' }
   const email = publishedEmail(l)
   if (!email) return { ok: false, reason: 'No published email address to draft to yet. See Details to look for one.' }
   if (domainReviewFor({ id: l.id ?? '', contact: l.contact }, l.enrichments ?? []).state === 'required') return { ok: false, reason: 'Confirm the company website in Details first.' }

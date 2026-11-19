@@ -6,9 +6,10 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
+import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { saveCredential, setEnrichFallback, recentAudit, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { setCreditLimit, creditUse } from '../lib/enrich/credit-pool.ts'
-import { findWorkEmail, judgeMatch, workEmailsFor, workEmailProviders, PENDING_STALE_S } from '../lib/people/work-email.ts'
+import { findWorkEmail, judgeMatch, workEmailsFor, workEmailProviders, workEmailPageRead, PENDING_STALE_S } from '../lib/people/work-email.ts'
 import { workEmailTargets, targetKey, workEmailCopy, workEmailCostNote, queryName, siteSettled, sameRole, linkedinHandle, mergeLookups, TARGET_KEY_MAX, PENDING_POLL_MS, PENDING_POLL_MAX, type ShownLookup } from '../lib/people/work-email-eligible.ts'
 import { deleteCommenterBatch, importCommenters, parseImport } from '../lib/scan/commenter-import.ts'
 import { eraseFirstParty, ingest, recordConfig, signBody } from '../lib/signals/first-party.ts'
@@ -504,6 +505,47 @@ test('a guessed candidate is never the free tier, even marked verified; two publ
   s.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('A', ?, 'Dana Lee, Practice Manager', 'dana@harbordental.example', 'published', 'x', 'published', 'https://harbordental.example/a')").run(s.lead)
   s.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('A', ?, 'Dana Lee, Practice Manager', 'dlee@harbordental.example', 'published', 'x', 'published', 'https://harbordental.example/b')").run(s.lead)
   assert.equal((await run(s, DANA, stub(never, never))).status, 'no_key', 'which printed address is hers is not settled')
+})
+
+test('strict-origin work email ignores cached paid and pending results, makes no calls, and keeps first-party proof', async () => {
+  const env = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', EMAIL_VERIFY_MONTHLY_CAP: '100', ZEROBOUNCE_API_KEY: 'synthetic-zerobounce-key' }
+  for (const status of ['unverified', 'verified', 'pending'] as const) {
+    const s = seed()
+    // Build a legacy row in the fixture before marking it as strict-origin. An
+    // unverified row with no mailbox check used to start one when replayed.
+    const old = await run(s, DANA, stub(() => apolloPerson({ email_status: status === 'unverified' ? 'unverified' : 'verified' }), never))
+    assert.equal(old.status, status === 'unverified' ? 'unverified' : 'verified')
+    if (status === 'pending') s.db.prepare("UPDATE work_email_lookups SET status = 'pending', provider = NULL, address = NULL, checked_at = NULL WHERE lead_id = ?").run(s.lead)
+    s.db.prepare("UPDATE scan_jobs SET run_budget = ? WHERE id = ?").run(qaClaudeOnlyBudget(null), s.job)
+    const before = workEmailsFor(s.db, 'A', s.lead, NOW)
+    const creditBefore = await creditUse(s.db, 'A', { now: NOW })
+    const calls: Calls = { apollo: 0, pdl: 0, urls: [] }
+    const withNoProvider = stub(never, never, calls)
+    const absent = await run(s, DANA, withNoProvider, { env })
+    assert.ok('row' in absent)
+    assert.equal(absent.status, 'not_found')
+    assert.match(absent.row.detail ?? '', /only published addresses/)
+    assert.equal(absent.row.address, null)
+    assert.equal(absent.guess, undefined)
+    const list = workEmailPageRead(s.db, 'A', [{ id: s.lead }], env)
+    assert.deepEqual(list.providers_by_lead[s.lead], { apollo: false, pdl: false, pdlNeedsOptIn: false, mailboxCheck: false, publishedOnly: true })
+    assert.deepEqual(list.lookups[s.lead], [])
+    assert.equal(list.guesses[s.lead], undefined)
+
+    s.db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES ('A', ?, 'Dana Lee, Practice Manager', ?, 'published', 'fixture', 'published', ?)").run(s.lead, `dana.lee@${SITE}`, `https://${SITE}.other.example/bio`)
+    assert.equal((await run(s, DANA, withNoProvider, { env })).status, 'not_found', 'a printed-address record with offsite source is not first-party evidence')
+    s.db.prepare("DELETE FROM email_candidates WHERE lead_id = ?").run(s.lead)
+    recordEmailGuesses(s.db, 'A', s.lead, SITE, [], ['Dana Lee, Practice Manager'], { env, homeText: '1 Main St, New York, NY 10001', seen: [{ address: 'dana.lee@harbordental.example', url: `https://${SITE}/team` }] })
+    const shown = await run(s, DANA, withNoProvider, { env })
+    assert.ok('row' in shown)
+    assert.equal(shown.status, 'published')
+    assert.deepEqual([shown.row.provider, shown.row.address, shown.row.source_url], ['site', `dana.lee@${SITE}`, `https://${SITE}/team`])
+    assert.equal(shown.row.checked_at, null, 'printed source is not a mailbox check')
+    assert.equal(calls.urls.length, 0)
+    assert.deepEqual(workEmailsFor(s.db, 'A', s.lead, NOW), before, 'historic provider receipt is not rewritten')
+    assert.deepEqual(await creditUse(s.db, 'A', { now: NOW }), creditBefore)
+    assert.equal((await run(s, DANA, withNoProvider, { tenant: 'B', env })).status, 'lead_not_found')
+  }
 })
 
 test('boundary (#899): a verified work email grants no send authority - drafts still need a published contact', async () => {

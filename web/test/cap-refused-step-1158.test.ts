@@ -1,30 +1,39 @@
-import test from 'node:test'
 import assert from 'node:assert/strict'
+import { bothEngines } from './helpers/engines.ts'
+import { createJob } from '../lib/scan/store-db.ts'
+import { readScanStatus } from '../lib/scan/status-read-service.ts'
+import { estimateRun } from '../lib/scan/price-estimate.ts'
 import { emptyLeadsMessage } from '../lib/scan/leads-view.ts'
-import { compareActual } from '../lib/scan/price-estimate.ts'
 
-// #1158: a run whose paid step was refused by its own spending limit finished "done" and read like an ordinary low-fit scan.
-const est = { total: { min: 0.05, max: 0.09 }, rows: [{ id: 'model', kind: 'model', label: 'AI research', usd: { min: 0.05, max: 0.09 } }] } as never
-
-test('#1158 AC1: the cost line names the refused step and the run limit', () => {
-  const a = compareActual(est, { inputTokens: 100, outputTokens: 50, tokensComplete: true, model: 'claude-sonnet-4-5', searches: 2, reservedUsd: null, capReservedUsd: 0.04, capRefusals: 1, capUsd: 0.093 })
-  assert.match(a.summary, /1 paid step was refused by this run's spending limit of \$0\.093/)
-  assert.match(a.summary, /raising the limit would let it run/i)
-})
-
-test('#1158 AC1b: no refusal, no extra sentence', () => {
-  const a = compareActual(est, { inputTokens: 100, outputTokens: 50, tokensComplete: true, model: 'claude-sonnet-4-5', searches: 2, reservedUsd: null, capReservedUsd: 0.04, capRefusals: 0, capUsd: 0.093 })
-  assert.doesNotMatch(a.summary, /refused by this run's spending limit/)
-})
-
-test('#1158 AC2: hidden leads after a refused step are not called low fit', () => {
-  const m = emptyLeadsMessage('done', 0, 3, 10, 0, 1)
-  assert.ok(m)
-  assert.doesNotMatch(m!, /fit bar|lower-fit/)
-  assert.match(m!, /spending limit refused a paid step/)
-  assert.match(m!, /3 hidden leads may not have been graded/)
-})
-
-test('#1158 AC3: without a refusal the existing copy is unchanged', () => {
-  assert.equal(emptyLeadsMessage('done', 0, 2, null, 0, 0), 'The scan found nothing above your fit bar - 2 lower-fit leads are hidden below.')
+bothEngines('#1158 historical cost line reports recorded paid refusals without implying a fit hold or inventing a cause', async ({ db }) => {
+  const id = await createJob(db, 'A', { business_name: 'Our Co', industry: 'software', location: 'Austin' }, '{"max_usd":0.093}')
+  const estimate = JSON.stringify(estimateRun({ budget: { max_usd: 0.093 }, payer: 'you' }))
+  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [id])
+  await db.run("UPDATE scan_jobs SET status = 'done', attempts = 2, estimate = ?, spend_cap_refusals = 12, spend_cap_usd = 0.093 WHERE id = ?", [estimate, id])
+  const read = async () => {
+    const s = await readScanStatus(db, 'A', id)
+    assert.ok(s)
+    const cost = s.cost as { actual: { summary: string } }
+    assert.ok(cost.actual)
+    return { s, copy: cost.actual.summary }
+  }
+  const put = (key: string, owner: string, attempt: number, kind: string, reason: string) => db.run(
+    "INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, reason, created_at) VALUES (?, ?, ?, ?, ?, 0, 'refused', ?, 1)",
+    [key, owner, id, attempt, kind, reason])
+  await put('other-owner', 'B', 2, 'render', 'over_limit')
+  await put('old-attempt', 'A', 1, 'render', 'over_limit')
+  await put('ownership', 'A', 2, 'llm.anthropic', 'ownership_lost')
+  assert.doesNotMatch((await read()).copy, /paid-step refusals|spending limit|0\.093|raising/)
+  // Legitimate historical/other-path reasons do not depend on a new typed grading report.
+  await put('account', 'A', 2, 'apollo.people', 'owner_pool_limit')
+  await put('per-scan-cap', 'A', 2, 'tinyfish.fetch', 'over_cap')
+  await put('per-run', 'A', 2, 'tinyfish.search', 'over_limit')
+  const { s, copy } = await read()
+  assert.match(copy, /1 enrichment request[s]? refused by the shared account spending limit/)
+  assert.match(copy, /1 page fetch(?:es)? refused by the applicable per-scan spending cap/)
+  assert.match(copy, /1 web search(?:es)? refused by this run’s spending limit/)
+  assert.doesNotMatch(copy, /raising|0\.093|ownership|render|12 paid/)
+  assert.deepEqual(s.scoring_budget_holds, [])
+  assert.equal(await readScanStatus(db, 'B', id), undefined)
+  assert.match(emptyLeadsMessage('done', 0, 1, 0, 0, s.scoring_budget_holds.some(h => h.stage === 'icp_grading'))!, /1 lower-fit lead/)
 })

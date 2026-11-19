@@ -49,6 +49,7 @@ import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 import { historyStatus, runTone, type CampaignRun } from '@/lib/run-status'
 import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
+import { heldFitLabel, readScoreBudgetHolds, scoreBudgetCopy } from '@/lib/scan/scoring-budget'
 import { outcomeOwnCopy, scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { Icon } from '../ui/icons'
@@ -94,8 +95,20 @@ interface CommenterBatch { batch_id: string; context: string; total: number; not
 const onlyNameOnlyRows = (rows: Parameters<typeof contactsFromEnrichments>[0] | undefined, roles: string): boolean => onlyNameOnly(contactsFromEnrichments(rows ?? [], roles))
 function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }) {
   return p
-    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
+    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : null}{p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></div>
     : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+}
+
+function ReviewCompanyWebsite({ lead }: { lead: Lead }) {
+  const name = lead.company || lead.name
+  if (!lead.company || lead.quarantined_at || !peopleSearchable(lead.review_reason)) return <div className="font-medium">{name}</div>
+  const domain = lead.company_domain?.trim().toLowerCase().replace(/^www\./, '')
+  const checked = domain && lead.enrichments?.some(row => row.connector === 'sitecrawl' && row.kind === 'domain_check' && row.value.toLowerCase() === `${domain}|identity_checked`)
+  const unresolved = lead.enrichments?.find(row => row.connector === 'sitecrawl' && row.kind === 'domain_unresolved')
+  return <>
+    <div className="font-medium">{checked ? <a className="underline" href={`https://${domain}`} target="_blank" rel="noopener noreferrer nofollow" data-testid="review-company-website">{name}</a> : name}</div>
+    {!checked && unresolved && <div className="text-xs text-[var(--ink-2)]">No company website confirmed: {domainUnresolvedText(unresolved.label)}.</div>}
+  </>
 }
 
 // Leads written by other workers can carry anything in signals; never let a bad value crash the page.
@@ -221,13 +234,15 @@ export default function LeadsClient() {
   // keyed to the job it was read for: a previous run's note never shows under another job
   const [capacityNote, setCapacityNote] = useState<{ job: string; text: string } | null>(null)
   const [quality, setQuality] = useState<Quality | null>(null)
-  const [capRefusals, setCapRefusals] = useState(0)
   const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
   // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
   const [providerIssues, setProviderIssues] = useState<ProviderIssue[] | null>(null)
   const [providerIssuesUnknown, setProviderIssuesUnknown] = useState(false) // API said null: record unreadable - not an all-clear
   const [jobError, setJobError] = useState('')
   const [failedOwnCopy, setFailedOwnCopy] = useState<string | null>(null) // #1157: a failed job's own outcome words when they name a source that failed (lib/scan/scan-outcome.ts outcomeOwnCopy)
+  const [scoringBudgetNote, setScoringBudgetNote] = useState<{ job: string; text: string; icpHeld: boolean } | null>(null)
+  const currentScoringBudget = scoringBudgetNote?.job === jobId ? scoringBudgetNote : null
+  const currentScoringBudgetNote = currentScoringBudget?.text
   const [trialStop, setTrialStop] = useState<{ label: string; detail: string | null } | null>(null) // a free scan that stopped at its spending limit: the same words as the scan's recorded outcome (Campaigns, past scans)
   const [enrichInterrupted, setEnrichInterrupted] = useState(false) // enrichment started but never ended (crash/restart): contacts and fit may be incomplete
   const [emptyReason, setEmptyReason] = useState<string | null>(null) // why a scan that read pages still extracted nothing (counts only)
@@ -560,7 +575,7 @@ export default function LeadsClient() {
       if (!r.ok && j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_unavailable' ? trialRefusedCopy(j.reason) : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       setOfferConflict(null); setPendingEst(null)
-      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setCapRefusals(0); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
+      setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
       // A rejected fetch (offline, aborted) used to fail silently - the click looked dead.
       setError('Could not reach the server. Check your connection and try again.')
@@ -586,8 +601,11 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
+      const holds = readScoreBudgetHolds({ attempt: s.attempts, scoring_budget_holds: s.scoring_budget_holds }, Number(s.attempts))
+      const scoringNote = scoreBudgetCopy(holds)
+      setScoringBudgetNote(scoringNote ? { job: jobId!, text: scoringNote, icpHeld: holds.some(h => h.stage === 'icp_grading') } : null)
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setLastProgressAt(typeof s.last_progress_at === 'number' ? s.last_progress_at : null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
-      setQuality(s.quality ?? null); setCapRefusals(Number(s.cap_refusals) || 0); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
+      setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
       // #1095: a search restored after linking Google stays in the box even when the open job has its own query
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; if (restoredSearch.current) restoredSearch.current = false; else setQuery(s.query) } // only the first job load after a restore keeps the restored search
@@ -645,11 +663,14 @@ export default function LeadsClient() {
     const r = await fetch('/api/watch').catch(() => null)
     if (r?.ok) { const j = await r.json(); setWatches(j.watches ?? []) }
   }
-  useEffect(() => { void loadWatches() }, [status])
+  useEffect(() => { queueMicrotask(() => { void loadWatches() }) }, [status])
   // Deep link: /app/leads?job_id=... (watch cards link here to show a past watch run).
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('job_id')
-    if (id && /^[a-f0-9]{24}$/.test(id)) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(id); setStatus('loading') }
+    if (id && /^[a-f0-9]{24}$/.test(id)) {
+      passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'
+      queueMicrotask(() => { setJobId(id); setStatus('loading') })
+    }
   }, [])
   // The address bar names the job on screen. A fresh scan started from an older scan's URL used to leave that old
   // job_id in the bar, so a refresh, copy or reopen showed the old result. Rewrite it in place (no navigation, no
@@ -702,7 +723,7 @@ export default function LeadsClient() {
     // ?q= (Home's "Widen to 180 days" / "Add a city") only prefills the box; nothing runs until Find leads. A prefilled
     // sentence differs from the last one, so the last reviewed profile is not reused for it.
     const prefill = new URLSearchParams(window.location.search).get('q')
-    if (prefill) setQuery(prefill.slice(0, 600))
+    if (prefill) queueMicrotask(() => setQuery(prefill.slice(0, 600)))
     void fetch('/api/scan/latest').then(r => r.ok ? r.json() : null).then(j => {
       if (!j) return
       // Either order of responses: a job is being viewed (adopted, or named by the URL) => keep ITS query and profile.
@@ -1039,6 +1060,7 @@ export default function LeadsClient() {
       )}
       {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4" data-testid="scan-failed-copy">{failedOwnCopy ? failedOwnCopy : jobError === 'accounting_uncertain' ? 'This run was interrupted while a paid step was in flight. dazl did not run it again automatically because that could bill the same step twice. The step stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'provider_rate_limited' ? 'The AI provider rate-limited a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'provider_rejected' ? 'The AI provider refused a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'accounting_failed' ? 'This run stopped because the cost of one paid step could not be recorded. dazl did not retry it automatically. That step may have been billed, so its worst-case cost stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'source_error' ? 'A source this run depends on failed, so the run stopped before it could conclude. This was not a budget stop: raising or removing the budget would not have searched further. Nothing was concluded about whether leads exist. Try again - if it keeps failing, the source may be down.' : jobError === 'no_discovery' ? 'The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope for this run. That is not proof that no matching companies exist. Run again with a broader search or without that scope limit to look further.' : jobError === 'search_allowance_reached' ? 'The web search allowance for today (this account\'s share of the day, or its share of the platform\'s) was used up, so nothing was searched. That is not an empty search and not a budget limit. Try again after the day turns over (UTC).' : jobError === 'no_lead_source' ? 'No source this run may use could search: the free news search did not run (switched off on this server, or the request has no usable profile) and the capped web search was off, not set up or refused before any search, so nothing was searched. Nothing was concluded about whether leads exist.' : jobError === 'unbounded_fallback_hold' ? 'This run could not conclude from its free sources, and the broader paid research step has no price bound, so the run stopped instead of starting it. Raising or removing the budget would not change this. Nothing was concluded about whether leads exist.' : jobError === 'model_unpriced' ? 'This run stopped because the configured model has no known price, so no paid step was allowed. Raising the budget would not help - check the model setup.' : jobError === 'spend_count_failed' ? 'This run stopped because the cost of a paid step could not be estimated in advance, so the step was not sent. Raising the budget would not help.' : jobError === 'spend_accounting_unavailable' ? 'This run stopped because spend accounting could not be written, so no further paid step was allowed. This is a safety stop, not a budget limit: raising the budget would not help. Nothing was concluded about whether leads exist.' : jobError === 'ownership_lost' ? 'This run stopped because it lost ownership of its own job - another process took it over. This was not a budget stop.' : jobError === 'spend_config_invalid' ? 'This run stopped because its spend configuration was invalid, so no paid step ran. Raising the budget would not help.' : jobError === 'spend_refused' ? 'This run stopped because a paid step was refused before it was sent. Nothing was concluded about whether leads exist.' : jobError === 'budget_stopped' ? (stopRefusalReason === 'owner_pool_limit' ? 'This run stopped because the shared account spending limit (its day/month pool) refused the next paid step before it ran. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. The per-scan budget did not cause it - raising or removing that budget would not have searched further.' : stopRefusalReason === 'over_cap' ? 'This run stopped because its recorded spending cap refused the next paid step before it ran. That is a cap stop, not an empty search: nothing was concluded about whether leads exist. That cap may be the run budget or the service per-scan limit; which one was binding was not kept with this stop.' : stopRefusalReason === 'over_limit' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : stopRefusalReason === 'trial_budget_reached' ? 'This free scan stopped at its spending limit. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. A free scan searches the web only in ways whose cost is fixed in advance.' : 'This run stopped before it could conclude. It was recorded as a budget stop, but its exact reason was not kept: it may not have been a budget limit, so raising or removing the budget may not change anything. Nothing was concluded about whether leads exist.') : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? (emptyReason ? `${emptyReason} This scan did not count toward your monthly scans.` : 'No candidates were extracted for that search. That does not show that no matching companies exist. Try rephrasing or broadening it - this scan did not count toward your monthly scans.') : jobError === 'key_rejected' ? 'The AI provider rejected the key this scan used. Check or replace your AI key in Settings, then run the scan again.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
       {jobId && capacityNote?.job === jobId && <p className="card p-3 mb-4 text-sm" role="status" data-testid="capacity-note">{capacityNote.text}</p>}
+      {jobId && (status === 'done' || status === 'enriching') && currentScoringBudgetNote && <p className="text-sm mb-4" role="status" data-testid="scan-scoring-budget-hold">{currentScoringBudgetNote}</p>}
       {jobId && status === 'done' && trialStop && (
         <div className="card p-4 mb-4 text-sm" role="status" data-testid="trial-stop">
           <span className="font-semibold">{trialStop.label}</span>
@@ -1184,7 +1206,7 @@ export default function LeadsClient() {
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review, !showSeen && repeats.collapsible ? repeats.repeats : 0, capRefusals) ?? ''}</p>
+            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review, !showSeen && repeats.collapsible ? repeats.repeats : 0, !!currentScoringBudget?.icpHeld) ?? ''}</p>
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
@@ -1242,10 +1264,10 @@ export default function LeadsClient() {
               <div className="mt-2">
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason === 'policy_stop' ? 'stopped by policy' : l.sequence.stop_reason})` : ''}</p>}
             {!l.quarantined_at && <p className="text-xs mb-1"><button className="underline text-[#555]" onClick={() => quarantine(l.id)}>Quarantine (wrong company or contacts)</button></p>}
-<div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">{scoreLabel(l.score, l.fit, l.intent, l.source_kind)}</span>
+<div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">{scoreLabel(l.score, l.fit, l.intent, l.source_kind, l.why)}</span>
               {!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span>}
               {l.stage === 'booked_call' && <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-300 border border-blue-300/30 px-1 py-0.5">booked call</span>}
-              {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent ?? '?'}/5{l.timing ? (l.timing === 'proof_backed' ? ' (timing proof-backed)' : ' (timing unconfirmed)') : ''} · action {l.action ?? '?'}/5</span>}
+              {l.fit != null && !heldFitLabel(l.fit, l.intent, l.why) && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent ?? '?'}/5{l.timing ? (l.timing === 'proof_backed' ? ' (timing proof-backed)' : ' (timing unconfirmed)') : ''} · action {l.action ?? '?'}/5</span>}
               {l.fit != null && l.icp_match && (() => {
                 let m: { role?: string; industry?: string; size?: string; location?: string; note?: string } | null = null
                 try { m = JSON.parse(l.icp_match) } catch { m = null }
@@ -1270,7 +1292,7 @@ export default function LeadsClient() {
                   <span className="text-[#111]">{p.name}</span>{p.title ? ` - ${p.title}` : ''}{' '}
                   <span className="text-gray-500">via {peopleSourceText(p)}{p.historical ? ', historical (past filing): not ranked, not a current contact' : p.tier === 'strong' ? `, title matches: ${p.matched.join(', ')}` : p.tier === 'weak' ? `, weak title match: ${p.matched.join(', ')}` : ', no title match'}{p.verified && (p.currency === 'verified_current' || p.verified.reason) ? `; ${currencyText(p.verified, p.connector)}` : ''}</span>{' '}
                   {p.linkedin && <a className="underline text-[#111]" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">profile</a>}
-                  {!p.linkedin && p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
+                  {p.source && <a className="underline text-[#111]" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a>}
                 </div>
               )
               return (
@@ -1307,10 +1329,10 @@ export default function LeadsClient() {
             {l.priority && (l.priority.graded || l.priority.evidence_score > 0) && (
               <div className="text-xs mt-1 space-y-0.5">
                 <div className="text-gray-500 uppercase tracking-wide text-[10px]">Why this company, why now</div>
-                {l.priority.graded ? (
+                {l.priority.graded && !heldFitLabel(l.fit, l.intent, l.why) ? (
                   <div className="text-gray-400">ICP grade {l.priority.fit} + {l.priority.intent} + {l.priority.action} = {(l.priority.fit ?? 0) + (l.priority.intent ?? 0) + (l.priority.action ?? 0)}/15, evidence <span className="text-[#111]">+{l.priority.evidence_score}</span></div>
                 ) : (
-                  <div className="text-gray-400">Not ICP-graded - evidence +{l.priority.evidence_score}, but fit is unverified</div>
+                  <div className="text-gray-400">{heldFitLabel(l.fit, l.intent, l.why) ?? "Not ICP-graded"} · evidence +{l.priority.evidence_score}, but fit is unverified</div>
                 )}
                 {l.priority.reasons.map((r, i) => <div key={`r${i}`} className="text-gray-400">+ {r}</div>)}
                 {l.priority.uncounted.map((u, i) => <div key={`u${i}`} className="text-gray-500">not scored: {u}</div>)}
@@ -1403,7 +1425,7 @@ export default function LeadsClient() {
       )}
       {status === 'done' && (hiddenCount > 0 || showHidden) && (
         <button onClick={() => setShowHidden(v => !v)} className="text-gray-500 hover:text-white text-xs mt-2">
-          {showHidden ? 'Hide hidden leads' : `Show ${hiddenCount} hidden lead${hiddenCount === 1 ? '' : 's'} (low fit or ungraded)`}
+          {showHidden ? 'Hide hidden leads' : `Show ${hiddenCount} hidden lead${hiddenCount === 1 ? '' : 's'} ${currentScoringBudget?.icpHeld ? '(may include unchecked fit)' : '(low fit or ungraded)'}`}
         </button>
       )}
       {leads.some(l => l.review_reason) && (
@@ -1419,7 +1441,7 @@ export default function LeadsClient() {
           <div className="card divide-y divide-white/5">
             {leads.filter(l => l.review_reason).map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
-                <div className="font-medium">{l.company || l.name}</div>
+                <ReviewCompanyWebsite lead={l} />
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
@@ -1438,7 +1460,7 @@ export default function LeadsClient() {
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
                 <QualifyPreview leadId={l.id} allowRun={l.source_kind === 'hiring_feed'} sourceBlocked={['blocked_by_site','login_required'].includes(l.review_reason ?? '')} />
                 {['quote_unconfirmed','source_review_required','event_timing_unconfirmed','event_date_bad_date','event_date_stale','event_date_future_date'].includes(l.review_reason ?? '') && l.evidence_excerpt && (
-                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}"{l.evidence_excerpt}"</div>
+                  <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}&quot;{l.evidence_excerpt}&quot;</div>
                 )}
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
                 {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">

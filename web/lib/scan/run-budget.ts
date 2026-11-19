@@ -6,7 +6,7 @@
 //  - THIS IS A PARTIAL, API-ONLY BUDGET, not a whole-scan dollar ceiling (see BUDGET_EXCLUDED_PATHS).
 //  - max_usd is a reservation limit computed from what dazl sends (prompt bytes, or count_tokens x 1.2, plus max_tokens at the
 //    model's listed price), NOT a bill and not a vendor-enforced ceiling. Web-search research cannot be bounded, so a run with
-//    max_usd REFUSES it. A refused call ends the run as `budget_stopped`, which is not the same as "nothing found".
+//    max_usd REFUSES it. A refused call can stop the run or hold fit grading; neither is a clean zero result.
 //  - the job's own reservation is saved after every reserved call, so a retry or a restart of THAT job continues from what it
 //    already reserved; the per-owner day/month pools (DAZL_RUN_MAX_USD_USERS, DAZL_OWNER_MONTH_MAX_USD_USERS) are rows in the
 //    shared store (lib/llm/spend-pool.ts), so no restart, retry or second instance resets them.
@@ -141,7 +141,7 @@ export function describeRunBudget(b: RunBudget | null, opts: { firstPlayPeopleSe
       row('autopilot', { status: 'off', note: 'A job with a budget does not start autopilot after the scan' }),
     ],
     limits: [
-      'A refused call ends the run as budget_stopped. That is a budget stop, not zero results.',
+      'If the spending limit stops the run, that is a budget stop, not zero results. If it prevents a fit check, leads already found are kept as partial results.',
       'The job reservation is saved after every reserved call and survives a retry or restart of that job; the per-owner day and month pools are saved in the shared store and survive restarts too.',
       'Token counts come from the provider count endpoint x 1.2 (a chosen margin, not a documented maximum), or prompt bytes when no counter is available.',
       'Only models with a listed price are allowed under max_usd; an unpriced model refuses every call.',

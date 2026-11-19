@@ -1,3 +1,5 @@
+import { SpendRefused } from '../llm/spend-guard.ts'
+import { scoreBudgetReason, type ScoreBudgetReason } from './scoring-budget.ts'
 // Lead scoring: ICP fit, intent/timing and actionability, graded by the tenant's own model.
 // The verifier proves the quoted evidence is real; this stage answers "is this lead worth the
 // user's time, and why now". Every grade must cite the lead's already-verified evidence.
@@ -183,7 +185,7 @@ export function fitRationale(storedWhy: string | null | undefined, timing: 'proo
   if (timing !== 'proof_backed' && isUrgencyClaim(t)) return null
   return t
 }
-export interface ScoreTimingOpts { windowDays?: number | null; now?: Date }
+export interface ScoreTimingOpts { windowDays?: number | null; now?: Date; onBudgetHold?: (reason: ScoreBudgetReason) => void }
 export async function scoreLeads(provider: Provider, apiKey: string, icpText: string, leads: { company: string; name: string; signal: string; excerpt: string | null; event_date?: string | null; date_status?: string | null; event_date_proof?: string | null; signal_kind?: string | null }[], fetchImpl?: typeof fetch, opts: ScoreTimingOpts = {}): Promise<LeadScore[] | null> {
   if (!provider.complete || leads.length === 0) return null
   try {
@@ -208,7 +210,9 @@ export async function scoreLeads(provider: Provider, apiKey: string, icpText: st
     })
     return parsed
   } catch (e) {
-    console.error('lead scoring failed', e instanceof Error ? e.message : 'error')
+    const reason = e instanceof SpendRefused ? scoreBudgetReason(e.reason) : null
+    if (reason) opts.onBudgetHold?.(reason)
+    else console.error('lead scoring failed', e instanceof Error ? e.message : 'error')
     return null
   }
 }

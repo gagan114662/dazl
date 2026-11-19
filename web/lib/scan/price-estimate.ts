@@ -1,3 +1,4 @@
+import { paidLimitRefusalCopy, type PaidLimitRefusal } from './scoring-budget.ts'
 // Price estimate for one scan, shown BEFORE anything paid runs, and the actual-vs-estimate read after it. Pure: no database,
 // no network, no provider call. The idea (a menu of what a run will use, each with a unit price and a projected total the
 // user confirms) follows other lead agents' pre-run cost gates; the numbers here are dazl's own.
@@ -54,6 +55,7 @@ export interface RunEstimate {
 }
 export interface EstimateInput {
   budget: RunBudget | null
+  qaClaudeOnly?: boolean
   payer: 'you' | 'trial'
   model?: string                     // exact model id the run will use (the payer's key's configured model); omitted: DEFAULT_MODEL
   modelUnknown?: boolean             // the payer's key exists but its model could not be read: every model row is unpriced (#851)
@@ -142,7 +144,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const tfSearch = num(env.DAZL_PRICE_TINYFISH_SEARCH_USD), tfFetch = num(env.DAZL_PRICE_TINYFISH_FETCH_USD)
   const fp = i.firstPlayPeopleSearches
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
-  if (b?.first5) {
+  if (i.qaClaudeOnly) {
+    rows.push({ id: 'qa_public_sources', label: 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Claude-only QA: no TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
+  } else if (b?.first5) {
     // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
     rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })
     // #1037 item 1: when free news cannot serve the play, a capped TinyFish lead search runs instead (runner.ts, firstPlayLeadCaps):
@@ -322,7 +326,7 @@ export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumpti
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
-export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; /** #1158: scan_jobs.spend_cap_refusals and the run's own limit */ capRefusals?: number | null; capUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
+export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; paidLimitRefusals?: PaidLimitRefusal[] | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
 export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
 export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput): ActualVsEstimate {
   // The canonical pricing truth is the settlement path's own (spend-guard.ts): priceOf normalizes dated served ids
@@ -360,9 +364,7 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
   const capRes = a.capReservedUsd ?? null
   if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
-  // #1158: a step this run's own limit refused is said out loud - the run may otherwise read as an ordinary finished scan.
-  const refused = a.capRefusals ?? 0
-  if (refused > 0) summary += ` ${refused} paid step${refused === 1 ? ' was' : 's were'} refused by this run's spending limit${a.capUsd != null ? ` of $${Number(a.capUsd.toFixed(4))}` : ''}; raising the limit would let ${refused === 1 ? 'it' : 'them'} run.`
+  summary += paidLimitRefusalCopy(a.paidLimitRefusals)
   return { model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: est.total, within, summary }
 }
 
