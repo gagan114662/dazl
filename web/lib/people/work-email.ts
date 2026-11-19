@@ -34,8 +34,8 @@ import { refundCredits, reserveCredits, settleCredits, CreditRefused, type Credi
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { guessFromLearnedFormat, guessesForLeads, type GuessView } from './email-formats.ts'
-import { splitName, emailGuessEnabled, publishedCandidateFor, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
+import { guessFromLearnedFormat, guessFor, guessesForLeads, type GuessView } from './email-formats.ts'
+import { splitName, emailGuessEnabled, publishedCandidateFor, verifyCandidates, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -234,8 +234,16 @@ async function findWorkEmailCounted(db: Database.Database, tenantId: string, lea
   // path refuses such a play AFTER its no-key return, so a keyless workspace must be stopped here, not by that check.
   if ((r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site || derived.foreign !== false) return r
   let guess: GuessView | null = null
-  try { guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), deps.env ?? process.env) }
-  catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+  try {
+    const env = deps.env ?? process.env
+    guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), env)
+    if (guess) {
+      // The click can create a guess after the scan's verifier pass. Check only this target's address,
+      // using the same reservation and caps; a replay never rechecks a finished candidate.
+      await verifyCandidates(db, tenantId, leadId, verifierFromEnv(env, deps.fetchImpl), { env, address: guess.address, ...(deps.now === undefined ? {} : { now: deps.now * 1000 }) })
+      guess = guessFor(db, tenantId, leadId, derived.person.name, env)
+    }
+  } catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
   return guess ? { ...r, guess } : r
 }
 

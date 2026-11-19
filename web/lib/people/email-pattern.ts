@@ -257,7 +257,7 @@ export interface VerifyRun { checked: number; verified: number; capped: number; 
 // Checks a lead's unchecked US candidates, one reserved slot at a time. The slot (verification='pending', checked_at)
 // is written and counted inside a transaction BEFORE the provider call, so the cap holds even if the call or the
 // process dies; a pending row is never verified.
-export async function verifyCandidates(db: Database.Database, tenantId: string, leadId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal; alive?: () => boolean } = {}): Promise<VerifyRun> {
+export async function verifyCandidates(db: Database.Database, tenantId: string, leadId: string, verifier: MailboxVerifier | null, opts: { env?: Record<string, string | undefined>; now?: number; signal?: AbortSignal; alive?: () => boolean; address?: string } = {}): Promise<VerifyRun> {
   const env = opts.env ?? process.env
   const run: VerifyRun = { checked: 0, verified: 0, capped: 0, skipped: null }
   if (!emailGuessEnabled(env)) return { ...run, skipped: 'EMAIL_GUESS_ENABLED is off' }
@@ -269,7 +269,7 @@ export async function verifyCandidates(db: Database.Database, tenantId: string, 
   migrateEmailGuess(db)
   const nowS = Math.floor((opts.now ?? Date.now()) / 1000)
   const vname = verifier.name.slice(0, 40)
-  const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' ORDER BY address").all(tenantId, leadId) as { address: string }[]
+  const rows = db.prepare("SELECT address FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND verification = 'none' AND country_basis IS NOT NULL AND tier = 'guessed' AND confidence = 'high' AND (? IS NULL OR address = ?) ORDER BY address").all(tenantId, leadId, opts.address ?? null, opts.address ?? null) as { address: string }[]
   for (const { address } of rows) {
     if (opts.signal?.aborted || (opts.alive && !opts.alive())) { run.aborted = true; break }
     // The reservation (#849 inventory: every provider call is reserved before it is made): refused = no call.
