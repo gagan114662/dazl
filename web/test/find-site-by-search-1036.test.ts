@@ -197,10 +197,17 @@ test('siteFinderFor policy: never on a free-trial scan, a first play, a run with
 })
 
 test('the post-finish step hands the search to the crawl, and the estimate and the disclosure state it under the runner\'s conditions', () => {
-  // wiring (source shape: runPostFinishBounded cannot be run without the whole scan pipeline): the finder is built from the job and its
-  // deps and passed to crawlJob
+  // Keep the finder and its crawl handoff tied to the same job and deadline. Other crawl options
+  // (such as the strict reader and buyer callback) must not make the finder optional in a new way.
   const src = readFileSync(new URL('../lib/scan/runner.ts', import.meta.url), 'utf8')
-  assert.match(src, /const findSites = siteFinderFor\(db, job, deps, postCtrl\.signal\)\n\s+await crawlJob\(db, job\.user_id, job\.id, \{[^\n]*\.\.\.\(findSites \? \{ findSites \} : \{\}\) \}\)/)
+  const postFinish = src.slice(src.indexOf('export async function runPostFinishBounded('))
+  const finder = /const findSites = siteFinderFor\(db, job, deps, postCtrl\.signal\)/.exec(postFinish)
+  assert.ok(finder, 'build the exact job finder with the post-finish abort signal')
+  const crawl = /await crawlJob\(db, job\.user_id, job\.id, \{([\s\S]*?)\}\)[ \t]*(?:;[^\n]*)?\n/.exec(postFinish.slice(finder.index))
+  assert.ok(crawl, 'the same tenant and job are passed to crawlJob')
+  assert.match(crawl[1], /\bsignal:\s*postCtrl\.signal\b/, 'the crawl uses the same deadline')
+  assert.match(crawl[1], /\.\.\.\(findSites\s*\?\s*\{\s*findSites\s*\}\s*:\s*\{\s*\}\)/, 'pass through the specific finder when available')
+  assert.match(crawl[1], /\.\.\.\(qaClaudeOnlyJob\(job\.run_budget\)\s*\?\s*\{\s*nativeOnly:\s*true\s*\}\s*:\s*\{\s*\}\)/, 'only strict jobs require the native reader')
   const row = (o: Record<string, unknown>, env: Record<string, string> = {}) => estimateRun({ budget: null, payer: 'you', env, ...o } as Parameters<typeof estimateRun>[0]).rows.find(r => r.id === 'tinyfish_search')
   const on = row({}), off = row({}, { SITECRAWL_ENABLED: '0' }), noPaid = row({ budget: { paid_fallback: false } }), trial = row({ payer: 'trial' })
   assert.ok(on && off && noPaid && trial, 'the search row exists in all four')

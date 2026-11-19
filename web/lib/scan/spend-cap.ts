@@ -1,3 +1,4 @@
+import { qaClaudeOnlyTransport } from './qa-provider-policy.ts'
 // Hard per-scan spend cap (#377 / #533 closure blocker 1). Every paid provider call a scan can make reserves its
 // worst-case cost against the scan's own durable ledger row BEFORE the request is sent, and is refused (nothing is
 // sent) when the reservation would pass the scan's cap. The cap is the owner's CAD 5 per paid scan.
@@ -177,6 +178,7 @@ export interface ScanSpendCtx {
   cap: CapConfig
   // The request's own run_budget.max_usd, when it set one: it can only lower the cap.
   requestMaxUsd?: number | null
+  claudeOnly?: boolean
   // #846/#847: the owner's day/month account caps (lib/llm/spend-pool.ts accountLimits), reserved on tenant_spend_pools
   // in the same transaction as this scan's cap, for every priced step of the scan (#1167: models, render, TinyFish, Apollo /
   // PDL). Null when the runner reserves the owner pool itself for model calls (an account with its own operator entry:
@@ -333,7 +335,8 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number): Pro
   let usd = 0
   let early: string | null = null
   const cap = effectiveCapUsd(ctx)
-  if (cap === null) early = 'cap_config_invalid'
+  if (ctx.claudeOnly && !qaClaudeOnlyTransport(kind)) early = 'qa_provider_disabled'
+  else if (cap === null) early = 'cap_config_invalid'
   else {
     try { usd = cost() } catch (e) { early = reasonOf(e) }
     if (!early && !(typeof usd === 'number' && Number.isFinite(usd) && usd >= 0)) { early = 'cost_invalid'; usd = 0 }
