@@ -1,0 +1,80 @@
+// Strict-origin work email through the real route, isolated from the shared staging fixture.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { randomBytes } from 'node:crypto'
+import { NextRequest } from 'next/server'
+import { setScanDb, setUser } from './helpers/tenant-route-db.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { GET as WE_GET, POST as WE_POST } from '../app/api/leads/[lead]/work-email/route.ts'
+import { setTestAddresses } from '../lib/outreach/sequences.ts'
+import { TEST_INBOX } from '../lib/outreach/service.ts'
+import { saveCredential, setEnrichFallback } from '../lib/connectors/store.ts'
+import { createJob } from '../lib/scan/store.ts'
+import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
+import { recordEmailGuesses } from '../lib/people/email-pattern.ts'
+
+let fetches = 0
+globalThis.fetch = (async () => { fetches++; throw new Error('Unexpected network call') }) as typeof fetch
+const master = randomBytes(32)
+process.env.DAZL_MASTER_KEY = master.toString('base64')
+const A = { id: 'A', business_name: 'Acme' }, B = { id: 'B', business_name: 'Beta' }
+const hdr = { 'content-type': 'application/json', origin: 'http://localhost', host: 'localhost' }
+const STAGING = { DAZL_ENV: 'staging', DAZL_STAGING_FAKE_PDL: '1', DAZL_STAGING_FAKE_ZEROBOUNCE: '1', EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5' }
+const setEnv = (on: boolean) => { for (const [k, v] of Object.entries(STAGING)) { if (on) process.env[k] = v; else delete process.env[k] } }
+
+function build() {
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  setTestAddresses(db, 'A', [TEST_INBOX])
+  saveCredential(db, 'A', 'enrich:pdl', 'staging-fake-pdl-any-string-1036', master)
+  saveCredential(db, 'A', 'enrich:apollo', 'real-looking-apollo-key-9999', master) // never called for the fixture lead
+  setEnrichFallback(db, 'A', true)
+  setScanDb(db); process.env.OUTREACH_TEST_TENANT_ID = 'A'
+  return db
+}
+
+test('strict-origin work email route serves published-only GET/POST without exposing legacy broker data or fetching', async () => {
+  const db = build(); setUser(A); setEnv(false)
+  // Real provider transport, if reached, must hit the fetch trap. No staging fake.
+  const verifierEnv = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5', EMAIL_VERIFY_MONTHLY_CAP: '100', ZEROBOUNCE_API_KEY: 'synthetic-zerobounce-key' }
+  const envBefore = Object.fromEntries(Object.keys(verifierEnv).map(k => [k, process.env[k]]))
+  Object.assign(process.env, verifierEnv)
+  try {
+    const site = 'harbordental.example', target = 'Dana Lee|Practice Manager', lead = randomBytes(12).toString('hex')
+    const email = `dana.lee@${site}`, bio = `https://${site}/team`, now = Math.floor(Date.now() / 1000)
+    const job = createJob(db, 'A', { business_name: 'Seller', industry: 'dental', location: 'New York' })
+    db.prepare("UPDATE scan_jobs SET status = 'running', icp = ?, run_budget = ? WHERE id = ?").run(JSON.stringify({ who: ['Practice Manager'], where: ['New York, NY'] }), qaClaudeOnlyBudget(null), job)
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, confidence) VALUES (?, ?, '', 'Harbor Dental', ?, 'hiring', ?, 80)").run(lead, job, site, bio)
+    const add = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'sitecrawl', ?, ?, ?, ?, '2026-11-19', ?)")
+    add.run(randomBytes(12).toString('hex'), lead, 'domain', `${site}|evidence_own_domain`, 'domain-basis-v1:evidence_own_domain', bio, now)
+    add.run(randomBytes(12).toString('hex'), lead, 'person', 'Dana Lee, Practice Manager', null, bio, now)
+    db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, updated_at) VALUES ('A', ?, ?, 'unverified', 'apollo', ?, ?)").run(lead, target, `stale@${site}`, now)
+    const params = { params: Promise.resolve({ lead }) }
+    const url = `http://localhost/api/leads/${lead}/work-email`
+    const get = () => WE_GET(new NextRequest(url), params)
+    const post = () => WE_POST(new NextRequest(url, { method: 'POST', body: JSON.stringify({ target }), headers: hdr }), params)
+    const tracked = fetches
+    const ownGet = await get()
+    assert.equal(ownGet.status, 200)
+    assert.deepEqual(await ownGet.json(), { providers: { apollo: false, pdl: false, pdlNeedsOptIn: false, mailboxCheck: false, publishedOnly: true }, lookups: [], guesses: [] })
+    const absent = await post()
+    assert.equal(absent.status, 200)
+    const absentView = await absent.json()
+    assert.equal(absentView.status, 'not_found')
+    assert.equal(absentView.lookup.address, null)
+    assert.equal(absentView.guess, undefined)
+    recordEmailGuesses(db, 'A', lead, site, [], ['Dana Lee, Practice Manager'], { env: verifierEnv, homeText: '1 Main St, New York, NY 10001', seen: [{ address: email, url: bio }] })
+    const found = await post()
+    assert.equal(found.status, 200)
+    const foundView = await found.json()
+    assert.equal(foundView.status, 'published')
+    assert.deepEqual([foundView.lookup.address, foundView.lookup.source_url, foundView.lookup.checked_at], [email, bio, null])
+    setUser(B)
+    assert.equal((await get()).status, 404)
+    assert.equal((await post()).status, 404)
+    assert.equal(fetches, tracked)
+    assert.deepEqual(db.prepare("SELECT status,address FROM work_email_lookups WHERE lead_id = ?").get(lead), { status: 'unverified', address: `stale@${site}` })
+  } finally {
+    for (const [k, v] of Object.entries(envBefore)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  }
+})
