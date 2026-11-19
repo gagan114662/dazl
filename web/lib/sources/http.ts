@@ -1,4 +1,6 @@
 import https from 'node:https'
+import { isIP } from 'node:net'
+import { isPublicIp } from '../net/public-fetch.ts'
 import { guardedLookup } from '../scan/fetch-page.ts'
 import type { HttpResult, SafeGet } from './types.ts'
 
@@ -13,6 +15,10 @@ export const makeSafeGet = (timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup
     let url: URL
     try { url = new URL(rawUrl) } catch { return resolveRaw(null) }
     if (url.protocol !== 'https:' || url.username || url.password || (!testAnyPort && url.port && url.port !== '443')) return resolveRaw(null)
+    // Node can connect to literal IPs without calling the supplied DNS lookup.
+    // Only the in-process deadline fixture on an explicit nonstandard port bypasses this.
+    const host = url.hostname.replace(/^\[|\]$/g, '')
+    if (!(testAnyPort && url.port && url.port !== '443') && isIP(host) && !isPublicIp(host)) return resolveRaw(null)
     const resolve = (v: HttpResult | null) => { clearTimeout(hard); resolveRaw(v) }
     const req = https.request(
       url,
