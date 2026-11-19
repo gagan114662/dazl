@@ -56,6 +56,7 @@ test('crawl obeys robots: disallowed contact page is never requested; unreachabl
 test('crawlJob stores each contact with its source page and date; the site is read once and every lead on it gets its own rows', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://news.example/a',NULL,90,80,NULL),('l2','j1','Stabyl','https://news.example/b',NULL,90,70,NULL),('l3','j1','NoSite Ltd','https://news.example/c',NULL,90,60,NULL)").run()
   const pages: Record<string, { body: string }> = {
     '/a': { body: html('<a href="https://stabyl.com">s</a>') }, '/b': { body: html('<a href="https://stabyl.com">s</a>') }, '/c': { body: html('nothing') },
@@ -81,6 +82,7 @@ test('crawlJob stores each contact with its source page and date; the site is re
 test('a lead held because its evidence page blocked us gets an identity attempt WITHOUT re-fetching the blocked page; event-hold classes are not selected', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare(`INSERT INTO leads VALUES
     ('lb','j1','Clera','https://blocked.example/article','blocked_by_site',NULL,80,NULL,NULL,NULL),
     ('lj','j1','JsCo','https://js.example/article','needs_javascript',NULL,75,NULL,NULL,NULL),
@@ -98,6 +100,7 @@ test('a lead held because its evidence page blocked us gets an identity attempt 
 test('the blocked-host guard covers candidate domains: a company whose own site refused us is NOT probed by another path', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, signal TEXT, evidence_excerpt TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare("INSERT INTO leads VALUES ('lb','j1','Clera','https://clera.com/blog/news','blocked_by_site',NULL,80,NULL,NULL,NULL)").run()
   const reads: string[] = []
   const get: Get = async url => { const u = new URL(url); reads.push(u.hostname); return { status: 404, body: '', finalUrl: url } }
@@ -158,6 +161,7 @@ test('probeDomains: names ending in "AI" also probe the .ai stem domain', async 
 test('crawlJob probes name-derived domains when evidence links nothing, verifies by homepage name', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Acme Robotics','https://news.example/a',NULL,90,80,NULL),('l2','j1','Ghost Corp','https://news.example/b',NULL,90,70,NULL)").run()
   const get: Get = async url => {
     const u = new URL(url)
@@ -207,6 +211,7 @@ test('domain provenance: each accepted domain records how it was chosen and the 
   const { domainBasisFor, publishedContact, domainBasisNote, domainBasisUnconfirmed } = await import('../lib/outreach/published-email.ts')
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare("INSERT INTO leads VALUES ('own','j1','Acme Robotics','https://acmerobotics.com/careers/1',NULL,90,90,NULL),('lab','j1','Beta Works','https://news.example/b',NULL,90,80,NULL),('txt','j1','Gamma Labs','https://news.example/c',NULL,90,70,NULL),('prb','j1','Stable','https://news.example/d',NULL,90,60,NULL)").run()
   const get: Get = async url => {
     const u = new URL(url)
@@ -258,6 +263,7 @@ test('domain provenance: each accepted domain records how it was chosen and the 
 test('two leads on one domain: each gets its own identity check, domain row and contact rows from one read of the site', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   // l1 and l2 both name Acme (suffix variants collapse in the name test); l3 links the same domain but the homepage never names Gloom Labs.
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Acme Roofing LLC','https://board.test/1',NULL,90,90,NULL),('l2','j1','Acme Roofing','https://board.test/2',NULL,90,80,NULL),('l3','j1','Gloom Labs','https://board.test/3',NULL,90,70,NULL)").run()
   const hits: string[] = []
@@ -286,6 +292,7 @@ test('two leads on one domain: each gets its own identity check, domain row and 
 test('a lead whose name the homepage does not show cannot reuse a crawl; a later lead whose name it does show reads the site once more', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare("INSERT INTO leads VALUES ('a','j1','Gloom Labs','https://board.test/1',NULL,90,90,NULL),('b','j1','Acme Roofing','https://board.test/2',NULL,90,80,NULL)").run()
   const hits: string[] = []
   const get: Get = async url => {
@@ -305,6 +312,7 @@ test('a lead whose name the homepage does not show cannot reuse a crawl; a later
 test('crawlJob also researches unfinished candidates (undated or quote-unconfirmed review) after verified leads; closed / counterparty / stale review leads are not crawled', async () => {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT, icp TEXT); INSERT INTO scan_jobs (id, user_id) VALUES ('j1', 't1')") // owned job required by the crawl boundary
   db.prepare("INSERT INTO leads VALUES ('v1','j1','Verified Co','https://news.example/v',NULL,90,10,NULL),('u1','j1','Undated Co','https://news.example/u','outside_window_undated',NULL,99,NULL),('q1','j1','Quote Co','https://news.example/q','quote_unconfirmed',NULL,50,NULL),('c1','j1','Closed Co','https://news.example/c','job_closed',NULL,99,NULL),('s1','j1','Stale Co','https://news.example/s','outside_window',NULL,99,NULL)").run()
   const link = (d: string, n: string) => html(`<a href="https://${d}.com">${n}</a>`)
   const pages: Record<string, string> = { '/v': link('verified', 'Verified Co'), '/u': link('undated', 'Undated Co'), '/q': link('quote', 'Quote Co'), '/c': link('closed', 'Closed Co'), '/s': link('stale', 'Stale Co'), '/robots.txt': '' }

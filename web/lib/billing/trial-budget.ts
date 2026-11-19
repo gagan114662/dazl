@@ -307,6 +307,21 @@ export async function settleTrialReservation(db: DbLike, jobId: string, attempt:
   catch (e) { captureError(e, { source: 'process', where: 'trial-budget:settleTrialReservation' }) } // stays at its full reserve; recorded (was silent on main)
 }
 
+// A locally pinned run has no next attempt. Its launcher also calls this after an early return or crash before the
+// runner's normal finalizer. Don't rewrite a completed settlement or reduce the reserve while any call is unsettled.
+export async function settlePinnedTrialReservation(db: DbLike, tenantId: string, jobId: string, attempt: number, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
+  try {
+    await asDb(db).run(`UPDATE trial_reservations SET settled_at = ?, settled_attempt = ?
+      WHERE tenant_id = ? AND job_id = ? AND kind = 'scan' AND settled_at IS NULL
+        AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.id = ? AND j.user_id = ? AND j.attempts = ?
+          AND (j.status = 'failed' OR (j.status = 'done' AND (j.enrich_started_at IS NULL OR j.enrich_finished_at IS NOT NULL))))
+        AND NOT EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = ? AND c.status = 'reserved')`,
+    [nowS, attempt, tenantId, jobId, jobId, tenantId, attempt, jobId])
+  } catch (e) {
+    captureError(e, { source: 'process', where: 'trial-budget:settlePinnedTrialReservation' }) // uncertain or unreadable: hold in full
+  }
+}
+
 // The scan the reservation paid for, once it exists. Until then (or if creating it failed) the reservation counts as
 // its full reserve for the day.
 export async function linkTrialReservation(db: Db, tenantId: string, reservation: string, jobId: string): Promise<void> {
