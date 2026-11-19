@@ -125,6 +125,15 @@ test('#1122 a homepage/footer customer address cannot establish the company’s 
   assert.equal(result.domain, null)
 })
 
+for (const section of ['Customers', 'Clients', 'Partners', 'Testimonials', 'Service areas', 'Customer story']) {
+  test(`#1122 a footer ${section} section ends the corporate office list`, async () => {
+    const home = html(`<h1>Northstar Design</h1>${PROSE}<footer><h2>Corporate HQ</h2><h3>Raleigh</h3><p>100 Fayetteville St, Raleigh, NC 27601</p><h2>${section}</h2><h3>Toronto</h3><p>320 Bay St. Toronto, Ontario, M5H 4A6</p></footer>`)
+    const result = await crawl({ 'northstar-design.example': { '/': home } }, 'Northstar Design', 'northstar-design.example')
+    assert.equal(result.domain, null)
+    assert.equal(result.proof, undefined)
+  })
+}
+
 test('#1122 company careers can confirm a market separately from an out-of-market HQ', async () => {
   const home = html(`<h1>Levitate</h1><p>Our headquarters are in Raleigh, NC 27601.</p><a href="/careers">Careers</a>`)
   const careers = (employer: string) => html(`<h1>Careers at Levitate</h1><h3>Raleigh, NC</h3><a href="https://job-boards.greenhouse.io/levitate/jobs/7777777">Accounts</a><h3>Toronto, ON</h3><a href="https://job-boards.greenhouse.io/${employer}/jobs/5209244008">Sales Development Representative</a>`)

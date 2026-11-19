@@ -689,7 +689,7 @@ function subpageLocationFacts(url: string, body: string): LocationPage {
       const blocks = [...body.matchAll(/<(p|h[1-6]|address)\b[^<>]*>([\s\S]{1,800}?)<\/\1\s*>/gi)].map(m => plainText(m[2], 200))
       const officeStart = blocks.findIndex(block => /^(?:corporate hq|head office|our offices|our locations)$/i.test(block))
       if (officeStart >= 0) for (let i = officeStart + 1; i + 1 < blocks.length; i++) {
-        if (FOREIGN_SUBJECT.test(blocks[i])) break
+        if (FOREIGN_SUBJECT.test(blocks[i]) || FOREIGN_FOOTER_SECTION.test(blocks[i])) break
         if (POSTAL_ADDRESS.test(blocks[i + 1]) && streetKeys(blocks[i + 1]).length) footerOffices.push({ heading: blocks[i], address: blocks[i + 1] })
       }
     }
@@ -701,6 +701,8 @@ const OFFICE_CLAIM = /^(?:is |are )?(?:(?:headquartered|based|located) (?:in|at)
 const FIRST_PERSON_OFFICE = /^(?:our (?:[\p{L}-]+ )?(?:office|headquarters) (?:is|are) (?:in|at)|we are (?:conveniently )?located (?:in|at|on))\s+/iu
 const HOME_BASE_CLAIM = /^we (?:are|work) remote-first with (?:a|our) ([\p{L} ,.'’-]{2,64}) home base[.!]?$/iu
 const FOREIGN_SUBJECT = /\b(?:customer|client|partner|testimonial|service area)\b/i
+// Footer category headings often use the plural; they end the first-party office block.
+const FOREIGN_FOOTER_SECTION = /\b(?:customers|clients|partners|testimonials|service areas)\b/i
 const POSTAL_ADDRESS = /\b(?:[A-Z]\d[A-Z]\s?\d[A-Z]\d|[A-Z]{2}\s+\d{5}(?:-\d{4})?)\b/i
 
 function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean): LocationProof | undefined {
