@@ -15,6 +15,8 @@ import { primarySignalKind } from './score.ts'
 import { migrateSourceRuns } from './source-runs.ts'
 import { migrateEvidenceCopies } from './evidence-copies.ts'
 import { migrateRunReport } from './run-report.ts'
+import { QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, qaClaudeOnlyJob, qaPinnedLocalJob } from './qa-provider-policy.ts'
+import type { Job } from './runner.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
 
 // Floor for the stale-running window / queue lease: it must outlive the longest single paid vendor call (a model
@@ -116,6 +118,7 @@ export function migrateScan(db: Database.Database): void {
   migrateRunReport(db)
   migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
   migrateScanSpendCap(db) // the per-scan hard spend cap's ledger columns and call rows (lib/scan/spend-cap.ts)
+  // The optional local pin fence is installed by its admission transaction, not the portable bootstrap.
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
@@ -275,6 +278,54 @@ export function createQueryJob(db: Database.Database, userId: string, input: Que
     id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
+}
+
+// Strict local execution is fenced at the SQLite storage boundary, even on rollback.
+const pin = (when: 'OLD' | 'NEW') => `COALESCE(json_extract(CASE WHEN json_valid(${when}.run_budget) THEN ${when}.run_budget ELSE '{}' END, '$.execution'), '') = '${QA_LOCAL_EXECUTION}'`
+
+function migrateStrictLocalPin(db: Database.Database): void {
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS strict_local_pin_insert BEFORE INSERT ON scan_jobs
+    WHEN ${pin('NEW')}
+    BEGIN SELECT RAISE(ABORT, 'strict execution pin must be claimed atomically'); END;
+
+    CREATE TRIGGER IF NOT EXISTS strict_local_pin_budget BEFORE UPDATE OF run_budget ON scan_jobs
+    WHEN ((${pin('OLD')}) AND OLD.run_budget IS NOT NEW.run_budget)
+      OR (NOT (${pin('OLD')}) AND (${pin('NEW')}) AND NOT (
+        OLD.status = 'pending' AND OLD.attempts = 0 AND NEW.status = 'running'
+        AND NEW.attempts = 1 AND NEW.claimed_at IS NOT NULL
+        AND COALESCE(json_extract(NEW.run_budget, '$.provider_policy'), '') = '${QA_CLAUDE_ONLY}'
+      ))
+    BEGIN SELECT RAISE(ABORT, 'strict execution pin is immutable or was not atomically claimed'); END;
+
+    CREATE TRIGGER IF NOT EXISTS strict_local_pin_handback BEFORE UPDATE OF status ON scan_jobs
+    WHEN OLD.status = 'running' AND NEW.status = 'pending' AND (${pin('OLD')})
+    BEGIN
+      UPDATE scan_jobs SET status = 'failed', claimed_at = NULL,
+        finished_at = CAST(strftime('%s','now') AS INTEGER),
+        error = CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = OLD.id AND c.status = 'reserved')
+                    THEN 'accounting_uncertain' ELSE 'timeout' END
+      WHERE id = OLD.id AND status = 'running' AND attempts = OLD.attempts;
+      SELECT RAISE(IGNORE);
+    END;
+  `)
+}
+// Call from the same immediate transaction that inserts, funds and estimates this job.
+// The transient ordinary pending row is never visible outside that transaction.
+export function pinAdmittedStrictJob(db: Database.Database, tenant: string, id: string, raw: string | null): Job {
+  if (!db.inTransaction || !qaClaudeOnlyJob(raw)) throw new Error('strict local admission fence is unavailable')
+  // Install the SQLite-only fence before committing its first pin. SQLite rolls back both DDL and the job
+  // together if admission fails. Ordinary bootstrap and PostgreSQL generation never need this fence.
+  migrateStrictLocalPin(db)
+  const pinned = JSON.stringify({ ...JSON.parse(raw!), execution: QA_LOCAL_EXECUTION })
+  const claimed = db.prepare(`UPDATE scan_jobs
+    SET status='running', attempts=1, claimed_at=?, run_budget=?
+    WHERE id=? AND user_id=? AND status='pending' AND attempts=0 AND run_budget=?
+      AND (funded_by='trial' OR user_id IN (SELECT tenant_id FROM tenant_llm_keys))
+    RETURNING id,user_id,business_name,industry,location,attempts,query,icp,sources,funded_by,seller,watch_id,csv_domain,run_budget,spend_reserved_usd`)
+    .get(Math.floor(Date.now() / 1000), pinned, id, tenant, raw) as Job | undefined
+  if (!claimed || !qaPinnedLocalJob(claimed.run_budget)) throw new Error('strict local admission could not claim the new job')
+  return claimed
 }
 
 // The tenant's most recent query scan - feeds the "your profile is still here" restore on the leads page.

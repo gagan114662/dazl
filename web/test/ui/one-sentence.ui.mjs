@@ -94,7 +94,7 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
     }
     if (p === '/api/scan' && m === 'POST') {
       const body = JSON.parse(req.postData())
-      if (tag === 'desktop' && !replacementAck) {
+      if ((tag === 'desktop' || tag === 'history') && !replacementAck) {
         assert.equal(body.estimate_ack, onboardingEstimate.ack)
         replacementAck = 'updated-onboarding-ack'
         if (estimateOnly) await confirmHold
@@ -163,6 +163,23 @@ async function run({ width, height, tag, how = 'cta', full = true, incomplete = 
     }
   }
   await page.getByTestId('estimate-confirm-run').click()
+  if (tag === 'history') {
+    await page.getByTestId('estimate-confirm-run').filter({ hasText: 'Starting...' }).waitFor()
+    try {
+      await page.evaluate(() => {
+        history.pushState(history.state, '', location.href)
+        history.back()
+      })
+      await page.getByTestId('estimate-confirm').waitFor({ state: 'hidden' })
+    } finally { releaseConfirmation() }
+    // The form becomes usable only after the delayed reply was handled; a stale quote must not reappear.
+    await page.waitForFunction(() => document.querySelector('[data-testid=ready-cta]')?.disabled === false)
+    assert.equal(await page.getByTestId('estimate-confirm').count(), 0)
+    assert.deepEqual(st.scanBodies, [], 'Back during a refused confirmation never admits a scan')
+    assert.equal(writes.filter(w => w === 'POST /api/scan').length, 1, 'no automatic retry after Back')
+    await ctx.close()
+    return { typed, firstCardSeconds: null }
+  }
   if (tag === 'desktop') {
     if (estimateOnly) {
       await page.getByRole('button', { name: 'Starting...' }).waitFor()
@@ -226,6 +243,7 @@ try {
   const d = await run({ width: 1440, height: 900, tag: 'desktop', tz: 'America/Toronto' })
   const m = await run({ width: 390, height: 844, tag: 'mobile' })
   if (estimateOnly) {
+    await run({ width: 1440, height: 900, tag: 'history' })
     console.log('first-search estimate UI passed: desktop re-confirmation and 390px cancellation, capped preview, exactly one queued scan')
   } else {
   const c = await run({ width: 1440, height: 900, tag: 'held', how: 'chip' })

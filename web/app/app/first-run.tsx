@@ -24,7 +24,7 @@ import type { SourceProgress } from '@/lib/scan/progress'
 import type { RunEstimate } from '@/lib/scan/price-estimate'
 import EstimateConfirm from './leads/estimate-confirm'
 
-import { FIRST5_CLAUDE_ONLY_MODE } from '@/lib/scan/qa-provider-policy'
+import { PINNED_FIRST5_CLAUDE_ONLY_MODE } from '@/lib/scan/qa-provider-policy'
 
 const CLAUDE_ONLY_SESSION = 'dazl.onboarding.claude-only.v1'
 const CLAUDE_ONLY_COPY = 'Claude only · public sources. No paid profile setup. Dazl caps scan reservations at US$5 or less. Some leads may not have a named contact.'
@@ -122,7 +122,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const drop = () => {
       setLinkNote(null)
       quoteEpoch.current++ // discard a pending preview after browser Back/Forward
-      if (!scanRequestInFlight.current) setPendingEstimate(null)
+      setPendingEstimate(null)
     }
     window.addEventListener('popstate', drop)
     return () => window.removeEventListener('popstate', drop)
@@ -280,7 +280,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     setError(''); setTrialRefused(null); setLinkNote(null); setBusy(true)
     const epoch = quoteEpoch.current
     const strict = claudeOnly
-    const body = JSON.stringify({ query, icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(strict ? { mode: FIRST5_CLAUDE_ONLY_MODE } : stay ? { mode: 'first5' } : {}) })
+    const body = JSON.stringify({ query, icp: profile, research_decisions: asResearchBlock(research)?.decisions, ...(strict ? { mode: PINNED_FIRST5_CLAUDE_ONLY_MODE } : stay ? { mode: 'first5' } : {}) })
     try {
       const r = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const j = await r.json().catch(() => ({}))
@@ -304,17 +304,19 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   async function confirmStart() {
     if (!pendingEstimate?.est.verdict.ok || scanRequestInFlight.current) return
     const { est, body, query, stay, strict } = pendingEstimate
+    const epoch = quoteEpoch.current
     scanRequestInFlight.current = true
     setError(''); setTrialRefused(null); setLinkNote(null); setBusy(true)
     try {
       const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...JSON.parse(body), estimate_ack: est.ack }) })
       const j = await r.json().catch(() => ({}))
       if (((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) && j.estimate?.ack) {
-        setPendingEstimate({ ...pendingEstimate, est: j.estimate as RunEstimate }); return
+        if (epoch === quoteEpoch.current) setPendingEstimate({ ...pendingEstimate, est: j.estimate as RunEstimate })
+        return
       }
       setPendingEstimate(null)
       if (r.ok && j.job_id) {
-        if (strict && j.provider_policy !== 'claude_only_v1') return setError('Could not verify the Claude-only scan mode. Check your leads before trying again.')
+        if (strict && (j.provider_policy !== 'claude_only_v1' || j.execution !== 'local_once_v1')) return setError('Could not verify the Claude-only scan mode. Check your leads before trying again.')
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
         if (stay || strict) { if (strict) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return

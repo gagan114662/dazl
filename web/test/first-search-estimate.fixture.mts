@@ -7,7 +7,7 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './helpers/tenant-route-db.ts'
 import { POST as SCAN } from '../app/api/scan/route.ts'
 import { GET as STATUS } from '../app/api/scan/status/route.ts'
-import { FIRST5_CLAUDE_ONLY_MODE } from '../lib/scan/qa-provider-policy.ts'
+import { PINNED_FIRST5_CLAUDE_ONLY_MODE } from '../lib/scan/qa-provider-policy.ts'
 import { writeModelCalls } from '../lib/scan/model-usage.ts'
 import { POST as ESTIMATE } from '../app/api/scan/estimate/route.ts'
 
@@ -65,7 +65,7 @@ test('first-run wizard: the exact first5 profile and decision payload can be est
 
 test('strict first play uses the same mode for the quote and acknowledgement and never falls back', async () => {
   await keyless(async db => {
-    const body = { query: Q, mode: FIRST5_CLAUDE_ONLY_MODE }
+    const body = { query: Q, mode: PINNED_FIRST5_CLAUDE_ONLY_MODE }
     const quote = await est(body)
     assert.equal(quote.status, 200)
     const { estimate } = await quote.json() as { estimate: { ack: string; rows: { provider: string }[] } }
@@ -78,7 +78,9 @@ test('strict first play uses the same mode for the quote and acknowledgement and
     assert.equal(reservations(db).length, 0)
     const ok = await scan({ ...body, estimate_ack: estimate.ack })
     assert.equal(ok.status, 202)
-    assert.equal((await ok.json()).provider_policy, 'claude_only_v1')
+    const admitted = await ok.json()
+    assert.equal(admitted.provider_policy, 'claude_only_v1')
+    assert.equal(admitted.execution, 'local_once_v1')
     assert.equal(JSON.parse(jobs(db)[0].estimate!).ack, estimate.ack)
   })
 })
