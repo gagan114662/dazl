@@ -118,7 +118,7 @@ export function migrateScan(db: Database.Database): void {
   migrateRunReport(db)
   migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
   migrateScanSpendCap(db) // the per-scan hard spend cap's ledger columns and call rows (lib/scan/spend-cap.ts)
-  migrateStrictLocalPin(db)
+  // The optional local pin fence is installed by its admission transaction, not the portable bootstrap.
 }
 
 // Evidence columns. Nullable, so rows written by other workers (Hermes) stay valid:
@@ -283,7 +283,7 @@ export function createQueryJob(db: Database.Database, userId: string, input: Que
 // Strict local execution is fenced at the SQLite storage boundary, even on rollback.
 const pin = (when: 'OLD' | 'NEW') => `COALESCE(json_extract(CASE WHEN json_valid(${when}.run_budget) THEN ${when}.run_budget ELSE '{}' END, '$.execution'), '') = '${QA_LOCAL_EXECUTION}'`
 
-export function migrateStrictLocalPin(db: Database.Database): void {
+function migrateStrictLocalPin(db: Database.Database): void {
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS strict_local_pin_insert BEFORE INSERT ON scan_jobs
     WHEN ${pin('NEW')}
@@ -314,8 +314,8 @@ export function migrateStrictLocalPin(db: Database.Database): void {
 // The transient ordinary pending row is never visible outside that transaction.
 export function pinAdmittedStrictJob(db: Database.Database, tenant: string, id: string, raw: string | null): Job {
   if (!db.inTransaction || !qaClaudeOnlyJob(raw)) throw new Error('strict local admission fence is unavailable')
-  // DDL and claim must be on this raw SQLite admission transaction together.
-  // PG and queue-managed configurations are refused at the route, not shimmed.
+  // Install the SQLite-only fence before committing its first pin. SQLite rolls back both DDL and the job
+  // together if admission fails. Ordinary bootstrap and PostgreSQL generation never need this fence.
   migrateStrictLocalPin(db)
   const pinned = JSON.stringify({ ...JSON.parse(raw!), execution: QA_LOCAL_EXECUTION })
   const claimed = db.prepare(`UPDATE scan_jobs
