@@ -1,3 +1,4 @@
+import { listedProfileLabel, listedProfileUrl, profileFromListedLabel } from '../people/site-profile.ts'
 import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
@@ -19,6 +20,7 @@ import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type Addr
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
@@ -109,7 +111,7 @@ function inflateEitherWay(): Transform {
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
-    let hard: NodeJS.Timeout | undefined
+    let hard: NodeJS.Timeout | undefined = undefined
     const resolve = (v: { status: number; body: string; finalUrl: string; text?: string } | null | Promise<{ status: number; body: string; finalUrl: string; text?: string } | null>) => { clearTimeout(hard); resolveRaw(v as never) }
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
@@ -181,7 +183,7 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
     } catch { return null }
   }
 }
-export const defaultGet = (env: Record<string, string | undefined> = process.env): Get => (env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal))
+export const defaultGet = (env: Record<string, string | undefined> = process.env, nativeOnly = false): Get => (!nativeOnly && env.CRAWL4AI_URL ? crawl4aiGet(env.CRAWL4AI_URL) : (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal))
 
 // ---- robots.txt: parsed by robots-parser (MIT, the parser Crawlee uses). We obey the group for our own token and for "dazl". ----
 export interface Robots { allows: (path: string, site?: string) => boolean; delayMs: number }
@@ -471,7 +473,7 @@ const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|dir
 export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
-const PEOPLE_PAGE = /(about|team|leadership|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
+const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -620,16 +622,77 @@ const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
 export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
-const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|careers?|our-practice|meet-the|providers|doctors|staff)/i
-export function contactPaths(homeHtml: string, home: URL): string[] {
+const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
+const BUYER_DIRECTORY_PATH = /\/(?:[^/]*-)?(?:team|leadership|management|people|staff|executives)(?:[-/]|$)/i
+function sameCompanyPage(target: URL, base: URL): boolean {
+  return target.protocol === 'https:' && !target.username && !target.password && !target.port && target.hostname.replace(/^www\./, '') === base.hostname.replace(/^www\./, '')
+}
+export function contactPaths(homeHtml: string, home: URL, preferBuyers = false): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
+  const linkedLocations = new Set<string>(), linkedBuyers = new Set<string>()
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
-    if (PAGE_HINT.test(u.pathname) && u.pathname.length < 60 && !/\.(pdf|jpg|png|zip)$/i.test(u.pathname) && !u.search) set.add(u.pathname)
+    if (!PAGE_HINT.test(u.pathname) || u.pathname.length >= 60 || /\.(pdf|jpg|png|zip)$/i.test(u.pathname) || u.search) continue
+    set.add(u.pathname)
+    if (sameCompanyPage(u, home) && BUYER_DIRECTORY_PATH.test(u.pathname)) linkedBuyers.add(u.pathname)
+    if (/\/(?:locations?|offices?)(?:\/|$)/i.test(u.pathname)) linkedLocations.add(u.pathname)
   }
   for (const extra of ['/locations', '/our-team', '/careers']) set.add(extra) // after the page's own links: same cap, never ahead of them
-  return [...set].slice(0, 8)
+  return [...new Set([...(preferBuyers ? [...linkedBuyers].slice(0, 1) : []), '/contact', '/contact-us', ...linkedLocations, ...set])].slice(0, 8)
+}
+
+// Follow one named person's exact first-party bio link, from a directory that the company
+// listed itself. Never treat the directory link as proof of a role.
+type BuyerBio = { path: string; name: string; expectedValue?: string }
+function linkedBuyerBio(html: string, page: URL, listed: Map<string, string> | null = null): BuyerBio | null {
+  const clean = cutBlocks(html)
+  if (!clean || !BUYER_DIRECTORY_PATH.test(page.pathname)) return null
+  // A directory that mixes former/current people is ambiguous without a scoped DOM section.
+  if (FORMER_SECTION.test(plainText(clean))) return null
+  for (const m of clean.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]{1,250}?)<\/a\s*>/gi)) {
+    const name = plainText(m[2], 80)
+    if (!NAME_LINE.test(name) || looksLikeJobTitle(name)) continue
+    const expectedValue = listed?.get(name)
+    if (listed && !expectedValue) continue
+    let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), page) } catch { continue }
+    if (!sameCompanyPage(u, page) || u.search || u.hash || u.pathname.length > 140) continue
+    const directory = page.pathname.replace(/\/+$/, '')
+    if (!u.pathname.startsWith(directory + '/') || u.pathname.slice(directory.length + 1).replace(/\/+$/, '').includes('/')) continue
+    const slug = name.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    if (slug.split('-').length < 2 || u.pathname.slice(directory.length + 1).replace(/\/+$/, '').toLowerCase() !== slug) continue
+    return { path: u.pathname, name, ...(expectedValue ? { expectedValue } : {}) }
+  }
+  return null
+}
+
+// A profile is metadata for an already accepted bio, never identity/title proof by
+// itself. Scope to one article with one exact heading and an explicitly named link;
+// no page-wide social icons, cross-card links, guessed slugs, or LinkedIn fetch.
+function linkedBioProfile(html: string, name: string): string | null {
+  // This optional extraction never processes an oversized/ambiguous document.
+  if (html.length > 32_768) return null
+  const stripped = cutBlocks(html)
+  if (!stripped) return null
+  const clean = stripped.replace(/<!--[^]*?(?:-->|$)|<(script|style|noscript|template)\b[^>]*>[^]*?(?:<\/\1\s*>|$)/gi, '')
+  const articles = [...clean.matchAll(/<article\b[^>]*>((?:(?!<article\b)[\s\S])*?)<\/article\s*>/gi)]
+  if (articles.length !== 1 || (clean.match(/<article\b/gi)?.length ?? 0) !== 1) return null
+  const body = articles[0][1]
+  const headings = [...body.matchAll(/<h[1-4]\b[^>]*>([\s\S]*?)<\/h[1-4]\s*>/gi)]
+  if (headings.length !== 1 || plainText(headings[0][1], 120) !== name) return null
+  const anchors = [...body.matchAll(/<a\b([^>]+)>([\s\S]*?)<\/a\s*>/gi)]
+  const profiles: { url: string; named: boolean }[] = []
+  for (const a of anchors) {
+    const href = /(?:^|\s)href\s*=\s*["']([^"']+)["']/i.exec(a[1])?.[1]
+    const url = href && listedProfileUrl(href)
+    if (!url) continue
+    const aria = /(?:^|\s)aria-label\s*=\s*["']([^"']+)["']/i.exec(a[1])?.[1]
+    const explicit = `${name} on LinkedIn`
+    const text = plainText(a[2], 160)
+    const label = aria ? plainText(aria, 160) : ''
+    profiles.push({ url, named: text === explicit || ((text === '' || text === 'LinkedIn') && label === explicit) })
+  }
+  return profiles.length === 1 && profiles[0].named ? listedProfileLabel(profiles[0].url) : null
 }
 
 // Abort-aware sleep: resolves early (to false) when the signal fires, so the
@@ -641,6 +704,100 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 })
 const lastHit = new Map<string, number>()
 
+type LocationPage = { url: string; statements: string[]; offices: { heading: string; address: string; ownSection: boolean }[]; footerOffices: { heading: string; address: string }[]; hiringMarkets: { heading: string; employer: string }[] }
+type LocationProof = { url: string; excerpt: string }
+
+function subpageLocationFacts(url: string, body: string): LocationPage {
+  // Keep prose statements and office entries separate. A page can list several offices or quote a customer.
+  const visibleMarkup = body.replace(/<!--[\s\S]*?(?:-->|$)|<(script|style|noscript|svg|template|blockquote)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+  const statements = [...visibleMarkup.matchAll(/<(p|address)\b[^>]*>([\s\S]{1,800}?)<\/\1\s*>/gi)]
+    .map(m => plainText(m[2], 300)).filter(Boolean)
+  const offices: LocationPage['offices'] = []
+  const footerOffices: LocationPage['footerOffices'] = []
+  const hiringMarkets: LocationPage['hiringMarkets'] = []
+  const locationPath = /\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname)
+  const careerPath = /\/(?:careers?|jobs)(?:\/|$)/i.test(new URL(url).pathname)
+  if (locationPath || careerPath) {
+    const headings = [...visibleMarkup.matchAll(/<h([1-6])\b[^>]*>([\s\S]{1,500}?)<\/h\1\s*>/gi)]
+    let ownSectionLevel = 0
+    for (const [index, heading] of headings.entries()) {
+      const level = Number(heading[1])
+      if (ownSectionLevel && level <= ownSectionLevel) ownSectionLevel = 0
+      const title = plainText(heading[2], 300)
+      if (/^we are (?:conveniently )?located (?:in|at|on)\b/i.test(title)) statements.push(title)
+      if (/^(?:where we are|our (?:offices|locations))$/i.test(title)) ownSectionLevel = level
+      const start = heading.index + heading[0].length
+      const block = visibleMarkup.slice(start, Math.min(headings[index + 1]?.index ?? visibleMarkup.length, start + 2500))
+      const address = plainText(block, 200)
+      if (locationPath && address) offices.push({ heading: title, address, ownSection: ownSectionLevel > 0 })
+      if (careerPath && /^[\p{L} .’'-]+,\s*[\p{L} .’'-]+$/u.test(title)) {
+        for (const link of block.matchAll(/<a\b[^<>]*\bhref\s*=\s*["'](https:\/\/[^"']+)["']/gi)) {
+          const employer = atsPostingRef(link[1])?.org
+          if (employer) hiringMarkets.push({ heading: title, employer })
+        }
+      }
+    }
+  }
+  if (new URL(url).pathname === '/') {
+    // A company footer may list each office as adjacent city and postal-address blocks.
+    const footer = /<footer\b[^<>]*>/i.exec(visibleMarkup)
+    if (footer) {
+      const start = footer.index + footer[0].length
+      const end = visibleMarkup.toLowerCase().indexOf('</footer', start)
+      const body = end < 0 ? '' : visibleMarkup.slice(start, Math.min(end, start + 50_000))
+      const blocks = [...body.matchAll(/<(p|h[1-6]|address)\b[^<>]*>([\s\S]{1,800}?)<\/\1\s*>/gi)].map(m => plainText(m[2], 200))
+      const officeStart = blocks.findIndex(block => /^(?:corporate hq|head office|our offices|our locations)$/i.test(block))
+      if (officeStart >= 0) for (let i = officeStart + 1; i + 1 < blocks.length; i++) {
+        if (FOREIGN_SUBJECT.test(blocks[i]) || FOREIGN_FOOTER_SECTION.test(blocks[i])) break
+        if (POSTAL_ADDRESS.test(blocks[i + 1]) && streetKeys(blocks[i + 1]).length) footerOffices.push({ heading: blocks[i], address: blocks[i + 1] })
+      }
+    }
+  }
+  return { url, statements, offices, footerOffices, hiringMarkets }
+}
+
+const OFFICE_CLAIM = /^(?:is |are )?(?:(?:headquartered|based|located) (?:in|at)|(?:office|headquarters)\s*[:,-])\s+/i
+const FIRST_PERSON_OFFICE = /^(?:our (?:[\p{L}-]+ )?(?:office|headquarters) (?:is|are) (?:in|at)|we are (?:conveniently )?located (?:in|at|on))\s+/iu
+const HOME_BASE_CLAIM = /^we (?:are|work) remote-first with (?:a|our) ([\p{L} ,.'’-]{2,64}) home base[.!]?$/iu
+const FOREIGN_SUBJECT = /\b(?:customer|client|partner|testimonial|service area)\b/i
+// Footer category headings often use the plural; they end the first-party office block.
+const FOREIGN_FOOTER_SECTION = /\b(?:customers|clients|partners|testimonials|service areas)\b/i
+const POSTAL_ADDRESS = /\b(?:[A-Z]\d[A-Z]\s?\d[A-Z]\d|[A-Z]{2}\s+\d{5}(?:-\d{4})?)\b/i
+
+function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean): LocationProof | undefined {
+  if (!where.length) return undefined
+  const key = norm(company)
+  if (key.length < 3 || company.length > 160) return undefined
+  const requestedPlaces = new Set(geoTerms(where).map(norm))
+  const agrees = (fragment: string) => placeAgreement(fragment, where, company) === 'agrees' && !ownAddressElsewhere(fragment, where)
+  for (const { url, statements, offices, footerOffices, hiringMarkets } of pages) {
+    const footer = footerOffices.find(({ heading, address }) => requestedPlaces.has(norm(heading)) && !FOREIGN_SUBJECT.test(address) && agrees(address))
+    if (footer) return { url, excerpt: `${footer.heading}: ${footer.address}` }
+    const market = hiringMarkets.find(({ heading, employer }) => norm(employer) === key && agrees(heading))
+    if (market) return { url, excerpt: `employer's own hiring page lists ${market.heading}` }
+    if (alternateOfficeOnly || new URL(url).pathname === '/') continue
+    for (const paragraph of statements) {
+      for (const sentence of paragraph.split(/(?<=[.!?])\s+/)) {
+        if (FOREIGN_SUBJECT.test(sentence)) continue
+        const words = sentence.trim().split(/\s+/)
+        const matchesCompany = words.slice(0, Math.min(10, words.length)).some((_, index) =>
+          norm(words.slice(0, index + 1).join(' ')) === key && OFFICE_CLAIM.test(words.slice(index + 1).join(' ')))
+        const homeBase = HOME_BASE_CLAIM.exec(sentence)?.[1]
+        if ((matchesCompany || FIRST_PERSON_OFFICE.test(sentence) || (homeBase && requestedPlaces.has(norm(homeBase)))) && agrees(sentence)) return { url, excerpt: sentence }
+      }
+    }
+    for (const { heading, address, ownSection } of offices) {
+      if (FOREIGN_SUBJECT.test(`${heading} ${address}`) || !POSTAL_ADDRESS.test(address) || !/^\d{1,5}\s+[\p{L}\d]/u.test(address)) continue
+      const words = heading.split(/\s+/)
+      const companyAndPlace = words.some((_, index) => norm(words.slice(0, index + 1).join(' ')) === key && requestedPlaces.has(norm(words.slice(index + 1).join(' '))))
+      // An office directory heading must be the place alone or the exact company followed by the place.
+      if (!(companyAndPlace || (ownSection && requestedPlaces.has(norm(heading)))) || !agrees(address)) continue
+      return { url, excerpt: `${heading}: ${address}` }
+    }
+  }
+  return undefined
+}
+
 // onPage (optional) sees the raw HTML of every own-site page read; used only by the email finder (EMAIL_GUESS_ENABLED).
 // buyerRoles (optional): the scan ICP's "who" roles. Listed people whose title shares ICP words are kept first, so for a
 // payroll seller "Head of HR" is not crowded out by a CTO; seniority breaks ties. Without it, seniority only (as before).
@@ -650,7 +807,7 @@ const lastHit = new Map<string, number>()
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; stoppedBy?: 'pages' | 'time' | 'aborted' }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -700,10 +857,9 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       }
     }
     const rob = await polite(`${origin}/robots.txt`, 0)
-    let robots: Robots
     if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
     if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
-    robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
+    const robots: Robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
     if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
     const home = await polite(`${origin}/`, robots.delayMs)
     if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
@@ -713,10 +869,14 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
-    const found = new Map<string, Found>(); let pages = 1
+    const found = new Map<string, Found>(); let pages = 1, buyerPages = 0
+    const locationPages: LocationPage[] = [subpageLocationFacts(home.finalUrl, home.body)]
     onPage?.(home.body, home.finalUrl, home.status)
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
-    for (const p of contactPaths(home.body, new URL(home.finalUrl))) {
+    const homePage = new URL(home.finalUrl)
+    const paths: ({ path: string } & Partial<Pick<BuyerBio, 'name' | 'expectedValue'>>)[] = contactPaths(home.body, homePage, !!buyerRoles).map(path => ({ path }))
+    let queuedBio = false
+    for (const { path: p, name, expectedValue } of paths) {
       if (stopped()) { stoppedBy = 'aborted'; break }
       if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
       if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
@@ -724,8 +884,40 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       const r = await polite(origin + p, robots.delayMs)
       if (!r || r.status >= 400) continue
       pages++
+      const page = new URL(r.finalUrl)
+      const buyerPage = sameCompanyPage(page, homePage) && PEOPLE_PAGE.test(page.pathname)
+      // A redirected bio provides no contact, location or person evidence.
+      if (name && (!buyerPage || page.pathname.replace(/\/+$/, '') !== p.replace(/\/+$/, ''))) continue
       onPage?.(r.body, r.finalUrl, r.status)
-      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...extractPeople(r.body, r.finalUrl, buyerRoles)]) if (!found.has(f.kind + f.value)) found.set(f.kind + f.value, f)
+      if (r.finalUrl.length <= 500 && page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
+      if (buyerPage) buyerPages++
+      // Require the exact directory name, and preserve extractPeople's role/anti-quote rules.
+      const people = extractPeople(r.body, r.finalUrl, buyerRoles)
+      const boundPeople = people.filter(f => !name || f.value.split(', ')[0] === name)
+      // When a directory already named the buyer, the bio cannot change their role or add a second identity.
+      if (expectedValue && (boundPeople.length !== 1 || boundPeople[0].value !== expectedValue)) continue
+      if (name && buyerRoles && boundPeople.length === 1 && buyerTitle(titleOf(boundPeople[0]), buyerRoles)) {
+        const label = linkedBioProfile(r.body, name)
+        if (label) boundPeople[0] = { ...boundPeople[0], label }
+      }
+      for (const f of [...extractContacts(r.body, r.finalUrl, site), ...boundPeople]) {
+        const key = f.kind + f.value
+        if (!found.has(key) || (expectedValue === f.value && f.kind === 'person' && profileFromListedLabel(f.label))) found.set(key, f)
+      }
+      if (buyerRoles && buyerPage && !name && !queuedBio) {
+        // With a populated directory, spend the one bio slot only on an existing role match with a unique exact name.
+        const listed = new Map<string, string>()
+        for (const person of people) {
+          const listedName = person.value.split(', ')[0]
+          if (buyerTitle(titleOf(person), buyerRoles) && people.filter(x => x.value.split(', ')[0] === listedName).length === 1) listed.set(listedName, person.value)
+        }
+        const bio = linkedBuyerBio(r.body, page, people.length === 0 ? null : listed)
+        if (bio && !paths.some(x => x.path === bio.path)) {
+          // Reserve at most one slot, without exceeding MAX_PAGES or the existing deadline.
+          queuedBio = true
+          paths.splice(paths.findIndex(x => x.path === p) + 1, 0, bio)
+        }
+      }
     }
     // Social bio adapter (flag SITECRAWL_SOCIAL=1). Same hard robots rule, per host. In practice x.com, facebook.com, linkedin.com and
     // instagram.com disallow our user agent, so this fetches nothing from them; it exists for smaller platforms that allow it.
@@ -746,7 +938,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
     const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, ...(sb ? { stoppedBy: sb } : {}) }
+    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], buyerPages, reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -962,16 +1154,18 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
+    // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
+    if (!db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId)) return
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
     const crawlBudgetMs = crawlBudgetBound(Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS))
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
     // own 40s per-call bound (outer deadline does not reach it yet - tracked).
-    const get = deps.get ?? (deps.signal && !deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL
+    const get = deps.get ?? (deps.signal && (deps.nativeOnly || (!deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL))
       ? (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal ?? deps.signal)
-      : defaultGet(deps.env))
+      : defaultGet(deps.env, deps.nativeOnly))
     // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
     // Held leads whose evidence page could not be READ (blocked_by_site / needs_javascript) get the same identity attempt as the
     // date/quote classes: a blocked article says nothing about the company's own site. This never re-fetches the blocked evidence
@@ -985,7 +1179,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const CRAWL_HOLD_LIST = crawlEligibleHolds()
     const CRAWL_HOLDS = CRAWL_HOLD_LIST.map(r => `'${r.replace(/'/g, "''")}'`).join(',')
     const pick = (cols: string) => db.prepare(`SELECT ${cols} FROM leads WHERE scan_job_id = ? AND ((review_reason IS NULL AND confidence IS NOT NULL) OR review_reason IN (${CRAWL_HOLDS})) AND company <> '' ORDER BY (review_reason IS NOT NULL), score DESC LIMIT ?`).all(jobId, MAX_SITES_PER_SCAN)
-    const leads = (deps.leads ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
+    const supplied = deps.leads?.filter(l => !!db.prepare('SELECT 1 FROM leads WHERE id = ? AND scan_job_id = ?').get(l.id, jobId))
+    const leads = (supplied ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
     try { const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ?').get(jobId) as { icp: string | null } | undefined; const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null; if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string') } catch { /* no ICP: evidence places only */ }
@@ -1035,7 +1230,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
       }
       const reading = (async () => {
-        const r = await crawlSite(cand, hostGet, deps.gapMs, company, (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
+        const r = await crawlSite(cand, hostGet, deps.gapMs, company, !deps.nativeOnly && (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
         siteRead.set(cand, r)
         return r
       })()
@@ -1084,8 +1279,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       const sourceOf = new Map<string, string>()   // 1328-F1: page that linked/named a site, when it is not the lead's original page
       const nowSec = Math.floor((deps.now ?? Date.now()) / 1000)
       let sites: string[] = []
-      // A site the cited page shows as a link (or the page's own domain) is "linked": if it is read and refused, resolution ends there, as
-      // before. A site named only in the page's structured data is a candidate: it is tried first, and its refusal stops nothing (#1122).
+      // A posting link is a candidate, not proof: if local candidates fail identity/read checks,
+      // the bounded official-site lookup may still find this company elsewhere (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
@@ -1093,7 +1288,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
       // #1122/#1037: a job-board posting that links no company site: the employer's ATS posting it links (same company slug) is read once,
       // and any site IT links or names becomes a candidate; then the slug's own domains join the name guesses below.
-      const board = ev && !anchored ? jobBoardSlugs(l.company, ev.finalUrl ?? l.source_url, ev.body) : { slug: '', ats: [] as string[] }
+      const board = jobBoardSlugs(l.company, ev?.finalUrl ?? l.source_url, ev?.body ?? '')
       for (const a of board.ats) {
         if (anchored || deps.signal?.aborted) break
         let page: Awaited<ReturnType<typeof evidenceGet>> = null
@@ -1105,8 +1300,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (!structured.includes(o.site)) structured.push(o.site)
         }
       }
-      const fromSlug = board.slug ? slugDomains(board.slug, where) : []
+      const fromSlug = board.slug ? slugDomains(board.slug, where).filter(notBlockedHost) : []
+      // ATS employer identity is the first source, even when the posting also links a website.
+      // Slug-derived hosts remain guesses: every homepage/place/refusal check still applies.
+      let lookupPending = false
+      if (anchored && probed < MAX_PROBES_PER_SCAN) {
+        // Reserve once for both slug probes and the fallback; linking a stale site must not suppress search.
+        probed++
+        lookupPending = !!deps.findSites
+        sites = [...new Set([...fromSlug, ...sites])]
+        for (const d of fromSlug) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
+      }
       let unresolved = anchored ? 'linked_site_not_confirmed' : 'not_confirmed'
+      let probeGuesses: string[] = []
       if (!anchored) {
         // Evidence page does not link the company site: probe name-derived domains. Wrong guesses
         // are rejected by the homepage name check inside crawlSite.
@@ -1120,25 +1326,50 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           // #1122 (review at 01140156): the lead's source page is ON the company's own name-built domain and it refused reading. That site is
           // already known and already refused us; a web search could only return it again, so none is made and the reason says what happened.
           const ownBlocked = !!blockedHost && guesses.some(g => !notBlockedHost(g))
-          // #1036 4b: the company's own host from a web search first (one search per lead, capped by the caller), then the name guesses
-          let found: string[] = []
-          if (deps.findSites && !deps.signal?.aborted && !ownBlocked) { try { found = await deps.findSites(l.company, where) } catch { found = [] } }
-          sites = [...new Set([...structured, ...found, ...fromSlug, ...guesses])]
+          // Check the posting's candidates and employer slug BEFORE an external lookup can consume the deadline.
+          // Search remains a fallback, followed by the remaining name guesses, under the same identity/place checks.
+          lookupPending = !!deps.findSites && !ownBlocked
+          probeGuesses = guesses.filter(notBlockedHost)
+          if (blockedHost && probeGuesses.length !== guesses.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 })
+          sites = [...new Set([...fromSlug, ...structured])].filter(notBlockedHost)
+          if (!lookupPending) sites = [...new Set([...sites, ...probeGuesses])]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
           const ownCode = l.review_reason === 'needs_javascript' ? 'own_site_needs_javascript' : 'own_site_refused_reading'
           if (ownBlocked) unresolved = ownCode
-          if (sites.length === 0) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? ownCode : 'no_site_linked', today, nowSec); return }
+          if (sites.length === 0 && !lookupPending) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 }); recordDomainUnresolved(db, tenantId, l, ownBlocked ? ownCode : 'no_site_linked', today, nowSec); return }
         }
       }
       let redirects = 0, asks = 0, robotsStopped = false, answered = false
       const followed = new Set<string>()   // hosts that are themselves forwarding targets: never followed further
       let r: Awaited<ReturnType<typeof crawlSite>> = { found: [], reason: 'name_mismatch', pages: 0 }; let site = sites[0]
+      let locationProof: LocationProof | undefined
       // Nothing usable was read: wrong company, unreachable, or the time budget stopped the crawl before the homepage (#871).
       const unread = (x: Awaited<ReturnType<typeof crawlSite>>) => x.reason === 'name_mismatch' || x.reason === 'site_unreachable' || x.reason === 'time_budget' || x.reason === 'aborted'
       // Places this lead is about: the scan geography plus places its own evidence names (signal, quote, cited page).
       const places = placeTerms(where, [l.signal ?? '', l.evidence_excerpt ?? '', ev?.body ? (ev.text ?? plainText(ev.body)) : ''].join(' '), l.company)
-      for (const cand of sites) {
+      for (let i = 0; i < sites.length || lookupPending; i++) {
+        if (deps.signal?.aborted) return
+        if (i >= sites.length) {
+          lookupPending = false
+          let found: string[] = []
+          try { found = await deps.findSites!(l.company, where) } catch { /* failed lookup: only local guesses remain */ }
+          if (deps.signal?.aborted) return
+          // A public record can supply new identity provenance for a host already probed. Re-evaluate it
+          // against the cached homepage (no extra network), with recordSite now bound to this company.
+          for (const d of [...new Set(found)]) {
+            if (!notBlockedHost(d)) { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost!, status: 'skipped_site_refused_us', results: 0 }); continue }
+            sites.push(d)
+            if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
+          }
+          for (const d of probeGuesses) {
+            if (sites.includes(d)) continue
+            sites.push(d)
+            if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
+          }
+          if (i >= sites.length) break
+        }
+        const cand = sites[i]
         site = cand
         r = await readSite(cand, l.company)
         // #1122: a name-built or searched domain that only FORWARDS to another site (queenstreetdentalcentre.ca -> qsdc.ca). The crawl's fetch
@@ -1167,7 +1398,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // 1289-F4: the waiver is for a lead with NO place at all. When the lead's own evidence names a place ("Mercury in Austin, TX"), a same-name
         // public record is not enough: the homepage must still agree with that place, so a Chicago site is refused for an Austin lead.
         const recordNoGeo = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
-        if (!unread(r) && ((basisOf.get(cand) === 'name_probe' && !recordNoGeo && !probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places })) || (basisOf.get(cand) !== 'name_probe' && basisOf.get(cand) !== 'evidence_own_domain' && places.length > 0 && !placeConsistent(r.homeNorm, places)))) {
+        const basis = basisOf.get(cand)
+        const guessed = basis === 'name_probe'
+        const vHome = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
+        const homeLocationOk = guessed ? probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places }) : placeConsistent(r.homeNorm, places)
+        const homeElsewhere = !!r.homeText && ownAddressElsewhere(r.homeText, where)
+        locationProof = !unread(r) && basis !== 'evidence_own_domain' && (!homeLocationOk || vHome === 'mismatch' || homeElsewhere)
+          ? siteLocationProof(r.locationPages ?? [], where, l.company, vHome !== 'unconfirmed' || !!firstPlaceLabel(r.homeText ?? ''))
+          : undefined
+        if (!unread(r) && !homeLocationOk && !locationProof && ((guessed && !recordNoGeo) || (!guessed && basis !== 'evidence_own_domain' && places.length > 0))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
@@ -1186,8 +1425,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           continue
         }
         if (!unread(r) && where.length > 0 && basisOf.get(cand) !== 'evidence_own_domain') {
-          const v = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
-          if (v === 'mismatch' || (r.homeText && ownAddressElsewhere(r.homeText, where)) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
+          const v = locationProof ? 'agrees' : vHome
+          if (v === 'mismatch' || (!locationProof && homeElsewhere) || (v !== 'agrees' && v !== 'no_geography' && cityScoped(where) && basisOf.get(cand) === 'name_probe')) {
             // Reason in plain words, e.g. "contact rejected: location mismatch Pico Rivera, CA vs New York, NY".
             audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: `contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180), results: 0 })
             if (r.homeText) recordContactRejection(db, tenantId, l.id, { connector: 'sitecrawl', reason: (`contact rejected: location ${v === 'mismatch' ? 'mismatch' : 'unconfirmed'} ${firstPlaceLabel(r.homeText ?? '') ?? 'another place'} vs ${leadPlaceLabel(where)}`.slice(0, 180)).slice(0, 180), sourceUrl: `https://${cand}/` })
@@ -1208,7 +1447,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (r.reason !== 'ok' && r.reason !== 'none_published') recordDomainUnresolved(db, tenantId, l, r.reason === 'robots_disallow' ? 'site_not_readable' : 'site_not_read', today, nowSec)   // only rules that FORBID reading are a refusal; rules that could not be fetched are just an unread site
       // The homepage named the company: the domain is confirmed as the company's own site, whether
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
-      if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ?').run(site, l.id)
+      if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ? AND scan_job_id = ? AND EXISTS (SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?)').run(site, l.id, jobId, jobId, tenantId)
       if (r.reason === 'ok' || r.reason === 'none_published') { try { db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(l.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND) } catch { /* note only */ } }
       if (r.reason === 'ok' || r.reason === 'none_published') { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
       let n = 0
@@ -1220,10 +1459,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       if (r.reason === 'ok' || r.reason === 'none_published') {
         const basis = basisOf.get(site) ?? 'name_probe'
         addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain', value: `${site}|${basis}`, label: domainBasisToken(basis), confidence: null, source_url: basis === 'name_probe' ? `https://${site}/` : (sourceOf.get(site) ?? ev?.finalUrl ?? l.source_url).slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
+        // Preserve the page that supplied positive office evidence and its own fetch time.
+        const proofPage = locationProof && db.prepare('SELECT fetched_at FROM crawl_pages WHERE tenant_id = ? AND scan_job_id = ? AND site = ? AND url = ?')
+          .get(tenantId, jobId, site, locationProof.url) as { fetched_at: number } | undefined
+        const checkedAt = proofPage?.fetched_at ?? Math.floor((deps.now ?? Date.now()) / 1000)
+        const proofLabel = locationProof ? `identity-check-v2: first-party location evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
+        addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: proofLabel.slice(0, 200), confidence: null, source_url: locationProof?.url ?? `https://${site}/`, source_date: new Date(checkedAt * 1000).toISOString().slice(0, 10), retrieved_at: checkedAt })
       }
-      // The identity check passed for this site (name on the homepage, and the place or street agreed or was not contradicted): record it,
-      // so the contact sweep and the score can tell this domain from a legacy name guess that only agrees with itself.
-      if (r.reason === 'ok' || r.reason === 'none_published') addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: 'identity-check-v2: homepage names the company and the place or address agrees'.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) })
       for (const t of r.tech ?? []) {
         const e: Enrichment = { connector: 'sitecrawl', kind: 'tech', value: t.name.slice(0, 254), label: `seen on the company website (${t.where})`.slice(0, 200), confidence: null, source_url: `https://${site}/`, source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
@@ -1233,11 +1475,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       techBranch(db, tenantId, jobId, l.id, site, r, Math.floor((deps.now ?? Date.now()) / 1000), deps.env)
       // A guessed site passed the name AND location checks, but the evidence never linked it: say so on every contact.
       const guessed = (basisOf.get(site) ?? 'name_probe') === 'name_probe'
+      let named = 0
       for (const f of r.found) {
-        const label = guessed ? `${f.label}; site found by name search and location match, not linked from the source` : f.label
+        const baseLabel = guessed && profileFromListedLabel(f.label) ? 'listed with this title on this company page, not verified as current staff' : f.label
+        const label = guessed ? `${baseLabel}; site found by name search and location match, not linked from the source` : f.label
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
         addEnrichment(db, tenantId, l.id, e); n++
+        if (f.kind === 'person' && (!buyerRoles || buyerTitle(titleOf(f), buyerRoles))) named++
       }
+      if ((r.reason === 'ok' || r.reason === 'none_published') && r.buyerPages) deps.onBuyerRead?.({ site, pages: r.buyerPages, stored: named })
       // #1036: a buyer the crawl named on this site whose OWN personal address the site prints (the published tier recordEmailGuesses
       // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
       // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this

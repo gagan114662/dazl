@@ -39,9 +39,9 @@ const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'start','-p',String(port),'-H','127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i=0;i<100;i++){ try { await fetch(base+'/sign-in'); break } catch { await new Promise(r=>setTimeout(r,200)) } }
 const calls = []; const scanBodies = []; const realProfile = []
-const state = { hasKey: false, sender: null }
+const state = { hasKey: false, sender: null, oldFirstPlayServer: false }
 const ICP = { summary: 'Independent dental practices with 2-10 chairs that are growing.', who: ['Practice owners', 'Office managers'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['Opened a new location', 'Hiring front-desk staff', 'Switched practice software'], exclude: [] }
-const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
+const b = await chromium.launch(process.env.DAZL_UI_CHROMIUM ? { executablePath: process.env.DAZL_UI_CHROMIUM } : {}); const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
 await ctx.addCookies([{ name:'dazl_session', value: token, url: base }])
 await ctx.route('**/*', async route => {
   const req = route.request(); const u = new URL(req.url()); const m = req.method()
@@ -56,7 +56,12 @@ await ctx.route('**/*', async route => {
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: false, remaining: 0, cap: 3 } })
   if (p === '/api/scan/icp-from-url') return state.hasKey ? json({ icp: ICP, source: 'https://brightsmile.example/', sells: 'Online booking and reminders for dental practices' }) : json({ error: 'no_api_key' }, 400)
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
-  if (p === '/api/scan' && m === 'POST') { scanBodies.push(JSON.parse(req.postData())); return json({ job_id: 'c'.repeat(24) }, 202) }
+  if (p === '/api/scan' && m === 'POST') {
+    const body = JSON.parse(req.postData()); scanBodies.push(body)
+    if (state.oldFirstPlayServer) return json({ error: 'unknown_mode' }, 400)
+    return json({ job_id: 'c'.repeat(24), ...(body.mode === 'first5_claude_only_pinned_v2' ? { provider_policy: 'claude_only_v1', execution: 'local_once_v1' } : {}) }, 202)
+  }
+  if (p === '/api/scan/status') return json({ status: 'running' })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: { email: 'me@brightsmile.example', status: 'active', read_granted: false }, sender: state.sender, daily_cap: 20, sent_24h: 0 })
   if (p === '/api/outreach/settings' && m === 'PUT') { state.sender = JSON.parse(req.postData()); return json({ ok: true }) }
   if (p === '/api/outreach') return json({ messages: [{ id: 'm1', to_email: 'owner@dentist.example', subject: 'Your new Dublin location', body: 'Hi Dr. Lee,\n\nCongrats on opening the Dublin office...', status: 'draft', error: null, sent_at: null, send_footer: state.sender ? `${state.sender.sender_name}\n${state.sender.postal_address}\nUnsubscribe: https://dazl.ai/u/...` : null, evidence_state: 'machine', provenance: null }] })
@@ -135,6 +140,32 @@ const val = l => page.getByLabel(l).inputValue()
 assert.deepEqual({ sells: await val('What you sell'), who: await val('Who buys it'), roles: await val('Buyer roles'), industries: await val('Industries'), where: await val('Where'), signals: await val('Signs they need you now'), sizes: await val('Company sizes'), skip: await val('Skip') },
   { sells: 'Online booking and reminders for dental practices', who: 'Group dental practices opening new offices', roles: 'Practice owners; COO', industries: 'Dental; Orthodontics', where: 'Austin, TX', signals: 'Opened a new location', sizes: '10-50 employees', skip: 'Dental schools' })
 assert.ok(realProfile.includes('POST') && realProfile.filter(m => m === 'GET').length >= 3, 'the profile went through the real route')
+// Explicit restricted onboarding: no automatic profile or key check on entry/back/reload. The old server rejects
+// the versioned mode, and the UI must never fall back to an ordinary run. Only a deliberate retry can queue a scan.
+const beforeRestricted = calls.length
+scanBodies.length = 0
+await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
+await page.getByTestId('first-play-claude-only').click()
+await page.getByTestId('claude-only-active').waitFor()
+await page.getByRole('button', { name: 'Back', exact: true }).click()
+assert.equal(await page.getByRole('button', { name: 'Read my site' }).count(), 0)
+await page.reload({ waitUntil: 'networkidle' })
+await page.getByTestId('first-play-claude-only').click()
+assert.equal(await page.getByRole('button', { name: 'Read my site' }).count(), 0)
+await cont()
+await sentence().fill('Austin dental practices hiring a receptionist')
+state.oldFirstPlayServer = true
+await page.getByRole('button', { name: 'Find leads' }).click()
+await page.getByRole('alert').filter({ hasText: 'Nothing started.' }).waitFor()
+assert.equal(scanBodies.length, 1, 'never retries as an ordinary first play')
+assert.equal(scanBodies[0].mode, 'first5_claude_only_pinned_v2')
+state.oldFirstPlayServer = false
+await page.getByRole('button', { name: 'Find leads' }).click()
+await page.getByTestId('ready-step').waitFor()
+assert.deepEqual(scanBodies.map(b => b.mode), ['first5_claude_only_pinned_v2', 'first5_claude_only_pinned_v2'])
+assert.ok(!calls.slice(beforeRestricted).some(c => /(?:POST \/api\/scan\/icp|PUT \/api\/settings\/llm-key)/.test(c)), 'manual Claude-only setup opened no paid-capable profile or key endpoint')
+await shot('claude-only')
+
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {
   await page.getByPlaceholder('Your name, as recipients will see it').fill('Dana Smith'); await page.getByPlaceholder(/Mailing address/).fill('1 Main St, Columbus, OH 43004, USA')
