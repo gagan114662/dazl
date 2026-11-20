@@ -473,3 +473,36 @@ test('#1424 a namesake guess needs the contact page’s own scoped address, not 
     if (!expected) NOTHING(r)
   }
 })
+
+test('#1424 a UK own-company postal address can prove a guessed domain on its contact page', async () => {
+  const company = 'Example Studio'
+  const host = 'examplestudio.co.uk'
+  const address = '120 High Street, Brighton BN1 1AA'
+  for (const [paragraph, expected] of [
+    [`${company}, ${address}.`, host],
+    [`Different Company, ${address}.`, null],
+    [`Our partner ${company}, ${address}.`, null],
+    [`${company}, 120 High Street, Brighton, no postcode.`, null],
+    [`${company}, 120 High Street, Bristol BS1 1AA.`, null],
+    [`${company}, Brighton BN1 1AA.`, null],
+  ] as const) {
+    const r = await run({
+      company, where: ['Brighton, UK'], evidenceUrl: BOARD,
+      evidence: html(`<p>${company} advertised an opening in Brighton.</p>`),
+      sites: { [host]: {
+        '/': html(`<h1>${company}</h1>${PROSE}<a href="/contact">Contact</a>`),
+        '/contact': html(`<p>${paragraph}</p><p>Email: info@${host}</p>`),
+      } },
+    })
+    assert.equal(r.domain, expected, paragraph)
+    if (!expected) NOTHING(r)
+  }
+})
+
+test('#1424 Canadian postal tail with terminal punctuation preserves the hint', () => {
+  for (const w of ['Toronto, ON M5S 1T8.', 'Toronto, ON, M5S1T8.', 'Toronto, Ontario M5S 1T8.', 'Toronto, Ontario M5S 1T8., Canada']) {
+    assert.deepEqual(sc.countryTlds([w]), ['ca'], w)
+  }
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, CA M5S 1T8.']), [])
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, ON M5S 1T8., Denmark']), [])
+})
