@@ -113,7 +113,7 @@ test('independently bound exact public job hint can point to a different reviewe
     return reviewed
   }})
   assert.equal((await verifyCompanyWebsite(on,scope,{...candidate,hintUrl:publicHint},proof.ports)).state,'verified')
-  assert.deepEqual(proof.trace.filter(x=>Array.isArray(x)&&x[0]==='read').map(x=>x[1]),[robots,identity])
+  assert.deepEqual(proof.trace.flatMap(x=>Array.isArray(x)&&x[0]==='read'?[x[1]]:[]),[robots,identity])
   assert.ok(!JSON.stringify(proof.trace).includes(publicHint))
   for (const receipt of [
     x.review, {...reviewed, hintBinding:{...reviewed.hintBinding!,exactHintUrl:publicHint.replace('/101','/102')}},
