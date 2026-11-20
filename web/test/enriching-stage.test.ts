@@ -83,7 +83,9 @@ test('status route, jobs route and the leads page use the effective status', asy
   assert.match(route, /const payload = await readScanStatus\(sqliteDb\(raw\), user\.tenantId, jobId\)/)
   assert.match(route, /payload \? NextResponse\.json\(payload\)/)
   const service = rd('../lib/scan/status-read-service.ts')
-  assert.match(service, /getJob\(db, tenantId, jobId\)/)
+  assert.match(service, /getStatusJob\(db, tenantId, jobId\)/)
+  const store = rd('../lib/scan/store-db.ts')
+  assert.match(store, /export function getStatusJob\(db: Db, userId: string, id: string\)[\s\S]*?FROM scan_jobs j WHERE id = \? AND user_id = \?`, \[id, userId\]\)/)
   assert.doesNotMatch(service, /\b(?:getDb|getScanDb)\s*\(/)
   assert.match(service, /status: effectiveStatus\(job\), enrichment: \{ state: enrichState\(job\)/)
   // The jobs route serves historyJobs (lib/scan/history-jobs.ts), which maps the effective status (behaviour: test/history-jobs.test.ts).
