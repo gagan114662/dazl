@@ -1,0 +1,47 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { randomBytes } from 'node:crypto'
+import { effectiveOffer, statedOffer } from '../lib/scan/play-offer-text.ts'
+import { createQueryJob, migrateScan } from '../lib/scan/store.ts'
+import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { saveKey, migrateKeys } from '../lib/llm/key-store.ts'
+import { migratePlans } from '../lib/plans.ts'
+import { migrateConnectors } from '../lib/connectors/store.ts'
+import type { Provider } from '../lib/llm/provider.ts'
+import { migrateEvents } from '../lib/events/store.ts'
+
+test('the full parenthetical offer label survives nested grammar and punctuation, not the buyer tail',()=>{
+  const selection='Example.ai (training for (small) firms; incl. finance)'
+  const q=`We sell ${selection} to independent studios in Oslo.`
+  assert.equal(statedOffer(q),selection)
+  assert.equal(statedOffer(`Offer: ${selection}. Find studios.`),selection)
+  const choice=effectiveOffer({query:q},'Workspace plumbing subscription')
+  assert.equal(choice.conflict?.stated,selection)
+  assert.equal(statedOffer('Find companies (note: we sell unrelated tooling) in Oslo'),null)
+  assert.equal(statedOffer('We sell Example.ai (unfinished'),null)
+})
+
+test('inference on the product runner uses the explicitly selected play offer without mutating the saved seller snapshot',async()=>{
+  const db=new Database(':memory:'), master=randomBytes(32), prompts:string[]=[]
+  const seller='Workspace plumbing subscription - plumbing.example', offer='Studio project planning (teams with (contractors))'
+  const old=process.env.DAZL_MASTER_KEY
+  process.env.DAZL_MASTER_KEY=master.toString('base64')
+  try{
+    migrateScan(db);migrateKeys(db);migratePlans(db);migrateConnectors(db);migrateEvents(db)
+    saveKey(db,'A','anthropic','sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',master)
+    const id=createQueryJob(db,'A',{query:'Find studio owners in Oslo',seller,offer})
+    const job=claimKeyedJob(db,id)!
+    const provider:Provider={
+      complete:async(_k,p)=>{prompts.push(p);return JSON.stringify({summary:'Oslo studios',who:['Owner'],where:['Oslo'],signals:[]})},
+      research:async()=>({text:'[]',citedUrls:[]}),
+    }
+    const fetchImpl=(async()=>new Response('{}',{status:404})) as typeof fetch
+    await runJob(db,job,{master,providers:{anthropic:provider,openai:provider},fetchImpl,score:false,ground:false})
+    assert.ok(prompts[0]);assert.ok(prompts[0].includes(offer));assert.doesNotMatch(prompts[0],/plumbing|plumbing\.example/i)
+    assert.deepEqual(db.prepare('SELECT seller,offer FROM scan_jobs WHERE id=?').get(id),{seller,offer})
+  }finally{
+    if(old===undefined)delete process.env.DAZL_MASTER_KEY;else process.env.DAZL_MASTER_KEY=old
+    db.close()
+  }
+})
