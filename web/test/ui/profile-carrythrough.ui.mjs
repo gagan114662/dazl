@@ -97,6 +97,7 @@ try {
   //    estimate and scan requests are the SAME profile, both marked reviewed: false (presence is not approval).
   const a = await open({ buyer: BUYER })
   await a.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
+  assert.equal(await a.page.getByTestId('business-profile').getAttribute('data-profile-origin'), 'workspace')
   const note = await a.page.getByTestId('business-profile').textContent()
   assert.match(note, /^Find leads uses the saved profile as it is: Businesses that need evidence-backed outbound leads\./)
   assert.ok(!note.includes('review decisions you made'), 'a saved profile is not a review: the note never claims decisions were made on it')
@@ -112,6 +113,7 @@ try {
   assert.equal(a.estBodies[0].reviewed, false, 'the estimate says not-a-review')
   assert.equal(a.scanBodies[0].reviewed, false, 'the scan says not-a-review')
   assert.deepEqual(a.scanBodies[0].research_decisions, RESEARCH.decisions, 'the recorded reject and hold decisions ride along, still marked sourced/held server-side')
+  assert.deepEqual(a.saves, [], 'using the workspace profile never writes Settings')
   await a.ctx.close()
   // 2. A changed sentence on that first scan keeps the saved business profile, visibly.
   const c = await open({ buyer: BUYER })
@@ -149,14 +151,21 @@ try {
   assert.deepEqual(f.scanBodies[0].research_decisions, [], 'no review act ever happened, so no decisions are claimed')
   await f.ctx.close()
   // 5. Reload + exact-sentence repeat of a carried scan: the stored origin ('carried') keeps the repeat raw.
-  const g = await open({ buyer: BUYER, latest: { query: Q, icp: BUYER, icp_source: 'carried' } })
+  const previous = { ...BUYER, summary: 'Distinct buyer profile from the previous play' }
+  const g = await open({ buyer: BUYER, latest: { query: Q, icp: previous, icp_source: 'carried' } })
+  const previousNote = g.page.getByTestId('business-profile')
+  await previousNote.waitFor({ timeout: 15000 })
+  assert.equal(await previousNote.getAttribute('data-profile-origin'), 'previous-play')
+  assert.match((await previousNote.textContent()).trim(), /^Find leads reuses the profile from your previous play as it is: Distinct buyer profile from the previous play\./)
+  assert.doesNotMatch(await previousNote.textContent(), /saved profile|Review it in Build/)
   await g.page.getByLabel('Who do you want to reach?').waitFor({ timeout: 15000 })
   await g.page.getByLabel('Who do you want to reach?').fill(Q)
   await g.page.getByRole('button', { name: 'Find leads' }).click()
   await g.page.getByTestId('estimate-confirm-run').click()
   await g.page.getByText('Queued - waiting to start.').waitFor()
-  assert.deepEqual(g.scanBodies[0].icp, BUYER, 'the restored carried profile runs whole on the repeat')
+  assert.deepEqual(g.scanBodies[0].icp, previous, 'the restored carried profile runs whole on the repeat')
   assert.equal(g.scanBodies[0].reviewed, false, 'a carried job is never re-read as a review')
+  assert.deepEqual(g.saves, [], 'reusing a previous play never writes Settings')
   await g.ctx.close()
   // 6. Home > Build reopen: the editor re-saves the research block and the canonical fields whole.
   const e = await open({ buyer: BUYER, page: '/app?setup=brain' })
@@ -176,7 +185,10 @@ try {
   const h = await open({ buyer: BUYER })
   await h.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
   await h.page.getByLabel('Who do you want to reach?').fill(Q)
-  await h.page.getByRole('button', { name: 'Review profile first' }).click()
+  await h.page.getByRole('button', { name: 'Review profile first' }).evaluate(button => {
+    // Both clicks occur before React can paint the disabled state.
+    button.click(); button.click()
+  })
   await h.page.getByText('Dismissed targeting (restore explicitly)').waitFor({ timeout: 15000 })
   assert.equal(h.previews.length, 1)
   assert.deepEqual(h.previews[0].prior_icp, BUYER, 'the preview carries the saved profile whole so the server can keep its decisions')

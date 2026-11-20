@@ -3,7 +3,7 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed in the
 // browser (no model call, no scan runs). Live finding: Find leads on an unchanged sentence sent no profile, so the server
 // worked out a new one and the reviewed profile was silently discarded. It proves:
-//   1. last search restored with a profile reviewed by the user: the page says Find leads uses the saved profile as
+//   1. last search restored with a profile reviewed by the user: the page says Find leads reuses the previous play profile as
 //      it is, and the one POST /api/scan carries exactly that profile - reviewed: false, because an ordinary repeat
 //      is NOT a new review (stored statuses are preserved, never promoted by presence);
 //   2. a changed sentence: the profile STILL carries (decisions are never silently discarded), the note stays so the
@@ -72,7 +72,7 @@ try {
   const box = a.page.getByLabel('Who do you want to reach?')
   await a.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
   assert.equal(await box.inputValue(), Q)
-  assert.match(await a.page.getByTestId('business-profile').textContent(), /^Find leads uses the saved profile as it is: Owner-run dental practices with 2-10 chairs\./)
+  assert.match(await a.page.getByTestId('business-profile').textContent(), /^Find leads reuses the profile from your previous play as it is: Owner-run dental practices with 2-10 chairs\./)
   await shot(a.page, 'reuse')
   await a.page.getByRole('button', { name: 'Find leads' }).click()
   assert.equal(a.scanBodies.length, 0, 'no scan before estimate confirmation'); await a.page.getByTestId('estimate-confirm-run').click()
@@ -86,7 +86,7 @@ try {
   const c = await open({ latest: { query: Q, icp: REVIEWED, icp_source: 'user' } })
   await c.page.getByTestId('business-profile').waitFor({ timeout: 15000 })
   await c.page.getByLabel('Who do you want to reach?').fill('Restaurant owners in Austin - started taking online orders')
-  assert.equal(await c.page.getByTestId('business-profile').count(), 1, 'the note stays: the saved profile still runs')
+  assert.equal(await c.page.getByTestId('business-profile').count(), 1, 'the note stays: the previous play profile still runs')
   await c.page.getByRole('button', { name: 'Find leads' }).click()
   assert.equal(c.scanBodies.length, 0); await c.page.getByTestId('estimate-confirm-run').click()
   await c.page.getByText('Queued - waiting to start.').waitFor()

@@ -210,6 +210,7 @@ export default function LeadsClient() {
   const draftPlan = useMemo(() => draft ? planView(compileTargeting(query, JSON.stringify(draft))) : null, [draft, query])
   const [draftNote, setDraftNote] = useState<PreviewNote>({ text: '', dropped: null })
   const [busy, setBusy] = useState(false)
+  const profilePreviewInFlight = useRef(false)
   const [starting, setStarting] = useState(false)
   // Optional per-run spend limit (same budget object as the API; partial, see budget-panel.tsx). Off by default.
   const [budgetForm, setBudgetForm] = useState<BudgetForm>(EMPTY_BUDGET_FORM)
@@ -454,6 +455,10 @@ export default function LeadsClient() {
 
   // Optional: work out the profile for review before running. The sentence alone runs straight away (submit below).
   async function preview() {
+    // Lock immediately; two click events can arrive before React paints the
+    // disabled button. The workspace spend checks remain authoritative.
+    if (profilePreviewInFlight.current) return
+    profilePreviewInFlight.current = true
     setError(''); setDraft(null); setBusy(true)
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(startIcp ? { prior_icp: startIcp } : {}) }) })
@@ -466,6 +471,7 @@ export default function LeadsClient() {
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
+      profilePreviewInFlight.current = false
       setBusy(false)
     }
   }
@@ -811,7 +817,9 @@ export default function LeadsClient() {
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => chooseDirectOffer(o, offerConflict.saved)} /></div>}
-        {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile">Find leads uses the saved profile as it is: {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Review it in Build, or use Review profile first to build a new one from your sentence.</p>}
+        {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
+          {priorIcp ? 'Find leads reuses the profile from your previous play as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Review it in Build, or use Review profile first to build a new one from your sentence.'}
+        </p>}
         </div>
       </form>
       {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}
