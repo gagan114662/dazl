@@ -64,7 +64,8 @@ await ctx.route('**/*', async route => {
     if (body.budget?.web_search === 'anthropic_estimated_v1') {
       if (state.searchResponse === 'no-key') return json({ error: 'qa_search_requires_own_key' }, 400)
       return json({ job_id: 'c'.repeat(24), provider_policy: 'claude_only_v1', execution: 'local_once_v1',
-        ...(state.searchResponse === 'confirmed' ? { web_search_policy: 'anthropic_estimated_v1' } : {}) }, 202)
+        ...(['confirmed','missing-target'].includes(state.searchResponse) ? { web_search_policy: 'anthropic_estimated_v1' } : {}),
+        ...(state.searchResponse === 'confirmed' ? {accepted_target:{...body.icp,query:body.query,who:['Operations manager']}} : {}) }, 202)
     }
     return json({ job_id: 'c'.repeat(24) }, 202)
   }
@@ -177,10 +178,12 @@ const preflightsBefore = calls.filter(m => m === 'POST /api/scan/icp').length
 await openReview()
 assert.match(await review.getByLabel('Unchanged search criteria').textContent(), /Exclude: Dental schools/)
 await review.getByLabel('Locations').fill('Durham, England')
+await review.getByLabel('Search request').fill('Canceled query for Durham')
 await review.getByRole('button',{name:'Cancel',exact:true}).click()
 assert.equal(scanBodies.length,0,'cancel never starts a search')
 await openReview()
 assert.equal(await review.getByLabel('Locations').inputValue(),'Austin, TX','canceled fields were not saved')
+assert.equal(await review.getByLabel('Search request').inputValue(),'Oxford accounting practices recruiting an office manager')
 await review.getByLabel('Locations').fill('')
 await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
 assert.equal(scanBodies.length,0,'clearing a constraint never submits a broader search')
@@ -196,7 +199,7 @@ await submitReviewed()
 await page.getByRole('alert').filter({ hasText: 'cannot use the free trial' }).waitFor()
 assert.equal(await optIn.isChecked(), false)
 assert.equal(scanBodies.length, 2, 'key refusal does not submit a fallback')
-assert.deepEqual(scanBodies[1].budget, { web_search: 'anthropic_estimated_v1' })
+assert.deepEqual(scanBodies[1].budget, { web_search: 'anthropic_estimated_v1',target_review:'manual_v1' })
 state.searchResponse = 'missing-policy'
 await optIn.check()
 await openReview()
@@ -210,11 +213,18 @@ await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
 await page.getByRole('alert').filter({ hasText: 'did not confirm the Claude Web Search policy' }).waitFor()
 assert.equal(scanBodies.length, 3, 'incomplete success never redirects or retries')
 assert.equal(await page.getByTestId('ready-step').count(), 0)
+state.searchResponse = 'missing-target'
+await optIn.check()
+await submitReviewed()
+await page.getByRole('alert').filter({hasText:'Could not verify the accepted target'}).waitFor()
+assert.equal(await page.getByTestId('ready-step').count(),0,'a successful response without target cannot display raw state')
 state.searchResponse = 'confirmed'
-await sentence().fill('Find machine shops in Wellington installing new equipment')
+await sentence().fill('Find machine shops in Oxford installing new equipment')
 await optIn.check()
 await openReview()
 assert.equal(await review.getByLabel('Locations').inputValue(),'Austin, TX','a prior play never rewrote the saved draft')
+assert.equal(await review.getByLabel('Search request').inputValue(),'Find machine shops in Oxford installing new equipment')
+await review.getByLabel('Search request').fill('Find machine shops in Wellington installing new equipment')
 await review.getByLabel('Buyer description').fill('Local machine shops')
 await review.getByLabel('Buyer roles').fill('Operations managers')
 await review.getByLabel('Locations').fill('Wellington, New Zealand')
@@ -223,9 +233,12 @@ await review.getByLabel('Industries').fill('Metalworking')
 await review.getByLabel('Buying signals').fill('Installing new equipment')
 await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
 await page.getByTestId('ready-step').waitFor()
-assert.equal(await page.getByTestId('first-submitted-target').textContent(), 'Targets for this play: Local machine shops · Operations managers')
-assert.deepEqual(scanBodies.map(({ mode, budget }) => ({ mode, budget })), Array(4).fill({ mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } }))
-assert.deepEqual(scanBodies.slice(2).map(({icp})=>[icp.where,icp.country,icp.industries,icp.signals,icp.exclude]),[
+const target = await page.getByTestId('first-submitted-target').textContent()
+for (const value of ['Search request: Find machine shops in Wellington installing new equipment','Local machine shops','Operations manager','Wellington, New Zealand','NZ','Metalworking','Installing new equipment']) assert.ok(target.includes(value),value)
+assert.doesNotMatch(target,/Oxford|Operations managers/,'display uses effective receipt, not original query or raw roles')
+assert.equal(scanBodies.at(-1).query,'Find machine shops in Wellington installing new equipment')
+assert.deepEqual(scanBodies.map(({ mode, budget }) => ({ mode, budget })), Array(5).fill({ mode: 'first5', budget: { web_search: 'anthropic_estimated_v1',target_review:'manual_v1' } }))
+assert.deepEqual([scanBodies[2],scanBodies[4]].map(({icp})=>[icp.where,icp.country,icp.industries,icp.signals,icp.exclude]),[
   [['Oxford, England'],'GB',['Accounting'],['Hiring an office manager'],['Dental schools']],
   [['Wellington, New Zealand'],'NZ',['Metalworking'],['Installing new equipment'],['Dental schools']],
 ])

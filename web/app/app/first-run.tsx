@@ -24,7 +24,7 @@ import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { icpLoss, normalizeIcp } from '@/lib/scan/icp'
 import ManualNativeTargetReview from './manual-native-target-review'
-import { buildManualNativeTarget, submittedTarget, targetFields, type TargetFields } from './manual-native-target'
+import { acceptedTarget, buildManualNativeTarget, targetFields, type AcceptedTarget, type TargetFields } from './manual-native-target'
 
 const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
 
@@ -55,7 +55,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [usage, setUsage] = useState<Usage | null>(null)
   const [step, setStep] = useState<Step>('site')
   const [claudeSearch, setClaudeSearch] = useState(false)
-  const [targetReview, setTargetReview] = useState<{query:string;stay:boolean;initial:TargetFields;retained:string[];makeBody:(draft:TargetFields)=>string|null} | null>(null)
+  const [targetReview, setTargetReview] = useState<{query:string;stay:boolean;initial:TargetFields;retained:string[];makeBody:(query:string,draft:TargetFields)=>string|null} | null>(null)
   const activeTargetReview = useRef<typeof targetReview>(null)
   const [website, setWebsite] = useState('')
   const [bizName, setBizName] = useState('')
@@ -94,7 +94,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // The first play started from the ready screen, watched in place: its status and, once done, its ready leads.
   // f5: the fast first scan's view (lib/scan/first5.ts, served by the status route for a mode=first5 job): live
   // per-source progress, candidates so far and the verified leads. null for a job without it (then the leads read is used).
-  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string; claudeSearch: boolean; reviewedTarget?:ReturnType<typeof submittedTarget> } | null>(null)
+  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string; claudeSearch: boolean; reviewedTarget?:AcceptedTarget } | null>(null)
 
   // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read). The saved profile's
   // research block comes back too: reopening the editor (?setup=brain) must keep every Add/Dismiss, hold and answer it
@@ -274,17 +274,16 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   async function reviewOrStart(sentence: string, stay = false) {
     if (!claudeSearch || askIsSuggestion) return start(sentence,stay)
     if (busy || activeTargetReview.current || sentence.trim().length < 3) return
-    // Independent of saved settings: freeze the as-shown profile/decisions and the exact typed query.
+    // Independent of saved settings: freeze the as-shown profile; the review can revise the exact typed query.
     const snapshot = structuredClone(profile)
-    const decisions = structuredClone(asResearchBlock(research)?.decisions)
     const windowDays = (snapshot as {window_days?:unknown}).window_days
     const retained = [
       ...(snapshot.sizes.length ? [`Company sizes: ${snapshot.sizes.join('; ')}`] : []),
       ...(typeof windowDays==='number' ? [`Time window: ${windowDays} days`] : []),
       ...(snapshot.exclude.length ? [`Exclude: ${snapshot.exclude.join('; ')}`] : []),
     ]
-    const review = {query:sentence.trim(),stay,initial:targetFields(snapshot),retained,makeBody:(draft:TargetFields)=>{
-      const body = buildManualNativeTarget(sentence,snapshot,draft,decisions)
+    const review = {query:sentence.trim(),stay,initial:targetFields(snapshot),retained,makeBody:(revisedQuery:string,draft:TargetFields)=>{
+      const body = buildManualNativeTarget(revisedQuery,snapshot,draft)
       if (!body) return null
       const icp = JSON.parse(body).icp
       return icpLoss(icp).length || !normalizeIcp(icp) ? null : body
@@ -308,6 +307,16 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         ...(useClaudeSearch ? { budget: { web_search: CLAUDE_SEARCH_POLICY } } : {}),
       }) })
       const j = await r.json().catch(() => ({}))
+      const effectiveTarget = reviewedBody && r.status===202 ? acceptedTarget(j.accepted_target,sentence.trim()) : null
+      if (reviewedBody && r.ok && j.web_search_policy === CLAUDE_SEARCH_POLICY && (!effectiveTarget || !/^[a-f0-9]{24}$/.test(j.job_id ?? ''))) {
+        return setError('Could not verify the accepted target. Check your scan history before trying again.')
+      }
+      if (reviewedBody && j.error==='target_review_conflict') {
+        return setError('Part of this target conflicts with criteria you previously rejected. Change the target and review it again. Nothing started.')
+      }
+      if (reviewedBody && j.error==='invalid_target_review') {
+        return setError('Could not verify the target review. Review the search again. Nothing started.')
+      }
       if (useClaudeSearch && r.ok && (!j.job_id || j.provider_policy !== 'claude_only_v1'
         || j.execution !== 'local_once_v1' || j.web_search_policy !== CLAUDE_SEARCH_POLICY)) {
         return setError('The server did not confirm the Claude Web Search policy. Check your scan history before trying again.')
@@ -317,7 +326,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       }
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
-        if (stay || useClaudeSearch) { if (useClaudeSearch) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim(), claudeSearch: useClaudeSearch, ...(reviewedBody ? {reviewedTarget:submittedTarget(reviewedBody)} : {}) }); return }
+        if (stay || useClaudeSearch) { if (useClaudeSearch) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim(), claudeSearch: useClaudeSearch, ...(effectiveTarget ? {reviewedTarget:effectiveTarget} : {}) }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
       if (useClaudeSearch && (j.error === 'invalid_budget' || j.error === 'unknown_mode')) return setError('This server does not support Claude Web Search for first play yet. Nothing started.')
@@ -335,7 +344,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       <ManualNativeTargetReview {...targetReview} onCancel={discard} onConfirm={body=>{
         if (activeTargetReview.current !== targetReview) return
         discard()
-        void start(targetReview.query,targetReview.stay,body)
+        const {query}: {query:string}=JSON.parse(body)
+        void start(query,targetReview.stay,body)
       }} />
     </main>
   }
@@ -468,7 +478,23 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     : split && split.held.length ? 'Leads held for your review'
                     : 'No leads in this first play'}</h2>
                   {first && <div className="text-sm text-[var(--ink-2)] mt-1" data-testid="first-submitted-target">
-                    {first.reviewedTarget ? <>Targets for this play: {first.reviewedTarget.summary}{first.reviewedTarget.who.length ? ` · ${first.reviewedTarget.who.join(', ')}` : ''}</> : <>Search request: {first.query}</>}
+                    <div>Search request: {first.query}</div>
+                    {first.reviewedTarget && <dl className="mt-2 grid gap-1" aria-label="Accepted target for this play">
+                      {([
+                        ['Buyer description', first.reviewedTarget.summary],
+                        ['Buyer roles', first.reviewedTarget.who.join('; ')],
+                        ['Locations', first.reviewedTarget.where.join('; ')],
+                        ['Country', first.reviewedTarget.country ?? ''],
+                        ['Industries', first.reviewedTarget.industries.join('; ')],
+                        ['Buying signals', first.reviewedTarget.signals.join('; ')],
+                        ['Company sizes', first.reviewedTarget.sizes.join('; ')],
+                        ['Time window', first.reviewedTarget.window_days ? `${first.reviewedTarget.window_days} days` : ''],
+                        ['Exclude', first.reviewedTarget.exclude.join('; ')],
+                        ['Page language', first.reviewedTarget.language ?? ''],
+                      ] as const).filter(([,v])=>v).map(([label,value])=><div key={label} className="flex gap-2">
+                        <dt>{label}:</dt><dd>{value}</dd>
+                      </div>)}
+                    </dl>}
                   </div>}
                   {!first && <>
                     <p className="text-sm text-[var(--ink-2)] mt-1">It searches with what dazl inferred, exactly as shown. Edit it first if anything is off.</p>

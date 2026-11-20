@@ -5,7 +5,7 @@ import { cleanText } from '../validate.ts'
 import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
-import { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
+import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
@@ -56,6 +56,9 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   const lost = b.icp && typeof b.icp === 'object' ? icpLoss(b.icp) : []
   if (lost.length) return { ok: false, status: 400, error: 'profile_lossy', message: 'Part of this profile would be cut or ignored. Fix the listed fields - nothing was dropped silently.', loss: lost }
   const icp = b.icp === undefined || b.icp === null ? null : normalizeIcp(b.icp)
+  if (isManualNativeTargetRequest(b.mode, b.budget) && (!icp || 'reviewed' in b || 'research_decisions' in b)) {
+    return { ok: false, status: 400, error: 'invalid_target_review', message: 'Confirm the target for this search separately from saved research decisions. Nothing started.' }
+  }
   const pool = await pools(ctx.db, ctx.tenantId)
   // The model the run will really call, so the rows, the total, the verdict and the confirmation price THAT model (#851): an
   // own key's configured model (keyedModel), or for a trial run the operator's Anthropic key (lib/scan/trial.ts operatorKey is
