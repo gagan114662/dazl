@@ -133,7 +133,9 @@ function ownedRoleCard(html:unknown,name:string,title:string):RoleCard|null{
           if(names.length===1&&values.length===1&&identityFold(literalText(values[0]))===role){
             const nonCardChildren=kids(node).some(n=>element(n)?!opaque(n)&&!heading.test(n.tagName)&&!/^(?:p|span|a|img)$/.test(n.tagName):
               n.nodeName==='#text'&&'value' in n&&!!n.value.trim())
-            if(!nonCardChildren&&!cardContradiction(direct)){
+            // The card element's own attributes can also mark the role as former.
+            const selfContradicts=['alt','title','aria-label','data-status'].some(k=>{const v=attribute(node,k)??'';return former.test(v)||historical(v)})
+            if(!nonCardChildren&&!selfContradicts&&!cardContradiction(direct)){
               const links=new Set<string>()
               for(const link of direct.filter(n=>n.tagName==='a')){
                 const label=identityFold(literalText(link)), href=attribute(link,'href'), loc=link.sourceCodeLocation?.attrs?.href
@@ -203,8 +205,10 @@ export async function proveCompanyFirstBuyerBySearch(
   const c = await dispatched(abort, () => readers.searchBuyer({ company, website: site.website, titles: [...roles] }, abort))
   if (await current() !== true) return held('contact_scope_unavailable')
   if (c===FAILED) return held('read_failed')
-  if (!c || !personName(c.name) || fold(c.name) === fold(c.title ?? '')) return held('buyer_not_found')
-  if (!sane(c.title) || former.test(c.title) || !roleMatches(c.title, roles)) return held('buyer_title_off')
+  if (!c || !personName(c.name)) return held('buyer_not_found')
+  if (!sane(c.title)) return held('buyer_title_off')
+  if (fold(c.name) === fold(c.title)) return held('buyer_not_found')
+  if ( former.test(c.title) || !roleMatches(c.title, roles)) return held('buyer_title_off')
 
   // Snapshot model proposal while reading untrusted public bytes asynchronously.
   const name=c.name,title=c.title
@@ -227,7 +231,9 @@ export async function proveCompanyFirstBuyerBySearch(
     const proposed=card.linkedin, corroborate=readers.corroborateProfile
     if(proposed&&corroborate&&await permit('buyer_profile')){
       const profile=await dispatched(abort,()=>corroborate.call(readers,proposed,abort))
-      if(profile!==FAILED&&profile&&profile.url===proposed&&profile.current===true&&
+      // A failed dispatched read may have unsettled usage: stop, like page reads.
+      if(profile===FAILED)return held('read_failed')
+      if(profile&&profile.url===proposed&&profile.current===true&&
         sane(profile.name)&&identityFold(profile.name)===identityFold(card.name)&&
         sane(profile.title)&&identityFold(profile.title)===identityFold(card.title)&&
         sane(profile.company)&&identityFold(profile.company)===identityFold(company))linkedin=proposed
@@ -282,8 +288,11 @@ export function findPublishedOwnDomainEmail(buyerName: string, ownPages: readonl
   const n = fold(buyerName)
   const title = sane(verifiedTitle) && !former.test(verifiedTitle) ? fold(verifiedTitle) : null
   for (const p of ownPages) {
-    const u = httpsUrl(p?.url)
-    if (!u || u.origin !== site.origin || typeof p.text !== 'string' || p.text.length > 200_000) continue
+    // Fail closed: a supplied page that cannot be examined could hold the
+    // copy that makes an address ambiguous. A bare origin is the homepage.
+    const u = httpsUrl(p?.url) ?? (typeof p?.url === 'string' ? httpsUrl(p.url + '/') : null)
+    if (!u || typeof p.text !== 'string' || p.text.length > 200_000) return null
+    if (u.origin !== site.origin || typeof p.text !== 'string' || p.text.length > 200_000) continue
     const lines: string[] = p.text.split(/\r?\n/).map((l:string) => l.trim())
     const slots = new Set<number>()
     lines.forEach((line, i) => {
