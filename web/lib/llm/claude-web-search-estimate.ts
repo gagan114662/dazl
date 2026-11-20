@@ -12,15 +12,41 @@ const count = (v: unknown): v is number => typeof v === 'number' && Number.isSaf
 const roundedUp = (usd: number) => Math.ceil(usd * MICROS) / MICROS
 
 export type ClaudeSearchFailure = 'invalid_input' | 'count_failed' | 'reservation_missing' | 'request_uncertain' | 'rate_limited' | 'key_rejected' | 'usage_uncertain' | 'provider_limit_violation'
-type ClaudeSearchDiagnostic = 'transport' | 'timeout' | 'http_error' | 'response_unreadable'
+export type ClaudeSearchUsageDiagnostic =
+  | 'usage_envelope' | 'usage_model' | 'usage_geo' | 'usage_speed' | 'usage_tier'
+  | 'usage_input_count' | 'usage_output_count' | 'usage_search_count' | 'usage_other_tool'
+  | 'usage_cache_totals' | 'usage_cache_split' | 'usage_cost'
+type UsageFieldState = 'absent' | 'null' | 'malformed'
+export type ClaudeUsageCounter = number | UsageFieldState | 'outside_diagnostic_bound'
+export type ClaudeUsageSnapshot = {
+  rejection: ClaudeSearchUsageDiagnostic
+  usage: 'object' | UsageFieldState
+  model: typeof CLAUDE_SEARCH_MODEL | 'claude-sonnet-4-5' | 'unrecognized' | UsageFieldState
+  inference_geo: 'global' | 'us' | 'unrecognized' | UsageFieldState
+  speed: 'standard' | 'fast' | 'unrecognized' | UsageFieldState
+  service_tier: 'standard' | 'priority' | 'batch' | 'unrecognized' | UsageFieldState
+  input_tokens: ClaudeUsageCounter
+  output_tokens: ClaudeUsageCounter
+  cache_read_input_tokens: ClaudeUsageCounter
+  cache_creation_input_tokens: ClaudeUsageCounter
+  cache_creation: 'object' | UsageFieldState
+  ephemeral_5m_input_tokens: ClaudeUsageCounter
+  ephemeral_1h_input_tokens: ClaudeUsageCounter
+  server_tool_use: 'object' | UsageFieldState
+  web_search_requests: ClaudeUsageCounter
+  web_fetch_requests: ClaudeUsageCounter
+  other_tool_counts: 'none' | 'zero_only' | 'nonzero_or_invalid'
+}
+type ClaudeSearchDiagnostic = 'transport' | 'timeout' | 'http_error' | 'response_unreadable' | ClaudeSearchUsageDiagnostic
 const claudeSearchFailure = Symbol('Claude search failure')
 // Keep our handling specific without adding a new externally reported error class.
 export class ClaudeSearchError {
   readonly code: ClaudeSearchFailure
   readonly diagnostic?: ClaudeSearchDiagnostic
-  constructor(code: ClaudeSearchFailure, diagnostic?: ClaudeSearchDiagnostic) {
+  readonly usageSnapshot?: ClaudeUsageSnapshot
+  constructor(code: ClaudeSearchFailure, diagnostic?: ClaudeSearchDiagnostic, usageSnapshot?: ClaudeUsageSnapshot) {
     this.code = code
-    return Object.assign(new Error(code), { code, diagnostic, [claudeSearchFailure]: true })
+    return Object.assign(new Error(code), { code, diagnostic, ...(usageSnapshot ? { usageSnapshot } : {}), [claudeSearchFailure]: true })
   }
   static [Symbol.hasInstance](error: unknown): boolean {
     return error instanceof Error && (error as Error & { [claudeSearchFailure]?: boolean })[claudeSearchFailure] === true
