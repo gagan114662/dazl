@@ -795,12 +795,13 @@ const FOREIGN_SUBJECT = /\b(?:customer|client|partner|testimonial|service area)\
 const FOREIGN_FOOTER_SECTION = /\b(?:customers|clients|partners|testimonials|service areas)\b/i
 const POSTAL_ADDRESS = /\b(?:[A-Z]\d[A-Z]\s?\d[A-Z]\d|[A-Z]{2}\s+\d{5}(?:-\d{4})?)\b/i
 
+const UK_POSTCODE = /\b(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b/i
+
 // Display-only named email needs the issuer's own matching postal office, not a service-area mention
 // or a job-vacancy market. Keep this gate separate from the ordinary domain-identity discovery.
 function publishedDisplayOffice(pages: LocationPage[], where: string[], company: string, country: 'CA' | 'GB'): boolean {
   const ca = /\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b/i
-  const gb = /\b(?:GIR\s?0AA|[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b/i
-  const postal = country === 'CA' ? ca : gb
+  const postal = country === 'CA' ? ca : UK_POSTCODE
   const key = norm(company)
   const placeNames = new Set(geoTerms(where).map(norm))
   const regionGroups = country === 'CA' ? [
@@ -842,6 +843,7 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
   const key = norm(company)
   if (key.length < 3 || company.length > 160) return undefined
   const requestedPlaces = new Set(geoTerms(where).map(norm))
+  const ukScope = guessed && probeCountry(where) === 'GB'
   const agrees = (fragment: string, alreadyBound = false) => (guessed
     ? probeScopeAgreement(fragment, where, company, alreadyBound) : placeAgreement(fragment, where, company)) === 'agrees' &&
     !ownAddressElsewhere(fragment, where)
@@ -860,14 +862,16 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
         const matchesCompany = words.slice(0, Math.min(10, words.length)).some((_, index) =>
           norm(words.slice(0, index + 1).join(' ')) === key && OFFICE_CLAIM.test(words.slice(index + 1).join(' ')))
         const homeBase = HOME_BASE_CLAIM.exec(sentence)?.[1]
-        const hadPostalAddress = POSTAL_ADDRESS.test(sentence) && streetKeys(sentence).length > 0
         const postalOwner = /^([^,:]{3,160}),\s*\d/.exec(sentence)?.[1]
+        const ownPostalName = !!postalOwner && norm(postalOwner) === key
+        const hadPostalAddress = (POSTAL_ADDRESS.test(sentence) || (ukScope && ownPostalName && UK_POSTCODE.test(sentence))) &&
+          streetKeys(sentence).length > 0
         // A standalone own-name postal line on the contact page, or an explicit
         // first-person invitation to that place, can supply a missing homepage
         // location. The same precise scope and conflict checks still apply.
         const ownContactPlace = guessed && /\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname) &&
           (/^visit us (?:in|at)\s+/i.test(sentence) || (hadPostalAddress &&
-            (/^LOCATION\s*:?\s+\d/.test(sentence) || (postalOwner && norm(postalOwner) === key))))
+            (/^LOCATION\s*:?\s+\d/.test(sentence) || ownPostalName)))
         if (((matchesCompany || FIRST_PERSON_OFFICE.test(sentence) || ownContactPlace) && agrees(sentence)) ||
             (homeBase && requestedPlaces.has(norm(homeBase)) && agrees(sentence, true))) return { url, excerpt: sentence }
       }
