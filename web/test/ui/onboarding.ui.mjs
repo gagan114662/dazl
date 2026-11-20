@@ -92,6 +92,10 @@ assert.ok(!calls.includes('POST /api/scan'), 'nothing is scanned before Find lea
 await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
 // The read builds the brain, saves what it inferred and opens "Your brain is ready."; the profile stays editable.
 await page.getByTestId('ready-step').waitFor({ timeout: 15000 }); await shot('ready')
+const registryNote = page.getByTestId('ready-step').getByTestId('optional-registry-note')
+await registryNote.waitFor({state:'visible'})
+assert.match(await registryNote.textContent(), /a bonus where available.*They’re not required to run a search/)
+
 assert.ok(!calls.includes('POST /api/scan'), 'the ready screen starts nothing on its own')
 await page.getByRole('button', { name: 'Edit what dazl inferred' }).click()
 await page.getByText("Here's what we think you sell").waitFor(); await shot('brain')
@@ -154,10 +158,6 @@ await sentence().fill('Oxford accounting practices recruiting an office manager'
 const optIn = page.getByTestId('claude-search-opt-in')
 const startSearch = page.getByRole('button', { name: 'Find leads' })
 await optIn.waitFor()
-const registryNote = page.getByTestId('optional-registry-note')
-await registryNote.waitFor({state:'visible'})
-assert.match(await registryNote.textContent(), /a bonus where available.*They’re not required to run a search/)
-
 assert.equal(await optIn.isChecked(), false)
 scanBodies.length = 0
 await optIn.check()

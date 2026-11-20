@@ -545,7 +545,6 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
         {claudeSearchOption}
-        <OptionalRegistryNote />
         <div className="ask">
           <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} />
           <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>
