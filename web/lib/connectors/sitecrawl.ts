@@ -25,6 +25,8 @@ import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.t
 import { atsPostingRef } from '../sources/ats-posting.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
+import { resolveSegment } from '../scan/countries.ts'
+import { candidateDomainSuffixes, countryDomainHints } from './country-domain-hints.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
 // Contact-page crawl. No key. For a verified lead it finds the company's own website, reads a handful of
@@ -367,26 +369,46 @@ export function companyHostsFromSearch(company: string, hits: { url: string }[],
   }
   return out
 }
-// The scan's geography names a country whose businesses usually live on its own TLD (#1122: Toronto and Vancouver leads were only ever
-// probed at .com / .ai / .io / .co). Only an explicit country or one of its provinces / states / nations counts; nothing is inferred from a city alone.
-const COUNTRY_TLDS: [RegExp, string[]][] = [
-  [/\bcanada\b|\bontario\b(?!,?\s*(ca\b|calif))|\bquebec\b|\bbritish columbia\b|\balberta\b|\bmanitoba\b|\bsaskatchewan\b|\bnova scotia\b|\bnew brunswick\b(?!,?\s*(nj\b|new jersey))|\bnewfoundland\b|\bprince edward island\b/i, ['ca']],
-  [/,\s*(ON|BC|AB|QC|MB|SK|NS|NL|PE)\b(?!\.)/, ['ca']],   // "Toronto, ON": the two-letter province after a comma, capitals only (", on" in running text is not a place)
-  [/\bunited kingdom\b|\buk\b|(?<!new )\bengland\b|\bscotland\b|(?<!new south )\bwales\b|\bnorthern ireland\b|\bgreat britain\b/i, ['co.uk', 'uk']],
-  [/\baustralia\b|\bnew south wales\b|\bnsw\b|\bqueensland\b|\bwestern australia\b|\bsouth australia\b|\btasmania\b/i, ['com.au']],
-  [/\bgermany\b|\bdeutschland\b/i, ['de']],
-  [/\bindia\b/i, ['in', 'co.in']],
-  [/\bnew zealand\b/i, ['co.nz']],
-  [/(?<!northern )\bireland\b/i, ['ie']],
+// Keep prior explicit regional qualifiers only for compatibility. These match a whole
+// place segment, never a country-like phrase embedded in prose or a city alone.
+const LEGACY_COUNTRY_QUALIFIERS: readonly [RegExp, string][] = [
+  [/^(?:ontario|quebec|british columbia|alberta|manitoba|saskatchewan|nova scotia|new brunswick|newfoundland(?: and labrador)?|prince edward island)$/, 'CA'],
+  [/^(?:england|scotland|wales|northern ireland|great britain)$/, 'GB'],
+  [/^(?:new south wales|nsw|queensland|western australia|south australia|tasmania)$/, 'AU'],
 ]
+const US_STATE_NAMES = new Set(Object.values(US_STATES))
+function probeCountry(where: readonly string[]): string | null {
+  let country: string | null = null
+  for (const place of where) {
+    if (!place.trim()) continue
+    const segments = place.split(',').map(s => s.trim())
+    if (segments.some(s => !s)) return null
+    const matches = new Set<string>()
+    let terminal = false
+    for (const [i, segment] of segments.entries()) {
+      const name = segment.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\.$/, '')
+      // US qualifiers can disqualify a conflicting foreign hint, not supply a suffix.
+      const us = i > 0 && (Object.hasOwn(US_STATES, name.toUpperCase()) || US_STATE_NAMES.has(name) || name === 'calif')
+      const ca = i > 0 && /^(?:ON|BC|AB|QC|MB|SK|NS|NL|PE)$/.test(segment)
+      const legacy = (i > 0 || !/^(?:ontario|new brunswick)$/.test(name))
+        ? LEGACY_COUNTRY_QUALIFIERS.find(([re]) => re.test(name))?.[1] : undefined
+      const code = us ? 'US' : ca ? 'CA' : resolveSegment(segment, true) ?? legacy
+      if (code) { matches.add(code); terminal = i === segments.length - 1 }
+    }
+    if (!terminal || matches.size !== 1) return null
+    const only = matches.values().next().value!
+    if (country !== null && country !== only) return null
+    country = only
+  }
+  return country
+}
 export function countryTlds(where: string[]): string[] {
-  const t = where.join(' ; ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-  return [...new Set(COUNTRY_TLDS.filter(([re]) => re.test(t)).flatMap(([, tlds]) => tlds))]
+  return countryDomainHints([probeCountry(where)])
 }
 export function probeDomains(company: string, where: string[] = []): string[] {
   const want = norm(company)
   if (want.length < 4 || want.length > 30) return []
-  const out = [`${want}.com`, ...countryTlds(where).map(t => `${want}.${t}`), `${want}.ai`, `${want}.io`, `${want}.co`]
+  const out = candidateDomainSuffixes([probeCountry(where)]).map(t => `${want}.${t}`)
   // Brands named "<word> AI" usually live at <word>.ai (seen live: "Wavee Ai" at wavee.ai);
   // norm() flattens the space, so the plain probes above would only try waveeai.*.
   const words = company.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)

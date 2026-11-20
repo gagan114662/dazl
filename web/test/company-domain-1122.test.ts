@@ -381,3 +381,29 @@ test('#1334-F1 past the top-lead cap, every hold the crawl admits says "did not 
   assert.deepEqual(why(r.lead('H4')), ['not_checked'], 'event-over hold stays excluded')
   assert.deepEqual(why(r.lead('H5')), ['not_checked'], 'unknown hold stays excluded')
 })
+
+test('name probes use explicit nonlegacy countries only and refuse conflicting or ambiguous scope', () => {
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, Denmark']), ['dk'])
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, South Korea']), ['co.kr'])
+  assert.deepEqual(sc.countryTlds(['Second Synthetic Place, Denmark', 'Synthetic Place, Denmark']), ['dk'])
+  assert.deepEqual(sc.probeDomains('Example Dental', ['Synthetic Place, Denmark']), ['exampledental.com', 'exampledental.dk', 'exampledental.ai', 'exampledental.io', 'exampledental.co'])
+  for (const where of [
+    ['Synthetic Place'], ['Victoria'], ['Ontario'], ['Ontario, CA'], ['Synthetic Place, TX, Denmark'],
+    ['Synthetic Place, Denmark', 'Toronto, Ontario'], ['Synthetic Place, Japan', 'Austin, TX'], ['Synthetic Place, Denmark', 'Unqualified Place'],
+    ['Canada, Denmark'], ['Vancouver, WA, Canada'], ['Vancouver, wa, Canada'], ['More buyers across Denmark'], ['Synthetic Place, DK'],
+  ]) assert.deepEqual(sc.countryTlds(where), [], where.join(' | '))
+})
+
+test('a nonlegacy country suffix only adds a probe; an unproven same-name site gives no domain or contact', async () => {
+  const company = 'Example Dental'
+  const r = await run({
+    company, where: ['Synthetic Place, Denmark'], evidenceUrl: BOARD,
+    evidence: html(`<p>${company} is hiring in Synthetic Place, Denmark.</p>`),
+    excerpt: `${company} is hiring in Synthetic Place, Denmark`,
+    sites: { 'exampledental.dk': { '/': ELSEWHERE_HOME(company), '/contact': CONTACT('info@exampledental.dk') } },
+  })
+  assert.ok(r.fetched.includes('exampledental.dk/'), 'localized hostname was actually tried')
+  assert.equal(r.domain, null)
+  assert.deepEqual(r.basis, [])
+  assert.deepEqual(r.emails, [])
+})
