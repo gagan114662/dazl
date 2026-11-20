@@ -237,7 +237,7 @@ test('unsafe 2xx usage retains the full hold and exposes only the exact closed d
   for (const [body, diagnostic] of [
     [{ ...message, usage: null }, 'usage_envelope'],
     [{ ...message, model: 'private-provider-data' }, 'usage_model'],
-    [{ ...message, usage: { ...sparse, inference_geo: 'not_available' } }, 'usage_geo'],
+    [{ ...message, usage: { ...sparse, inference_geo: { value: 'private-provider-data' } } }, 'usage_geo'],
     [{ ...message, usage: { ...sparse, speed: 'fast' } }, 'usage_speed'],
     [{ ...message, usage: { ...sparse, service_tier: 'priority' } }, 'usage_tier'],
     [{ ...message, usage: { ...sparse, input_tokens: null } }, 'usage_input_count'],
@@ -304,4 +304,23 @@ test('explicitly zero searches with nullable cache counters settles only tokens 
   assert.deepEqual(marks, ['settle:0.027000'])
   assert.deepEqual(result.citedUrls, [])
   assert.equal(result.outcome, 'unavailable')
+})
+
+test('pinned pre-4.6 request settles Toronto-shaped counters despite an unrecognized geo string', async () => {
+  const marks: string[] = []
+  let sent = 0
+  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+    assert.equal(Object.hasOwn(JSON.parse(String(init?.body)), 'inference_geo'), false)
+    if (++sent === 1) return Response.json({ input_tokens: counted })
+    return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant',
+      content: [{ type: 'text', text: 'No cited sources in this billing fixture.' }],
+      usage: { inference_geo: 'synthetic_unrecognized_label', service_tier: 'standard', speed: 'standard',
+        input_tokens: 22_129, output_tokens: 748, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+        server_tool_use: { web_search_requests: 2, web_fetch_requests: 0 } } })
+  })
+  assert.equal(sent, 2)
+  assert.equal(result.usage.searches, 2)
+  assert.deepEqual(marks, ['settle:0.097607'])
+  assert.deepEqual(result.citedUrls, [])
 })

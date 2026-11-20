@@ -215,12 +215,12 @@ test('a refusal writes only bounded billing fields on the tenant run report and 
   const x = await simulate({ uncertainResponse: 'projected' })
   assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
   assert.deepEqual(x.sequence, ['native-count', 'native-send'])
-  assert.deepEqual(x.nativeStatus, { status: 'error:usage_geo' })
+  assert.deepEqual(x.nativeStatus, { status: 'error:usage_tier' })
   assert.equal(x.nativeReport.actual_usd, null)
   assert.equal(x.nativeReport.reported_input_tokens, null)
   assert.equal(x.nativeReport.searches, null)
   assert.deepEqual(x.nativeReport.rejected_usage, {
-    rejection: 'usage_geo', usage: 'object', model: CLAUDE_SEARCH_MODEL,
+    rejection: 'usage_tier', usage: 'object', model: CLAUDE_SEARCH_MODEL,
     inference_geo: 'unrecognized', speed: 'standard', service_tier: 'priority', input_tokens: 8000,
     output_tokens: 'outside_diagnostic_bound', cache_read_input_tokens: 'null', cache_creation_input_tokens: 'absent',
     cache_creation: 'object', ephemeral_5m_input_tokens: 3, ephemeral_1h_input_tokens: 'absent',

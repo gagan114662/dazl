@@ -59,10 +59,13 @@ function checkUsage(response: unknown, fixedUncachedSearch = false): UsageCheck 
   const root = obj(response), u = obj(root.usage), cached = obj(u.cache_creation), tools = obj(u.server_tool_use)
   if (!Object.keys(u).length) return { diagnostic: 'usage_envelope' }
   if (root.model !== CLAUDE_SEARCH_MODEL) return { diagnostic: 'usage_model' }
-  // First-party pricing for the exact pre-4.6 snapshot above is standard in either documented geo.
+  // First-party direct pricing is independent of geography for this exact pre-4.6 snapshot.
   // This is a response check only, never a change to the request's geo or workspace routing.
   // https://platform.claude.com/docs/en/about-claude/pricing#data-residency-pricing
-  if (u.inference_geo != null && u.inference_geo !== 'global' && u.inference_geo !== 'us') return { diagnostic: 'usage_geo' }
+  const geo = u.inference_geo
+  const pre46TransportLabel = fixedUncachedSearch && root.model === 'claude-sonnet-4-5-20250929' &&
+    typeof geo === 'string'
+  if (geo != null && geo !== 'global' && geo !== 'us' && !pre46TransportLabel) return { diagnostic: 'usage_geo' }
   if (u.speed != null && u.speed !== 'standard') return { diagnostic: 'usage_speed' }
   if (u.service_tier != null && u.service_tier !== 'standard') return { diagnostic: 'usage_tier' }
   const { input_tokens: input, output_tokens: output } = u
