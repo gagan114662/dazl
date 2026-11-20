@@ -1,0 +1,75 @@
+name: Production literal checker tests
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/scripts/production-literals.mjs'
+      - '.github/scripts/production-literals-advisory.mjs'
+      - '.github/tests/production-literals.test.mjs'
+      - '.github/policy/production-literals.json'
+      - '.github/workflows/production-literals-advisory.yml'
+      - '.github/workflows/production-literals-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/production-literals.mjs'
+      - '.github/scripts/production-literals-advisory.mjs'
+      - '.github/tests/production-literals.test.mjs'
+      - '.github/policy/production-literals.json'
+      - '.github/workflows/production-literals-advisory.yml'
+      - '.github/workflows/production-literals-tests.yml'
+permissions: {}
+jobs:
+  checker-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run checker unit tests with one pinned compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf -- "$tmp"' EXIT
+          mkdir -m 700 "$tmp/home"
+          clean=(env -i "PATH=$PATH" "HOME=$tmp/home" LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1)
+          "${clean[@]}" node - "$GITHUB_EVENT_NAME" "$GITHUB_EVENT_PATH" "$GITHUB_SHA" <<'NODE' > "$tmp/ref"
+          const fs = require('node:fs')
+          const [type, file, sha] = process.argv.slice(2)
+          if (!/^[a-f0-9]{40}$/.test(sha) || fs.statSync(file).size>2*1024*1024) process.exit(2)
+          const event=JSON.parse(fs.readFileSync(file,'utf8'))
+          if (event.repository?.id!==1288615110) process.exit(2)
+          if (type==='push' && event.ref==='refs/heads/main' && event.after===sha) console.log('refs/heads/main')
+          else if (type==='pull_request' && event.pull_request?.base?.ref==='main' &&
+            event.pull_request.base.repo?.id===1288615110 && Number.isSafeInteger(event.number) &&
+            event.number===event.pull_request.number && event.number>0) console.log('refs/pull/'+event.number+'/merge')
+          else process.exit(2)
+          NODE
+          ref=$(cat "$tmp/ref")
+          "${clean[@]}" git -c init.templateDir= init -q --bare "$tmp/objects"
+          (ulimit -f 262144; "${clean[@]}" GIT_ALLOW_PROTOCOL=https timeout 45s git -C "$tmp/objects" -c credential.helper= -c core.hooksPath=/dev/null -c http.followRedirects=false -c gc.auto=0 fetch --quiet --no-tags --no-recurse-submodules --depth=2 https://github.com/gagan114662/dazl.git "$ref:refs/test/input")
+          read -r storage _ < <(du -sk "$tmp/objects")
+          [[ "$storage" =~ ^[0-9]+$ ]] && (( storage <= 262144 ))
+          actual=$("${clean[@]}" git -C "$tmp/objects" rev-parse --verify 'refs/test/input^{commit}')
+          [[ "$actual" == "$GITHUB_SHA" ]]
+
+          # Install one pinned package, before reading either of the fixed candidate files.
+          mkdir -p "$tmp/suite/web" "$tmp/suite/.github/scripts" "$tmp/suite/.github/tests"
+          cd "$tmp/suite/web"
+          : > "$tmp/npm-user"
+          : > "$tmp/npm-global"
+          cat > package.json <<'JSON'
+          {"name":"dazl-literal-fixture-tools","version":"1.0.0","private":true,"dependencies":{"typescript":"5.9.3"}}
+          JSON
+          cat > package-lock.json <<'JSON'
+          {"name":"dazl-literal-fixture-tools","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"dazl-literal-fixture-tools","version":"1.0.0","dependencies":{"typescript":"5.9.3"}},"node_modules/typescript":{"version":"5.9.3","resolved":"https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz","integrity":"sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="}}}
+          JSON
+          "${clean[@]}" timeout 25s npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier --fetch-retries=0 --strict-ssl=true --registry=https://registry.npmjs.org/ --userconfig="$tmp/npm-user" --globalconfig="$tmp/npm-global"
+
+          cd "$tmp/suite"
+          for path in .github/scripts/production-literals.mjs .github/tests/production-literals.test.mjs; do
+            mode=$("${clean[@]}" git -C "$tmp/objects" ls-tree --format='%(objectmode)' "$actual" -- "$path")
+            [[ "$mode" == 100644 ]]
+            (ulimit -f 128; "${clean[@]}" GIT_ALLOW_PROTOCOL='' GIT_NO_LAZY_FETCH=1 git -C "$tmp/objects" show "$actual:$path" > "$path")
+          done
+          # This is ordinary unprivileged pull_request test code, NOT the base-controlled advisory job.
+          "${clean[@]}" GIT_ALLOW_PROTOCOL='' GIT_NO_LAZY_FETCH=1 timeout 25s node --test .github/tests/production-literals.test.mjs

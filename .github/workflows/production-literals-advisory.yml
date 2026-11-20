@@ -1,0 +1,47 @@
+name: Production literals (advisory only)
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+permissions: {}
+concurrency:
+  group: literals-advisory-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  advisory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Scan pinned Git objects (no checkout, status writes, or secrets)
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf -- "$tmp"' EXIT
+          mkdir -m 700 "$tmp/home"
+          clean=(env -i "PATH=$PATH" "HOME=$tmp/home" LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_ALLOW_PROTOCOL=https)
+          "${clean[@]}" node - "$GITHUB_EVENT_PATH" "$GITHUB_SHA" <<'NODE' > "$tmp/pins"
+          const fs = require('node:fs')
+          const [file, boot] = process.argv.slice(2)
+          const id = 1288615110
+          const sha = x => typeof x === 'string' && /^[a-f0-9]{40}$/.test(x)
+          if (!sha(boot) || fs.statSync(file).size > 2*1024*1024) process.exit(2)
+          const event = JSON.parse(fs.readFileSync(file,'utf8')), p=event.pull_request
+          if (event.repository?.id!==id || p?.base?.repo?.id!==id || p.base.ref!=='main' ||
+              !['opened','synchronize','reopened'].includes(event.action) ||
+              !Number.isSafeInteger(p.number) || p.number<1 || p.number!==event.number ||
+              !sha(p.head?.sha) || !sha(p.base?.sha)) process.exit(2)
+          console.log(p.number)
+          NODE
+          pr=$(cat "$tmp/pins")
+          "${clean[@]}" git -c init.templateDir= init -q --bare "$tmp/objects"
+          # One bounded public fetch. Ref moved, pack cutoff, or shallow missing history -> unavailable, not green.
+          # On runner shell ulimit -f is 1 KiB units. The single fetch also has time and post-fetch aggregate limits.
+          (ulimit -f 262144; "${clean[@]}" timeout 45s git -C "$tmp/objects" -c credential.helper= -c core.hooksPath=/dev/null -c http.followRedirects=false -c gc.auto=0 fetch --quiet --no-tags --no-recurse-submodules --depth=64 https://github.com/gagan114662/dazl.git             'refs/heads/main:refs/remotes/trusted/main'             "refs/pull/$pr/head:refs/pull/$pr/head" "refs/pull/$pr/merge:refs/pull/$pr/merge")
+          read -r storage _ < <(du -sk "$tmp/objects")
+          [[ "$storage" =~ ^[0-9]+$ ]] && (( storage <= 262144 ))
+          trusted=$("${clean[@]}" git -C "$tmp/objects" rev-parse --verify 'refs/remotes/trusted/main^{commit}')
+          [[ "$trusted" == "$GITHUB_SHA" ]]
+          "${clean[@]}" git -C "$tmp/objects" show "$trusted:.github/scripts/production-literals-advisory.mjs" > "$tmp/launcher.mjs"
+          # Launcher validates event/refs again; stdout is bounded summary only.
+          "${clean[@]}" node "$tmp/launcher.mjs" "$GITHUB_EVENT_PATH" "$tmp/objects" "$tmp/runtime" "$trusted" >> "$GITHUB_STEP_SUMMARY"
