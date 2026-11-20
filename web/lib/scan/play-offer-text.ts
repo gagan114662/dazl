@@ -39,6 +39,8 @@ export function completeOffer(value: unknown): string | null {
   return hasOpenOfferParenthesis(text) ? null : text
 }
 
+const clipped = (v: unknown): boolean => cleanOffer(v).length >= 3 && !completeOffer(v)
+
 function hasOpenOfferParenthesis(text: string): boolean {
   let depth = 0
   for (const char of text) {
@@ -608,9 +610,11 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   const reviewed = completeOffer(play.offer)
   const incomplete = (): PlayOffer => ({ offer: null, source: 'conflict', conflict: { stated: null, recorded: '', incomplete: true } })
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
-  if (cleanOffer(play.offer)) return incomplete()
+  // Only a CLIPPED value (3+ characters, overlength or cut inside a parenthesis) is incomplete; text under 3 characters
+  // states no offer at all, as before, and falls through (an 'x' profile is no offer, not a hold).
+  if (clipped(play.offer)) return incomplete()
   const recorded = offerOfSeller(play.seller)
-  if ((recorded && !completeOffer(recorded)) || (!recorded && cleanOffer(profileSells) && !completeOffer(profileSells))) return incomplete()
+  if ((recorded && clipped(recorded)) || (!recorded && clipped(profileSells))) return incomplete()
   const base = recorded ?? (cleanOffer(profileSells) || null)
   if (offerSentences(play.query ?? '').ambiguous)
     return { offer:null, source:'conflict', conflict:{ stated:null, recorded:base??'', ambiguous:true } }
