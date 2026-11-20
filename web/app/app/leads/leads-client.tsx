@@ -1,4 +1,5 @@
 'use client'
+import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
@@ -816,6 +817,7 @@ export default function LeadsClient() {
           <details className="mb-4 text-sm" data-testid="more-sources">
             <summary className="cursor-pointer text-[#555]">More sources</summary>
             <div className="mt-3 space-y-4 border-l border-black/10 pl-4">
+              <OptionalRegistryNote />
               <div className="space-y-2">
                 <p className="text-xs font-medium text-[#111]">Add to this search</p>
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useGithub} onChange={e => setUseGithub(e.target.checked)} /> Also search public GitHub repositories</label>

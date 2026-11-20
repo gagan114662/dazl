@@ -1,4 +1,5 @@
 'use client'
+import { OptionalRegistryNote } from './optional-registry-note'
 import { useEffect, useMemo, useState } from 'react'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from './trial-refusal-notice'
 import { useRouter } from 'next/navigation'
@@ -442,6 +443,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                         onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
                     </form>
                     {claudeSearchOption}
+                    <OptionalRegistryNote />
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
                     <div className="mt-2 flex flex-col gap-2">
                       {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy || noPool || poolUnknown || !!trialRefused} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); if (!noPool && !poolUnknown) void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
