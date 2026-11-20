@@ -17,7 +17,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -73,8 +73,16 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       })
       return Response.json({
         model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn', role: 'assistant', type: 'message',
-        content: [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
+        content: noNativeUrls ? [
+          { type: 'web_search_tool_result', content: { type: 'opaque-private-sentinel' } },
+          { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'opaque-private-sentinel' }] },
+          { type: 'web_search_tool_result', content: [] },
+          ...['too_many_requests', 'invalid_tool_input', 'max_uses_exceeded', 'query_too_long', 'request_too_large', 'unavailable', '__proto__', 'opaque-private-sentinel'].map(error_code =>
+            ({ type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code } })),
+        ]
+          : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
         usage: { input_tokens: overage ? 100_000 : 8_000, output_tokens: 200,
+          ...(acceptedGeo !== undefined ? { inference_geo: acceptedGeo } : {}),
           ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
           server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } },
       })
@@ -87,7 +95,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
         assert.equal(page, url)
         if (sparseUsage) assert.deepEqual(db.prepare("SELECT status,actual_usd FROM scan_spend_calls WHERE scan_job_id='job' AND kind='llm.anthropic.web_search'").get(),
           { status: 'settled', actual_usd: 0.037 }, 'native billing is durable before publisher evidence is read')
-        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: 'Published evidence about a commercial roofing company. '.repeat(8) }
+        if (failedPublisher) return { fail: 'blocked' }
+        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: thinPublisher ? 'too short' : 'Published evidence about a commercial roofing company. '.repeat(8) }
       },
     })
     const end = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(job.id)
@@ -228,4 +237,41 @@ test('a refusal writes only bounded billing fields on the tenant run report and 
   })
   assert.doesNotMatch(JSON.stringify(x.nativeReport), /secret-enum-value|hidden-request-id|raw-response-sentinel|private-cache-value|provider_private_tool/)
   assert.deepEqual(x.ledger, [{ status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null }])
+})
+
+test('settled unavailable searches distinguish discarded transport results from thin publisher pages', async () => {
+  const noUrls = await simulate({ noNativeUrls: true })
+  const thin = await simulate({ thinPublisher: true })
+  const blocked = await simulate({ failedPublisher: true })
+  for (const x of [noUrls, thin, blocked]) {
+    assert.deepEqual(x.nativeStatus, { status: 'unavailable' })
+    assert.equal(x.nativeReport.actual_usd, 0.037)
+    assert.doesNotMatch(JSON.stringify(x.nativeReport), /opaque-private-sentinel|too short/)
+  }
+  const present = { stop: 'end_turn', result_blocks: 1, non_array_result_blocks: 0, empty_result_blocks: 0,
+    malformed_result_blocks: 0, result_errors: {}, result_entries: 1, safe_urls: 1, publisher_attempted: 1,
+    publisher_returned: 1, publisher_failures: {}, publisher_usable: 0, evidence_items: 0 }
+  assert.deepEqual(noUrls.nativeReport.evidence_diagnostic, { stop: 'end_turn', result_blocks: 11, non_array_result_blocks: 9,
+    empty_result_blocks: 1, malformed_result_blocks: 1, result_errors: { too_many_requests: 1, invalid_tool_input: 1,
+      max_uses_exceeded: 1, query_too_long: 1, request_too_large: 1, unavailable: 1, other: 2 },
+    result_entries: 1, safe_urls: 0, publisher_attempted: 0, publisher_returned: 0, publisher_failures: {}, publisher_usable: 0, evidence_items: 0 })
+  assert.deepEqual(thin.nativeReport.evidence_diagnostic, present)
+  assert.deepEqual(blocked.nativeReport.evidence_diagnostic, { ...present, publisher_returned: 0, publisher_failures: { blocked: 1 } })
+})
+
+test('settled pre-4.6 geo fallback persists only a fixed diagnostic, never raw provider metadata', async () => {
+  const injected = 'secret-geo-sentinel\n<script>injection</script>'
+  const x = await simulate({ sparseUsage: true, acceptedGeo: injected })
+  assert.equal(x.nativeReport.actual_usd, 0.037)
+  assert.equal(x.nativeReport.inference_geo_diagnostic, 'unrecognized_price_neutral')
+  assert.doesNotMatch(JSON.stringify(x.nativeReport), /secret-geo-sentinel|<script>/)
+  assert.deepEqual(x.ledger[0], { status: 'settled', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: 0.037 })
+  const documented = await simulate({ sparseUsage: true, acceptedGeo: 'not_available' })
+  assert.equal(documented.nativeReport.actual_usd, 0.037)
+  assert.equal(documented.nativeReport.inference_geo_diagnostic, 'not_available')
+  for (const acceptedGeo of ['us', 'global', undefined]) {
+    const known = await simulate({ sparseUsage: true, acceptedGeo })
+    assert.equal(known.nativeReport.actual_usd, 0.037)
+    assert.equal(Object.hasOwn(known.nativeReport, 'inference_geo_diagnostic'), false)
+  }
 })
