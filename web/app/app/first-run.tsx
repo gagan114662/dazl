@@ -1,6 +1,6 @@
 'use client'
 import { OptionalRegistryNote } from './optional-registry-note'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from './trial-refusal-notice'
 import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
@@ -22,6 +22,9 @@ import { calendarDay } from '@/lib/day'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
+import { icpLoss, normalizeIcp } from '@/lib/scan/icp'
+import ManualNativeTargetReview from './manual-native-target-review'
+import { buildManualNativeTarget, submittedTarget, targetFields, type TargetFields } from './manual-native-target'
 
 const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
 
@@ -52,6 +55,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [usage, setUsage] = useState<Usage | null>(null)
   const [step, setStep] = useState<Step>('site')
   const [claudeSearch, setClaudeSearch] = useState(false)
+  const [targetReview, setTargetReview] = useState<{query:string;stay:boolean;initial:TargetFields;retained:string[];makeBody:(draft:TargetFields)=>string|null} | null>(null)
+  const activeTargetReview = useRef<typeof targetReview>(null)
   const [website, setWebsite] = useState('')
   const [bizName, setBizName] = useState('')
   const [sells, setSells] = useState('')
@@ -89,7 +94,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // The first play started from the ready screen, watched in place: its status and, once done, its ready leads.
   // f5: the fast first scan's view (lib/scan/first5.ts, served by the status route for a mode=first5 job): live
   // per-source progress, candidates so far and the verified leads. null for a job without it (then the leads read is used).
-  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string; claudeSearch: boolean } | null>(null)
+  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string; claudeSearch: boolean; reviewedTarget?:ReturnType<typeof submittedTarget> } | null>(null)
 
   // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read). The saved profile's
   // research block comes back too: reopening the editor (?setup=brain) must keep every Add/Dismiss, hold and answer it
@@ -106,7 +111,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   }
   // #1325 F1: the Google-return note is for one return, as on Leads: history movement (back/forward) drops it.
   useEffect(() => {
-    const drop = () => setLinkNote(null)
+    const drop = () => { setLinkNote(null); activeTargetReview.current = null; setTargetReview(null) }
     window.addEventListener('popstate', drop)
     return () => window.removeEventListener('popstate', drop)
   }, [])
@@ -265,16 +270,38 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   )
 
   // One scan from one sentence: the box, or a suggested play picked with one click (it goes in the box and starts at once).
-  async function run(e: React.FormEvent) { e.preventDefault(); await start(ask) }
-  async function start(sentence: string, stay = false) {
+  async function run(e: React.FormEvent) { e.preventDefault(); await reviewOrStart(ask) }
+  async function reviewOrStart(sentence: string, stay = false) {
+    if (!claudeSearch || askIsSuggestion) return start(sentence,stay)
+    if (busy || activeTargetReview.current || sentence.trim().length < 3) return
+    // Independent of saved settings: freeze the as-shown profile/decisions and the exact typed query.
+    const snapshot = structuredClone(profile)
+    const decisions = structuredClone(asResearchBlock(research)?.decisions)
+    const windowDays = (snapshot as {window_days?:unknown}).window_days
+    const retained = [
+      ...(snapshot.sizes.length ? [`Company sizes: ${snapshot.sizes.join('; ')}`] : []),
+      ...(typeof windowDays==='number' ? [`Time window: ${windowDays} days`] : []),
+      ...(snapshot.exclude.length ? [`Exclude: ${snapshot.exclude.join('; ')}`] : []),
+    ]
+    const review = {query:sentence.trim(),stay,initial:targetFields(snapshot),retained,makeBody:(draft:TargetFields)=>{
+      const body = buildManualNativeTarget(sentence,snapshot,draft,decisions)
+      if (!body) return null
+      const icp = JSON.parse(body).icp
+      return icpLoss(icp).length || !normalizeIcp(icp) ? null : body
+    }}
+    setError('')
+    activeTargetReview.current = review
+    setTargetReview(review)
+  }
+  async function start(sentence: string, stay = false, reviewedBody?:string) {
     if (busy || sentence.trim().length < 3) return
-    const useClaudeSearch = claudeSearch
+    const useClaudeSearch = !!reviewedBody || claudeSearch
     setClaudeSearch(false)
     setError(''); setTrialRefused(null); setLinkNote(null); setBusy(true)
     try {
       // Older servers reject all first5 budgets. Use that boundary to refuse rather than accidentally start
       // an ordinary scan on a server that does not understand the opt-in.
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: reviewedBody ?? JSON.stringify({
         query: sentence.trim(), icp: profile, research_decisions: asResearchBlock(research)?.decisions,
         // Ready's quick play and an explicit Web Search opt-in use first5. Unselected Ask/Play keeps the full scan.
         ...(stay || useClaudeSearch ? { mode: 'first5' } : {}),
@@ -290,7 +317,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       }
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
-        if (stay || useClaudeSearch) { if (useClaudeSearch) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim(), claudeSearch: useClaudeSearch }); return }
+        if (stay || useClaudeSearch) { if (useClaudeSearch) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim(), claudeSearch: useClaudeSearch, ...(reviewedBody ? {reviewedTarget:submittedTarget(reviewedBody)} : {}) }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return
       }
       if (useClaudeSearch && (j.error === 'invalid_budget' || j.error === 'unknown_mode')) return setError('This server does not support Claude Web Search for first play yet. Nothing started.')
@@ -300,6 +327,17 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
+  }
+
+  if (targetReview) {
+    const discard = () => { activeTargetReview.current = null; setTargetReview(null) }
+    return <main className="fixed inset-0 z-50 overflow-y-auto bg-[var(--canvas)] p-5 app-ui">
+      <ManualNativeTargetReview {...targetReview} onCancel={discard} onConfirm={body=>{
+        if (activeTargetReview.current !== targetReview) return
+        discard()
+        void start(targetReview.query,targetReview.stay,body)
+      }} />
+    </main>
   }
 
   // Website, building and ready are one full-screen flow (no menu, the brain behind it); editing the profile and the
@@ -331,7 +369,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     const day = calendarDay // the same calendar day in every time zone
     const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
     // #1037: who to contact on each lead, from the stored people rows (never invented; null = "No buyer named yet").
-    const buyerRoles = profile.who.join('; ')
+    const buyerRoles = (first?.reviewedTarget?.who ?? profile.who).join('; ')
     const buyerOf = (l: PreviewLead) => leadPerson(l.enrichments, buyerRoles, undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
     const fullRow = (id: string) => (first?.leads as PreviewLead[] | null)?.find(x => x.id === id) ?? null
     const person = (l: PreviewLead) => {
@@ -429,6 +467,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     : readyLeads.length ? `${readyLeads.length} found - research needed before outreach`
                     : split && split.held.length ? 'Leads held for your review'
                     : 'No leads in this first play'}</h2>
+                  {first && <div className="text-sm text-[var(--ink-2)] mt-1" data-testid="first-submitted-target">
+                    {first.reviewedTarget ? <>Targets for this play: {first.reviewedTarget.summary}{first.reviewedTarget.who.length ? ` · ${first.reviewedTarget.who.join(', ')}` : ''}</> : <>Search request: {first.query}</>}
+                  </div>}
                   {!first && <>
                     <p className="text-sm text-[var(--ink-2)] mt-1">It searches with what dazl inferred, exactly as shown. Edit it first if anything is off.</p>
                     {/* The same profile object the scan is sent with: nothing here is widened or re-split. */}
@@ -437,7 +478,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                     </dl>
                     {/* One sentence. It starts as the top suggestion, so the website stays the only thing typed; a click on a
                         suggestion starts that one at once. */}
-                    <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); if (!noPool && !poolUnknown && !trialRefused) void start(sentence, true) }}>
+                    <form id="first-ask" className="mt-5" onSubmit={e => { e.preventDefault(); if (!noPool && !poolUnknown && !trialRefused) void reviewOrStart(sentence, true) }}>
                       <label className="block text-sm font-semibold" htmlFor="first-ask-input">Describe who you want in one sentence</label>
                       <textarea id="first-ask-input" className="field w-full mt-2 text-[15px]" rows={2} maxLength={300} value={sentence} data-testid="first-ask"
                         onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />

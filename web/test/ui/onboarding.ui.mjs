@@ -163,29 +163,75 @@ scanBodies.length = 0
 await optIn.check()
 assert.equal(scanBodies.length, 0)
 await page.getByText(/actual Anthropic charges can vary/).waitFor()
+const review = page.getByRole('region', {name:'Review targets for this search'})
+const openReview = async () => {
+  await startSearch.click()
+  await review.waitFor({state:'visible'})
+}
+const submitReviewed = async () => {
+  await openReview()
+  await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
+}
+const profileWritesBefore = realProfile.filter(m => m === 'POST').length
+const preflightsBefore = calls.filter(m => m === 'POST /api/scan/icp').length
+await openReview()
+assert.match(await review.getByLabel('Unchanged search criteria').textContent(), /Exclude: Dental schools/)
+await review.getByLabel('Locations').fill('Durham, England')
+await review.getByRole('button',{name:'Cancel',exact:true}).click()
+assert.equal(scanBodies.length,0,'cancel never starts a search')
+await openReview()
+assert.equal(await review.getByLabel('Locations').inputValue(),'Austin, TX','canceled fields were not saved')
+await review.getByLabel('Locations').fill('')
+await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
+assert.equal(scanBodies.length,0,'clearing a constraint never submits a broader search')
+await review.getByRole('button',{name:'Cancel',exact:true}).click()
 state.oldFirstPlayServer = true
-await startSearch.click()
+await submitReviewed()
 await page.getByRole('alert').filter({ hasText: 'does not support Claude Web Search' }).waitFor()
 assert.equal(scanBodies.length, 1, 'older server refuses, without starting or retrying an ordinary scan')
 state.oldFirstPlayServer = false
 await optIn.check()
 state.searchResponse = 'no-key'
-await startSearch.click()
+await submitReviewed()
 await page.getByRole('alert').filter({ hasText: 'cannot use the free trial' }).waitFor()
 assert.equal(await optIn.isChecked(), false)
 assert.equal(scanBodies.length, 2, 'key refusal does not submit a fallback')
 assert.deepEqual(scanBodies[1].budget, { web_search: 'anthropic_estimated_v1' })
 state.searchResponse = 'missing-policy'
 await optIn.check()
-await startSearch.click()
+await openReview()
+await review.getByLabel('Buyer description').fill('Local accountancy practices')
+await review.getByLabel('Buyer roles').fill('Practice managers')
+await review.getByLabel('Locations').fill('Oxford, England')
+await review.getByLabel('Country restriction', {exact:false}).fill('GB')
+await review.getByLabel('Industries').fill('Accounting')
+await review.getByLabel('Buying signals').fill('Hiring an office manager')
+await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
 await page.getByRole('alert').filter({ hasText: 'did not confirm the Claude Web Search policy' }).waitFor()
 assert.equal(scanBodies.length, 3, 'incomplete success never redirects or retries')
 assert.equal(await page.getByTestId('ready-step').count(), 0)
 state.searchResponse = 'confirmed'
+await sentence().fill('Find machine shops in Wellington installing new equipment')
 await optIn.check()
-await startSearch.click()
+await openReview()
+assert.equal(await review.getByLabel('Locations').inputValue(),'Austin, TX','a prior play never rewrote the saved draft')
+await review.getByLabel('Buyer description').fill('Local machine shops')
+await review.getByLabel('Buyer roles').fill('Operations managers')
+await review.getByLabel('Locations').fill('Wellington, New Zealand')
+await review.getByLabel('Country restriction', {exact:false}).fill('NZ')
+await review.getByLabel('Industries').fill('Metalworking')
+await review.getByLabel('Buying signals').fill('Installing new equipment')
+await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
 await page.getByTestId('ready-step').waitFor()
+assert.equal(await page.getByTestId('first-submitted-target').textContent(), 'Targets for this play: Local machine shops · Operations managers')
 assert.deepEqual(scanBodies.map(({ mode, budget }) => ({ mode, budget })), Array(4).fill({ mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } }))
+assert.deepEqual(scanBodies.slice(2).map(({icp})=>[icp.where,icp.country,icp.industries,icp.signals,icp.exclude]),[
+  [['Oxford, England'],'GB',['Accounting'],['Hiring an office manager'],['Dental schools']],
+  [['Wellington, New Zealand'],'NZ',['Metalworking'],['Installing new equipment'],['Dental schools']],
+])
+assert.equal(realProfile.filter(m => m === 'POST').length, profileWritesBefore)
+assert.equal(calls.filter(m => m === 'POST /api/scan/icp').length, preflightsBefore)
+
 
 await page.goto(base + '/app/outreach', { waitUntil: 'networkidle' }); await shot('outreach')
 {
