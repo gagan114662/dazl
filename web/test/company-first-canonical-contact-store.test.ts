@@ -124,7 +124,7 @@ for(const market of [
           // consumed from the real product contact function before grading.
           const buyer='Robin Example',role='Founder',bioUrl=site+'/team/robin',directory=site+'/team'
           const linkedIn='https://www.linkedin.com/in/example-fixture'
-          const email='robin.example@fixtureharbor.example'
+          const email='Robin.Example@FixtureHarbor.Example'
           let contactReads=0
           const telephone=market.place==='York'?'<p><a href="tel:+441904123456">+44 1904 123456</a></p>':''
           const wire:ObservedSafeGet=async u=>{
@@ -212,6 +212,9 @@ for(const market of [
             assert.deepEqual(persisted,{published:market.published,currentRoute:market.route})
             assert.equal(stageCanonicalSiteContact(packet,adapterScope,issued.site,{homepage,bio}),null)
             assert.equal(scratch.prepare("SELECT COUNT(*) FROM lead_enrichments WHERE kind='email'").pluck().get(),market.published==='candidate'?1:0)
+            if(market.published==='display_only')
+              assert.equal(scratch.prepare('SELECT address FROM published_work_email_display').pluck().get(),email.split('@')[0]+'@fixtureharbor.example')
+            else assert.equal(scratch.prepare("SELECT value FROM lead_enrichments WHERE kind='email'").pluck().get(),email.toLowerCase())
             assert.equal(db.prepare('SELECT COUNT(*) FROM email_candidates').pluck().get(),0)
             assert.equal(stageCanonicalContactRow(packet,adapterScope),null)
             assert.equal(scratch.prepare('SELECT status FROM scan_jobs WHERE id=?').pluck().get(fresh.jobId),'running')

@@ -4,6 +4,7 @@ import { addEnrichment } from '../connectors/store.ts'
 import { domainBasisToken } from '../connectors/sitecrawl.ts'
 import { migrateEmailGuess, recordEmailGuesses } from '../people/email-pattern.ts'
 import { migratePublishedDisplay, publishedDisplayCountry, recordPublishedDisplay } from '../people/published-display.ts'
+import { samePublishedEmailAddress } from '../outreach/published-email.ts'
 import { migrateOutreach } from '../outreach/store.ts'
 import { listedProfileLabel } from '../people/site-profile.ts'
 import { strictPublishedWorkEmailsForLeads } from '../people/work-email.ts'
@@ -62,7 +63,7 @@ export function stageCanonicalSiteContact(packet:CanonicalContactPacket,s:Scope,
         role.literalRoleQuote!==e.ownRole.quote||role.sourceUrl!==e.buyerBio||role.observedAtMs!==bio?.checkedAt||
         role.name!==e.buyer||role.title!==e.title||role.company!==row.company||role.linkedin!==e.linkedin||
         !role.literalRoleQuote||role.literalRoleQuote.length>254))return null
-    if(!bio||!bio.seen.some(p=>p.address.toLowerCase()===e.email.toLowerCase())||
+    if(!bio||!bio.seen.some(p=>samePublishedEmailAddress(p.address,e.email))||
       primary.prepare('SELECT 1 FROM suppressions WHERE tenant_id=? AND lower(email)=lower(?)').get(t.tenantId,e.email))return null
     const where:unknown=JSON.parse(row.icp).where
     if(!Array.isArray(where)||!where.every(x=>typeof x==='string'))return null
@@ -99,8 +100,8 @@ export function stageCanonicalSiteContact(packet:CanonicalContactPacket,s:Scope,
     const ready=currentSiteContact(scratch,PRIVATE,{id,company_domain:host},whoOf(row.icp))
     const addresses=strictPublishedWorkEmailsForLeads(scratch,PRIVATE,[id],Math.floor(now/1000))[id]
     if(!ready.confirmed||ready.person?.source_url!==e.buyerBio||ready.person.value!==person||
-      addresses?.length!==1||addresses[0].target!==e.buyer+'|'+e.title||addresses[0].address!==e.email||
-      addresses[0].source_url!==e.emailSource||(!display&&ready.route?.value!==e.email))return refused()
+      addresses?.length!==1||addresses[0].target!==e.buyer+'|'+e.title||!samePublishedEmailAddress(addresses[0].address,e.email)||
+      addresses[0].source_url!==e.emailSource||(!display&&!samePublishedEmailAddress(ready.route?.value,e.email)))return refused()
     if(!currentCanonicalContactPacket(packet,s))return refused()
     return Object.freeze({published:display?'display_only' as const:'candidate' as const,currentRoute:!!ready.route})
   }).immediate()).immediate()}catch{return null}

@@ -1,3 +1,7 @@
+import { provisionPrivatePolicyContext, privatePolicyContextCurrent } from '../lib/company-first/company-first-private-policy-context.ts'
+import { loadPlayDemandRubric } from '../lib/scan/demand-rubric-play.ts'
+import { saveMemory } from '../lib/memory.ts'
+import { setCompetitors } from '../lib/signals/competitor-reddit.ts'
 import { runPrivateCompanyFirstProductGates } from '../lib/company-first/company-first-private-product-gates.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -151,6 +155,22 @@ test('private protected product gates accept genuine bound input but hold missin
             assert.deepEqual(await runGates([{id,finding:{...finding},facts}]),{state:'held',reason:'source_binding_unavailable'})
             assert.deepEqual(await runGates([{id,finding,facts:{...facts}}]),{state:'held',reason:'source_binding_unavailable'})
             assert.deepEqual(await runGates(),{state:'checked',admitted:1,salesProofHeld:0,rubricAvailable:false,actionable:0,timingProven:0,held:1,qualifiedIds:[]})
+            // The opaque primary anchor must not expose the private arm's
+            // offer. The same signed subject DOES populate scratch's exact
+            // reviewed offer; the product rubric consumes that row.
+            assert.equal(db.prepare('SELECT offer FROM scan_jobs WHERE id=?').pluck().get(fresh.jobId),null)
+            assert.equal(scratch.prepare('SELECT offer FROM scan_jobs WHERE id=?').pluck().get(fresh.jobId),offer)
+            db.prepare(`INSERT INTO users(id,email,business_name,website,password_hash,salt,email_verified_at)
+              VALUES(?,?,?,?,'','',1)`).run(tenantId,'policy-fixture@example.test','Fixture Seller','https://seller.example')
+            saveMemory(db,tenantId,{exclusions:['Unrelated Excluded Supplier']})
+            await setCompetitors(sqliteDb(db),tenantId,['Fixture Rival'])
+            const policy=await provisionPrivatePolicyContext(db,scratch,execution,{query,icp,offer},signal)
+            assert.ok(policy,'authorize the private policy projection for this exact offer')
+            const rubric=await loadPlayDemandRubric(sqliteDb(scratch),'private-scratch',fresh.jobId)
+            assert.ok(rubric.rubric,'normal canonical loader sees the reviewed private offer')
+            assert.deepEqual(await runGates(),{state:'checked',admitted:1,salesProofHeld:0,rubricAvailable:true,
+              actionable:0,timingProven:0,held:1,qualifiedIds:[]})
+            assert.equal(await privatePolicyContextCurrent(policy,db,scratch,execution,{query,icp,offer},signal),true)
             const dbRow=scratch.prepare('SELECT status FROM scan_jobs WHERE id=?').pluck().get(fresh.jobId)
             assert.equal(dbRow,'running')
             db.prepare("UPDATE organizations SET company_first_scorecard_enabled=0 WHERE id=?").run(tenantId)

@@ -3,6 +3,8 @@
 import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { sqliteDb } from '../db/client.ts'
+import { loadPlayDemandRubric } from '../scan/demand-rubric-play.ts'
+import { normalizeIcp } from '../scan/icp.ts'
 import { feedbackVersion } from '../scan/feedback.ts'
 import { bindGuardedCompanyFirstContact } from './company-first-guarded-contact.ts'
 import { stageCanonicalSiteContact } from './company-first-canonical-contact-store.ts'
@@ -25,7 +27,8 @@ export const prepareStagingCaseOneBinding:StagingCaseOneBinder=async (primary,sc
   return (proof,execution):ProtectedCandidateBindings|null=>{
     const ticket=execution.ticket
     if(!isStagingCaseOneTicket(ticket)||ticket.release!==scope.release||ticket.tenantId!==scope.tenantId||ticket.actorId!==scope.actorId||
-      ticket.jobId!==scope.jobId||!authorizeScorecardSubject(ticket,proof.subject))return null
+      ticket.jobId!==scope.jobId||!authorizeScorecardSubject(ticket,proof.subject)||
+      typeof proof.subject.offer!=='string'||proof.subject.offer.trim().length<3)return null
     const life=AbortSignal.timeout(Math.max(1,Math.min(8*60_000,ticket.expiresAt-Date.now())))
     const plan=bindReviewedCompanyPlan(proof,execution,life)
     // The case-one pilot does not yet install a reviewed second size issuer.
@@ -75,7 +78,13 @@ export const prepareStagingCaseOneBinding:StagingCaseOneBinder=async (primary,sc
         if(input.primary!==primary||input.execution!==execution||installedPolicy||input.signal.aborted||life.aborted)return false
         writtenScratch=input.scratch
         installedPolicy=await provisionPrivatePolicyContext(primary,input.scratch,execution,proof.subject,input.signal)
-        return !!installedPolicy&&!input.signal.aborted
+        if(!installedPolicy||input.signal.aborted)return false
+        // The primary anchor intentionally stores no offer. A real rubric
+        // must read the exact signed per-play offer from the private job.
+        const reviewed=normalizeIcp(JSON.parse(proof.subject.icp))
+        const {rubric}=await loadPlayDemandRubric(sqliteDb(input.scratch),'private-scratch',ticket.jobId,reviewed?.window_days)
+        return !!rubric&&!input.signal.aborted&&
+          await privatePolicyContextCurrent(installedPolicy,primary,input.scratch,execution,proof.subject,input.signal)
       },
       readStages(scratch,asked,key){
         const row=snapshots.get(key.id)

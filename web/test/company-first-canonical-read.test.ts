@@ -23,7 +23,7 @@ const org='Fixture Harbor', website='https://fixtureharbor.example', linkedin='h
 const legalIdentity={issuerKey:'fixture.registry',jurisdictionKey:'fixture.jurisdiction',legalId:'FIX-991172'}
 const expected={companyKey:officialCompanyEntityKey(legalIdentity),website,identitySource:website+'/news',event:'expansion',eventSource:website+'/event',
   eventDate:'2026-11-15',literalQuote:'Fixture Harbor opened a second office.',buyer:'Robin Example',title:'Owner',
-  buyerBio:website+'/bio',linkedin,email:'robin.example@fixtureharbor.example',emailSource:website+'/bio'}
+  buyerBio:website+'/bio',linkedin,email:'Robin.Example@FixtureHarbor.Example',emailSource:website+'/bio'}
 const roster=Array.from({length:7},(_,i)=>h(i+1))
 function issue(actorId=actor,attempt=1){
  const k=Buffer.alloc(32,17), hash=(s:string)=>createHmac('sha256',k).update(s).digest('hex')
@@ -86,7 +86,7 @@ async function fixture(){
  add('sitecrawl','email',expected.email,expected.emailSource)
  add('scan:actionable','actionability','Actionable: domain, person and published contact confirmed',expected.eventSource,'Robin Example, Owner - email')
  db.prepare(`INSERT INTO email_candidates (tenant_id,lead_id,person,address,format,tier,source_url) VALUES (?,?,?,?,?,'published',?)`)
-   .run(scratchTenant,lead,expected.buyer,expected.email,'first.last',expected.emailSource)
+   .run(scratchTenant,lead,expected.buyer,expected.email.toLowerCase(),'first.last',expected.emailSource)
  assert.deepEqual(recordTimingProof(db,{id:job,user_id:scratchTenant},new Date(now)),{proven:1,held:0})
  db.prepare("UPDATE scan_jobs SET status='done' WHERE id=?").run(job)
  const owned=await issueSite()
@@ -114,6 +114,9 @@ test('stored stale quote, no named email or timing and a wrong actor/attempt nev
    f.db.prepare("UPDATE leads SET evidence_excerpt='Different excerpt' WHERE id=?").run(lead)
    assert.equal(await read().then(r=>r.state==='held'&&r.reason),'evidence_mismatch')
    f.db.prepare('UPDATE leads SET evidence_excerpt=? WHERE id=?').run(expected.literalQuote,lead)
+   f.db.prepare("UPDATE email_candidates SET address='robin.example+other@fixtureharbor.example' WHERE lead_id=?").run(lead)
+   assert.equal(await read().then(r=>r.state==='held'&&r.reason),'published_email_missing')
+   f.db.prepare("UPDATE email_candidates SET address=? WHERE lead_id=?").run(expected.email.toLowerCase(),lead)
    f.db.prepare("UPDATE email_candidates SET tier='guessed' WHERE lead_id=?").run(lead)
    assert.equal(await read().then(r=>r.state==='held'&&r.reason),'published_email_missing')
    f.db.prepare("DELETE FROM lead_enrichments WHERE connector='scan:timing-proof'").run()

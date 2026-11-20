@@ -44,18 +44,23 @@ export function parseStagingCaseOneMaterial(raw:Uint8Array):Material|null{
       reviewedInput:Object.freeze({...x.reviewedInput} as ScorecardSubjectInput)})
   }catch{return null}
 }
-async function privateInput():Promise<Material|null>{
-  if(process.stdin.isTTY)return null
+async function privateInput(signal:AbortSignal):Promise<Material|null>{
+  if(process.stdin.isTTY||signal.aborted)return null
   const chunks:Buffer[]=[]
-  let size=0
-  for await(const raw of process.stdin){
-    const part=Buffer.isBuffer(raw)?raw:Buffer.from(raw)
-    if((size+=part.byteLength)>MAX_MATERIAL_BYTES)return null
-    chunks.push(part)
-  }
-  const material=Buffer.concat(chunks)
-  try{return parseStagingCaseOneMaterial(material)}
-  finally{material.fill(0);for(const c of chunks)c.fill(0)}
+  let size=0, material:Buffer|undefined
+  const stop=()=>{process.stdin.destroy()}
+  signal.addEventListener('abort',stop,{once:true})
+  try{
+    for await(const raw of process.stdin){
+      const part=Buffer.isBuffer(raw)?raw:Buffer.from(raw)
+      if(signal.aborted||(size+=part.byteLength)>MAX_MATERIAL_BYTES){part.fill(0);return null}
+      chunks.push(part)
+    }
+    if(signal.aborted)return null
+    material=Buffer.concat(chunks)
+    return parseStagingCaseOneMaterial(material)
+  }catch{return null}
+  finally{signal.removeEventListener('abort',stop);material?.fill(0);for(const c of chunks)c.fill(0)}
 }
 
 // Invoked by trusted staging code only. The operator holds the same staging
@@ -74,7 +79,7 @@ export async function runTrustedStagingCaseOneEntry(bind:StagingCaseOneBinder, s
     const info=lstatSync(stagingDb)
     if(realpathSync(`${stagingRoot}/current/web`)!==webRoot||process.cwd()!==webRoot||
       !info.isFile()||info.nlink!==1||realpathSync(stagingDb)!==stagingDb)return PUBLIC_REFUSAL
-    const x=await privateInput()
+    const x=await privateInput(signal)
     if(!x||signal.aborted)return PUBLIC_REFUSAL
     key=Buffer.from(secret!,'hex')
     db=new Database(stagingDb,{fileMustExist:true,timeout:2000})

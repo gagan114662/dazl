@@ -1,4 +1,4 @@
-import { parseDomainRow } from '../outreach/published-email.ts'
+import { parseDomainRow, samePublishedEmailAddress } from '../outreach/published-email.ts'
 // Final private read bridge only. Uses current legacy product rule readers;
 // none is converted into a synthetic affirmative StageAttestation.
 import type Database from 'better-sqlite3'
@@ -126,7 +126,7 @@ export async function readPrivateCompanyFirstProof(primary:Database.Database, db
       const exactTarget=`${evidence.buyer}|${evidence.title}`
       const email=strictPublishedWorkEmailsForLeads(db,scratchTenant,[row.id],Math.floor(t0/1000))[row.id]??[]
       if(!email.some(v=>v.target===exactTarget&&v.status==='published'&&v.provider==='site'&&
-           v.address===evidence.email&&v.source_url===evidence.emailSource))return {held:'published_email_missing'}
+           samePublishedEmailAddress(v.address,evidence.email)&&v.source_url===evidence.emailSource))return {held:'published_email_missing'}
       observed.push('named_published_work_email')
       const canonical=sources?.(db,claim,selected)
       // Collapse absent/unreadable stages, never fabricate policy revisions,
