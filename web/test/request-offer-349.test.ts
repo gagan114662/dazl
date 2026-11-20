@@ -13,5 +13,5 @@ test('Test A / Test B through POST /api/scan and the runner: the request\'s offe
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 90000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 5\b/); assert.match(r.stdout, /# fail 0/)
+  assert.match(r.stdout, /# pass 6\b/); assert.match(r.stdout, /# fail 0/)
 })

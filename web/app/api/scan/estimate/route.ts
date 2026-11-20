@@ -10,6 +10,10 @@ import { denied } from '@/lib/workspace-access'
 import { trialAllowanceLeft, trialPrincipal, trialRefusal } from '@/lib/billing/trial-budget'
 import { readTrialStatus } from '@/lib/scan/trial'
 import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
+import { offerAdmission } from '@/lib/scan/offer-admission'
+import { cleanText } from '@/lib/validate'
+import { MAX_QUERY } from '@/lib/scan/icp'
+import { captureError } from '@/lib/ops/errors'
 
 // Price estimate for a scan request, before anything paid runs. Read-only: it queues nothing, counts nothing against the
 // quota or the trial, reserves nothing and calls no provider. POST body = the body POST /api/scan would take.
@@ -22,6 +26,13 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const db = await getDb()   // the Db layer, not the raw SQLite handle
+  // #1436: the same offer check POST /api/scan runs, before the cost panel: a request naming a different offer than the
+  // saved profile is asked about first, so the panel never shows a run on the saved, unrelated profile.
+  const offerCheck = await offerAdmission(db, user.tenantId, cleanText(body?.query, MAX_QUERY), body?.offer)
+  if (!offerCheck.ok) {
+    if (offerCheck.status === 503) captureError(offerCheck.cause, { source: 'route', where: '/api/scan/estimate', method: 'POST', tenantId: user.tenantId })
+    return NextResponse.json(offerCheck.body, { status: offerCheck.status })
+  }
   const vendors = (await connectorStatus(db, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector)
   const hasOwnKey = await readHasKey(db, user.tenantId)
   // A keyless account on the shared trial: say up front if POST /api/scan would refuse it (free scans used up, money or day cap), so the screen

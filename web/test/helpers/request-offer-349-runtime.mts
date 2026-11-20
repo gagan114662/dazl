@@ -21,6 +21,7 @@ import { confirmedPlayOffer, readPlayOffer } from '../../lib/scan/play-offer.ts'
 import { createWatch, runDueWatches } from '../../lib/watch.ts'
 import { runDueMonitors } from '../../lib/monitors.ts'
 import { POST as SCAN } from '../../app/api/scan/route.ts'
+import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
 
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 const master = Buffer.from(process.env.DAZL_MASTER_KEY, 'base64')
@@ -183,4 +184,29 @@ test('a scheduled run of the same play (weekly watch, monitor) keeps the confirm
   const ran = await runDueMonitors(D, { now: due })
   assert.equal(ran.length, 1)
   assert.deepEqual({ offer: row(ran[0]).offer, seller: row(ran[0]).seller }, { offer: CRM, seller: SAVED }, 'the monitor run keeps the CRM offer')
+})
+
+// #1436 follow-up (live check on prod 70671839): a request with its own "seller = ..." line beside the saved dental
+// profile. Before: no offer was read from it, the estimate went straight to the cost panel and the run used the dental
+// profile. Now the real estimate AND scan endpoints both stop for a choice, nothing is queued, and the chosen offer runs.
+test('#1436: a "seller = ..." request beside the saved dental profile asks before the cost panel and before queueing', async () => {
+  const O = tenants.O
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE user_id = ? AND status IN ('pending', 'running')").run(O)
+  const REQ = 'B2B companies with 5-200 employees doing outbound sales with a dated buying signal (hiring their first SDR or sales rep, new funding, new sales leader, or a founder still doing sales); buyer = Founder, CEO or Head of Sales; seller = Leadly (leadly.example), AI lead finding plus reviewed outreach for any business.'
+  const OFFER = 'Leadly (leadly.example), AI lead finding plus reviewed outreach for any business'
+  const n0 = jobs()
+  setUser({ id: O, business_name: 'Dental Seller', email: `${O.slice(0, 4)}@example.test` } as never)
+  await (await getDb()).run('DELETE FROM rate_limits')
+  const est = async (body: unknown) => { const r = await ESTIMATE(new NextRequest('http://localhost/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `10.9.1.${++ip}` }, body: JSON.stringify(body) })); return { status: r.status, ...(await r.json()) as Record<string, unknown> } }
+  assert.deepEqual(await est({ query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED }, 'the cost panel is not shown before the offer is chosen')
+  assert.deepEqual(await scan(O, { query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED })
+  assert.equal(jobs(), n0, 'nothing queued')
+  const e2 = await est({ query: REQ, offer: OFFER })
+  assert.notEqual(e2.error, 'offer_conflict', JSON.stringify(e2))
+  const run = await scan(O, { query: REQ, offer: OFFER })
+  assert.equal(run.status, 202, JSON.stringify(run))
+  assert.equal(row(run.job_id as string).offer, OFFER)
+  assert.doesNotMatch(grades(O, run.job_id as string), /dental|appointment booking/i, 'the dental offer never enters this play')
+  assert.deepEqual(await readPlayOffer(D, O, run.job_id as string), { offer: OFFER, source: 'play', conflict: null })
+  finish(run.job_id as string)
 })

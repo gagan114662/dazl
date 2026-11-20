@@ -545,10 +545,12 @@ export default function LeadsClient() {
     setError(''); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const body = JSON.stringify({ query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const body = JSON.stringify({ query, ...(offer ? { offer } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
       // No estimate, no run: a paid scan is never started without showing what it will use.
+      // #1436: the request names a different offer than the saved profile: choose before any cost panel is shown
+      if (er.status === 409 && ej.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof ej.stated === 'string' ? ej.stated : null, saved: String(ej.saved), ambiguous: ej.ambiguous === true, withdrawn: typeof ej.withdrawn === 'string' ? ej.withdrawn : undefined, direct: reviewed !== true }); return }
       if (er.status === 400 && ej.error === 'profile_lossy') { setError(lossyProfileCopy(ej)); return }   // keep the draft open so it can be fixed
       if (!er.ok || !ej.estimate) { setError(ej.detail ? `The spend limit was not accepted: ${String(ej.detail).slice(0, 200)}` : 'Could not get a price estimate, so nothing was started. Try again.'); return }
       setPendingEst({ est: ej.estimate as RunEstimate, withIcp, offer, reviewed })

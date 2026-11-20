@@ -33,6 +33,15 @@ const EPS = 1e-9
 // 150 s (SCAN_LLM_TIMEOUT_MS) plus a token count, so a live call's marker is never this old. A marker whose settle is
 // KNOWN to have failed is marked at once (markFailed: updated_at 0), so it refuses without waiting.
 export const PENDING_STALE_S = 5 * 60
+// #1436: a pending marker this old (and not KNOWN failed: updated_at > 0) is released by the next reservation of its
+// owner, so one lost settle cannot wedge a workspace forever. Released means: the call stays counted at its full
+// worst-case reservation in the day/month windows (never refunded or settled lower), and the marker row is kept,
+// renamed 'r:<id>', as the record of the release (reason: stuck_unresolved_kept_worst_case). Markers younger than this
+// keep refusing exactly as before ('busy', then 'accounting_unsettled'); failed markers (updated_at 0) need an operator.
+export const STUCK_RELEASE_S = 30 * 60
+function* releaseStuckMarkers(t: Tx, owner: string, nowS: number): TxBody<void> {
+  yield* t.run("UPDATE tenant_spend_pools SET period = 'r:' || substr(period, 3), updated_at = ? WHERE tenant_id = ? AND period LIKE 'p:%' AND updated_at > 0 AND updated_at <= ?", [nowS, owner, nowS - STUCK_RELEASE_S])
+}
 // Failure marks this process could not write yet (the store was down), per store and owner. Every reservation of that
 // owner in this process first writes them and refuses until it can; a background retry writes them as soon as the store
 // answers, so other instances are stopped too. Lost on a restart: the marker itself stays and refuses once stale.
@@ -255,6 +264,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       let ok: boolean
       try {
         ok = await db.tx(function* (t: Tx): TxBody<boolean> {
+          yield* releaseStuckMarkers(t, owner, nowS)
           // SQLite already holds its write lock: check the existing reservation before raising any new window
           // amount (a new reservation must not supply apparent proof of an old charge remaining held).
           const checkTerminalNative = t.kind === 'sqlite' && !!scanJobId
