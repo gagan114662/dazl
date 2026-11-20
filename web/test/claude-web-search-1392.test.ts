@@ -289,3 +289,19 @@ test('the pinned pre-4.6 uncached Messages request prices documented nullable/ze
     }
   }
 })
+
+test('explicitly zero searches with nullable cache counters settles only tokens and produces no sources', async () => {
+  const marks: string[] = []
+  let sent = 0
+  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async () => {
+    if (++sent === 1) return Response.json({ input_tokens: counted })
+    return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant',
+      content: [{ type: 'text', text: 'No search was needed.' }],
+      usage: { input_tokens: 8_000, output_tokens: 200, cache_read_input_tokens: null,
+        cache_creation_input_tokens: null, cache_creation: null, server_tool_use: { web_search_requests: 0 } } })
+  })
+  assert.equal(result.usage.searches, 0)
+  assert.deepEqual(marks, ['settle:0.027000'])
+  assert.deepEqual(result.citedUrls, [])
+  assert.equal(result.outcome, 'unavailable')
+})

@@ -83,7 +83,7 @@ function checkUsage(response: unknown, fixedUncachedSearch = false): UsageCheck 
   const zeroSplit = u.cache_creation == null ||
     (cached.ephemeral_5m_input_tokens === 0 && cached.ephemeral_1h_input_tokens === 0 && Object.keys(cached).length === 2)
   if (fixedUncachedSearch && root.type === 'message' && root.role === 'assistant' && Array.isArray(root.content) &&
-      searches > 0 && zeroOrUnstated(read) && zeroOrUnstated(written) && zeroSplit) {
+      zeroOrUnstated(read) && zeroOrUnstated(written) && zeroSplit) {
     read = 0
     written = 0
   }
