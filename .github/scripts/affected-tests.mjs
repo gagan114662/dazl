@@ -19,7 +19,17 @@ const testDir = 'web/test'
 const tests = readdirSync(testDir).filter(f => /\.test\.(ts|mjs)$/.test(f))
 const out = new Set()
 for (const f of web) {
-  if (f.startsWith('test/') && /\.test\.(ts|mjs)$/.test(f)) { out.add(f); continue }
+  if (/^test\/[^/]+\.test\.(ts|mjs)$/.test(f)) { out.add(f); continue }
+  // A nested test-tree file (e.g. test/fixtures/gate-check/pass.test.mjs) is never a runnable shard entry: run the
+  // top-level tests that reference its directory or file; if none do, fall back to the full suite.
+  const nested = f.match(/^test\/(.+)\/([^/]+)$/)
+  if (nested) {
+    const dir = `test/${nested[1]}`, rel = dir.slice('test/'.length), name = nested[2]
+    const users = tests.filter(t => { const src = readFileSync(join(testDir, t), 'utf8'); return src.includes(rel) || src.includes(name) })
+    if (!users.length) { console.log('ALL'); process.exit(0) }
+    for (const t of users) out.add(`test/${t}`)
+    continue
+  }
   if (!/\.(ts|tsx|mts|mjs|js)$/.test(f)) continue
   const mod = basename(f, extname(f))
   if (mod === 'index' || mod.length < 3) { console.log('ALL'); process.exit(0) }
