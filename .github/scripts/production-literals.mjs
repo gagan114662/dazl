@@ -21,19 +21,51 @@ export const sourcePath = path =>
   /\.[cm]?[jt]sx?$/.test(path) &&
   !/(?:^|\/)(?:__tests__|__fixtures__|tests?|fixtures?|docs|generated)(?:\/|\.)|\.(?:test|spec|fixture|stories|d)\.[cm]?[jt]sx?$/.test(path)
 
+function unwrapParens(n) {
+  for (let i = 0; n && ts.isParenthesizedExpression(n) && i < 7; i++) n = n.expression
+  return n
+}
+function literalKey(n) {
+  n = unwrapParens(n)
+  return n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) ? n.text : null
+}
+function fieldName(n) {
+  if (!n) return null
+  if (ts.isComputedPropertyName(n)) return literalKey(n.expression)
+  return ts.isIdentifier(n) ? n.text : literalKey(n)
+}
+function accessField(n) {
+  n = unwrapParens(n)
+  if (ts.isPropertyAccessExpression(n)) return fieldName(n.name)
+  if (ts.isElementAccessExpression(n)) return literalKey(n.argumentExpression)
+  return ts.isIdentifier(n) ? n.text : null
+}
+const comparisons = new Set([
+  ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken,
+])
 function typedSlot(node) {
-  const textOf = n => n && (ts.isIdentifier(n) || ts.isStringLiteral(n)) ? n.text : null
   let cur = node
   for (let i = 0; cur.parent && i < 7; i++) {
     const p = cur.parent
     if ((ts.isVariableDeclaration(p) || ts.isPropertyAssignment(p) || ts.isParameter(p) || ts.isJsxAttribute(p)) && p.initializer === cur) {
-      const field = textOf(p.name)
+      const field = fieldName(p.name)
       return field ? { field, role: ts.isVariableDeclaration(p) ? 'variable' : ts.isPropertyAssignment(p) ? 'property' : ts.isParameter(p) ? 'parameter' : 'jsx' } : null
     }
+    if (ts.isBindingElement(p) && ts.isObjectBindingPattern(p.parent) && p.initializer === cur) {
+      // Govern the object key, not a local alias. A computed key must be statically literal.
+      const field = fieldName(p.propertyName ?? p.name)
+      return field ? { field, role: 'binding_default' } : null
+    }
     if (ts.isBinaryExpression(p)) {
-      if ([ts.SyntaxKind.EqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken].includes(p.operatorToken.kind) && p.right === cur) {
-        const field = textOf(ts.isPropertyAccessExpression(p.left) ? p.left.name : p.left)
-        return field ? { field, role: p.operatorToken.kind === ts.SyntaxKind.EqualsToken ? 'assignment' : 'comparison' } : null
+      const op = p.operatorToken.kind
+      if (op === ts.SyntaxKind.EqualsToken && p.right === cur) {
+        const field = accessField(p.left)
+        return field ? { field, role: 'assignment' } : null
+      }
+      if (comparisons.has(op)) {
+        const field = accessField(p.right === cur ? p.left : p.right)
+        return field ? { field, role: 'comparison' } : null
       }
       if (![ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(p.operatorToken.kind)) return null
     } else if (!(ts.isArrayLiteralExpression(p) || ts.isParenthesizedExpression(p) || ts.isAsExpression(p) || ts.isSatisfiesExpression(p) || ts.isJsxExpression(p)

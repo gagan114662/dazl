@@ -1,7 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdtempSync,mkdirSync,writeFileSync,renameSync,rmSync} from 'node:fs'
+import {mkdtempSync,mkdirSync,writeFileSync,renameSync,rmSync,readFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join,dirname} from 'node:path'
 import {checkChanges,fromGit,DESIGNATED_CATALOG} from '../scripts/production-literals.mjs'
@@ -11,6 +11,12 @@ const neighbor='web/lib/sources/registry-source-catalog-extra.ts'
 const terms=[{kind:'city',label:'Utrecht',source:'docs/reviewed-geography.md'},{kind:'industry',label:'Dental Practices',source:'docs/reviewed-industries.md'}]
 const policy={version:1,terms,registryPaths:[registry],receipts:[]}
 const check=(after,before='',path=source,p=policy)=>checkChanges([{path,before,after}],p)
+test('the policy blob from the same candidate commit passes the scanner schema',()=>{
+  const actual=JSON.parse(readFileSync(new URL('../policy/production-literals.json',import.meta.url),'utf8'))
+  assert.deepEqual(checkChanges([],actual),[])
+  const widened={...actual,registryPaths:[...actual.registryPaths,neighbor]}
+  assert.throws(()=>checkChanges([],widened),/invalid reviewed production-literal policy/)
+})
 test('new exact operational city/industry each fail; aliases/copy are not falsely inferred',()=>{
   assert.deepEqual(check('const targetCity = cfg?.city ?? "Utrecht"; let plan={industries:["Dental Practices"]};').map(x=>[x.kind,x.receipt]),[['city',null],['industry',null]])
   assert.deepEqual(check('const help = "Search Dental Practices in Utrecht"; const path = "./Utrecht"; import city from "Utrecht";'),[])
@@ -128,4 +134,28 @@ test('empty governed policy is valid deny-by-default, not an authorization gap',
     {path:registry,kind:'city',literal:'Existing city',issue:'#1393',rationale:'Purported source receipt without any approved terms.',maxAdded:1},
   ]}),/invalid reviewed production-literal policy/)
   assert.throws(()=>check('const city="Any city"','',source,{...empty,terms:null}),/invalid reviewed production-literal policy/)
+})
+
+test('explicit literal element keys and object binding defaults count as identity fields',()=>{
+  const code=[
+    'settings["city"] = "Unseen A";',
+    'if (settings[`industry`] === "Unseen B") return;',
+    'if ("Unseen C" !== settings["defaultCity"]) return;',
+    'const { industry = "Unseen D", "city": locality = "Unseen E", ["targetIndustry"]: sector = "Unseen F" } = settings;',
+    'const settingsOverride = { ["fallbackCity"]: "Unseen G" };',
+  ].join('\n')
+  assert.deepEqual(check(code).map(x=>[x.kind,x.literal,x.receipt]),[
+    ['city','Unseen A',null],['industry','Unseen B',null],['city','Unseen C',null],
+    ['industry','Unseen D',null],['city','Unseen E',null],['industry','Unseen F',null],['city','Unseen G',null],
+  ])
+})
+test('dynamic keys, ungoverned destructured aliases, and positional binding defaults remain unclassified',()=>{
+  const code=[
+    'settings[city] = "Unknown A";',
+    'if (settings[industry] === "Unknown B") return;',
+    'const { [key]: city = "Unknown C", title: industry = "Unknown D" } = settings;',
+    'const [city = "Unknown E"] = tuple;',
+    'const override = { [key]: "Unknown F" };',
+  ].join('\n')
+  assert.deepEqual(check(code),[])
 })

@@ -52,8 +52,8 @@ jobs:
           actual=$("${clean[@]}" git -C "$tmp/objects" rev-parse --verify 'refs/test/input^{commit}')
           [[ "$actual" == "$GITHUB_SHA" ]]
 
-          # Install one pinned package, before reading either of the fixed candidate files.
-          mkdir -p "$tmp/suite/web" "$tmp/suite/.github/scripts" "$tmp/suite/.github/tests"
+          # Install one pinned package, before reading any fixed candidate file.
+          mkdir -p "$tmp/suite/web" "$tmp/suite/.github/scripts" "$tmp/suite/.github/tests" "$tmp/suite/.github/policy"
           cd "$tmp/suite/web"
           : > "$tmp/npm-user"
           : > "$tmp/npm-global"
@@ -66,7 +66,7 @@ jobs:
           "${clean[@]}" timeout 25s npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier --fetch-retries=0 --strict-ssl=true --registry=https://registry.npmjs.org/ --userconfig="$tmp/npm-user" --globalconfig="$tmp/npm-global"
 
           cd "$tmp/suite"
-          for path in .github/scripts/production-literals.mjs .github/tests/production-literals.test.mjs; do
+          for path in .github/scripts/production-literals.mjs .github/tests/production-literals.test.mjs .github/policy/production-literals.json; do
             mode=$("${clean[@]}" git -C "$tmp/objects" ls-tree --format='%(objectmode)' "$actual" -- "$path")
             [[ "$mode" == 100644 ]]
             (ulimit -f 128; "${clean[@]}" GIT_ALLOW_PROTOCOL='' GIT_NO_LAZY_FETCH=1 git -C "$tmp/objects" show "$actual:$path" > "$path")
