@@ -9,7 +9,7 @@ test('manual reviewed target: guarded scope and accepted snapshot use the real s
   const result = spawnSync(process.execPath, [
     '--experimental-strip-types', '--import', './test/helpers/net-fence.ts',
     '--loader', './test/helpers/scan-route-loader.mjs',
-    '--test', '--test-reporter=tap', './test/helpers/manual-target-contract-runtime.mts',
+    '--test', '--test-reporter=tap', './test/manual-target-contract.fixture.mts',
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)

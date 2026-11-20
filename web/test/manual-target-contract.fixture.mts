@@ -3,11 +3,11 @@ import test from 'node:test'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
-import { POST } from '../../app/api/scan/route.ts'
-import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { saveKey } from '../../lib/llm/key-store.ts'
-import { setScanDb, setUser } from './tenant-route-db.ts'
-import { isFirst5NativeSearchRequest } from '../../lib/scan/qa-provider-policy.ts'
+import { POST } from '../app/api/scan/route.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { saveKey } from '../lib/llm/key-store.ts'
+import { setScanDb, setUser } from './helpers/tenant-route-db.ts'
+import { isFirst5NativeSearchRequest } from '../lib/scan/qa-provider-policy.ts'
 
 const master = randomBytes(32)
 Object.assign(process.env,{DAZL_MASTER_KEY:master.toString('base64'), NEWS_SEARCH_ENABLED:'0',LEAD_ENGINE:'',TINYFISH_API_KEY:'',DAZL_SCAN_CAP_CAD:'5',DAZL_SCAN_CAP_FX_CAD_PER_USD:'1.50'})
