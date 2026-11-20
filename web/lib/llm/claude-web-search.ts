@@ -11,6 +11,7 @@ const arr = (v: unknown): unknown[] => Array.isArray(v) ? v : []
 export interface ClaudeSearchUsage {
   inputTokens: number; outputTokens: number; cacheReadTokens: number
   cacheWrite5mTokens: number; cacheWrite1hTokens: number; searches: number; usd: number
+  inferenceGeoDiagnostic?: 'not_available' | 'unrecognized_price_neutral'
 }
 
 type Absent = 'absent' | 'null'
@@ -65,7 +66,8 @@ function checkUsage(response: unknown, fixedUncachedSearch = false): UsageCheck 
   const geo = u.inference_geo
   const pre46TransportLabel = fixedUncachedSearch && root.model === 'claude-sonnet-4-5-20250929' &&
     typeof geo === 'string'
-  if (geo != null && geo !== 'global' && geo !== 'us' && !pre46TransportLabel) return { diagnostic: 'usage_geo' }
+  const unknownGeo = geo != null && geo !== 'global' && geo !== 'us'
+  if (unknownGeo && !pre46TransportLabel) return { diagnostic: 'usage_geo' }
   if (u.speed != null && u.speed !== 'standard') return { diagnostic: 'usage_speed' }
   if (u.service_tier != null && u.service_tier !== 'standard') return { diagnostic: 'usage_tier' }
   const { input_tokens: input, output_tokens: output } = u
@@ -96,7 +98,12 @@ function checkUsage(response: unknown, fixedUncachedSearch = false): UsageCheck 
   if (!count(write5m) || !count(write1h) || write5m + write1h !== written) return { diagnostic: 'usage_cache_split' }
   const usd = (input * 3 + output * 15 + read * 0.30 + write5m * 3.75 + write1h * 6) / MICROS + searches * USD_PER_SEARCH
   if (!Number.isFinite(usd)) return { diagnostic: 'usage_cost' }
-  return { usage: { inputTokens: input, outputTokens: output, cacheReadTokens: read, cacheWrite5mTokens: write5m, cacheWrite1hTokens: write1h, searches, usd } }
+  return { usage: { inputTokens: input, outputTokens: output, cacheReadTokens: read, cacheWrite5mTokens: write5m, cacheWrite1hTokens: write1h, searches, usd,
+    // The legacy organization usage report documents not_available for models without geo.
+    // Preserve it only if actually returned; other labels are not stored or fingerprinted.
+    // https://platform.claude.com/docs/en/api/beta/organization/usage_report/retrieve_messages
+    ...(unknownGeo ? { inferenceGeoDiagnostic: geo === 'not_available' ? 'not_available' : 'unrecognized_price_neutral' } : {}),
+  } }
 }
 
 // Default parser has no evidence about what the caller sent; only the dedicated transport enables the no-cache shape.
@@ -110,10 +117,33 @@ export interface ClaudeSearchHold {
   uncertain(): Promise<void> | void
   rejected(status: number): Promise<void> | void
 }
+// The pinned direct-search tool's six documented error codes. Unknown provider bytes never escape.
+function resultErrorCode(value: unknown) {
+  switch (value) {
+    case 'too_many_requests': return 'too_many_requests'
+    case 'invalid_tool_input': return 'invalid_tool_input'
+    case 'max_uses_exceeded': return 'max_uses_exceeded'
+    case 'query_too_long': return 'query_too_long'
+    case 'request_too_large': return 'request_too_large'
+    case 'unavailable': return 'unavailable'
+    default: return 'other'
+  }
+}
+export type ClaudeSearchEvidenceDiagnostic = {
+  stop: 'end_turn' | 'pause_turn' | 'max_tokens' | 'other'
+  result_blocks: number
+  non_array_result_blocks: number
+  empty_result_blocks: number
+  malformed_result_blocks: number
+  result_errors: Partial<Record<ReturnType<typeof resultErrorCode>, number>>
+  result_entries: number
+  safe_urls: number
+}
 export interface ClaudeSearchResult {
   outcome: 'ok' | 'partial' | 'unavailable'
   citedUrls: string[]
-  stop: 'end_turn' | 'pause_turn' | 'max_tokens' | 'other'
+  stop: ClaudeSearchEvidenceDiagnostic['stop']
+  evidenceDiagnostic: ClaudeSearchEvidenceDiagnostic
   usage: ClaudeSearchUsage
   estimate: ClaudeSearchEstimate
 }
@@ -197,12 +227,29 @@ export async function runClaudeWebSearch(
   const root = obj(json), content = arr(root.content)
   const rawStop = root.stop_reason
   const stop = rawStop === 'end_turn' || rawStop === 'pause_turn' || rawStop === 'max_tokens' ? rawStop : 'other'
-  let toolError = false
+  // Counters saturate; never retain provider text, tool error codes, URLs or raw labels in diagnostics.
+  const bounded = (n: number) => Math.min(1000, n + 1)
+  let resultBlocks = 0, nonArrayBlocks = 0, resultEntries = 0
+  let emptyBlocks = 0, malformedBlocks = 0
+  const resultErrors: ClaudeSearchEvidenceDiagnostic['result_errors'] = {}
   const urls = new Set<string>()
   for (const block of content.map(obj)) {
     if (block.type !== 'web_search_tool_result') continue
-    if (!Array.isArray(block.content)) { toolError = true; continue }
+    resultBlocks = bounded(resultBlocks)
+    if (!Array.isArray(block.content)) {
+      nonArrayBlocks = bounded(nonArrayBlocks)
+      const err = obj(block.content)
+      if (err.type === 'web_search_tool_result_error' && typeof err.error_code === 'string') {
+        const code = resultErrorCode(err.error_code)
+        resultErrors[code] = bounded(resultErrors[code] ?? 0)
+      } else malformedBlocks = bounded(malformedBlocks)
+      continue
+    }
+    if (!block.content.length) emptyBlocks = bounded(emptyBlocks)
+    else if (block.content.some(v => { const r = obj(v); return r.type !== 'web_search_result' || typeof r.url !== 'string' }))
+      malformedBlocks = bounded(malformedBlocks)
     for (const result of block.content.map(obj)) {
+      if (result.type === 'web_search_result') resultEntries = bounded(resultEntries)
       if (result.type !== 'web_search_result' || typeof result.url !== 'string' || result.url.length > 480 || /\s/.test(result.url)) continue
       try {
         const u = new URL(result.url)
@@ -212,5 +259,7 @@ export async function runClaudeWebSearch(
   }
   // A real search result must be charged/recorded and subsequently fetched through the app's own public-page guard.
   const citedUrls = usage.searches > 0 ? [...urls] : []
-  return { outcome: !citedUrls.length ? 'unavailable' : toolError || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate }
+  return { outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
+    evidenceDiagnostic: { stop, result_blocks: resultBlocks, non_array_result_blocks: nonArrayBlocks, empty_result_blocks: emptyBlocks, malformed_result_blocks: malformedBlocks, result_errors: resultErrors, result_entries: resultEntries, safe_urls: citedUrls.length },
+  }
 }
