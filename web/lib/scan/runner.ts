@@ -98,7 +98,7 @@ import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
-import { applyBuyerFitGate, failClosedBuyerFit } from './buyer-fit.ts'
+import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -2214,7 +2214,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       trace.note('buyer_fit', 'skipped', `this play's offer is unresolved - no model call, ${capped} hiring lead(s) capped below the qualified bar`)
     } else if (complete && deps.score !== false) {
       try {
-        const icpText = gradingTarget + offerBlockFor(db, job.user_id, job.id)
+        const icpText = nativeJudgeContext && job.query
+          ? nativeBuyerFitTarget(icpForSources, job.query, playDraftOffer(db, job.user_id, job.id)?.offer ?? null)
+          : gradingTarget + offerBlockFor(db, job.user_id, job.id)
         await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
       } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }
