@@ -7,6 +7,7 @@ import { findWorkEmail, workEmailProviders, workEmailsFor, strictPublishedWorkEm
 import { guessesForLead } from '@/lib/people/email-formats'
 import { isWorkEmailFixtureLead } from '@/lib/people/work-email-eligible'
 import { captureError } from '@/lib/ops/errors'
+import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
 import { qaClaudeOnlyJob } from '@/lib/scan/qa-provider-policy'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -23,7 +24,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ lea
   const db = getScanDb()
   const own = db.prepare('SELECT l.company, l.source_kind, j.run_budget FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId) as { company: string; source_kind: string | null; run_budget: string | null } | undefined
   if (!own) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (qaClaudeOnlyJob(own.run_budget)) return NextResponse.json({ providers: PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS,
+  if (qaClaudeOnlyJob(own.run_budget) || hasCompanyFirstBudget(own.run_budget)) return NextResponse.json({ providers: PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS,
     lookups: strictPublishedWorkEmailsForLeads(db, user.tenantId, [lead])[lead] ?? [], guesses: [] })
   // The test-only work-email fixture lead never calls Apollo and runs its saved PDL key regardless of the Apollo-gated opt-in
   // (lib/people/work-email.ts), so the panel states exactly that.

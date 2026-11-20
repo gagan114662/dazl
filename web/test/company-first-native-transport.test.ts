@@ -11,9 +11,6 @@ import { armProtectedScorecardJobSqlite } from '../lib/company-first/scorecard-p
 import { dispatchScorecardAware } from '../lib/company-first/scorecard-dispatch.ts'
 import { readNativeCandidateCallId, runCompanyFirstNativeTransport, prepareNativeDiscoveryVariant, type NativeCompanySearch } from '../lib/company-first/company-first-native-transport.ts'
 import { DISCOVERY_STRATEGIES } from '../lib/company-first/company-first-claude-request.ts'
-import { settleMeasuredScorecardArm } from '../lib/company-first/scorecard-baseline.ts'
-import { hasSettledStagingProofAuthority } from '../lib/company-first/scorecard-staging-proof.ts'
-import { takeSettledStagingCandidateProof } from '../lib/company-first/company-first-protected-candidate.ts'
 import { runWithScanSpend, scanCapConfig } from '../lib/scan/spend-cap.ts'
 
 const endpoint='https://api.anthropic.com/v1/messages'
@@ -135,35 +132,6 @@ async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:n
             const first=await operation()
             if ((multi&&sends>0)||['valid','timeout','throttle','bad_json','oversize','lost_after_send','overrun','refusal'].includes(mode))
               assert.deepEqual(await operation(),{state:'refused',reason:'not_authorized'})
-            if(mode==='valid'){
-              assert.equal(first.state,'settled')
-              const t=execution.ticket
-              const proofKey=Buffer.alloc(32,99)
-              const keys=['DAZL_ENV','DAZL_COMMIT_SHA','DAZL_STAGING_SCORECARD_PROOF_KEY'] as const
-              const prior=keys.map(k=>process.env[k])
-              process.env.DAZL_ENV='staging'
-              process.env.DAZL_COMMIT_SHA=t.release
-              process.env.DAZL_STAGING_SCORECARD_PROOF_KEY=proofKey.toString('hex')
-              const expiresAt=t.expiresAt-100
-              const mac=createHmac('sha256',proofKey).update(JSON.stringify(['dazl-staging-scorecard-proof/v1',
-                t.tenantId,t.actorId,t.jobId,t.attempt,t.release,t.workspaceRevision,t.cohort,t.ordinal,t.nonce,t.subjectMac,expiresAt])).digest('hex')
-              const request={expiresAt,mac}, signal=new AbortController().signal
-              try{
-                assert.equal(await hasSettledStagingProofAuthority(dbPort,t,request,signal),false,
-                  'settled native transport alone is not final canonical arm accounting')
-                assert.equal(await settleMeasuredScorecardArm(db,execution),12500)
-                assert.equal(db.prepare('SELECT status FROM scan_jobs WHERE id=?').pluck().get(t.jobId),'done')
-                assert.equal(db.prepare('SELECT status FROM company_scorecard_claims WHERE nonce=?').pluck().get(t.nonce),'complete')
-                assert.equal(await hasSettledStagingProofAuthority(dbPort,t,request,signal),true)
-                assert.equal(await hasSettledStagingProofAuthority(dbPort,{...t,subjectMac:'0'.repeat(64)},request,signal),false)
-                assert.equal(await takeSettledStagingCandidateProof({state:'measured',counts:{candidates:1,rightPlaceSignals:1,proven:1}},
-                  execution,db,request,signal),undefined,'real settlement cannot authenticate object-forged Ready')
-                db.prepare("UPDATE organizations SET company_first_scorecard_enabled=0 WHERE id=?").run(t.tenantId)
-                assert.equal(await hasSettledStagingProofAuthority(dbPort,t,request,signal),false)
-              }finally{
-                for(const [i,k] of keys.entries())if(prior[i]===undefined)delete process.env[k];else process.env[k]=prior[i]
-              }
-            }
             return first
           })
       },

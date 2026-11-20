@@ -76,7 +76,7 @@ export function migrateScorecardDispatchSqlite(db: SqliteMigrationHandle): void 
 
 type Claimed = Readonly<{ id: string; user_id: string; attempts: number }>
 type TicketScope = Readonly<{ tenantId: string; actorId: string; jobId: string; attempt: number; release: string; nonce: string; lane: ScorecardLane }>
-type TicketMaterial = Readonly<{ signedToken: string; signingKey: Uint8Array; mode?: 'staging-case-one' }>
+type TicketMaterial = Readonly<{ signedToken: string; signingKey: Uint8Array }>
 type Failure = 'scorecard_dispatch_unavailable' | 'scorecard_dispatch_refused' | 'scorecard_dispatch_started' | 'scorecard_dispatch_failed'
 type Legacy = 'done' | 'failed' | 'retry'
 
@@ -159,7 +159,7 @@ export async function dispatchScorecardAware(
     if (!binding || !lane) return refuse('scorecard_dispatch_refused')
     const scope = Object.freeze({ tenantId: job.user_id, actorId: binding.actorId, jobId: job.id, attempt: job.attempts, release: worker.release, nonce, lane })
     const material = await worker.materialFor(scope)
-    ticket = material ? verifyScorecardTicket(material.signedToken, material.signingKey, scope, clock(), material.mode) : null
+    ticket = material ? verifyScorecardTicket(material.signedToken, material.signingKey, scope, clock()) : null
     if (!ticket || ticket.lane !== lane || ticket.nonce !== nonce || ticket.workspaceRevision !== binding.revision || ticket.expiresAt !== Number(binding.expires))
       return refuse('scorecard_dispatch_refused')
     const exact = ticket

@@ -9,7 +9,6 @@ import type { PublicAtsPorts } from './company-first-ats-read.ts'
 import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
 import { observedSafeGet, type ObservedHttpResult, type ObservedSafeGet } from '../sources/http.ts'
 import type { Candidate, Scope } from './company-first-evidence.ts'
-import { isCurrentCompanyFirstDeadline } from './company-first-signal-freshness.ts'
 import { verifyCompanyWebsite, type WebsiteProof } from './company-first-website-proof.ts'
 
 type Binding = Readonly<{ scope:Scope; candidateName:string; exactPostingUrl:string; settledCallId:string; expiresAtMs:number }>
@@ -25,12 +24,6 @@ const issued=new WeakMap<VerifiedReciprocal, OwnedPosting>()
 export function readReciprocalOwnedPosting(site:VerifiedReciprocal,scope:Scope):OwnedPosting|null{
   const r=issued.get(site)
   return r&&eq(r.scope,scope)&&r.expiresAtMs>Date.now()?r:null
-}
-type OwnedPermalink=Readonly<{url:string;title:string;day:string;deadline:string|null}>
-const permalinks=new WeakMap<VerifiedReciprocal,OwnedPermalink>()
-export function readReciprocalOwnedCareerPermalink(site:VerifiedReciprocal,scope:Scope):OwnedPermalink|null {
-    const link=permalinks.get(site)
-  return link&&readReciprocalOwnedPosting(site,scope)&&isCurrentCompanyFirstDeadline(link.deadline,Date.now())?link:null
 }
 const HELD={state:'held',reason:'identity_unknown'} as const
 const UA='dazl-contact-check/1.0 (+https://dazl.ai)'
@@ -130,16 +123,14 @@ export async function proveReciprocalCompanySite(policy:Readonly<{enabled?:boole
   const res=await bounded(signal,()=>wire(api,{accept:'application/json',userAgent:UA,signal}))
   if(!complete(res,api)||res.status!==200||!jsonMime.test(res.contentType??'')||!await stillCurrent())return HELD
   let target:URL|null=null
-  let expected:Readonly<{title:string;day:string;deadline:string|null}>|null=null
   try{
     const raw:unknown=JSON.parse(res.body)
     if(!raw||typeof raw!=='object'||Array.isArray(raw))return HELD
     const row=raw as Record<string,unknown>
     const record=atsRecord(raw,ref)
     if(!record||record==='missing'||!short(row.company_name)||nfc(row.company_name)!==nfc(candidate.name)||
-        row.closed===true||row.archived===true||!isCurrentCompanyFirstDeadline(row.application_deadline,Date.now()))return HELD
+        row.closed===true||row.archived===true)return HELD
     target=publicUrl(row.absolute_url,ref.id)
-    if(record.posted&&record.title)expected=Object.freeze({title:record.title,day:record.posted,deadline:typeof row.application_deadline==='string'?row.application_deadline:null})
   }catch{return HELD}
   const targetDomain=target&&getDomain(target.hostname,{allowPrivateDomains:true})
   const vendorDomain=getDomain(posting.hostname,{allowPrivateDomains:true})
@@ -175,8 +166,5 @@ export async function proveReciprocalCompanySite(policy:Readonly<{enabled?:boole
   issued.set(site,Object.freeze({scope,version:initial.settledCallId,expiresAtMs:initial.expiresAtMs,companyKey,
     companyName:candidate.name,websiteOrigin:home.origin,kind:'observed_owned_link',
     linkSource:home.href,literalPostingHref:posting.href}))
-  // Query-bearing embeds are not accepted by the exact public page reader.
-  // Do not strip the parameter: that could name another posting.
-  if(expected&&!target.search)permalinks.set(site,Object.freeze({url:target.href,...expected}))
   return {state:'verified',site}
 }

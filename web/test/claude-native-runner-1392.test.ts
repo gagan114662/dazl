@@ -8,7 +8,8 @@ import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from '../lib/llm/claude-web
 import { saveKey } from '../lib/llm/key-store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
-import { runJob } from '../lib/scan/runner.ts'
+import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
+import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
 
 const master = randomBytes(32)
@@ -19,7 +20,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -32,6 +33,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
     DAZL_TRIAL_GLOBAL_DAILY_USD: '10',
     TINYFISH_API_KEY: '',
+    DAZL_COMPANY_FIRST_TENANT_ID: companyFirstTenant ?? '',
   }
   const old = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]))
   Object.assign(process.env, env)
@@ -42,12 +44,13 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
   try {
     migrateAllSqlite(db)
     saveKey(db, 'workspace', 'anthropic', 'sk-ant-workspace-fixture', master)
-    const raw = qaClaudeOnlyBudget(JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false }), mode === v3)
+    const options = JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false })
+    const raw = ordinary ? (companyFirstTenant ? markCompanyFirstBudget(options) : options) : qaClaudeOnlyBudget(options, mode === v3)
     const job = db.transaction(() => {
       createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: [], industries, sizes: [], where, signals, exclude: [], ...(windowDays ? { window_days: windowDays } : {}) }) })
       if (query === null) db.exec("UPDATE scan_jobs SET query=NULL WHERE id='job'") // legacy/non-query row: never open native discovery
       if (trial) db.exec("UPDATE scan_jobs SET funded_by='trial' WHERE id='job'")
-      return pinAdmittedStrictJob(db, 'workspace', 'job', raw)
+      return ordinary ? claimKeyedJob(db, 'job')! : pinAdmittedStrictJob(db, 'workspace', 'job', raw)
     }).immediate()
     const io: typeof fetch = async (input, init) => {
       const target = String(input)
@@ -119,7 +122,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       await runJob(db, next, { master, fetchImpl: io, score: false, ground: false, judge: null })
       second = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(id)
     }
-    const nativeStatus = db.prepare("SELECT status FROM scan_source_runs WHERE job_id=? AND collector='search:anthropic_web'").get(job.id)
+    const nativeStatus = db.prepare("SELECT status FROM scan_source_runs WHERE job_id=? AND collector=?").get(job.id, ordinary ? 'search:company_first' : 'search:anthropic_web')
     const reportRow = db.prepare('SELECT report FROM scan_run_report WHERE job_id=? AND attempt=1').get(job.id) as { report: string } | undefined
     return { status, sequence, messages, denied, publisherRequests, end, ledger, jobSpend, pool, second, nativeStatus,
       nativeReport: reportRow ? JSON.parse(reportRow.report).native_web_search : undefined }
@@ -129,6 +132,28 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     db.close()
   }
 }
+
+test('ordinary claimed query uses the company-first source for exactly the configured workspace', async () => {
+  const open = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 90 })
+  const delivered = open.messages.find(m => Array.isArray(m.body.tools))
+  assert.equal(delivered?.key, 'sk-ant-workspace-fixture', JSON.stringify({end:open.end, sequence:open.sequence, ledger:open.ledger, nativeStatus:open.nativeStatus}))
+  const prompt = JSON.stringify(delivered?.body)
+  assert.match(prompt, /Find organizations in the requested geography/)
+  assert.match(prompt, /Locate the official company website/)
+  assert.match(prompt, /45 days/)
+  assert.deepEqual(open.publisherRequests, [url])
+  assert.ok(open.nativeStatus)
+  assert.ok(open.nativeReport && open.nativeReport.actual_usd > 0)
+  assert.equal(open.end && (open.end as { error: string }).error, 'no_candidates', 'a source page alone did not become a lead')
+})
+
+test('company-first stays off by default, for a different workspace, or for shared trial funding', async () => {
+  for (const options of [{}, { companyFirstTenant: 'different-workspace' }, { companyFirstTenant: 'workspace', trial: true }]) {
+    const run = await simulate({ ordinary: true, ...options })
+    assert.equal(run.messages.some(m => Array.isArray(m.body.tools)), false)
+    assert.equal(run.nativeStatus, undefined)
+  }
+})
 
 test('pinned V3 uses one counted, budgeted native request with workspace key and validates publisher evidence afterward', async () => {
   const x = await simulate()

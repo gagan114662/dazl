@@ -3,9 +3,10 @@
 // Read-only: nothing is queued, counted or reserved.
 import { cleanText } from '../validate.ts'
 import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
+import { companyFirstDiscoveryEnabled } from '../company-first/product-discovery.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
-import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
+import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_SPEND_MAX_USD, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
@@ -44,13 +45,16 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   if (first5 && supplied && !qaNativeWebSearch) return { ok: false, status: 400, error: 'invalid_budget', detail: 'mode first5 only accepts the explicit Claude Web Search option' }
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(supplied ? b.budget : undefined, supplied)
   if (!nb.ok) return { ok: false, status: 400, error: 'invalid_budget', detail: nb.error }
-  const qaClaudeOnly = qaNativeWebSearch || isClaudeOnlyRequestMode(b.mode)
-  if (qaClaudeOnly && !strictLocalTopologySupported(ctx.db.kind)) return { ok: false, status: 503, error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }
-  if (qaNativeWebSearch && (!ctx.hasOwnKey || ctx.model !== anthropicProvider.configuredModel!())) return { ok: false, status: 409, error: 'qa_search_requires_own_key', message: QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE }
-  const qaCap = qaClaudeOnly ? scanCapConfig() : null
-  if (qaCap && !qaCap.ok) return { ok: false, status: 503, error: 'spend_config_invalid', detail: 'The QA scan cap cannot be verified. Nothing was started.' }
-  const budget = qaClaudeOnly ? { ...JSON.parse(qaClaudeOnlyBudget(nb.value, qaNativeWebSearch)), max_usd: Math.min(nb.budget?.max_usd ?? Infinity, qaCap?.capUsd ?? 0) } : nb.budget
   const query = cleanText(b.query, MAX_QUERY)
+  const companyFirst = companyFirstDiscoveryEnabled({ user_id: ctx.tenantId, funded_by: 'user', query }, process.env.DAZL_COMPANY_FIRST_TENANT_ID)
+  const qaClaudeOnly = !companyFirst && (qaNativeWebSearch || isClaudeOnlyRequestMode(b.mode))
+  if (qaClaudeOnly && !strictLocalTopologySupported(ctx.db.kind)) return { ok: false, status: 503, error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }
+  if ((qaNativeWebSearch || companyFirst) && (!ctx.hasOwnKey || ctx.model !== anthropicProvider.configuredModel!())) return { ok: false, status: 409, error: 'qa_search_requires_own_key', message: QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE }
+  const qaCap = qaClaudeOnly || companyFirst ? scanCapConfig() : null
+  if (qaCap && !qaCap.ok) return { ok: false, status: 503, error: 'spend_config_invalid', detail: 'The scan cap cannot be verified. Nothing was started.' }
+  const budget = companyFirst ? { ...nb.budget, paid_fallback: false as const, credit_enrichment: false as const,
+    max_usd: Math.min(nb.budget?.max_usd ?? QA_SPEND_MAX_USD, QA_SPEND_MAX_USD, qaCap?.capUsd ?? 0) }
+    : qaClaudeOnly ? { ...JSON.parse(qaClaudeOnlyBudget(nb.value, qaNativeWebSearch)), max_usd: Math.min(nb.budget?.max_usd ?? Infinity, qaCap?.capUsd ?? 0) } : nb.budget
   if (qaClaudeOnly && query.length < 3) return { ok: false, status: 400, error: 'invalid_mode', detail: 'Claude-only first play requires a search query.' }
   // #917: the same refusal POST /api/scan applies, so a profile is never priced and confirmed only to be refused at run time.
   const lost = b.icp && typeof b.icp === 'object' ? icpLoss(b.icp) : []
@@ -72,7 +76,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   const named = ownerLimits(ctx.tenantId)
   const limited = !ctx.hasOwnKey || budget?.max_usd != null || named !== null
   const estimate = estimateRun({
-    budget, qaClaudeOnly, qaNativeWebSearch, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
+    budget, qaClaudeOnly, qaNativeWebSearch, companyFirst, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
     model: ctx.hasOwnKey ? own ?? undefined : anthropicModel, modelUnknown: ctx.hasOwnKey && own === null, limited, pricedAlternative: anthropicModel, priceModel: scanModelPrice,
     hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
     // #1037: the people step the run itself will take (runner.ts: off when people search cannot run, else the first-play cap).

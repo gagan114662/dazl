@@ -1,3 +1,4 @@
+import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 // Strict-origin work email through the real route, isolated from the shared staging fixture.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -85,6 +86,11 @@ test('strict-origin work email route serves published-only GET/POST without expo
     assert.deepEqual(evidence(await reload()), evidence([foundView.lookup]), 'GET reload reconstructs published result')
     assert.deepEqual(evidence(list()), evidence([foundView.lookup]), 'page preload agrees with POST')
     assert.deepEqual(list('B'), [])
+    db.prepare('UPDATE scan_jobs SET run_budget = ? WHERE id = ?').run(markCompanyFirstBudget(null), job)
+    assert.deepEqual(evidence(await reload()), evidence([foundView.lookup]), 'normal company-first uses the same first-party-only read')
+    assert.deepEqual(evidence(list()), evidence([foundView.lookup]))
+    assert.equal((await (await post()).json()).status, 'published')
+    assert.equal(fetches, tracked, 'normal company-first did not call a broker or mailbox API')
     const more = Array.from({ length: 10 }, () => randomBytes(12).toString('hex'))
     const insertLead = db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES (?, ?, '', 'Harbor Dental', 'hiring', ?)")
     for (const id of more) insertLead.run(id, job, bio)

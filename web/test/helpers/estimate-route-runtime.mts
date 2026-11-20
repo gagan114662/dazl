@@ -401,3 +401,35 @@ test('#851 an own key whose model cannot be read (null, blank, wrong type) is UN
   const t = await estimateForBody({ query: Q }, { db, tenantId: 'T851', hasOwnKey: false, model: 'gpt-4.1', enrichmentVendors: [] })
   assert.ok(t.ok); assert.ok(t.estimate.rows.filter(x => x.kind === 'model').every(x => /\(claude-sonnet-4-5\)$/.test(x.unit_usd)))
 })
+
+test('flagged workspace gets matching Claude search pricing and an ordinary, tenant-bound queued scan', async () => {
+  const db = setup(); as(db)
+  const flag = process.env.DAZL_COMPANY_FIRST_TENANT_ID
+  process.env.DAZL_COMPANY_FIRST_TENANT_ID = `E${n}`
+  try {
+    const body = { query: Q, mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } }
+    const quote = await est(body)
+    assert.equal(quote.status, 200)
+    const { estimate } = await quote.json()
+    assert.ok(estimate.rows.some((row: { id: string }) => row.id === 'anthropic_native_web_search'))
+    assert.ok(!estimate.rows.some((row: { id: string }) => row.id === 'tinyfish_search'))
+    assert.equal(jobs(db).length, 0)
+    const sent = await scan({ ...body, estimate_ack: estimate.ack })
+    assert.equal(sent.status, 202, await sent.clone().text())
+    const { job_id, discovery_source, execution } = await sent.json()
+    assert.equal(discovery_source, 'company_first_v1')
+    assert.equal(execution, 'queued')
+    const job = claimKeyedJob(db, job_id)
+    const budget = JSON.parse(job?.run_budget ?? '{}')
+    assert.equal(job?.funded_by, 'user')
+    assert.equal(budget.discovery_source, 'company_first_v1')
+    assert.equal(budget.execution, undefined, 'no private or pinned run')
+    assert.equal(budget.provider_policy, undefined)
+    as(db)
+    assert.equal((await scan({ query: Q, budget: { discovery_source: 'company_first_v1' } })).status, 400)
+  } finally {
+    if (flag === undefined) delete process.env.DAZL_COMPANY_FIRST_TENANT_ID
+    else process.env.DAZL_COMPANY_FIRST_TENANT_ID = flag
+    db.close()
+  }
+})

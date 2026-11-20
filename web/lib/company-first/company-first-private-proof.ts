@@ -21,13 +21,12 @@ export const STRICT_GATE_STAGE = Object.freeze({
 type Gate = keyof typeof STRICT_GATE_STAGE
 export type Claim = Readonly<{ tenant: string; job: string; attempt: number; actor: string }>
 export type CandidateKey = Readonly<{ id: string; revision: string }>
-export type OwnedRoleProof = Readonly<{sourceUrl:string; quote:string; fetchedAtMs:number}>
 export type CandidateEvidence = Readonly<{
   companyKey: string; website: string; identitySource: string; event: string; eventSource: string
   eventDate: string; literalQuote: string; buyer: string; title: string; buyerBio: string
-  linkedin: string|null; email: string; emailSource: string; ownRole?: OwnedRoleProof
+  linkedin: string; email: string; emailSource: string
 }>
-type EvidenceField = Exclude<keyof CandidateEvidence,'ownRole'>
+type EvidenceField = keyof CandidateEvidence
 const evidenceFields = ['companyKey', 'website', 'identitySource', 'event', 'eventSource', 'eventDate', 'literalQuote',
   'buyer', 'title', 'buyerBio', 'linkedin', 'email', 'emailSource'] as const satisfies readonly EvidenceField[]
 
@@ -58,18 +57,10 @@ export interface PrivateCandidateProofStore {
 
 const eqClaim = (a: Claim, b: Claim) => a.tenant === b.tenant && a.job === b.job && a.actor === b.actor && a.attempt === b.attempt
 const nonempty = (s: unknown): s is string => typeof s === 'string' && s.trim().length > 0
-const roleParts=(role:OwnedRoleProof|undefined)=>role ? [role.sourceUrl,role.quote,role.fetchedAtMs] : null
-const sameRole=(a:OwnedRoleProof|undefined,b:OwnedRoleProof|undefined)=>JSON.stringify(roleParts(a))===JSON.stringify(roleParts(b))
-const validOwnedRole=(e:CandidateEvidence, now:number):boolean=>{
-  const r=e.ownRole
-  if(!r||r.sourceUrl!==e.buyerBio||!nonempty(r.quote)||r.quote.length>400||/[@\p{Cc}\p{Cf}]/u.test(r.quote)||
-    !Number.isSafeInteger(r.fetchedAtMs)||r.fetchedAtMs<=0||r.fetchedAtMs>now||now-r.fetchedAtMs>=MAX_AGE_MS)return false
-  try{return new URL(r.sourceUrl).origin===e.website}catch{return false}
-}
 const gates = Object.keys(STRICT_GATE_STAGE) as Gate[]
 export function proofBinding(claim: Claim, key: CandidateKey, policy: string, evidence: CandidateEvidence): string {
   return createHash('sha256').update(JSON.stringify(['company-first-proof:v1', claim.tenant, claim.job, claim.attempt, claim.actor,
-    key.id, key.revision, policy, ...evidenceFields.map(f => evidence[f]),roleParts(evidence.ownRole)])).digest('hex')
+    key.id, key.revision, policy, ...evidenceFields.map(f => evidence[f])])).digest('hex')
 }
 
 // Identifier only: never expose this, its digest, or private evidence to UI.
@@ -87,16 +78,15 @@ export async function evaluatePrivateCandidateProof(store: PrivateCandidateProof
   // replace either the caller claim or evidence in flight.
   const request = Object.freeze({ ...claim })
   const selected = Object.freeze({ ...key })
-  const evidence = Object.freeze({ ...expected, ...(expected.ownRole?{ownRole:Object.freeze({...expected.ownRole})}:{}) })
-  if (!evidenceFields.every(f => f==='linkedin'&&evidence[f]===null?!!evidence.ownRole:nonempty(evidence[f]))) return null
+  const evidence = Object.freeze({ ...expected })
+  if (!evidenceFields.every(f => nonempty(evidence[f]))) return null
   try {
     const row = await store.readCurrentSnapshot(request, selected.id)
     const nowMs = clock()
     if (!Number.isSafeInteger(nowMs) || nowMs < 1 || !row || row.authorization !== 'current' || !eqClaim(row.claim, request) || row.phase !== 'finalized' ||
         row.settlement.attempt !== request.attempt || row.settlement.state !== 'all_charges_resolved' || !nonempty(row.settlement.revision) ||
         !nonempty(row.policyRevision) || row.candidate.key.id !== selected.id || row.candidate.key.revision !== selected.revision ||
-        !evidenceFields.every(f => row.candidate.evidence[f] === evidence[f])||!sameRole(row.candidate.evidence.ownRole,evidence.ownRole)||
-        (evidence.ownRole!==undefined&&!validOwnedRole(evidence,nowMs))) return null
+        !evidenceFields.every(f => row.candidate.evidence[f] === evidence[f])) return null
     const binding = proofBinding(request, selected, row.policyRevision, evidence)
     if (row.attestations.length !== gates.length) return null
     const seen = new Set<Gate>()

@@ -3,11 +3,10 @@
 // This is NOT a finish, targeting/ICP pass, currentness proof, or Ready row.
 import type Database from 'better-sqlite3'
 import { normalizeIcp } from '../scan/icp.ts'
-import { feedbackGate, verifyLeads, type LeadDraft, type PageFetcher, type VerifyOutcome } from '../scan/runner.ts'
+import { feedbackGate, verifyLeads, type LeadDraft, type PageFetcher } from '../scan/runner.ts'
 import { readCanonicalAtsPage } from './company-first-canonical-ats-signal.ts'
 import { originalCoreAtsSignal, isCoreVerifiedOwnFinding, type Finding, type Scope } from './company-first-evidence.ts'
 import { authorizeScorecardSubject, scorecardPinnedBudget, SCORECARD_ANCHOR } from './scorecard-admission.ts'
-import { ownsNewDiscoveryScratch } from './scorecard-evidence-scratch.ts'
 import type { AuthorizedScorecardExecution } from './scorecard-dispatch.ts'
 
 type IssuedFinding=Extract<Finding,{state:'signal_verified'}>
@@ -16,70 +15,8 @@ type Read= (scope:Scope, exactSourceUrl:string, signal:AbortSignal)=>Promise<Cap
 const MAX_CANDIDATES=5
 const held=Object.freeze({state:'held' as const})
 const byteCap=(s:string)=>Buffer.byteLength(s)<=128_000
-type VerifiedDraft = Readonly<VerifyOutcome['leads'][number]>
-type QuoteEntries = NonNullable<VerifyOutcome['quotes']> extends Map<string,infer Q> ? Q : never
-export type CanonicalDraftFacts = Readonly<{
-  quotes:readonly (readonly [string, Readonly<QuoteEntries>])[]
-  postingTitles:readonly (readonly [string,string])[]
-}>
-declare const receiptBrand: unique symbol
-export type CanonicalVerifiedDraftReceipt = Readonly<{[receiptBrand]:true}>
-const receipts=new WeakMap<CanonicalVerifiedDraftReceipt,{
-  scratch:Database.Database; execution:AuthorizedScorecardExecution; finding:IssuedFinding;
-  current:()=>boolean; draft:VerifiedDraft; facts:CanonicalDraftFacts
-}>()
-
-const factScopes=new WeakMap<CanonicalDraftFacts,Readonly<{
-  scratch:Database.Database; execution:AuthorizedScorecardExecution; finding:IssuedFinding
-}>>()
-
-export function isCanonicalDraftFactsForScope(facts:CanonicalDraftFacts,scratch:Database.Database,
-  execution:AuthorizedScorecardExecution,finding:IssuedFinding):boolean {
-  const entry=factScopes.get(facts)
-  return !!entry&&scratch.open&&entry.scratch===scratch&&entry.execution===execution&&entry.finding===finding
-}
-
-/** Single-use in-process lease. It is not a stage attestation or a grade. */
-export function takeCanonicalVerifiedDraft(receipt:CanonicalVerifiedDraftReceipt,scratch:Database.Database,
-  execution:AuthorizedScorecardExecution,finding:IssuedFinding):VerifiedDraft|null{
-  const entry=receipts.get(receipt)
-  if(!entry||entry.scratch!==scratch||entry.execution!==execution||entry.finding!==finding)return null
-  receipts.delete(receipt)
-  try{return scratch.open&&entry.current()?entry.draft:null}catch{return null}
-}
-
-export function readCanonicalVerifiedDraftFacts(receipt:CanonicalVerifiedDraftReceipt,scratch:Database.Database,
-  execution:AuthorizedScorecardExecution,finding:IssuedFinding):CanonicalDraftFacts|null {
-  const entry=receipts.get(receipt)
-  if(!entry||entry.scratch!==scratch||entry.execution!==execution||entry.finding!==finding)return null
-  try{return scratch.open&&entry.current()?entry.facts:null}catch{return null}
-}
-
-export async function verifySingleCanonicalDraft(primary:Database.Database,scratch:Database.Database,
-  execution:AuthorizedScorecardExecution,finding:IssuedFinding,read:Read,signal:AbortSignal):Promise<CanonicalVerifiedDraftReceipt|null>{
-  if(!ownsNewDiscoveryScratch(scratch,primary,execution.ticket))return null
-  let receipt:CanonicalVerifiedDraftReceipt|null=null
-  await preverifyCompanyFirstDiscovery(primary,scratch,execution,[finding],read,signal,token=>{receipt=token})
-  return receipt
-}
-
-export function preverifyCompanyFirstDiscovery(primary:Database.Database,scratch:Database.Database,
-  execution:AuthorizedScorecardExecution,findings:readonly Finding[],read:Read,signal:AbortSignal,
-  onSingleVerified?: (receipt:CanonicalVerifiedDraftReceipt)=>void){
-  const finding=findings[0]
-  const canIssue=onSingleVerified&&findings.length===1&&finding?.state==='signal_verified'&&
-    ownsNewDiscoveryScratch(scratch,primary,execution.ticket)
-  return preverify(primary,scratch,execution,findings,read,signal,canIssue?(draft,current,facts)=>{
-    const receipt=Object.freeze({}) as CanonicalVerifiedDraftReceipt
-    receipts.set(receipt,{scratch,execution,finding,current,draft:Object.freeze(structuredClone(draft)),facts})
-    factScopes.set(facts,{scratch,execution,finding})
-    onSingleVerified(receipt)
-  }:undefined)
-}
-
-async function preverify(primary:Database.Database,scratch:Database.Database,
-  execution:AuthorizedScorecardExecution, findings:readonly Finding[], read:Read, signal:AbortSignal,
-  issue?: (draft:VerifiedDraft,current:()=>boolean,facts:CanonicalDraftFacts)=>void) {
+export async function preverifyCompanyFirstDiscovery(primary:Database.Database,scratch:Database.Database,
+  execution:AuthorizedScorecardExecution, findings:readonly Finding[], read:Read, signal:AbortSignal) {
   const x=execution.ticket
   if(x.lane!=='new'||execution.vendor!=='anthropic'||execution.funding!=='workspace_owned'||signal.aborted||
     primary===scratch||!scratch.memory||x.attempt!==1||findings.length>20)return held
@@ -148,16 +85,6 @@ async function preverify(primary:Database.Database,scratch:Database.Database,
       return {text:got.page.text,title:got.page.title,retrievedAt:got.page.retrievedAt}
     },new Date(),undefined,null,undefined,undefined,geo,undefined,()=>{rightPlace++})
     if(!current())return held
-    if(issue&&originals.length===1&&rightPlace===1&&outcome.leads.length===1){
-      const f=originals[0],d=outcome.leads[0]
-      if(d.company===f.name&&d.source_url===f.signal.sourceUrl&&d.excerpt===f.signal.quote&&d.event_date===f.signal.date&&
-         (d.event_date_proof==='page_bound'||d.event_date_proof==='ats_structured')){
-        const quotes=[...(outcome.quotes??new Map<string,QuoteEntries>())].map(([k,qs])=>
-          Object.freeze([k,Object.freeze(qs.map(q=>Object.freeze({...q})))] as const))
-        const postingTitles=[...(outcome.postingTitles??new Map<string,string>())].map(([k,title])=>Object.freeze([k,title] as const))
-        issue(d,current,Object.freeze({quotes:Object.freeze(quotes),postingTitles:Object.freeze(postingTitles)}))
-      }
-    }
     return Object.freeze({state:'preverified' as const,attempted:drafts.length,feedbackHeld:feedback.previously_rejected??0,
       literalVerifierPassed:outcome.leads.length,canonicalDated:outcome.leads.filter(r=>r.event_date_proof==="page_bound"||r.event_date_proof==="ats_structured").length,verifierReview:outcome.review.length,verifiedPlace:rightPlace,
       unavailableExactSources:sourceUnavailable.size,canonicalReady:null as null})

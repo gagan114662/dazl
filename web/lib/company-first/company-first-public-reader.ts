@@ -1,9 +1,8 @@
 // Native public-page reader for settled candidate hints and reviewed owned
 // pages. No rendering, record lookup, ownership inference, or posting proof.
 import { parse, parseFragment, type DefaultTreeAdapterMap } from 'parse5'
-import { addressContexts, extractContacts, parseRobots } from '../connectors/sitecrawl.ts'
+import { parseRobots } from '../connectors/sitecrawl.ts'
 import { observedSafeGet, type ObservedHttpResult, type ObservedSafeGet } from '../sources/http.ts'
-import { personalAddresses } from '../people/email-pattern.ts'
 import type { Scope } from './company-first-evidence.ts'
 
 type Node = DefaultTreeAdapterMap['node']
@@ -11,18 +10,6 @@ type Element = DefaultTreeAdapterMap['element']
 export type ObservedCompanyPage = Readonly<{ url: string; finalUrl: string; contentType:'text/html'; visibleText:string; jsonLd:readonly string[] }>
 export type VisibleCareerLink = Readonly<{ literalHref:string; visibleLabel:string }>
 export type ObservedCareerPage = ObservedCompanyPage & Readonly<{ visibleLinks:readonly VisibleCareerLink[] }>
-const contactCaptures=new WeakMap<ObservedCompanyPage,{scope:Scope;checkedAt:number}>()
-export type ObservedContactPage=ObservedCareerPage&Readonly<{html:string;observedAtMs:number}>
-export function projectObservedContactPage(page:ObservedContactPage,scope:Scope,url:string,host:string,now=Date.now()){
-  const item=contactCaptures.get(page)
-  if(!item||item.scope.tenant!==scope.tenant||item.scope.job!==scope.job||item.scope.attempt!==scope.attempt||
-    page.url!==url||page.finalUrl!==url||new URL(url).hostname!==host||!Number.isSafeInteger(now)||
-    now<item.checkedAt||now-item.checkedAt>=10*60_000)return null
-  return {text:page.visibleText,checkedAt:item.checkedAt,
-    seen:personalAddresses(page.html,host,true).map(a=>({address:a.address,url,ctx:addressContexts(page.html,a.at),
-      literalLocals:a.literalLocals})),
-    phones:extractContacts(page.html,url,host).filter(x=>x.kind==='phone')}
-}
 export interface PublicPageReadAuthority {
   // Atomically verify scope/stage authorization and admit this physical request.
   isCurrent(scope:Scope):Promise<boolean>
@@ -98,9 +85,7 @@ function statics(html:string,includeLinks:boolean,posting=false) {
           if(literal.length>16_384 || jsonLd.length>=MAX_LD)return null
           try{
             const obj=JSON.parse(literal)
-            // Keep the exact script bytes for bounded schema readers; some
-            // publishers include a single posting among other array nodes.
-            if(obj && typeof obj==='object')jsonLd.push(literal)
+            if(obj && typeof obj==='object' && !Array.isArray(obj))jsonLd.push(literal)
           }catch{/* Invalid declarations are not observable schema nodes. */}
         }
         continue
@@ -146,7 +131,7 @@ export function companyFirstPublicReader(scope:Scope, authority:PublicPageReadAu
   const scoped=Object.values(exactScope).every(v=>typeof v==='string' && !!v.trim() && v.length<=200 && !/[\p{C}]/u.test(v))
   let pages=0, steps=0
   const allowPublicUrl=(raw:string)=>scoped && pageUrl(raw)!==null
-  async function readPage(raw:string, callerSignal:AbortSignal,includeLinks:boolean):Promise<ObservedContactPage|null>{
+  async function readPage(raw:string, callerSignal:AbortSignal,includeLinks:boolean):Promise<ObservedCareerPage|null>{
     const u=pageUrl(raw)
     if(!scoped||!u||callerSignal.aborted||pages>=MAX_PAGES)return null
     pages++
@@ -170,11 +155,10 @@ export function companyFirstPublicReader(scope:Scope, authority:PublicPageReadAu
       }
       const page=await read(raw,'html')
       if(signal.aborted||!page||!boundedBody(page,raw)||page.status!==200||mime(page)!=='html')return null
-      const observedAtMs=Date.now()
       const projected=statics(page.body,includeLinks)
       if(!projected || await authority.isCurrent(exactScope)!==true || signal.aborted)return null
       return Object.freeze({visibleText:projected.visibleText,jsonLd:projected.jsonLd,visibleLinks:projected.visibleLinks,
-        url:raw,finalUrl:page.finalUrl,contentType:'text/html',html:page.body,observedAtMs})
+        url:raw,finalUrl:page.finalUrl,contentType:'text/html'})
     }catch{return null}
   }
   async function readPublicHtml(raw:string, signal:AbortSignal):Promise<ObservedCompanyPage|null>{
@@ -182,16 +166,5 @@ export function companyFirstPublicReader(scope:Scope, authority:PublicPageReadAu
     if(!p)return null
     return Object.freeze({url:p.url,finalUrl:p.finalUrl,contentType:p.contentType,visibleText:p.visibleText,jsonLd:p.jsonLd})
   }
-  async function readCareerHtml(raw:string,signal:AbortSignal):Promise<ObservedCareerPage|null>{
-    const p=await readPage(raw,signal,true)
-    if(!p)return null
-    return Object.freeze({url:p.url,finalUrl:p.finalUrl,contentType:p.contentType,visibleText:p.visibleText,jsonLd:p.jsonLd,visibleLinks:p.visibleLinks})
-  }
-  return Object.freeze({allowPublicUrl,readPublicHtml,readCareerHtml,
-    readContactHtml:async(raw:string,signal:AbortSignal)=>{
-      const p=await readPage(raw,signal,true)
-      if(p&&!signal.aborted)contactCaptures.set(p,{scope:exactScope,checkedAt:p.observedAtMs})
-      return p
-    }})
-
+  return Object.freeze({allowPublicUrl,readPublicHtml,readCareerHtml:(raw:string,signal:AbortSignal)=>readPage(raw,signal,true)})
 }

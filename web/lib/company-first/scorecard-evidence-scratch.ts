@@ -2,7 +2,7 @@
 // route, or publisher. The primary DB is read-only through fixed authorization statements.
 import Database from 'better-sqlite3'
 import { createHmac } from 'node:crypto'
-import { authorizeScorecardSubject, scorecardPinnedBudget, scorecardRawBudget, SCORECARD_ANCHOR, verifyScorecardTicket, type ScorecardSubjectInput, type VerifiedScorecardTicket } from './scorecard-admission.ts'
+import { authorizeScorecardSubject, scorecardPinnedBudget, scorecardRawBudget, SCORECARD_ANCHOR, verifyScorecardTicket, type ScorecardSubjectInput } from './scorecard-admission.ts'
 import { createQueryJob, migrateScan } from '../scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../connectors/store.ts'
 import { leadHoldReason, timingOptsFor } from '../outreach/lead-hold.ts'
@@ -33,20 +33,10 @@ function publicSource(value:unknown):value is string {
 type CanonicalScratchCallback = (context:Readonly<{ db:Database.Database; job:Readonly<{id:string;user_id:string;attempts:1}>;
   signal:AbortSignal }>) => void | Promise<void>
 
-const newLeases=new WeakMap<Database.Database,{primary:Database.Database;ticket:VerifiedScorecardTicket}>()
-export function ownsNewDiscoveryScratch(scratch:Database.Database,primary:Database.Database,x:VerifiedScorecardTicket):boolean{
-  const entry=newLeases.get(scratch)
-  if(!entry||entry.primary!==primary||!scratch.open)return false
-  const t=entry.ticket
-  return x.lane==='new'&&t.nonce===x.nonce&&t.jobId===x.jobId&&t.attempt===x.attempt&&t.tenantId===x.tenantId&&
-    t.actorId===x.actorId&&t.release===x.release&&t.workspaceRevision===x.workspaceRevision&&t.cohort===x.cohort&&
-    t.ordinal===x.ordinal&&t.subjectMac===x.subjectMac&&t.expiresAt===x.expiresAt
-}
-
 function openScratch(primary:Database.Database, expected:Authority, signedTicket:string, key:Uint8Array,
-  input:ScorecardSubjectInput,mode:'drafts'|'canonical'|'new-preverify', clock:()=>number, ticketMode?:'staging-case-one'){
+  input:ScorecardSubjectInput,mode:'drafts'|'canonical'|'new-preverify', clock:()=>number){
   const scope=Object.freeze({...expected})
-  const ticket=verifyScorecardTicket(signedTicket,key,scope,clock(),ticketMode)
+  const ticket=verifyScorecardTicket(signedTicket,key,scope,clock())
   const expectedLane=mode==='new-preverify'?'new':'old'
   if(!ticket||ticket.lane!==expectedLane||ticket.attempt!==1)return null
   const proof=authorizeScorecardSubject(ticket,input,clock)
@@ -124,7 +114,6 @@ function openScratch(primary:Database.Database, expected:Authority, signedTicket
         const stop=setTimeout(close,Math.min(mode==='new-preverify'?480_000:limits.maxAsyncMs,Math.max(1,ticket.expiresAt-clock())))
         stop.unref()
         try {
-          if(mode==='new-preverify')newLeases.set(scratch,{primary,ticket})
           const scope=Object.freeze({db:scratch,job:Object.freeze({id:job,user_id:tenant,attempts:1 as const}),signal:lifetime.signal})
           // Never await uncooperative callback forever. Its captured handle is physically closed
           // before result leaves, even if trusted asynchronous caller ignores the cancel signal.
@@ -244,7 +233,7 @@ export async function withCanonicalEvidenceScratch(primary:Database.Database, ex
  * No evidence or callback result escapes this helper; work never receives primary.
  */
 export async function withNewDiscoveryScratch(primary:Database.Database,expected:Authority,signedTicket:string,key:Uint8Array,
-  input:ScorecardSubjectInput,work:CanonicalScratchCallback,clock=Date.now,ticketMode?:'staging-case-one'):Promise<boolean>{
-  const isolated=openScratch(primary,expected,signedTicket,key,input,'new-preverify',clock,ticketMode)
+  input:ScorecardSubjectInput,work:CanonicalScratchCallback,clock=Date.now):Promise<boolean>{
+  const isolated=openScratch(primary,expected,signedTicket,key,input,'new-preverify',clock)
   return isolated ? await isolated.runCanonical(work)===true : false
 }

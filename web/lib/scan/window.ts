@@ -1,3 +1,5 @@
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+
 // The user's own recency window ("in the past 90 days"). Issue #198: the window was dropped when the request became a
 // profile, so nothing enforced it and an April opening came back as a top lead in late October. It is read from the
 // request text deterministically (not left to the model), kept on the profile, shown to the user, used in the
@@ -43,10 +45,15 @@ const validDate = (d: string): boolean => {
 export type WindowStatus = 'inside' | 'stale' | 'undated' | 'invalid' | 'future'
 // The scan's freshness window at read time: the request text wins, else the saved ICP window (#498: shared by the
 // leads route and the CSV export so both rule the SAME lead the same way).
-export function jobWindowDays(job: { query?: string | null; icp?: string | null }): number | null {
+export function jobWindowDays(job: { query?: string | null; icp?: string | null; run_budget?: string | null }): number | null {
   let icpWindow: number | null = null
   try { const j = job.icp ? JSON.parse(job.icp) as { window_days?: unknown } : null; icpWindow = typeof j?.window_days === 'number' ? j.window_days : null } catch { icpWindow = null }
-  return parseWindowDays(job.query ?? '') ?? icpWindow
+  const requested = parseWindowDays(job.query ?? '')
+  if (hasCompanyFirstBudget(job.run_budget)) {
+    const stored = icpWindow !== null && Number.isInteger(icpWindow) && icpWindow >= 1 && icpWindow <= MAX_WINDOW_DAYS ? icpWindow : null
+    return Math.min(45, requested ?? 45, stored ?? 45)
+  }
+  return requested ?? icpWindow
 }
 
 export function windowStatus(eventDate: string | null | undefined, windowDays: number | null | undefined, now: Date = new Date()): WindowStatus {

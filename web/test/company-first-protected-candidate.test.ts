@@ -31,7 +31,7 @@ test('protected current ticket refuses unbound independent/canonical proof befor
   const independentOwner={
     readCurrentAuthorizedSource:syntheticPort,readIndependentRecords:syntheticPort,readOwnedIdentityBlocks:()=>{assert.fail('unbound reader')},authorizeAndReserve:syntheticPort,
   }
-  const canonical={readCurrentProtectedSession:syntheticPort,reviewedSubject:{query,icp},readStages:()=>null,finishStagedCandidates:syntheticPort}
+  const canonical={readCurrentProtectedSession:syntheticPort,store:{readCurrentSnapshot:syntheticPort},locateExactCandidate:syntheticPort}
   const signal=new AbortController().signal
   try {
     migrateAllSqlite(db)

@@ -32,9 +32,9 @@ export type TimingProofGap = 'no_lead' | 'not_machine_verified' | 'needs_review'
   | 'no_domain' | 'domain_unconfirmed' | 'not_actionable' | 'no_record' | 'version_mismatch' | 'binding_changed'
 
 interface Binding { v: number; proof: string; date: string; domain: string; route: string }
-type LeadRow = { id: string; source_url: string; company_domain: string | null; event_date: string | null; event_date_proof: string | null; signal: string | null; signal_kind: string | null; review_reason: string | null; quarantined_at: number | null; confidence: number | null; query: string | null; icp: string | null }
+type LeadRow = { id: string; source_url: string; company_domain: string | null; event_date: string | null; event_date_proof: string | null; signal: string | null; signal_kind: string | null; review_reason: string | null; quarantined_at: number | null; confidence: number | null; query: string | null; icp: string | null; run_budget: string | null }
 
-const LEAD_SQL = `SELECT l.id, l.source_url, l.company_domain, l.event_date, l.event_date_proof, l.signal, l.signal_kind, l.review_reason, l.quarantined_at, l.confidence, j.query, j.icp
+const LEAD_SQL = `SELECT l.id, l.source_url, l.company_domain, l.event_date, l.event_date_proof, l.signal, l.signal_kind, l.review_reason, l.quarantined_at, l.confidence, j.query, j.icp, j.run_budget
   FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`
 
 // The facts as they are now, and the binding they make. A gap names the first failed condition, in the order above.

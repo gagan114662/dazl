@@ -1,3 +1,6 @@
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { strictOwnContactCards } from './strict-own-contacts.ts'
+import { currentReviewedDomain, domainRelationship } from '../signals/domain-basis.ts'
 import { listedProfileLabel, listedProfileUrl, profileFromListedLabel } from '../people/site-profile.ts'
 import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
@@ -18,7 +21,7 @@ import { detectTech, observability, type Observability, type TechHit } from './t
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { publishedDisplayCountry, recordPublishedDisplay, withdrawPublishedDisplay } from '../people/published-display.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
-import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
+import { personalAddresses, publishedCandidateFor, recordEmailGuesses, usEvidence, type AddressContext } from '../people/email-pattern.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
@@ -1261,18 +1264,21 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
-    if (!db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId)) return
+    const ownedJob = db.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { run_budget: string | null } | undefined
+    if (!ownedJob) return
+    const companyFirstContacts = !!deps.companyFirstContacts || hasCompanyFirstBudget(ownedJob.run_budget)
+    const nativeOnly = companyFirstContacts || !!deps.nativeOnly
     // The per-site crawl budget resolves per call (env-overridable, #871); an unparseable value falls back to the default bound.
     const crawlBudgetMs = crawlBudgetBound(Number((deps.env ?? process.env).SITECRAWL_CRAWL_BUDGET_MS ?? CRAWL_BUDGET_MS))
     // Signal threads only into the rawGet path; a crawl4ai backend keeps its
     // own 40s per-call bound (outer deadline does not reach it yet - tracked).
-    const get = deps.get ?? (deps.signal && (deps.nativeOnly || (!deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL))
+    const get = deps.get ?? (deps.signal && (nativeOnly || (!deps.env?.CRAWL4AI_URL && !process.env.CRAWL4AI_URL))
       ? (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal ?? deps.signal)
-      : defaultGet(deps.env, deps.nativeOnly))
+      : defaultGet(deps.env, nativeOnly))
     // signal and evidence_excerpt feed the location check; a leads table without them (older schema) still crawls.
     // Held leads whose evidence page could not be READ (blocked_by_site / needs_javascript) get the same identity attempt as the
     // date/quote classes: a blocked article says nothing about the company's own site. This never re-fetches the blocked evidence
@@ -1297,12 +1303,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     } catch { /* no ICP: evidence places only */ }
     // The display-only importer is optional. A missing policy must not erase ordinary crawl geography.
     let publishedDisplayOnly = false
-    if (deps.nativeOnly && !deps.leads) {
-      try {
-        const j = db.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { run_budget: string | null } | undefined
-        publishedDisplayOnly = qaClaudeOnlyJob(j?.run_budget)
-      } catch { /* no policy: no display import */ }
-    }
+    if (!companyFirstContacts && nativeOnly && !deps.leads) publishedDisplayOnly = qaClaudeOnlyJob(ownedJob.run_budget)
     const today = new Date((deps.now ?? Date.now())).toISOString().slice(0, 10)
     // One crawl per site per run. Another lead on the same domain is NOT skipped: its own identity check runs against the cached homepage
     // text (same name test, per lead), and it reuses the pages already read, so no extra fetch and no extra budget. Only when the first lead's
@@ -1310,6 +1311,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // identity check. Site-level outcomes (robots, unreachable) are the same for every lead and are reused as they are.
     type Crawled = Awaited<ReturnType<typeof crawlSite>>
     const siteRead = new Map<string, Crawled>()
+    const strictSeenBySite = new Map<string, Map<string, { cards: ReturnType<typeof strictOwnContactCards>; at: number }>>()
     // Email finder part 1 (off by default): personal local parts published on each confirmed site, never shown or sent.
     const localsBySite = new Map<string, Set<string>>()
     const displaySeenBySite = new Map<string, Map<string, { address: string; url: string; ctx: AddressContext[]; literalLocals?: Set<string> }>>()
@@ -1337,7 +1339,21 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // Every page the crawl fetches is recorded with its exact URL and its own completion time (#871); the email
       // finder keeps riding the same callback when enabled. The crawl runs under an intrinsic wall-clock budget so a
       // slow host or a polite per-host gap cannot stretch one site's read past CRAWL_BUDGET_MS.
+      const strictSeen = new Map<string, { cards: ReturnType<typeof strictOwnContactCards>; at: number }>()
+      if (companyFirstContacts) strictSeenBySite.set(cand, strictSeen)
       const onPage = (html: string, url: string, status: number) => {
+        const at = Math.floor((deps.now ?? Date.now()) / 1000)
+        if (companyFirstContacts) {
+          recordCrawlPage(db, tenantId, jobId, cand, url, status, at)
+          if (status === 200 && !strictSeen.has(url)) {
+            const page = new URL(url)
+            if (page.protocol === 'https:' && !page.port && !page.username && !page.password && !page.search && !page.hash &&
+                page.href === url && page.hostname.replace(/^www\./, '') === cand) {
+              strictSeen.set(url, { cards: strictOwnContactCards(html, page.hostname.replace(/^www\./, '')), at })
+            }
+          }
+          return // no reveal, inferred pattern, guessed or alternative display addresses
+        }
         if (displayCountry && status === 200) {
           // Display-only observations require the literal address; do not decode obfuscation here.
           // An opaque token prevents both joining fragments and treating a partial token as a whole address.
@@ -1363,7 +1379,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
       }
       const reading = (async () => {
-        const r = await crawlSite(cand, hostGet, deps.gapMs, company, !deps.nativeOnly && (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
+        const r = await crawlSite(cand, hostGet, deps.gapMs, company, !nativeOnly && (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, crawlBudgetMs)
         siteRead.set(cand, r)
         return r
       })()
@@ -1398,6 +1414,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const evidenceGet = (url: string) => hostGet(url, deps.signal ? { signal: deps.signal } : undefined)
     const readLead = async (l: (typeof leads)[number]): Promise<void> => {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
+      if (companyFirstContacts) {
+        // A selected refresh withdraws stale role/mail proof even when this
+        // visit is withheld or cannot re-read the company page.
+        db.prepare("DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'email', 'phone', 'contact')").run(tenantId, l.id)
+      }
       // A lead held because its evidence page blocked us (or needs JavaScript) never has that page fetched again here:
       // the block is known, re-hitting it is pressure on a refusing site, and the answer would be the same. Identity is
       // probed from the company name + place instead (strict agreement checks below apply unchanged).
@@ -1582,8 +1603,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // or not it publishes contacts. Record it so leads link out and later runs skip the search.
       if (r.reason === 'ok' || r.reason === 'none_published') db.prepare('UPDATE leads SET company_domain = ? WHERE id = ? AND scan_job_id = ? AND EXISTS (SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?)').run(site, l.id, jobId, jobId, tenantId)
       if (r.reason === 'ok' || r.reason === 'none_published') { try { db.prepare('DELETE FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?').run(l.id, tenantId, 'sitecrawl', DOMAIN_UNRESOLVED_KIND) } catch { /* note only */ } }
-      if (r.reason === 'ok' || r.reason === 'none_published') { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
-      if (displayCountry && (r.reason === 'ok' || r.reason === 'none_published') && publishedDisplayOffice(r.locationPages ?? [], where, l.company, displayCountry)) {
+      if (!companyFirstContacts && (r.reason === 'ok' || r.reason === 'none_published')) { try { recordEmailGuesses(db, tenantId, l.id, site, [...(localsBySite.get(site) ?? [])], r.found.filter(f => f.kind === 'person').map(f => f.value), { env: deps.env ?? process.env, homeText: r.homeText, where, seen: [...(seenBySite.get(site)?.values() ?? [])] }) } catch { /* never affects the crawl */ } }
+      if (!companyFirstContacts && displayCountry && (r.reason === 'ok' || r.reason === 'none_published') && publishedDisplayOffice(r.locationPages ?? [], where, l.company, displayCountry)) {
         try { recordPublishedDisplay(db, tenantId, l.id, site, where, r.found.filter(f => f.kind === 'person'), [...(displaySeenBySite.get(site)?.values() ?? [])]) } catch { /* never affects the crawl */ }
       }
       let n = 0
@@ -1612,7 +1633,49 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // A guessed site passed the name AND location checks, but the evidence never linked it: say so on every contact.
       const guessed = (basisOf.get(site) ?? 'name_probe') === 'name_probe'
       let named = 0
-      for (const f of r.found) {
+      if (companyFirstContacts) {
+        // The guarded crawl and old verifier still select this exact buyer.
+        // Establishing a name/place-matched probe alone cannot authorize proof.
+        const basis = basisOf.get(site)
+        const ownOrigin = basis === 'evidence_own_domain' ? (() => {
+          try {
+            const q = new URL(ev?.finalUrl ?? '')
+            return ev?.status === 200 && ev.finalUrl === l.source_url && q.protocol === 'https:' &&
+              q.hostname.replace(/^www\./, '') === site ? q.origin : null
+          } catch { return null }
+        })() : null
+        const reviewed = currentReviewedDomain(db, tenantId, l.id) === site
+        const allowed = (r.reason === 'ok' || r.reason === 'none_published') &&
+          domainRelationship(db, tenantId, l.id, site) === 'established' && (ownOrigin || reviewed)
+        const strictPages = strictSeenBySite.get(site)
+        const strictBuyers: { person: string; quote: string; name: string; email: string | null; source: string; at: number }[] = []
+        const cardKey = (v: string) => v.normalize('NFC').toLowerCase().replace(/\s+/g, ' ')
+        if (allowed && buyerRoles && strictPages) for (const f of r.found) {
+          if (f.kind !== 'person' || !buyerTitle(titleOf(f), buyerRoles) || (ownOrigin && new URL(f.url).origin !== ownOrigin)) continue
+          const page = strictPages.get(f.url)
+          const exact = page?.cards.filter(c => `${c.name}, ${c.quote}`.replace(/\s+/g, ' ') === f.value)
+          if (!page || exact?.length !== 1) continue
+          const card = exact[0]
+          const observedElsewhere = [...strictPages.values()].flatMap(p => p.cards).filter(c => c !== card)
+          if (observedElsewhere.some(c => cardKey(c.name) === cardKey(card.name) && cardKey(c.quote) !== cardKey(card.quote))) continue
+          const email = card.email && usEvidence(r.homeText, where).us && !observedElsewhere.some(c =>
+            (c.email?.toLowerCase() === card.email?.toLowerCase() && cardKey(c.name) !== cardKey(card.name)) ||
+            (cardKey(c.name) === cardKey(card.name) && !!c.email && c.email.toLowerCase() !== card.email?.toLowerCase())) ? card.email : null
+          strictBuyers.push({ person: f.value, quote: card.quote, name: card.name, email, source: f.url, at: page.at })
+        }
+        // Current product readiness selects person and route independently.
+        // Publish one matched pair (or one buyer only); never mix two cards.
+        if (strictBuyers.length === 1) {
+          const buyer = strictBuyers[0]
+          const dated = { source_url: buyer.source, source_date: new Date(buyer.at * 1000).toISOString().slice(0, 10), retrieved_at: buyer.at }
+          addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: buyer.person,
+            label: 'Title on the company page: ' + buyer.quote, confidence: null, ...dated }); n++; named++
+          if (buyer.email) {
+            addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: buyer.email,
+              label: contextLabel({ excerpt: buyer.name + ' | ' + buyer.email, source_url: buyer.source }), confidence: null, ...dated }); n++
+          }
+        }
+      } else for (const f of r.found) {
         const baseLabel = guessed && profileFromListedLabel(f.label) ? 'listed with this title on this company page, not verified as current staff' : f.label
         const label = guessed ? `${baseLabel}; site found by name search and location match, not linked from the source` : f.label
         const e: Enrichment = { connector: 'sitecrawl', kind: f.kind, value: f.value.slice(0, 254), label: label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }
@@ -1624,7 +1687,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
       // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this
       // lead's confirmed site only; the label names the person and says where it was printed.
-      if (r.reason === 'ok' || r.reason === 'none_published') {
+      if (!companyFirstContacts && (r.reason === 'ok' || r.reason === 'none_published')) {
         const have = new Set(r.found.filter(f => f.kind === 'email').map(f => f.value.toLowerCase()))
         for (const f of r.found) {
           if (f.kind !== 'person') continue

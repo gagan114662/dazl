@@ -7,8 +7,8 @@ const origin='https://sample-studio.example', own=origin+'/about/team'
 const scope={tenant:'t',job:'j',attempt:'1'}, company='Sample Studio', name='Jane Quinn', title='Head of Sales'
 const finding={state:'signal_verified',name:company,site:{companyKey:'s',website:origin,identitySource:origin+'/'},
   signal:{companyKey:'s',place:'X',event:'hiring',date:'2026-11-01',sourceUrl:origin+'/careers/sdr',quote:'hiring'}} as const satisfies Finding
-const run=(html:string,cand:any={name,title,linkedin:null,sources:[own]},extra:Partial<BuyerSearchReaders>={})=>proveCompanyFirstBuyerBySearch(finding,[title],scope,{
-  isCurrent:async()=>true,reserveBeforeDispatch:async()=>true,searchBuyer:async()=>cand,
+const run=(html:string,cand:unknown={name,title,linkedin:null,sources:[own]},extra:Partial<BuyerSearchReaders>={})=>proveCompanyFirstBuyerBySearch(finding,[title],scope,{
+  isCurrent:async()=>true,reserveBeforeDispatch:async()=>true,searchBuyer:async()=>cand as Awaited<ReturnType<BuyerSearchReaders['searchBuyer']>>,
   readPage:async(url):Promise<PublicPage>=>({url,text:'',html}),...extra})
 test('Z1a: page-wide mentions do not link a name to another person\'s title', async()=>{
   assert.equal((await run(`<p>Jane Quinn — Designer. Sam Lee — Head of Sales.</p>`)).status,'held')

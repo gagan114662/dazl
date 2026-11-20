@@ -45,6 +45,7 @@ import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, s
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
 import { stagingFakePdl } from '../enrich/pdl.ts'
 import { runWithTenantSpend } from '../scan/spend-cap.ts'
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
@@ -155,7 +156,7 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
   for (let i = 0; i < ids.length; i += 200) {
     const part = ids.slice(i, i + 200)
     const owned = db.prepare(`SELECT ${LEAD_COLS} FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.id IN (${part.map(() => '?').join(',')})`).all(tenantId, ...part) as LeadRow[]
-    const strict = owned.filter(l => qaClaudeOnlyJob(l.run_budget))
+    const strict = owned.filter(l => qaClaudeOnlyJob(l.run_budget) || hasCompanyFirstBudget(l.run_budget))
     const strictIds = strict.map(l => l.id)
     const enriched = enrichmentsForLeads(db, tenantId, strictIds)
     const projected = strict.map(l => ({ l, ctx: workEmailTargetContext(l, enriched[l.id] ?? [], now) }))
@@ -333,7 +334,7 @@ async function lookupWorkEmail(
   // provider: Apollo is skipped for it below), so no real key is ever charged for a synthetic person.
   const fixture = isWorkEmailFixtureLead(lead)
   if (fixture && !(fixtureAvailable(db, tenantId) && workEmailFixtureFakesOn(deps.env ?? process.env))) return { status: 'not_eligible', detail: 'this test-only fixture lead is looked up only on staging with the fake People Data Labs and the fake ZeroBounce' }
-  derived.publishedOnly = qaClaudeOnlyJob(lead.run_budget)
+  derived.publishedOnly = qaClaudeOnlyJob(lead.run_budget) || hasCompanyFirstBudget(lead.run_budget)
   if (derived.publishedOnly && fixture) return { status: 'not_eligible', detail: 'a strict-origin result must come from the company website' }
   const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
   const ctx = workEmailTargetContext(lead, rows, now)

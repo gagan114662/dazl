@@ -2,13 +2,6 @@ import { isRecruitingInbox } from '../recruiting-inbox.ts'
 import {contextRestriction,readContextLabel,type ContactContext} from './contact-context.ts'
 export const PUBLISHED_EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
 const address = (value: string | null) => value?.trim().toLowerCase() ?? ''
-// Comparison for already-proven publication only. Preserve the original
-// address in the evidence and display; no mailbox aliases are equivalent.
-export function samePublishedEmailAddress(a:string|null|undefined,b:string|null|undefined):boolean{
-  return typeof a==='string'&&typeof b==='string'&&a.length<=254&&b.length<=254&&
-    PUBLISHED_EMAIL_RE.test(a)&&PUBLISHED_EMAIL_RE.test(b)&&address(a)===address(b)
-}
-
 
 // The contact a sales draft may use: an address the company itself published -
 // on the cited page (lead.contact) or on its own contact/about page (sitecrawl).
