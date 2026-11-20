@@ -1,10 +1,9 @@
 import '../helpers/net-fence.ts'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { createPasswordUser, createSession } from '../../lib/auth-db.ts'
@@ -33,7 +32,7 @@ const base = 'http://127.0.0.1:' + port
 const mode = process.argv.includes('--production-build') ? 'start' : 'dev'
 if (mode === 'start') assert.ok(existsSync('.next/BUILD_ID'), 'build the actual Next app before this smoke')
 const app = spawn(process.execPath, ['--experimental-strip-types','--import','./test/manual/icp-signed-wire-preload.mjs','./node_modules/next/dist/bin/next',mode,'--hostname','127.0.0.1','--port',String(port)], {
-  env:{ PATH:process.env.PATH, HOME:dir, DB_PATH:dbPath, DAZL_FIXTURE_WIRE:wire,
+  env:{ NODE_ENV:mode==='start'?'production':'development', PATH:process.env.PATH, HOME:dir, DB_PATH:dbPath, DAZL_FIXTURE_WIRE:wire,
     NEXT_TELEMETRY_DISABLED:'1', DAZL_RUN_MAX_USD_USERS:A+':1,'+B+':1', DAZL_OWNER_MONTH_MAX_USD_USERS:A+':1,'+B+':1',
     DAZL_SPEND_BUSY_WAIT_MS:'0', DAZL_ANTHROPIC_MODEL:'claude-sonnet-4-5', SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0' }, stdio:['ignore','pipe','pipe']
 })
