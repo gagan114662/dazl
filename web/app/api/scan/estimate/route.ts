@@ -13,7 +13,7 @@ import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
 import { readSellerLine } from '@/lib/auth-db'
 import { MAX_QUERY } from '@/lib/scan/icp'
 import { cleanText } from '@/lib/validate'
-import { carriedWorkspaceOfferConflict, cleanOffer, confirmedPlayOffer, effectiveOffer, profileOffer } from '@/lib/scan/play-offer'
+import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer, profileOffer } from '@/lib/scan/play-offer'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
   const db = await getDb()   // the Db layer, not the raw SQLite handle
   const query = cleanText(body?.query, MAX_QUERY)
   const supplied = body?.offer !== undefined && body?.offer !== null
-  if (supplied && cleanOffer(body.offer).length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
+  if (supplied && !completeOffer(body.offer)) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   if (query.length >= 3 && !supplied) {
     // Resolve the same recorded or explicit request offer as POST /api/scan,
     // but before presenting a cost panel for the wrong saved buyer context.
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
         const conflict = result.conflict ?? (body?.icp && body.reviewed === false
           ? carriedWorkspaceOfferConflict(query, user.business_name, seller, result.offer) : null)
         if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated,
-          saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}),
+          saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}),
           ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
       }
     } catch (e) {

@@ -66,7 +66,7 @@ test('a plain request to find customers for the signed workspace offers that cho
   for (const request of [est, scan]) {
     const r = await request(body)
     assert.equal(r.status, 409)
-    assert.deepEqual(await r.json(), { error: 'offer_conflict', stated: 'dazl', saved })
+    assert.deepEqual(await r.json(), { error: 'offer_conflict', stated: 'dazl', saved, fresh_target: true })
     assert.equal(jobs(db).length, 0)
   }
   // A similar company name or ordinary buyers described as partners are not this workspace's offer.

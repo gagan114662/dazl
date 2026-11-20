@@ -15,8 +15,8 @@ import type { Db, DbLike } from '../db/client.ts'
 import { asDb } from '../db/client.ts'
 import { readSellerLine } from '../auth-db.ts'
 
-export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, carriedWorkspaceOfferConflict, type OfferSource, type PlayOffer } from './play-offer-text.ts'
-import { effectiveOffer, cleanOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
+export { MAX_OFFER, isMissingSchema, cleanOffer, completeOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, carriedWorkspaceOfferConflict, type OfferSource, type PlayOffer } from './play-offer-text.ts'
+import { effectiveOffer, cleanOffer, completeOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
 
 // The effective offer of one play of this tenant (null: no such play of this tenant).
 export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string): Promise<PlayOffer | null> {
@@ -56,8 +56,8 @@ export async function confirmedPlayOffer(db: DbLike, tenantId: string, query: st
   if (typeof query !== 'string' || query.trim().length < 3) return null
   let row: { offer: string | null; seller: string | null } | undefined
   try { row = await asDb(db).get<{ offer: string | null; seller: string | null }>(CONFIRMED_SQL, [tenantId, query.trim(), (sellerLine ?? '').trim().slice(0, 300)]) } catch (e) { if (isMissingSchema(e)) return null; throw e }
-  const offer = cleanOffer(row?.offer)
-  return row && offer.length >= 3 ? { offer, seller: row.seller } : null
+  const offer = completeOffer(row?.offer)
+  return row && offer ? { offer, seller: row.seller } : null
 }
 // The same, for a scheduled run of a saved play (weekly watch, monitor), which has no request body: matched against the
 // tenant's business profile as it is now (the seller snapshot POST /api/scan records).
@@ -69,7 +69,7 @@ export async function scheduledPlayOffer(db: Db, tenantId: string, query: string
 
 // Sets the offer of one play of this tenant, and nothing else: the profile and every other play keep theirs.
 export async function setPlayOffer(db: Db, tenantId: string, jobId: string, offer: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
-  const o = cleanOffer(offer)
-  if (o.length < 3) return false
+  const o = completeOffer(offer)
+  if (!o) return false
   return (await db.run('UPDATE scan_jobs SET offer = ?, offer_set_at = ? WHERE id = ? AND user_id = ?', [o, now, jobId, tenantId])).changes === 1
 }

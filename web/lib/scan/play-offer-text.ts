@@ -25,10 +25,24 @@ export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
   // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
-  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true; freshTarget?: true } }
+  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true; incomplete?: true; freshTarget?: true } }
   | { offer: null; source: 'none'; conflict: null }
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
+
+// Confirmation must never make a clipped value authoritative. Normalize spacing but reject overlength
+// rather than storing a truncated choice. Unmatched closing punctuation (e.g. "1) Setup") is not clipping.
+export function completeOffer(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (text.length < 3 || text.length > MAX_OFFER) return null
+  let depth = 0
+  for (const char of text) {
+    if (char === '(') depth++
+    else if (char === ')' && depth > 0) depth--
+  }
+  return depth === 0 ? text : null
+}
 
 // The offer a request states, if it states one. Only a positive seller assertion counts, and only at the start of a
 // sentence or clause (after ",", ";", ":" or a dash), never words embedded in targeting or an exclusion:
@@ -587,9 +601,12 @@ function withdrawsSaved(withdrawn: string, saved: string): boolean {
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
-  const reviewed = cleanOffer(play.offer)
+  const reviewed = completeOffer(play.offer)
+  const incomplete = (): PlayOffer => ({ offer: null, source: 'conflict', conflict: { stated: null, recorded: '', incomplete: true } })
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
+  if (cleanOffer(play.offer)) return incomplete()
   const recorded = offerOfSeller(play.seller)
+  if ((recorded && !completeOffer(recorded)) || (!recorded && cleanOffer(profileSells) && !completeOffer(profileSells))) return incomplete()
   const base = recorded ?? (cleanOffer(profileSells) || null)
   if (offerSentences(play.query ?? '').ambiguous)
     return { offer:null, source:'conflict', conflict:{ stated:null, recorded:base??'', ambiguous:true } }
@@ -630,7 +647,7 @@ export function carriedWorkspaceOfferConflict(query: string, businessName: strin
     tail = tail.slice(literal[0].length).trimStart()
   }
   if (tail && !/^(?:[,;:—–]|[.!?](?:\s|$))/u.test(tail)) return null
-  return sameOffer(name, recorded) ? { stated: name, recorded, freshTarget: true } : { stated: name, recorded }
+  return { stated: name, recorded, freshTarget: true }
 }
 
 // The tenant's own selling context, for a play without an offer of its own (#349): the Memory positioning set in

@@ -45,6 +45,7 @@ import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import EstimateConfirm from './estimate-confirm'
 import { directOfferProfile, scanOfferConflict } from './offer-preflight'
+import { completeOffer, MAX_OFFER } from '@/lib/scan/play-offer-text'
 import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
@@ -524,7 +525,7 @@ export default function LeadsClient() {
   // play only: the business profile and earlier plays keep theirs.
   const [offerText, setOfferText] = useState('')
   // A choice still to make: from the review step, or from the server refusing a direct run (409 offer_conflict).
-  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; freshTarget?: boolean; direct: boolean; requested?: string } | null>(null)
+  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; incomplete?: boolean; freshTarget?: boolean; direct: boolean; requested?: string } | null>(null)
   // The saved offer could not be read at review time: a reviewed run states its offer, so the server does not compare it
   // again. Run stays disabled until the check succeeds (fail closed), never treated as "nothing saved".
   const [offerUnread, setOfferUnread] = useState(false)
@@ -832,7 +833,7 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
-        {directChoice && <div className="mt-3"><OfferChooser c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
+        {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
         {businessIcp && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
           {priorIcp ? 'Find leads reuses the profile from your previous play as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Review it in Build, or use Review profile first to build a new one from your sentence.'}
         </p>}
@@ -1541,19 +1542,30 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
 // runs. Nothing is changed in the profile.
 // A request that only withdraws an offer ("We no longer sell X.") names nothing to use instead: the user keeps the saved
 // offer or writes this play's own (onWrite empties the offer field below; nothing is invented).
-function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; freshTarget?: boolean }; onChoose: (offer: string, choice: 'stated' | 'saved') => void; onWrite?: () => void }) {
+function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; incomplete?: boolean; freshTarget?: boolean }; onChoose: (offer: string, choice: 'stated' | 'saved') => void; onWrite?: () => void }) {
+  const [writing, setWriting] = useState(false)
+  const [writtenOffer, setWrittenOffer] = useState('')
+  const explicitOffer = completeOffer(writtenOffer)
+  const namesWorkspace = c.freshTarget && c.stated && c.stated.trim().toLowerCase() !== c.saved.trim().toLowerCase()
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    {c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
+    {c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
+      : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
       : c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
       : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request may name more than one offer because a parenthesis is unfinished. Choose or write this play’s offer before it runs.</p>
       : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
-      {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}
+      {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => namesWorkspace ? setWriting(true) : onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}
       {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved, 'saved')} data-testid="offer-use-saved">{c.freshTarget ? 'Keep saved targeting' : `Use: ${c.saved}`}</button>}
-      {!c.stated && onWrite && <button type="button" className="btn-primary btn-sm" onClick={onWrite} data-testid="offer-write">Write what this play sells</button>}
+      {!c.stated && (onWrite || c.incomplete) && <button type="button" className="btn-primary btn-sm" onClick={onWrite ?? (() => setWriting(true))} data-testid="offer-write">Write what this play sells</button>}
     </div>
-    {!c.stated && !onWrite && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
+    {writing && <div className="mt-3 flex flex-wrap items-end gap-2">
+      <label className="flex flex-col gap-1">What does this play sell?
+        <input className="field" value={writtenOffer} maxLength={MAX_OFFER} onChange={e => setWrittenOffer(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }} />
+      </label>
+      <button type="button" className="btn-primary btn-sm" disabled={!explicitOffer || explicitOffer.toLowerCase() === c.stated?.trim().toLowerCase()} onClick={() => explicitOffer && onChoose(explicitOffer, 'stated')}>Use this offer</button>
+    </div>}
+    {!c.stated && !onWrite && !c.incomplete && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
   </div>
 }

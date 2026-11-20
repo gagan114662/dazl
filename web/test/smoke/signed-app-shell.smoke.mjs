@@ -52,7 +52,9 @@ async function verify(base, route, pageMarker, mode) {
     assert.ok(html.indexOf(statusText) < html.indexOf(pageMarker), route + ': loading status must precede page content')
   } else {
     assert.equal(r.status, 307)
-    assert.equal(r.headers.get('location'), base + '/sign-in')
+    const location = r.headers.get('location')
+    assert.ok(location, route + ': invalid session must redirect to sign-in')
+    assert.equal(new URL(location, base + route).href, base + '/sign-in')
     assert.equal(contentMs, null)
     assert.equal(status, null)
   }

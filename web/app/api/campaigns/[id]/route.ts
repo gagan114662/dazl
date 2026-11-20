@@ -3,7 +3,7 @@ import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { campaignDetail } from '@/lib/outreach/campaign-detail'
 import { recordedEmptyReason, recordedStopRefusalReason } from '@/lib/scan/outcome-detail'
-import { readPlayOffer, setPlayOffer } from '@/lib/scan/play-offer'
+import { completeOffer, readPlayOffer, setPlayOffer } from '@/lib/scan/play-offer'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied } from '@/lib/workspace-access'
 
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const { id } = await params
   const body = await req.json().catch(() => null)
-  if (typeof body?.offer !== 'string' || body.offer.replace(/\s+/g, ' ').trim().length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
+  if (!completeOffer(body?.offer)) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   const db = await getDb()
   if (!/^[a-f0-9]{24}$/.test(id) || !(await setPlayOffer(db, user.tenantId, id, body.offer))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   return NextResponse.json({ offer: await readPlayOffer(db, user.tenantId, id) })

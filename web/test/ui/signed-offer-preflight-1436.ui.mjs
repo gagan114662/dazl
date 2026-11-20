@@ -25,6 +25,7 @@ const actor='fixture-owner',away='fixture-other',oldJob='a'.repeat(24)
 const oldQuery='Find independent dental practices in New York City hiring a receptionist.'
 const dental='Dental appointment reminder software'
 const savedOffer=sameBrand?'dazl':dental
+const chosenOffer=sameBrand?savedOffer:'Software for finding qualified business leads'
 const buyer={summary:'Independent dental practices in New York City',who:['Practice owner'],where:['New York City'],industries:['Dental'],sizes:[],signals:[],exclude:[],country:'US',language:'en',window_days:45}
 const query='Find leads for dazl (dazl.ai): small marketing and creative agencies in Toronto, Ontario hiring an SDR or sales development rep.'
 const fakeSession=()=>randomBytes(32).toString('hex')
@@ -88,10 +89,10 @@ try{
   const before=await request('/api/scan/estimate',{query,icp:latest.data.icp,reviewed:false})
   console.log('signed old-context quote status:',before.status,'same brand:',sameBrand)
   assert.equal(before.status,409,'No cost panel before a real offer choice')
-  assert.deepEqual(before.data,{error:'offer_conflict',stated:'dazl',saved:savedOffer,...(sameBrand?{fresh_target:true}:{})})
+  assert.deepEqual(before.data,{error:'offer_conflict',stated:'dazl',saved:savedOffer,fresh_target:true})
   const outside=await request('/api/scan/estimate',{query,icp:latest.data.icp,reviewed:false},other)
   assert.notEqual(outside.data?.saved,savedOffer,'another workspace cannot learn the stored offer')
-  const selected=await request('/api/scan/estimate',{query,offer:before.data.stated})
+  const selected=await request('/api/scan/estimate',{query,offer:chosenOffer})
   assert.equal(selected.status,200,JSON.stringify(selected.data))
   assert.equal(selected.data.estimate.verdict.ok,true)
   assert.equal(typeof selected.data.estimate.ack,'string')
@@ -115,14 +116,21 @@ try{
     assert.ok((await conflictResponse).request().postDataJSON().icp)
     const use=page.getByRole('button',{name:'Use: dazl',exact:true})
     await use.waitFor()
-    if(sameBrand)await page.getByRole('button',{name:'Keep saved targeting',exact:true}).waitFor()
+    await page.getByRole('button',{name:'Keep saved targeting',exact:true}).waitFor()
     assert.equal(await page.getByTestId('estimate-confirm').count(),0)
     const quoteResponse=page.waitForResponse(r=>r.url()===base+'/api/scan/estimate'&&r.status()===200)
     await use.click()
+    if(!sameBrand){
+      const field=page.getByRole('textbox',{name:'What does this play sell?'})
+      await field.waitFor()
+      assert.equal(await field.inputValue(),'','do not reuse the unrelated saved offer or insert the workspace name')
+      await field.fill(chosenOffer)
+      await page.getByRole('button',{name:'Use this offer',exact:true}).click()
+    }
     const quote=await quoteResponse
     const submitted=quote.request().postDataJSON()
     assert.equal(submitted.query,query)
-    assert.equal(submitted.offer,'dazl')
+    assert.equal(submitted.offer,chosenOffer)
     assert.equal('icp' in submitted,false)
     assert.equal('reviewed' in submitted,false)
     await page.getByTestId('estimate-confirm-run').waitFor()
