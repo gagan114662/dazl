@@ -19,7 +19,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -44,7 +44,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     saveKey(db, 'workspace', 'anthropic', 'sk-ant-workspace-fixture', master)
     const raw = qaClaudeOnlyBudget(JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false }), mode === v3)
     const job = db.transaction(() => {
-      createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: [], industries, sizes: [], where, signals, exclude: [] }) })
+      createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: [], industries, sizes: [], where, signals, exclude: [], ...(windowDays ? { window_days: windowDays } : {}) }) })
       if (query === null) db.exec("UPDATE scan_jobs SET query=NULL WHERE id='job'") // legacy/non-query row: never open native discovery
       if (trial) db.exec("UPDATE scan_jobs SET funded_by='trial' WHERE id='job'")
       return pinAdmittedStrictJob(db, 'workspace', 'job', raw)
@@ -93,7 +93,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     }
     globalThis.fetch = io
     const status = await runJob(db, job, {
-      master, fetchImpl: io, score: false, ground: false, judge: null,
+      master, fetchImpl: io, score: false, ground: false, judge: null, now,
       fetchPage: async page => {
         sequence.push('publisher-page')
         publisherRequests.push(page)
@@ -353,4 +353,34 @@ test('native hop fencing refuses a URL before any network or rendering work', as
     assert.fail('refused hop must not render')
   }, undefined, { allow: url => { inspected.push(url.origin); return false }, blocked: () => assert.fail('refused hop was not requested') }), { fail: 'refused' })
   assert.deepEqual(inspected, ['https://blocked.example'])
+})
+
+
+test('native freshness prompt uses clock and normalized explicit window without changing request limits', async () => {
+  const now = new Date('2026-11-20T12:00:00Z')
+  const x = await simulate({ now, windowDays: 30, query: 'Workshops posting roles within the last 60 days',
+    where: ['Dunedin, New Zealand'], industries: ['Repair'], signals: ['Hiring'] })
+  const paid = x.messages.find(m => Array.isArray(m.body.tools))!
+  const counted = x.messages.find(m => m.url.endsWith('/count_tokens') && String(m.body.messages).length > 0)!
+  const text = (paid.body.messages as { content: string }[])[0].content
+  assert.match(text, /Today is 2026-11-20/)
+  assert.match(text, /last 30 days.*2026-10-21/)
+  assert.match(text, /Dunedin, New Zealand/)
+  assert.match(text, /not the date the page was published/)
+  assert.doesNotMatch(text, /undated official posting/)
+  assert.deepEqual(paid.body.messages, counted.body.messages)
+  assert.equal(paid.body.max_tokens, 3000)
+  assert.deepEqual(paid.body.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }])
+  assert.deepEqual(x.sequence.filter(s => s.startsWith('native-')), ['native-count', 'native-send'])
+})
+
+test('native default freshness favors current events without asserting a date on an active official posting', async () => {
+  const x = await simulate({ now: new Date('2026-11-20T12:00:00Z'), query: 'Local studios hiring',
+    where: ['Porto, Portugal'], industries: ['Studios'] })
+  const paid = x.messages.find(m => Array.isArray(m.body.tools))!
+  const text = (paid.body.messages as { content: string }[])[0].content
+  assert.match(text, /Today is 2026-11-20.*2025-11-20/)
+  assert.match(text, /undated official posting.*still active.*do not infer a date/)
+  assert.match(text, /Porto, Portugal/)
+  assert.doesNotMatch(text, /last 30 days/)
 })
