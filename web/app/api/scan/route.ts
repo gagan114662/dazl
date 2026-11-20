@@ -28,7 +28,7 @@ import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
-import { cleanOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -70,12 +70,16 @@ export async function POST(req: NextRequest) {
   // refused until the caller chooses which one this play is for, before anything is queued or counted.
   const seller = await readSellerLine(await getDb(), user.tenantId)
   const offerSupplied = body?.offer !== undefined && body?.offer !== null
-  let offer = offerSupplied ? cleanOffer(body.offer) : ''
+  let offer = offerSupplied ? (completeOffer(body.offer) ?? '') : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   // The next run of the same play (#349): the offer this tenant already confirmed for this exact request, while the
   // profile says what it says now, is this run's offer too. Nothing confirmed: the checks below, unchanged.
   if (!offerSupplied && query.length >= 3) {
-    try { offer = (await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller))?.offer ?? '' } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+    try {
+      const confirmed = await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller)
+      if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
+      offer = confirmed?.offer ?? ''
+    } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
   }
   if (query.length >= 3 && !offer) {
     // the same inputs drafting reads later (draftOffer: this play's seller snapshot, then the tenant's Memory positioning or
@@ -83,7 +87,8 @@ export async function POST(req: NextRequest) {
     let tenant: string | null
     try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
     const e = effectiveOffer({ seller, query }, tenant)
-    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.ambiguous ? { ambiguous: true } : {}), ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
+    const conflict = e.conflict ?? (icp && body?.reviewed === false ? carriedWorkspaceOfferConflict(query, user.business_name, seller, e.offer) : null)
+    if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated, saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}), ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
   }
 
   // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's

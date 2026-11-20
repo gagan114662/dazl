@@ -44,6 +44,8 @@ import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import EstimateConfirm from './estimate-confirm'
+import { directOfferProfile, scanOfferConflict } from './offer-preflight'
+import { completeOffer, MAX_OFFER } from '@/lib/scan/play-offer-text'
 import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
 import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
@@ -210,6 +212,7 @@ export default function LeadsClient() {
   const draftPlan = useMemo(() => draft ? planView(compileTargeting(query, JSON.stringify(draft))) : null, [draft, query])
   const [draftNote, setDraftNote] = useState<PreviewNote>({ text: '', dropped: null })
   const [busy, setBusy] = useState(false)
+  const profilePreviewInFlight = useRef(false)
   const [starting, setStarting] = useState(false)
   // Optional per-run spend limit (same budget object as the API; partial, see budget-panel.tsx). Off by default.
   const [budgetForm, setBudgetForm] = useState<BudgetForm>(EMPTY_BUDGET_FORM)
@@ -454,6 +457,9 @@ export default function LeadsClient() {
 
   // Optional: work out the profile for review before running. The sentence alone runs straight away (submit below).
   async function preview() {
+    // Duplicate clicks can arrive before React paints the disabled button.
+    if (profilePreviewInFlight.current) return
+    profilePreviewInFlight.current = true
     setError(''); setDraft(null); setBusy(true)
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(startIcp ? { prior_icp: startIcp } : {}) }) })
@@ -466,6 +472,7 @@ export default function LeadsClient() {
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
+      profilePreviewInFlight.current = false
       setBusy(false)
     }
   }
@@ -518,7 +525,7 @@ export default function LeadsClient() {
   // play only: the business profile and earlier plays keep theirs.
   const [offerText, setOfferText] = useState('')
   // A choice still to make: from the review step, or from the server refusing a direct run (409 offer_conflict).
-  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; direct: boolean } | null>(null)
+  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; incomplete?: boolean; freshTarget?: boolean; direct: boolean; requested?: string } | null>(null)
   // The saved offer could not be read at review time: a reviewed run states its offer, so the server does not compare it
   // again. Run stays disabled until the check succeeds (fail closed), never treated as "nothing saved".
   const [offerUnread, setOfferUnread] = useState(false)
@@ -531,7 +538,7 @@ export default function LeadsClient() {
     const c = effectiveOffer({ seller: null, query: q }, base.offer).conflict
     if (c) {
       // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
-      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ambiguous: c.ambiguous, ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
+      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ambiguous: c.ambiguous, ...(c.incomplete ? { incomplete: true } : {}), ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
     }
     setOfferText(statedOffer(q) ?? base.offer ?? '')
     setOfferConflict(null)
@@ -539,36 +546,48 @@ export default function LeadsClient() {
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
   // The price estimate shown before a run starts; the run begins only from its Confirm button (or is blocked with what to change).
-  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; withIcp: Icp | null; offer?: string; reviewed?: boolean } | null>(null)
+  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; query: string; withIcp: Icp | null; offer?: string; reviewed?: boolean } | null>(null)
+  const latestOfferQuery = useRef(query)
+  latestOfferQuery.current = query
+  function receiveOfferConflict(status: number, payload: unknown, requested: string, reviewed?: boolean) {
+    const choice = scanOfferConflict(status, payload)
+    if (!choice) return false
+    if (latestOfferQuery.current === requested) {
+      setPendingEst(null)
+      setOfferConflict({ ...choice, direct: reviewed !== true, requested })
+    }
+    return true
+  }
   async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean) {
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
-    setError(''); setStarting(true)
+    setError(''); setStarting(true); setPendingEst(null); setOfferConflict(null)
+    const requested = query
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const body = JSON.stringify({ query, ...(offer ? { offer } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const body = JSON.stringify({ query: requested, ...(offer ? { offer } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
+      if (latestOfferQuery.current !== requested || receiveOfferConflict(er.status, ej, requested, reviewed)) return
       // No estimate, no run: a paid scan is never started without showing what it will use.
-      // #1436: the request names a different offer than the saved profile: choose before any cost panel is shown
-      if (er.status === 409 && ej.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof ej.stated === 'string' ? ej.stated : null, saved: String(ej.saved), ambiguous: ej.ambiguous === true, withdrawn: typeof ej.withdrawn === 'string' ? ej.withdrawn : undefined, direct: reviewed !== true }); return }
       if (er.status === 400 && ej.error === 'profile_lossy') { setError(lossyProfileCopy(ej)); return }   // keep the draft open so it can be fixed
       if (!er.ok || !ej.estimate) { setError(ej.detail ? `The spend limit was not accepted: ${String(ej.detail).slice(0, 200)}` : 'Could not get a price estimate, so nothing was started. Try again.'); return }
-      setPendingEst({ est: ej.estimate as RunEstimate, withIcp, offer, reviewed })
+      setPendingEst({ est: ej.estimate as RunEstimate, query: requested, withIcp, offer, reviewed })
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
       setStarting(false)
     }
   }
-  async function confirmRun(ack: string, withIcp: Icp | null, offer?: string, reviewed?: boolean) {
+  async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean) {
+    if (requested !== latestOfferQuery.current) { setPendingEst(null); return }
     setError(''); setTrialRefused(null); setLinkNote(null); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query: requested, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
-      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer, reviewed }); return }
-      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), ambiguous: j.ambiguous === true, withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: reviewed !== true }); return }
+      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed }); return }
+      if (receiveOfferConflict(r.status, j, requested, reviewed)) return
       // A refusal that clicking Confirm again cannot change (free scans or the month used up, no key, the hourly start limit): take the cost panel and its Confirm button down, so the page never keeps offering a button that does nothing.
       if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
       if (!r.ok && j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
@@ -758,14 +777,16 @@ export default function LeadsClient() {
   // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
   // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
   const startReviewed = startIcp ? false : undefined
-  function chooseDirectOffer(offer: string, saved: string) {
+  function chooseDirectOffer(offer: string, saved: string, freshTarget = false) {
     setOfferConflict(null)
-    // Choosing a different offer clears only the workspace-default buyer scope.
-    // Keep a prior explicitly carried play profile and never change Settings.
-    const carry = offer === saved || priorIcp !== null ? startIcp : null
+    // A different offer starts a different targeting profile for this play.
+    // Neither earlier reviewed plays nor Settings are changed.
+    const carry = directOfferProfile(offer, saved, startIcp, freshTarget)
     void run(carry, offer, carry ? startReviewed : undefined)
   }
   const businessIcp = startIcp
+  const directChoice = offerConflict?.direct && offerConflict.requested === query ? offerConflict : null
+  const reviewChoice = offerConflict && !offerConflict.direct ? offerConflict : null
 
   const input = 'field'
   // #1238: repeats are collapsed only when something new remains (lib/scan/leads-view.ts visibleReadyLeads)
@@ -792,12 +813,12 @@ export default function LeadsClient() {
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
+      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
       <form onSubmit={e => { e.preventDefault(); void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
-          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setTrialRefused(null); setLinkNote(null) }}
+          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setPendingEst(null); setOfferConflict(null); setTrialRefused(null); setLinkNote(null) }}
             placeholder="Find people who..." />
           <button disabled={busy || starting || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
         </div>
@@ -805,15 +826,17 @@ export default function LeadsClient() {
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
               <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setTrialRefused(null); setLinkNote(null) }} className="chip">{t}</button>)}
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setPendingEst(null); setOfferConflict(null); setTrialRefused(null); setLinkNote(null) }} className="chip">{t}</button>)}
             </div>)}
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
-        {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => chooseDirectOffer(o, offerConflict.saved)} /></div>}
-        {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile">Find leads uses the saved profile as it is: {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Review it in Build, or use Review profile first to build a new one from your sentence.</p>}
+        {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
+        {businessIcp && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
+          {priorIcp ? 'Find leads reuses the profile from your previous play as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Review it in Build, or use Review profile first to build a new one from your sentence.'}
+        </p>}
         </div>
       </form>
       {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}
@@ -946,7 +969,7 @@ export default function LeadsClient() {
               <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
               {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
             </div>
-            <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
@@ -954,7 +977,7 @@ export default function LeadsClient() {
               <p>dazl could not read your saved offer, so it cannot check this request against it. Nothing runs until it can.</p>
               <button type="button" className="btn-ghost btn-sm mt-2" onClick={() => void startOffer(query)} data-testid="offer-recheck">Check again</button>
             </div>}
-            {offerConflict ? <OfferChooser c={offerConflict} onChoose={o => { setOfferText(o); setOfferConflict(null) }} onWrite={() => { setOfferText(''); setOfferConflict(null) }} />
+            {reviewChoice ? <OfferChooser c={reviewChoice} onChoose={o => { setOfferText(o); setOfferConflict(null) }} onWrite={() => { setOfferText(''); setOfferConflict(null) }} />
               : <>
                 <label className="block text-xs text-gray-500 mb-1" htmlFor="play-offer">What you sell for this play</label>
                 <input id="play-offer" className={`${input} w-full`} maxLength={150} value={offerText} onChange={e => setOfferText(e.target.value)} placeholder="e.g. CRM setup and outbound consulting" data-testid="review-offer-input" />
@@ -971,7 +994,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={n => setOfferText(n)} />}
-          <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!offerConflict || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
@@ -1519,18 +1542,31 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
 // runs. Nothing is changed in the profile.
 // A request that only withdraws an offer ("We no longer sell X.") names nothing to use instead: the user keeps the saved
 // offer or writes this play's own (onWrite empties the offer field below; nothing is invented).
-function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean }; onChoose: (offer: string) => void; onWrite?: () => void }) {
+function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; incomplete?: boolean; freshTarget?: boolean }; onChoose: (offer: string, choice: 'stated' | 'saved') => void; onWrite?: () => void }) {
+  const [writing, setWriting] = useState(false)
+  const [writtenOffer, setWrittenOffer] = useState('')
+  const manualOnly = c.incomplete || (c.ambiguous && !c.saved)
+  const explicitOffer = completeOffer(writtenOffer)
+  const namesWorkspace = c.freshTarget && c.stated && c.stated.trim().toLowerCase() !== c.saved.trim().toLowerCase()
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    {c.stated
+    {c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
+      : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
+      : c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
       : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request may name more than one offer because a parenthesis is unfinished. Choose or write this play’s offer before it runs.</p>
       : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
-      {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated!)} data-testid="offer-use-stated">Use: {c.stated}</button>}
-      {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>}
-      {!c.stated && onWrite && <button type="button" className="btn-primary btn-sm" onClick={onWrite} data-testid="offer-write">Write what this play sells</button>}
+      {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => namesWorkspace ? setWriting(true) : onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}
+      {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved, 'saved')} data-testid="offer-use-saved">{c.freshTarget ? 'Keep saved targeting' : `Use: ${c.saved}`}</button>}
+      {!c.stated && (onWrite || manualOnly) && <button type="button" className="btn-primary btn-sm" onClick={onWrite ?? (() => setWriting(true))} data-testid="offer-write">Write what this play sells</button>}
     </div>
-    {!c.stated && !onWrite && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
+    {writing && <div className="mt-3 flex flex-wrap items-end gap-2">
+      <label className="flex flex-col gap-1">What does this play sell?
+        <input className="field" value={writtenOffer} maxLength={MAX_OFFER} onChange={e => setWrittenOffer(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.preventDefault() }} />
+      </label>
+      <button type="button" className="btn-primary btn-sm" disabled={!explicitOffer || explicitOffer.toLowerCase() === c.stated?.trim().toLowerCase()} onClick={() => explicitOffer && onChoose(explicitOffer, 'stated')}>Use this offer</button>
+    </div>}
+    {!c.stated && !onWrite && !manualOnly && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
   </div>
 }

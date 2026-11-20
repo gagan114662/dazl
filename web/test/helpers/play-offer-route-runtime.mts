@@ -14,6 +14,8 @@ import { setSellerLine } from './scan-route-auth-stub.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../../lib/llm/key-store.ts'
 import { saveMemory } from '../../lib/memory.ts'
+import { confirmedPlayOffer } from '../../lib/scan/play-offer.ts'
+import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
 import { POST as SCAN } from '../../app/api/scan/route.ts'
 import { GET as CAMPAIGN, POST as SET_OFFER } from '../../app/api/campaigns/[id]/route.ts'
 
@@ -161,4 +163,43 @@ test('a Memory-only tenant gets the offer conflict at play creation; its same-pr
   assert.equal((db.prepare('SELECT count(*) AS n FROM scan_jobs').get() as { n: number }).n, jobs0, 'nothing queued')
   const same = await scan(M, { query: 'Find restaurants in London hiring a manager.' })
   assert.equal(same.status, 202, JSON.stringify(same))
+})
+
+test('incomplete confirmed and recorded offers require a complete per-play choice', async () => {
+  const C = randomBytes(16).toString('hex')
+  db.prepare("INSERT INTO users (id,email,name,business_name,password_hash,salt) VALUES (?,'clipped-offer-fixture@example.test','n','Acme','x','y')").run(C)
+  saveKey(db,C,'anthropic','sk-ant-api03-FIXTUREFIXTUREFIXTUREFIXTURE',Buffer.from(process.env.DAZL_MASTER_KEY!,'base64'))
+  const clipped = 'Scheduling tools (including'
+  const q = 'Find regional laboratory founders'
+  const prior = randomBytes(12).toString('hex')
+  const recorded = randomBytes(12).toString('hex')
+  const insert = db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,query,seller,offer,offer_set_at) VALUES (?,?,'x','-','-',?,?,?,?)")
+  const seller = clipped + ' - https://seller.example'
+  setSellerLine(C, seller)
+  try {
+    insert.run(prior,C,q,seller,clipped,1)
+    insert.run(recorded,C,q + ' nearby',seller,null,null)
+    finish(prior); finish(recorded)
+    for (const id of [prior,recorded]) {
+      assert.deepEqual((await campaign(C,id)).offer,{ offer:null, source:'conflict', conflict:{ stated:null, recorded:'', incomplete:true } })
+      assert.equal((await setOffer(C,id,clipped)).status,400)
+    }
+    assert.deepEqual(await confirmedPlayOffer(db,C,q,seller),{offer:null,incomplete:true})
+    const estimate = async (body: unknown) => {
+      as(C)
+      const res=await ESTIMATE(new NextRequest('http://localhost/api/scan/estimate',{method:'POST',headers:{'content-type':'application/json',host:'localhost'},body:JSON.stringify(body)}))
+      return {status:res.status,...await res.json()}
+    }
+    assert.deepEqual(await estimate({query:q}),{status:409,error:'offer_conflict',stated:null,saved:'',incomplete:true})
+    assert.equal((await estimate({query:q,offer:clipped})).status,400)
+    const before = db.prepare('SELECT count(*) AS n FROM scan_jobs').pluck().get()
+    assert.deepEqual(await scan(C,{query:q}),{status:409,error:'offer_conflict',stated:null,saved:'',incomplete:true})
+    assert.equal((await scan(C,{query:q,offer:clipped})).status,400)
+    assert.equal(db.prepare('SELECT count(*) AS n FROM scan_jobs').pluck().get(),before)
+    const accepted = await scan(C,{query:q,offer:'Scheduling tools (including support)'})
+    assert.equal(accepted.status,202,JSON.stringify(accepted))
+    finish(accepted.job_id as string)
+    assert.equal(row(accepted.job_id as string).offer,'Scheduling tools (including support)')
+    assert.equal(row(prior).offer,clipped, 'no historical rewrite')
+  } finally { setSellerLine(C,`${DENTAL} - https://seller.example`) }
 })

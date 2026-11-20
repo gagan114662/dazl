@@ -146,7 +146,7 @@ function provenLegacyHold(rows: PoolRow[], legacy: LegacyProof[]): (NativeHoldPr
   return { id: p.id, period: marker.period, scan_job_id: p.scan_job_id, created_at: p.created_at, reserve_usd: p.reserve_usd, run_budget: p.run_budget }
 }
 
-function fullyRetainedExpiredMarkers(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string, legacy: LegacyProof[]): Set<string> {
+function fullyRetainedExpiredMarkers(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string | undefined, legacy: LegacyProof[]): Set<string> {
   const windowAmounts = new Map(rows.map(r => [r.period, r.reserved_usd]))
   const due = new Map<string, number>(), proven = new Map<string, { job: string; windows: [string, string] }>()
   const old = provenLegacyHold(rows, legacy)
@@ -242,7 +242,7 @@ function windows(limits: PoolLimits): [PoolWindow, number][] {
   return out
 }
 
-export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000), busyWaitMs = BUSY_WAIT_MS, scanJobId?: string): SharedPool {
+export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000), busyWaitMs = BUSY_WAIT_MS, scanJobId?: string, purpose?: 'icp_preview'): SharedPool {
   const db = asDb(d)
   const ws = windows(limits)
   for (const [, v] of ws) if (!(Number.isFinite(v) && v > 0)) throw new Error('spend pool limit must be a positive number')
@@ -280,7 +280,8 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
           yield* releaseStuckMarkers(t, owner, nowS)
           // SQLite already holds its write lock: check the existing reservation before raising any new window
           // amount (a new reservation must not supply apparent proof of an old charge remaining held).
-          const checkTerminalNative = t.kind === 'sqlite' && !!scanJobId
+          // Only the named-owner ICP preview and a distinct scan may reuse proven terminal-hold accounting.
+          const checkTerminalNative = t.kind === 'sqlite' && (!!scanJobId || purpose === 'icp_preview')
           let legacySeal: ReturnType<typeof provenLegacyHold> = null
           if (checkTerminalNative) {
             const rows = yield* t.all<PoolRow>(allPoolRows, [owner])
@@ -293,7 +294,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
             if (anyStaleNative(rows, cutoff)) {
               try { linked = yield* t.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)) } catch { /* no provenance: do not ignore the marker */ }
             }
-            const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, scanJobId!, legacy)
+            const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, scanJobId, legacy)
             const proved = provenLegacyHold(rows, legacy)
             if (proved && retainedNonBlocking.has(proved.period)) legacySeal = proved
             let oldest = Infinity

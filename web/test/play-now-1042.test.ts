@@ -8,6 +8,7 @@ import { createWatch, runDueWatches, watchAction } from '../lib/watch.ts'
 import { createMonitor, runDueMonitors, setMonitorEnabled } from '../lib/monitors.ts'
 import { runPlayNow, playNew, RUN_NOW_MIN_GAP_S, NEW_LIMIT } from '../lib/play-now.ts'
 import { newLabel, parseSeen, readSeen, runNowMessage, writeSeen, seenKey } from '../lib/play-new-view.ts'
+import { scheduledPlayOffer } from '../lib/scan/play-offer.ts'
 import { savedPlays } from '../lib/saved-plays.ts'
 import type { Db } from '../lib/db/client.ts'
 
@@ -209,4 +210,34 @@ test('#1042 the play row shows last and next run to the minute, and an overdue l
   assert.deepEqual([p.schedule, p.lastRun, p.nextRun], ['Daily', '11 Nov 2026, 15:30, 4 new', '12 Nov 2026, 16:30'])
   assert.equal(savedPlays(null, [{ ...row, next_run_at: T - 60 }], 'UTC', T)[0].nextRun, 'Due now: runs on the next scheduled check')
   assert.equal(savedPlays(null, [{ ...row, enabled: 0, next_run_at: T - 60 }], 'UTC', T)[0].nextRun, 'Paused: resume to schedule it')
+})
+
+for (const kind of ['watch', 'monitor'] as const) bothEngines(`saved ${kind} refuses a matching incomplete offer before scheduling`, async ({ db }) => {
+  const q = 'Find regional laboratory founders'
+  const original = 'Laboratory operations software', current = 'Unrelated services'
+  await db.run("INSERT INTO users (id,email,name,business_name,password_hash,salt,sells,website) VALUES (?,?,'Fixture','Fixture','x','y',?,'')",[A,'fixture@example.test',original])
+  const saved = kind === 'watch'
+    ? (await createWatch(db,A,q,'{"summary":"Laboratories"}',null,NOW-DAY)).watch!
+    : await createMonitor(db,A,{query:q},NOW-DAY)
+  assert.ok('id' in saved)
+  await giveKey(db,A)
+  const old = id24()
+  await db.run("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,query,seller,offer,offer_set_at,status,created_at) VALUES (?,?,'Fixture','-','-',?,?,'Copper (including',?,'done',?)",[old,A,q,original,NOW-DAY,NOW-DAY]
+  )
+  await db.run('UPDATE users SET sells=? WHERE id=?',[current,A])
+  const table = kind === 'watch' ? 'watches' : 'monitors'
+  await db.run(`UPDATE ${table} SET next_run_at=? WHERE id=?`,[NOW-1,saved.id])
+  const schedule = () => db.get(`SELECT next_run_at,last_run_at FROM ${table} WHERE id=?`,[saved.id])
+  const before = await schedule()
+  if (kind === 'watch') assert.equal((await runDueWatches(db,{now:NOW})).ran,0)
+  else assert.deepEqual(await runDueMonitors(db,{now:NOW}),[])
+  assert.deepEqual(await runPlayNow(db,A,kind,saved.id,NOW),{error:'offer_conflict'})
+  assert.deepEqual((await jobs(db,A)).map(j=>j.id),[old])
+  assert.deepEqual(await schedule(),before)
+  await db.run("UPDATE scan_jobs SET offer='Copper (including setup)' WHERE id=?",[old])
+  assert.equal(await scheduledPlayOffer(db,A,q),null,'a complete old confirmation is not reusable under the changed seller')
+  await db.run('UPDATE users SET sells=? WHERE id=?',[original,A])
+  const good=await runPlayNow(db,A,kind,saved.id,NOW)
+  assert.ok('job_id' in good,JSON.stringify(good))
+  assert.equal((await db.get<{offer:string}>('SELECT offer FROM scan_jobs WHERE id=?',[good.job_id]))?.offer,'Copper (including setup)')
 })
