@@ -17,34 +17,70 @@ const finding = { state: 'signal_verified', name: company,
     sourceUrl: origin + '/careers/sdr', quote: 'Sample Studio is hiring an SDR.' },
 } as const satisfies Finding
 
-function readers(candidate: BuyerSearchCandidate | null, pages: Record<string, string>, opts: { refuse?: string; stale?: boolean } = {}) {
+function readers(candidate: BuyerSearchCandidate | null, pages: Record<string, string | (PublicPage & {html:string})>, opts: { refuse?: string; stale?: boolean } = {}) {
   const reads: string[] = [], reserves: string[] = []
   const r: BuyerSearchReaders = {
     isCurrent: async () => !opts.stale,
     reserveBeforeDispatch: async ({ stage }) => { reserves.push(stage); return opts.refuse !== stage },
     searchBuyer: async () => candidate,
-    readPage: async (url): Promise<PublicPage | null> => { reads.push(url); return url in pages ? { url, text: pages[url] } : null },
+    readPage: async (url): Promise<PublicPage | null> => { reads.push(url); const p=pages[url];return typeof p==='string'?{url,text:p}:p??null },
   }
   return { r, reads, reserves }
 }
 const own = origin + '/about/team'
 const ownText = `Our team\n${name}\n${title}\n${company}`
 
+test('an exact non-Latin owned name and role can be proved without an English alias', async () => {
+  const name = '山田 花子', title = '営業部長'
+  const { r } = readers({ name, title, linkedin: null, sources: [own] }, {
+    [own]: {url: own, text: `${name}\n${title}`, html: `<article><h2>${name}</h2><p>${title}</p></article>`},
+  })
+  assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding, [title], scope, r), {
+    status:'buyer_proof', buyer:{name,title,linkedin:null,proofUrls:[own]},
+  })
+})
+const pageCard=(role=title,profile:string|null=linkedin)=>({url:own,text:ownText,
+  html:`<article><h2>${name}</h2><p>${role}</p>${profile?`<a href="${profile}">${name} on LinkedIn</a>`:''}</article>`})
+const ownPage=pageCard()
+
 test('buyer proven by one own-site page naming the person and role', async () => {
-  const { r, reserves } = readers({ name, title, linkedin, sources: [own] }, { [own]: ownText })
+  const { r, reserves } = readers({ name, title, linkedin, sources: [own] }, { [own]: ownPage })
   const res = await proveCompanyFirstBuyerBySearch(finding, [title], scope, r)
   assert.deepEqual(res, { status: 'buyer_proof', buyer: { name, title, linkedin, proofUrls: [own] } })
   assert.deepEqual(reserves.slice(0, 1), ['buyer_search'])
 })
 
-test('buyer proven by two independent outside pages, not by one', async () => {
-  const a = 'https://news-one.example/story/1', b = 'https://press-two.example/item/2', b2 = 'https://news-one.example/story/2'
-  const text = `${name}, ${title} at ${company}, said...`
-  const two = readers({ name, title, linkedin: null, sources: [a, b] }, { [a]: text, [b]: text })
-  assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding, [title], scope, two.r),
-    { status: 'buyer_proof', buyer: { name, title, linkedin: null, proofUrls: [a, b] } })
-  const sameHost = readers({ name, title, linkedin: null, sources: [a, b2] }, { [a]: text, [b2]: text })
-  assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding, [title], scope, sameHost.r), { status: 'held', reason: 'buyer_uncorroborated' })
+test('two outside copies are not independent proof of a current role', async () => {
+  const a='https://news-one.example/story/1',b='https://press-two.example/item/2'
+  const text=`${name}, ${title} at ${company}, said...`
+  const f=readers({name,title,linkedin:null,sources:[a,b]},{[a]:text,[b]:text})
+  assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding,[title],scope,f.r),{status:'held',reason:'buyer_uncorroborated'})
+  assert.deepEqual(f.reads,[])
+})
+
+test('literal current card, not a mixed sentence, former role, hidden title or neighboring card', async()=>{
+  for(const html of [
+    `<article><h2>${name}</h2><p>Designer; Sam Lee is ${title}</p></article>`,
+    `<article><h2>${name}</h2><p>Former ${title}</p></article>`,
+    `<article><h2>${name}</h2><p>${title}</p><p>Retired after the acquisition.</p></article>`,
+    `<section class="team_alumni"><article><h2>${name}</h2><p>${title}</p></article></section>`,
+    `<section aria-label="Former team"><article><h2>${name}</h2><p>${title}</p></article></section>`,
+    `<main><h1>Leadership archive</h1><article><h2>${name}</h2><p>${title}</p></article></main>`,
+    `<article><h2>${name}</h2><p>${title}</p></article><article><h2>${name}</h2><p>Designer</p></article>`,
+    `<article><h2>${name}</h2><p hidden>${title}</p></article>`,
+    `<article><h2>${name}</h2></article><article><h2>Sam Lee</h2><p>${title}</p></article>`,
+  ]){
+    const f=readers({name,title,linkedin,sources:[own]},{[own]:{url:own,text:`${name} ${title}`,html}})
+    assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding,[title],scope,f.r),{status:'held',reason:'buyer_uncorroborated'},html)
+  }
+})
+
+test('LinkedIn proposal is never proof; only a literal full-name anchor on the proved card earns a link',async()=>{
+  const fromAnother='https://www.linkedin.com/in/jane-other'
+  const f=readers({name,title,linkedin:fromAnother,sources:[own]},{[own]:{url:own,text:ownText,
+    html:`<article><h2>${name}</h2><p>${title}</p></article><article><h2>Jane Other</h2><a href="${fromAnother}">Jane Other on LinkedIn</a></article>`}})
+  const r=await proveCompanyFirstBuyerBySearch(finding,[title],scope,f.r)
+  assert.deepEqual(r,{status:'buyer_proof',buyer:{name,title,linkedin:null,proofUrls:[own]}})
 })
 
 test('search text alone, LinkedIn alone, or a page without the role never proves the buyer', async () => {
@@ -68,7 +104,7 @@ test('role must be one the user asked for; former roles and bad names are held',
 })
 
 test('a LinkedIn link that does not carry the person name is dropped, not trusted', async () => {
-  const { r } = readers({ name, title, linkedin: 'https://www.linkedin.com/in/someone-else-77', sources: [own] }, { [own]: ownText })
+  const { r } = readers({ name, title, linkedin: 'https://www.linkedin.com/in/someone-else-77', sources: [own] }, { [own]: pageCard(title,null) })
   const res = await proveCompanyFirstBuyerBySearch(finding, [title], scope, r)
   assert.equal(res.status, 'buyer_proof')
   assert.equal(res.status === 'buyer_proof' && res.buyer.linkedin, null)
@@ -103,16 +139,16 @@ test('role mailboxes are rejected, including no-reply and careers style', () => 
 
 test('only a published own-domain named address is returned', () => {
   const page = (text: string) => [{ url: origin + '/about/team', text: `${name}\n${title}\n${text}` }]
-  assert.equal(findPublishedOwnDomainEmail(name, page('Email: jane.quinn@sample-studio.example'), origin), 'jane.quinn@sample-studio.example')
-  assert.equal(findPublishedOwnDomainEmail(name, page('jquinn@sample-studio.example'), origin), 'jquinn@sample-studio.example')
-  assert.equal(findPublishedOwnDomainEmail(name, page('jane.quinn@gmail.example'), origin), null)
-  assert.equal(findPublishedOwnDomainEmail(name, page('sales@sample-studio.example'), origin), null)
-  assert.equal(findPublishedOwnDomainEmail(name, page('noreply@sample-studio.example'), origin), null)
-  assert.equal(findPublishedOwnDomainEmail(name, page('mark.lee@sample-studio.example'), origin), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page('Email: jane.quinn@sample-studio.example'), origin, title), 'jane.quinn@sample-studio.example')
+  assert.equal(findPublishedOwnDomainEmail(name, page('jquinn@sample-studio.example'), origin, title), 'jquinn@sample-studio.example')
+  assert.equal(findPublishedOwnDomainEmail(name, page('jane.quinn@gmail.example'), origin, title), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page('sales@sample-studio.example'), origin, title), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page('noreply@sample-studio.example'), origin, title), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page('mark.lee@sample-studio.example'), origin, title), null)
   // Two different named addresses for the same person is ambiguous: held.
-  assert.equal(findPublishedOwnDomainEmail(name, page('jane.quinn@sample-studio.example jquinn@sample-studio.example'), origin), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page('jane.quinn@sample-studio.example jquinn@sample-studio.example'), origin, title), null)
   // A guessed pattern never appears unless it is literally published.
-  assert.equal(findPublishedOwnDomainEmail(name, page('Email us at our site.'), origin), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page('Email us at our site.'), origin, title), null)
   // Outside pages never own the company mailbox.
   assert.equal(findPublishedOwnDomainEmail(name, [{ url: 'https://news.example/x', text: `${name}\njane.quinn@sample-studio.example` }], origin), null)
 })
@@ -133,7 +169,7 @@ test('Q2: a subordinate title containing the requested role is not that role', a
     const { r } = readers({ name, title: t, linkedin: null, sources: [own] }, { [own]: `${name}\n${t}` })
     assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding, [title], scope, r), { status: 'held', reason: 'buyer_title_off' }, t)
   }
-  const { r } = readers({ name, title: 'Head of Sales, EMEA', linkedin: null, sources: [own] }, { [own]: `${name}\nHead of Sales, EMEA` })
+  const { r } = readers({ name, title: 'Head of Sales, EMEA', linkedin: null, sources: [own] }, { [own]: pageCard('Head of Sales, EMEA',null) })
   assert.equal((await proveCompanyFirstBuyerBySearch(finding, [title], scope, r)).status, 'buyer_proof')
 })
 
@@ -146,21 +182,21 @@ test('Q3: a page on another subdomain of the company domain is not an own-site p
 
 test('Q4: a first-name-only or namesake mailbox is not given to the buyer', () => {
   const page = (text: string) => [{ url: own, text }]
-  assert.equal(findPublishedOwnDomainEmail(name, page(`${name}\n${title}\njane@sample-studio.example`), origin), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page(`${name}\n${title}\njane@sample-studio.example`), origin, title), null)
   // jquinn next to a different Quinn belongs to them, not the buyer.
-  assert.equal(findPublishedOwnDomainEmail(name, page(`${name}\n${title}\n\nJohn Quinn\nDesigner\njquinn@sample-studio.example`), origin), null)
+  assert.equal(findPublishedOwnDomainEmail(name, page(`${name}\n${title}\n\nJohn Quinn\nDesigner\njquinn@sample-studio.example`), origin, title), null)
 })
 
 test('Q5: an own-site page proposed after five outside pages is still checked first', async () => {
   const outside = Array.from({ length: 5 }, (_, i) => `https://outside-${i}.example/p`)
-  const { r, reads } = readers({ name, title, linkedin: null, sources: [...outside, own] }, { [own]: ownText })
+  const { r, reads } = readers({ name, title, linkedin: null, sources: [...outside, own] }, { [own]: ownPage })
   const res = await proveCompanyFirstBuyerBySearch(finding, [title], scope, r)
   assert.equal(res.status, 'buyer_proof')
   assert.deepEqual(reads, [own])
 })
 
 test('Q6: a failed page read stops all further paid reads', async () => {
-  const a = 'https://news-one.example/s/1', b = 'https://press-two.example/s/2'
+  const a = origin+'/broken', b = own
   const reserves: string[] = [], reads: string[] = []
   const r: BuyerSearchReaders = {
     isCurrent: async () => true,

@@ -1,10 +1,10 @@
 // Company-first buyer proof by search (ported from the research runner).
 // The search adapter (Claude Haiku web search through the existing client and
 // spend reservation) only PROPOSES a person; nothing it says is trusted. A
-// buyer is proven only by public pages we read ourselves: one page on the
-// company's own site, or two pages on two independent outside domains, each
-// naming the person, the requested role and (outside pages) the company.
+// buyer is proven only by an exact named role card on the verified origin.
+// Outside articles and mirrors have no verified current-employment issuer.
 // Email is separate and optional: a missing published email never holds a buyer.
+import { parse, type DefaultTreeAdapterMap } from 'parse5'
 import { getDomain } from 'tldts'
 import type { Finding, Scope } from './company-first-evidence.ts'
 
@@ -15,13 +15,14 @@ export interface BuyerSearchCandidate {
   linkedin: string | null
   sources: readonly string[]
 }
-export interface PublicPage { url: string; text: string }
+export interface PublicPage { url: string; text: string; html?: string }
 export interface BuyerSearchReaders {
   isCurrent(scope: Scope, finding: SignalFinding): Promise<boolean>
   reserveBeforeDispatch(request: { scope: Scope; stage: BuyerSearchStage; signal: AbortSignal }): Promise<boolean>
   // Proposal only. Must use the existing Claude client under the scan budget.
   searchBuyer(request: { company: string; website: string; titles: readonly string[] }, signal: AbortSignal): Promise<BuyerSearchCandidate | null>
-  // Plain public page text for an exact https URL, or null.
+  // Guarded, whole HTML bytes from the exact final HTTPS URL plus visible
+  // text. An adapter with flat text only cannot prove person-card ownership.
   readPage(url: string, signal: AbortSignal): Promise<PublicPage | null>
 }
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
@@ -48,7 +49,6 @@ function httpsUrl(value: unknown): URL | null {
     return u.protocol === 'https:' && !u.username && !u.password && !u.port && u.href === value ? u : null
   } catch { return null }
 }
-const registrable = (u: URL) => getDomain(u.hostname, { allowPrivateDomains: true })
 
 // The role must be one the user reviewed. A combined title ("Founder & CEO")
 // is split into its roles; each role may carry only a trailing scope
@@ -63,23 +63,74 @@ function roleMatches(found: string, requested: ReadonlySet<string>): boolean {
     return wanted.has(words(core))
   })
 }
-// A page proves the person+role only through one person-specific assertion:
-// the name's own line, or the name line plus the line right after it (a team
-// card "Name / Title"). Outside pages must name the company in that same
-// assertion. Name and title in unrelated sections never count.
-function pageNames(text: string, name: string, title: string, company: string | null): boolean {
-  if (typeof text !== 'string' || text.length > 200_000) return false
-  const lines = text.split(/\r?\n/).map(l => fold(l)).filter(Boolean)
-  const n = fold(name), t = fold(title), c = company === null ? null : fold(company)
-  return lines.some((line, i) => {
-    if (!line.includes(n)) return false
-    const own = line.includes(t) && (c === null || line.includes(c))
-    // Team card on the company's own site: a line that is just the name,
-    // followed by a line that starts with the title.
-    const bare = line.replace(/[^\p{L}\p{M}\p{N}' .-]/gu, '').trim()
-    const card = c === null && bare === n && (lines[i + 1] ?? '').startsWith(t)
-    return own || card
-  })
+// Accept only an explicit static card with one direct literal name heading and
+// one distinct direct literal role. Never join sibling cards, inline fragments,
+// prose, or model names/links. Static checks do not establish computed CSS.
+// This is candidate proof only; it does not replace the canonical final verifier.
+type HtmlNode=DefaultTreeAdapterMap['node']
+type HtmlElement=DefaultTreeAdapterMap['element']
+const kids=(x:HtmlNode):readonly HtmlNode[]=>'childNodes' in x?x.childNodes:[]
+const element=(x:HtmlNode):x is HtmlElement=>'tagName' in x
+const attribute=(x:HtmlElement,k:string)=>x.attrs.find(a=>a.name===k)?.value
+const heading=/^h[1-6]$/
+const stale=/\b(?:archive[ds]?|alumni|history|historical|past leadership|past team|former team)\b/i
+const historical=(value:string)=>stale.test(value.replace(/[^\p{L}\p{N}]+/gu,' '))
+const historicalContainer=(n:HtmlElement)=>['class','id','aria-label','data-status'].some(k=>historical(attribute(n,k)??''))
+const opaque=(n:HtmlElement)=>/^(?:head|template|script|style|noscript|textarea|iframe|dialog|details|svg|math|object|embed|select|option|plaintext|xmp|noembed|noframes|del|s|strike)$/.test(n.tagName)||
+  ['hidden','inert','style'].some(k=>attribute(n,k)!==undefined)||attribute(n,'aria-hidden')?.trim().toLowerCase()==='true'||
+  /(?:^|\s)(?:hidden|invisible|sr-only|visually-hidden|screen-reader-only|d-none)(?:\s|$)/i.test(attribute(n,'class')??'')
+function literalText(n:HtmlElement):string{
+  const loc=n.sourceCodeLocation, contents=kids(n)
+  if(!loc?.startTag||!loc.endTag||contents.length!==1||contents[0].nodeName!=='#text'||!('value' in contents[0]))return ''
+  return contents[0].value.trim()
+}
+type RoleCard={name:string;title:string;linkedin:string|null}
+const identityFold=(s:string)=>s.normalize('NFC').trim().replace(/\s+/g,' ').toLowerCase()
+function ownedRoleCard(html:unknown,name:string,title:string):RoleCard|null{
+  if(typeof html!=='string'||html.length>128_000||Buffer.byteLength(html)>128_000)return null
+  const doc=parse(html,{sourceCodeLocationInfo:true,scriptingEnabled:true})
+  const wanted=identityFold(name), role=identityFold(title), matches:RoleCard[]=[]
+  const walk:{node:HtmlNode;body:boolean}[]=[{node:doc,body:false}]
+  let seen=0, conflicts=0
+  while(walk.length){
+    if(++seen>10_000)return null
+    const {node,body}=walk.pop()!
+    if(element(node)){
+      if(node.tagName==='meta'&&attribute(node,'http-equiv')?.trim().toLowerCase()==='refresh')return null
+      if(node.tagName==='base')return null
+      if((opaque(node)&&node.tagName!=='head')||historicalContainer(node))continue
+      if((node.tagName==='title'||(body&&heading.test(node.tagName)))&&historical(literalText(node)))return null
+      if(body&&(node.tagName==='article'||node.tagName==='li')){
+        const direct=kids(node).filter(element).filter(n=>!opaque(n))
+        const names=direct.filter(n=>heading.test(n.tagName))
+        if(names.some(n=>identityFold(literalText(n))===wanted)){
+          conflicts++
+          const values=direct.filter(n=>n.tagName==='p'||n.tagName==='span')
+          // Contradictory or additional narrative about the named person is
+          // not authority for current employment in this intentionally small lane.
+          if(names.length===1&&values.length===1&&identityFold(literalText(values[0]))===role){
+            const nonCardChildren=kids(node).some(n=>element(n)?!opaque(n)&&!heading.test(n.tagName)&&!/^(?:p|span|a|img)$/.test(n.tagName):
+              n.nodeName==='#text'&&'value' in n&&!!n.value.trim())
+            if(!nonCardChildren){
+              const links=new Set<string>()
+              for(const link of direct.filter(n=>n.tagName==='a')){
+                const label=identityFold(literalText(link)), href=attribute(link,'href'), loc=link.sourceCodeLocation?.attrs?.href
+                if(label!==wanted&&label!==wanted+' on linkedin')continue
+                if(!href||!loc||!LINKEDIN.test(href))continue
+                const raw=html.slice(loc.startOffset,loc.endOffset)
+                if(/^href\s*=\s*(["'])([^"'&<>]+)\1$/i.exec(raw)?.[2]===href)links.add(href)
+              }
+              matches.push({name:literalText(names[0]),title:literalText(values[0]),linkedin:links.size===1?[...links][0]:null})
+            }
+          }
+        }
+      }
+    }
+    const inBody=body||(element(node)&&node.tagName==='body')
+    if(walk.length+kids(node).length>10_000)return null
+    for(const child of kids(node))walk.push({node:child,body:inBody})
+  }
+  return conflicts===1&&matches.length===1?matches[0]:null
 }
 
 const FAILED = Symbol('read_failed')
@@ -114,7 +165,7 @@ export async function proveCompanyFirstBuyerBySearch(
   if (!finding || finding.state !== 'signal_verified') return held('missing_signal_proof')
   const { name: company, site } = finding
   const origin = httpsUrl(site?.website + '/') ? new URL(site.website) : null
-  if (!sane(company) || !origin) return held('missing_signal_proof')
+  if (!sane(company) || !origin || site.website!==origin.origin) return held('missing_signal_proof')
   if (!Array.isArray(requestedTitles) || requestedTitles.length > 12) return held('missing_requested_role')
   const roles = new Set(requestedTitles.filter((x): x is string => sane(x) && !former.test(x)).map(fold))
   if (!roles.size) return held('missing_requested_role')
@@ -127,52 +178,31 @@ export async function proveCompanyFirstBuyerBySearch(
     await bounded(abort, () => readers.reserveBeforeDispatch({ scope: snap, stage, signal: abort })) === true
 
   if (!await permit('buyer_search')) return held('contact_scope_unavailable')
-  const c = await bounded(abort, () => readers.searchBuyer({ company, website: site.website, titles: [...roles] }, abort))
+  const c = await dispatched(abort, () => readers.searchBuyer({ company, website: site.website, titles: [...roles] }, abort))
   if (await current() !== true) return held('contact_scope_unavailable')
+  if (c===FAILED) return held('read_failed')
   if (!c || !personName(c.name) || fold(c.name) === fold(c.title ?? '')) return held('buyer_not_found')
   if (!sane(c.title) || former.test(c.title) || !roleMatches(c.title, roles)) return held('buyer_title_off')
 
-  const ownDomain = registrable(origin)
-  // Own-site means the exact verified origin, not any host under its domain.
-  const isOwn = (u: URL) => u.origin === origin.origin
-  const all: URL[] = []
-  for (const s of Array.isArray(c.sources) ? c.sources.slice(0, 50) : []) {
-    const u = httpsUrl(s)
-    if (!u || /(^|\.)linkedin\.com$/i.test(u.hostname) || all.some(x => x.href === u.href)) continue
-    // Other hosts under the company domain are neither own-site nor independent.
-    if (!isOwn(u) && registrable(u) === ownDomain) continue
-    all.push(u)
+  // Snapshot model proposal while reading untrusted public bytes asynchronously.
+  const name=c.name,title=c.title
+  const urls:URL[]=[]
+  for(const s of Array.isArray(c.sources)?c.sources.slice(0,50):[]){
+    const u=httpsUrl(s)
+    if(!u||u.origin!==origin.origin||u.hash||urls.some(r=>r.href===u.href))continue
+    urls.push(u)
+    if(urls.length>=MAX_PAGES)break
   }
-  // Prioritize own-site pages over the whole list, then cap the paid reads.
-  const urls = [...all.filter(isOwn), ...all.filter(u => !isOwn(u))].slice(0, MAX_PAGES)
-  const outside = new Map<string, string>()
-  for (const u of urls) {
-    if (!await permit('buyer_page')) return held('contact_scope_unavailable')
-    const page = await dispatched(abort, () => readers.readPage(u.href, abort))
-    if (page === FAILED) return held('read_failed')
-    if (await current() !== true) return held('contact_scope_unavailable')
-    if (!page || page.url !== u.href) continue
-    const dom = registrable(u)
-    if (!dom) continue
-    if (isOwn(u)) {
-      if (pageNames(page.text, c.name, c.title, null)) return proven(c, [u.href])
-    } else if (!outside.has(dom) && pageNames(page.text, c.name, c.title, company)) {
-      outside.set(dom, u.href)
-      if (outside.size >= 2) return proven(c, [...outside.values()].slice(0, 2))
-    }
+  for(const u of urls){
+    if(!await permit('buyer_page'))return held('contact_scope_unavailable')
+    const page=await dispatched(abort,()=>readers.readPage(u.href,abort))
+    if(page===FAILED)return held('read_failed')
+    if(await current()!==true)return held('contact_scope_unavailable')
+    if(!page||page.url!==u.href)continue
+    const card=ownedRoleCard(page.html,name,title)
+    if(card)return {status:'buyer_proof',buyer:{...card,proofUrls:[u.href]}}
   }
   return held('buyer_uncorroborated')
-}
-
-function proven(c: BuyerSearchCandidate, proofUrls: string[]): BuyerSearchResult {
-  // LinkedIn is shown only when its slug carries the person's first or last name.
-  let linkedin: string | null = null
-  const m = typeof c.linkedin === 'string' ? LINKEDIN.exec(c.linkedin) : null
-  if (m) {
-    const slug = ascii(m[1]), words = c.name.trim().split(/\s+/).map(ascii).filter(w => w.length >= 2)
-    if (words.some(w => slug.includes(w))) linkedin = c.linkedin
-  }
-  return { status: 'buyer_proof', buyer: { name: c.name, title: c.title, linkedin, proofUrls } }
 }
 
 // Shared/departmental mailboxes: never shown as a person's email.
@@ -184,11 +214,18 @@ const ROLE_LOCAL = new Set(['info', 'hello', 'hi', 'contact', 'contactus', 'enqu
   'payments', 'orders', 'privacy', 'legal', 'compliance', 'security', 'abuse', 'webmaster', 'postmaster', 'hostmaster', 'feedback',
   'newsletter', 'news', 'marketing', 'events', 'community', 'social', 'investors', 'ir', 'founders', 'staff', 'all', 'inbox'])
 export function isRoleMailbox(local: string): boolean {
-  return ROLE_LOCAL.has(local.toLowerCase().replace(/[._+-]/g, ''))
+  const base = local.toLowerCase().split('+', 1)[0]
+  const key = base.replace(/[._-]/g, '').replace(/\d+$/, '')
+  if (ROLE_LOCAL.has(key)) return true
+  const segments = base.split(/[._-]+/)
+  // A role plus a tag/branch/department does not become a person's mailbox.
+  return segments.some((_, i) => i + 1 < segments.length && ROLE_LOCAL.has(segments.slice(0, i + 1).join('')))
 }
 
-const ADDRESS = /(?<![\p{L}\p{N}._%+@-])[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9.-]+\.[a-z]{2,}(?![\p{L}\p{N}_%+@-])/giu
-const HAS_ADDRESS = new RegExp(ADDRESS.source, 'iu')
+const MAIL_LOCAL = String.raw`[a-z0-9]+(?:[._-][a-z0-9]+)*`
+const MAIL_DOMAIN = String.raw`(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}`
+const ADDRESS = new RegExp(String.raw`(?<![\p{L}\p{N}._%+@-])${MAIL_LOCAL}@${MAIL_DOMAIN}(?![\p{L}\p{N}_%+@-])`, 'giu')
+const ADDRESS_LINE = new RegExp(String.raw`^(?:e-?mail[ \t]*:[ \t]*)?(${MAIL_LOCAL}@${MAIL_DOMAIN})$`, 'i')
 function namedLocal(local: string, name: string): boolean {
   const words = name.trim().split(/\s+/).map(ascii)
   const first = words[0], last = words.at(-1)
@@ -197,41 +234,45 @@ function namedLocal(local: string, name: string): boolean {
   return [first + last, last + first, first[0] + last, first + last[0], last + first[0]].includes(key)
 }
 
-// Returns an address only if it is literally published on a page of the
-// company's exact verified origin, on the company's own domain, is not a role
-// mailbox, matches the person's full name, and sits in the buyer's own block
-// (the name line and the few lines after it, before another person). A
-// mailbox that could belong to a namesake on the same page is held.
-export function findPublishedOwnDomainEmail(buyerName: string, ownPages: readonly PublicPage[], siteOrigin: string): string | null {
+// No forward scan: unknown text, a blank line, or a different card ends the
+// association. A title may bridge one line only if it was independently
+// verified for exactly this buyer. An address also published outside their
+// own card is ambiguous, including a shared/footer address or a namesake.
+export function findPublishedOwnDomainEmail(buyerName: string, ownPages: readonly PublicPage[], siteOrigin: string,
+  verifiedTitle?: string): string | null {
   if (!personName(buyerName)) return null
   const site = httpsUrl(siteOrigin) ?? httpsUrl(siteOrigin + '/')
   if (!site) return null
   const hostDomain = getDomain(site.hostname, { allowPrivateDomains: true })
-  if (!hostDomain) return null
-  const found = new Set<string>()
+  if (!hostDomain || !Array.isArray(ownPages) || ownPages.length > MAX_PAGES) return null
+  const found = new Map<string, string>(), outside = new Set<string>()
   const n = fold(buyerName)
-  for (const p of Array.isArray(ownPages) ? ownPages : []) {
+  const title = sane(verifiedTitle) && !former.test(verifiedTitle) ? fold(verifiedTitle) : null
+  for (const p of ownPages) {
     const u = httpsUrl(p?.url)
     if (!u || u.origin !== site.origin || typeof p.text !== 'string' || p.text.length > 200_000) continue
-    const text: string = p.text
-    const lines: string[] = text.split(/\r?\n/).map((l: string) => l.normalize('NFKC').trim()).filter(Boolean)
-    const people: string[] = lines.map((l: string) => (l.split(/[,|–—-]/)[0] ?? '').trim()).filter((l: string) => personName(l) && l.length <= 60)
-    lines.forEach((line: string, i: number) => {
-      if (!fold(line).includes(n)) return
-      for (let j = i; j < Math.min(lines.length, i + 4); j++) {
-        // Stop at the next person's card.
-        if (j > i && fold(lines[j]) !== n && people.includes(lines[j]) && lines.slice(j + 1, j + 2).some(x => !HAS_ADDRESS.test(x) && x.length <= 60)) break
-        for (const raw of lines[j].match(ADDRESS) ?? []) {
-          const addr = raw.toLowerCase().replace(/\.$/, '')
-          const [local, domain] = addr.split('@')
-          if (!local || !domain || getDomain(domain, { allowPrivateDomains: true }) !== hostDomain) continue
-          if (isRoleMailbox(local) || !namedLocal(local, buyerName)) continue
-          // Held if any other named person on the page could own this mailbox.
-          if (people.some(other => fold(other) !== n && namedLocal(local, other))) continue
-          found.add(addr)
-        }
+    const lines: string[] = p.text.split(/\r?\n/).map((l:string) => l.trim())
+    const slots = new Set<number>()
+    lines.forEach((line, i) => {
+      const label = fold(line)
+      if (label === n) slots.add(title && fold(lines[i + 1] ?? '') === title ? i + 2 : i + 1)
+      else if (title && [',', '|', '-', '–', '—', ':'].some(sep => {
+        const parts = label.split(sep).map(x => x.trim())
+        return parts.length === 2 && parts[0] === n && parts[1] === title
+      })) slots.add(i + 1)
+    })
+    lines.forEach((line, i) => {
+      const approved = slots.has(i) ? ADDRESS_LINE.exec(line)?.[1] : undefined
+      for (const literal of line.match(ADDRESS) ?? []) {
+        const key = literal.toLowerCase()
+        const [local, domain] = key.split('@')
+        if (!local || !domain || getDomain(domain, { allowPrivateDomains: true }) !== hostDomain ||
+            isRoleMailbox(local) || !namedLocal(local, buyerName)) continue
+        if (approved === literal) found.set(key, literal)
+        else outside.add(key)
       }
     })
   }
-  return found.size === 1 ? [...found][0] : null
+  const survivor = found.size === 1 ? [...found.entries()][0] : undefined
+  return survivor && !outside.has(survivor[0]) ? survivor[1] : null
 }
