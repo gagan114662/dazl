@@ -11,6 +11,7 @@
 //   1. this year's licences of the category issued inside the window;  2. last year's licences at those addresses (renewals);
 //   3. this year's licences under those business names (how many locations each holds).
 // No person: a licence names the business, not someone in it (the company step finds people). Never relabelled as another signal.
+import { REGISTRY_SOURCE_CATALOG, registryPattern } from '../../sources/registry-source-catalog.ts'
 import type { SafeGet } from '../../sources/types.ts'
 import { isRecord, looksLikeHtml } from '../../sources/types.ts'
 import type { Candidate } from '../types.ts'
@@ -26,24 +27,30 @@ export interface LicenceDataset {
   categories: Record<string, { words: RegExp; types: string[]; noun: string; label: string }>
 }
 
-export const VANCOUVER_LICENCES: LicenceDataset = {
-  id: 'vancouver', city: 'Vancouver', region: 'BC', country: 'CA', where: /^ vancouver (?:bc|british columbia)(?: canada)? $/,
-  api: 'https://opendata.vancouver.ca/api/explore/v2.1/catalog/datasets/business-licences',
-  explore: 'https://opendata.vancouver.ca/explore/dataset/business-licences/table/',
-  categories: { restaurants: { words: / restaurants? /, types: ['Restaurant'], noun: 'restaurant', label: 'Restaurants / food service' } },
+const CONFIG = REGISTRY_SOURCE_CATALOG.vancouverBusinessLicences
+function vancouverDataset(): LicenceDataset {
+  const { id, city, region, where } = CONFIG.jurisdiction
+  return {
+    id, city, region, country: CONFIG.country, where: registryPattern(where),
+    api: CONFIG.resource, explore: CONFIG.recordTable,
+    categories: Object.fromEntries(Object.entries(CONFIG.categories).map(([name, category]) =>
+      [name, { ...category, words: registryPattern(category.words), types: [...category.types] }])),
+  }
 }
+export const VANCOUVER_LICENCES: LicenceDataset = vancouverDataset()
 
 type Row = Record<string, unknown>
 // one new licence, before it becomes a Candidate (internal)
 export interface LicenceRecord { company: string; eventKind: 'new_business_licence' | 'additional_location_licence'; eventSummary: string; eventDate: string; licence: string; recordUrl: string; pageUrl: string; personName: null }
-const FIELDS = 'folderyear,licencenumber,businessname,businesstradename,status,issueddate,unit,house,street,localarea,businesssubtype'
+const F = CONFIG.fields
+const FIELDS = Object.values(F).join(',')
 const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : typeof v === 'number' ? String(v) : '')
 const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '')
-const who = (r: Row) => key(str(r.businesstradename) || str(r.businessname))
-const where = (r: Row) => key(`${str(r.unit)} ${str(r.house)} ${str(r.street)}`)
-const addressText = (r: Row) => [str(r.unit) && `${str(r.unit)}-`, str(r.house), str(r.street)].filter(Boolean).join(' ').replace('- ', '-')
+const who = (r: Row) => key(str(r[F.tradeName]) || str(r[F.legalName]))
+const where = (r: Row) => key(`${str(r[F.unit])} ${str(r[F.house])} ${str(r[F.street])}`)
+const addressText = (r: Row) => [str(r[F.unit]) && `${str(r[F.unit])}-`, str(r[F.house]), str(r[F.street])].filter(Boolean).join(' ').replace('- ', '-')
 // the licence's day where it was issued: the dataset stamps issueddate in UTC ("2026-09-29T01:30:00+00:00" is the 28th in Vancouver)
-const LOCAL = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Vancouver', year: 'numeric', month: '2-digit', day: '2-digit' })
+const LOCAL = new Intl.DateTimeFormat('en-CA', { timeZone: CONFIG.jurisdiction.timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
 export const licenceDay = (v: unknown): string | null => {
   const s = str(v), d = s.slice(0, 10)
   // the calendar day must exist (2026-02-30 never rolls over to March) and a timestamp must say its offset (no server-timezone guess)
@@ -56,11 +63,11 @@ export const licenceDay = (v: unknown): string | null => {
 const day = licenceDay
 // an Opendatasoft (ODSQL) string literal: double quotes, a quote inside doubled
 const lit = (s: string) => `"${s.replace(/"/g, '""')}"`
-const typeClause = (types: string[]) => `(${types.map(t => `businesstype=${lit(t)}`).join(' or ')})`
+const typeClause = (types: string[]) => `(${types.map(t => `${CONFIG.typeField}=${lit(t)}`).join(' or ')})`
 
-export const CHUNK = 25   // OR clauses per request: every URL stays a few KB
+export const CHUNK = CONFIG.limits.termsPerRequest   // OR clauses per request: every URL stays a few KB
 const chunks = <T,>(xs: T[]) => Array.from({ length: Math.ceil(xs.length / CHUNK) }, (_, i) => xs.slice(i * CHUNK, (i + 1) * CHUNK))
-const yearsClause = (ys: string[]) => `(${ys.map(y => `folderyear=${lit(y)}`).join(' or ')})`
+const yearsClause = (ys: string[]) => `(${ys.map(y => `${F.year}=${lit(y)}`).join(' or ')})`
 const prev = (y: string) => String((Number(y) + 99) % 100).padStart(2, '0')
 // The licence years a window touches: since 2025-11-12 .. today 2026-02-10 -> ['25', '26'] (a licence issued in December 2025 is in folder 25).
 export const licenceYears = (since: string, today: string): string[] => [...new Set([since, today].map(d => d.slice(2, 4)))]
@@ -68,14 +75,14 @@ export const licenceYears = (since: string, today: string): string[] => [...new 
 export function licenceQueries(d: LicenceDataset, category: string, since: string, years: string[]) {
   const c = d.categories[category]
   const url = (w: string) => `${d.api}/exports/json?${new URLSearchParams({ select: FIELDS, where: w })}`
-  const names = (rows: Row[]) => [...new Set(rows.flatMap(r => [str(r.businesstradename) && `businesstradename=${lit(str(r.businesstradename))}`, str(r.businessname) && `businessname=${lit(str(r.businessname))}`]).filter(Boolean))]
+  const names = (rows: Row[]) => [...new Set(rows.flatMap(r => [str(r[F.tradeName]) && `${F.tradeName}=${lit(str(r[F.tradeName]))}`, str(r[F.legalName]) && `${F.legalName}=${lit(str(r[F.legalName]))}`]).filter(Boolean))]
   return {
-    window: url(`${typeClause(c.types)} and ${yearsClause(years)} and status="Issued" and issueddate >= date'${since}'`),
+    window: url(`${typeClause(c.types)} and ${yearsClause(years)} and ${F.status}=${lit(CONFIG.issuedStatus)} and ${F.issued} >= date'${since}'`),
     // the year before each window year, at the window's addresses (any name: the name test runs here, on both of a licence's names)
-    renewals: (rows: Row[]) => chunks([...new Set(rows.map(r => `(house=${lit(str(r.house))} and street=${lit(str(r.street))})`))]).map(ch =>
+    renewals: (rows: Row[]) => chunks([...new Set(rows.map(r => `(${F.house}=${lit(str(r[F.house]))} and ${F.street}=${lit(str(r[F.street]))})`))]).map(ch =>
       url(`${typeClause(c.types)} and ${yearsClause([...new Set(years.map(prev))])} and (${ch.join(' or ')})`)),
     // the current licence year only ("N locations this year"), under the window's business names (trade or legal)
-    locations: (rows: Row[]) => chunks(names(rows)).map(ch => url(`${typeClause(c.types)} and ${yearsClause(years.slice(-1))} and status="Issued" and (${ch.join(' or ')})`)),
+    locations: (rows: Row[]) => chunks(names(rows)).map(ch => url(`${typeClause(c.types)} and ${yearsClause(years.slice(-1))} and ${F.status}=${lit(CONFIG.issuedStatus)} and (${ch.join(' or ')})`)),
   }
 }
 
@@ -85,10 +92,10 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
   if (!c) return []
   // a renewal: last year's licence at the same address under either of this licence's names (trade or legal), so a business that added or
   // changed its trade name is still a renewal, never "new"
-  const namesOf = (r: Row) => [key(str(r.businesstradename)), key(str(r.businessname))].filter(Boolean)
+  const namesOf = (r: Row) => [key(str(r[F.tradeName])), key(str(r[F.legalName]))].filter(Boolean)
   // a witness is a licence from BEFORE the window: when the window spans New Year, last year's folder also holds the window's own December
   // licences, and a licence is never its own renewal (no issue day, e.g. pending: still a licence that existed before)
-  const renewed = new Set(priorYearRows.filter(r => !((day(r.issueddate) ?? '') >= since)).flatMap(r => namesOf(r).map(n => `${n}|${where(r)}`)))
+  const renewed = new Set(priorYearRows.filter(r => !((day(r[F.issued]) ?? '') >= since)).flatMap(r => namesOf(r).map(n => `${n}|${where(r)}`)))
   // locations per name (a licence counts under both its trade and its legal name); a window licence's count is its busiest name's
   const locations = new Map<string, Set<string>>()
   // every issued licence this year counts as a location, dated or not (the query already asks for status Issued in this licence year);
@@ -96,11 +103,11 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
   for (const r of [...sameNameRows, ...windowRows]) for (const k of namesOf(r)) locations.set(k, new Set([...(locations.get(k) ?? []), where(r)]))
   const seen = new Set<string>(), out: LicenceRecord[] = []
   for (const r of windowRows) {
-    const date = day(r.issueddate), k = who(r), a = where(r)
+    const date = day(r[F.issued]), k = who(r), a = where(r)
     if (!date || date < since || !k || !a || namesOf(r).some(n => renewed.has(`${n}|${a}`)) || seen.has(`${k}|${a}`)) continue
     seen.add(`${k}|${a}`)
-    const n = Math.max(1, ...namesOf(r).map(x => locations.get(x)?.size ?? 1)), name = str(r.businesstradename) || str(r.businessname), number = str(r.licencenumber)
-    const at = `${addressText(r)}${str(r.localarea) ? ` (${str(r.localarea)})` : ''}`
+    const n = Math.max(1, ...namesOf(r).map(x => locations.get(x)?.size ?? 1)), name = str(r[F.tradeName]) || str(r[F.legalName]), number = str(r[F.number])
+    const at = `${addressText(r)}${str(r[F.area]) ? ` (${str(r[F.area])})` : ''}`
     out.push({
       company: name, licence: number,
       eventKind: n >= 2 ? 'additional_location_licence' : 'new_business_licence',
@@ -109,7 +116,7 @@ export function licenceSignals(d: LicenceDataset, category: string, windowRows: 
         : `${name} newly licensed as a ${c.noun} at ${at}, ${d.city} (licence ${number}, issued ${date}; no licence under this name at this address last year)`,
       eventDate: date,
       // the readable record: this one licence as JSON on the open-data API; the human table for the person reading
-      recordUrl: `${d.api}/records?${new URLSearchParams({ where: `licencenumber=${lit(number)}`, limit: '5' })}`,
+      recordUrl: `${d.api}/records?${new URLSearchParams({ where: `${F.number}=${lit(number)}`, limit: String(CONFIG.limits.recordLimit) })}`,
       pageUrl: `${d.explore}?${new URLSearchParams({ q: number })}`,
       personName: null,
     })
@@ -155,4 +162,4 @@ export function licencesSourceFor(d: LicenceDataset): RegistrySource {
     },
   }
 }
-export const vancouverLicencesSource = licencesSourceFor(VANCOUVER_LICENCES)
+export const vancouverLicencesSource = licencesSourceFor(vancouverDataset())

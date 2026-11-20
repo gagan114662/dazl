@@ -10,6 +10,7 @@
 //
 // The signal is what the record proves and nothing more: "N roofing permits issued in <city> since <date>" (active roofing jobs),
 // never "hiring" (SIGNAL_INDEX.md: the UI must describe the signal as it is).
+import { REGISTRY_SOURCE_CATALOG, registryPattern } from '../../sources/registry-source-catalog.ts'
 import { isRecord, looksLikeHtml } from '../../sources/types.ts'
 import type { Candidate } from '../types.ts'
 import type { RegistrySource } from './registry.ts'
@@ -35,23 +36,21 @@ export interface PermitCategory {
   exclude: RegExp                  // never this category, whatever else matches
 }
 
-export const AUSTIN_PERMITS: PermitDataset = {
-  id: 'austin', city: 'Austin', region: 'TX', country: 'US', where: /^ austin (?:tx|texas)(?: usa?| united states)? $/,
-  url: 'https://data.austintexas.gov/resource/3syk-w9eu.json',
-  fields: { date: 'issue_date', company: 'contractor_company_name', person: 'contractor_full_name', trade: 'contractor_trade', description: 'description', number: 'permit_number', location: 'permit_location', link: 'link' },
-  generalTrade: 'General Contractor',
-  categories: {
-    roofing: {
-      words: / roof(?:er|ers|ing)? /,
-      eventKind: 'roofing_permits', noun: 'roofing permit', label: 'Roofing contractors', serverLike: 'ROOF',
-      primary: /^\W*(?:express\s*[:\-]?\s*)?(?:residential\s+|commercial\s+)?(?:re-?roof|roof(?:ing)?\s+(?:replace|repair|over)|new\s+roof|tear[- ]off)/i,
-      companyName: /\broof/i,
-      exclude: /\b(?:solar|photovoltaic|pv)\b|\d+(?:\.\d+)?\s*kw\b/i,
-    },
-  },
+const CONFIG = REGISTRY_SOURCE_CATALOG.austinIssuedPermits
+function austinDataset(): PermitDataset {
+  const { id, city, region, where } = CONFIG.jurisdiction
+  return {
+    id, city, region, country: CONFIG.country, where: registryPattern(where), url: CONFIG.resource,
+    fields: { ...CONFIG.fields }, generalTrade: CONFIG.generalTrade,
+    categories: Object.fromEntries(Object.entries(CONFIG.categories).map(([name, category]) => [name, {
+      ...category, words: registryPattern(category.words), primary: registryPattern(category.primary),
+      companyName: registryPattern(category.companyName), exclude: registryPattern(category.exclude),
+    }])),
+  }
 }
+export const AUSTIN_PERMITS: PermitDataset = austinDataset()
 
-const PAGE_ROWS = 500, MAX_PAGES = 4   // 500 rows a page stays far under the getter's 1 MB cap; at most 2000 rows a market
+const { pageRows: PAGE_ROWS, maxPages: MAX_PAGES } = CONFIG.limits
 // one company's permits, before it becomes a Candidate (internal)
 export interface PermitRecord { company: string; eventSummary: string; eventDate: string; eventCount: number; recordUrl: string; pageUrl: string; personName: string | null; personTitle: string | null; eventKind: string; city: string; category: string }
 const str = (v: unknown): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '')
@@ -148,4 +147,4 @@ export const permitsSourceFor = (d: PermitDataset): RegistrySource => {
     },
   }
 }
-export const austinPermitsSource = permitsSourceFor(AUSTIN_PERMITS)
+export const austinPermitsSource = permitsSourceFor(austinDataset())
