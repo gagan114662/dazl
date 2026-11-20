@@ -29,9 +29,20 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # Next.js incremental build cache: speeds up `next build`, never changes what is built or tested
+      - uses: actions/cache@v4
+        with:
+          path: web/.next/cache
+          key: next-preview-public-v1-node22-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/package-lock.json') }}-${{ github.sha }}
+          restore-keys: next-preview-public-v1-node22-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/package-lock.json') }}-
       - run: npm ci
       - run: npm run build
       # Playwright (and esbuild, for the rendered check) are not app dependencies: installed for this job only, the lockfile untouched
+      # Playwright's Chromium download is cached per version (it took up to 7.5 min uncached); --with-deps still installs the OS libraries every run
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browser-full-v1-1.63.0-${{ runner.os }}-${{ runner.arch }}
       - run: npm install --no-save playwright@1.63.0 esbuild@0.25.0 && npx playwright install --with-deps chromium
       # The rendered price-estimate check (stubbed: no server, db, network or key). esbuild bundles the page; installed with playwright for this job only, the lockfile untouched. It must run, not skip.
       - name: Rendered price-estimate and budget check
