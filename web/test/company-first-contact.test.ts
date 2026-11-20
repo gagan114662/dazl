@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { proveCompanyFirstContact, type CompanyFirstContactReaders, type OfficialBio, type OfficialDirectory, type PublicProfileCorroboration } from '../lib/company-first/company-first-contact-proof.ts'
 import { runCompanyFirst, type Finding } from '../lib/company-first/company-first-evidence.ts'
+import { readPublicAtsSignal } from '../lib/company-first/company-first-ats-read.ts'
 
 const origin = 'https://sample-studio.example'
 const bioUrl = origin + '/team/jane-quinn'
@@ -191,4 +192,72 @@ test('a regional LinkedIn hostname still requires the same exact current employe
   const fixtureFor = (currentTitle: string) => fixture({ bio: { profiles: [{ url: regional, named: name }] }, profile: { url: regional, title: currentTitle } })
   assert.equal((await proveCompanyFirstContact(success, [title], scope, fixtureFor(title).readers)).status, 'contact_proof')
   assert.deepEqual(await proveCompanyFirstContact(success, [title], scope, fixtureFor('Former Founder').readers), { status: 'held', reason: 'profile_unconfirmed' })
+})
+
+const ats = 'https://job-boards.greenhouse.io/sample-studio/jobs/123'
+const atsApi = 'https://boards-api.greenhouse.io/v1/boards/sample-studio/jobs/123'
+async function atsFinding(mode: 'valid' | 'wrong_board' | 'hint_only' = 'valid') {
+  const { companyKey } = success.site
+  const expiresAtMs = Date.now() + 30_000
+  const criteria = { category: 'fixture-category', place: success.signal.place, event: 'hiring_posting', from: '2026-11-01', through: '2026-11-30' } as const
+  const report = await runCompanyFirst({ enabled: true }, scope, criteria, {
+    reserveBeforeDispatch: async () => true,
+    isCurrent: async () => true,
+    discover: async () => [{ name: company, hintUrl: ats }],
+    verifyWebsite: async () => ({ status: 'verified', candidateName: company, ...success.site,
+      posting: { linkSource: mode === 'hint_only' ? ats : origin + '/careers', postingUrl: ats } }),
+    verifyDatedSignal: async input => {
+      const result = await readPublicAtsSignal({ enabled: true, signal: input.signal }, { scope, companyKey, websiteOrigin: origin },
+        { ...criteria, roleKey: 'fixture-role', placeKey: criteria.place }, {
+          readCurrentOwnedLink: async () => ({ scope, companyKey, websiteOrigin: origin, companyName: company,
+            version: 'fixture-review', expiresAtMs, kind: 'observed_owned_link',
+            linkSource: origin + '/careers', literalPostingHref: ats }),
+          authorizeAndReserve: async () => true,
+          readPublicJson: async ({ url }) => {
+            assert.equal(url, atsApi)
+            return { status: 200, finalUrl: url, body: JSON.stringify({ id: 123, title: 'Senior Technical Account Executive',
+              company_name: company, location: { name: criteria.place }, first_published: '2026-11-01T12:00:00Z' }) }
+          },
+          matchesRole: (_role, published) => published === 'Senior Technical Account Executive',
+          matchesPlace: (_place, location) => location.literal === criteria.place,
+        })
+      if (result.state !== 'candidate') throw Error('offline ATS fixture failed to verify')
+      const sourceUrl = mode === 'wrong_board' ? ats.replace('/sample-studio/', '/other-company/') : ats
+      return { ...result, sourceUrl, dateProof: { ...result.dateProof, sourceUrl } }
+    },
+  })
+  return report.findings[0]
+}
+
+test('original own-linked current ATS evidence reaches first-party buyer and own-domain email proof', async () => {
+  const found = await atsFinding()
+  assert.equal(found.state, 'signal_verified')
+  const f = fixture({}, found)
+  const result = await proveCompanyFirstContact(found, [title], scope, f.readers)
+  assert.equal(result.status, 'contact_proof')
+  assert.deepEqual(f.calls, ['readDirectory', 'readBio', 'corroborateProfile'])
+  if (result.status === 'contact_proof') assert.equal(result.published.address, 'Jane.Quinn@sample-studio.example')
+  const atsMail = fixture({ bio: { text: name + '\n' + title + '\nWork email: Jane.Quinn@job-boards.greenhouse.io' } }, found)
+  assert.deepEqual(await proveCompanyFirstContact(found, [title], scope, atsMail.readers), { status: 'held', reason: 'email_unconfirmed' })
+})
+
+test('wrong board, unowned ATS hint, forged/copy/mutated external finding and foreign scope authorize no buyer reads', async () => {
+  const original = await atsFinding()
+  if (original.state !== 'signal_verified') assert.fail('expected original ATS finding')
+  assert.equal(original.state, 'signal_verified')
+  const shallow = { ...original }
+  const copied = structuredClone(original)
+  const mutated = { ...original, signal: { ...original.signal, place: 'Another market' } }
+  const forged = { ...success, signal: { ...success.signal, sourceUrl: ats } }
+  for (const finding of [await atsFinding('wrong_board'), await atsFinding('hint_only'), shallow, copied, mutated, forged]) {
+    const f = fixture({}, finding)
+    assert.deepEqual(await proveCompanyFirstContact(finding, [title], scope, f.readers), { status: 'held', reason: 'missing_signal_proof' })
+    assert.deepEqual(f.calls, []); assert.deepEqual(f.reserves, [])
+  }
+  const f = fixture({}, original)
+  assert.deepEqual(await proveCompanyFirstContact(original, [title], { ...scope, attempt: 'wrong' }, f.readers), { status: 'held', reason: 'missing_signal_proof' })
+  assert.deepEqual(f.calls, []); assert.deepEqual(f.reserves, [])
+  assert.equal(Reflect.set(original, 'name', 'Another company'), false)
+  assert.equal(Reflect.set(original.signal, 'sourceUrl', ats.replace('/123','/456')), false)
+  assert.equal(Reflect.set(original.site, 'website', 'https://other.example'), false)
 })

@@ -40,6 +40,20 @@ export interface CompanyFirstPorts {
 export type Hold = 'identity_unknown' | 'duplicate_company' | 'signal_unknown' | 'reservation_unavailable'
 export type Finding = Readonly<{ state: 'held'; reason: Hold; count: number }> |
   Readonly<{ name: string; state: 'signal_verified'; site: VerifiedSite; signal: Readonly<Omit<Signal, 'literalSourceText' | 'dateProof'>> }>
+type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
+type AtsWitness = Readonly<{ scope: Scope; postingUrl: string; ownedLinkSource: string; firstPublishedDay: string }>
+const issuedAts = new WeakMap<SignalFinding, AtsWitness>()
+
+// Read-only provenance check. Only an original frozen finding published by a
+// current core run can carry the external ATS exception; serialized copies,
+// caller objects and different tenant/job/attempt scopes cannot inherit it.
+export function isCoreVerifiedAtsFinding(finding: SignalFinding, scope: Scope): boolean {
+  const witness = issuedAts.get(finding)
+  return !!witness && witness.scope.tenant === scope?.tenant && witness.scope.job === scope?.job &&
+    witness.scope.attempt === scope?.attempt && witness.postingUrl === finding.signal.sourceUrl &&
+    witness.firstPublishedDay === finding.signal.date && url(witness.ownedLinkSource)?.origin === finding.site.website
+}
+
 export type Report = Readonly<{
   state: 'disabled' | 'invalid' | 'discovery_unavailable' | 'superseded_or_expired' | 'checked';
   findings: readonly Finding[];
@@ -115,7 +129,7 @@ export async function runCompanyFirst(
     candidates.push(Object.freeze({ name: item.name, ...(hint ? { hintUrl: hint.href } : {}) }))
   }
   const nameKey = (name: string) => name.trim().normalize('NFC').toLowerCase()
-  const visited: { candidate: Candidate; site?: VerifiedSite; postingUrl?: string; hold?: Hold }[] = []
+  const visited: { candidate: Candidate; site?: VerifiedSite; postingUrl?: string; postingLinkSource?: string; hold?: Hold }[] = []
   for (const candidate of candidates) {
     if (signal.aborted) return empty('superseded_or_expired')
     if (candidates.filter(x => nameKey(x.name) === nameKey(candidate.name)).length > 1) {
@@ -129,13 +143,14 @@ export async function runCompanyFirst(
     const site = Object.freeze({ companyKey: value.companyKey, website: website.origin, identitySource: authority.href })
     const linkSource = url(value.posting?.linkSource), posting = url(value.posting?.postingUrl)
     const postingUrl = linkSource?.origin === site.website && posting && atsPostingRef(posting.href) ? posting.href : undefined
-    visited.push({ candidate, site, postingUrl })
+    visited.push({ candidate, site, postingUrl, postingLinkSource: postingUrl ? linkSource?.href : undefined })
   }
   const findings: Finding[] = []
+  const pendingAts: [SignalFinding, AtsWitness][] = []
   const counts = new Map<Hold, number>()
   let distinctSites = 0
   const holdOne = (reason: Hold) => counts.set(reason, (counts.get(reason) ?? 0) + 1)
-  for (const { candidate, site, postingUrl, hold } of visited) {
+  for (const { candidate, site, postingUrl, postingLinkSource, hold } of visited) {
     if (signal.aborted) return empty('superseded_or_expired')
     if (!site) { holdOne(hold ?? 'identity_unknown'); continue }
     if (visited.filter(v => v.site && (nameKey(v.site.companyKey) === nameKey(site.companyKey) || v.site.website === site.website)).length > 1) {
@@ -161,10 +176,17 @@ export async function runCompanyFirst(
           proof.kind !== 'ats_first_published')) {
       holdOne('signal_unknown'); continue
     }
-    findings.push({ name: candidate.name, state: 'signal_verified', site,
-      signal: { companyKey: site.companyKey, place: c.place, event: c.event, date: value.date, sourceUrl: source.href, quote: value.quote } })
+    const finding: SignalFinding = { name: candidate.name, state: 'signal_verified', site,
+      signal: { companyKey: site.companyKey, place: c.place, event: c.event, date: value.date, sourceUrl: source.href, quote: value.quote } }
+    if (source.origin !== site.website && source.href === postingUrl && postingLinkSource && proof.kind === 'ats_first_published') {
+      Object.freeze(finding.signal)
+      Object.freeze(finding)
+      pendingAts.push([finding, Object.freeze({ scope: scopeSnapshot, postingUrl, ownedLinkSource: postingLinkSource, firstPublishedDay: proof.day })])
+    }
+    findings.push(finding)
   }
   if (await within(signal, () => ports.isCurrent(scopeSnapshot)) !== true || signal.aborted) return empty('superseded_or_expired')
+  for (const [finding, witness] of pendingAts) issuedAts.set(finding, witness)
   const signalsVerified = findings.length
   for (const [reason, count] of counts) findings.push({ state: 'held', reason, count })
   return { state: 'checked', findings, observed: { discovered: candidates.length, website_verified: visited.filter(v => !!v.site).length,

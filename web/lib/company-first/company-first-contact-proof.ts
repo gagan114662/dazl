@@ -1,7 +1,7 @@
 // Offline company-first contact proof. This module owns no transport, storage,
 // lookup activation, display, outreach, or Ready decision. All supplied readers
 // are proof adapters, not search engines: they must return observed public data.
-import type { Finding, Scope } from './company-first-evidence.ts'
+import { isCoreVerifiedAtsFinding, type Finding, type Scope } from './company-first-evidence.ts'
 
 export interface OfficialDirectory {
   url: string
@@ -122,9 +122,10 @@ export async function proveCompanyFirstContact(
   const origin = site.website
   const identity = pageUrl(site.identitySource)
   const page = pageUrl(signal.sourceUrl)
-  // This initial slice requires the issuer's own dated event. An externally
-  // hosted ATS signal awaits a separate proof contract, not a guessed domain.
-  if (!identity || identity.origin !== origin || !page || page.origin !== origin || page.pathname === '/') return held('missing_signal_proof')
+  // An external page can corroborate the hiring signal only with its original
+  // core-issued own-link and first-published proof. It never owns the company mailbox.
+  if (!identity || identity.origin !== origin || !page || page.pathname === '/' ||
+      (page.origin !== origin && !isCoreVerifiedAtsFinding(finding, scope))) return held('missing_signal_proof')
   if (!sane(scope?.tenant) || !sane(scope?.job) || !sane(scope?.attempt)) return held('contact_scope_unavailable')
   if (!Array.isArray(requestedTitles) || requestedTitles.length > 12) return held('missing_requested_role')
   const roles = new Set(requestedTitles.filter((x): x is string => sane(x) && ordinaryTitle(x)).map(fold))
@@ -176,7 +177,7 @@ export async function proveCompanyFirstContact(
   if (!profile || profile.url !== link.url || profile.current !== true || !exactName(profile.name) || fold(profile.name) !== fold(person.name) ||
       !sane(profile.company) || fold(profile.company) !== fold(company) || !sane(profile.title) || fold(profile.title) !== fold(person.title)) return held('profile_unconfirmed')
   const address = literalNamedAddress(bio, [person.name, ...(nameLines[0].alternate ? [nameLines[0].alternate] : [])],
-    page.hostname.replace(/^www\./, ''), dir)
+    identity.hostname.replace(/^www\./, ''), dir)
   if (!address) return held('email_unconfirmed')
   return { status: 'contact_proof', buyer: { name: person.name, title: person.title, bioUrl: bioUrl.href, linkedin: link.url },
     published: { address, sourceUrl: bioUrl.href } }
