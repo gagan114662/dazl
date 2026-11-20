@@ -45,8 +45,11 @@ const ownPage=pageCard()
 
 test('buyer proven by one own-site page naming the person and role', async () => {
   const { r, reserves } = readers({ name, title, linkedin, sources: [own] }, { [own]: ownPage })
-  const res = await proveCompanyFirstBuyerBySearch(finding, [title], scope, r)
+  const res = await proveCompanyFirstBuyerBySearch(finding,[title],scope,{
+    ...r, async corroborateProfile(url){assert.equal(url,linkedin);return {url,name,title,company,current:true}},
+  })
   assert.deepEqual(res, { status: 'buyer_proof', buyer: { name, title, linkedin, proofUrls: [own] } })
+  assert.ok(reserves.includes('buyer_profile'))
   assert.deepEqual(reserves.slice(0, 1), ['buyer_search'])
 })
 
@@ -81,6 +84,44 @@ test('LinkedIn proposal is never proof; only a literal full-name anchor on the p
     html:`<article><h2>${name}</h2><p>${title}</p></article><article><h2>Jane Other</h2><a href="${fromAnother}">Jane Other on LinkedIn</a></article>`}})
   const r=await proveCompanyFirstBuyerBySearch(finding,[title],scope,f.r)
   assert.deepEqual(r,{status:'buyer_proof',buyer:{name,title,linkedin:null,proofUrls:[own]}})
+})
+
+test('a named card hyperlink cannot attach a profile independently attributed to someone else',async()=>{
+  const wrong='https://www.linkedin.com/in/john-doe-123'
+  const f=readers({name,title,linkedin:wrong,sources:[own]},{[own]:pageCard(title,wrong)})
+  const r=await proveCompanyFirstBuyerBySearch(finding,[title],scope,{
+    ...f.r,async corroborateProfile(url:string){return {url,name:'John Doe',company,title,current:true}},
+  })
+  assert.deepEqual(r,{status:'buyer_proof',buyer:{name,title,linkedin:null,proofUrls:[own]}})
+})
+
+test('a profile stays null without a reserved corroborated exact current person, role, company and URL',async()=>{
+  const expected={status:'buyer_proof',buyer:{name,title,linkedin:null,proofUrls:[own]}}
+  const candidate={name,title,linkedin,sources:[own]}
+  const plain=readers(candidate,{[own]:ownPage})
+  assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding,[title],scope,plain.r),expected)
+  const blocked=readers(candidate,{[own]:ownPage},{refuse:'buyer_profile'})
+  assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding,[title],scope,{
+    ...blocked.r,async corroborateProfile(){assert.fail('profile dispatch requires reservation')},
+  }),expected)
+  for(const bad of [{title:'Designer'},{company:'Another Company'},{current:false},{url:linkedin+'/'}]){
+    assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding,[title],scope,{
+      ...plain.r,async corroborateProfile(){return {url:linkedin,name,title,company,current:true,...bad}},
+    }),expected)
+  }
+})
+
+test('same-card image alt and anchor status contradict a current role',async()=>{
+  for(const child of [
+    `<img alt="${name}, former ${title}">`,
+    `<a href="/former-team">${name}, former ${title}</a>`,
+    `<a aria-label="Former ${title}" href="/bio">Bio</a>`,
+    `<a href="/bio"><span>Former</span> ${title}</a>`,
+  ]){
+    const page={...ownPage,html:ownPage.html.replace('</article>',child+'</article>')}
+    const f=readers({name,title,linkedin,sources:[own]},{[own]:page})
+    assert.deepEqual(await proveCompanyFirstBuyerBySearch(finding,[title],scope,f.r),{status:'held',reason:'buyer_uncorroborated'},child)
+  }
 })
 
 test('search text alone, LinkedIn alone, or a page without the role never proves the buyer', async () => {

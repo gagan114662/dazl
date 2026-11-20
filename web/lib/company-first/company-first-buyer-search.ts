@@ -6,9 +6,10 @@
 // Email is separate and optional: a missing published email never holds a buyer.
 import { parse, type DefaultTreeAdapterMap } from 'parse5'
 import { getDomain } from 'tldts'
+import type { PublicProfileCorroboration } from './company-first-contact-proof.ts'
 import type { Finding, Scope } from './company-first-evidence.ts'
 
-export type BuyerSearchStage = 'buyer_search' | 'buyer_page'
+export type BuyerSearchStage = 'buyer_search' | 'buyer_page' | 'buyer_profile'
 export interface BuyerSearchCandidate {
   name: string
   title: string
@@ -24,6 +25,9 @@ export interface BuyerSearchReaders {
   // Guarded, whole HTML bytes from the exact final HTTPS URL plus visible
   // text. An adapter with flat text only cannot prove person-card ownership.
   readPage(url: string, signal: AbortSignal): Promise<PublicPage | null>
+  // Existing trusted corroboration contract only. Absent evidence removes
+  // the optional link; never construct a URL or infer identity from its slug.
+  corroborateProfile?(exactAlreadyPublishedUrl:string,signal:AbortSignal):Promise<PublicProfileCorroboration|null>
 }
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
 type Hold = 'missing_signal_proof' | 'missing_requested_role' | 'contact_scope_unavailable' | 'buyer_not_found' |
@@ -86,6 +90,24 @@ function literalText(n:HtmlElement):string{
 }
 type RoleCard={name:string;title:string;linkedin:string|null}
 const identityFold=(s:string)=>s.normalize('NFC').trim().replace(/\s+/g,' ').toLowerCase()
+function cardContradiction(roots:readonly HtmlElement[]):boolean{
+  // Direct semantic attributes and anchor contents can explicitly say the
+  // displayed title is former. They can veto evidence, never supply proof.
+  const work:HtmlNode[]=[...roots]
+  let seen=0
+  const contradicts=(v:string)=>former.test(v)||historical(v)
+  while(work.length){
+    if(++seen>128)return true
+    const n=work.pop()!
+    if(element(n)){
+      if(opaque(n))continue
+      if(['alt','title','aria-label','data-status'].some(k=>contradicts(attribute(n,k)??'')))return true
+    }else if(n.nodeName==='#text'&&'value' in n&&contradicts(n.value))return true
+    if(work.length+kids(n).length>128)return true
+    for(const child of kids(n))work.push(child)
+  }
+  return false
+}
 function ownedRoleCard(html:unknown,name:string,title:string):RoleCard|null{
   if(typeof html!=='string'||html.length>128_000||Buffer.byteLength(html)>128_000)return null
   const doc=parse(html,{sourceCodeLocationInfo:true,scriptingEnabled:true})
@@ -111,7 +133,7 @@ function ownedRoleCard(html:unknown,name:string,title:string):RoleCard|null{
           if(names.length===1&&values.length===1&&identityFold(literalText(values[0]))===role){
             const nonCardChildren=kids(node).some(n=>element(n)?!opaque(n)&&!heading.test(n.tagName)&&!/^(?:p|span|a|img)$/.test(n.tagName):
               n.nodeName==='#text'&&'value' in n&&!!n.value.trim())
-            if(!nonCardChildren){
+            if(!nonCardChildren&&!cardContradiction(direct)){
               const links=new Set<string>()
               for(const link of direct.filter(n=>n.tagName==='a')){
                 const label=identityFold(literalText(link)), href=attribute(link,'href'), loc=link.sourceCodeLocation?.attrs?.href
@@ -200,7 +222,18 @@ export async function proveCompanyFirstBuyerBySearch(
     if(await current()!==true)return held('contact_scope_unavailable')
     if(!page||page.url!==u.href)continue
     const card=ownedRoleCard(page.html,name,title)
-    if(card)return {status:'buyer_proof',buyer:{...card,proofUrls:[u.href]}}
+    if(!card)continue
+    let linkedin:string|null=null
+    const proposed=card.linkedin, corroborate=readers.corroborateProfile
+    if(proposed&&corroborate&&await permit('buyer_profile')){
+      const profile=await dispatched(abort,()=>corroborate.call(readers,proposed,abort))
+      if(profile!==FAILED&&profile&&profile.url===proposed&&profile.current===true&&
+        sane(profile.name)&&identityFold(profile.name)===identityFold(card.name)&&
+        sane(profile.title)&&identityFold(profile.title)===identityFold(card.title)&&
+        sane(profile.company)&&identityFold(profile.company)===identityFold(company))linkedin=proposed
+    }
+    if(await current()!==true)return held('contact_scope_unavailable')
+    return {status:'buyer_proof',buyer:{...card,linkedin,proofUrls:[u.href]}}
   }
   return held('buyer_uncorroborated')
 }
