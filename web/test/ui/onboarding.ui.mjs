@@ -40,7 +40,7 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'star
 for (let i=0;i<100;i++){ try { await fetch(base+'/sign-in'); break } catch { await new Promise(r=>setTimeout(r,200)) } }
 const calls = []; const scanBodies = []; const realProfile = []
 const state = { hasKey: false, sender: null, oldFirstPlayServer: false, searchResponse: null }
-const ICP = { summary: 'Independent dental practices with 2-10 chairs that are growing.', who: ['Practice owners', 'Office managers'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['Opened a new location', 'Hiring front-desk staff', 'Switched practice software'], exclude: [] }
+const ICP = { summary: 'Independent dental practices with 2-10 chairs that are growing.', who: ['Practice owners', 'Office managers'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['Opened a new location', 'Hiring front-desk staff', 'Switched practice software'], exclude: [], language: 'en' }
 const b = await chromium.launch(process.env.DAZL_UI_CHROMIUM ? { executablePath: process.env.DAZL_UI_CHROMIUM } : {}); const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
 await ctx.addCookies([{ name:'dazl_session', value: token, url: base }])
 await ctx.route('**/*', async route => {
@@ -83,7 +83,7 @@ const sentence = () => page.getByLabel('Who do you want to find?')
 const cont = async () => { await page.getByRole('button', { name: 'Looks right, continue' }).click(); await page.getByText('Who do you want to find?').waitFor() }
 const back = async () => { await page.getByRole('button', { name: 'Back' }).click(); await page.getByText("Here's what we think you sell").waitFor() }
 const findLeads = async () => { await page.getByRole('button', { name: 'Find leads' }).click(); await page.waitForURL(/\/app\/leads\?job_id=/) }
-const PROFILE = { summary: ICP.summary, who: ICP.who, industries: ICP.industries, sizes: [], where: ['Ohio'], signals: ICP.signals, exclude: [] }
+const PROFILE = { summary: ICP.summary, who: ICP.who, industries: ICP.industries, sizes: [], where: ['Ohio'], signals: ICP.signals, exclude: [], language: 'en' }
 
 // Scenario 1: website -> inline key -> profile -> plays; then Back, change Ohio to NYC, continue, Find leads.
 await page.goto(base + '/app', { waitUntil: 'networkidle' }); await shot('home')
@@ -140,7 +140,7 @@ await sentence().fill('Orthodontists in Austin opening a second office')
 await back(); await cont()
 assert.equal(await sentence().inputValue(), 'Orthodontists in Austin opening a second office', "the user's own sentence is kept")
 await findLeads()
-assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'] } }])
+assert.deepEqual(scanBodies, [{ query: 'Orthodontists in Austin opening a second office', icp: { summary: 'Group dental practices opening new offices', who: ['Practice owners', 'COO'], industries: ['Dental', 'Orthodontics'], sizes: ['10-50 employees'], where: ['Austin, TX'], signals: ['Opened a new location'], exclude: ['Dental schools'], language: 'en' } }])
 
 // Scenario 3: full reload; the saved profile comes back from the real route, not from page memory.
 await page.goto(base + '/app?setup=site', { waitUntil: 'networkidle' })
@@ -215,8 +215,13 @@ assert.equal(scanBodies.length, 3, 'incomplete success never redirects or retrie
 assert.equal(await page.getByTestId('ready-step').count(), 0)
 state.searchResponse = 'missing-target'
 await optIn.check()
-await submitReviewed()
+await openReview()
+const pageLanguage = review.getByLabel('Page language', {exact:false})
+assert.equal(await pageLanguage.inputValue(),'en')
+await pageLanguage.fill('')
+await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
 await page.getByRole('alert').filter({hasText:'Could not verify the accepted target'}).waitFor()
+assert.equal(Object.hasOwn(scanBodies.at(-1).icp,'language'),false,'explicitly clearing does not carry saved language')
 assert.equal(await page.getByTestId('ready-step').count(),0,'a successful response without target cannot display raw state')
 state.searchResponse = 'confirmed'
 await sentence().fill('Find machine shops in Oxford installing new equipment')
@@ -229,6 +234,8 @@ await review.getByLabel('Buyer description').fill('Local machine shops')
 await review.getByLabel('Buyer roles').fill('Operations managers')
 await review.getByLabel('Locations').fill('Wellington, New Zealand')
 await review.getByLabel('Country restriction', {exact:false}).fill('NZ')
+assert.equal(await pageLanguage.inputValue(),'en','the previous play never changed the saved language')
+await pageLanguage.fill('mi')
 await review.getByLabel('Industries').fill('Metalworking')
 await review.getByLabel('Buying signals').fill('Installing new equipment')
 await review.getByRole('button',{name:'Confirm targets and find leads'}).click()
@@ -237,6 +244,8 @@ const target = await page.getByTestId('first-submitted-target').textContent()
 for (const value of ['Search request: Find machine shops in Wellington installing new equipment','Local machine shops','Operations manager','Wellington, New Zealand','NZ','Metalworking','Installing new equipment']) assert.ok(target.includes(value),value)
 assert.doesNotMatch(target,/Oxford|Operations managers/,'display uses effective receipt, not original query or raw roles')
 assert.equal(scanBodies.at(-1).query,'Find machine shops in Wellington installing new equipment')
+assert.equal(scanBodies.at(-1).icp.language,'mi')
+assert.match(target,/Page language:\s*mi\b/)
 assert.deepEqual(scanBodies.map(({ mode, budget }) => ({ mode, budget })), Array(5).fill({ mode: 'first5', budget: { web_search: 'anthropic_estimated_v1',target_review:'manual_v1' } }))
 assert.deepEqual([scanBodies[2],scanBodies[4]].map(({icp})=>[icp.where,icp.country,icp.industries,icp.signals,icp.exclude]),[
   [['Oxford, England'],'GB',['Accounting'],['Hiring an office manager'],['Dental schools']],

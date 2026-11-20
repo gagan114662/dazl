@@ -62,3 +62,18 @@ test('corrected (not original) sentence binds the wire and only the server-effec
  assert.equal(Object.hasOwn(optionalMissing,'window_days'),false)
  assert.equal(Object.hasOwn(optionalMissing,'language'),false)
 })
+
+test('review can change or clear inherited page language without touching saved profile or guessing from market',()=>{
+ const p={...profile,language:'en'}
+ const draft=targetFields(p)
+ assert.equal(draft.language,'en')
+ const changed=JSON.parse(buildManualNativeTarget('Find local companies',p,{...draft,where:'Unrelated market',country:'PT',language:' FR '})!)
+ assert.equal(changed.icp.language,'fr')
+ const cleared=JSON.parse(buildManualNativeTarget('Find local companies',p,{...draft,language:''})!)
+ assert.equal(Object.hasOwn(cleared.icp,'language'),false)
+ assert.equal(p.language,'en')
+ assert.equal(buildManualNativeTarget('Find local companies',p,{...draft,language:'fr-CA'}),null)
+ assert.equal(buildManualNativeTarget('Find local companies',p,{...draft,language:'42'}),null)
+ const notSet=JSON.parse(buildManualNativeTarget('Find local companies',profile,{...targetFields(profile),country:'JP'})!)
+ assert.equal(Object.hasOwn(notSet.icp,'language'),false)
+})

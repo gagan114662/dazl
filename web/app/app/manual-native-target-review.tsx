@@ -5,6 +5,7 @@ const fields = [
   ['summary','Buyer description'], ['who','Buyer roles'], ['where','Locations'],
   ['country','Country restriction (two-letter code, or blank for no single country)'],
   ['industries','Industries'], ['signals','Buying signals'],
+  ['language','Page language (two-letter code, or blank for no preference)'],
 ] as const
 export default function ManualNativeTargetReview({query,initial,retained,makeBody,onConfirm,onCancel}:{
   query:string;initial:TargetFields;retained:readonly string[];makeBody:(query:string,draft:TargetFields)=>string|null;
@@ -30,12 +31,12 @@ export default function ManualNativeTargetReview({query,initial,retained,makeBod
       </label>
       <div className="text-sm">If you change the place, buyer or signal below, update any conflicting details in your search request too.</div>
       {fields.map(([key,title])=><label key={key} className="block text-sm">{title}
-        <input className="field w-full" value={draft[key]} onChange={e=>{setError(false);setDraft({...draft,[key]:e.target.value})}} />
+        <input className="field w-full" maxLength={key==='language'?2:undefined} value={draft[key]} onChange={e=>{setError(false);setDraft({...draft,[key]:e.target.value})}} />
       </label>)}
       {retained.length>0&&<div className="text-sm" aria-label="Unchanged search criteria">
         <strong>Stays the same for this search:</strong><ul>{retained.map(row=><li key={row}>{row}</li>)}</ul>
       </div>}
-      {error&&<div role="alert">Check the target details. Replace any existing criterion rather than leaving it empty.</div>}
+      {error&&<div role="alert">Check the target details. Replace any existing criterion instead of leaving it empty. For page language, use a two-letter code or clear it.</div>}
       <div className="text-sm">Uses your Anthropic key. Target cost is under US$5; actual charges can vary and may exceed that estimate.</div>
       <button type="submit" className="btn-primary">Confirm targets and find leads</button>{' '}
       <button type="button" className="btn-ghost" onClick={onCancel}>Cancel</button>

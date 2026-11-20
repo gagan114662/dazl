@@ -1,13 +1,16 @@
-type TargetBase = {summary:string;who:string[];where:string[];industries:string[];signals:string[];country?:unknown}
-export type TargetFields = {summary:string;who:string;where:string;industries:string;signals:string;country:string}
+type TargetBase = {summary:string;who:string[];where:string[];industries:string[];signals:string[];country?:unknown;language?:unknown}
+export type TargetFields = {summary:string;who:string;where:string;industries:string;signals:string;country:string;language:string}
 const lists = ['who','where','industries','signals'] as const
 export function targetFields(p:TargetBase):TargetFields {
   return {summary:p.summary,who:p.who.join('; '),where:p.where.join('; '),
-    industries:p.industries.join('; '),signals:p.signals.join('; '),country:typeof p.country==='string'?p.country:''}
+    industries:p.industries.join('; '),signals:p.signals.join('; '),country:typeof p.country==='string'?p.country:'',language:typeof p.language==='string'?p.language:''}
 }
 export function buildManualNativeTarget<T extends TargetBase>(sentence:string,p:T,fields:TargetFields):string|null {
   const query=sentence.trim(), summary=fields.summary.trim(), country=fields.country.trim().toUpperCase()
+  const language=fields.language.trim().toLowerCase()
   if(query.length<3||query.length>600||!summary||country&&!/^[A-Z]{2}$/.test(country)) return null
+  // Same input contract as normalizeIcp; never infer language from the country or locality.
+  if(language&&!/^[a-z]{2}$/.test(language)) return null
   const icp={...p,summary}
   for(const key of lists){
     icp[key]=fields[key]===p[key].join('; ') ? [...p[key]] : fields[key].split(';').map(s=>s.trim()).filter(Boolean)
@@ -17,6 +20,8 @@ export function buildManualNativeTarget<T extends TargetBase>(sentence:string,p:
   if(p.country && !country && !icp.where.length) return null
   if(country) icp.country=country
   else delete icp.country // Explicitly choosing no single country; a reviewed locality still anchors the search if replacing a saved country.
+  if(language) icp.language=language
+  else delete icp.language
   return JSON.stringify({query,icp,mode:'first5',budget:{web_search:'anthropic_estimated_v1',target_review:'manual_v1'}})
 }
 
