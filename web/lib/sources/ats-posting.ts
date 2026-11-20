@@ -31,6 +31,26 @@ export function atsPostingRef(raw: string): AtsPostingRef | null {
   return null
 }
 
+// Ranking-only publisher identity. Public board roots identify organizations but never authorize
+// posting API lookup, count as evidence, or alter existing guarded fetch and verifier behavior.
+export function atsPublisherRef(raw: string): Pick<AtsPostingRef, 'kind' | 'org'> | null {
+  const posting = atsPostingRef(raw)
+  if (posting) return { kind: posting.kind, org: posting.org }
+  let url: URL
+  try { url = new URL(raw) } catch { return null }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) return null
+  const match = /^\/([^/]+)\/?$/.exec(url.pathname)
+  if (!match || !TOKEN.test(match[1])) return null
+  const org = match[1]
+  switch (url.hostname) {
+    case 'boards.greenhouse.io':
+    case 'job-boards.greenhouse.io': return { kind: 'greenhouse', org }
+    case 'jobs.ashbyhq.com': return { kind: 'ashby', org }
+    case 'jobs.lever.co': return { kind: 'lever', org }
+    default: return null
+  }
+}
+
 // The board's public API URL for the record (the hosts lib/legal/policy.ts lists as public sources). Ashby has no
 // single-posting endpoint: its board endpoint lists the postings and the record is picked by id.
 export function atsRecordUrl(r: AtsPostingRef): string {

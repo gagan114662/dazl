@@ -142,6 +142,7 @@ export type ClaudeSearchEvidenceDiagnostic = {
 export interface ClaudeSearchResult {
   outcome: 'ok' | 'partial' | 'unavailable'
   citedUrls: string[]
+  preferredPublisherUrls: string[]
   stop: ClaudeSearchEvidenceDiagnostic['stop']
   evidenceDiagnostic: ClaudeSearchEvidenceDiagnostic
   usage: ClaudeSearchUsage
@@ -259,7 +260,16 @@ export async function runClaudeWebSearch(
   }
   // A real search result must be charged/recorded and subsequently fetched through the app's own public-page guard.
   const citedUrls = usage.searches > 0 ? [...urls] : []
-  return { outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
+  // Text citations can rank only exact URLs already accepted from the charged tool results.
+  const preferred = new Set<string>()
+  if (citedUrls.length) for (const block of content.map(obj)) {
+    if (block.type !== 'text') continue
+    for (const citation of arr(block.citations).map(obj)) {
+      if (citation.type !== 'web_search_result_location' || typeof citation.url !== 'string' || citation.url.length > 480 || /\s/.test(citation.url)) continue
+      try { const normalized = new URL(citation.url).href; if (urls.has(normalized)) preferred.add(normalized) } catch { /* not an admitted URL */ }
+    }
+  }
+  return { preferredPublisherUrls: [...preferred], outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
     evidenceDiagnostic: { stop, result_blocks: resultBlocks, non_array_result_blocks: nonArrayBlocks, empty_result_blocks: emptyBlocks, malformed_result_blocks: malformedBlocks, result_errors: resultErrors, result_entries: resultEntries, safe_urls: citedUrls.length },
   }
 }

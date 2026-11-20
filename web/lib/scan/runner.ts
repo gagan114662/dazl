@@ -22,7 +22,8 @@ import { getDb, sqliteDb } from '../db/client.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
-import { heldCopyBoard } from '../sources/ats-posting.ts'
+import { getDomain } from 'tldts'
+import { atsPublisherRef, heldCopyBoard } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate } from './evidence.ts'
 import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer } from './play-offer-text.ts'
@@ -1605,14 +1606,31 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const over = usage.usd > est.estimatedUsd + 1e-9
         if (spendAttemptUncertain() || !usage) { ledger.record(source, 'error:usage_unknown'); finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }
         if (over) { ledger.record(source, 'partial_hold:estimate_exceeded'); finish(db, job, 'failed', 'native_search_estimate_exceeded', null, null, ledger); return 'failed' }
-        const pages = [], candidateUrls = found.citedUrls.slice(0, 5)
-        let publisherReturned = 0
+        // Prefer cited evidence, then stable publisher diversity; public ATS postings and board roots use the documented
+        // board org as the publisher. Only admitted tool-result URLs go through the existing guarded fetch.
+        // A duplicate publisher can still fill an otherwise empty slot, but never reread a blocked origin or publisher.
+        const ordered = [...new Set([...found.preferredPublisherUrls, ...found.citedUrls])]
+        const publisherKeys = new Set<string>()
+        const distinct: { url: string; origin: string; publisher: string }[] = [], repeats: typeof distinct = []
+        for (const url of ordered) {
+          const { hostname, origin } = new URL(url)
+          const board = atsPublisherRef(url)
+          const publisher = board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(hostname, { allowPrivateDomains: true }) ?? hostname
+          ;(publisherKeys.has(publisher) ? repeats : distinct).push({ url, origin, publisher })
+          publisherKeys.add(publisher)
+        }
+        const pages = [], candidateUrls = [...distinct, ...repeats].slice(0, 5)
+        const blockedOrigins = new Set<string>(), blockedPublishers = new Set<string>()
+        let publisherReturned = 0, publisherAttempted = 0
         const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
-        for (const url of candidateUrls) {
+        for (const { url, origin, publisher } of candidateUrls) {
+          if (blockedOrigins.has(origin) || blockedPublishers.has(publisher)) continue
           assertOwned(db, job)
+          publisherAttempted++
           const page = await fetchP(url)
           if (isFail(page)) {
             const fail = page.fail
+            if (fail === 'blocked') { blockedOrigins.add(origin); blockedPublishers.add(publisher) }
             const code = fail === 'blocked' || fail === 'js_required' || fail === 'not_found' || fail === 'error' || fail === 'refused' ? fail : 'other'
             publisherFailures[code] = (publisherFailures[code] ?? 0) + 1
           } else if (page) {
@@ -1622,7 +1640,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         }
         const hits = pages.map(p => ({ url: p.url, title: p.title, snippet: '', date: null }))
         const items = toEvidence(hits, pages).map(e => ({ ...e, source: 'claude-web-search' }))
-        reportSearch(est, usage, undefined, { ...found.evidenceDiagnostic, publisher_attempted: candidateUrls.length,
+        reportSearch(est, usage, undefined, { ...found.evidenceDiagnostic, publisher_attempted: publisherAttempted,
           publisher_returned: publisherReturned, publisher_failures: publisherFailures, publisher_usable: pages.length, evidence_items: items.length })
         let nativeCandidates = 0
         if (items.length) {
