@@ -855,7 +855,9 @@ function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: Sourc
     finish(db, job, 'failed', 'key_rejected', null, null, ledger)
     return 'failed'
   }
-  if (job.attempts >= MAX_ATTEMPTS || qaPinnedLocalJob(job.run_budget)) {
+  // The paid search is single-attempt for an explicitly started company-first play.
+  // A new paid attempt must be started by the workspace owner, not by a queue retry.
+  if (job.attempts >= MAX_ATTEMPTS || qaPinnedLocalJob(job.run_budget) || hasCompanyFirstBudget(job.run_budget)) {
     finish(db, job, 'failed', err.message.slice(0, 200), null, null, ledger)
     return 'failed'
   }
@@ -1300,6 +1302,12 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
   const companyFirst = hasCompanyFirstBudget(job.run_budget)
   if (companyFirst && !companyFirstDiscoveryEnabled(job, process.env.DAZL_COMPANY_FIRST_TENANT_ID)) {
     finish(db, job, 'failed', 'discovery_disabled')
+    return 'failed'
+  }
+  // A worker restart can reclaim a job without going through failOrRetry.
+  // Refuse any later company-first claim before counting tokens or calling a provider.
+  if (companyFirst && job.attempts > 1) {
+    finish(db, job, 'failed', 'scan_timeout')
     return 'failed'
   }
   const claudeOnly = qaClaudeOnlyJob(job.run_budget) || companyFirst

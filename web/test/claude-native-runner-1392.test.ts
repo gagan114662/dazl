@@ -20,7 +20,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, reclaimed = false, publisherError = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; reclaimed?: boolean; publisherError?: boolean } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -49,6 +49,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     const job = db.transaction(() => {
       createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: [], industries, sizes: [], where, signals, exclude: [], ...(windowDays ? { window_days: windowDays } : {}) }) })
       if (query === null) db.exec("UPDATE scan_jobs SET query=NULL WHERE id='job'") // legacy/non-query row: never open native discovery
+      if (reclaimed) db.exec("UPDATE scan_jobs SET attempts=1 WHERE id='job'")
       if (trial) db.exec("UPDATE scan_jobs SET funded_by='trial' WHERE id='job'")
       return ordinary ? claimKeyedJob(db, 'job')! : pinAdmittedStrictJob(db, 'workspace', 'job', raw)
     }).immediate()
@@ -101,6 +102,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
         sequence.push('publisher-page')
         publisherRequests.push(page)
         if (!diverseFixture) assert.equal(page, url)
+        if (publisherError) throw new Error('fixture: publisher handoff unavailable')
         if (sparseUsage) assert.deepEqual(db.prepare("SELECT status,actual_usd FROM scan_spend_calls WHERE scan_job_id='job' AND kind='llm.anthropic.web_search'").get(),
           { status: 'settled', actual_usd: 0.037 }, 'native billing is durable before publisher evidence is read')
         if (failedPublisher || diverseFixture?.blocked.includes(page)) return { fail: 'blocked' }
@@ -145,6 +147,18 @@ test('ordinary claimed query uses the company-first source for exactly the confi
   assert.ok(open.nativeStatus)
   assert.ok(open.nativeReport && open.nativeReport.actual_usd > 0)
   assert.equal(open.end && (open.end as { error: string }).error, 'no_candidates', 'a source page alone did not become a lead')
+})
+
+test('company-first never replays a settled search after a later fault or worker reclaim', async () => {
+  const input = { ordinary: true, companyFirstTenant: 'workspace' }
+  const fault = await simulate({ ...input, publisherError: true })
+  assert.equal(fault.sequence.filter(x => x === 'native-send').length, 1)
+  assert.ok(fault.ledger.some(x => (x as { status: string }).status === 'settled'))
+  assert.equal(fault.status, 'failed', 'settled search must not transition back to pending')
+  const reclaimed = await simulate({ ...input, reclaimed: true })
+  assert.equal(reclaimed.status, 'failed')
+  assert.deepEqual(reclaimed.sequence, [], 're-claimed job touches no provider')
+  assert.deepEqual(reclaimed.ledger, [])
 })
 
 test('company-first stays off by default, for a different workspace, or for shared trial funding', async () => {

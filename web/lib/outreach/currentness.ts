@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
-import { jobWindowDays, parseWindowDays, windowStatus } from '../scan/window.ts'
+import { companyFirstJobWindow, parseWindowDays, windowStatus } from '../scan/window.ts'
 import { requiredGateHeld } from '../scan/held-state.ts'
 import { uncheckableCause } from '../lead-state.ts'
 import { timingProofGap } from '../scan/timing-proof.ts'
@@ -49,6 +49,8 @@ const validStoredWindow = (w: unknown): w is number => typeof w === 'number' && 
 
 // Exported (pure) for reads on the async Db layer, e.g. a campaign page (lib/outreach/campaign-detail.ts, #683): same verdict, no second copy.
 export function windowHeld(row: { event_date: string | null; icp: string | null; query: string | null; run_budget?: string | null }, now: Date): boolean {
+ const companyFirst = companyFirstJobWindow(row)
+ if (companyFirst) return companyFirst.days === null || windowStatus(row.event_date, companyFirst.days, now) !== 'inside'
  let days: number | null = null
  let corrupt = false
  if (row.icp) {
@@ -61,6 +63,5 @@ export function windowHeld(row: { event_date: string | null; icp: string | null;
  // Invalid saved window: recover the constraint from the original request text; if that has none, hold (fail closed).
  days ??= parseWindowDays(row.query ?? '')
  if (days === null && corrupt) return true
- if (hasCompanyFirstBudget(row.run_budget)) days = jobWindowDays(row)
  return windowStatus(row.event_date, days, now) !== 'inside'
 }

@@ -1,6 +1,6 @@
 import { readGdeltAttribution } from '@/lib/search/news-attribution'
 import { NextRequest, NextResponse } from 'next/server'
-import { requireUser } from '@/lib/scan/service'
+import { getScanDb, requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { exportLeads } from '@/lib/scan/store-db'
 import { toCsv } from '@/lib/scan/csv'
@@ -10,6 +10,8 @@ import { jobWindowDays } from '@/lib/scan/window'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
 import { bestPeople } from '@/lib/people/best-person'
 import { audit } from '@/lib/audit-route'
+import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
+import { currentnessHeld } from '@/lib/outreach/currentness'
 import { denied } from '@/lib/workspace-access'
 
 const COLUMNS = [
@@ -54,10 +56,15 @@ export async function GET(req: NextRequest) {
   // Default export is real leads only; ?include_fixtures=1 is the explicit opt-in
   // that keeps the verification fixture rows in the file.
   const includeFixtures = req.nextUrl.searchParams.get('include_fixtures') === '1'
-  const rows = await exportLeads(db, user.tenantId, jobId || undefined, 5000, includeFixtures)
+  const at = new Date()
+  const rows = (await exportLeads(db, user.tenantId, jobId || undefined, 5000, includeFixtures)).filter(row => {
+    if (!hasCompanyFirstBudget(typeof row.job_run_budget === 'string' ? row.job_run_budget : null)) return true
+    if (db.kind !== 'sqlite' || typeof row.lead_id !== 'string') return false
+    try { return !currentnessHeld(getScanDb(), user.tenantId, row.lead_id, at) } catch { return false }
+  })
   const via = await readGdeltAttribution(db, user.tenantId, rows.map(r => String(r.lead_id)))
   const people = await bestPeople(db, user.tenantId, rows as { lead_id: string; job_id: string }[])
-  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: (() => { const lead = { intent: typeof r.intent === 'number' ? r.intent : null, event_date: typeof r.event_date === 'string' ? r.event_date : null, event_date_proof: typeof r.event_date_proof === 'string' ? r.event_date_proof : null, signal: typeof r.signal === 'string' ? r.signal : null, signal_kind: typeof r.signal_kind === 'string' ? r.signal_kind : null }; const w = jobWindowDays({ query: typeof r.job_query === 'string' ? r.job_query : null, icp: typeof r.job_icp === 'string' ? r.job_icp : null }); const o = { windowDays: w, timingRequired: w != null || TIMING_REQUESTED.test(typeof r.job_query === 'string' ? r.job_query : '') }; return eventDateCopy(lead.event_date, typeof r.date_status === 'string' ? r.date_status : null, surfaceStoredIntent(lead, o).timing, { dayVerified: eventDayVerified(lead), windowMissed: timingUnconfirmedReason(lead, o) === 'out_of_window' }) })(), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
+  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: (() => { const lead = { intent: typeof r.intent === 'number' ? r.intent : null, event_date: typeof r.event_date === 'string' ? r.event_date : null, event_date_proof: typeof r.event_date_proof === 'string' ? r.event_date_proof : null, signal: typeof r.signal === 'string' ? r.signal : null, signal_kind: typeof r.signal_kind === 'string' ? r.signal_kind : null }; const w = jobWindowDays({ query: typeof r.job_query === 'string' ? r.job_query : null, icp: typeof r.job_icp === 'string' ? r.job_icp : null, run_budget: typeof r.job_run_budget === 'string' ? r.job_run_budget : null }); const o = { windowDays: w, timingRequired: w != null || TIMING_REQUESTED.test(typeof r.job_query === 'string' ? r.job_query : '') }; return eventDateCopy(lead.event_date, typeof r.date_status === 'string' ? r.date_status : null, surfaceStoredIntent(lead, o).timing, { dayVerified: eventDayVerified(lead), windowMissed: timingUnconfirmedReason(lead, o) === 'out_of_window' }) })(), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
   await audit(user, req, { action: 'export.leads', resource: jobId ? 'scan_job' : 'leads', id: jobId || null, summary: { rows: rows.length, fixtures: includeFixtures } })
   return new NextResponse(csv, {
     headers: {

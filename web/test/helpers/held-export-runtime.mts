@@ -5,7 +5,9 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
-import { migrateConnectors } from '../../lib/connectors/store.ts'
+import { markCompanyFirstBudget } from '../../lib/company-first/product-discovery.ts'
+import { recordTimingProof } from '../../lib/scan/timing-proof.ts'
+import { migrateConnectors,addEnrichment } from '../../lib/connectors/store.ts'
 import { GET as exportGET } from '../../app/api/leads/export/route.ts'
 
 // The REAL CSV export route (it reads through store-db.ts, on SQLite too). A lead the required sales gate failed on whose review write was rejected still has review_reason NULL and
@@ -36,4 +38,36 @@ test('export route: a failed-gate lead exports as sales_hiring_check_failed with
   assert.deepEqual([by('HeldCo')['Review Reason'], by('HeldCo')['Confidence']], ['sales_hiring_check_failed', ''], 'the failed-gate lead is held in the export, with no confidence')
   assert.deepEqual([by('LandedCo')['Review Reason'], by('LandedCo')['Confidence']], ['', '70'], 'a lead whose write landed (no marker) still exports verified')
   assert.deepEqual([by('ReviewCo')['Review Reason'], by('ReviewCo')['Confidence']], ['quote_unconfirmed', ''], 'an ordinary review lead is unchanged')
+})
+
+
+test('CSV scoped and workspace exports exclude held marked company-first; ready and ordinary still export',async()=>{
+  const db=new Database(':memory:');migrateScan(db);migrateConnectors(db);setScanDb(db);setUser({id:'A',business_name:'Fixture'})
+  try {
+    const job=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    const ordinary=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    const foreign=createJob(db,'B',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    db.prepare("UPDATE scan_jobs SET status='running',attempts=1 WHERE id IN (?,?,?)").run(job,ordinary,foreign)
+    db.prepare('UPDATE scan_jobs SET run_budget=? WHERE id=?').run(markCompanyFirstBudget(null),job)
+    const t=Math.floor(Date.now()/1000),day=new Date((t-86400)*1000).toISOString().slice(0,10),source='https://fixture.example/evidence'
+    const put=db.prepare(`INSERT INTO leads(id,scan_job_id,company,company_domain,signal,source_url,evidence_excerpt,
+      confidence,event_date,event_date_proof,contact,fit) VALUES(?,?,?,'fixture.example','opening',?,'company opened',80,?,'page_bound',?,4)`)
+    const held=hex(),ready=hex()
+    put.run(held,job,'DoNotExportHeld',source,day,'held@fixture.example')
+    put.run(ready,job,'CurrentMachineReady',source,day,'ready@fixture.example')
+    put.run(hex(),ordinary,'OrdinaryLegacy',source,day,'ordinary@fixture.example')
+    put.run(hex(),foreign,'OtherWorkspace',source,day,'other@fixture.example')
+    for(const [connector,kind,value,label] of [
+      ['sitecrawl','domain','fixture.example|evidence_own_domain','domain-basis-v1:evidence_own_domain'],
+      ['sitecrawl','person','Dana Lee, Owner','owner'],['sitecrawl','email','ready@fixture.example','printed on site'],
+      ['scan:actionable','actionability','Actionable: confirmed','Dana Lee, Owner'],
+    ]) addEnrichment(db,'A',ready,{connector,kind,value,label,source_url:source,confidence:null,source_date:day,retrieved_at:t})
+    assert.deepEqual(recordTimingProof(db,{id:job,user_id:'A'}),{proven:1,held:1})
+    const scoped=await exportGET(get('/api/leads/export?job_id='+job));assert.equal(scoped.status,200)
+    assert.deepEqual(parseCsv(await scoped.text()).map(r=>r.Company),['CurrentMachineReady'])
+    const all=await exportGET(get('/api/leads/export'));assert.equal(all.status,200)
+    const out=await all.text()
+    assert.deepEqual(parseCsv(out).map(r=>r.Company).sort(),['CurrentMachineReady','OrdinaryLegacy'])
+    assert.equal(out.includes('held@fixture.example'),false)
+  } finally {db.close()}
 })

@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { addEnrichment, INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { proofBackedTiming, TIMING_REQUESTED } from './scoreboard.ts'
-import { jobWindowDays } from './window.ts'
+import { companyFirstJobWindow, jobWindowDays } from './window.ts'
 import { currentSiteContact, whoOf } from './site-contact.ts'
 
 // v2 (#914): the person/route binding hashes the current evidence rows (value + source page), not the summary label.
@@ -43,8 +43,9 @@ function evaluate(db: Database.Database, tenant: string, row: LeadRow | undefine
   if (row.confidence === null) return { gap: 'not_machine_verified', binding: null }
   if (row.review_reason !== null) return { gap: 'needs_review', binding: null }
   if (row.quarantined_at !== null) return { gap: 'quarantined', binding: null }
-  const windowDays = jobWindowDays(row)
-  if (windowDays == null && TIMING_REQUESTED.test(row.query ?? '')) return { gap: 'unresolved_recency_bound', binding: null }
+  const companyFirst = companyFirstJobWindow(row)
+  const windowDays = companyFirst ? companyFirst.days : jobWindowDays(row)
+  if (windowDays == null && (companyFirst || TIMING_REQUESTED.test(row.query ?? ''))) return { gap: 'unresolved_recency_bound', binding: null }
   if (!proofBackedTiming(row, windowDays, now)) return { gap: 'timing_unproven', binding: null }
   if (!row.company_domain) return { gap: 'no_domain', binding: null }
   // The current facts, from the evidence rows as they are now (one rule with actionability).

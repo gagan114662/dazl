@@ -27,17 +27,42 @@ const nameHasLocal=(name:string,local:string)=>{
  return words.length>=2&&!!first&&!!last&&first.length>=2&&last.length>=2&&first!==last&&
   [first+last,last+first,first[0]+last,first+last[0],last+first[0]].includes(local)
 }
+// Base / refresh are document-level controls, not visible contact content.
+// Inspect even under opaque ancestors: hidden markup does not make URL
+// resolution or a meta refresh harmless. HTML template contents stay inert.
+function safeDocumentControls(root:Node,raw:string):boolean{
+ const stack=[root]
+ let seen=0,baseSeen=false
+ while(stack.length){
+  if(++seen>10_000)return false
+  const n=stack.pop()!
+  if(isEl(n)){
+   if(n.tagName==='meta'&&attr(n,'http-equiv')?.trim().toLowerCase()==='refresh')return false
+   if(n.tagName==='base'){
+    const parent=n.parentNode,loc=n.sourceCodeLocation?.startTag
+    if(baseSeen||!parent||!isEl(parent)||parent.tagName!=='head'||!parent.sourceCodeLocation?.startTag||!loc||
+      attr(n,'href')!=='/'||!/^<base[ \t\r\n]+href[ \t\r\n]*=[ \t\r\n]*(["'])\/\1[ \t\r\n]*>$/i.test(raw.slice(loc.startOffset,loc.endOffset)))return false
+    baseSeen=true
+   }
+  }
+  const children=kids(n)
+  if(stack.length+children.length>10_000)return false
+  stack.push(...children)
+ }
+ return true
+}
 type Card=Readonly<{name:string;quote:string;email:string|null}>
 export function strictOwnContactCards(html:string,exactHost:string):readonly Card[]{
  if(Buffer.byteLength(html)>256_000)return []
- const stack=[parse(html,{sourceCodeLocationInfo:true,scriptingEnabled:true}) as Node]
+ const root=parse(html,{sourceCodeLocationInfo:true,scriptingEnabled:true}) as Node
+ if(!safeDocumentControls(root,html))return []
+ const stack=[root]
  const cards:Card[]=[],names=new Set<string>()
  let count=0
  while(stack.length){
   if(++count>10_000||cards.length>80)return []
   const n=stack.pop()!
   if(isEl(n)){
-   if(n.tagName==='base'||(n.tagName==='meta'&&attr(n,'http-equiv')?.trim().toLowerCase()==='refresh'))return []
    if(heading.test(n.tagName)&&excluded.test(kids(n).map(k=>'value'in k?k.value:'').join(' ')))return []
    if(opaque(n)&&n.tagName!=='head')continue
    if((n.tagName==='article'||n.tagName==='li')&&n.sourceCodeLocation?.startTag&&n.sourceCodeLocation.endTag){

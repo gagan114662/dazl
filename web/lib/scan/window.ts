@@ -45,15 +45,34 @@ const validDate = (d: string): boolean => {
 export type WindowStatus = 'inside' | 'stale' | 'undated' | 'invalid' | 'future'
 // The scan's freshness window at read time: the request text wins, else the saved ICP window (#498: shared by the
 // leads route and the CSV export so both rule the SAME lead the same way).
-export function jobWindowDays(job: { query?: string | null; icp?: string | null; run_budget?: string | null }): number | null {
+type JobWindow = { query?: string | null; icp?: string | null; run_budget?: string | null }
+
+// null here means this is not a company-first job. For a marked job, null
+// days means the saved constraint could not be recovered, NOT "unlimited".
+export function companyFirstJobWindow(job: JobWindow): { days: number | null } | null {
+  if (!hasCompanyFirstBudget(job.run_budget)) return null
+  const requested = parseWindowDays(job.query ?? '')
+  let stored: unknown = null
+  if (job.icp) {
+    try {
+      const profile: unknown = JSON.parse(job.icp)
+      if (profile !== null && (typeof profile !== 'object' || Array.isArray(profile))) return { days: null }
+      stored = (profile as { window_days?: unknown } | null)?.window_days
+    } catch { return { days: null } }
+  }
+  if (typeof stored === 'number' && Number.isInteger(stored) && stored >= 1 && stored <= MAX_WINDOW_DAYS) {
+    return { days: Math.min(45, requested ?? 45, stored) }
+  }
+  if (stored != null && requested === null) return { days: null }
+  return { days: Math.min(45, requested ?? 45) }
+}
+
+export function jobWindowDays(job: JobWindow): number | null {
+  const companyFirst = companyFirstJobWindow(job)
+  if (companyFirst) return companyFirst.days
   let icpWindow: number | null = null
   try { const j = job.icp ? JSON.parse(job.icp) as { window_days?: unknown } : null; icpWindow = typeof j?.window_days === 'number' ? j.window_days : null } catch { icpWindow = null }
-  const requested = parseWindowDays(job.query ?? '')
-  if (hasCompanyFirstBudget(job.run_budget)) {
-    const stored = icpWindow !== null && Number.isInteger(icpWindow) && icpWindow >= 1 && icpWindow <= MAX_WINDOW_DAYS ? icpWindow : null
-    return Math.min(45, requested ?? 45, stored ?? 45)
-  }
-  return requested ?? icpWindow
+  return parseWindowDays(job.query ?? '') ?? icpWindow
 }
 
 export function windowStatus(eventDate: string | null | undefined, windowDays: number | null | undefined, now: Date = new Date()): WindowStatus {
