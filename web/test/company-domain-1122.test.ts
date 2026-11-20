@@ -450,3 +450,26 @@ test('#1424 a broader country statement is not enough for a narrower name guess,
   NOTHING(await runSite(['Québec, Canada'], noPlace.replace(PROSE, '<p>Example Dental is based in Canada.</p>' + PROSE), ''))
   assert.equal((await runSite(['Denmark'], noPlace.replace(PROSE, country + PROSE), '')).domain, 'exampledental.dk')
 })
+
+test('#1424 a namesake guess needs the contact page’s own scoped address, not another company’s address', async () => {
+  const company = 'Example Dental'
+  const host = 'exampledental.com'
+  const address = '45-12 Main Street, Synthetic Place, ON M5S 1T8'
+  for (const [paragraph, expected] of [
+    [`${company}, ${address}.`, host],
+    [`Different Company, ${address}.`, null],
+    [`Our supplier ${company}, ${address}.`, null],
+    [`We serve clients near ${address}.`, null],
+  ] as const) {
+    const r = await run({
+      company, where: ['Synthetic Place, Ontario'], evidenceUrl: BOARD,
+      evidence: html(`<p>${company} advertised an opening in Synthetic Place, Ontario.</p>`),
+      sites: { [host]: {
+        '/': html(`<h1>${company}</h1>${PROSE}<a href="/contact">Contact</a>`),
+        '/contact': html(`<p>${paragraph}</p><p>Email: info@${host}</p>`),
+      } },
+    })
+    assert.equal(r.domain, expected, paragraph)
+    if (!expected) NOTHING(r)
+  }
+})

@@ -860,9 +860,15 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
         const matchesCompany = words.slice(0, Math.min(10, words.length)).some((_, index) =>
           norm(words.slice(0, index + 1).join(' ')) === key && OFFICE_CLAIM.test(words.slice(index + 1).join(' ')))
         const homeBase = HOME_BASE_CLAIM.exec(sentence)?.[1]
-        const labeledAddress = guessed && /^LOCATION\s*:?\s+\d/.test(sentence) && POSTAL_ADDRESS.test(sentence) && streetKeys(sentence).length > 0 &&
-          /\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname)
-        if (((matchesCompany || FIRST_PERSON_OFFICE.test(sentence) || labeledAddress) && agrees(sentence)) ||
+        const hadPostalAddress = POSTAL_ADDRESS.test(sentence) && streetKeys(sentence).length > 0
+        const postalOwner = /^([^,:]{3,160}),\s*\d/.exec(sentence)?.[1]
+        // A standalone own-name postal line on the contact page, or an explicit
+        // first-person invitation to that place, can supply a missing homepage
+        // location. The same precise scope and conflict checks still apply.
+        const ownContactPlace = guessed && /\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname) &&
+          (/^visit us (?:in|at)\s+/i.test(sentence) || (hadPostalAddress &&
+            (/^LOCATION\s*:?\s+\d/.test(sentence) || (postalOwner && norm(postalOwner) === key))))
+        if (((matchesCompany || FIRST_PERSON_OFFICE.test(sentence) || ownContactPlace) && agrees(sentence)) ||
             (homeBase && requestedPlaces.has(norm(homeBase)) && agrees(sentence, true))) return { url, excerpt: sentence }
       }
     }
