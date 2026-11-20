@@ -30,8 +30,6 @@ jobs:
           node-version: 22.23.3
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-        working-directory: web
       - name: Resolve exact comparison (never silently fall back)
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base }}
@@ -41,6 +39,60 @@ jobs:
           git cat-file -e "$BASE^{commit}"
           git merge-base --is-ancestor "$BASE" HEAD
           echo "QUALITY_BASE=$BASE" >> "$GITHUB_ENV"
+      - name: Block new literal targeting and per-case tuning (protected scanner)
+        shell: bash
+        env:
+          EVENT_KIND: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf -- "$tmp"' EXIT
+          mkdir -m 700 "$tmp/home" "$tmp/web" "$tmp/.github"
+          clean=(env -i "PATH=$PATH" "HOME=$tmp/home" LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='')
+          base=$QUALITY_BASE
+          head=$("${clean[@]}" git rev-parse --verify HEAD^{commit})
+          [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]]
+          "${clean[@]}" git merge-base --is-ancestor "$base" "$head"
+          scanner=.github/scripts/production-literals.mjs
+          policy=.github/policy/production-literals.json
+          tool_sha=$base
+          have_scanner=$("${clean[@]}" git ls-tree --format='%(objectmode)' "$base" -- "$scanner")
+          have_policy=$("${clean[@]}" git ls-tree --format='%(objectmode)' "$base" -- "$policy")
+          if [[ -z "$have_scanner" && -z "$have_policy" ]]; then
+            # One reviewed bootstrap only. No general fallback to candidate code.
+            [[ "$base" == 636a07a9bb417222b352232ad2361bd432187caa ]]
+            if [[ "$EVENT_KIND" == pull_request && "$PR_NUMBER" == 1430 ]] ||
+               [[ "$EVENT_KIND" == push && $("${clean[@]}" git rev-parse --verify "$head^1") == "$base" ]]; then
+              tool_sha=$head
+              printf '%s\n' 'Bootstrap: the exact candidate gate code requires separate protected review.'
+            else
+              exit 1
+            fi
+          fi
+          mkdir -m 700 "$tmp/.github/scripts"
+          for path in "$scanner" "$policy"; do
+            [[ $("${clean[@]}" git ls-tree --format='%(objectmode)' "$tool_sha" -- "$path") == 100644 ]]
+          done
+          (ulimit -f 128; "${clean[@]}" git show "$tool_sha:$scanner" > "$tmp/$scanner")
+          : > "$tmp/npm-user"
+          : > "$tmp/npm-global"
+          cat > "$tmp/web/package.json" <<'JSON'
+          {"name":"dazl-blocking-literal-tools","version":"1.0.0","private":true,"dependencies":{"typescript":"5.9.3"}}
+          JSON
+          cat > "$tmp/web/package-lock.json" <<'JSON'
+          {"name":"dazl-blocking-literal-tools","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"dazl-blocking-literal-tools","version":"1.0.0","dependencies":{"typescript":"5.9.3"}},"node_modules/typescript":{"version":"5.9.3","resolved":"https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz","integrity":"sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="}}}
+          JSON
+          (cd "$tmp/web"; "${clean[@]}" timeout 25s npm ci --ignore-scripts --no-audit --no-fund --no-update-notifier --fetch-retries=0 --strict-ssl=true --registry=https://registry.npmjs.org/ --userconfig="$tmp/npm-user" --globalconfig="$tmp/npm-global")
+          rc=0
+          (ulimit -f 1024; "${clean[@]}" timeout 30s node "$tmp/$scanner" "$base" "$head" "$tool_sha" > "$tmp/result" 2>/dev/null) || rc=$?
+          case "$rc" in
+            0) echo 'No new governed literals.' ;;
+            1) echo 'New operational identity or per-case literals detected. Inspect reviewed changes locally.'; exit 1 ;;
+            *) echo 'Protected production-literal check unavailable. No pass recorded.'; exit 1 ;;
+          esac
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: web
       - name: Workflow syntax and job shape (not execution proof)
         working-directory: web
         run: node scripts/quality/workflows.mjs
