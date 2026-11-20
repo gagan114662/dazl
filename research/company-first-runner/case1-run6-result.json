@@ -1,0 +1,557 @@
+{
+  "brief_id": "case1-dazl",
+  "stages": {
+    "discovered": 70,
+    "unique": 65,
+    "signal_verified": 18,
+    "ready": 10,
+    "with_linkedin": 8,
+    "with_email": 6
+  },
+  "holds": {
+    "website_unreachable": 10,
+    "region_unverified": 2,
+    "stale": 14,
+    "job_closed": 16,
+    "website_name_mismatch": 2,
+    "job_unreachable": 1,
+    "website_job_mismatch": 2,
+    "size_out_of_range(329)": 1,
+    "acquired_or_subsidiary": 1,
+    "size_out_of_range(807)": 1,
+    "size_out_of_range(430)": 1,
+    "size_out_of_range(596)": 1,
+    "size_out_of_range(373)": 1,
+    "buyer_uncorroborated": 1,
+    "size_out_of_range(455)": 1
+  },
+  "cost_usd": 3.391,
+  "searches": 108,
+  "claude_calls": 24,
+  "minutes": 2.1,
+  "ready": [
+    {
+      "company": "Assembled",
+      "website": "https://assembled.com",
+      "buyer": {
+        "name": "Ryan Wang",
+        "title": "Co-Founder and CEO",
+        "linkedin": "https://www.linkedin.com/in/ryanywang/",
+        "proof": "https://londontechweek.com/speakers/ryan-wang + https://notanotherceo.substack.com/p/ryan-wang-assembled-71",
+        "employees": 132,
+        "employees_source": "https://tracxn.com/d/companies/assembled/__fqt0O6Yrs3NkTisKr7Rtt_k0BiHhTKPt_hb4MPe_Jk8"
+      },
+      "email": null,
+      "signal": {
+        "url": "https://jobs.ashbyhq.com/assembledhq/0ddac6fa-d015-41ed-bf87-0fe151686a6c",
+        "date": "2026-11-10",
+        "title": "Enterprise Sales Development Representative (SDR)",
+        "location": "New York City, NY",
+        "date_source": "ashby_api",
+        "age_days": 10
+      },
+      "why": "Workforce management platform for support teams hiring SDR to generate pipeline across enterprise accounts.",
+      "employees_estimate": 120
+    },
+    {
+      "company": "Happyrobot",
+      "website": "https://happyrobot.ai",
+      "buyer": {
+        "name": "Pablo Palafox",
+        "title": "CEO & Co-Founder",
+        "linkedin": "https://www.linkedin.com/in/pablorpalafox/",
+        "proof": "https://finance.yahoo.com/technology/ai/articles/happyrobot-raises-150-million-series-123000309.html + https://www.dig-in.com/news/stay-customer-focused-happyrobot-ceo-and-co-founder",
+        "employees": 80,
+        "employees_source": "https://www.ycombinator.com/companies/happyrobot/jobs/gT1OBRa-people-partner"
+      },
+      "email": null,
+      "signal": {
+        "url": "https://jobs.ashbyhq.com/happyrobot.ai/66f36293-ebf3-43ce-a931-d21d12b527ff",
+        "date": "2026-11-03",
+        "title": "Strategic Account Executive",
+        "location": "San Francisco",
+        "date_source": "ashby_api",
+        "age_days": 17
+      },
+      "why": "AI voice infrastructure company for enterprises hiring SDR to drive growth and generate new business opportunities.",
+      "employees_estimate": 25
+    },
+    {
+      "company": "GC AI",
+      "website": "https://gc.ai",
+      "buyer": {
+        "name": "Cecilia Ziniti",
+        "title": "Co-Founder & CEO",
+        "linkedin": "https://www.linkedin.com/in/ceciliaziniti/",
+        "proof": "https://gc.ai/company/cecilia-ziniti",
+        "employees": 140,
+        "employees_source": "https://dealroom.co/companies/gc-ai/"
+      },
+      "email": {
+        "address": "sales@gc.ai",
+        "source": "https://gc.ai/",
+        "personal": false
+      },
+      "signal": {
+        "url": "https://jobs.ashbyhq.com/gc-ai/1ca53378-1666-4ecd-941c-ed8aee3f8ba4",
+        "date": "2026-11-18",
+        "title": "Sales Development Representative, Executive Sales",
+        "location": "Remote - United States",
+        "date_source": "ashby_api",
+        "age_days": 2
+      },
+      "why": "AI company building revenue team, hiring SDR reporting to Manager of Sales Development to drive pipeline generation strategy.",
+      "employees_estimate": "30-80"
+    },
+    {
+      "company": "Exa",
+      "website": "https://exa.ai",
+      "buyer": {
+        "name": "Will Bryk",
+        "title": "Co-founder & CEO",
+        "linkedin": "https://www.linkedin.com/in/william-bryk/",
+        "proof": "https://exa.ai/about",
+        "employees": 82,
+        "employees_source": "https://getlatka.com/companies/exa.ai#customers"
+      },
+      "email": {
+        "address": "sales@exa.ai",
+        "source": "https://exa.ai/",
+        "personal": false
+      },
+      "signal": {
+        "url": "https://jobs.ashbyhq.com/exa/a0575d64-ec5e-45e6-983b-23b4e72d873b",
+        "date": "2026-10-23",
+        "title": "Account Executive, UK",
+        "location": "London",
+        "date_source": "ashby_api",
+        "age_days": 28
+      },
+      "why": "AI search company hiring SDR to build pipeline across enterprise and developer segments, expanding sales motion.",
+      "employees_estimate": "100"
+    },
+    {
+      "company": "Swayable",
+      "website": "https://swayable.com",
+      "buyer": {
+        "name": "Brian Lawrence",
+        "title": "Chief Revenue Officer",
+        "linkedin": null,
+        "proof": "http://www.swayable.com/about/",
+        "employees": 34,
+        "employees_source": "https://getlatka.com/companies/swayable/team"
+      },
+      "email": null,
+      "signal": {
+        "url": "https://job-boards.greenhouse.io/swayable/jobs/5277731007",
+        "date": "2026-10-27",
+        "title": "Sales Development Representative",
+        "location": "San Francisco, CA",
+        "date_source": "greenhouse_api",
+        "age_days": 24
+      },
+      "why": "B2B SaaS company with recent SDR posting on Greenhouse indicating sales team expansion.",
+      "employees_estimate": "50-100"
+    },
+    {
+      "company": "PointOne",
+      "website": "https://pointone.com",
+      "buyer": {
+        "name": "Katon Luaces",
+        "title": "Co-Founder & CEO",
+        "linkedin": "https://linkedin.com/in/katon-luaces/",
+        "proof": "https://pointone.com/authors",
+        "employees": 35,
+        "employees_source": "https://www.ycombinator.com/companies/pointone"
+      },
+      "email": {
+        "address": "team@pointone.com",
+        "source": "https://pointone.com/",
+        "personal": false
+      },
+      "signal": {
+        "url": "https://jobs.ashbyhq.com/PointOne/5668ecfb-7986-4b1a-9d6f-67b10b4d9c1d",
+        "date": "2026-11-09",
+        "title": "Sales Development Representative",
+        "location": "New York City",
+        "date_source": "ashby_api",
+        "age_days": 11
+      },
+      "why": "Seed-funded startup with rapid customer adoption building sales development team.",
+      "employees_estimate": "30-80"
+    },
+    {
+      "company": "Gumloop",
+      "website": "https://gumloop.com",
+      "buyer": {
+        "name": "Max Brodeur-Urbas",
+        "title": "Co-founder & CEO",
+        "linkedin": "https://www.linkedin.com/in/max-brodeur-urbas/",
+        "proof": "https://ai.engineer/orgs/gumloop + https://www.ycombinator.com/companies/gumloop",
+        "employees": 44,
+        "employees_source": "https://www.ycombinator.com/companies/gumloop"
+      },
+      "email": {
+        "address": "agent@gumloop.com",
+        "source": "https://www.gumloop.com/",
+        "personal": false
+      },
+      "signal": {
+        "url": "https://jobs.ashbyhq.com/Gumloop/02a4e41c-ca1e-4dd7-88b6-d14fd8c8d401",
+        "date": "2026-11-03",
+        "title": "Enterprise Account Executive",
+        "location": "San Francisco Office",
+        "date_source": "ashby_api",
+        "age_days": 17
+      },
+      "why": "AI automation B2B SaaS company hiring Founding SDR Manager to build outbound prospecting function from ground up.",
+      "employees_estimate": 60
+    },
+    {
+      "company": "Pave",
+      "website": "https://pave.com",
+      "buyer": {
+        "name": "Matt Schulman",
+        "title": "Founder and CEO",
+        "linkedin": "https://www.linkedin.com/in/matt-schulman-15911861",
+        "proof": "https://www.pave.com/company/leadership",
+        "employees": 185,
+        "employees_source": "https://pitchbook.com/profiles/company/340875-01"
+      },
+      "email": null,
+      "signal": {
+        "url": "https://job-boards.greenhouse.io/paveakatroveinformationtechnologies/jobs/4727221005",
+        "date": "2026-11-19",
+        "title": "Sales Development Representative",
+        "location": "New York, NY",
+        "date_source": "greenhouse_api",
+        "age_days": 1
+      },
+      "why": "Compensation management platform hiring full-cycle AE to source and close new customers, early Series B startup.",
+      "employees_estimate": 160
+    },
+    {
+      "company": "Ketryx",
+      "website": "https://ketryx.com",
+      "buyer": {
+        "name": "Erez Kaminski",
+        "title": "Founder & CEO",
+        "linkedin": "https://www.linkedin.com/in/erez-kaminski-ketryx/",
+        "proof": "https://www.ketryx.com/press-release/ketryx-marks-milestone-year-impacting-over-20m-patients-in-medtech",
+        "employees": 139,
+        "employees_source": "https://leadiq.com/c/ketryx/61e06c64867cb9e67837f30c"
+      },
+      "email": {
+        "address": "support@ketryx.com",
+        "source": "https://support.ketryx.com/hc/en-us/requests/new",
+        "personal": false
+      },
+      "signal": {
+        "url": "https://job-boards.greenhouse.io/ketryx/jobs/5450232008",
+        "date": "2026-10-12",
+        "title": "Account Executive, SMB",
+        "location": "Boston, Massachusetts, United States",
+        "date_source": "greenhouse_api",
+        "age_days": 39
+      },
+      "why": "MedTech SaaS startup hiring AE with 3-5 years B2B experience, backed by Lightspeed, two years since launch.",
+      "employees_estimate": 50
+    },
+    {
+      "company": "Doxel",
+      "website": "https://doxel.ai",
+      "buyer": {
+        "name": "Saurabh Ladha",
+        "title": "CEO and Founder",
+        "linkedin": null,
+        "proof": "https://doxel.ai/company",
+        "employees": 141,
+        "employees_source": "https://www.tipranks.com/private-companies/doxel"
+      },
+      "email": {
+        "address": "sales@doxel.ai",
+        "source": "https://doxel.ai/contact",
+        "personal": false
+      },
+      "signal": {
+        "url": "https://jobs.lever.co/doxel/b8c65dd0-1ae8-4581-8b5a-5e8ca2d4e37a",
+        "date": "2026-09-22",
+        "title": "SDR Manager",
+        "location": "Austin, TX",
+        "date_source": "lever_api",
+        "age_days": 59
+      },
+      "why": "Construction AI platform posted SDR Manager role in September to hire, coach, and develop SDR talent for enterprise pipeline generation.",
+      "employees_estimate": 75
+    }
+  ],
+  "held": [
+    {
+      "company": "Spice AI",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.lever.co/spiceai/5680c99b-aa2c-4788-a393-df0b2690def8"
+    },
+    {
+      "company": "Moab",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.ashbyhq.com/moab/11f4970e-3dbf-4e80-b96c-c67df16d90d8"
+    },
+    {
+      "company": "Nango",
+      "reason": "region_unverified",
+      "job_url": "https://jobs.ashbyhq.com/Nango/aa3e86d1-5040-40bf-a75d-f011ed17a571"
+    },
+    {
+      "company": "Zania",
+      "reason": "stale(267d)",
+      "job_url": "https://jobs.ashbyhq.com/zania/a6e40adf-d005-40cf-8f49-06561f7c50f4"
+    },
+    {
+      "company": "Fospha",
+      "reason": "job_closed",
+      "job_url": "https://job-boards.greenhouse.io/fosphamarketing/jobs/7554061"
+    },
+    {
+      "company": "Reign",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.lever.co/reign/b469f79f-6d4b-422b-a82d-a031082b0469"
+    },
+    {
+      "company": "Wing Assistant",
+      "reason": "job_closed",
+      "job_url": "https://jobs.lever.co/getwingapp/19c2fa1d-76f0-4d7c-9900-5d4d340ac9f1"
+    },
+    {
+      "company": "Wayfinder",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.lever.co/project-wayfinder/26db46f0-5781-4313-9b3b-3d3ddcb6c67c"
+    },
+    {
+      "company": "Pixability",
+      "reason": "job_closed",
+      "job_url": "https://boards.greenhouse.io/pixability/jobs/6352371"
+    },
+    {
+      "company": "MaestroQA",
+      "reason": "website_name_mismatch",
+      "job_url": "https://boards.greenhouse.io/maestroqa/jobs/4698424003"
+    },
+    {
+      "company": "Cheddar",
+      "reason": "job_closed",
+      "job_url": "https://boards.greenhouse.io/cheddar/jobs/5605923"
+    },
+    {
+      "company": "Reign",
+      "reason": "stale(78d)",
+      "job_url": "https://jobs.lever.co/reign/b469f79f-6d4b-422b-a82d-a031082b0469"
+    },
+    {
+      "company": "Pebl",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.ashbyhq.com/pebl/700bcc79-ce21-454a-a55b-5512e5584861"
+    },
+    {
+      "company": "Chalk",
+      "reason": "job_closed",
+      "job_url": "https://jobs.ashbyhq.com/chalk/1f394b94-e22d-4594-acb9-7d44474d0105"
+    },
+    {
+      "company": "Parker",
+      "reason": "website_unreachable(403)",
+      "job_url": "https://jobs.ashbyhq.com/parker/0238c602-2be7-4787-ad34-eb20a7a3424d"
+    },
+    {
+      "company": "Granola",
+      "reason": "stale(155d)",
+      "job_url": "https://jobs.ashbyhq.com/granola/f0879239-98c4-41db-b450-49578f72cdd2"
+    },
+    {
+      "company": "Beehiiv",
+      "reason": "job_unreachable(404)",
+      "job_url": "https://jobs.ashbyhq.com/beehiiv"
+    },
+    {
+      "company": "Brave",
+      "reason": "stale(112d)",
+      "job_url": "https://job-boards.greenhouse.io/brave/jobs/8100029"
+    },
+    {
+      "company": "Labviva",
+      "reason": "job_closed",
+      "job_url": "https://job-boards.greenhouse.io/labviva/jobs/5287191008"
+    },
+    {
+      "company": "Viseven",
+      "reason": "region_unverified",
+      "job_url": "https://jobs.lever.co/viseven/47555fa1-2715-4f44-8a57-a512de7704dd"
+    },
+    {
+      "company": "Topline Pro",
+      "reason": "stale(326d)",
+      "job_url": "https://jobs.ashbyhq.com/topline-pro/4ccb6016-1b9d-4275-a118-db8d9075091e"
+    },
+    {
+      "company": "Junction",
+      "reason": "stale(232d)",
+      "job_url": "https://jobs.ashbyhq.com/junction/71c37ebb-5896-4c69-967e-0ecd0e75e9c6"
+    },
+    {
+      "company": "Coram AI",
+      "reason": "job_closed",
+      "job_url": "https://jobs.ashbyhq.com/coram-ai/3f27889a-c339-4d8f-85ce-5b04bb37739a"
+    },
+    {
+      "company": "Stacks",
+      "reason": "website_unreachable(403)",
+      "job_url": "https://jobs.ashbyhq.com/stacks/1cf8cddf-2f11-49f0-b7fb-3a6160862215"
+    },
+    {
+      "company": "Parabola",
+      "reason": "stale(80d)",
+      "job_url": "https://jobs.ashbyhq.com/parabola-io/d60abec6-6a4b-46a1-a062-7e9cc329473c"
+    },
+    {
+      "company": "Docflow Labs",
+      "reason": "job_closed",
+      "job_url": "https://jobs.ashbyhq.com/docflowlabs/0c86b853-69dc-4aea-8162-423d43b575a5"
+    },
+    {
+      "company": "Concourse",
+      "reason": "website_job_mismatch",
+      "job_url": "https://jobs.ashbyhq.com/concourse/84822b72-1e86-4b07-becc-f2cce15893d0"
+    },
+    {
+      "company": "Kana.ai",
+      "reason": "job_closed",
+      "job_url": "https://job-boards.greenhouse.io/kana/jobs/5254098008"
+    },
+    {
+      "company": "FirmPilot",
+      "reason": "website_job_mismatch",
+      "job_url": "https://job-boards.greenhouse.io/firmpilotailawfirmmarketing/jobs/5235106008"
+    },
+    {
+      "company": "Origin",
+      "reason": "stale(308d)",
+      "job_url": "https://jobs.ashbyhq.com/originhq/95f65030-9623-4c12-9bc1-35a19965a800"
+    },
+    {
+      "company": "Novidea",
+      "reason": "stale(116d)",
+      "job_url": "https://jobs.ashbyhq.com/novidea/10f5ebd8-37d2-477c-aaed-299625a1bda2"
+    },
+    {
+      "company": "Slash Financial",
+      "reason": "job_closed",
+      "job_url": "https://jobs.ashbyhq.com/slash-financial/3fbb3be5-40b4-48d4-82aa-ac30b721f3f6"
+    },
+    {
+      "company": "Neuroscale AI",
+      "reason": "stale(116d)",
+      "job_url": "https://jobs.ashbyhq.com/neuroscale/edd4ebdc-d933-4ed0-94ab-6874a1cb7f7c"
+    },
+    {
+      "company": "PeopleGrove",
+      "reason": "stale(457d)",
+      "job_url": "https://jobs.lever.co/peoplegrove/2fda1a06-b7d3-4b8e-9944-2cfe96313641"
+    },
+    {
+      "company": "Canary Technologies",
+      "reason": "job_closed",
+      "job_url": "https://jobs.lever.co/canarytechnologies/b9a6d1b9-f36f-4288-8816-e935dd4d0eac"
+    },
+    {
+      "company": "Bluesight",
+      "reason": "website_name_mismatch",
+      "job_url": "https://jobs.lever.co/bluesight/2e922725-975c-4b24-8e4f-a79df534b068"
+    },
+    {
+      "company": "Reign",
+      "reason": "stale(78d)",
+      "job_url": "https://jobs.lever.co/reign/b469f79f-6d4b-422b-a82d-a031082b0469"
+    },
+    {
+      "company": "DataGrail",
+      "reason": "job_closed",
+      "job_url": "https://boards.greenhouse.io/datagrail/jobs/4027842003"
+    },
+    {
+      "company": "Taxwire",
+      "reason": "stale(143d)",
+      "job_url": "https://jobs.ashbyhq.com/taxwire/c00267d1-544c-4ab6-b677-1d91c6cef21a"
+    },
+    {
+      "company": "ITVA",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.ashbyhq.com/itva/f28c26a2-d238-49b3-8703-c9a5b9f8856d"
+    },
+    {
+      "company": "BrightBee",
+      "reason": "job_closed",
+      "job_url": "https://jobs.lever.co/brightbee/54b8e240-3b2a-4623-9e04-fa75e3d90fce"
+    },
+    {
+      "company": "Parker",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.ashbyhq.com/parker/0238c602-2be7-4787-ad34-eb20a7a3424d"
+    },
+    {
+      "company": "Rundoo",
+      "reason": "website_unreachable(502)",
+      "job_url": "https://jobs.ashbyhq.com/rundoo/d1d41d5e-51c5-4099-a99d-22c0e3273c30"
+    },
+    {
+      "company": "Blacksmith Agency",
+      "reason": "stale(149d)",
+      "job_url": "https://jobs.ashbyhq.com/Blacksmith%20Agency/e532f1b6-282c-4f6a-8dde-19e82376ca82"
+    },
+    {
+      "company": "Prodigal",
+      "reason": "job_closed",
+      "job_url": "https://boards.greenhouse.io/prodigal/jobs/4587873007"
+    },
+    {
+      "company": "Pipe17",
+      "reason": "job_closed",
+      "job_url": "https://boards.greenhouse.io/pipe17/jobs/4466389005"
+    },
+    {
+      "company": "Dutchie",
+      "reason": "job_closed",
+      "job_url": "https://boards.greenhouse.io/thedutchie/jobs/7881728002"
+    },
+    {
+      "company": "CodeRabbit",
+      "reason": "size_out_of_range(329)"
+    },
+    {
+      "company": "Conversica",
+      "reason": "acquired_or_subsidiary"
+    },
+    {
+      "company": "Chainguard",
+      "reason": "size_out_of_range(807)"
+    },
+    {
+      "company": "Paddle",
+      "reason": "size_out_of_range(430)"
+    },
+    {
+      "company": "Runway",
+      "reason": "size_out_of_range(596)"
+    },
+    {
+      "company": "UpGuard",
+      "reason": "size_out_of_range(373)"
+    },
+    {
+      "company": "Runwise",
+      "reason": "buyer_uncorroborated"
+    },
+    {
+      "company": "Pebl",
+      "reason": "size_out_of_range(455)"
+    }
+  ]
+}
