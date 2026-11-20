@@ -7,6 +7,7 @@ import { cleanOffer, effectiveOffer } from './play-offer-text.ts'
 export type OfferAdmission =
   | { ok: true }
   | { ok: false; status: 409; body: { error: 'offer_conflict'; stated: string | null; saved: string; ambiguous?: true; withdrawn?: string } }
+  | { ok: false; status: 400; body: { error: string } }
   | { ok: false; status: 503; body: { error: 'offer_unreadable' }; cause: unknown }
 
 export interface OfferReads {
@@ -16,8 +17,11 @@ export interface OfferReads {
 }
 
 export async function offerAdmission(query: string, bodyOffer: unknown, reads: OfferReads): Promise<OfferAdmission> {
+  // the same supplied-offer rule as POST /api/scan: a supplied offer it would refuse is refused here, before any price
+  if (bodyOffer !== undefined && bodyOffer !== null) {
+    return cleanOffer(bodyOffer).length >= 3 ? { ok: true } : { ok: false, status: 400, body: { error: 'Say in a few words what you sell for this play' } }
+  }
   if (query.length < 3) return { ok: true }
-  if (bodyOffer !== undefined && bodyOffer !== null && cleanOffer(bodyOffer).length >= 3) return { ok: true }
   try {
     const seller = await reads.sellerLine()
     if (await reads.confirmedOffer(seller)) return { ok: true }

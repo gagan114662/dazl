@@ -2,7 +2,28 @@
 // lib/llm/spend-pool.ts windowCap) in an env file, without touching any other entry or setting. Pure: the operator
 // script (scripts/set-day-cap.mts) reads and writes the file. The per-scan cap (DAZL_SCAN_CAP_CAD, CAD 5) is separate and
 // unchanged: a day cap only bounds how many scans fit in a day.
+import { closeSync, fsyncSync, openSync, renameSync, statSync, unlinkSync, writeSync, chownSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { CAP_ENV, OWNER_DAY_CEILING_USD } from '../llm/spend-pool.ts'
+
+// A restart reloads only the live release's .release.env snapshot; the run env reaches it when the prod deploy
+// regenerates that snapshot (ops/prod/deploy-prod.sh, ops/uptime/README.md), so the apply step is a deploy.
+export const APPLY_STEP = 'apply it with the prod deploy, which regenerates the release env from this file: sudo /usr/local/lib/dazl-prod/deploy-prod.sh (see ops/uptime/README.md)'
+
+// Replace the file whole or not at all: write a new file beside it (same dir, same mode and owner when permitted),
+// flush it, then rename it over the original. A failure removes the temp file and leaves the original untouched.
+export function writeEnvAtomically(file: string, text: string, beforeRename: () => void = () => {}): void {
+  const st = statSync(file)
+  const tmp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`)
+  const fd = openSync(tmp, 'wx', st.mode & 0o777)
+  try {
+    try { writeSync(fd, text); fsyncSync(fd) } finally { closeSync(fd) }
+    try { chownSync(tmp, st.uid, st.gid) } catch { /* not permitted as this user: the file stays the operator's */ }
+    beforeRename()
+    renameSync(tmp, file)
+  } catch (e) { try { unlinkSync(tmp) } catch { /* already gone */ } throw e }
+}
 
 const KEY = CAP_ENV.day.account
 const TENANT = /^[A-Za-z0-9_-]{1,64}$/

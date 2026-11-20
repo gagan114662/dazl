@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { sharedPool, poolRows, periodOf, migrateSpendPools, PENDING_STALE_S, STUCK_RELEASE_S } from '../lib/llm/spend-pool.ts'
+import { sharedPool, poolRows, periodOf, migrateSpendPools, PENDING_STALE_S, STUCK_RELEASE_S, stuckReleaseS, blocksNewReservation } from '../lib/llm/spend-pool.ts'
 import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 
@@ -45,4 +45,23 @@ test('a fresh in-flight cost is not released (busy), and a known-failed settle s
     now = T0 + STUCK_RELEASE_S * 10
     await assert.rejects(f.reserve(0.1, now), refused('accounting_unsettled'), 'a known failure is never released by time alone')
   } finally { raw.close() }
+})
+
+// Qodo on #1441 (4): the release age must outlive the longest configured live paid call, with a settlement margin, so a
+// live call's marker is never released before its own settle lands.
+test('the release age always outlives the configured provider timeout', () => {
+  assert.equal(stuckReleaseS(150_000), 30 * 60, 'default timeout: 30 minutes')
+  assert.ok(stuckReleaseS(45 * 60_000) >= 45 * 60 + 600, 'a 45-minute call: released only after it plus a 10-minute margin')
+  assert.ok(STUCK_RELEASE_S >= 30 * 60)
+})
+
+// Qodo on #1441 (2): the read-only preflight (estimate, POST /api/scan) must not refuse on a marker the next reservation
+// will release, or the release could never be reached. Younger and known-failed markers still block.
+test('preflight: only markers eligible for release stop blocking', () => {
+  const now = T0 + STUCK_RELEASE_S + 1
+  assert.equal(blocksNewReservation({ period: 'p:abcdef0123', updated_at: T0 }, now), false, 'eligible for release')
+  assert.equal(blocksNewReservation({ period: 'p:abcdef0123', updated_at: now - PENDING_STALE_S - 1 }, now), true, 'stale but young')
+  assert.equal(blocksNewReservation({ period: 'p:abcdef0123', updated_at: 0 }, now), true, 'known failed')
+  assert.equal(blocksNewReservation({ period: 'p:abcdef0123', updated_at: now - 10 }, now), false, 'in flight is busy, not unsettled')
+  assert.equal(blocksNewReservation({ period: periodOf('day', now), updated_at: T0 }, now), false, 'a window row')
 })

@@ -201,6 +201,11 @@ test('#1436: a "seller = ..." request beside the saved dental profile asks befor
   assert.deepEqual(await est({ query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED }, 'the cost panel is not shown before the offer is chosen')
   assert.deepEqual(await scan(O, { query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED })
   assert.equal(jobs(), n0, 'nothing queued')
+  // Qodo on #1441 (3): a supplied offer the scan route refuses (empty, blank, under 3 characters) is refused by the estimate too
+  for (const bad of ['', '   ', 'ab']) {
+    assert.deepEqual(await est({ query: REQ, offer: bad }), { status: 400, error: 'Say in a few words what you sell for this play' }, JSON.stringify(bad))
+    assert.equal((await scan(O, { query: REQ, offer: bad })).status, 400)
+  }
   const e2 = await est({ query: REQ, offer: OFFER })
   assert.notEqual(e2.error, 'offer_conflict', JSON.stringify(e2))
   const run = await scan(O, { query: REQ, offer: OFFER })

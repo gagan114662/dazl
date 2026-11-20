@@ -14,6 +14,7 @@
 //   calls        - reservations admitted
 // On the Db layer (both engines). Tenant scope: every statement is keyed by the owner id it was given.
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
+import { configuredTimeoutMs } from './timeout-env.ts'
 import { SpendRefused } from './spend-guard.ts'
 import { qaClaudeOnlyNativeSearchJob } from '../scan/qa-provider-policy.ts'
 import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from './claude-web-search-estimate.ts'
@@ -38,7 +39,19 @@ export const PENDING_STALE_S = 5 * 60
 // worst-case reservation in the day/month windows (never refunded or settled lower), and the marker row is kept,
 // renamed 'r:<id>', as the record of the release (reason: stuck_unresolved_kept_worst_case). Markers younger than this
 // keep refusing exactly as before ('busy', then 'accounting_unsettled'); failed markers (updated_at 0) need an operator.
-export const STUCK_RELEASE_S = 30 * 60
+// It always outlives the longest configured live paid call (SCAN_LLM_TIMEOUT_MS, the same value lib/llm/provider.ts
+// uses) plus a 10-minute settlement margin, so a live call's own marker is never released before its settle lands.
+export const stuckReleaseS = (llmTimeoutMs: number): number => Math.max(30 * 60, Math.ceil(llmTimeoutMs / 1000) + 600)
+export const STUCK_RELEASE_S = stuckReleaseS(configuredTimeoutMs(process.env.SCAN_LLM_TIMEOUT_MS, 150_000, 'SCAN_LLM_TIMEOUT_MS'))
+// For read-only preflight (estimate, POST /api/scan): does this row refuse the next reservation as unsettled? A stale
+// pending marker does, except one old enough for that reservation to release (kept at worst case) - otherwise the
+// release could never be reached. Known-failed markers (updated_at 0) always do.
+export function blocksNewReservation(r: { period: string; updated_at: number | string }, nowS: number): boolean {
+  if (!r.period.startsWith('p:')) return false
+  const at = Number(r.updated_at)
+  if (at === 0) return true
+  return at <= nowS - PENDING_STALE_S && at > nowS - STUCK_RELEASE_S
+}
 function* releaseStuckMarkers(t: Tx, owner: string, nowS: number): TxBody<void> {
   yield* t.run("UPDATE tenant_spend_pools SET period = 'r:' || substr(period, 3), updated_at = ? WHERE tenant_id = ? AND period LIKE 'p:%' AND updated_at > 0 AND updated_at <= ?", [nowS, owner, nowS - STUCK_RELEASE_S])
 }
