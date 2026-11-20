@@ -384,3 +384,24 @@ test('native default freshness favors current events without asserting a date on
   assert.match(text, /Porto, Portugal/)
   assert.doesNotMatch(text, /last 30 days/)
 })
+
+test('native hiring discovery steers the same paid request toward employer-specific vacancy permalinks', async () => {
+  const x = await simulate({ query: 'Find employers hiring refrigeration technicians in Faro', where: ['Faro, Portugal'], industries: ['Cold storage'] })
+  const paid = x.messages.find(m => Array.isArray(m.body.tools))!
+  const counted = x.messages.find(m => m.url.endsWith('/count_tokens'))!
+  const prompt = (paid.body.messages as { content: string }[])[0].content
+  assert.match(prompt, /individual vacancy permalink.*employer['’]s own careers site/)
+  assert.match(prompt, /category lists.*discovery only/)
+  assert.match(prompt, /Faro, Portugal/)
+  assert.match(prompt, /refrigeration technicians/)
+  assert.deepEqual(paid.body.messages, counted.body.messages)
+  assert.equal(paid.body.max_tokens, 3000)
+  assert.deepEqual(paid.body.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }])
+  assert.deepEqual(x.sequence.filter(s => s.startsWith('native-')), ['native-count', 'native-send'])
+  const nonHiring = await simulate({ query: 'Find cold storage companies expanding in Nelson, not hiring',
+    where: ['Nelson, New Zealand'], industries: ['Cold storage'], signals: ['Expansion'] })
+  const expansion = nonHiring.messages.find(m => Array.isArray(m.body.tools))!
+  const otherPrompt = (expansion.body.messages as { content: string }[])[0].content
+  assert.match(otherPrompt, /Nelson, New Zealand/)
+  assert.doesNotMatch(otherPrompt, /individual vacancy permalink|category lists.*discovery only/)
+})
