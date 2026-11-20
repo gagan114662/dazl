@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
     let tenant: string | null
     try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
     const e = effectiveOffer({ seller, query }, tenant)
-    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
+    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.ambiguous ? { ambiguous: true } : {}), ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
   }
 
   // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's

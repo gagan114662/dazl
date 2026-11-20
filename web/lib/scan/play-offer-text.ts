@@ -25,7 +25,7 @@ export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
   // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
-  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string } }
+  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true } }
   | { offer: null; source: 'none'; conflict: null }
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
@@ -52,15 +52,17 @@ const NOT_AN_OFFER = /^(?:(?:to|for|into|in|at|within|only|except|no|not)(?![\p{
 type Found = { offer: string; tail: string; sentence: number; sentences: string[] }
 // Only top-level grammar is structural. A nested qualifier can contain
 // its own "for", sentence punctuation, or another pair of parentheses.
-function offerSentences(q: string): {text:string; grammar:string}[] {
+const LATER_SELLER = /(?:^|[.!?;,\n:]\s*|\s+(?:and|but|then)\s+)(?:(?:and|but|also)\s+)?(?:(?:i|we|i'm|we're)\s+(?:also\s+)?(?:(?:am|are|can)\s+(?:also\s+)?)?(?:sell|selling|offer|offering|provide|providing)\s+(?!to\b|for\b|only\b|not\b)\S|(?:(?:our|my)\s+)?(?:offer|offering|product|service)s?\s*:\s*\S)/iu
+function offerSentences(q: string) {
   const parts: {text:string; grammar:string}[] = []
-  let depth = 0, start = 0, outerOpen = -1, grammar = ''
+  const open:number[] = [], closed = new Map<number, number>()
+  let start = 0, grammar = '', ambiguous = false
   const push = (end:number) => { if (grammar.trim()) parts.push({text:q.slice(start,end),grammar}); grammar = '' }
   for (let i=0;i<q.length;i++) {
     const ch=q[i]
-    if (ch==='(') { if (!depth) outerOpen=i; depth++; grammar+='x'; continue }
-    if (ch===')' && depth) { depth--; grammar+='x'; continue }
-    if (depth) { grammar+='x'; continue }
+    if (ch==='(') { open.push(i); grammar+='x'; continue }
+    if (ch===')' && open.length) { closed.set(open.pop()!,i); grammar+='x'; continue }
+    if (open.length) { grammar+='x'; continue }
     // A period inside a brand/domain (e.g. buyer.example) is not a sentence end.
     const tightClause = (ch==='.' || ch==='!' || ch==='?') &&
       /^(?:find|look\s+for|search\s+for|target|identify|exclude|(?:i|we)\s+(?:sell|offer|provide))\s+\S/i.test(q.slice(i+1))
@@ -69,17 +71,27 @@ function offerSentences(q: string): {text:string; grammar:string}[] {
     }
     grammar+=ch
   }
-  if (depth) {
+  const outerOpen=open[0]
+  if (outerOpen!==undefined) {
+    // Scan the uncertain tail for a reason to require a choice, never to
+    // extract an alternative. Completely closed inner qualifiers are opaque.
+    let tail=''
+    for(let i=outerOpen+1;i<q.length;i++){
+      const end=closed.get(i)
+      if(end!==undefined){tail+=' ';i=end;continue}
+      tail+=q[i]==='(' ? '; ' : q[i]
+    }
+    ambiguous=LATER_SELLER.test(tail.trim())
     // Retain the complete top-level prefix, not bytes inside a cut-off qualifier.
     grammar=grammar.slice(0,outerOpen-start)
     push(outerOpen)
   } else push(q.length)
-  return parts
+  return {parts,ambiguous}
 }
 function findOffer(text: string | null | undefined): Found | null {
   const q = (text ?? '').replace(/[ \t]+/g, ' ').trim()
   if (!q) return null
-  const entries=offerSentences(q), sentences=entries.map(x=>x.text.trim())
+  const entries=offerSentences(q).parts, sentences=entries.map(x=>x.text.trim())
   for (const [i, sentence] of entries.entries()) {
     const grammar=sentence.grammar.trimEnd()
     for (const p of [TO_FOR, SELLING_TO_FOR, LABEL, BARE]) {
@@ -579,6 +591,8 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
   const recorded = offerOfSeller(play.seller)
   const base = recorded ?? (cleanOffer(profileSells) || null)
+  if (offerSentences(play.query ?? '').ambiguous)
+    return { offer:null, source:'conflict', conflict:{ stated:null, recorded:base??'', ambiguous:true } }
   const stated = statedOffer(play.query)
   // a request that withdraws an offer never resolves to a saved one by default: explicit choice only
   const w = readWithdrawal(play.query)

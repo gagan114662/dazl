@@ -64,6 +64,10 @@ const ids: Record<string, string> = {}
 
 test('Test B: a London CRM request beside the saved dental profile stops and asks, then the scan uses CRM only, never the dental offer', async () => {
   const L = tenants.L, n0 = jobs()
+  const malformed='We sell appointment booking and reminder software to independent dental practices in New York City (unfinished. We also offer CRM setup.'
+  const rejected=await scan(L,{query:malformed})
+  assert.deepEqual(rejected,{status:409,error:'offer_conflict',stated:null,saved:SAVED,ambiguous:true})
+  assert.equal(jobs(),n0,'an uncertain later assertion cannot silently queue against the saved offer')
   assert.deepEqual(await scan(L, { query: TEST_B }), { status: 409, error: 'offer_conflict', stated: CRM, saved: SAVED })
   assert.equal(jobs(), n0, 'nothing queued until the offer is chosen')
   const b = await scan(L, { query: TEST_B, offer: CRM })

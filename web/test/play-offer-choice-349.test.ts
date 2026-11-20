@@ -60,3 +60,20 @@ test('tight sentence punctuation separates targeting clauses while preserving do
   assert.equal(statedOffer('We sell Example.AI and Dotted.Brand services to studios'),'Example.AI and Dotted.Brand services')
   assert.equal(statedOffer('We sell Example.ai (for (small) firms.Find a better workflow) to studios'),'Example.ai (for (small) firms.Find a better workflow)')
 })
+
+test('an unfinished qualifier cannot silently hide a later explicit seller assertion',()=>{
+  const base='CRM setup'
+  for (const tail of ['We sell payroll support.', 'We also offer payroll support.', 'We are also providing payroll support.', 'Offer: payroll support.']) {
+    const query=`We sell CRM setup (unfinished. ${tail}`
+    assert.equal(statedOffer(query),base,'never extract the uncertain seller clause as the offer')
+    const result=effectiveOffer({query},base)
+    assert.equal(result.offer,null)
+    assert.equal(result.conflict?.ambiguous,true)
+    assert.equal(effectiveOffer({query,offer:'Payroll support'},base).offer,'Payroll support')
+    assert.equal(effectiveOffer({query},null).conflict?.ambiguous,true)
+  }
+  assert.equal(effectiveOffer({query:'We sell CRM setup (unfinished but we also offer payroll support'},base).conflict?.ambiguous,true)
+  assert.equal(effectiveOffer({query:'We sell CRM setup (an example: We also offer payroll support.)'},'CRM setup (an example: We also offer payroll support.)').conflict?.ambiguous,undefined)
+  assert.equal(effectiveOffer({query:'We sell CRM setup (unfinished (We also offer payroll support.)'},base).conflict?.ambiguous,undefined,'a closed nested qualifier does not promote its contents')
+  assert.equal(effectiveOffer({query:'We sell CRM setup (unfinished'},base).offer,base)
+})
