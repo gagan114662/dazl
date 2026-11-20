@@ -1,4 +1,6 @@
 import { qaClaudeOnlyTransport } from './qa-provider-policy.ts'
+import { requireCombinedScorecardReservation, type VerifiedScorecardTicket, type ScorecardLane } from '../company-first/scorecard-admission.ts'
+import { requireScorecardWorkspace } from '../company-first/scorecard-workspace.ts'
 // Hard per-scan spend cap (#377 / #533 closure blocker 1). Every paid provider call a scan can make reserves its
 // worst-case cost against the scan's own durable ledger row BEFORE the request is sent, and is refused (nothing is
 // sent) when the reservation would pass the scan's cap. The cap is the owner's CAD 5 per paid scan.
@@ -179,6 +181,8 @@ export interface ScanSpendCtx {
   // The request's own run_budget.max_usd, when it set one: it can only lower the cap.
   requestMaxUsd?: number | null
   claudeOnly?: boolean
+  // Server-only verified worker authority. A durable marked job cannot spend without it.
+  scorecard?: Readonly<{ ticket: VerifiedScorecardTicket; lane: ScorecardLane }>
   // #846/#847: the owner's day/month account caps (lib/llm/spend-pool.ts accountLimits), reserved on tenant_spend_pools
   // in the same transaction as this scan's cap, for every priced step of the scan (#1167: models, render, TinyFish, Apollo /
   // PDL). Null when the runner reserves the owner pool itself for model calls (an account with its own operator entry:
@@ -250,7 +254,10 @@ export function runWithScanSpend<T>(ctx: ScanSpendCtx, fn: () => Promise<T>): Pr
 export function scanSpendContext(): ScanSpendCtx | undefined { return store.getStore() }
 // Work a scan starts that is not the scan's own spend (autopilot's outreach drafting, under its own guards) runs outside
 // the scan's context: the cap neither counts nor refuses it.
-export function outsideScanSpend<T>(fn: () => T): T { return store.exit(fn) }
+export function outsideScanSpend<T>(fn: () => T): T {
+  if (store.getStore()?.scorecard) throw new SpendRefused('scorecard_spend_refused')
+  return store.exit(fn)
+}
 
 // A paid step a scan's owner runs on that scan outside its runner (the owner retry of a held enrichment lookup,
 // lib/enrich/index.ts retryHeldEnrichment) draws on the same scan's ledger, at the scan's current attempt, under the
@@ -354,6 +361,12 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number, nati
   let refused: string | null
   try {
     refused = await db.tx(function* (t: Tx): TxBody<string | null> {
+      const proof = ctx.scorecard
+      // Order locks consistently with scorecard admission: workspace before
+      // account/claim and combined case. A lost authority never reaches egress.
+      if (proof && (proof.ticket.tenantId !== ctx.tenantId || proof.ticket.jobId !== ctx.jobId ||
+          proof.ticket.attempt !== attempt || !(yield* requireScorecardWorkspace(t, proof.ticket))))
+        throw new SpendRefused('scorecard_spend_refused')
       let why = early
       // SQLite's immediate transaction serializes active reservations. An old play's possibly billed
       // amount stays fully reserved against its job and account windows; it is not an indefinite
@@ -397,8 +410,27 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number, nati
              AND spend_cap_reserved_usd + ? <= (CASE WHEN spend_cap_usd IS NOT NULL AND spend_cap_usd < ? THEN spend_cap_usd ELSE ? END) + ?`,
           [cap!, cap!, usd, ctx.jobId, ctx.tenantId, attempt, usd, cap!, cap!, EPS])
         if (r.changes === 1) {
+          // A scorecard job's private marker is durable and cannot be set by
+          // the ordinary scan API. Recheck it under the canonical job lock;
+          // a missing async capability, mismatched scope or revoked admission
+          // never turns a tagged job into an ordinary billable scan.
+          const binding = yield* t.get<{ company_scorecard_claim_nonce: string | null;
+            company_scorecard_dispatch_started_at: number | string | null; company_scorecard_dispatch_release: string | null }>(
+            'SELECT company_scorecard_claim_nonce, company_scorecard_dispatch_started_at, company_scorecard_dispatch_release FROM scan_jobs WHERE id = ? AND user_id = ? AND attempts = ?',
+            [ctx.jobId, ctx.tenantId, attempt])
+          const scorecard = ctx.scorecard
+          if (!binding || (binding.company_scorecard_claim_nonce !== null || scorecard) &&
+              (!scorecard || binding.company_scorecard_claim_nonce !== scorecard.ticket.nonce || binding.company_scorecard_dispatch_release !== scorecard.ticket.release ||
+                !Number.isSafeInteger(Number(binding.company_scorecard_dispatch_started_at)) || Number(binding.company_scorecard_dispatch_started_at) < 1 ||
+                !qaClaudeOnlyTransport(kind) || (!pool && !nativeOwnerHold))) throw new SpendRefused('scorecard_spend_refused')
           yield* t.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, ?, ?, ?, ?, ?, NULL, 'reserved', NULL, ?, NULL)",
             [id, ctx.tenantId, ctx.jobId, attempt, kind, usd, at])
+          if (scorecard) {
+            // Roll back job, account AND new case reservation together on any
+            // refusal. Settlement still uses this canonical call ID, even if
+            // the workspace flag is revoked after the call may have billed.
+            yield* requireCombinedScorecardReservation(t, scorecard.ticket, requireScorecardWorkspace, scorecard.lane, id)
+          }
           return null
         }
         // Why it did not fit, read under the same lock: another tenant's (or no) job, a lost attempt, a finished job, or the cap.

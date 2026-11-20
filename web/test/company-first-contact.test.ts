@@ -261,3 +261,14 @@ test('wrong board, unowned ATS hint, forged/copy/mutated external finding and fo
   assert.equal(Reflect.set(original.signal, 'sourceUrl', ats.replace('/123','/456')), false)
   assert.equal(Reflect.set(original.site, 'website', 'https://other.example'), false)
 })
+
+test('role and generic mailboxes do not become named merely through a compatible person spelling',async()=>{
+  for(const [person,local] of [['Ag Ent','agent'],['Sop Orte','soporte'],['Cus Tomerservice','customer.service'],['Sup Port','support'],['In Fo','info']]){
+    const f=fixture({
+      directory:{people:[{name:person,title,bioUrl}]},
+      bio:{name:person,profiles:[{url:linkedin,named:person}],text:person+'\n'+title+'\nWork email: '+local+'@sample-studio.example'},
+      profile:{name:person},
+    })
+    assert.deepEqual(await proveCompanyFirstContact(success,[title],scope,f.readers),{status:'held',reason:'email_unconfirmed'},local)
+  }
+})

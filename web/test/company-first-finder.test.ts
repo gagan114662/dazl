@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runCompanyFirstFinder, type CompanyFirstFinderPorts } from '../lib/company-first/company-first-pipeline.ts'
+import type { CompanySizeFact } from '../lib/company-first/company-first-evidence.ts'
 
 const scope = { tenant: 'fixture-tenant', job: 'fixture-job', attempt: '1' }
 const criteria = { category: 'service-category', place: 'bound-location', event: 'active-event', from: '2026-11-01', through: '2026-11-20' }
@@ -79,4 +80,36 @@ test('uncertain accounting drops output and prevents later provider or gate disp
  assert.deepEqual(got.ready,[])
  assert.equal(got.observed,null)
  assert.equal(calls.at(-1),'directory')
+})
+
+test('an explicit size target requires two current, independent, range-agreeing company facts before buyer reads',async()=>{
+  const observedDay=new Date().toISOString().slice(0,10)
+  const one:CompanySizeFact={scope,companyKey:'same-company',sourceUrl:origin+'/annual-filing',datasetKey:'company-filing',
+    observedDay,basis:'first_party_disclosure',employees:{min:30,max:60}}
+  const two:CompanySizeFact={...one,sourceUrl:'https://official-secondary.example/record/42',datasetKey:'independent-ledger',
+    basis:'independent_primary_record',employees:{min:40,max:70}}
+  const targeted={...criteria,companySize:{min:20,max:80}}
+  for(const [facts,ok] of [
+    [[one,two],true],[[one],false],
+    [[one,{...two,datasetKey:one.datasetKey}],false],
+    [[one,{...two,sourceUrl:'https://data.fictional.example/filing'}],false],
+    [[one,{...two,scope:{...scope,attempt:'older'}}],false],
+    [[one,{...two,companyKey:'other-business'}],false],
+    [[one,{...two,observedDay:'2000-01-01'}],false],
+    [[one,{...two,observedDay:'2999-12-31'}],false],
+    [[one,{...two,employees:{min:60,max:88}}],false],
+    [[one,{...two,employees:{min:61,max:75}}],false],
+  ] as const){
+    const {ports,calls}=fixture('ok'), original=ports.evidence.verifyDatedSignal
+    ports.evidence.verifyDatedSignal=async request=>{
+      assert.deepEqual(request.input.companySize,targeted.companySize)
+      const observed=await original(request)
+      return observed?{...observed,companySizeFacts:facts}:null
+    }
+    const got=await runCompanyFirstFinder({enabled:true},scope,targeted,[title],ports)
+    assert.equal(got.ready.length,ok?1:0)
+    assert.equal(calls.includes('directory'),ok)
+    if(!ok)assert.deepEqual(got.observed?.evidence?.holds,{size_unconfirmed:1})
+    assert.doesNotMatch(JSON.stringify(got),/secondary|company-filing|independent-ledger/)
+  }
 })

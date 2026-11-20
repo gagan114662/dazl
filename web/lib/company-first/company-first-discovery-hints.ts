@@ -1,13 +1,13 @@
 // Unmounted adapter: one settled dynamic search -> private company hypotheses.
 // The underlying result is not proof of company ownership, intent, or activity.
-import { prepareDiscovery, type Prepared } from './company-first-claude-request.ts'
+import { prepareDiscovery, type DiscoveryStrategy, type Prepared } from './company-first-claude-request.ts'
 import { decodeDynamicSettlement, TARIFF } from './company-first-dynamic-usage.ts'
 import { projectDynamicReceipt } from './company-first-dynamic-receipt.mjs'
 import type { Candidate, Criteria, Scope } from './company-first-evidence.ts'
 
 type Lane = Parameters<typeof prepareDiscovery>[0]
 type Call = Readonly<{status:number; body:unknown}>
-type Confirmed = Readonly<{ scope:Scope; criteria:Criteria; lane:Lane; maxUses:number }>
+type Confirmed = Readonly<{ scope:Scope; criteria:Criteria; lane:Lane; maxUses:number; strategy?:DiscoveryStrategy }>
 type SpendReceipt = Readonly<{ id:string; binding:string; reserveMicros:number; actualMicros:number }>
 type Page = Readonly<{ url:string; finalUrl:string; contentType:'text/html'; visibleText:string; jsonLd:readonly string[] }>
 type Ports = Readonly<{
@@ -76,7 +76,7 @@ export async function companyHintsFromDynamicSearch(confirmed:Confirmed,receipt:
   if(signal.aborted)return stop('stale')
   if(!day(criteria.from)||!day(criteria.through)||criteria.from>criteria.through||
     !Object.values(scope).every(v=>typeof v==='string'&&v.length>0&&v.length<=200))return stop('binding')
-  const prepared=prepareDiscovery(confirmed.lane,{companyType:criteria.category,market:criteria.place,intent:criteria.event},confirmed.maxUses)
+  const prepared=prepareDiscovery(confirmed.lane,{companyType:criteria.category,market:criteria.place,intent:criteria.event},confirmed.maxUses,confirmed.strategy?{strategy:confirmed.strategy,from:criteria.from,through:criteria.through}:undefined)
   if(!prepared||receipt.binding!==prepared.binding||!int(receipt.reserveMicros,5_000_000)||receipt.reserveMicros===0||
     !int(receipt.actualMicros,100_000_000)||typeof receipt.id!=='string'||!/^[A-Za-z0-9_-]{1,80}$/.test(receipt.id))return stop('binding')
   const cost=decodeDynamicSettlement({tariff:TARIFF,model:'claude-sonnet-5-5',provider:'anthropic',api:'messages_2023-06-01',

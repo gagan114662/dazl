@@ -56,9 +56,14 @@ import { migrateWorkers } from '../workers/store.ts'
 import { migrateFirstParty } from '../signals/first-party.ts'
 import { migrateNeedEvidence } from '../scan/need-evidence.ts'
 
+import { migrateScorecardWorkspaceSqlite } from '../company-first/scorecard-workspace.ts'
+import { SCORECARD_ADMISSION_DDL } from '../company-first/scorecard-admission.ts'
+
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
   migratePlatform(db)
+  migrateScorecardWorkspaceSqlite(db)
+  for (const ddl of SCORECARD_ADMISSION_DDL) db.exec(ddl)
   const migrates = [
     migrateScan, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
     migrateOutreach, migrateSequences, migrateReplies, migrateBounceLedger, migrateBounceScan, migrateLedger, migrateReopen,

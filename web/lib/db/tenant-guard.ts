@@ -15,7 +15,7 @@ export const UNGUARDED = new Set(['evidence_purge_gate', 'audit_purge_gate'])
 // Columns that name an account without being the row's tenant column (no foreign key): guarded against tombstoned
 // tenants too, so a deleted account can neither be added to another workspace nor have a membership moved onto it
 // (decision 9 in docs/TENANT-LIFECYCLE.md, which the deletion also re-checks before erasing).
-export const ACCOUNT_COLUMNS: Record<string, string[]> = { memberships: ['member_id'] }
+export const ACCOUNT_COLUMNS: Record<string, string[]> = { memberships: ['member_id'], company_scorecard_cohorts: ['actor_id'] }
 
 // Every table's columns on a live store, either engine (engine-specific SQL lives here, with the other schema machinery).
 export async function tableColumns(db: Db): Promise<Map<string, string[]>> {

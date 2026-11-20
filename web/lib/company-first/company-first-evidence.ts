@@ -1,10 +1,19 @@
 // Unmounted company-first evidence core. Ports are trusted server-side adapters,
 // not request callbacks. A qualified signal is not a Ready or contact decision.
+import { getDomain } from 'tldts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 
 export type Scope = Readonly<{ tenant: string; job: string; attempt: string }>
 export type Stage = 'discover' | 'website' | 'signal'
-export type Criteria = Readonly<{ category: string; place: string; event: string; from: string; through: string }>
+export type CompanySizeBand = Readonly<{ min: number; max: number }>
+// Produced by trusted exact-source adapters, never discovery text/model estimates.
+// datasetKey identifies the original producer (syndication/mirrors share one key).
+// observedDay is the date the source states for the count, not its fetch date.
+export type CompanySizeFact = Readonly<{
+  scope: Scope; companyKey: string; sourceUrl: string; datasetKey: string; observedDay: string;
+  basis:'first_party_disclosure'|'independent_primary_record'; employees:CompanySizeBand
+}>
+export type Criteria = Readonly<{ category: string; place: string; event: string; from: string; through: string; companySize?:CompanySizeBand }>
 export type Candidate = Readonly<{ name: string; hintUrl?: string }>
 type Site = Readonly<{
   status: 'verified'; companyKey: string; candidateName: string; website: string; identitySource: string;
@@ -21,7 +30,8 @@ type Signal = Readonly<{
   sourceUrl: string; quote: string; literalSourceText: string;
   // The trusted reader must tie the date to this exact event/record. A page's
   // crawl/update day or a date found elsewhere is never a valid date proof.
-  dateProof: DateProof;
+  dateProof: DateProof
+  companySizeFacts?: readonly CompanySizeFact[];
 }>
 type Call<T> = Readonly<{ input: Readonly<T>; signal: AbortSignal }>
 export type Reservation = Readonly<{ scope: Scope; stage: Stage; ordinal: number; signal: AbortSignal }>
@@ -35,11 +45,11 @@ export interface CompanyFirstPorts {
   // usage reject (never return null/empty). Later stages then cannot dispatch.
   discover: (call: Call<Pick<Criteria, 'category' | 'place'>>) => Promise<readonly Candidate[]>
   verifyWebsite: (call: Call<Candidate>) => Promise<Site | null>
-  verifyDatedSignal: (call: Call<{ companyKey: string; websiteOrigin: string; event: string; place: string; from: string; through: string; postingUrl?: string }>) => Promise<Signal | null>
+  verifyDatedSignal: (call: Call<{ companyKey: string; websiteOrigin: string; event: string; place: string; from: string; through: string; postingUrl?: string; companySize?:CompanySizeBand }>) => Promise<Signal | null>
 }
-export type Hold = 'identity_unknown' | 'duplicate_company' | 'signal_unknown' | 'reservation_unavailable'
+export type Hold = 'identity_unknown' | 'duplicate_company' | 'signal_unknown' | 'size_unconfirmed' | 'reservation_unavailable'
 export type Finding = Readonly<{ state: 'held'; reason: Hold; count: number }> |
-  Readonly<{ name: string; state: 'signal_verified'; site: VerifiedSite; signal: Readonly<Omit<Signal, 'literalSourceText' | 'dateProof'>> }>
+  Readonly<{ name: string; state: 'signal_verified'; site: VerifiedSite; signal: Readonly<Omit<Signal, 'literalSourceText' | 'dateProof' | 'companySizeFacts'>> }>
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
 type AtsWitness = Readonly<{ scope: Scope; postingUrl: string; ownedLinkSource: string; firstPublishedDay: string }>
 const issuedAts = new WeakMap<SignalFinding, AtsWitness>()
@@ -88,6 +98,32 @@ function within<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T | undef
   })
 }
 
+const MAX_SIZE_AGE_MS = 90 * 86_400_000
+function validSizeBand(b: CompanySizeBand | null | undefined): b is CompanySizeBand {
+  return !!b && Number.isSafeInteger(b.min) && Number.isSafeInteger(b.max) && b.min >= 0 && b.max >= b.min
+}
+function confirmsSize(facts: readonly CompanySizeFact[] | undefined, target:CompanySizeBand, scope:Scope, site:VerifiedSite, now:number):boolean {
+  if (!Array.isArray(facts) || facts.length !== 2) return false
+  const owner = url(site.website)
+  const domains = new Set<string>(), datasets = new Set<string>()
+  let lower = target.min, upper = target.max, independent = false
+  for (const f of facts) {
+    const source = url(f?.sourceUrl), domain = source && getDomain(source.hostname,{allowPrivateDomains:true})
+    if (!f || !source || source.search || source.hash || source.pathname==='/' || !domain || domains.has(domain) ||
+        !validText(f.datasetKey,200) || datasets.has(f.datasetKey) || f.companyKey!==site.companyKey ||
+        f.scope?.tenant!==scope.tenant || f.scope?.job!==scope.job || f.scope?.attempt!==scope.attempt ||
+        !day(f.observedDay) || Date.parse(f.observedDay)>now || now-Date.parse(f.observedDay)>MAX_SIZE_AGE_MS ||
+        !validSizeBand(f.employees) || f.employees.min<target.min || f.employees.max>target.max) return false
+    const ownDomain = owner && getDomain(owner.hostname,{allowPrivateDomains:true})
+    if (!ownDomain || (f.basis==='first_party_disclosure' ? source.origin!==site.website :
+      f.basis!=='independent_primary_record' || domain===ownDomain)) return false
+    independent ||= f.basis==='independent_primary_record'
+    lower=Math.max(lower,f.employees.min); upper=Math.min(upper,f.employees.max)
+    domains.add(domain); datasets.add(f.datasetKey)
+  }
+  return independent && lower<=upper
+}
+
 export async function runCompanyFirst(
   policy: Readonly<{ enabled?: boolean; signal?: AbortSignal }>,
   scope: Scope, criteria: Criteria, ports: CompanyFirstPorts,
@@ -95,6 +131,8 @@ export async function runCompanyFirst(
   const empty = (state: Report['state']): Report => ({ state, findings: [] })
   if (policy.enabled !== true) return empty('disabled')
   const scopeSnapshot = Object.freeze({ tenant: scope.tenant, job: scope.job, attempt: scope.attempt })
+  if (criteria.companySize!==undefined && !validSizeBand(criteria.companySize)) return empty('invalid')
+  const companySize=criteria.companySize && Object.freeze({min:criteria.companySize.min,max:criteria.companySize.max})
   const c = Object.freeze({ category: criteria.category, place: criteria.place, event: criteria.event, from: criteria.from, through: criteria.through })
   if (!Object.values(scopeSnapshot).every(v => validText(v, 200)) ||
       ![c.category, c.place, c.event].every(v => validText(v, 200)) ||
@@ -159,7 +197,7 @@ export async function runCompanyFirst(
     distinctSites++
     const { reserved, value } = await run('signal', {
       companyKey: site.companyKey, websiteOrigin: site.website, event: c.event, place: c.place,
-      from: c.from, through: c.through, ...(postingUrl ? { postingUrl } : {}),
+      from: c.from, through: c.through, ...(postingUrl ? { postingUrl } : {}), ...(companySize ? { companySize } : {}),
     }, ports.verifyDatedSignal)
     const source = url(value?.sourceUrl)
     if (!reserved || !value || !source || (source.origin !== site.website && source.href !== postingUrl) ||
@@ -175,6 +213,9 @@ export async function runCompanyFirst(
           proof.kind !== 'first_party_event_date' || !validText(proof.literalDate, 100) || !value.literalSourceText.includes(proof.literalDate) :
           proof.kind !== 'ats_first_published')) {
       holdOne('signal_unknown'); continue
+    }
+    if (companySize && !confirmsSize(value.companySizeFacts,companySize,scopeSnapshot,site,Date.now())) {
+      holdOne('size_unconfirmed'); continue
     }
     const finding: SignalFinding = { name: candidate.name, state: 'signal_verified', site,
       signal: { companyKey: site.companyKey, place: c.place, event: c.event, date: value.date, sourceUrl: source.href, quote: value.quote } }

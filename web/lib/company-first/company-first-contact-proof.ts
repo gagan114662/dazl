@@ -67,7 +67,7 @@ function pageUrl(value: unknown): URL | null {
 }
 const LINKEDIN = /^https:\/\/(?:[a-z]{2,3}\.)?(?:www\.)?linkedin\.com\/in\/[a-zA-Z0-9_-]{3,100}\/?$/
 // Existing audited display mailbox veto, not an address generation rule.
-const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
+const ROLE = /^(info|hello|hi|contact|contactus|enquiries|enquiry|inquiries|inquiry|sales|business|office|admin|general|mail|team|support|help|agent|agents|helpdesk|customerservice|assistance|assistenza|atencion|soporte|suporte|serviciocliente|kundendienst|press|media|partnerships|partners|bookings|booking|reservations|hola|contacto|kontakt|bonjour|ciao|ola|connect)$/i
 const MAIL = /^[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9.-]+\.[a-z]{2,}$/i
 const LETTER_ADDRESS = /(?<![\p{L}\p{N}._%+@-])[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9.-]+\.[a-z]{2,}(?![\p{L}\p{N}._%+@-])/giu
 function parts(name: string): [string, string] | null {
