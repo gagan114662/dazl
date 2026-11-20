@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {projectDynamicReceipt as parse} from '../lib/company-first/dynamic-receipt.mjs'
+import {projectDynamicReceipt as parse} from '../lib/company-first/company-first-dynamic-receipt.mjs'
 const u='https://company.example/staff', quote='synthetic quote'
 const caller={type:'code_execution_20260120',tool_id:'srvtoolu_exec'}
 const use=(name,id,caller)=>({type:'server_tool_use',name,id,input:{query:'opaque private query'},caller})

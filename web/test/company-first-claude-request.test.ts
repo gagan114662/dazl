@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { executePrepared, prepareCompanyPage, prepareDiscovery, type Lease, type Ports, type Prepared } from '../lib/company-first/claude-request.ts'
+import { executePrepared, prepareCompanyPage, prepareDiscovery, type Lease, type Ports, type Prepared } from '../lib/company-first/company-first-claude-request.ts'
 const lane={enabled:true,approvedForPublicDynamicFiltering:true,ownKey:true,model:'claude-sonnet-5-5',apiVersion:'2023-06-01',scope:{caseId:'fictional-case',attempt:2}}
 const scope={companyType:'Industrial maintenance',market:'Wellington',intent:'new branch'}
 const uri='https://company.example/team'

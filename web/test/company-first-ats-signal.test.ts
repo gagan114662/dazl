@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { readPublicAtsSignal, type PublicAtsPorts } from '../lib/company-first/ats-signal.ts'
+import { readPublicAtsSignal, type PublicAtsPorts } from '../lib/company-first/company-first-ats-read.ts'
 
 const scope = { tenant: 'private-tenant', job: 'private-job', attempt: 'private-attempt' }
 const target = { scope, companyKey: 'sample-company-key', websiteOrigin: 'https://sample.example' }

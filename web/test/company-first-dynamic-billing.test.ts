@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { decodeDynamicSettlement as decode, TARIFF, type BillingBinding } from '../lib/company-first/dynamic-billing.ts'
+import { decodeDynamicSettlement as decode, TARIFF, type BillingBinding } from '../lib/company-first/company-first-dynamic-usage.ts'
 const bind:BillingBinding={tariff:TARIFF,model:'claude-sonnet-5-5',api:'messages_2023-06-01',provider:'anthropic',currency:'USD',
  tier:'standard_only',geo:'global',cache:'uncached',tool:'web_search_20260209',caller:'code_execution_20260120',maxUses:5,maxOutput:3000}
 const use={service_tier:'standard',inference_geo:'global',input_tokens:1001,output_tokens:50,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { proveCompanyFirstContact, type CompanyFirstContactReaders, type OfficialBio, type OfficialDirectory, type PublicProfileCorroboration } from '../lib/company-first/contact.ts'
-import { runCompanyFirst, type Finding } from '../lib/company-first/core.ts'
+import { proveCompanyFirstContact, type CompanyFirstContactReaders, type OfficialBio, type OfficialDirectory, type PublicProfileCorroboration } from '../lib/company-first/company-first-contact-proof.ts'
+import { runCompanyFirst, type Finding } from '../lib/company-first/company-first-evidence.ts'
 
 const origin = 'https://sample-studio.example'
 const bioUrl = origin + '/team/jane-quinn'

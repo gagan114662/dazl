@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runCompanyFirstFinder, type CompanyFirstFinderPorts } from '../lib/company-first/finder.ts'
+import { runCompanyFirstFinder, type CompanyFirstFinderPorts } from '../lib/company-first/company-first-pipeline.ts'
 
 const scope = { tenant: 'fixture-tenant', job: 'fixture-job', attempt: '1' }
 const criteria = { category: 'service-category', place: 'bound-location', event: 'active-event', from: '2026-11-01', through: '2026-11-20' }

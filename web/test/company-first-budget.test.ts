@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { measuredQuote, runBudgetedCompanyQueries, type Dependencies, type Lease, type Query, type Settlement } from '../lib/company-first/budget.ts'
+import { measuredQuote, runBudgetedCompanyQueries, type Dependencies, type Lease, type Query, type Settlement } from '../lib/company-first/company-first-paid-batch.ts'
 
 const fixtureCohort='anthropic:messages:model-pinned:tool-dynamic:standard:USD:uncached:shape-1'
 const query=(id:string, maxUses=1):Query=>({id,prompt:'different company intent '+id,cohort:fixtureCohort,fallbackMicros:100_000,maxUses})

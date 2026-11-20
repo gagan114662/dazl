@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { runCompanyFirst, type Candidate, type CompanyFirstPorts, type Reservation } from '../lib/company-first/core.ts'
+import { runCompanyFirst, type Candidate, type CompanyFirstPorts, type Reservation } from '../lib/company-first/company-first-evidence.ts'
 
 const scope = { tenant: 'private-tenant', job: 'private-job', attempt: 'private-attempt' }
 const criteria = { category: 'sector-key', place: 'canonical-place-key', event: 'open-role', from: '2026-09-01', through: '2026-09-30' }

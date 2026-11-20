@@ -1,7 +1,7 @@
 // Fresh module only. No product router, provider, repository flag or storage is
 // mounted here. Only a trusted application adapter may enable and bind a run.
-import { runCompanyFirst, type CompanyFirstPorts, type Criteria, type Finding, type Scope } from './core.ts'
-import { proveCompanyFirstContact, type CompanyFirstContactReaders, type CompanyFirstContactResult } from './contact.ts'
+import { runCompanyFirst, type CompanyFirstPorts, type Criteria, type Finding, type Scope } from './company-first-evidence.ts'
+import { proveCompanyFirstContact, type CompanyFirstContactReaders, type CompanyFirstContactResult } from './company-first-contact-proof.ts'
 
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
 type ContactProof = Extract<CompanyFirstContactResult, { status: 'contact_proof' }>

@@ -1,7 +1,7 @@
 // Offline company-first contact proof. This module owns no transport, storage,
 // lookup activation, display, outreach, or Ready decision. All supplied readers
 // are proof adapters, not search engines: they must return observed public data.
-import type { Finding, Scope } from './core.ts'
+import type { Finding, Scope } from './company-first-evidence.ts'
 
 export interface OfficialDirectory {
   url: string
