@@ -184,7 +184,7 @@ test('incomplete confirmed and recorded offers require a complete per-play choic
       assert.deepEqual((await campaign(C,id)).offer,{ offer:null, source:'conflict', conflict:{ stated:null, recorded:'', incomplete:true } })
       assert.equal((await setOffer(C,id,clipped)).status,400)
     }
-    assert.equal(await confirmedPlayOffer(db,C,q,seller),null)
+    assert.deepEqual(await confirmedPlayOffer(db,C,q,seller),{offer:null,incomplete:true})
     const estimate = async (body: unknown) => {
       as(C)
       const res=await ESTIMATE(new NextRequest('http://localhost/api/scan/estimate',{method:'POST',headers:{'content-type':'application/json',host:'localhost'},body:JSON.stringify(body)}))

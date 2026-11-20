@@ -2,7 +2,7 @@
 export function scanOfferConflict(status:number,value:unknown) {
   if(status!==409||!value||typeof value!=='object')return null
   const fields=value as Record<string,unknown>
-  if(fields.error!=='offer_conflict'||typeof fields.saved!=='string'||(!fields.saved.trim()&&fields.incomplete!==true)||
+  if(fields.error!=='offer_conflict'||typeof fields.saved!=='string'||(!fields.saved.trim()&&fields.incomplete!==true&&fields.ambiguous!==true)||
     (fields.stated!==null&&typeof fields.stated!=='string'))return null
   return {stated:fields.stated,saved:fields.saved,ambiguous:fields.ambiguous===true,
     ...(fields.incomplete===true?{incomplete:true}:{}),

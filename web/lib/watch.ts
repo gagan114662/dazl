@@ -295,6 +295,9 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
       if (out !== 'run') continue
     }
     if (await countActiveJobs(db, w.user_id) > 0) continue // a scan is already going; the next tick picks this watch up
+    // the offer already confirmed for this play's request (#349), with the snapshot it was confirmed beside
+    const play = await scheduledPlayOffer(db, w.user_id, w.query)
+    if (play?.offer === null) continue // never spend or advance this watch until the stored choice is repaired
     // the free trial's existing admission, only for the first play's repeat with no key (nothing reserved otherwise)
     let trial: TrialRun | null = null
     if (funder) {
@@ -302,8 +305,6 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
       if (!a.ok) { const why = trialPauseReason(a.reason); if (why) await pause(why); continue }
       trial = a.run
     }
-    // the offer already confirmed for this play's request (#349), with the snapshot it was confirmed beside
-    const play = await scheduledPlayOffer(db, w.user_id, w.query)
     let job: string | null = null
     try {
       const out = await db.tx(function* (t): TxBody<string | 'skipped' | null> {

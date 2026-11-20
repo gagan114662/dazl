@@ -22,3 +22,13 @@ test('drafting refuses a clipped saved offer instead of silently falling back', 
     assert.deepEqual(draftOffer({...play,offer:'Platform (including support)'},'Current unrelated offer'),{offer:'Platform (including support)',refuse:null})
   }
 })
+
+test('long, complete Settings positioning does not become a clipped legacy hold', async () => {
+  const { draftOffer, tenantOffer } = await import('../lib/scan/play-offer-text.ts')
+  const product = 'Scheduling software for field service teams'
+  const position = product + ' (' + 'work order reminders, '.repeat(8) + 'shared calendars)'
+  assert.ok(position.length > 150)
+  assert.equal(tenantOffer(position, 'Unrelated fallback'), product)
+  assert.deepEqual(draftOffer({}, tenantOffer(position, null)), { offer: product, refuse: null })
+  assert.deepEqual(draftOffer({}, tenantOffer(position.slice(0,-1), null)), { offer: null, refuse: 'offer_conflict' })
+})

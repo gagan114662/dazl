@@ -36,7 +36,9 @@ export async function POST(req: NextRequest) {
     // but before presenting a cost panel for the wrong saved buyer context.
     try {
       const seller = await readSellerLine(db, user.tenantId)
-      if (!await confirmedPlayOffer(db, user.tenantId, query, seller)) {
+      const confirmed = await confirmedPlayOffer(db, user.tenantId, query, seller)
+      if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
+      if (!confirmed) {
         const result = effectiveOffer({ seller, query }, await profileOffer(db, user.tenantId))
         const conflict = result.conflict ?? (body?.icp && body.reviewed === false
           ? carriedWorkspaceOfferConflict(query, user.business_name, seller, result.offer) : null)

@@ -38,7 +38,7 @@ import type { PlayKind } from './play-runs.ts'
 export const RUN_NOW_MIN_GAP_S = 3600
 const nowS = () => Math.floor(Date.now() / 1000)
 
-export type RunNowRefusal = 'not_found' | 'paused' | 'no_api_key' | 'quota_exceeded' | 'scan_active' | 'too_soon' | 'trial_used' | 'trial_busy' | 'daily_cap'
+export type RunNowRefusal = 'not_found' | 'paused' | 'no_api_key' | 'quota_exceeded' | 'scan_active' | 'too_soon' | 'trial_used' | 'trial_busy' | 'daily_cap' | 'offer_conflict'
 export type RunNowResult = { job_id: string; next_run_at: number; funded_by: 'user' | 'trial' } | { error: RunNowRefusal; retry_at?: number }
 
 interface PlayRow { query: string; icp: string | null; sources: string | null; run_budget: string | null; on: number; last_run_at: number | null; next_run_at: number | null; interval_s: number }
@@ -68,14 +68,15 @@ export async function runPlayNow(db: Db, userId: string, kind: PlayKind, id: str
   const capHit = function* (t: Tx): TxBody<boolean> { return capped && (yield* scansTodayStep(t, userId, now)) >= FREE_DAILY_RUNS }
   if (capped && await db.tx(capHit)) return capRefusal // before any trial reservation
   if (await countActiveJobs(db, userId, now) >= 1) return { error: 'scan_active' } // before any trial reservation
+  // the offer already confirmed for this play's request (#349), as the scheduled run reads it
+  const play = await scheduledPlayOffer(db, userId, p.query)
+  if (play?.offer === null) return { error: 'offer_conflict' }
   let trial: TrialRun | null = null
   if (funder) {
     const a = await admitTrialRun(db, funder, now, env)
     if (!a.ok) return { error: a.reason === 'global_daily_cap' ? 'trial_busy' : a.reason === 'attempts_cap' || a.reason === 'account_total_cap' ? 'trial_used' : 'no_api_key' }
     trial = a.run
   }
-  // the offer already confirmed for this play's request (#349), as the scheduled run reads it
-  const play = await scheduledPlayOffer(db, userId, p.query)
   const offer = play ? { offer: play.offer, seller: play.seller ?? undefined } : {}
   const next = now + p.interval_s
   const read = p.next_run_at

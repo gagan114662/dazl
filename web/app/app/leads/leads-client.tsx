@@ -538,7 +538,7 @@ export default function LeadsClient() {
     const c = effectiveOffer({ seller: null, query: q }, base.offer).conflict
     if (c) {
       // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
-      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ambiguous: c.ambiguous, ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
+      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ambiguous: c.ambiguous, ...(c.incomplete ? { incomplete: true } : {}), ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
     }
     setOfferText(statedOffer(q) ?? base.offer ?? '')
     setOfferConflict(null)
@@ -1545,6 +1545,7 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
 function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; incomplete?: boolean; freshTarget?: boolean }; onChoose: (offer: string, choice: 'stated' | 'saved') => void; onWrite?: () => void }) {
   const [writing, setWriting] = useState(false)
   const [writtenOffer, setWrittenOffer] = useState('')
+  const manualOnly = c.incomplete || (c.ambiguous && !c.saved)
   const explicitOffer = completeOffer(writtenOffer)
   const namesWorkspace = c.freshTarget && c.stated && c.stated.trim().toLowerCase() !== c.saved.trim().toLowerCase()
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
@@ -1558,7 +1559,7 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => namesWorkspace ? setWriting(true) : onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}
       {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved, 'saved')} data-testid="offer-use-saved">{c.freshTarget ? 'Keep saved targeting' : `Use: ${c.saved}`}</button>}
-      {!c.stated && (onWrite || c.incomplete) && <button type="button" className="btn-primary btn-sm" onClick={onWrite ?? (() => setWriting(true))} data-testid="offer-write">Write what this play sells</button>}
+      {!c.stated && (onWrite || manualOnly) && <button type="button" className="btn-primary btn-sm" onClick={onWrite ?? (() => setWriting(true))} data-testid="offer-write">Write what this play sells</button>}
     </div>
     {writing && <div className="mt-3 flex flex-wrap items-end gap-2">
       <label className="flex flex-col gap-1">What does this play sell?
@@ -1566,6 +1567,6 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
       </label>
       <button type="button" className="btn-primary btn-sm" disabled={!explicitOffer || explicitOffer.toLowerCase() === c.stated?.trim().toLowerCase()} onClick={() => explicitOffer && onChoose(explicitOffer, 'stated')}>Use this offer</button>
     </div>}
-    {!c.stated && !onWrite && !c.incomplete && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
+    {!c.stated && !onWrite && !manualOnly && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}
   </div>
 }

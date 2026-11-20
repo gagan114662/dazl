@@ -75,7 +75,11 @@ export async function POST(req: NextRequest) {
   // The next run of the same play (#349): the offer this tenant already confirmed for this exact request, while the
   // profile says what it says now, is this run's offer too. Nothing confirmed: the checks below, unchanged.
   if (!offerSupplied && query.length >= 3) {
-    try { offer = (await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller))?.offer ?? '' } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+    try {
+      const confirmed = await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller)
+      if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
+      offer = confirmed?.offer ?? ''
+    } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
   }
   if (query.length >= 3 && !offer) {
     // the same inputs drafting reads later (draftOffer: this play's seller snapshot, then the tenant's Memory positioning or

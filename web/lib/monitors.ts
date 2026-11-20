@@ -138,6 +138,7 @@ export async function runDueMonitors(db: Db, o: { now?: number; fence?: Fence } 
     if (await countActiveJobs(db, m.user_id) >= 2) continue // user's own scans win; try again next tick
     // the offer already confirmed for this play's request (#349), with the snapshot it was confirmed beside
     const play = await scheduledPlayOffer(db, m.user_id, m.query)
+    if (play?.offer === null) continue // never queue or advance a monitor against a guessed offer
     const jobId = await db.tx(function* (t: Tx): TxBody<string | null> {
       yield* fence(t)
       // #1042: re-checked under the shared admission lock (lib/play-funding.ts), so a "Find leads now" click and this tick

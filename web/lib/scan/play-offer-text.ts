@@ -36,12 +36,16 @@ export function completeOffer(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.replace(/\s+/g, ' ').trim()
   if (text.length < 3 || text.length > MAX_OFFER) return null
+  return hasOpenOfferParenthesis(text) ? null : text
+}
+
+function hasOpenOfferParenthesis(text: string): boolean {
   let depth = 0
   for (const char of text) {
     if (char === '(') depth++
     else if (char === ')' && depth > 0) depth--
   }
-  return depth === 0 ? text : null
+  return depth > 0
 }
 
 // The offer a request states, if it states one. Only a positive seller assertion counts, and only at the start of a
@@ -654,7 +658,19 @@ export function carriedWorkspaceOfferConflict(query: string, businessName: strin
 // Settings, else what onboarding saved (users.sells), so nobody needs a second hidden form. Every drafting path (template,
 // rewrite, follow-ups), scoring and the offer card read it through these two functions, so they cannot disagree.
 export function tenantOffer(memoryPositioning: string | null | undefined, profileSells: string | null | undefined): string | null {
-  return cleanOffer(memoryPositioning) || cleanOffer(profileSells) || null
+  const source = [memoryPositioning, profileSells].find(v => v?.trim())?.replace(/\s+/g, ' ').trim()
+  if (!source) return null
+  const bound = cleanOffer(source)
+  if (source.length <= MAX_OFFER || !hasOpenOfferParenthesis(bound) || hasOpenOfferParenthesis(source)) return bound
+  // Settings allows longer positioning than a play can store. If an otherwise complete source
+  // crosses the play limit inside a parenthetical, keep the complete leading clause, never half
+  // an aside. A truly malformed source, or one with no usable leading clause, still needs review.
+  let depth = 0, opening = -1
+  for (let i = 0; i < bound.length; i++) {
+    if (bound[i] === '(') { if (depth === 0) opening = i; depth++ }
+    else if (bound[i] === ')' && depth > 0) depth--
+  }
+  return completeOffer(bound.slice(0, opening).trim()) ?? bound
 }
 // The offer a draft for a lead of this play states: the play's effective offer, with the tenant context as its base. A
 // contested play refuses (offer_conflict). offer null and no refusal: there is nothing to state.
