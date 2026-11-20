@@ -22,7 +22,7 @@ const SELECT = 'if [ "$FULL_SUITE" = true ]; then sel=ALL; else sel=$(node .gith
 const timeoutFor = (event, labels) => (event === 'pull_request' && !labels.includes('full-suite-ci') ? 5 : 45)
 
 test('label on/off: both PR test jobs use the 45-min ceiling only with full-suite-ci', () => {
-  for (const name of ['test-sqlite', 'test-postgres']) {
+  for (const name of ['sqlite-shard', 'postgres-shard']) {
     const lines = job(name).split('\n').map(l => l.trim())
     assert.ok(lines.includes(TIMEOUT), `${name}: timeout must honour the full-suite-ci label`)
   }
@@ -33,12 +33,14 @@ test('label on/off: both PR test jobs use the 45-min ceiling only with full-suit
 })
 
 test('full-suite selection: the label forces ALL, otherwise affected-tests decides', () => {
-  for (const name of ['test-sqlite', 'test-postgres']) {
+  for (const name of ['sqlite-shard', 'postgres-shard']) {
     const j = job(name)
     const lines = j.split('\n').map(l => l.trim())
     assert.ok(lines.includes(FULL_ENV), `${name}: selection step reads the label`)
     assert.ok(j.includes(SELECT), `${name}: label => sel=ALL`)
-    assert.match(j, /\[ "\$SEL" = ALL \]; then npm test/, `${name}: ALL still runs the whole npm test suite`)
+    assert.match(j, /\[ "\$SEL" = ALL \]; then all=\$\(ls test\/\*\.test\.ts test\/crm-webhook-unknown-ui\.test\.mjs\)/, `${name}: ALL still runs the whole npm test list`)
+    assert.match(j, /shard: \[1, 2, 3, 4\]/, `${name}: 4 shards`)
+    assert.match(j, /'NF && \(NR-1\)%n==i-1'/, `${name}: each file lands in exactly one shard`)
   }
 })
 
@@ -47,12 +49,19 @@ test('adding or removing the label re-runs CI', () => {
 })
 
 test('nothing else is loosened: migrations, pr-budget cancel detection, no manual success status on PRs', () => {
-  const pg = job('test-postgres')
+  const pg = job('postgres-shard')
   assert.match(pg, /npm run db:migrate \| grep -q 'applied \\\[\\\]'/, 'migrate-twice check kept')
   assert.match(pg, /test\/leads-read-pg-live\.test\.ts/, 'live leads-read contract kept')
   const b = job('pr-budget')
   assert.match(b, /if \[ "\$R1" = cancelled \] \|\| \[ "\$R2" = cancelled \]; then/)
   assert.match(b, /exit 1/)
+  for (const [req, shard] of [['test-sqlite', 'sqlite-shard'], ['test-postgres', 'postgres-shard']]) {
+    const j = job(req)
+    assert.match(j, new RegExp(`needs: ${shard}`), `${req} waits for every shard`)
+    assert.ok(j.includes(`[ "\${{ needs.${shard}.result }}" = success ] || {`), `${req} fails unless every shard passed`)
+    assert.match(j, /if: always\(\)/, `${req} reports even when a shard fails`)
+  }
+  assert.match(job('main-green'), /needs: \[test-sqlite, test-postgres\]/)
   assert.match(job('main-green'), /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/)
   assert.equal((wf.match(/state=success/g) || []).length, 1, 'only main-green sets a success status')
 })

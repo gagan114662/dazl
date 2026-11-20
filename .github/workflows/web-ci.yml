@@ -9,12 +9,21 @@ on:
   # Manual run at an exact ref so a merged commit whose diff only touched release plumbing
   # can still carry the full required check set on its own SHA (checked_launch's gate).
   workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
   group: web-ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Full suite on SQLite, today's runtime store. PG-only tests skip here.
-  test-sqlite:
+  # Sharded 4 ways (round-robin over the exact `npm test` file list, or over the PR's affected list) so the full suite on
+  # main can run the work concurrently. Every file still runs in exactly one shard; the test-sqlite and
+  # test-postgres jobs below keep the required check names and fail unless every shard passed.
+  sqlite-shard:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     # Gate 2: PRs get a hard 5-minute budget (affected tests only); main runs the full suite (gate 3).
     # A reviewer-applied `full-suite-ci` label gives a PR the 45-minute ceiling AND forces ALL (#1099/#1273, Hermes F1).
@@ -45,6 +54,7 @@ jobs:
       # one tsc pass: ordinary type errors AND unused locals/imports/parameters (narrow documented exemptions, #898).
       # check-unused fails on any non-unused TS error too, so a separate `tsc --noEmit` step would only compile twice.
       - name: Lint changed files (PR) / typecheck (main)
+        if: matrix.shard == 1
         env:
           PR_BASE_SHA: ${{ steps.pr_base.outputs.sha }}
         run: |
@@ -72,15 +82,36 @@ jobs:
           DAZL_REQUIRE_AGE: "1"
           SEL: ${{ steps.sel.outputs.tests }}
         run: |
-          if [ "${{ github.event_name }}" != pull_request ] || [ "$SEL" = ALL ]; then npm test
-          elif [ "$SEL" = NONE ]; then echo "no affected tests"
-          else SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test $SEL
+          # the full list is exactly what `npm test` runs; the guard fails loudly if package.json's test script changes
+          want='SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts test/crm-webhook-unknown-ui.test.mjs'
+          [ "$(node -p 'require("./package.json").scripts.test')" = "$want" ] || { echo "::error::web/package.json test script changed: update the shard list in web-ci.yml"; exit 1; }
+          if [ "${{ github.event_name }}" != pull_request ] || [ "$SEL" = ALL ]; then all=$(ls test/*.test.ts test/crm-webhook-unknown-ui.test.mjs)
+          elif [ "$SEL" = NONE ]; then echo "no affected tests"; exit 0
+          else all=$SEL
+          fi
+          set -f
+          files=()
+          for f in $all; do
+            [[ "$f" =~ ^test/[a-zA-Z0-9_.-]+\.test\.(ts|mjs)$ && -f "$f" ]] || { echo "::error::Invalid test selection entry"; exit 1; }
+            files+=("$f")
+          done
+          (( ${#files[@]} > 0 )) || { echo "::error::Missing test selection (NONE must be explicit)"; exit 1; }
+          selected=$(printf '%s\n' "${files[@]}" | LC_ALL=C sort)
+          [[ $(printf '%s\n' "$selected" | uniq | wc -l) -eq ${#files[@]} ]] || { echo "::error::Duplicate test selection"; exit 1; }
+          mapfile -t mine < <(printf '%s\n' "$selected" | awk -v n=4 -v i=${{ matrix.shard }} 'NF && (NR-1)%n==i-1')
+          echo "shard ${{ matrix.shard }}/4: ${#mine[@]} of ${#files[@]} files"
+          if (( ${#mine[@]} > 0 )); then
+            SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test "${mine[@]}"
           fi
 
   # Full suite again with a Postgres 16 service container. Tests that take DAZL_TEST_PG_URL run against it (data layer
   # contract, migrations, schema drift) and DAZL_REQUIRE_PG=1 makes them fail instead of skipping if it is missing.
   # Modules not yet moved to lib/db/client.ts still run on SQLite in this job (docs/PLATFORM.md step 2).
-  test-postgres:
+  postgres-shard:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}
     services:
@@ -133,16 +164,51 @@ jobs:
         env:
           SEL: ${{ steps.sel.outputs.tests }}
         run: |
-          if [ "${{ github.event_name }}" != pull_request ] || [ "$SEL" = ALL ]; then npm test
-          elif [ "$SEL" = NONE ]; then echo "no affected tests"
-          else SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test $SEL
+          # the full list is exactly what `npm test` runs; the guard fails loudly if package.json's test script changes
+          want='SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts test/crm-webhook-unknown-ui.test.mjs'
+          [ "$(node -p 'require("./package.json").scripts.test')" = "$want" ] || { echo "::error::web/package.json test script changed: update the shard list in web-ci.yml"; exit 1; }
+          if [ "${{ github.event_name }}" != pull_request ] || [ "$SEL" = ALL ]; then all=$(ls test/*.test.ts test/crm-webhook-unknown-ui.test.mjs)
+          elif [ "$SEL" = NONE ]; then echo "no affected tests"; exit 0
+          else all=$SEL
+          fi
+          set -f
+          files=()
+          for f in $all; do
+            [[ "$f" =~ ^test/[a-zA-Z0-9_.-]+\.test\.(ts|mjs)$ && -f "$f" ]] || { echo "::error::Invalid test selection entry"; exit 1; }
+            files+=("$f")
+          done
+          (( ${#files[@]} > 0 )) || { echo "::error::Missing test selection (NONE must be explicit)"; exit 1; }
+          selected=$(printf '%s\n' "${files[@]}" | LC_ALL=C sort)
+          [[ $(printf '%s\n' "$selected" | uniq | wc -l) -eq ${#files[@]} ]] || { echo "::error::Duplicate test selection"; exit 1; }
+          mapfile -t mine < <(printf '%s\n' "$selected" | awk -v n=4 -v i=${{ matrix.shard }} 'NF && (NR-1)%n==i-1')
+          echo "shard ${{ matrix.shard }}/4: ${#mine[@]} of ${#files[@]} files"
+          if (( ${#mine[@]} > 0 )); then
+            SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test "${mine[@]}"
           fi
       - name: db:migrate against the service container, twice (second run must apply nothing)
+        if: matrix.shard == 1
         run: |
           DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate
           DATABASE_URL=$DAZL_TEST_PG_URL npm run db:migrate | grep -q 'applied \[\]'
       - name: live leads-read contract on the regenerated schema
+        if: matrix.shard == 1
         run: DAZL_PG_ADMIN=$DAZL_TEST_PG_URL node --experimental-strip-types --test test/leads-read-pg-live.test.ts
+
+  # Required checks: these names are what branch protection requires. Each passes only if every shard passed.
+  test-sqlite:
+    if: always()
+    needs: sqlite-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: '[ "${{ needs.sqlite-shard.result }}" = success ] || { echo "::error::sqlite shards: ${{ needs.sqlite-shard.result }}"; exit 1; }'
+  test-postgres:
+    if: always()
+    needs: postgres-shard
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: '[ "${{ needs.postgres-shard.result }}" = success ] || { echo "::error::postgres shards: ${{ needs.postgres-shard.result }}"; exit 1; }'
 
   # Gate 3: after the full suite passes on main, mark the commit green. Only main-green commits may deploy (prod-deploy.yml).
   main-green:
@@ -167,14 +233,14 @@ jobs:
   # Gate 2: say clearly when a PR job hit the 5-minute budget, so an optimization lane gets opened.
   pr-budget:
     if: always() && github.event_name == 'pull_request'
-    needs: [test-sqlite, test-postgres]
+    needs: [sqlite-shard, postgres-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Budget report
         env:
-          R1: ${{ needs.test-sqlite.result }}
-          R2: ${{ needs.test-postgres.result }}
+          R1: ${{ needs.sqlite-shard.result }}
+          R2: ${{ needs.postgres-shard.result }}
         run: |
           echo "test-sqlite=$R1 test-postgres=$R2"
           if [ "$R1" = cancelled ] || [ "$R2" = cancelled ]; then
