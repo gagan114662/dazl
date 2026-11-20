@@ -26,7 +26,7 @@ export interface BuyerSearchReaders {
 }
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
 type Hold = 'missing_signal_proof' | 'missing_requested_role' | 'contact_scope_unavailable' | 'buyer_not_found' |
-  'buyer_title_off' | 'buyer_uncorroborated'
+  'buyer_title_off' | 'buyer_uncorroborated' | 'read_failed'
 export type BuyerSearchResult =
   | { status: 'held'; reason: Hold }
   | { status: 'buyer_proof'; buyer: { name: string; title: string; linkedin: string | null; proofUrls: string[] } }
@@ -50,23 +50,50 @@ function httpsUrl(value: unknown): URL | null {
 }
 const registrable = (u: URL) => getDomain(u.hostname, { allowPrivateDomains: true })
 
-// The role must be one the user reviewed: equal, or the reviewed role appears
-// as whole words inside the found title (e.g. "VP Sales" in "VP Sales, EMEA").
+// The role must be one the user reviewed. A combined title ("Founder & CEO")
+// is split into its roles; each role may carry only a trailing scope
+// qualifier after a comma, dash or bracket ("Head of Sales, EMEA"). Anything
+// in front of the role ("Assistant to", "Deputy") makes it a different role.
+const words = (s: string) => fold(s).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 function roleMatches(found: string, requested: ReadonlySet<string>): boolean {
-  const f = ` ${fold(found).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `
-  for (const r of requested) {
-    const w = fold(r).replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-    if (w && (f.trim() === w || f.includes(` ${w} `))) return true
-  }
-  return false
+  const wanted = new Set([...requested].map(words).filter(Boolean))
+  const roles = fold(found).split(/\s*(?:&|\/|\band\b|\|)\s*/u)
+  return roles.some(role => {
+    const core = role.split(/\s*(?:,|\s[-–—]\s|\()/u)[0] ?? ''
+    return wanted.has(words(core))
+  })
 }
-// A page proves the person+role only if both appear in the visible text.
+// A page proves the person+role only through one person-specific assertion:
+// the name's own line, or the name line plus the line right after it (a team
+// card "Name / Title"). Outside pages must name the company in that same
+// assertion. Name and title in unrelated sections never count.
 function pageNames(text: string, name: string, title: string, company: string | null): boolean {
   if (typeof text !== 'string' || text.length > 200_000) return false
-  const t = fold(text)
-  return t.includes(fold(name)) && t.includes(fold(title)) && (company === null || t.includes(fold(company)))
+  const lines = text.split(/\r?\n/).map(l => fold(l)).filter(Boolean)
+  const n = fold(name), t = fold(title), c = company === null ? null : fold(company)
+  return lines.some((line, i) => {
+    if (!line.includes(n)) return false
+    const own = line.includes(t) && (c === null || line.includes(c))
+    // Team card on the company's own site: a line that is just the name,
+    // followed by a line that starts with the title.
+    const bare = line.replace(/[^\p{L}\p{M}\p{N}' .-]/gu, '').trim()
+    const card = c === null && bare === n && (lines[i + 1] ?? '').startsWith(t)
+    return own || card
+  })
 }
 
+const FAILED = Symbol('read_failed')
+// Like bounded, but a rejected or aborted dispatched read is a distinct
+// failure: usage may be uncertain, so the stage stops instead of moving on.
+function dispatched<T>(signal: AbortSignal, op: () => Promise<T>): Promise<T | typeof FAILED> {
+  if (signal.aborted) return Promise.resolve(FAILED)
+  return new Promise(resolve => {
+    const abort = () => finish(FAILED)
+    const finish = (v: T | typeof FAILED) => { signal.removeEventListener('abort', abort); resolve(v) }
+    signal.addEventListener('abort', abort, { once: true })
+    void Promise.resolve().then(() => signal.aborted ? FAILED : op()).then(finish, () => finish(FAILED))
+  })
+}
 function bounded<T>(signal: AbortSignal, op: () => Promise<T>): Promise<T | undefined> {
   if (signal.aborted) return Promise.resolve(undefined)
   return new Promise(resolve => {
@@ -106,24 +133,28 @@ export async function proveCompanyFirstBuyerBySearch(
   if (!sane(c.title) || former.test(c.title) || !roleMatches(c.title, roles)) return held('buyer_title_off')
 
   const ownDomain = registrable(origin)
-  const urls: URL[] = []
-  for (const s of Array.isArray(c.sources) ? c.sources : []) {
+  // Own-site means the exact verified origin, not any host under its domain.
+  const isOwn = (u: URL) => u.origin === origin.origin
+  const all: URL[] = []
+  for (const s of Array.isArray(c.sources) ? c.sources.slice(0, 50) : []) {
     const u = httpsUrl(s)
-    if (!u || /(^|\.)linkedin\.com$/i.test(u.hostname) || urls.some(x => x.href === u.href)) continue
-    urls.push(u)
-    if (urls.length >= MAX_PAGES) break
+    if (!u || /(^|\.)linkedin\.com$/i.test(u.hostname) || all.some(x => x.href === u.href)) continue
+    // Other hosts under the company domain are neither own-site nor independent.
+    if (!isOwn(u) && registrable(u) === ownDomain) continue
+    all.push(u)
   }
-  // Own-site pages first: one is enough.
-  urls.sort((a, b) => Number(registrable(b) === ownDomain) - Number(registrable(a) === ownDomain))
+  // Prioritize own-site pages over the whole list, then cap the paid reads.
+  const urls = [...all.filter(isOwn), ...all.filter(u => !isOwn(u))].slice(0, MAX_PAGES)
   const outside = new Map<string, string>()
   for (const u of urls) {
     if (!await permit('buyer_page')) return held('contact_scope_unavailable')
-    const page = await bounded(abort, () => readers.readPage(u.href, abort))
+    const page = await dispatched(abort, () => readers.readPage(u.href, abort))
+    if (page === FAILED) return held('read_failed')
     if (await current() !== true) return held('contact_scope_unavailable')
     if (!page || page.url !== u.href) continue
     const dom = registrable(u)
     if (!dom) continue
-    if (dom === ownDomain) {
+    if (isOwn(u)) {
       if (pageNames(page.text, c.name, c.title, null)) return proven(c, [u.href])
     } else if (!outside.has(dom) && pageNames(page.text, c.name, c.title, company)) {
       outside.set(dom, u.href)
@@ -157,32 +188,49 @@ export function isRoleMailbox(local: string): boolean {
 }
 
 const ADDRESS = /(?<![\p{L}\p{N}._%+@-])[a-z0-9]+(?:[._-][a-z0-9]+)*@[a-z0-9.-]+\.[a-z]{2,}(?![\p{L}\p{N}_%+@-])/giu
+const HAS_ADDRESS = new RegExp(ADDRESS.source, 'iu')
 function namedLocal(local: string, name: string): boolean {
   const words = name.trim().split(/\s+/).map(ascii)
   const first = words[0], last = words.at(-1)
   if (words.length < 2 || !first || !last || first.length < 2 || last.length < 2 || first === last) return false
   const key = local.toLowerCase().replace(/[._-]/g, '')
-  return [first + last, last + first, first[0] + last, first + last[0], last + first[0], first].includes(key) && key.length >= 3
+  return [first + last, last + first, first[0] + last, first + last[0], last + first[0]].includes(key)
 }
 
 // Returns an address only if it is literally published on a page of the
-// company's own site, on the company's own domain, is not a role mailbox, and
-// clearly belongs to the named person. Ambiguity (two candidates) is held.
-export function findPublishedOwnDomainEmail(buyerName: string, ownPages: readonly PublicPage[], siteHost: string): string | null {
-  if (!personName(buyerName) || !sane(siteHost, 253)) return null
-  const host = siteHost.toLowerCase().replace(/^www\./, '')
-  const hostDomain = getDomain(host, { allowPrivateDomains: true })
+// company's exact verified origin, on the company's own domain, is not a role
+// mailbox, matches the person's full name, and sits in the buyer's own block
+// (the name line and the few lines after it, before another person). A
+// mailbox that could belong to a namesake on the same page is held.
+export function findPublishedOwnDomainEmail(buyerName: string, ownPages: readonly PublicPage[], siteOrigin: string): string | null {
+  if (!personName(buyerName)) return null
+  const site = httpsUrl(siteOrigin) ?? httpsUrl(siteOrigin + '/')
+  if (!site) return null
+  const hostDomain = getDomain(site.hostname, { allowPrivateDomains: true })
+  if (!hostDomain) return null
   const found = new Set<string>()
+  const n = fold(buyerName)
   for (const p of Array.isArray(ownPages) ? ownPages : []) {
     const u = httpsUrl(p?.url)
-    if (!u || !hostDomain || getDomain(u.hostname, { allowPrivateDomains: true }) !== hostDomain || typeof p.text !== 'string') continue
-    for (const raw of p.text.match(ADDRESS) ?? []) {
-      const addr = raw.toLowerCase().replace(/\.$/, '')
-      const [local, domain] = addr.split('@')
-      if (!local || !domain || getDomain(domain, { allowPrivateDomains: true }) !== hostDomain) continue
-      if (isRoleMailbox(local) || !namedLocal(local, buyerName)) continue
-      found.add(addr)
-    }
+    if (!u || u.origin !== site.origin || typeof p.text !== 'string' || p.text.length > 200_000) continue
+    const lines = p.text.split(/\r?\n/).map(l => l.normalize('NFKC').trim()).filter(Boolean)
+    const people = lines.map(l => l.split(/[,|–—-]/)[0].trim()).filter(l => personName(l) && l.length <= 60)
+    lines.forEach((line, i) => {
+      if (!fold(line).includes(n)) return
+      for (let j = i; j < Math.min(lines.length, i + 4); j++) {
+        // Stop at the next person's card.
+        if (j > i && fold(lines[j]) !== n && people.includes(lines[j]) && lines.slice(j + 1, j + 2).some(x => !HAS_ADDRESS.test(x) && x.length <= 60)) break
+        for (const raw of lines[j].match(ADDRESS) ?? []) {
+          const addr = raw.toLowerCase().replace(/\.$/, '')
+          const [local, domain] = addr.split('@')
+          if (!local || !domain || getDomain(domain, { allowPrivateDomains: true }) !== hostDomain) continue
+          if (isRoleMailbox(local) || !namedLocal(local, buyerName)) continue
+          // Held if any other named person on the page could own this mailbox.
+          if (people.some(other => fold(other) !== n && namedLocal(local, other))) continue
+          found.add(addr)
+        }
+      }
+    })
   }
   return found.size === 1 ? [...found][0] : null
 }
