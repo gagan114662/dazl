@@ -17,7 +17,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; uncertainResponse?: 'http' | 'body' | 'usage'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -65,16 +65,30 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (uncertainResponse === 'http') return new Response('raw-response-sentinel', { status: 529 })
       if (uncertainResponse === 'body') return new Response('raw-response-sentinel')
       if (uncertainResponse === 'usage') return Response.json({ model: CLAUDE_SEARCH_MODEL, content: 'raw-response-sentinel', usage: {} })
+      if (uncertainResponse === 'projected') return Response.json({
+        model: CLAUDE_SEARCH_MODEL, content: 'raw-response-sentinel', id: 'hidden-request-id',
+        usage: { input_tokens: 8_000, output_tokens: 10_000_001, cache_read_input_tokens: null, service_tier: 'priority',
+          inference_geo: 'secret-enum-value', speed: 'standard', cache_creation: { ephemeral_5m_input_tokens: 3, arbitrary: 'private-cache-value' },
+          server_tool_use: { web_search_requests: 2, web_fetch_requests: 0, provider_private_tool: 1 } },
+      })
       return Response.json({
-        model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn',
+        model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn', role: 'assistant', type: 'message',
         content: [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
-        usage: { input_tokens: overage ? 100_000 : 8_000, output_tokens: 200, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } },
+        usage: { input_tokens: overage ? 100_000 : 8_000, output_tokens: 200,
+          ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
+          server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } },
       })
     }
     globalThis.fetch = io
     const status = await runJob(db, job, {
       master, fetchImpl: io, score: false, ground: false, judge: null,
-      fetchPage: async page => { sequence.push('publisher-page'); assert.equal(page, url); return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: 'Published evidence about a commercial roofing company. '.repeat(8) } },
+      fetchPage: async page => {
+        sequence.push('publisher-page')
+        assert.equal(page, url)
+        if (sparseUsage) assert.deepEqual(db.prepare("SELECT status,actual_usd FROM scan_spend_calls WHERE scan_job_id='job' AND kind='llm.anthropic.web_search'").get(),
+          { status: 'settled', actual_usd: 0.037 }, 'native billing is durable before publisher evidence is read')
+        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: 'Published evidence about a commercial roofing company. '.repeat(8) }
+      },
     })
     const end = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(job.id)
     const ledger = db.prepare('SELECT status, reason, reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id=? ORDER BY rowid').all(job.id)
@@ -91,7 +105,9 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       second = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(id)
     }
     const nativeStatus = db.prepare("SELECT status FROM scan_source_runs WHERE job_id=? AND collector='search:anthropic_web'").get(job.id)
-    return { status, sequence, messages, denied, end, ledger, jobSpend, pool, second, nativeStatus }
+    const reportRow = db.prepare('SELECT report FROM scan_run_report WHERE job_id=? AND attempt=1').get(job.id) as { report: string } | undefined
+    return { status, sequence, messages, denied, end, ledger, jobSpend, pool, second, nativeStatus,
+      nativeReport: reportRow ? JSON.parse(reportRow.report).native_web_search : undefined }
   } finally {
     globalThis.fetch = previousFetch
     for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
@@ -164,7 +180,7 @@ test('unknown native search billing stops the old play without permanently block
 })
 
 test('post-send failure diagnostics distinguish response paths without releasing unknown spend', async () => {
-  for (const [uncertainResponse, reason] of [['http', 'http_error'], ['body', 'response_unreadable'], ['usage', 'usage_uncertain']] as const) {
+  for (const [uncertainResponse, reason] of [['http', 'http_error'], ['body', 'response_unreadable'], ['usage', 'usage_envelope']] as const) {
     const x = await simulate({ uncertainResponse })
     assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
     assert.deepEqual(x.sequence, ['native-count', 'native-send'])
@@ -185,4 +201,31 @@ test('authenticated 429 stops this play, reverses all reservations and lets a se
     assert.equal(row.reported_usd, 0)
   }
   assert.equal(x.sequence.filter(x => x === 'native-send').length, 2)
+})
+
+
+test('the real runner settles sparse documented native usage before reading publisher evidence', async () => {
+  const x = await simulate({ sparseUsage: true })
+  assert.deepEqual(x.sequence.slice(0, 3), ['native-count', 'native-send', 'publisher-page'])
+  assert.deepEqual(x.ledger[0], { status: 'settled', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: 0.037 })
+})
+
+
+test('a refusal writes only bounded billing fields on the tenant run report and never settles or fetches evidence', async () => {
+  const x = await simulate({ uncertainResponse: 'projected' })
+  assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(x.sequence, ['native-count', 'native-send'])
+  assert.deepEqual(x.nativeStatus, { status: 'error:usage_geo' })
+  assert.equal(x.nativeReport.actual_usd, null)
+  assert.equal(x.nativeReport.reported_input_tokens, null)
+  assert.equal(x.nativeReport.searches, null)
+  assert.deepEqual(x.nativeReport.rejected_usage, {
+    rejection: 'usage_geo', usage: 'object', model: CLAUDE_SEARCH_MODEL,
+    inference_geo: 'unrecognized', speed: 'standard', service_tier: 'priority', input_tokens: 8000,
+    output_tokens: 'outside_diagnostic_bound', cache_read_input_tokens: 'null', cache_creation_input_tokens: 'absent',
+    cache_creation: 'object', ephemeral_5m_input_tokens: 3, ephemeral_1h_input_tokens: 'absent',
+    server_tool_use: 'object', web_search_requests: 2, web_fetch_requests: 0, other_tool_counts: 'nonzero_or_invalid',
+  })
+  assert.doesNotMatch(JSON.stringify(x.nativeReport), /secret-enum-value|hidden-request-id|raw-response-sentinel|private-cache-value|provider_private_tool/)
+  assert.deepEqual(x.ledger, [{ status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null }])
 })
