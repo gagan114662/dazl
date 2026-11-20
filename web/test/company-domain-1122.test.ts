@@ -381,3 +381,95 @@ test('#1334-F1 past the top-lead cap, every hold the crawl admits says "did not 
   assert.deepEqual(why(r.lead('H4')), ['not_checked'], 'event-over hold stays excluded')
   assert.deepEqual(why(r.lead('H5')), ['not_checked'], 'unknown hold stays excluded')
 })
+
+test('name probes use explicit nonlegacy countries only and refuse conflicting or ambiguous scope', () => {
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, Denmark']), ['dk'])
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, South Korea']), ['co.kr'])
+  assert.deepEqual(sc.countryTlds(['Second Synthetic Place, Denmark', 'Synthetic Place, Denmark']), ['dk'])
+  assert.deepEqual(sc.probeDomains('Example Dental', ['Synthetic Place, Denmark']), ['exampledental.com', 'exampledental.dk', 'exampledental.ai', 'exampledental.io', 'exampledental.co'])
+  for (const where of [
+    ['Synthetic Place'], ['Victoria'], ['Ontario'], ['Ontario, CA'], ['Synthetic Place, TX, Denmark'],
+    ['Synthetic Place, Denmark', 'Toronto, Ontario'], ['Synthetic Place, Japan', 'Austin, TX'], ['Synthetic Place, Denmark', 'Unqualified Place'],
+    ['Canada, Denmark'], ['Vancouver, WA, Canada'], ['Vancouver, wa, Canada'], ['More buyers across Denmark'], ['Synthetic Place, DK'],
+  ]) assert.deepEqual(sc.countryTlds(where), [], where.join(' | '))
+})
+
+test('a nonlegacy country suffix only adds a probe; an unproven same-name site gives no domain or contact', async () => {
+  const company = 'Example Dental'
+  const r = await run({
+    company, where: ['Synthetic Place, Denmark'], evidenceUrl: BOARD,
+    evidence: html(`<p>${company} is hiring in Synthetic Place, Denmark.</p>`),
+    excerpt: `${company} is hiring in Synthetic Place, Denmark`,
+    sites: { 'exampledental.dk': { '/': ELSEWHERE_HOME(company), '/contact': CONTACT('info@exampledental.dk') } },
+  })
+  assert.ok(r.fetched.includes('exampledental.dk/'), 'localized hostname was actually tried')
+  assert.equal(r.domain, null)
+  assert.deepEqual(r.basis, [])
+  assert.deepEqual(r.emails, [])
+})
+
+test('#1424 Canadian postal tails preserve the country hint without bypassing conflicts', () => {
+  for (const place of ['Toronto, ON M5S 1T8', 'Toronto, Ontario M5S 1T8', 'Toronto, ON, M5S1T8', 'Toronto, ON M5S 1T8, Canada']) {
+    assert.deepEqual(sc.countryTlds([place]), ['ca'], place)
+  }
+  for (const place of ['Toronto, CA M5S 1T8', 'Toronto, ON 12345', 'Synthetic Place, ON,, Canada', 'Toronto, ON M5S 1T8, Denmark', 'Synthetic Place M5S 1T8']) {
+    assert.deepEqual(sc.countryTlds([place]), [], place)
+  }
+})
+
+test('#1424 a broader country statement is not enough for a narrower name guess, on home or another first-party page', async () => {
+  const company = 'Example Dental'
+  const evidence = html('<p>Example Dental advertised an opening in Synthetic Place, Denmark.</p>')
+  const noPlace = html(`<h1>${company}</h1>${PROSE}<a href="/contact">Contact</a>`)
+  const runSite = (where: string[], home: string, contact: string, host = 'exampledental.dk') => run({
+    company, where, evidenceUrl: BOARD, evidence, excerpt: 'Example Dental advertised an opening.',
+    sites: { [host]: { '/': home, '/contact': contact } },
+  })
+  const country = `<p>${company} is based in Denmark.</p>`
+  const local = `<p>${company} is based in Synthetic Place, Denmark.</p>`
+  const service = `<p>${company} serves customers in Synthetic Place, Denmark.</p>`
+  for (const host of ['exampledental.dk', 'exampledental.com']) {
+    for (const [home, contact] of [[noPlace.replace(PROSE, country + PROSE), ''], [noPlace, country], [noPlace.replace(PROSE, service + PROSE), '']]) {
+      const result = await runSite(['Synthetic Place, Denmark'], home, html(contact + '<p>Email: info@example.org</p>'), host)
+      assert.ok(result.fetched.includes(host + '/'))
+      NOTHING(result)
+    }
+  }
+  for (const [heading, expected] of [['Denmark, Denmark', null], ['Synthetic Place, Denmark', 'exampledental.dk']] as const) {
+    const result = await run({
+      company, where: ['Synthetic Place, Denmark'], evidenceUrl: BOARD, evidence,
+      sites: { 'exampledental.dk': {
+        '/': noPlace.replace('</body>', '<a href="/careers">Careers</a></body>'),
+        '/careers': html(`<h1>Careers</h1><h3>${heading}</h3><a href="https://job-boards.greenhouse.io/exampledental/jobs/1234567">Open roles</a>`),
+      } },
+    })
+    assert.ok(result.fetched.includes('exampledental.dk/careers'))
+    assert.equal(result.domain, expected, heading)
+  }
+  assert.equal((await runSite(['Synthetic Place, Denmark'], noPlace, html(local))).domain, 'exampledental.dk')
+  NOTHING(await runSite(['Québec, Canada'], noPlace.replace(PROSE, '<p>Example Dental is based in Canada.</p>' + PROSE), ''))
+  assert.equal((await runSite(['Denmark'], noPlace.replace(PROSE, country + PROSE), '')).domain, 'exampledental.dk')
+})
+
+test('#1424 a namesake guess needs the contact page’s own scoped address, not another company’s address', async () => {
+  const company = 'Example Dental'
+  const host = 'exampledental.com'
+  const address = '45-12 Main Street, Synthetic Place, ON M5S 1T8'
+  for (const [paragraph, expected] of [
+    [`${company}, ${address}.`, host],
+    [`Different Company, ${address}.`, null],
+    [`Our supplier ${company}, ${address}.`, null],
+    [`We serve clients near ${address}.`, null],
+  ] as const) {
+    const r = await run({
+      company, where: ['Synthetic Place, Ontario'], evidenceUrl: BOARD,
+      evidence: html(`<p>${company} advertised an opening in Synthetic Place, Ontario.</p>`),
+      sites: { [host]: {
+        '/': html(`<h1>${company}</h1>${PROSE}<a href="/contact">Contact</a>`),
+        '/contact': html(`<p>${paragraph}</p><p>Email: info@${host}</p>`),
+      } },
+    })
+    assert.equal(r.domain, expected, paragraph)
+    if (!expected) NOTHING(r)
+  }
+})

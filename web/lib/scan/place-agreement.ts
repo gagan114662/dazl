@@ -96,7 +96,7 @@ function ownOtherUkStreet(text: string, company?: string): boolean {
 function londonVerdict(text: string, company?: string): PlaceVerdict {
   const t = clean(text)
   // Another UK city named as a place ("Manchester, England", "Leeds, UK") or a UK city on an address line.
-  let other = UK_CITIES.find(c => new RegExp(`(?<![a-z0-9])${esc(c)},?\\s*(?:england|scotland|wales|northern ireland|uk|u\\.k\\.|united kingdom)(?![a-z0-9])`).test(t)) ?? null
+  const other = UK_CITIES.find(c => new RegExp(`(?<![a-z0-9])${esc(c)},?\\s*(?:england|scotland|wales|northern ireland|uk|u\\.k\\.|united kingdom)(?![a-z0-9])`).test(t)) ?? null
   // Do not guess a UK city from any capitalised words before ', UK': flattened
   // bylines, country lists and customer names have this shape too. Unknown cities
   // bound to this company are handled by boundElsewhere before this function.
@@ -420,3 +420,30 @@ export { otherState as otherUsStateName }
 
 // True when the request names New York City or London: the country / state beside it is context, never enough to attach a company.
 export const cityScoped = (where: string[]): boolean => where.some(w => NYC_ASK.test(w) || /\blondon\b/i.test(w))
+
+
+// Bind an approved narrow place to the company. An owned office-address block
+// can establish it directly; ordinary prose must name the company or office.
+export function ownProbePlace(text: string, terms: readonly string[], company: string, alreadyBound: boolean): boolean {
+  const names = terms.map(n => clean(n).replace(SUFFIX, '')).filter(n => n.length >= 2)
+  if (!names.length) return false
+  const token = `(?<![a-z0-9])(?:${[...new Set(names)].map(n => esc(n).replace(/ /g, '[ ]+')).join('|')})(?![a-z0-9])`
+  const re = new RegExp(token, 'gi')
+  return sentences(text).some(sentence => {
+    const normalized = sentence.normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    for (const m of normalized.matchAll(re)) {
+      const prefix = normalized.slice(0, m.index)
+      const street = /\b\d{1,5}[a-z]?\s+[^,]{2,80},?\s*$/i.exec(prefix)
+      if (alreadyBound || bindsToCompany(prefix, company)) return true
+      if (!street) continue
+      const before = prefix.slice(0, street.index)
+      if (bindsToCompany(before.replace(/,\s+a (?:family )?practice at\s*$/i, ''), company)) return true
+      const after = normalized.slice(m.index + m[0].length)
+      // The original visible text also carries footer addresses beyond the HTML cap.
+      if (/\bLOCATION\s*:?\s*$/.test(before) &&
+          /^,\s*[A-Z]{2},?\s*(?:[A-Z]\d[A-Z]\s?\d[A-Z]\d|\d{5}(?:-\d{4})?)\b/.test(after) &&
+          !/\b(?:customer|client|partner|supplier|testimonial)\s*$/i.test(before.replace(/LOCATION\s*:?\s*$/, ''))) return true
+    }
+    return false
+  })
+}
