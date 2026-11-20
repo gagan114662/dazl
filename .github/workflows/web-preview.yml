@@ -47,8 +47,14 @@ jobs:
       # Signed real Next and persisted SQLite workspace; no API stubs or paid scan.
       - name: Signed saved-profile offer chooser (real browser and routes)
         run: |
-          node test/ui/signed-offer-preflight-1436.ui.mjs
-          node test/ui/signed-offer-preflight-1436.ui.mjs --same-brand
+          node --experimental-strip-types test/ui/signed-offer-preflight-1436.ui.mjs
+          node --experimental-strip-types test/ui/signed-offer-preflight-1436.ui.mjs --same-brand
+      - name: Signed clipped-offer Home card (real browser and routes)
+        run: node --experimental-strip-types test/ui/signed-home-clipped-offer-1436.ui.mjs
+      - name: Signed workspace auth shell and stream completion
+        run: node --experimental-strip-types test/smoke/signed-app-shell.smoke.mjs
+      - name: Signed terminal and active accounting holds (real route and ledger)
+        run: node --experimental-strip-types test/manual/icp-signed-loopback.mts --production-build
       # The rendered price-estimate check (stubbed: no server, db, network or key). esbuild bundles the page; installed with playwright for this job only, the lockfile untouched. It must run, not skip.
       - name: Rendered price-estimate and budget check
         run: |

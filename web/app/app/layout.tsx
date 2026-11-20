@@ -41,7 +41,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           Home and Inbox stayed on BODY. Its visible focus ring is #main:focus-visible in globals.css. MainFocus keeps
           that focus when the page swaps its loading view for the loaded one, or hydration re-creates the subtree. */}
       <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto">
-        <Suspense fallback={null}>
+        <Suspense fallback={
+          <div className="p-4 sm:p-8" role="status">
+            <p className="text-sm font-medium">Opening your workspace…</p>
+            <p className="mt-1 text-sm text-[var(--ink-2)]">If this screen stays here, reload the page to try again.</p>
+          </div>
+        }>
           <AuthGate>{children}</AuthGate>
         </Suspense>
       </main>
