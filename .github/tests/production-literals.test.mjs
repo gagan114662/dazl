@@ -1,161 +1,177 @@
-import {test} from 'node:test'
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import {execFileSync} from 'node:child_process'
-import {mkdtempSync,mkdirSync,writeFileSync,renameSync,rmSync,readFileSync} from 'node:fs'
-import {tmpdir} from 'node:os'
-import {join,dirname} from 'node:path'
-import {checkChanges,fromGit,DESIGNATED_CATALOG} from '../scripts/production-literals.mjs'
-const source='web/lib/scan/discover.ts'
-const registry=DESIGNATED_CATALOG
-const neighbor='web/lib/sources/registry-source-catalog-extra.ts'
-const terms=[{kind:'city',label:'Utrecht',source:'docs/reviewed-geography.md'},{kind:'industry',label:'Dental Practices',source:'docs/reviewed-industries.md'}]
-const policy={version:1,terms,registryPaths:[registry],receipts:[]}
-const check=(after,before='',path=source,p=policy)=>checkChanges([{path,before,after}],p)
-test('the policy blob from the same candidate commit passes the scanner schema',()=>{
-  const actual=JSON.parse(readFileSync(new URL('../policy/production-literals.json',import.meta.url),'utf8'))
-  assert.deepEqual(checkChanges([],actual),[])
-  const widened={...actual,registryPaths:[...actual.registryPaths,neighbor]}
-  assert.throws(()=>checkChanges([],widened),/invalid reviewed production-literal policy/)
-})
-test('new exact operational city/industry each fail; aliases/copy are not falsely inferred',()=>{
-  assert.deepEqual(check('const targetCity = cfg?.city ?? "Utrecht"; let plan={industries:["Dental Practices"]};').map(x=>[x.kind,x.receipt]),[['city',null],['industry',null]])
-  assert.deepEqual(check('const help = "Search Dental Practices in Utrecht"; const path = "./Utrecht"; import city from "Utrecht";'),[])
-  assert.deepEqual(check('const city = "Utrechtshire"; const industry = "Utrecht";').map(x=>[x.kind,x.literal]),
-    [['city','Utrechtshire'],['industry','Utrecht']])
-})
-test('formatting stays grandfathered, an added copy still gets flagged',()=>{
-  assert.deepEqual(check("const city = 'Utrecht'\n",'const city="Utrecht";'),[])
-  assert.equal(check('const cities=["Utrecht","Utrecht"]','const cities=["Utrecht"]')[0].added,1)
-})
-test('docs, fixtures, TS declarations and source outside lib/app/components not in scope',()=>{
-  const hard='const city="Utrecht"'
-  for (const p of ['web/scripts/home/reader.ts','web/lib/scan/docs/example.ts','web/lib/scan/path.test.ts','web/lib/scan/path.fixture.ts','web/lib/scan/path.d.ts','docs/notes.ts','web/lib/scan/fixtures/path.ts']) assert.deepEqual(check(hard,'',p),[],p)
-})
-test('only the designated catalog file is a permitted config location',()=>{
-  const code='const rules={city:"Unseen city",industries:["Unseen industry"],fallbackCity:"Second city"};'
-  assert.deepEqual(check(code,'',registry).map(r=>r.receipt?.authority),Array(3).fill('designated_catalog'))
-  for(const path of [source,neighbor,'web/lib/sources/registry-source-catalog.tsx','web/lib/sources/Registry-source-catalog.ts']) {
-    assert.deepEqual(check(code,'',path).map(r=>r.receipt),Array(3).fill(null))
-  }
-})
-test('real local Git loader pins reviewed base policy and follows exact production rename only',()=>{
- const cwd=mkdtempSync(join(tmpdir(),'literal-policy-'))
- const git=(...args)=>execFileSync('git',args,{cwd,encoding:'utf8'}).trimEnd()
- const raw=(...args)=>execFileSync('git',args,{cwd,encoding:'utf8'})
- const write=(path,text)=>{mkdirSync(dirname(join(cwd,path)),{recursive:true});writeFileSync(join(cwd,path),text)}
- const commit=()=>{git('add','-A');git('-c','user.name=Fixture','-c','user.email=test@example.invalid','commit','-m','fixture');return git('rev-parse','HEAD')}
- try {
-  git('init','-q')
-  const cfg='.github/policy/production-literals.json'
-  write(cfg,JSON.stringify(policy));write(source,'const city="Utrecht"');write('web/test/fixture.ts','const industry="Dental Practices"')
-  const base=commit()
-  renameSync(join(cwd,source),join(cwd,'web/lib/scan/renamed.ts'))
-  mkdirSync(dirname(join(cwd,neighbor)),{recursive:true})
-  renameSync(join(cwd,'web/test/fixture.ts'),join(cwd,neighbor))
-  write(cfg,JSON.stringify({...policy,registryPaths:[registry,neighbor],receipts:[]}))
-  assert.deepEqual(fromGit(base,commit(),raw).map(r=>[r.path,r.receipt]),[[neighbor,null]])
- } finally {rmSync(cwd,{recursive:true,force:true})}
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { checkChanges, fromGit } from '../scripts/production-literals.mjs'
+
+const source = 'web/lib/scan/discover.ts'
+const catalog = 'web/lib/sources/registry-source-catalog.ts'
+const policyPath = '.github/policy/production-literals.json'
+const policy = { version: 2, grandfathering: 'trusted_same_path_slot_counts' }
+const check = (after, before = '', path = source, p = policy) => checkChanges([{ path, before, after }], p)
+const literals = rows => rows.map(r => [r.kind, r.literal, r.receipt])
+const marked = (kind, literal) => [kind, literal, null]
+
+test('actual candidate policy validates; no terms, registry path or exception schema exists', () => {
+  const actual = JSON.parse(readFileSync(new URL('../policy/production-literals.json', import.meta.url), 'utf8'))
+  assert.deepEqual(checkChanges([], actual), [])
+  for (const p of [{ ...actual, terms: [] }, { ...actual, registryPaths: [catalog] }, { ...actual, receipts: [] }, { ...actual, grandfathering: 'allow_all' }, null])
+    assert.throws(() => checkChanges([], p), /invalid reviewed production-literal policy/)
 })
 
-test('same-count typed field move does not grandfather new fallback city or default industry', () => {
-  const before='const config={city:"Utrecht"}; const industry="Dental Practices";'
-  const after='const config={fallbackCity:"Utrecht"}; const defaultIndustry="Dental Practices";'
-  const findings=check(after,before)
-  assert.deepEqual(findings.map(r=>[r.kind,r.added,r.receipt]),[['city',1,null],['industry',1,null]])
-})
-test('same-count move from typed initializer to explicit match is new hardcoding', () => {
-  assert.equal(check('if (config.city === "Utrecht") start();','const city = "Utrecht";')[0]?.added,1)
-})
-test('exact content renamed out of allowed catalog becomes new outside hardcoding',()=>{
- const cwd=mkdtempSync(join(tmpdir(),'literal-catalog-rename-'))
- const git=(...args)=>execFileSync('git',args,{cwd,encoding:'utf8'})
- const write=(path,text)=>{mkdirSync(dirname(join(cwd,path)),{recursive:true});writeFileSync(join(cwd,path),text)}
- const commit=()=>{git('add','-A');git('-c','user.name=Fixture','-c','user.email=test@example.invalid','commit','-m','fixture');return git('rev-parse','HEAD').trim()}
- try {
-  git('init','-q')
-  write('.github/policy/production-literals.json',JSON.stringify(policy))
-  write(registry,'const city="Catalog jurisdiction";')
-  const base=commit()
-  renameSync(join(cwd,registry),join(cwd,neighbor))
-  const head=commit()
-  assert.match(git('diff','--name-status','--find-renames=100%',base,head),/^R100/)
-  assert.deepEqual(fromGit(base,head,git).map(r=>[r.path,r.receipt]),[[neighbor,null]])
- } finally {rmSync(cwd,{recursive:true,force:true})}
+test('operational identity slots deny unseen city, region, country, industry and company', () => {
+  const patch = 'const q = { targetCity: "A city", fallbackRegion: "A region", countryCodes: ["AQ"], targetIndustry: "An industry", companyName: "A company" }'
+  assert.deepEqual(literals(check(patch)), [
+    marked('city', 'A city'), marked('region', 'A region'), marked('country', 'AQ'), marked('industry', 'An industry'), marked('company', 'A company'),
+  ])
+  assert.deepEqual(literals(check(patch, '', catalog)), literals(check(patch)))
 })
 
-test('unlisted nonempty direct identity literals deny by default',()=>{
-  const rows=check('const cfg={city:"Unlisted city", industries:["Unlisted industry"],fallbackCity:`Unlisted fallback`};')
-  assert.deepEqual(rows.map(r=>[r.kind,r.literal,r.receipt]),[
-    ['city','Unlisted city',null],['industry','Unlisted industry',null],['city','Unlisted fallback',null],
+test('literal computed comparison/assignments, destructured aliases, static alias values and switches', () => {
+  const code = [
+    'config["region"] = "Unseen A"',
+    'if ("Unseen B" !== data[`country`]) hit()',
+    'const { "companyName": org = "Unseen C", ["industry"]: sectorKey } = data;',
+    'if (sectorKey === "Unseen D") hit()',
+    'const geoKey = query.region; switch (geoKey) { case "Unseen E": hit() }',
+    'const cityValue = "Unseen F"; const req = { city: cityValue }',
+    'const unrelated = (geoKey) => geoKey === "not bound to the region";',
+  ].join('\n')
+  assert.deepEqual(literals(check(code)), [
+    marked('region','Unseen A'), marked('country','Unseen B'), marked('company','Unseen C'),
+    marked('industry','Unseen D'), marked('region','Unseen E'), marked('city','Unseen F'),
   ])
 })
-test('existing unlisted literal formatting is grandfathered, added slot or copy is not',()=>{
-  const before='const cfg={city:"Unlisted city", industries:["Existing other"]};'
-  assert.deepEqual(check("const cfg = { city:'Unlisted city', industries:['Existing other'] }",before),[])
-  const rows=check('const cfg={fallbackCity:"Unlisted city", industries:["Existing other","Unlisted industry"]};',before)
-  assert.deepEqual(rows.map(r=>[r.literal,r.added]),[['Unlisted city',1],['Unlisted industry',1]])
-})
-test('display copy, generic terms, empty sentinels and unsupported AST shapes remain outside strong slots',()=>{
-  const rows=check('const cfg={title:"City: Unlisted", city:"", industries:["   "], sector:"Other", location:"Unlisted city", cityGuide:"Browse cities", cityLabel:"Choose a city", targetCity:raw, fallbackCity:`New ${name}`};')
-  assert.deepEqual(rows,[])
-})
-test('trusted config cannot add a second path or broader receipt',()=>{
-  const illegal={...policy,registryPaths:[registry,neighbor]}
-  assert.throws(()=>check('const city="Other"','',neighbor,illegal), /invalid reviewed production-literal policy/)
-  assert.throws(()=>check('const city="Other"','',neighbor,{...policy,registryPaths:[neighbor]}), /invalid reviewed production-literal policy/)
-  assert.throws(()=>check('const city="Other"','',neighbor,{...policy,receipts:[{path:neighbor}]}), /invalid reviewed production-literal policy/)
+
+test('per-case markers cover string comparisons and typed map keys, numbers and booleans, not generic tuning', () => {
+  const rows = check('if (plan.evalCaseId === "Case A") hit(); const cfg={perCaseTuning:{["Case B"]:{threshold:0.91,enabled:false}}}; const generic={threshold:0.91,enabled:false}; cfg.caseOverrides["Case C"]=0.23;')
+  assert.ok(rows.length >= 4)
+  for (const value of ['Case A','Case B','Case C','0.91','0.23','false'])
+    assert.ok(rows.some(x => x.kind === 'case_tuning' && x.literal === value && !x.receipt), value)
+  assert.deepEqual(check('const generic={threshold:0.91,enabled:false}; const genericSignal = "job_hiring";'), [])
 })
 
-test('oversized scoped input fails closed instead of dropping new literals',()=>{
+test('ordinary UI copy, types, schema keys, imports, dynamic lookups and enum-like generic event data not guessed', () => {
+  const code = [
+    'import place from "uninterpreted"; type Shape = { region: "symbolic"; company: "company type" }',
+    'const labels={countryLabel:"Choose a country",exampleTitle:"Dentists in Main City", companyCaption:"Who?"};',
+    'const schema={type:"object", properties:{country:{type:"string"}}};',
+    'const row={city:"",industry:"    ",locationLabel:"West",region:input.region};',
+    'const { [raw]: country="unknown", title: city="display" } = data;',
+    'if (opts[key] === "unknown" || opts["generic"] === "unknown") hit();',
+  ].join('\n')
+  assert.deepEqual(check(code), [])
+})
+
+test('legacy same-path/same-slot formatting stable; count, slot, lexical owner and runtime move are not allowances', () => {
+  const initial = 'const target = { country: "AQ" }'
+  assert.deepEqual(check("const target = { country: 'AQ' }", initial), [])
+  assert.equal(check('const target = { countries: ["AQ", "AQ"] }', 'const target = { countries: ["AQ"] }')[0].added, 1)
+  assert.equal(check('const target = { fallbackCountry: "AQ" }', initial)[0].added, 1)
+  assert.equal(check('const other = { country: "AQ" }', initial)[0].added, 1)
+  assert.equal(check('if (profile.country === "AQ") find()', initial)[0].added, 1)
+})
+
+test('production lib/app and existing components included, docs/fixtures/declarations excluded', () => {
+  const addition = 'const q = { city: "New Name" }'
+  for (const p of ['web/lib/site/a.ts','web/app/target/a.tsx','web/components/b.js']) assert.equal(check(addition, '', p).length, 1)
+  for (const p of ['web/docs/notes.ts','web/test/a.ts','web/lib/__fixtures__/a.ts','web/lib/a.d.ts','web/lib/a.test.ts']) assert.deepEqual(check(addition, '', p), [])
+})
+
+function repoTest(fn) {
+  const cwd = mkdtempSync(join(tmpdir(), 'production-literal-blocking-'))
+  const git = (...args) => execFileSync('git', args, { cwd, encoding:'utf8' })
+  const write = (path, data) => { mkdirSync(dirname(join(cwd,path)), {recursive:true}); writeFileSync(join(cwd,path),data) }
+  const commit = () => { git('add','-A'); git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture'); return git('rev-parse','HEAD').trim() }
+  try { git('init','-q'); fn({cwd,git,write,commit}) } finally { rmSync(cwd,{recursive:true,force:true}) }
+}
+test('trusted base policy wins over a candidate self-edit, and fixture/catalog moves do not import grandfathering',()=>{
+  repoTest(({cwd,git,write,commit})=>{
+    write(policyPath,JSON.stringify(policy))
+    write(source,'const city="legacy";')
+    write(catalog,'const country="old config";')
+    write('web/test/fixture.ts','const company="fixture company";')
+    const base=commit()
+    renameSync(join(cwd,catalog), join(cwd,'web/lib/sources/renamed.ts'))
+    renameSync(join(cwd,'web/test/fixture.ts'),join(cwd,'web/lib/sources/fixture-moved.ts'))
+    write(policyPath,JSON.stringify({ ...policy, registryPaths: ['web/lib'] }))
+    write(source,'const city="legacy"; const country="new country";')
+    const head=commit()
+    const rows=fromGit(base,head,git)
+    assert.deepEqual(new Set(rows.map(r=>r.literal)),new Set(['new country','old config','fixture company']))
+    assert.ok(rows.every(r=>r.receipt===null))
+  })
+})
+test('CLI redacts raw source and returns nonzero on a true finding; parse and unsafe source modes fail unavailable',()=>{
+  repoTest(({cwd,git,write,commit})=>{
+    write(policyPath,JSON.stringify(policy))
+    const base=commit()
+    write(source,'const country="do not leak raw value";')
+    const head=commit()
+    const cli=fileURLToPath(new URL('../scripts/production-literals.mjs',import.meta.url))
+    const r=spawnSync(process.execPath,[cli,base,head],{cwd,encoding:'utf8'})
+    assert.equal(r.status,1,r.stderr)
+    assert.deepEqual(JSON.parse(r.stdout),[{kind:'country',added:1,receipt:null}])
+    assert.ok(!r.stdout.includes('raw value'))
+    write(source,'const country=')
+    assert.throws(()=>fromGit(base,commit(),git),/cannot parse/)
+    rmSync(join(cwd,source));symlinkSync('unreviewed-source',join(cwd,source))
+    assert.throws(()=>fromGit(base,commit(),git),/unexpected production source mode|unsupported status/)
+  })
+})
+test('oversize either source side refuses rather than silently dropping scope',()=>{
   assert.throws(()=>check('/*'+ 'x'.repeat(2*1024*1024)+'*/ const city="Unseen";'), /oversize/)
 })
 
-test('production lib/app/components use the same explicit identity policy, not UI copy inference',()=>{
-  assert.equal(check('const profile={defaultCity:"Outside list"}','', 'web/lib/profile/default.ts')[0]?.receipt,null)
-  assert.equal(check('const Page=()=> <Search city="Outside list" />','', 'web/app/search/page.tsx')[0]?.receipt,null)
-  assert.equal(check('const View=()=> <Search industry={`Outside list`} />','', 'web/components/search/view.jsx')[0]?.receipt,null)
-  assert.deepEqual(check('const Page=()=> <Search cityLabel="Select a city" title="Outside list" />','', 'web/app/search/page.tsx'),[])
-  assert.deepEqual(check('const Fixture=()=> <Search city="Outside list" />','', 'web/components/fixtures/search.tsx'),[])
-})
-
-test('legacy reviewed sector moved into original discovery scope does not inherit old uncovered slot',()=>{
-  const code='const sector = "Dental Practices";'
-  const r=checkChanges([{path:source,beforePath:'web/lib/seller/config.ts',before:code,after:code}],policy)
-  assert.equal(r[0]?.receipt,null)
-})
-
-test('empty governed policy is valid deny-by-default, not an authorization gap',()=>{
-  const empty={version:1,terms:[],registryPaths:[registry],receipts:[]}
-  assert.deepEqual(check('const cfg={city:"Unexpected city", industry:"Unexpected industry"}','',source,empty).map(x=>[x.kind,x.receipt]),[
-    ['city',null],['industry',null],
-  ])
-  assert.deepEqual(check("const city = 'Existing city'",'const city="Existing city"',source,empty),[])
-  assert.throws(()=>check('const city="Existing city"','',registry,{...empty,registryPaths:[registry],receipts:[
-    {path:registry,kind:'city',literal:'Existing city',issue:'#1393',rationale:'Purported source receipt without any approved terms.',maxAdded:1},
-  ]}),/invalid reviewed production-literal policy/)
-  assert.throws(()=>check('const city="Any city"','',source,{...empty,terms:null}),/invalid reviewed production-literal policy/)
-})
-
-test('explicit literal element keys and object binding defaults count as identity fields',()=>{
-  const code=[
-    'settings["city"] = "Unseen A";',
-    'if (settings[`industry`] === "Unseen B") return;',
-    'if ("Unseen C" !== settings["defaultCity"]) return;',
-    'const { industry = "Unseen D", "city": locality = "Unseen E", ["targetIndustry"]: sector = "Unseen F" } = settings;',
-    'const settingsOverride = { ["fallbackCity"]: "Unseen G" };',
+test('location, where, target category and employer names and explicitly named numeric case comparisons are governed', () => {
+  const code = [
+    'const target={location:"A",locations:["B"],where:"C",targetLocation:"D",category:"E",targetCategory:"F"};',
+    'const cfg={employer:"G",organization:"H",businessName:"I"};',
+    'if (ctx.scorecardCaseOrdinal >= 4 || -1 === ctx.evalCaseIndex) hit();',
+    'const nth=3; if (ctx.scorecardCaseIndex !== nth) hit();',
+    'switch(ctx.benchmarkCaseIndex){case 5: break}',
+    'if (list.index > 4 || generic.threshold >= 0.90) hit();',
   ].join('\n')
-  assert.deepEqual(check(code).map(x=>[x.kind,x.literal,x.receipt]),[
-    ['city','Unseen A',null],['industry','Unseen B',null],['city','Unseen C',null],
-    ['industry','Unseen D',null],['city','Unseen E',null],['industry','Unseen F',null],['city','Unseen G',null],
+  assert.deepEqual(literals(check(code)), [
+    ...['A','B','C','D'].map(x=>marked('location',x)), ...['E','F'].map(x=>marked('industry',x)),
+    ...['G','H','I'].map(x=>marked('company',x)), ...['4','-1','3','5'].map(x=>marked('case_tuning',x)),
   ])
 })
-test('dynamic keys, ungoverned destructured aliases, and positional binding defaults remain unclassified',()=>{
-  const code=[
-    'settings[city] = "Unknown A";',
-    'if (settings[industry] === "Unknown B") return;',
-    'const { [key]: city = "Unknown C", title: industry = "Unknown D" } = settings;',
-    'const [city = "Unknown E"] = tuple;',
-    'const override = { [key]: "Unknown F" };',
+
+test('static comparison methods detect governed intent, not generic regex, paths, labels, SQL or arbitrary string calls', () => {
+  const code = [
+    'const org = intent.businessName;',
+    'if (org.trim().startsWith("exact prefix")) hit();',
+    'if (intent.where.includes("needle")) hit();',
+    'if (/^fixed location$/iu.test(intent.targetLocation)) hit();',
+    'const matchIndustry = /industry fixed/i; if (matchIndustry.test(intent.targetCategory)) hit();',
+    'if (["fixed member"].includes(intent.employer)) hit();',
+    'if (title.includes("user facing") || /hello/i.test(message) || window.location.href.startsWith("/about")) hit();',
+    'query("select * from teams where location=literal");',
   ].join('\n')
-  assert.deepEqual(check(code),[])
+  assert.deepEqual(literals(check(code)), [
+    marked('company','exact prefix'),marked('location','needle'),marked('location','/^fixed location$/iu'),
+    marked('industry','/industry fixed/i'),marked('company','fixed member'),
+  ])
+})
+
+test('import-bound error location tags are not targeting; unrelated and shadowed copies still govern where', () => {
+  const code = [
+    'import {captureError as record} from "../ops/errors.ts";',
+    'record(err,{where:"diagnostic tag"});',
+    'const override = {where:"actual targeting"};',
+    'function other(record){record(err,{where:"govern a shadowed call"});}',
+  ].join('\n')
+  assert.deepEqual(literals(check(code)), [marked('location','actual targeting'),marked('location','govern a shadowed call')])
+})
+
+test('generic work-mode rejection is not a named-location exception; mixed patterns still fail', () => {
+  const generic = String.raw`/\b(remote|hybrid|multiple locations)\b/i`
+  const mixed = String.raw`/\b(remote|Example City)\b/i`
+  assert.deepEqual(literals(check(`const rejected = ${generic}.test(location);`)), [])
+  assert.deepEqual(literals(check(`const rejected = ${mixed}.test(location);`)), [marked('location', mixed)])
+  assert.deepEqual(literals(check(`const rejected = ${generic}.test(company);`)), [marked('company', generic)])
 })

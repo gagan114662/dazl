@@ -4,20 +4,18 @@ on:
     branches: [main]
     paths:
       - '.github/scripts/production-literals.mjs'
-      - '.github/scripts/production-literals-advisory.mjs'
       - '.github/tests/production-literals.test.mjs'
       - '.github/policy/production-literals.json'
-      - '.github/workflows/production-literals-advisory.yml'
       - '.github/workflows/production-literals-tests.yml'
+      - '.github/workflows/static-quality.yml'
   push:
     branches: [main]
     paths:
       - '.github/scripts/production-literals.mjs'
-      - '.github/scripts/production-literals-advisory.mjs'
       - '.github/tests/production-literals.test.mjs'
       - '.github/policy/production-literals.json'
-      - '.github/workflows/production-literals-advisory.yml'
       - '.github/workflows/production-literals-tests.yml'
+      - '.github/workflows/static-quality.yml'
 permissions: {}
 jobs:
   checker-tests:
@@ -71,5 +69,5 @@ jobs:
             [[ "$mode" == 100644 ]]
             (ulimit -f 128; "${clean[@]}" GIT_ALLOW_PROTOCOL='' GIT_NO_LAZY_FETCH=1 git -C "$tmp/objects" show "$actual:$path" > "$path")
           done
-          # This is ordinary unprivileged pull_request test code, NOT the base-controlled advisory job.
+          # This is ordinary unprivileged pull_request test code, NOT the base-controlled blocking step.
           "${clean[@]}" GIT_ALLOW_PROTOCOL='' GIT_NO_LAZY_FETCH=1 timeout 25s node --test .github/tests/production-literals.test.mjs

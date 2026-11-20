@@ -1,21 +1,23 @@
 import { createRequire } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
+import { posix } from 'node:path'
 
 const ts = createRequire(new URL('../../web/package.json', import.meta.url))('typescript')
 const normal = value => value.trim().normalize('NFC').toLowerCase()
 const fields = {
+  location: new Set(['location', 'locations', 'where', 'targetLocation', 'targetLocations']),
+  region: new Set(['region', 'regions', 'targetRegion', 'defaultRegion', 'fallbackRegion', 'targetRegions']),
+  country: new Set(['country', 'countries', 'countryCode', 'countryCodes', 'targetCountry', 'targetCountries', 'defaultCountry', 'fallbackCountry']),
+  company: new Set(['company', 'companies', 'companyName', 'companyNames', 'targetCompany', 'targetCompanies', 'defaultCompany', 'fallbackCompany', 'employer', 'employers', 'employerName', 'organization', 'organizationName', 'businessName']),
+  case_tuning: new Set(['caseId', 'evalCase', 'evalCaseId', 'benchmarkCase', 'benchmarkCaseId', 'scorecardCase', 'scorecardCaseId', 'evalCaseIndex', 'evalCaseOrdinal', 'scorecardCaseIndex', 'scorecardCaseOrdinal', 'benchmarkCaseIndex', 'benchmarkCaseOrdinal', 'perCase', 'perCaseTuning', 'caseTuning', 'caseOverrides', 'benchmarkOverrides', 'evalOverrides']),
   city: new Set(['city', 'cities', 'targetCity', 'defaultCity', 'fallbackCity', 'targetCities']),
-  industry: new Set(['industry', 'industries', 'targetIndustry', 'defaultIndustry', 'fallbackIndustry', 'targetIndustries', 'sector', 'sectors', 'targetSector', 'defaultSector', 'fallbackSector']),
+  industry: new Set(['industry', 'industries', 'targetIndustry', 'defaultIndustry', 'fallbackIndustry', 'targetIndustries', 'sector', 'sectors', 'targetSector', 'defaultSector', 'fallbackSector', 'category', 'categories', 'targetCategory', 'targetCategories']),
 }
-// Only specifically named direct city/industry identities default-deny unlisted literals.
-// Generic sector slots retain the narrower reviewed-label coverage they had before.
-const strongIdentity = new Set([...fields.city, ...[...fields.industry].filter(field => /industr/i.test(field))])
+const tuningContainers = new Set(['perCase', 'perCaseTuning', 'caseTuning', 'caseOverrides', 'benchmarkOverrides', 'evalOverrides'])
 const MAX_FILES = 4096, MAX_FILE_BYTES = 2 * 1024 * 1024, MAX_TOTAL_BYTES = 16 * 1024 * 1024
-export const DESIGNATED_CATALOG = 'web/lib/sources/registry-source-catalog.ts'
 const reviewedPolicyPath = '.github/policy/production-literals.json'
 
-const legacyTermPath = /^web\/lib\/(?:scan|research|sources|search|discovery|connectors)\//
 export const sourcePath = path =>
   /^web\/(?:lib|app|components)\//.test(path) &&
   /\.[cm]?[jt]sx?$/.test(path) &&
@@ -34,20 +36,65 @@ function fieldName(n) {
   if (ts.isComputedPropertyName(n)) return literalKey(n.expression)
   return ts.isIdentifier(n) ? n.text : literalKey(n)
 }
-function accessField(n) {
+function accessField(n, checker, depth = 0) {
   n = unwrapParens(n)
   if (ts.isPropertyAccessExpression(n)) return fieldName(n.name)
   if (ts.isElementAccessExpression(n)) return literalKey(n.argumentExpression)
-  return ts.isIdentifier(n) ? n.text : null
+  if (!ts.isIdentifier(n)) return null
+  if (kindOf(n.text) || !checker || depth >= 3) return n.text
+  const d = checker.getSymbolAtLocation(n)?.valueDeclaration
+  if (d && ts.isVariableDeclaration(d) && (d.parent.flags & ts.NodeFlags.Const) && d.initializer)
+    return accessField(d.initializer, checker, depth + 1)
+  if (d && ts.isBindingElement(d) && ts.isObjectBindingPattern(d.parent) &&
+      ts.isVariableDeclaration(d.parent.parent) && (d.parent.parent.parent.flags & ts.NodeFlags.Const))
+    return fieldName(d.propertyName ?? d.name)
+  return n.text
+}
+const kindOf = field => Object.keys(fields).find(k => fields[k].has(field))
+const ordinalFields = new Set(['evalCase', 'benchmarkCase', 'scorecardCase', 'evalCaseIndex', 'evalCaseOrdinal', 'scorecardCaseIndex', 'scorecardCaseOrdinal', 'benchmarkCaseIndex', 'benchmarkCaseOrdinal'])
+const rangeComparisons = new Set([
+  ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken,
+])
+const stringHelpers = new Set(['includes', 'startsWith', 'endsWith'])
+function intentField(node, checker, depth = 0) {
+  const n = unwrapParens(node)
+  if (n && ts.isCallExpression(n) && depth < 4 && ts.isPropertyAccessExpression(n.expression) && n.arguments.length === 0 &&
+      ['trim', 'toLowerCase', 'toUpperCase', 'normalize'].includes(n.expression.name.text))
+    return intentField(n.expression.expression, checker, depth + 1)
+  return accessField(n, checker)
+}
+function matchSlot(node, checker) {
+  const p = node.parent
+  if (!p) return null
+  if (ts.isPropertyAccessExpression(p) && p.expression === node && ts.isCallExpression(p.parent) && p.parent.expression === p &&
+      fieldName(p.name) === 'test' && p.parent.arguments.length === 1) {
+    const field = intentField(p.parent.arguments[0], checker)
+    if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'regex_test' }
+  }
+  if (ts.isCallExpression(p) && p.arguments[0] === node && ts.isPropertyAccessExpression(p.expression) &&
+      stringHelpers.has(p.expression.name.text)) {
+    const field = intentField(p.expression.expression, checker)
+    if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'string_' + p.expression.name.text }
+  }
+  if (ts.isArrayLiteralExpression(p) && ts.isPropertyAccessExpression(p.parent) && p.parent.expression === p &&
+      p.parent.name.text === 'includes' && ts.isCallExpression(p.parent.parent) && p.parent.parent.expression === p.parent) {
+    const field = intentField(p.parent.parent.arguments[0], checker)
+    if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'literal_membership' }
+  }
+  return null
 }
 const comparisons = new Set([
   ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
   ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken,
 ])
-function typedSlot(node) {
+function typedSlot(node, checker) {
   let cur = node
   for (let i = 0; cur.parent && i < 7; i++) {
     const p = cur.parent
+    if (ts.isCaseClause(p) && p.expression === cur && ts.isSwitchStatement(p.parent.parent)) {
+      const field = intentField(p.parent.parent.expression, checker)
+      return field ? { field, role: 'switch_case' } : null
+    }
     if ((ts.isVariableDeclaration(p) || ts.isPropertyAssignment(p) || ts.isParameter(p) || ts.isJsxAttribute(p)) && p.initializer === cur) {
       const field = fieldName(p.name)
       return field ? { field, role: ts.isVariableDeclaration(p) ? 'variable' : ts.isPropertyAssignment(p) ? 'property' : ts.isParameter(p) ? 'parameter' : 'jsx' } : null
@@ -60,12 +107,12 @@ function typedSlot(node) {
     if (ts.isBinaryExpression(p)) {
       const op = p.operatorToken.kind
       if (op === ts.SyntaxKind.EqualsToken && p.right === cur) {
-        const field = accessField(p.left)
+        const field = accessField(p.left, checker)
         return field ? { field, role: 'assignment' } : null
       }
-      if (comparisons.has(op)) {
-        const field = accessField(p.right === cur ? p.left : p.right)
-        return field ? { field, role: 'comparison' } : null
+      if (comparisons.has(op) || rangeComparisons.has(op)) {
+        const field = intentField(p.right === cur ? p.left : p.right, checker)
+        return field && (comparisons.has(op) || ordinalFields.has(field)) ? { field, role: 'comparison' } : null
       }
       if (![ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(p.operatorToken.kind)) return null
     } else if (!(ts.isArrayLiteralExpression(p) || ts.isParenthesizedExpression(p) || ts.isAsExpression(p) || ts.isSatisfiesExpression(p) || ts.isJsxExpression(p)
@@ -75,35 +122,132 @@ function typedSlot(node) {
   return null
 }
 
-/** @typedef {{kind:'city'|'industry', label:string, source:string}} Term
- *  @typedef {{version:1, terms:Term[], registryPaths:string[], receipts:never[]}} Policy
- */
 function reviewed(policy) {
-  if (policy.version !== 1 || !Array.isArray(policy.terms) ||
-      !Array.isArray(policy.registryPaths) || policy.registryPaths.length !== 1 || policy.registryPaths[0] !== DESIGNATED_CATALOG ||
-      !Array.isArray(policy.receipts) || policy.receipts.length !== 0) throw Error('invalid reviewed production-literal policy')
-  const terms = new Map()
-  for (const t of policy.terms) {
-    if (!Object.hasOwn(fields, t.kind) || typeof t.label !== 'string' || t.label.trim().length < 3 ||
-        typeof t.source !== 'string' || !/^(?:https:\/\/|docs\/)/.test(t.source)) throw Error('invalid term source')
-    const key = t.kind + '\0' + normal(t.label)
-    if (terms.has(key)) throw Error('duplicate reviewed term')
-    terms.set(key, t)
-  }
-  return terms
+  if (!policy || policy.version !== 2 || Object.keys(policy).sort().join(',') !== 'grandfathering,version' ||
+      policy.grandfathering !== 'trusted_same_path_slot_counts') throw Error('invalid reviewed production-literal policy')
 }
-function inventory(path, source, terms) {
+function sourceOnlyChecker(path, ast) {
+  const host = {
+    getSourceFile: name => name === path ? ast : undefined,
+    getDefaultLibFileName: () => '/unavailable.d.ts',
+    writeFile: () => { throw Error('unexpected compiler output') },
+    getCurrentDirectory: () => '/',
+    getDirectories: () => [],
+    fileExists: name => name === path,
+    readFile: () => undefined,
+    getCanonicalFileName: name => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => '\n',
+  }
+  // Only bind the one blob in memory. No imports, configs, plugins, resolution,
+  // candidate checkout, execution, or candidate-selected compiler options.
+  return ts.createProgram([path], { noLib: true, noResolve: true, allowJs: true }, host).getTypeChecker()
+}
+function tuningAccess(node) {
+  for (let n = unwrapParens(node), i = 0; n && i < 6; i++, n = unwrapParens(n.expression)) {
+    const field = accessField(n)
+    if (tuningContainers.has(field)) return field
+    if (!ts.isPropertyAccessExpression(n) && !ts.isElementAccessExpression(n)) return null
+  }
+  return null
+}
+function tuningSlot(node) {
+  for (let cur = node, depth = 0; cur.parent && depth < 10; cur = cur.parent, depth++) {
+    const p = cur.parent
+    if (ts.isPropertyAssignment(p) || ts.isVariableDeclaration(p) || ts.isParameter(p)) {
+      const field = fieldName(p.name)
+      if (tuningContainers.has(field)) return { field, role: 'per_case_literal' }
+    }
+    if (ts.isElementAccessExpression(p) && p.argumentExpression === cur) {
+      const field = tuningAccess(p.expression)
+      if (field) return { field, role: 'per_case_index' }
+    }
+    if (ts.isBinaryExpression(p) && p.right === cur && p.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const field = tuningAccess(p.left)
+      if (field) return { field, role: 'per_case_literal' }
+    }
+    if (ts.isFunctionLike(p) || ts.isStatement(p)) break
+  }
+  return null
+}
+function context(n) {
+  const keys = []
+  for (let p = n.parent, depth = 0; p && depth < 16; p = p.parent, depth++) {
+    if (ts.isVariableDeclaration(p) || ts.isFunctionDeclaration(p) || ts.isMethodDeclaration(p) || ts.isPropertyAssignment(p)) {
+      const key = fieldName(p.name)
+      if (key) keys.push(key)
+      if (keys.length === 4) break
+    }
+  }
+  return keys
+}
+function diagnosticWhere(n, slot, checker, path) {
+  if (slot?.field !== 'where' || slot.role !== 'property') return false
+  // Dazl's imported captureError(where) is a logging tag, not targeting.
+  // Limit the exemption to its exact inline context argument and import binding.
+  const prop = n.parent, object = prop?.parent, call = object?.parent
+  if (!prop || !ts.isPropertyAssignment(prop) || !object || !ts.isObjectLiteralExpression(object) ||
+      !call || !ts.isCallExpression(call) || call.arguments[1] !== object || !ts.isIdentifier(call.expression)) return false
+  const declaration = checker?.getSymbolAtLocation(call.expression)?.declarations?.[0]
+  if (!declaration || !ts.isImportSpecifier(declaration) || (declaration.propertyName ?? declaration.name).text !== 'captureError') return false
+  const imported = declaration.parent.parent.parent
+  if (!ts.isImportDeclaration(imported) || !ts.isStringLiteral(imported.moduleSpecifier)) return false
+  const name = imported.moduleSpecifier.text
+  const normalized = name.startsWith('@/') ? 'web/' + name.slice(2) :
+    name.startsWith('.') ? posix.normalize(posix.join(posix.dirname(path), name)) : ''
+  return normalized === 'web/lib/ops/errors' || normalized === 'web/lib/ops/errors.ts'
+}
+// A pattern consisting solely of generic work modes is a proof-quality control,
+// not a city, region, country or scorecard identity. Mixed patterns still fail.
+const genericWorkModes = new Set(['remote', 'hybrid', 'multiple locations', 'onsite', 'on-site', 'on site'])
+function workModeOnlyPattern(literal) {
+  const match = /^\/\\b\((?:\?:)?([a-z |\-]+)\)\\b\/[iu]*$/i.exec(literal)
+  return !!match && match[1].toLowerCase().split('|').every(term => genericWorkModes.has(term.trim()))
+}
+function inventory(path, source) {
   const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true)
   if (ast.parseDiagnostics.length) throw Error(`cannot parse ${path}`)
+  let checker
   const out = new Map()
+  function remember(n, slot, payload) {
+    const kind = kindOf(slot?.field)
+    if (!kind || !normal(payload) || diagnosticWhere(n, slot, checker, path)) return
+    if (kind === 'location' && slot.role === 'regex_test' && workModeOnlyPattern(payload)) return
+    const key = JSON.stringify([kind, payload, slot.field, slot.role, context(n)])
+    const value = out.get(key) ?? { kind, literal: payload, field: slot.field, role: slot.role, lines: [] }
+    value.lines.push(ast.getLineAndCharacterOfPosition(n.getStart(ast)).line + 1); out.set(key, value)
+  }
   function walk(n) {
-    if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) {
-      const slot = typedSlot(n)
-      const kind = Object.keys(fields).find(k => fields[k].has(slot?.field))
-      if (kind && normal(n.text) && (strongIdentity.has(slot.field) || (legacyTermPath.test(path) && terms.has(kind + '\0' + normal(n.text))))) {
-        const key = JSON.stringify([kind, n.text, slot.field, slot.role])
-        const value = out.get(key) ?? { kind, literal: n.text, field: slot.field, role: slot.role, lines: [] }
-        value.lines.push(ast.getLineAndCharacterOfPosition(n.getStart(ast)).line + 1); out.set(key, value)
+    const direct = ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)
+    const regex = ts.isRegularExpressionLiteral(n)
+    const numeric = ts.isNumericLiteral(n)
+    const other = numeric || [ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword].includes(n.kind)
+    const propKey = n.parent && ts.isPropertyAssignment(n.parent) && n.parent.name === n && ts.isIdentifier(n)
+    if (direct || regex || other || propKey) {
+      const tuning = tuningSlot(n)
+      if (tuning) remember(n, tuning, n.text ?? n.getText(ast))
+      else if (direct || regex || numeric) {
+        checker ??= sourceOnlyChecker(path, ast)
+        const operand = numeric && ts.isPrefixUnaryExpression(n.parent) ? n.parent : n
+        const matcher = matchSlot(n, checker)
+        const slot = regex ? (matcher?.role === 'regex_test' ? matcher : null) :
+          numeric ? typedSlot(operand, checker) : (matcher?.role === 'regex_test' ? null : (matcher ?? typedSlot(n, checker)))
+        if (!numeric || ordinalFields.has(slot?.field)) remember(n, slot, operand === n ? n.text : operand.getText(ast))
+      }
+    }
+    // A local const value (not an import/parameter or mutable/reassigned
+    // variable) flowing directly into an explicit operational slot.
+    if (ts.isIdentifier(n) && n.parent && !(ts.isVariableDeclaration(n.parent) && n.parent.name === n)) {
+      checker ??= sourceOnlyChecker(path, ast)
+      const slot = matchSlot(n, checker) ?? typedSlot(n, checker)
+      if (kindOf(slot?.field)) {
+        const d = checker.getSymbolAtLocation(n)?.valueDeclaration
+        if (d && ts.isVariableDeclaration(d) && (d.parent.flags & ts.NodeFlags.Const)) {
+          const ini = unwrapParens(d.initializer)
+          const payload = slot.role === 'regex_test' ? (ini && ts.isRegularExpressionLiteral(ini) ? ini.text : null) :
+            ordinalFields.has(slot.field) && ini && ts.isNumericLiteral(ini) ? ini.text : literalKey(ini)
+          if (payload !== null) remember(n, { ...slot, role: 'const_alias_' + slot.role }, payload)
+        }
       }
     }
     ts.forEachChild(n, walk)
@@ -112,7 +256,7 @@ function inventory(path, source, terms) {
   return out
 }
 export function checkChanges(changes, policy) {
-  const terms = reviewed(policy)
+  reviewed(policy)
   if (!Array.isArray(changes) || changes.length > MAX_FILES) throw Error('oversize production literal comparison')
   let total = 0
   return changes.flatMap(({path, beforePath = path, before = '', after = ''}) => {
@@ -123,13 +267,13 @@ export function checkChanges(changes, policy) {
       total += size
       if (size > MAX_FILE_BYTES || total > MAX_TOTAL_BYTES) throw Error('oversize production source blobs')
     }
-    // A literal allowed as configuration did not previously exist as operational hardcoding.
-    // Moving/copying the catalog to a sibling file must not inherit its grandfathered counts.
-    const old = inventory(beforePath, beforePath === DESIGNATED_CATALOG && path !== DESIGNATED_CATALOG ? '' : before, terms)
+    // Only the exact existing production path can grandfather a slot. Moves
+    // or copies may change behavior and do not import another path's inventory.
+    const old = inventory(beforePath, beforePath === path ? before : '')
     // Compare stable AST slot/role, not line number. Distinct new slots cannot
     // use a removed slot's count or carry the catalog exception into a runtime neighbor.
     const additions = new Map()
-    for (const [key, row] of inventory(path, after, terms)) {
+    for (const [key, row] of inventory(path, after)) {
       const added = row.lines.length - (old.get(key)?.lines.length ?? 0)
       if (added <= 0) continue
       const literalKey = JSON.stringify([row.kind, row.literal])
@@ -140,20 +284,23 @@ export function checkChanges(changes, policy) {
       additions.set(literalKey, result)
     }
     return [...additions.values()].map(row => ({
-      path, ...row, receipt: path === DESIGNATED_CATALOG ? { authority: 'designated_catalog' } : null,
+      path, ...row, receipt: null,
     }))
   })
 }
 
 // Explicit SHA-only entrypoint; not wired to a workflow. Read policy from reviewed base,
 // not HEAD. For eventual CI run the reviewed checker too, never execute PR-modified gate code.
-export function fromGit(base, head, git = (...args) => execFileSync('git', args, {encoding:'utf8',maxBuffer:32*1024*1024})) {
-  if (![base, head].every(x => /^[a-f0-9]{40}$/.test(x ?? ''))) throw Error('expected full reviewed base and head SHAs')
-  const policy = JSON.parse(git('show', `${base}:${reviewedPolicyPath}`))
+export function fromGit(base, head, git = (...args) => execFileSync('git', args, {encoding:'utf8',maxBuffer:32*1024*1024,timeout:12000}), policySha = base) {
+  if (![base, head, policySha].every(x => /^[a-f0-9]{40}$/.test(x ?? '')) || (policySha !== base && policySha !== head))
+    throw Error('expected full reviewed base and head SHAs')
+  const policy = JSON.parse(git('show', `${policySha}:${reviewedPolicyPath}`))
   const names = git('diff', '--name-status', '-z', '--find-renames=100%', base, head, '--').split('\0')
   const changes = []
   let bytes = 0
   const blob = (commit, path) => {
+    const mode = git('ls-tree', '--format=%(objectmode)', commit, '--', path).trim()
+    if (mode !== '100644' && mode !== '100755') throw Error('unexpected production source mode')
     const body = git('show', `${commit}:${path}`)
     const size = Buffer.byteLength(body)
     bytes += size
@@ -167,15 +314,15 @@ export function fromGit(base, head, git = (...args) => execFileSync('git', args,
     if (!['R100','A','M'].includes(status)) throw Error(`unsupported status for production source: ${status} ${path}`)
     // Existing fixture moving into production is new production code, not grandfathered.
     if (changes.length >= MAX_FILES) throw Error('oversize production literal comparison')
-    const before = status !== 'A' && sourcePath(oldPath) ? blob(base, oldPath) : ''
+    const before = status === 'M' && sourcePath(oldPath) ? blob(base, oldPath) : ''
     changes.push({path, beforePath: oldPath, before, after: blob(head, path)})
   }
   return checkChanges(changes, policy)
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const report = fromGit(process.argv[2], process.argv[3])
-    console.log(JSON.stringify(report, null, 2))
+    const report = fromGit(process.argv[2], process.argv[3], undefined, process.argv[4])
+    console.log(JSON.stringify(report.map(({ kind, added, receipt }) => ({ kind, added, receipt }))))
     if (report.some(row => !row.receipt)) process.exitCode = 1
-  } catch (e) { console.error(String(e)); process.exitCode = 2 }
+  } catch { console.error('Production-literal scan unavailable. No pass recorded.'); process.exitCode = 2 }
 }

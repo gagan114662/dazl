@@ -1,6 +1,4 @@
 {
-  "version": 1,
-  "terms": [],
-  "registryPaths": ["web/lib/sources/registry-source-catalog.ts"],
-  "receipts": []
+  "version": 2,
+  "grandfathering": "trusted_same_path_slot_counts"
 }

@@ -2,6 +2,10 @@
 
 Run it as ONE Node process (in-memory rate limits and the in-process scan runner assume that).
 
+## Lead quality release review
+
+Read the [root repository rules](../../AGENTS.md) before reviewing a discovery release. A healthy deploy is not proof of lead quality. Keep the old finder as the comparison baseline, replay recorded fixtures at no cost in PR checks, and release any change to the active finder only after approved evidence shows no regression with all holds intact.
+
 ## Env vars
 Required (`/api/ready` answers 503 until every one is set and well-formed, so `ops/safe_launch.py` will not cut over without them):
 - `DB_PATH` - SQLite file. Use a NEW path (for example /var/lib/dazl-next/app.db). Never point it at the old app's database.

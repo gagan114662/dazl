@@ -18,7 +18,7 @@ import type { Job } from '@/lib/scan/runner'
 import { kickRunner, pickVendor } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { readSellerLine } from '@/lib/auth-db'
-import { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_NATIVE_WEB_SEARCH_POLICY, isClaudeOnlyRequestMode, QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from '@/lib/scan/qa-provider-policy'
+import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_NATIVE_WEB_SEARCH_POLICY, isClaudeOnlyRequestMode, QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from '@/lib/scan/qa-provider-policy'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '@/lib/people/people-search'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '@/lib/people/first-play-cap'
@@ -54,6 +54,10 @@ export async function POST(req: NextRequest) {
   if (lost.length) return NextResponse.json({ error: 'profile_lossy', message: 'Part of this profile would be cut or ignored. Fix the listed fields - nothing was dropped silently.', loss: lost }, { status: 400 })
   const icp = body?.icp === undefined || body?.icp === null ? null : normalizeIcp(body.icp)
   if (body?.icp !== undefined && body?.icp !== null && !icp) return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
+  const manualTarget = isManualNativeTargetRequest(body?.mode, body?.budget)
+  if (manualTarget && (!icp || body?.reviewed !== undefined || body?.research_decisions !== undefined)) {
+    return NextResponse.json({ error: 'invalid_target_review', message: 'Confirm the target for this search separately from saved research decisions. Nothing started.' }, { status: 400 })
+  }
   // Legacy input, still accepted for older clients.
   const business_name = cleanText(body?.business_name, 150)
   const industry = cleanText(body?.industry, 100)
@@ -97,6 +101,15 @@ export async function POST(req: NextRequest) {
   // reviewed: false = the profile is carried exactly as stored (a saved business profile reused for a first scan):
   // nothing in it is confirmed or rejected by this request alone (applyReviewedDraft).
   const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed === true }) : icp
+  // Manual targeting is one play, not a fresh research decision. Do not resurrect
+  // dismissed exact targets or silently launch against the changed scope.
+  const target = (p: NonNullable<typeof icp>) => {
+    const { summary, who, where, country, industries, signals, sizes, exclude, window_days, language } = p
+    return { query, summary, who, where, country, industries, signals, sizes, exclude, window_days, language }
+  }
+  if (manualTarget && icp && effective && JSON.stringify(target(icp)) !== JSON.stringify(target(effective))) {
+    return NextResponse.json({ error: 'target_review_conflict', message: 'A target for this search conflicts with a previously dismissed research decision. Choose another target or update the saved research decision first. Nothing started.' }, { status: 409 })
+  }
   // Capture only explicit Add/Dismiss events, not inferred statuses or a profile's mere presence.
   let decisions: ReturnType<typeof decisionRows>
   try { decisions = decisionRows(body?.research_decisions, effective?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, effective ?? undefined) }
@@ -231,7 +244,7 @@ export async function POST(req: NextRequest) {
       }
       return claudeOnly ? pinAdmittedStrictJob(db, user.tenantId, jid, runBudget) : null
     }).immediate()
-    if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION, ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}) }, { status: 202 })
+    if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION, ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}), ...(manualTarget && sized?.ok ? { accepted_target: target(sized.icp) } : {}) }, { status: 202 })
     after(() => kickRunner(db))
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
     return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0, firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 }, trial: funded === 'trial' }) } : { job_id }, { status: 202 })
