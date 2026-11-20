@@ -113,5 +113,6 @@ export function scanPipelineDiagnostic(report: unknown, jobError: unknown, store
 export function currentScanPipelineDiagnostic(reports: unknown, attempts: unknown, jobError: unknown, storedRows?: unknown) {
   const attempt = count(attempts)
   const row = attempt === null || !Array.isArray(reports) ? null : reports.findLast(r => obj(r).attempt === attempt)
-  return scanPipelineDiagnostic(obj(row).report, jobError, storedRows)
+  // A newly claimed retry can still carry the last attempt's job.error.
+  return scanPipelineDiagnostic(obj(row).report, row ? jobError : null, storedRows)
 }
