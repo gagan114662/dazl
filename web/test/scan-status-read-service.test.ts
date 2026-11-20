@@ -104,6 +104,14 @@ bothEngines('status: early key failure or cancel keeps its hint even without a r
   assert.equal(failed?.run_report, null)
   assert.equal(failed?.pipeline_diagnostic.stop_hint, 'review_key_configuration')
 
+  const trial = await createJob(db, 'A', { business_name: 'fixture', industry: 'services', location: 'Example' })
+  await db.run("UPDATE scan_jobs SET funded_by = 'trial', status = 'running', attempts = 1 WHERE id = ?", [trial])
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = 'key_rejected' WHERE id = ?", [trial])
+  const trialFailed = await readScanStatus(db, 'A', trial)
+  assert.equal(trialFailed?.run_report, null)
+  assert.equal(trialFailed?.error, 'trial_key_invalid')
+  assert.equal(trialFailed?.pipeline_diagnostic.stop_hint, 'review_trial_availability')
+
   const cancelled = await createJob(db, 'A', { business_name: 'fixture', industry: 'services', location: 'Example' })
   await db.run("UPDATE scan_jobs SET status = 'running', attempts = 2, error = 'accounting_uncertain' WHERE id = ?", [cancelled])
   const previous = { stop: { code: 'accounting_uncertain' }, extracted_candidates: 12 }
