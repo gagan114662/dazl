@@ -76,7 +76,7 @@ export async function readPrivateCompanyFirstProof(primary:Database.Database, db
       const reciprocal=issuedSite?readReciprocalOwnedPosting(issuedSite,proofScope):null
       const permalink=issuedSite?readReciprocalOwnedCareerPermalink(issuedSite,proofScope):null
       const ownsReciprocalEvent=!!permalink&&permalink.url===evidence.eventSource&&
-        permalink.title===evidence.literalQuote&&permalink.day===evidence.eventDate&&row.event_date_proof==='page_bound'
+        permalink.day===evidence.eventDate&&row.event_date_proof==='page_bound'
       const persistedSite=row.company_domain?new URL('https://'+row.company_domain+'/'):null
       const reciprocalOwned=!!reciprocal&&reciprocal.expiresAtMs>t0&&
         reciprocal.companyKey===evidence.companyKey&&reciprocal.companyName===row.company&&

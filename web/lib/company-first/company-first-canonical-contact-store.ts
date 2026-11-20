@@ -47,7 +47,7 @@ export function stageCanonicalSiteContact(packet:CanonicalContactPacket,s:Scope,
       .get(id,t.jobId,PRIVATE,t.attempt,scorecardPinnedBudget()) as Row|undefined
     const publicPosting=readReciprocalOwnedCareerPermalink(issuedSite,scope)
     const reciprocalOwn=!!publicPosting&&publicPosting.url===e.eventSource&&publicPosting.day===e.eventDate&&
-      publicPosting.title===e.literalQuote&&issuedSite.companyKey===e.companyKey&&issuedSite.website===e.website&&
+      issuedSite.companyKey===e.companyKey&&issuedSite.website===e.website&&
       issuedSite.identitySource===e.identitySource&&issuedSite.candidateName===row?.company
     if(!row||!authorizeScorecardSubject(t,row)||row.company_domain!==null||row.source_url!==e.eventSource||
       row.evidence_excerpt!==e.literalQuote||row.event_date!==e.eventDate||

@@ -6,7 +6,7 @@ import { companyFirstPublicReader } from '../lib/company-first/company-first-pub
 import type { ObservedSafeGet } from '../lib/sources/http.ts'
 
 const scope={tenant:'fixture-tenant',job:'fixture-job',attempt:'1'}
-const employer='Example Employer', title='Senior Purchasing Operations Director'
+const employer='Example Employer', title='Sales Development Representative'
 const posting='https://job-boards.greenhouse.io/example-board/jobs/244'
 const api='https://boards-api.greenhouse.io/v1/boards/example-board/jobs/244'
 const origin='https://example-employer.example', home=origin+'/', permalink=origin+'/careers/purchasing-director'
@@ -14,7 +14,7 @@ const date='2026-11-19', from='2026-11-17', through='2026-11-20'
 const local={locality:'Example Locality',region:'Example Region',country:'Example Country'}
 const signal=new AbortController().signal
 const clock=()=>Date.parse('2026-11-20T12:00:00Z')
-type Variant='ok'|'wrong_place'|'wrong_date'|'wrong_title'|'wrong_route'|'redirect'|'expired_ats'|'invalid_ats'|'hidden_date'|'embed'
+type Variant='ok'|'wrong_place'|'wrong_date'|'wrong_title'|'wrong_route'|'redirect'|'expired_ats'|'invalid_ats'|'hidden_date'|'no_employer_quote'|'embed'
 async function run(variant:Variant){
  const events:string[]=[]
  const exactDate=variant==='wrong_date'?'2026-11-18':date
@@ -34,7 +34,7 @@ async function run(variant:Variant){
    hiringOrganization:{'@type':'Organization',name:employer,url:home},jobLocation:{'@type':'Place',
     address:{'@type':'PostalAddress',addressLocality:locality,addressRegion:local.region,addressCountry:local.country}}}
   const body='<!doctype html><html><head><script type="application/ld+json">'+JSON.stringify(job)+'</script></head><body>'+
-    '<h1>'+exactTitle+'</h1><p>'+employer+'</p><p>'+locality+'</p><p>'+local.region+'</p><p>'+local.country+
+    '<h1>'+exactTitle+'</h1>'+(variant==='no_employer_quote'?'':'<p>As a '+exactTitle+' at '+employer+" you'll help buyers.</p>")+'<p>'+employer+'</p><p>'+locality+'</p><p>'+local.region+'</p><p>'+local.country+
     '</p><p'+(variant==='hidden_date'?' hidden':'')+'>Posted '+exactDate+'</p></body></html>'
   return {...common,contentType:'text/html',body,...(variant==='redirect'?{status:302,location:origin+'/careers/different'}:{})}
  }
@@ -58,9 +58,9 @@ async function run(variant:Variant){
 test('exact issued publisher permalink with same visible title and date yields only owned dated proof',async()=>{
  const {proof,events}=await run('ok')
  assert.equal(proof?.sourceUrl,permalink)
- assert.equal(proof?.quote,title)
+ assert.equal(proof?.quote,'As a '+title+' at '+employer+" you'll help buyers.")
  assert.deepEqual(proof?.dateProof,{kind:'first_party_event_date',sourceUrl:permalink,day:date,literalDate:'Posted '+date})
  for(let i=0;i<events.length;i+=2)assert.equal(events[i],events[i+1].replace('read:','reserve:'))
 })
-for(const variant of ['wrong_place','wrong_date','wrong_title','redirect','hidden_date','embed','wrong_route','expired_ats','invalid_ats'] as const)
+for(const variant of ['wrong_place','wrong_date','wrong_title','redirect','hidden_date','no_employer_quote','embed','wrong_route','expired_ats','invalid_ats'] as const)
  test('withholds '+variant,async()=>{const {proof,events}=await run(variant);assert.equal(proof,null);if(['wrong_route','embed','expired_ats','invalid_ats'].includes(variant))assert.ok(!events.includes('read:'+permalink))})

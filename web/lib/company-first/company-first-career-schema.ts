@@ -1,6 +1,8 @@
 // Protected additive lift from the Quest prototype's public JobPosting reader.
 // Existing root/site, transport, date, and canonical location holds still apply.
 import type { Candidate, CompanyFirstPorts, Scope } from './company-first-evidence.ts'
+import { jobAdQuoteRole } from '../scan/sales-hiring-gate.ts'
+import { requestedHiringRoles } from '../scan/hiring-role-match.ts'
 import { readReciprocalOwnedCareerPermalink, readReciprocalOwnedPosting } from './company-first-reciprocal-site.ts'
 import type { ObservedCareerPage } from './company-first-public-reader.ts'
 
@@ -247,6 +249,18 @@ export async function verifyReciprocalOwnedCareerSignal(scope:Scope,site:Site,in
     const row:CareerSchemaObservation=Object.freeze({kind:'owned_linked_jobposting',scope:Object.freeze({...scope}),
       companyKey:site.companyKey,employer:site.candidateName,ownedOrigin:site.website,sourceUrl:u.href,linkSource:site.identitySource,...d})
     ownedEvidence.set(row,Object.freeze({sourceText:page.visibleText,expiresAt:clock()+60_000}))
-    return matchOwnedCareerSignal(scope,{...input,postingUrl:undefined},[row],matches,signal,clock)
+    const core=matchOwnedCareerSignal(scope,{...input,postingUrl:undefined},[row],matches,signal,clock)
+    if(!core)return null
+    // The existing sales-hiring gate expects an employer-naming literal
+    // vacancy quote, not a title glued to the company's separate heading.
+    const roles=requestedHiringRoles('hiring '+permit.title)
+    const company=fold(site.candidateName),title=fold(permit.title)
+    const quote=page.visibleText.split(' | ').find(line=>{
+      const plain=fold(line).replace(/^as an? /u,'')
+      return line.length>=20&&line.length<=300&&
+        (plain===title+' at '+company||plain.startsWith(title+' at '+company+' '))&&
+        !!jobAdQuoteRole(line,site.candidateName,roles)
+    })
+    return quote&&!signal.aborted?Object.freeze({...core,quote}):null
   }catch{return null}
 }
