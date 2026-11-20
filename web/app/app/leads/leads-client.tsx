@@ -518,7 +518,7 @@ export default function LeadsClient() {
   // play only: the business profile and earlier plays keep theirs.
   const [offerText, setOfferText] = useState('')
   // A choice still to make: from the review step, or from the server refusing a direct run (409 offer_conflict).
-  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; direct: boolean } | null>(null)
+  const [offerConflict, setOfferConflict] = useState<{ stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean; direct: boolean } | null>(null)
   // The saved offer could not be read at review time: a reviewed run states its offer, so the server does not compare it
   // again. Run stays disabled until the check succeeds (fail closed), never treated as "nothing saved".
   const [offerUnread, setOfferUnread] = useState(false)
@@ -528,10 +528,10 @@ export default function LeadsClient() {
     setOfferUnread(!base)
     if (!base) { setOfferText(statedOffer(q) ?? ''); setOfferConflict(null); return }
     // the server's own resolution (effectiveOffer), with the base as the play's starting offer
-    const c = base.offer ? effectiveOffer({ seller: null, query: q }, base.offer).conflict : null
+    const c = effectiveOffer({ seller: null, query: q }, base.offer).conflict
     if (c) {
       // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
-      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
+      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ambiguous: c.ambiguous, ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
     }
     setOfferText(statedOffer(q) ?? base.offer ?? '')
     setOfferConflict(null)
@@ -566,7 +566,7 @@ export default function LeadsClient() {
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
       if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { setPendingEst({ est: j.estimate as RunEstimate, withIcp, offer, reviewed }); return }
-      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: !withIcp || withIcp === priorIcp }); return }
+      if (r.status === 409 && j.error === 'offer_conflict') { setPendingEst(null); setOfferConflict({ stated: typeof j.stated === 'string' ? j.stated : null, saved: String(j.saved), ambiguous: j.ambiguous === true, withdrawn: typeof j.withdrawn === 'string' ? j.withdrawn : undefined, direct: reviewed !== true }); return }
       // A refusal that clicking Confirm again cannot change (free scans or the month used up, no key, the hourly start limit): take the cost panel and its Confirm button down, so the page never keeps offering a button that does nothing.
       if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
       if (!r.ok && j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
@@ -756,6 +756,13 @@ export default function LeadsClient() {
   // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
   // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
   const startReviewed = startIcp ? false : undefined
+  function chooseDirectOffer(offer: string, saved: string) {
+    setOfferConflict(null)
+    // Choosing a different offer clears only the workspace-default buyer scope.
+    // Keep a prior explicitly carried play profile and never change Settings.
+    const carry = offer === saved || priorIcp !== null ? startIcp : null
+    void run(carry, offer, carry ? startReviewed : undefined)
+  }
   const businessIcp = startIcp
 
   const input = 'field'
@@ -803,7 +810,7 @@ export default function LeadsClient() {
           <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
-        {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => { setOfferConflict(null); void run(startIcp, o, startReviewed) }} /></div>}
+        {offerConflict?.direct && !draft && <div className="mt-3"><OfferChooser c={offerConflict} onChoose={o => chooseDirectOffer(o, offerConflict.saved)} /></div>}
         {businessIcp && !scanActive && <p className="text-xs text-[#555] mt-2" data-testid="business-profile">Find leads uses the saved profile as it is: {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Review it in Build, or use Review profile first to build a new one from your sentence.</p>}
         </div>
       </form>
@@ -1510,15 +1517,16 @@ function DiscoveredVia({ l }: { l: { discovered_via?: string | null; discovered_
 // runs. Nothing is changed in the profile.
 // A request that only withdraws an offer ("We no longer sell X.") names nothing to use instead: the user keeps the saved
 // offer or writes this play's own (onWrite empties the offer field below; nothing is invented).
-function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string }; onChoose: (offer: string) => void; onWrite?: () => void }) {
+function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; saved: string; withdrawn?: string; ambiguous?: boolean }; onChoose: (offer: string) => void; onWrite?: () => void }) {
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
     {c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
+      : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request may name more than one offer because a parenthesis is unfinished. Choose or write this play’s offer before it runs.</p>
       : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => onChoose(c.stated!)} data-testid="offer-use-stated">Use: {c.stated}</button>}
-      <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>
+      {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved)} data-testid="offer-use-saved">Use: {c.saved}</button>}
       {!c.stated && onWrite && <button type="button" className="btn-primary btn-sm" onClick={onWrite} data-testid="offer-write">Write what this play sells</button>}
     </div>
     {!c.stated && !onWrite && <p className="mt-2 text-xs text-[var(--ink-2)]">Or use Review profile first to write what this play sells.</p>}

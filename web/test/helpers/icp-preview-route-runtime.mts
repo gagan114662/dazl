@@ -28,6 +28,8 @@ test('POST /api/scan/icp: spend and provider failures map to their own names and
       [{ error: 'model_unpriced' }, 503, 'model_unpriced'],
       [{ error: 'accounting_pending' }, 503, 'accounting_pending'],
       [{ error: 'spend_unavailable' }, 503, 'spend_unavailable'],
+      [{ error: 'preview_spend_busy' }, 503, 'preview_spend_busy'],
+      [{ error: 'preview_accounting_blocked' }, 503, 'preview_accounting_blocked'],
       [{ error: 'provider_failed' }, 502, 'provider_failed'],
       [{ error: 'key_rejected' }, 402, 'key_rejected'],
       [{ error: 'key_unreadable' }, 400, 'key_unreadable'],
@@ -44,6 +46,8 @@ test('POST /api/scan/icp: spend and provider failures map to their own names and
         assert.ok(typeof j.message === 'string' && /nothing was charged|no new charge/i.test(j.message), `${name}: honest no-charge copy`)
         assert.ok(!/key was rejected|rejected your key|invalid key/i.test(j.message!), `${name}: never mislabeled as a key problem`)
       }
+      if (name === 'preview_spend_busy') assert.match(j.message ?? '', /did not run and was not charged.*Wait/)
+      if (name === 'preview_accounting_blocked') assert.match(j.message ?? '', /did not run and was not charged.*earlier call may still be billed/)
       if (name === 'accounting_pending') {
         // The unsettled call may be THIS request's (the provider was called, then the settle failed): the copy must
         // be safe for current OR earlier uncertain accounting, never a false "no new charge was made for this request".

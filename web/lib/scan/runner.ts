@@ -26,7 +26,7 @@ import { getDomain } from 'tldts'
 import { atsPublisherRef, heldCopyBoard } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
-import { isMissingSchema, draftOffer } from './play-offer-text.ts'
+import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
@@ -1390,7 +1390,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       let icp = job.icp ? normalizeIcp(safeJson(job.icp)) : null
       if (!icp) {
         assertOwned(db, job)
-        const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl, job.seller ?? undefined)
+        // Inference previously used the workspace seller snapshot even after
+        // the person explicitly chose what this play sells. Preserve that snapshot
+        // for history/repeat matching, but never pass its conflicting offer to ICP inference.
+        const selected = db.prepare('SELECT offer FROM scan_jobs WHERE id = ? AND user_id = ?').pluck().get(job.id, job.user_id)
+        const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl, cleanOffer(selected) || job.seller || undefined)
         icp = r.icp
         db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(JSON.stringify(icp), r.inferred ? 1 : 2, job.id, job.attempts)
       }
@@ -2626,7 +2630,7 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
-export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'provider_failed' | 'trial_key_invalid' | 'key_unreadable' | 'spend_limit' | 'spend_unavailable' | 'model_unpriced' | 'accounting_pending' }> {
+export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'provider_failed' | 'trial_key_invalid' | 'key_unreadable' | 'spend_limit' | 'spend_unavailable' | 'preview_accounting_blocked' | 'preview_spend_busy' | 'model_unpriced' | 'accounting_pending' }> {
   const vendor = pickVendor(db, tenantId)
   const read = vendor ? readKey(db, tenantId, vendor, deps.master) : { key: null, unreadable: false }
   const key = read.key
@@ -2671,6 +2675,8 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     if (spendRefused(e)) {
       if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
       if (e.reason === 'over_limit' || e.reason === OWNER_POOL_LIMIT_REASON) return { error: 'spend_limit' }
+      if (e.reason === 'accounting_unsettled') return { error: 'preview_accounting_blocked' }
+      if (e.reason === 'busy') return { error: 'preview_spend_busy' }
       return { error: 'spend_unavailable' }
     }
     console.error('icp preview failed:', e instanceof Error ? e.message : e)

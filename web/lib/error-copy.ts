@@ -32,6 +32,10 @@ export function knownErrorCopy(code: unknown): string | null {
       return 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.'
     case 'accounting_pending':
       return 'The cost of an AI call could not be recorded, so paid generation is paused until that record settles. A recent call - possibly this request - may still be billed to your key.'
+    case 'preview_accounting_blocked':
+      return 'A previous AI call’s cost is unresolved, so this profile preview did not run and was not charged. The earlier call may still be billed. Retrying now or raising the limit will not resolve the earlier charge.'
+    case 'preview_spend_busy':
+      return 'Another AI step is still being accounted for. This profile preview did not run and was not charged. Wait for the other step to finish before trying again.'
     case 'spend_unavailable':
       return 'Your spend budget could not be checked just now, so nothing was generated and nothing was charged. Try again shortly.'
     // A money cap, not a rate cap: the route's own message (app/api/scan/icp-from-url), true on every surface.
