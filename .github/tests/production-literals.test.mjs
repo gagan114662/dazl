@@ -175,3 +175,42 @@ test('generic work-mode rejection is not a named-location exception; mixed patte
   assert.deepEqual(literals(check(`const rejected = ${mixed}.test(location);`)), [marked('location', mixed)])
   assert.deepEqual(literals(check(`const rejected = ${generic}.test(company);`)), [marked('company', generic)])
 })
+
+test('Object.assign detects explicit per-case source literals, not generic or shadowed receivers', () => {
+  const rows = check([
+    'const cases = cfg.caseOverrides;',
+    'Object.assign(cases, shared, { ["case only"]: { threshold: 0.42, enabled: true } });',
+    'Object["assign"](cfg.evalOverrides.entry, { limit: 17 });',
+    'Object.assign(generic, { threshold: 0.97 });',
+    'function shadow(Object) { Object.assign(cfg.caseOverrides, { threshold: 0.78 }); }',
+  ].join('\n'))
+  assert.deepEqual(new Set(rows.map(x => x.literal)), new Set(['case only','threshold','0.42','enabled','true','limit','17']))
+  assert.ok(rows.every(x => x.kind === 'case_tuning'))
+})
+
+test('logical assignments govern statically named slots, including wrapped element keys', () => {
+  const code = [
+    'plan.city ||= "fallback city";',
+    'plan[("targetCountry")] ??= "fallback country";',
+    'plan.company &&= "replacement company";',
+    'plan.perCaseTuning.extra ||= { threshold: 0.71 };',
+    'plan[dynamic] ??= "generic key";',
+  ].join('\n')
+  for (const value of ['fallback city','fallback country','replacement company','0.71']) assert.ok(check(code).some(x => x.literal === value), value)
+  assert.ok(!check(code).some(x => x.literal === 'generic key'))
+})
+
+test('transparent wrappers around regex, string arguments, and literal membership do not hide targeting', () => {
+  const code = [
+    '((/^fixed place$/iu) as RegExp).test(intent.where);',
+    '((intent.businessName).trim() as string).includes((("fixed employer") satisfies string)!);',
+    '(([("fixed member")] as const) satisfies readonly string[]).includes(intent.employer);',
+    'const re = (/fixed industry/i as RegExp); (re!).test(intent.industry);',
+    '(["copy"] as const).includes(generic);',
+    '(intent.company).includes(build("not direct"));',
+  ].join('\n')
+  assert.deepEqual(literals(check(code)), [
+    marked('location','/^fixed place$/iu'), marked('company','fixed employer'),
+    marked('company','fixed member'), marked('industry','/fixed industry/i'),
+  ])
+})

@@ -23,8 +23,14 @@ export const sourcePath = path =>
   /\.[cm]?[jt]sx?$/.test(path) &&
   !/(?:^|\/)(?:__tests__|__fixtures__|tests?|fixtures?|docs|generated)(?:\/|\.)|\.(?:test|spec|fixture|stories|d)\.[cm]?[jt]sx?$/.test(path)
 
+const transparentValue = n => ts.isParenthesizedExpression(n) || ts.isAsExpression(n) ||
+  ts.isSatisfiesExpression(n) || ts.isNonNullExpression(n) || ts.isTypeAssertionExpression(n)
 function unwrapParens(n) {
-  for (let i = 0; n && ts.isParenthesizedExpression(n) && i < 7; i++) n = n.expression
+  while (n && transparentValue(n)) n = n.expression
+  return n
+}
+function outerValue(n) {
+  while (n.parent && transparentValue(n.parent) && n.parent.expression === n) n = n.parent
   return n
 }
 function literalKey(n) {
@@ -64,28 +70,41 @@ function intentField(node, checker, depth = 0) {
   return accessField(n, checker)
 }
 function matchSlot(node, checker) {
+  node = outerValue(node)
   const p = node.parent
   if (!p) return null
-  if (ts.isPropertyAccessExpression(p) && p.expression === node && ts.isCallExpression(p.parent) && p.parent.expression === p &&
-      fieldName(p.name) === 'test' && p.parent.arguments.length === 1) {
-    const field = intentField(p.parent.arguments[0], checker)
-    if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'regex_test' }
+  if (ts.isPropertyAccessExpression(p) && p.expression === node && fieldName(p.name) === 'test') {
+    const member = outerValue(p), call = member.parent
+    if (call && ts.isCallExpression(call) && call.expression === member && call.arguments.length === 1) {
+      const field = intentField(call.arguments[0], checker)
+      if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'regex_test' }
+    }
   }
-  if (ts.isCallExpression(p) && p.arguments[0] === node && ts.isPropertyAccessExpression(p.expression) &&
-      stringHelpers.has(p.expression.name.text)) {
-    const field = intentField(p.expression.expression, checker)
-    if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'string_' + p.expression.name.text }
+  if (ts.isCallExpression(p) && p.arguments[0] === node) {
+    const member = unwrapParens(p.expression)
+    if (ts.isPropertyAccessExpression(member) && stringHelpers.has(member.name.text)) {
+      const field = intentField(member.expression, checker)
+      if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'string_' + member.name.text }
+    }
   }
-  if (ts.isArrayLiteralExpression(p) && ts.isPropertyAccessExpression(p.parent) && p.parent.expression === p &&
-      p.parent.name.text === 'includes' && ts.isCallExpression(p.parent.parent) && p.parent.parent.expression === p.parent) {
-    const field = intentField(p.parent.parent.arguments[0], checker)
-    if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'literal_membership' }
+  if (ts.isArrayLiteralExpression(p)) {
+    const array = outerValue(p), member = array.parent
+    if (member && ts.isPropertyAccessExpression(member) && member.expression === array && member.name.text === 'includes') {
+      const method = outerValue(member), call = method.parent
+      if (call && ts.isCallExpression(call) && call.expression === method) {
+        const field = intentField(call.arguments[0], checker)
+        if (kindOf(field) && kindOf(field) !== 'case_tuning') return { field, role: 'literal_membership' }
+      }
+    }
   }
   return null
 }
 const comparisons = new Set([
   ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
   ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken,
+])
+const staticAssignments = new Set([
+  ts.SyntaxKind.EqualsToken, ts.SyntaxKind.BarBarEqualsToken, ts.SyntaxKind.QuestionQuestionEqualsToken, ts.SyntaxKind.AmpersandAmpersandEqualsToken,
 ])
 function typedSlot(node, checker) {
   let cur = node
@@ -106,7 +125,7 @@ function typedSlot(node, checker) {
     }
     if (ts.isBinaryExpression(p)) {
       const op = p.operatorToken.kind
-      if (op === ts.SyntaxKind.EqualsToken && p.right === cur) {
+      if (staticAssignments.has(op) && p.right === cur) {
         const field = accessField(p.left, checker)
         return field ? { field, role: 'assignment' } : null
       }
@@ -115,7 +134,7 @@ function typedSlot(node, checker) {
         return field && (comparisons.has(op) || ordinalFields.has(field)) ? { field, role: 'comparison' } : null
       }
       if (![ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken].includes(p.operatorToken.kind)) return null
-    } else if (!(ts.isArrayLiteralExpression(p) || ts.isParenthesizedExpression(p) || ts.isAsExpression(p) || ts.isSatisfiesExpression(p) || ts.isJsxExpression(p)
+    } else if (!(ts.isArrayLiteralExpression(p) || (transparentValue(p) && p.expression === cur) || ts.isJsxExpression(p)
       || (ts.isConditionalExpression(p) && p.condition !== cur))) return null
     cur = p
   }
@@ -143,15 +162,25 @@ function sourceOnlyChecker(path, ast) {
   // candidate checkout, execution, or candidate-selected compiler options.
   return ts.createProgram([path], { noLib: true, noResolve: true, allowJs: true }, host).getTypeChecker()
 }
-function tuningAccess(node) {
+function tuningAccess(node, checker) {
   for (let n = unwrapParens(node), i = 0; n && i < 6; i++, n = unwrapParens(n.expression)) {
-    const field = accessField(n)
+    const field = accessField(n, checker)
     if (tuningContainers.has(field)) return field
     if (!ts.isPropertyAccessExpression(n) && !ts.isElementAccessExpression(n)) return null
   }
   return null
 }
-function tuningSlot(node) {
+function objectAssignTuning(call, source, checker) {
+  // Static writes via the native builtin, not a locally shadowed Object method
+  // or the target argument (a read). No evaluating/merging candidate objects.
+  if (!ts.isCallExpression(call) || call.arguments.length < 2 || call.arguments.indexOf(source) < 1) return null
+  const method = unwrapParens(call.expression)
+  if (!(ts.isPropertyAccessExpression(method) || ts.isElementAccessExpression(method)) || accessField(method) !== 'assign') return null
+  const receiver = unwrapParens(method.expression)
+  if (!ts.isIdentifier(receiver) || receiver.text !== 'Object' || checker.getSymbolAtLocation(receiver)) return null
+  return tuningAccess(call.arguments[0], checker)
+}
+function tuningSlot(node, checker) {
   for (let cur = node, depth = 0; cur.parent && depth < 10; cur = cur.parent, depth++) {
     const p = cur.parent
     if (ts.isPropertyAssignment(p) || ts.isVariableDeclaration(p) || ts.isParameter(p)) {
@@ -159,13 +188,15 @@ function tuningSlot(node) {
       if (tuningContainers.has(field)) return { field, role: 'per_case_literal' }
     }
     if (ts.isElementAccessExpression(p) && p.argumentExpression === cur) {
-      const field = tuningAccess(p.expression)
+      const field = tuningAccess(p.expression, checker)
       if (field) return { field, role: 'per_case_index' }
     }
-    if (ts.isBinaryExpression(p) && p.right === cur && p.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      const field = tuningAccess(p.left)
+    if (ts.isBinaryExpression(p) && p.right === cur && staticAssignments.has(p.operatorToken.kind)) {
+      const field = tuningAccess(p.left, checker)
       if (field) return { field, role: 'per_case_literal' }
     }
+    const assigned = objectAssignTuning(p, cur, checker)
+    if (assigned) return { field: assigned, role: 'per_case_literal' }
     if (ts.isFunctionLike(p) || ts.isStatement(p)) break
   }
   return null
@@ -224,10 +255,10 @@ function inventory(path, source) {
     const other = numeric || [ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword].includes(n.kind)
     const propKey = n.parent && ts.isPropertyAssignment(n.parent) && n.parent.name === n && ts.isIdentifier(n)
     if (direct || regex || other || propKey) {
-      const tuning = tuningSlot(n)
+      checker ??= sourceOnlyChecker(path, ast)
+      const tuning = tuningSlot(n, checker)
       if (tuning) remember(n, tuning, n.text ?? n.getText(ast))
       else if (direct || regex || numeric) {
-        checker ??= sourceOnlyChecker(path, ast)
         const operand = numeric && ts.isPrefixUnaryExpression(n.parent) ? n.parent : n
         const matcher = matchSlot(n, checker)
         const slot = regex ? (matcher?.role === 'regex_test' ? matcher : null) :
