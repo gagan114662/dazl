@@ -25,7 +25,7 @@ export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
   // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
-  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true } }
+  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true; freshTarget?: true } }
   | { offer: null; source: 'none'; conflict: null }
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
@@ -605,6 +605,32 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }
   if (stated) return { offer: stated, source: 'request', conflict: null }
   return { offer: null, source: 'none', conflict: null }
+}
+
+// An exact request to look for leads for the signed-in workspace can name
+// its business rather than use seller grammar. It proposes a choice only,
+// not a confirmed offer, and only when this would otherwise carry a profile
+// into a different offer. Never infer a name from the query or a domain.
+export function carriedWorkspaceOfferConflict(query: string, businessName: string, seller: string, recorded: string | null): NonNullable<PlayOffer['conflict']> | null {
+  const name = cleanOffer(businessName)
+  if (name.length < 3 || !recorded) return null
+  const m = /^(?:please\s+)?(?:find|look for|search for)\s+(?:(?:me|us)\s+)?(?:[1-9]\d?\s+)?(?:(?:new|qualified|high[- ]intent|relevant)\s+){0,3}(?:leads|customers|prospects)\s+for\s+(.+)$/iu.exec(query.trim())
+  if (!m || exact(m[1].slice(0, name.length)) !== exact(name)) return null
+  let tail = m[1].slice(name.length).trimStart()
+  if (tail.startsWith('(')) {
+    const literal = /^\(([^()\s]{1,200})\)/u.exec(tail)
+    const site = /\s-\s(\S+)$/u.exec(seller)?.[1]
+    const host = (v: string) => {
+      try {
+        const u = new URL(v.startsWith('https://') ? v : `https://${v}`)
+        return u.protocol === 'https:' && !u.username && !u.password && !u.port && !u.search && !u.hash ? u.hostname : null
+      } catch { return null }
+    }
+    if (!literal || !site || !host(literal[1]) || host(literal[1]) !== host(site)) return null
+    tail = tail.slice(literal[0].length).trimStart()
+  }
+  if (tail && !/^(?:[,;:—–]|[.!?](?:\s|$))/u.test(tail)) return null
+  return sameOffer(name, recorded) ? { stated: name, recorded, freshTarget: true } : { stated: name, recorded }
 }
 
 // The tenant's own selling context, for a play without an offer of its own (#349): the Memory positioning set in

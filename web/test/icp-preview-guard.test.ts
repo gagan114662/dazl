@@ -10,9 +10,10 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { ProviderError, anthropicProvider, openaiProvider, type Provider } from '../lib/llm/provider.ts'
-import { poolRows } from '../lib/llm/spend-pool.ts'
+import { periodOf, poolRows, PENDING_STALE_S, sharedPool } from '../lib/llm/spend-pool.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { previewIcp } from '../lib/scan/runner.ts'
+import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 
 const master = randomBytes(32)
 const KA = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
@@ -138,4 +139,48 @@ test('a current unsettled reservation reports a wait, without touching it or run
     assert.equal(fetches.length, 0)
   })
   assert.deepEqual((await poolRows(sqliteDb(db), 'A')).map(r => [r.period, r.reserved_usd, r.updated_at]), [['p:testcall', 0.1, before]])
+})
+
+test('profile preview admits only a proven retained stale native hold without settling its unknown cost', async () => {
+  const db = setup()
+  try {
+    const t = Math.floor(Date.now() / 1000), old = t - PENDING_STALE_S - 30
+    // Keep this test in one UTC accounting period even if executed near midnight.
+    const windows = new Set([periodOf('day', old), periodOf('month', old), periodOf('day', t), periodOf('month', t)])
+    const id = 'n123456789'
+    const oldUsd = 0.4
+    const budget = JSON.stringify({ ...JSON.parse(qaClaudeOnlyBudget('{"first5":true}', true)), execution: 'local_once_v1' })
+    db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,error,attempts,funded_by,run_budget,created_at,finished_at,spend_reserved_usd,spend_cap_reserved_usd) VALUES ('old','A','Fixture','Test','Test','failed','accounting_uncertain',1,'user',?,?,?,?,?)").run(budget, old, old + 1, oldUsd, oldUsd)
+    db.prepare("INSERT INTO scan_spend_calls (id,scan_job_id,user_id,attempt,kind,status,created_at,reserve_usd) VALUES (?,'old','A',1,'llm.anthropic.web_search','reserved',?,?)").run(id, old, oldUsd)
+    const add = db.prepare("INSERT INTO tenant_spend_pools (tenant_id,period,reserved_usd,reported_usd,calls,updated_at) VALUES ('A',?,?,0,0,?)")
+    for (const w of windows) add.run(w, oldUsd, old)
+    add.run('p:' + id, oldUsd, 0)
+    const rows = () => poolRows(sqliteDb(db), 'A')
+    const initial = await rows()
+    await assert.rejects(sharedPool(db, 'A', { day: 1, month: 1 }, () => t, 0).reserve(0.05), { reason: 'accounting_unsettled' })
+    fetches.length = 0
+    const opts = { master, providers: realProviders, fetchImpl: answering(GOOD) }
+    const env = { ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_OWNER_MONTH_MAX_USD_USERS: 'A:20', DAZL_SPEND_BUSY_WAIT_MS: '0' }
+    await withEnv(env, async () => {
+      add.run('p:abcdef1234', 0.001, 0)
+      assert.deepEqual(await previewIcp(db, 'A', 'fintech founders', opts), { error: 'preview_accounting_blocked' })
+      assert.equal(fetches.length, 0)
+      db.prepare("DELETE FROM tenant_spend_pools WHERE tenant_id='A' AND period='p:abcdef1234'").run()
+      await withEnv({ DAZL_RUN_MAX_USD_USERS: 'A:0.4' }, async () => {
+        assert.deepEqual(await previewIcp(db, 'A', 'fintech founders', opts), { error: 'spend_limit' })
+        assert.deepEqual(await rows(), initial)
+        assert.equal(fetches.length, 0)
+      })
+      const result = await previewIcp(db, 'A', 'fintech founders', opts)
+      assert.ok('icp' in result && result.inferred)
+      assert.equal(fetches.length, 1)
+    })
+    assert.deepEqual((await rows()).find(r => r.period === 'p:' + id), initial.find(r => r.period === 'p:' + id))
+    assert.deepEqual(db.prepare('SELECT status, reserve_usd, actual_usd FROM scan_spend_calls WHERE id=?').get(id), { status: 'reserved', reserve_usd: oldUsd, actual_usd: null })
+    for (const w of [periodOf('day', t), periodOf('month', t)]) {
+      const row = (await rows()).find(r => r.period === w)!
+      assert.ok(Math.abs(row.reserved_usd - oldUsd - 0.00018) < 1e-9)
+      assert.equal(row.reported_usd, 0.00018)
+    }
+  } finally { db.close() }
 })

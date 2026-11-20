@@ -10,6 +10,12 @@ import { denied } from '@/lib/workspace-access'
 import { trialAllowanceLeft, trialPrincipal, trialRefusal } from '@/lib/billing/trial-budget'
 import { readTrialStatus } from '@/lib/scan/trial'
 import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
+import { readSellerLine } from '@/lib/auth-db'
+import { MAX_QUERY } from '@/lib/scan/icp'
+import { cleanText } from '@/lib/validate'
+import { carriedWorkspaceOfferConflict, cleanOffer, confirmedPlayOffer, effectiveOffer, profileOffer } from '@/lib/scan/play-offer'
+import { captureError } from '@/lib/ops/errors'
+import { requestIdOf } from '@/lib/ops/request-log'
 
 // Price estimate for a scan request, before anything paid runs. Read-only: it queues nothing, counts nothing against the
 // quota or the trial, reserves nothing and calls no provider. POST body = the body POST /api/scan would take.
@@ -22,6 +28,27 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const db = await getDb()   // the Db layer, not the raw SQLite handle
+  const query = cleanText(body?.query, MAX_QUERY)
+  const supplied = body?.offer !== undefined && body?.offer !== null
+  if (supplied && cleanOffer(body.offer).length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
+  if (query.length >= 3 && !supplied) {
+    // Resolve the same recorded or explicit request offer as POST /api/scan,
+    // but before presenting a cost panel for the wrong saved buyer context.
+    try {
+      const seller = await readSellerLine(db, user.tenantId)
+      if (!await confirmedPlayOffer(db, user.tenantId, query, seller)) {
+        const result = effectiveOffer({ seller, query }, await profileOffer(db, user.tenantId))
+        const conflict = result.conflict ?? (body?.icp && body.reviewed === false
+          ? carriedWorkspaceOfferConflict(query, user.business_name, seller, result.offer) : null)
+        if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated,
+          saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}),
+          ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
+      }
+    } catch (e) {
+      captureError(e, { source: 'route', where: '/api/scan/estimate', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
+      return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 })
+    }
+  }
   const vendors = (await connectorStatus(db, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector)
   const hasOwnKey = await readHasKey(db, user.tenantId)
   // A keyless account on the shared trial: say up front if POST /api/scan would refuse it (free scans used up, money or day cap), so the screen

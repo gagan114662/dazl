@@ -2644,7 +2644,7 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     const calls: ModelCall[] = []
     const raw = (deps.providers ?? providers)[v]
     try {
-      const guarded = ownerGuarded(db, tenantId, meterProvider(raw, c => calls.push(c)))
+      const guarded = ownerGuarded(db, tenantId, meterProvider(raw, c => calls.push(c)), undefined, v === 'anthropic' ? 'icp_preview' : undefined)
       // NOT inferIcp: it swallows a thrown error into the plain-word fallback, which would hide a spend refusal or an
       // accounting pause behind a successful-looking preview. Same steps, but errors propagate to the named mapping
       // below; only an unreadable ANSWER (received and billed) still falls back to the request as it is.

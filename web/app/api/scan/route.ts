@@ -28,7 +28,7 @@ import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
-import { cleanOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { carriedWorkspaceOfferConflict, cleanOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -83,7 +83,8 @@ export async function POST(req: NextRequest) {
     let tenant: string | null
     try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
     const e = effectiveOffer({ seller, query }, tenant)
-    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.ambiguous ? { ambiguous: true } : {}), ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
+    const conflict = e.conflict ?? (icp && body?.reviewed === false ? carriedWorkspaceOfferConflict(query, user.business_name, seller, e.offer) : null)
+    if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated, saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}), ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
   }
 
   // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's

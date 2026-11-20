@@ -44,6 +44,11 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-browser-full-v1-1.63.0-${{ runner.os }}-${{ runner.arch }}
       - run: npm install --no-save playwright@1.63.0 esbuild@0.25.0 && npx playwright install --with-deps chromium
+      # Signed real Next and persisted SQLite workspace; no API stubs or paid scan.
+      - name: Signed saved-profile offer chooser (real browser and routes)
+        run: |
+          node test/ui/signed-offer-preflight-1436.ui.mjs
+          node test/ui/signed-offer-preflight-1436.ui.mjs --same-brand
       # The rendered price-estimate check (stubbed: no server, db, network or key). esbuild bundles the page; installed with playwright for this job only, the lockfile untouched. It must run, not skip.
       - name: Rendered price-estimate and budget check
         run: |
@@ -247,3 +252,4 @@ jobs:
           path: web/preview/
           retention-days: 14
           if-no-files-found: error
+

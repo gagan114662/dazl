@@ -15,7 +15,7 @@ import type { Db, DbLike } from '../db/client.ts'
 import { asDb } from '../db/client.ts'
 import { readSellerLine } from '../auth-db.ts'
 
-export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, type OfferSource, type PlayOffer } from './play-offer-text.ts'
+export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, carriedWorkspaceOfferConflict, type OfferSource, type PlayOffer } from './play-offer-text.ts'
 import { effectiveOffer, cleanOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
 
 // The effective offer of one play of this tenant (null: no such play of this tenant).

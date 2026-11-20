@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setSellerLine } from './scan-route-auth-stub.ts'
 import { migrateScan } from '../../lib/scan/store.ts'
 import { defaultVendor, migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
@@ -28,6 +29,59 @@ const est = (body: unknown) => ESTIMATE(req('/api/scan/estimate', body))
 const scan = (body: unknown) => SCAN(req('/api/scan', body))
 const jobs = (db: Database.Database) => db.prepare('SELECT id, estimate FROM scan_jobs').all() as { id: string; estimate: string | null }[]
 const Q = 'Independent dental practices hiring a receptionist in New York in the past 90 days'
+
+test('new stated offer and saved dental buyer: confirm the offer before showing cost or admitting a job', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); setScanDb(db); as(db)
+  const tenant = `E${n}`
+  const buyer = { summary: 'Independent dental practices in New York City', who: ['Practice owners'], industries: [], sizes: [], where: ['New York City'], signals: [], exclude: [] }
+  const saved = 'appointment booking and reminder software'
+  db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt, sells, buyer_profile) VALUES (?, ?, 'Owner', 'Fixture company', 'x', 'y', ?, ?)")
+    .run(tenant, `${tenant}@example.test`, saved, JSON.stringify(buyer))
+  setSellerLine(tenant, saved)
+  const offer = 'dazl (dazl.ai)'
+  const query = `We sell ${offer} to B2B sales leaders. Find companies looking for outbound support.`
+  const response = await est({ query, icp: buyer, reviewed: false })
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), { error: 'offer_conflict', stated: offer, saved })
+  assert.equal(jobs(db).length, 0)
+  const chosen = { query, offer, icp: null }
+  const quoted = await est(chosen); assert.equal(quoted.status, 200)
+  const quote = await quoted.json() as { estimate: { ack: string } }
+  assert.equal(jobs(db).length, 0)
+  const accepted = await scan({ ...chosen, estimate_ack: quote.estimate.ack }); assert.equal(accepted.status, 202)
+  const persisted = db.prepare('SELECT offer, icp FROM scan_jobs WHERE user_id=?').get(tenant)
+  assert.deepEqual(persisted, { offer, icp: null })
+  assert.deepEqual(db.prepare('SELECT sells, buyer_profile FROM users WHERE id=?').get(tenant), { sells: saved, buyer_profile: JSON.stringify(buyer) })
+})
+
+test('a plain request to find customers for the signed workspace offers that choice before pricing a carried buyer', async () => {
+  const db = setup(); as(db)
+  const tenant = `E${n}`
+  setUser({ id: tenant, business_name: 'dazl' })
+  const saved = 'appointment booking and reminder software'
+  setSellerLine(tenant, `${saved} - https://dazl.ai`)
+  const icp = { summary: 'Independent dental practices in New York City', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
+  const query = 'Find leads for dazl (dazl.ai), focusing on owners looking for outbound help.'
+  const body = { query, icp, reviewed: false }
+  for (const request of [est, scan]) {
+    const r = await request(body)
+    assert.equal(r.status, 409)
+    assert.deepEqual(await r.json(), { error: 'offer_conflict', stated: 'dazl', saved })
+    assert.equal(jobs(db).length, 0)
+  }
+  // A similar company name or ordinary buyers described as partners are not this workspace's offer.
+  assert.equal((await est({ ...body, query: 'Find leads for dazl partners in New York.' })).status, 200)
+  assert.equal((await est({ ...body, query: 'Find leads for another company (dazl.ai).' })).status, 200)
+  assert.equal((await est({ ...body, query: 'Find leads for dazl (another.example).' })).status, 200)
+  setSellerLine(tenant, 'dazl - https://dazl.ai')
+  const sameOfferBody = { ...body, query: 'Find 5 high-intent leads for dazl (dazl.ai), focusing on owners looking for outbound help.' }
+  for (const request of [est, scan]) {
+    const r = await request(sameOfferBody)
+    assert.equal(r.status, 409)
+    assert.deepEqual(await r.json(), { error: 'offer_conflict', stated: 'dazl', saved: 'dazl', fresh_target: true })
+  }
+  assert.equal(jobs(db).length, 0)
+})
 
 test('estimate: a menu of providers with unit prices and a projected range; it queues nothing and counts nothing', async () => {
   const db = setup(); as(db)
