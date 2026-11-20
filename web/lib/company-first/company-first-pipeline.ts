@@ -13,6 +13,9 @@ type GateReceipt = Readonly<{
 type Policy = Readonly<{ enabled: boolean; signal?: AbortSignal }>
 export interface CompanyFirstFinderPorts {
   evidence: CompanyFirstPorts
+  // Protected candidate arm installs real canonical preverification; legacy
+  // standalone evaluation remains unchanged when the optional port is absent.
+  preverifyFinding?(scope: Scope, finding: SignalFinding, signal: AbortSignal): Promise<boolean|null>
   contact: CompanyFirstContactReaders
   // Never a caller-supplied status field. Evaluates the SAME production holds
   // and a fully bound candidate using a trusted server-side adapter.
@@ -57,6 +60,12 @@ export async function runCompanyFirstFinder(
   const ready: Ready[] = []
   for (const finding of evidence.findings) {
     if (finding.state !== 'signal_verified') { observations.evidence_held += finding.count; continue }
+    if (ports.preverifyFinding) {
+      const accept=await read(signal,()=>ports.preverifyFinding!(scope,finding,signal))
+      if (await stillCurrent() !== true) return stop('superseded_or_unsettled')
+      if (accept==null) return stop('unavailable')
+      if (!accept) { observations.evidence_held++; continue }
+    }
     observations.signal_verified++
     if (await stillCurrent() !== true) return stop('superseded_or_unsettled')
     const contact = await proveCompanyFirstContact(finding, requestedTitles, scope, ports.contact, signal)

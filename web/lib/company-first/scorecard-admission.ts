@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import { SpendRefused } from '../llm/spend-guard.ts'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { QA_LOCAL_EXECUTION, qaClaudeOnlyBudget } from '../scan/qa-provider-policy.ts'
 
@@ -165,7 +166,7 @@ const scoped = (t: Tx, x: VerifiedScorecardTicket) => t.run(`UPDATE company_scor
  * lower account/job limits; this never substitutes for them. */
 export function* requireCombinedScorecardReservation(t: Tx, x: VerifiedScorecardTicket, gate: WorkspaceGate,
   lane: ScorecardLane, reservationId: string, clock = Date.now): TxBody<void> {
-  const deny = () => { throw new Error('scorecard_spend_refused') }
+  const deny = () => { throw new SpendRefused('scorecard_spend_refused') }
   const step = LANES.indexOf(lane)
   if (!active(x, clock()) || step < 0 || lane !== x.lane || !ID.test(reservationId) || !(yield* gate(t, x)) ||
       (yield* claimLock(t, x, 'running')).changes !== 1 || (yield* scoped(t, x)).changes !== 1 || !(yield* exactJob(t, x)) || !active(x, clock())) return deny()

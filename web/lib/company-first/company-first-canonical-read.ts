@@ -1,3 +1,4 @@
+import { parseDomainRow } from '../outreach/published-email.ts'
 // Final private read bridge only. Uses current legacy product rule readers;
 // none is converted into a synthetic affirmative StageAttestation.
 import type Database from 'better-sqlite3'
@@ -86,8 +87,11 @@ export async function readPrivateCompanyFirstProof(primary:Database.Database, db
       const site=currentSiteContact(db,scratchTenant,row,whoOf(row.icp)||'founder')
       const domain=siteIdentity(evidence.website)
       if(!site.confirmed||!domain||site.domain!==domain||domainRelationship(db,scratchTenant,row.id,row.company_domain)!=='established'||
-         !enrichments.some(r=>r.connector==='sitecrawl'&&r.kind==='domain'&&r.source_url===evidence.identitySource&&
-           r.value.toLowerCase().endsWith('|evidence_own_domain')&&siteIdentity(r.value.split('|')[0])===domain)||
+         !enrichments.some(r=>{
+           if(r.connector!=='sitecrawl'||r.kind!=='domain'||r.source_url!==evidence.identitySource)return false
+           const provenance=parseDomainRow(r)
+           return provenance.basis?.kind==='own_domain'&&siteIdentity(provenance.domain)===domain
+         })||
          site.person?.value!==`${evidence.buyer}, ${evidence.title}`||site.person.source_url!==evidence.buyerBio||
          profileFromListedLabel(site.person.label??null)!==evidence.linkedin)return {held:'buyer_proof_missing'}
       // The official link is only listed, not independently current. Do not

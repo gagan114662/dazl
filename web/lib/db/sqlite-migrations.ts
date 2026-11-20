@@ -58,6 +58,7 @@ import { migrateNeedEvidence } from '../scan/need-evidence.ts'
 
 import { migrateScorecardWorkspaceSqlite } from '../company-first/scorecard-workspace.ts'
 import { SCORECARD_ADMISSION_DDL } from '../company-first/scorecard-admission.ts'
+import { migrateScorecardDispatchSqlite } from '../company-first/scorecard-dispatch.ts'
 
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
@@ -76,6 +77,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateFirstParty, migrateNeedEvidence,
   ]
   for (const m of migrates) m(db)
+  migrateScorecardDispatchSqlite(db)
   // The queue adapter owns its tables and creates them in its constructor.
   new SqliteQueue(db)
   // Last: it adds a column to tables the migrations above create.

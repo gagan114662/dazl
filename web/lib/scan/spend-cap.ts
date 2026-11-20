@@ -447,6 +447,8 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number, nati
       return why
     })
   } catch (e) {
+    // Deliberate scorecard rollback is a normal refusal, not a storage outage.
+    if (e instanceof SpendRefused && e.reason === 'scorecard_spend_refused') throw e
     // The store did not answer: no reservation exists, so the call must not happen. Logged, since it cannot be recorded.
     captureError(e, { source: 'worker', where: 'scan-spend-cap:reserve', tenantId: ctx.tenantId, ref: ctx.jobId })
     throw new SpendRefused('ledger_unavailable')

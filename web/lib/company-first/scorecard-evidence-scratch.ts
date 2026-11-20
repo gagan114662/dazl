@@ -34,10 +34,11 @@ type CanonicalScratchCallback = (context:Readonly<{ db:Database.Database; job:Re
   signal:AbortSignal }>) => void | Promise<void>
 
 function openScratch(primary:Database.Database, expected:Authority, signedTicket:string, key:Uint8Array,
-  input:ScorecardSubjectInput,mode:'drafts'|'canonical', clock:()=>number){
+  input:ScorecardSubjectInput,mode:'drafts'|'canonical'|'new-preverify', clock:()=>number){
   const scope=Object.freeze({...expected})
   const ticket=verifyScorecardTicket(signedTicket,key,scope,clock())
-  if(!ticket||ticket.lane!=='old'||ticket.attempt!==1)return null
+  const expectedLane=mode==='new-preverify'?'new':'old'
+  if(!ticket||ticket.lane!==expectedLane||ticket.attempt!==1)return null
   const proof=authorizeScorecardSubject(ticket,input,clock)
   if(!proof)return null
   const subject=proof.subject
@@ -55,13 +56,13 @@ function openScratch(primary:Database.Database, expected:Authority, signedTicket
         AND j.business_name=? AND j.run_budget=?
         AND j.query IS NULL AND j.icp IS NULL AND j.offer IS NULL AND j.seller IS NULL AND j.sources IS NULL AND j.icp_inferred IS NULL
         AND j.company_scorecard_dispatch_started_at IS NOT NULL AND j.company_scorecard_dispatch_started_at<=?
-        AND c.job_id=j.id AND c.tenant_id=j.user_id AND c.attempt=j.attempts AND c.status='running' AND c.lane=0
+        AND c.job_id=j.id AND c.tenant_id=j.user_id AND c.attempt=j.attempts AND c.status='running' AND c.lane=?
         AND c.cohort=? AND c.nonce=? AND c.ordinal=? AND c.expires_at=? AND c.subject_mac=? AND p.next_ordinal=c.ordinal
         AND p.release=? AND p.actor_id=? AND p.workspace_revision=? AND p.roster=?
         AND o.company_first_scorecard_enabled=1 AND o.company_first_scorecard_revision=p.workspace_revision
         AND m.role='owner' AND u.email_verified_at IS NOT NULL
         AND NOT EXISTS(SELECT 1 FROM tenant_tombstones d WHERE d.deleted_tenant IN(o.id,u.id))`)
-      .get(ticket.jobId,ticket.tenantId,ticket.release,SCORECARD_ANCHOR.business_name,scorecardPinnedBudget(),now,ticket.cohort,ticket.nonce,ticket.ordinal,ticket.expiresAt,ticket.subjectMac,
+      .get(ticket.jobId,ticket.tenantId,ticket.release,SCORECARD_ANCHOR.business_name,scorecardPinnedBudget(),now,expectedLane==='new'?1:0,ticket.cohort,ticket.nonce,ticket.ordinal,ticket.expiresAt,ticket.subjectMac,
         ticket.release,ticket.actorId,ticket.workspaceRevision,JSON.stringify(ticket.presets)) as {authorized:number}|undefined
     return admitted?.authorized===1 ? subject:undefined
   }
@@ -104,13 +105,13 @@ function openScratch(primary:Database.Database, expected:Authority, signedTicket
     const authorized=()=>{try {return !closed && scratch!==undefined && !!authorize()}catch{return false}}
     const limits=Object.freeze({maxSynchronousPageBytes:16_777_216,maxAsyncMs:180_000})
     return Object.freeze({
-      async runCanonical(work:CanonicalScratchCallback):Promise<Snapshot|null>{
-        if(mode!=='canonical'||workUsed||!authorized()||!scratch){close();return null}
+      async runCanonical(work:CanonicalScratchCallback):Promise<Snapshot|true|null>{
+        if((mode!=='canonical'&&mode!=='new-preverify')||workUsed||!authorized()||!scratch){close();return null}
         workUsed=true
         // Restrict retained storage independently of the evidence-count bound. A trusted in-process
         // adapter can run existing local row/proof helpers; it is not an untrusted SQL sandbox.
         scratch.pragma(`max_page_count = ${Math.floor(limits.maxSynchronousPageBytes/4096)}`)
-        const stop=setTimeout(close,Math.min(limits.maxAsyncMs,Math.max(1,ticket.expiresAt-clock())))
+        const stop=setTimeout(close,Math.min(mode==='new-preverify'?480_000:limits.maxAsyncMs,Math.max(1,ticket.expiresAt-clock())))
         stop.unref()
         try {
           const scope=Object.freeze({db:scratch,job:Object.freeze({id:job,user_id:tenant,attempts:1 as const}),signal:lifetime.signal})
@@ -122,7 +123,7 @@ function openScratch(primary:Database.Database, expected:Authority, signedTicket
           const stopped=new Promise<false>(done=>{abort=()=>done(false);lifetime.signal.addEventListener('abort',abort,{once:true})})
           try{workComplete=await Promise.race([invocation,stopped])&&authorized()}
           finally {lifetime.signal.removeEventListener('abort',abort)}
-          return workComplete? this.seal():null
+          return workComplete?(mode==='new-preverify'?true:this.seal()):null
         }catch{return null}finally{clearTimeout(stop);close()}
       },
       close,
@@ -224,5 +225,15 @@ export function openPrivateEvidenceScratch(primary:Database.Database, expected:A
 export async function withCanonicalEvidenceScratch(primary:Database.Database, expected:Authority, signedTicket:string,
   key:Uint8Array,input:ScorecardSubjectInput,work:CanonicalScratchCallback, clock=Date.now):Promise<Snapshot|null>{
   const isolated=openScratch(primary,expected,signedTicket,key,input,'canonical',clock)
-  return isolated ? await isolated.runCanonical(work) : null
+  const receipt=isolated?await isolated.runCanonical(work):null
+  return receipt===true?null:receipt
+}
+
+/** Only the protected new lane may borrow this exact per-run memory database.
+ * No evidence or callback result escapes this helper; work never receives primary.
+ */
+export async function withNewDiscoveryScratch(primary:Database.Database,expected:Authority,signedTicket:string,key:Uint8Array,
+  input:ScorecardSubjectInput,work:CanonicalScratchCallback,clock=Date.now):Promise<boolean>{
+  const isolated=openScratch(primary,expected,signedTicket,key,input,'new-preverify',clock)
+  return isolated ? await isolated.runCanonical(work)===true : false
 }

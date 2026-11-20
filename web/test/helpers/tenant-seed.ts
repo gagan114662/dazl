@@ -13,7 +13,7 @@ type Col = { table: string; column: string; type: string; nullable: boolean; has
 export const marker = (tag: string, table: string) => `${tag}~${table}`
 
 // Values the schema's triggers need while seeding (a lead is written only to a running scan).
-const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' }, onboarding_audit: { event: 'conversion:seeded' }, work_email_lookups: { status: 'unverified', provider: 'pdl' } } // onboarding_audit: its CHECK wants a conversion:<kind> event
+const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running', company_scorecard_claim_nonce: null, company_scorecard_dispatch_started_at: null, company_scorecard_dispatch_release: null }, onboarding_audit: { event: 'conversion:seeded' }, work_email_lookups: { status: 'unverified', provider: 'pdl' } } // onboarding_audit: its CHECK wants a conversion:<kind> event
 
 // A value for `col` that satisfies the CHECK constraint `def`, or undefined when the definition is not one of the
 // shapes the schema uses.
@@ -57,22 +57,26 @@ export type Seeded = { tag: string; tenant: string; ids: Record<string, string[]
 // Seeds one row per tenant-scoped table for `tenant`. Parents first (scan_jobs before leads before lead_sources).
 export async function seedTenant(db: Db, tenant: string, tag: string): Promise<Seeded> {
   const tables = await tenantTables(db)
+  // Required FK parents for scorecard cohorts. Tests still exercise the same
+  // named tenant's normal data; these are not dummy bypass rows.
+  await db.run("INSERT INTO organizations (id,name,kind,created_by,created_at) VALUES (?, ?, 'personal', ?, 1) ON CONFLICT (id) DO NOTHING",
+    [tenant, `${tenant} workspace`, tenant])
   const cons = await db.all<{ t: string; name: string; ty: string; def: string }>(`SELECT conrelid::regclass::text AS t, conname AS name, contype AS ty, pg_get_constraintdef(oid) AS def
     FROM pg_constraint WHERE connamespace = current_schema()::regnamespace AND contype IN ('c', 'f')`)
   const checks = new Map(cons.filter(c => c.ty === 'c').map(c => [c.name, c.def]))
   // FOREIGN KEY (col) REFERENCES parent(id)
-  const fks = new Map<string, Map<string, string>>()
+  const fks = new Map<string, Map<string, {table:string;column:string}>>()
   for (const c of cons.filter(c => c.ty === 'f')) {
-    const m = /FOREIGN KEY \((\w+)\) REFERENCES (\w+)\(/.exec(c.def)
-    if (m) fks.set(c.t, (fks.get(c.t) ?? new Map()).set(m[1], m[2]))
+    const m = /FOREIGN KEY \((\w+)\) REFERENCES (\w+)\((\w+)\)/.exec(c.def)
+    if (m) fks.set(c.t, (fks.get(c.t) ?? new Map()).set(m[1], {table:m[2],column:m[3]}))
   }
-  const parents = (t: string) => { const nd = NOT_DIRECT[t]; return [...(nd && 'via' in nd ? [nd.via[1]] : []), ...(fks.get(t)?.values() ?? [])].filter(p => p !== t && tables.has(p)) }
+  const parents = (t: string) => { const nd = NOT_DIRECT[t]; return [...(nd && 'via' in nd ? [nd.via[1]] : []), ...[...(fks.get(t)?.values() ?? [])].map(ref=>ref.table)].filter(p => p !== t && tables.has(p)) }
   const depth = (t: string, seen = new Set<string>()): number => seen.has(t) ? 0 : Math.max(0, ...parents(t).map(p => 1 + depth(p, new Set([...seen, t]))))
-  const ids: Record<string, string[]> = {}, failed: Record<string, string> = {}, texts = new Set<string>()
+  const ids: Record<string, string[]> = {}, seededRows:Record<string,Record<string,unknown>> = {users:{id:tenant},organizations:{id:tenant}}, failed: Record<string, string> = {}, texts = new Set<string>()
   for (const t of [...tables.keys()].sort((a, b) => depth(a) - depth(b) || a.localeCompare(b))) {
     const nd = NOT_DIRECT[t]
     const refs = new Map(fks.get(t) ?? [])
-    if (nd && 'via' in nd) refs.set(nd.via[0], nd.via[1])
+    if (nd && 'via' in nd) refs.set(nd.via[0], {table:nd.via[1],column:'id'})
     const id = `${tag}${randomBytes(6).toString('hex')}`
     const values: Record<string, unknown> = {}
     let missing = ''
@@ -80,9 +84,10 @@ export async function seedTenant(db: Db, tenant: string, tag: string): Promise<S
       if (TENANT_COLUMNS.includes(c.column)) values[c.column] = tenant
       else if (PRESET[t]?.[c.column] !== undefined) values[c.column] = PRESET[t][c.column]
       else if (refs.has(c.column)) {
-        const parentId = ids[refs.get(c.column)!]?.[0]
+        const ref=refs.get(c.column)!
+        const parentId = seededRows[ref.table]?.[ref.column]
         if (parentId !== undefined) values[c.column] = parentId
-        else if (!c.nullable) missing = `no ${refs.get(c.column)} row for ${c.column}`
+        else if (!c.nullable) missing = `no ${ref.table} row for ${c.column}`
       } else if (c.column === 'id' && isText(c.type)) values[c.column] = id
       else if (c.column === 'id' && c.hasDefault) continue
       else if (isText(c.type)) values[c.column] = marker(tag, t)
@@ -93,7 +98,8 @@ export async function seedTenant(db: Db, tenant: string, tag: string): Promise<S
     for (let attempt = 0; ; attempt++) {
       const cols = Object.keys(values)
       try {
-        const row = await db.get<{ id?: unknown }>(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')}) RETURNING *`, cols.map(c => values[c]) as Param[])
+        const row = await db.get<Record<string,unknown>>(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')}) RETURNING *`, cols.map(c => values[c]) as Param[])
+        seededRows[t]=row??values
         ids[t] = [String(row?.id ?? values.id ?? '')].filter(Boolean)
         for (const v of Object.values(values)) if (typeof v === 'string' && v !== tenant) texts.add(v)
         break

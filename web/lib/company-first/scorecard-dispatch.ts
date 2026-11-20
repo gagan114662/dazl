@@ -55,12 +55,21 @@ type SqliteMigrationHandle = {
   exec(sql: string): unknown
   transaction<T>(fn: () => T): { immediate(): T }
 }
-export function migrateScorecardDispatchSqlite(db: SqliteMigrationHandle): void {
+// Partial scan stores still use the canonical row shape, but cannot enroll or
+// dispatch a scorecard. Do not create triggers referencing primary-only tables.
+export function migrateScorecardDispatchColumnsSqlite(db: SqliteMigrationHandle): void {
   db.transaction(() => {
     const columns = db.prepare("PRAGMA table_info('scan_jobs')").all() as { name: string }[]
     for (const [i, name] of ['company_scorecard_claim_nonce', 'company_scorecard_dispatch_started_at', 'company_scorecard_dispatch_release'].entries()) {
       if (!columns.some(c => c.name === name)) db.exec(SCORECARD_DISPATCH_COLUMNS[i])
     }
+  }).immediate()
+}
+
+// Only after the primary claim/cohort and spend tables have been provisioned.
+export function migrateScorecardDispatchSqlite(db: SqliteMigrationHandle): void {
+  db.transaction(() => {
+    migrateScorecardDispatchColumnsSqlite(db)
     db.exec(SCORECARD_DISPATCH_GUARDS_SQLITE)
   }).immediate()
 }

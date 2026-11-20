@@ -85,6 +85,7 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'data.austintexas.gov': { name: 'Austin (City of Austin open data, building permits)', role: 'public_source' }, // lib/research/sources/socrata-permits.ts
   'opendata.vancouver.ca': { name: 'Vancouver (City of Vancouver open data, business licences)', role: 'public_source' }, // lib/research/sources/opendatasoft-licences.ts
   'weworkremotely.com': { name: 'We Work Remotely (public job feed)', role: 'public_source' },
+  'data.iana.org': { name: 'IANA (public RDAP DNS bootstrap directory)', role: 'public_source' }, // fixed directory URL: no queried domain or workspace data in the request
   'www.wikidata.org': { name: 'Wikidata (company official website)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts: the lead's company NAME only
   'nominatim.openstreetmap.org': { name: 'OpenStreetMap Nominatim (business website tag)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts: the lead's company name and the request's place only
   'html.duckduckgo.com': { name: 'DuckDuckGo HTML search (company website lookup)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts last step: the lead's company name and the request's place only
@@ -95,6 +96,7 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
 export const NON_REQUEST_HOSTS: Record<string, string> = {
   'dazl.ai': 'own domain (user-agent string, links)',
   'staging.dazl.ai': 'own domain',
+  'schema.org': 'JobPosting JSON-LD context identifiers are checked as literal strings; the context URLs are not fetched',
   'docs.github.com': 'documentation link',
   'github.com': 'link to the dazl Connect extension install steps (a page the user opens; dazl requests nothing there)',
   'docs.anthropic.com': 'documentation link',
@@ -231,6 +233,7 @@ export const PRIVACY: Section[] = [
     `Providers you choose and connect with your own account or key: ${ai} (AI models), ${enrich} (contact enrichment), and ${crm} (lead export to your CRM). Their use of the data is governed by your agreement with them.`,
     'Public sources dazl queries receive the search terms it sends - a company or industry name, for the Norwegian business register and UK Companies House a place and industry filter, for SEC EDGAR a city, state and date range, and for the city open-data portals a business category and date range and, for Vancouver, the business names and street addresses of licences already found there (a term can be personal data when it names a person, such as the name or address of a sole trader) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, city open-data portals (City of Austin building permits, City of Vancouver business licences), the Norwegian business register (Brønnøysundregistrene), careers pages on company websites, Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), public job feeds such as We Work Remotely, and, to find a company\'s own website, Wikidata (the company name) OpenStreetMap\'s Nominatim search (the company name and the requested place) and, as a last step, DuckDuckGo\'s HTML search (the company name and the requested place).',
     'Error reports, if an error-monitoring service or an operator alert channel (for example a Telegram bot the operator owns) is configured, carry only the error type, code locations and a request id: never messages, account identifiers, request bodies or personal data. The server\'s own error log keeps the fuller scrubbed record, including the scrubbed message.',
+    'If the restricted company website ownership check is enabled, dazl downloads the public RDAP registry directory from IANA without including the domain being checked or any account data. For the separate public registration lookup, dazl sends only the public domain being checked to the approved domain registry service, not your account details or credentials.',
     '[NEEDS COUNSEL: the sale/share statement privacy laws such as CCPA/CPRA require; no assertion is made until then.]',
   ] },
   { heading: 'Retention', paragraphs: [

@@ -2,7 +2,8 @@
 // a new lead, read a buyer, or compute a final Ready gate.
 import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
 import { observedSafeGet, type ObservedSafeGet } from '../sources/http.ts'
-import { decode, htmlToText } from '../scan/fetch-page.ts'
+import type { Page } from '../scan/fetch-page.ts'
+import { greenhouseDescriptionFragments } from './company-first-public-reader.ts'
 import { verifyEvidence } from '../scan/evidence.ts'
 import { readPublicAtsSignal, type PublicAtsPorts } from './company-first-ats-read.ts'
 import { isRecentCompanyFirstSignal } from './company-first-signal-freshness.ts'
@@ -31,6 +32,20 @@ function stillAccepting(v:unknown, now:number):boolean {
   return Number.isFinite(+day)&&day.toISOString().slice(0,10)===m[1]&&Date.parse(v)>now
 }
 const mime=/^application\/json(?:\s*;\s*charset\s*=\s*"?utf-8"?)?\s*$/i
+
+type Lease = Readonly<{scope:Scope;sourceUrl:string;page:Page;expires:number;ownerStillCurrent(signal:AbortSignal):Promise<boolean>}>
+const canonicalPages=new WeakMap<object,Lease>()
+function sameScope(a:Scope,b:Scope){return a.tenant===b.tenant&&a.job===b.job&&a.attempt===b.attempt}
+/** Protected canonical verifier only. Direct HTTPS API bytes already observed
+ * in this attempt, never a generic cached page, public result or copied body.
+ * Recheck the exact owned posting lease before returning its frozen Page. */
+export async function readCanonicalAtsPage(original:object|undefined,scope:Scope,sourceUrl:string,signal:AbortSignal):Promise<Page|null>{
+  const lease=original&&canonicalPages.get(original)
+  if(!lease||signal.aborted||!sameScope(lease.scope,scope)||lease.sourceUrl!==sourceUrl||Date.now()>=lease.expires)return null
+  try {
+    return await lease.ownerStillCurrent(signal)&&!signal.aborted&&Date.now()<lease.expires?lease.page:null
+  }catch{return null}
+}
 export function createCanonicalAtsSignal(scope:Scope,binding:CanonicalAtsBinding,wire:ObservedSafeGet=observedSafeGet):Stage{
   const exactScope=Object.freeze({tenant:scope.tenant,job:scope.job,attempt:scope.attempt})
   const roleKey=binding.approvedRoleKey
@@ -72,7 +87,7 @@ export function createCanonicalAtsSignal(scope:Scope,binding:CanonicalAtsBinding
     if(signal.aborted||result.state!=='candidate'||!authority||!isRecentCompanyFirstSignal(result.date))return null
     const rec=atsRecord(recordBody,ref)
     if(!rec||rec==='missing'||!rec.company||rec.posted!==result.date)return null
-    const page=atsPageText(rec,rec.html?htmlToText(decode(rec.description)).text:rec.description)
+    const page=atsPageText(rec,rec.html?greenhouseDescriptionFragments(rec.description).join(' | '):rec.description)
     const now=Date.now()
     const verdict=verifyEvidence({
       name:authority.companyName,company:authority.companyName,contact:null,
@@ -81,7 +96,19 @@ export function createCanonicalAtsSignal(scope:Scope,binding:CanonicalAtsBinding
     if(!verdict.ok||!stillAccepting((recordBody as {application_deadline?:unknown}).application_deadline,Date.now()))return null
     // The ATS reader, not the scan verifier's unverified date label, supplies
     // the structured first-published proof. All ordinary holds remain later.
-    return {companyKey:result.companyKey,place:result.place,event:result.event,date:result.date,
-      sourceUrl:result.sourceUrl,quote:result.quote,literalSourceText:result.literalSourceText,dateProof:result.dateProof}
+    const proved=Object.freeze({companyKey:result.companyKey,place:result.place,event:result.event,date:result.date,
+      sourceUrl:result.sourceUrl,quote:result.quote,literalSourceText:result.literalSourceText,dateProof:Object.freeze(result.dateProof)})
+    const original=authority
+    canonicalPages.set(proved,Object.freeze({scope:exactScope,sourceUrl:result.sourceUrl,
+      page:Object.freeze({...page,board:Object.freeze({...page.board}),postedAt:rec.posted,retrievedAt:Math.floor(now/1000)}),
+      expires:Math.min(original.expiresAtMs,now+60_000),
+      async ownerStillCurrent(abort:AbortSignal) {
+        const link=await binding.readCurrentOwnedLink(exactScope,request,abort)
+        return !!link&&sameScope(link.scope,exactScope)&&link.version===original.version&&link.expiresAtMs===original.expiresAtMs&&
+          link.companyKey===original.companyKey&&link.companyName===original.companyName&&link.websiteOrigin===original.websiteOrigin&&
+          link.kind===original.kind&&link.linkSource===original.linkSource&&link.literalPostingHref===original.literalPostingHref&&
+          stillAccepting((recordBody as {application_deadline?:unknown}).application_deadline,Date.now())
+      }}))
+    return proved
   }
 }

@@ -114,3 +114,22 @@ test('an explicit size target requires two current, independent, range-agreeing 
     assert.doesNotMatch(JSON.stringify(got),/secondary|company-filing|independent-ledger/)
   }
 })
+
+test('protected preverification denial never starts the buyer/contact phase',async()=>{
+ const {calls,ports}=fixture('ok')
+ ports.preverifyFinding=async ()=>{calls.push('preverify');return false}
+ const got=await runCompanyFirstFinder({enabled:true},scope,criteria,[title],ports)
+ assert.equal(got.state,'checked');assert.equal(got.observed?.evidence_held,1)
+ assert.deepEqual(got.ready,[])
+ assert.equal(calls.at(-1),'preverify')
+ assert.equal(calls.includes('reserve:directory'),false)
+ assert.equal(calls.includes('gate'),false)
+})
+
+test('absent canonical observation does not become a measured zero or contact permission',async()=>{
+ const {calls,ports}=fixture('ok')
+ ports.preverifyFinding=async()=>null
+ const got=await runCompanyFirstFinder({enabled:true},scope,criteria,[title],ports)
+ assert.equal(got.state,'unavailable');assert.equal(got.observed,null)
+ assert.equal(calls.includes('reserve:directory'),false)
+})

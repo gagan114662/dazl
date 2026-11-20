@@ -1,6 +1,6 @@
 // Native public-page reader for settled candidate hints and reviewed owned
 // pages. No rendering, record lookup, ownership inference, or posting proof.
-import { parse, type DefaultTreeAdapterMap } from 'parse5'
+import { parse, parseFragment, type DefaultTreeAdapterMap } from 'parse5'
 import { parseRobots } from '../connectors/sitecrawl.ts'
 import { observedSafeGet, type ObservedHttpResult, type ObservedSafeGet } from '../sources/http.ts'
 import type { Scope } from './company-first-evidence.ts'
@@ -45,7 +45,7 @@ function literalAnchor(node:Element,html:string):string|null{
   const href=/^href\s*=\s*(["'])([^"'<>&]{1,470})\1$/i.exec(raw)?.[2]
   return href&&href===attr(node,'href')?href:null
 }
-function statics(html:string,includeLinks:boolean) {
+function statics(html:string,includeLinks:boolean,posting=false) {
   const doc=parse(html,{sourceCodeLocationInfo:true,scriptingEnabled:true})
   type LinkDraft = {literalHref:string; chunks:string[]}
   const stack: {node:Node;body:boolean;link?:LinkDraft}[]=children(doc).map(node=>({node,body:false})).reverse()
@@ -90,6 +90,7 @@ function statics(html:string,includeLinks:boolean) {
         }
         continue
       }
+      if(posting&&/^(?:select|option|optgroup|datalist|input|button|details|plaintext|xmp|noembed|noframes)$/.test(tag))continue
       if(NON_TEXT.has(tag) && tag!=='head')continue
     }
     const inBody=body || (isElement(node)&&node.tagName==='body')
@@ -108,7 +109,21 @@ function statics(html:string,includeLinks:boolean) {
   if(visibleText.length<12 || /\b(?:captcha|verify you are (?:a )?human|access denied)\b/i.test(visibleText.slice(0,500)))return null
   const visibleLinks=baseTag?[]:links.map(x=>({literalHref:x.literalHref,visibleLabel:x.chunks.join(' ').trim().slice(0,200)}))
     .filter(x=>x.visibleLabel).map(x=>Object.freeze(x))
-  return {visibleText,jsonLd:Object.freeze(jsonLd),visibleLinks:Object.freeze(visibleLinks)}
+  return {visibleText,fragments,jsonLd:Object.freeze(jsonLd),visibleLinks:Object.freeze(visibleLinks)}
+}
+
+// Greenhouse represents the description as HTML, sometimes escaped once in
+// the JSON field. Unwrap only a whole escaped HTML envelope, not individual
+// text nodes of already-marked-up content. Never join nodes to select a quote.
+export function greenhouseDescriptionFragments(content:string):readonly string[]{
+  if(content.length>MAX_BODY||Buffer.byteLength(content)>MAX_BODY)return []
+  let html=content
+  if(/^\s*&lt;[a-z!/]/i.test(content)&&!content.includes('<')){
+    const envelope=parseFragment(content,{scriptingEnabled:true}).childNodes
+    if(envelope.length!==1||!('value' in envelope[0])||!/^\s*<[a-z!/]/i.test(envelope[0].value))return []
+    html=envelope[0].value
+  }
+  return statics(html,false,true)?.fragments??[]
 }
 
 export function companyFirstPublicReader(scope:Scope, authority:PublicPageReadAuthority, transport:ObservedSafeGet=observedSafeGet) {
@@ -142,7 +157,8 @@ export function companyFirstPublicReader(scope:Scope, authority:PublicPageReadAu
       if(signal.aborted||!page||!boundedBody(page,raw)||page.status!==200||mime(page)!=='html')return null
       const projected=statics(page.body,includeLinks)
       if(!projected || await authority.isCurrent(exactScope)!==true || signal.aborted)return null
-      return Object.freeze({...projected,url:raw,finalUrl:page.finalUrl,contentType:'text/html'})
+      return Object.freeze({visibleText:projected.visibleText,jsonLd:projected.jsonLd,visibleLinks:projected.visibleLinks,
+        url:raw,finalUrl:page.finalUrl,contentType:'text/html'})
     }catch{return null}
   }
   async function readPublicHtml(raw:string, signal:AbortSignal):Promise<ObservedCompanyPage|null>{

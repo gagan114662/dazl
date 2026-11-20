@@ -1,5 +1,6 @@
 // Unmounted public ATS reader. All ports are trusted server implementations;
 // do not accept receipts, policies, origins, or transports from request bodies.
+import { greenhouseDescriptionFragments } from './company-first-public-reader.ts'
 import { atsPostingRef, atsRecord, atsRecordUrl, type AtsPostingRef } from '../sources/ats-posting.ts'
 
 type Scope = Readonly<{ tenant: string; job: string; attempt: string }>
@@ -62,8 +63,7 @@ function within<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T | und
     void Promise.resolve().then(() => signal.aborted ? undefined : work()).then(settle, () => settle(undefined))
   })
 }
-// Select a visible field without stripping or joining HTML fragments. A short
-// title plus HTML-only description cannot support a quote and deliberately holds.
+// Select a visible field without stripping or joining fragments.
 function visibleQuote(title: unknown, description: unknown): string | null {
   for (const field of [title, description]) {
     if (typeof field !== 'string' || field.length > 32_000 || /[<>]|&(?:#\w+|[a-z]+);/i.test(field)) continue
@@ -149,7 +149,13 @@ export async function readPublicAtsSignal(
     if (ports.matchesPlace(c.placeKey, Object.freeze({ literal: record.location, workplace: workplace ? 'onsite' : 'unknown' })) !== true) return held('place_unknown')
   } catch { return held('record_unknown') }
 
-  const quote = visibleQuote(title, kind === 'greenhouse' ? undefined : job.descriptionPlain)
+  let quote = visibleQuote(title, kind === 'greenhouse' ? undefined : job.descriptionPlain)
+  if(!quote&&kind==='greenhouse'){
+    for(const node of greenhouseDescriptionFragments(record.description)){
+      quote=visibleQuote(node,undefined)
+      if(quote)break
+    }
+  }
   if (!quote) return held('quote_unknown')
   if (!day(record.posted) || record.posted < c.from || record.posted > c.through) return held('date_unknown')
   const checked = compile(await within(signal, () => ports.readCurrentOwnedLink(target, signal)))

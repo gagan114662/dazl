@@ -1,6 +1,6 @@
 // Mechanical SQLite DDL -> Postgres DDL translator. FAILS CLOSED: any
 // construct it does not know how to translate - including tokens inside string
-// literals and any column type other than TEXT/INTEGER - aborts the whole
+// literals and any column type outside the explicit type map - aborts the whole
 // translation. A silent or guessed translation is worse than none.
 //
 // Semantic choices (reviewed):
@@ -23,7 +23,21 @@ const out = process.env.PG_SCHEMA_OUT || '/tmp/full-schema-pg.sql'
 // same column with a sequence default instead. Only this exact trigger shape is recognised; the table names must agree.
 const seqRe = /CREATE TRIGGER (?:IF NOT EXISTS )?(\w+)_insert_seq\s+AFTER INSERT ON (\w+)\s+WHEN NEW\.insert_seq IS NULL\s+BEGIN UPDATE (\w+) SET insert_seq = \(SELECT coalesce\(max\(insert_seq\), 0\) \+ 1 FROM (\w+)\) WHERE rowid = NEW\.rowid; END;/g
 const seqTables: string[] = []
-const srcNoSeq = src.replace(seqRe, (_m, name, table, upd, from) => {
+// SQLite refuses the original edit after updating only accounting-owned fields.
+// Match this exact policy before the generic abort-trigger parser, and reproduce
+// its atomic inner update + canceled outer write in Postgres.
+const handbackSqlite = `CREATE TRIGGER company_scorecard_no_handback
+    BEFORE UPDATE OF status ON scan_jobs
+    WHEN OLD.company_scorecard_claim_nonce IS NOT NULL AND OLD.status='running' AND NEW.status='pending'
+    BEGIN
+      UPDATE scan_jobs SET status='failed', claimed_at=NULL, finished_at=unixepoch(),
+        error=CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id=OLD.id AND c.status='reserved')
+          THEN 'accounting_uncertain' ELSE 'scorecard_dispatch_failed' END
+      WHERE id=OLD.id AND user_id=OLD.user_id AND status='running' AND attempts=OLD.attempts;
+      SELECT RAISE(IGNORE);
+    END;`
+const handback = src.includes(handbackSqlite)
+const srcNoSeq = src.replace(handbackSqlite, '').replace(seqRe, (_m, name, table, upd, from) => {
   if (name !== table || upd !== table || from !== table) throw new Error(`insert_seq trigger ${name}_insert_seq names other tables`)
   seqTables.push(table as string)
   return ''
@@ -32,7 +46,7 @@ const seqName = (t: string) => `${t}_insert_seq_seq`
 
 // Split: triggers contain semicolons inside BEGIN...END, so pull them out first.
 // WHEN is optional: a guard without one (immutable / append-only tables) always aborts.
-const triggerRe = /CREATE TRIGGER (?:IF NOT EXISTS )?(\w+)\s+BEFORE (INSERT|DELETE|UPDATE(?: OF \w+(?:, \w+)*)?) ON (\w+)\s+(?:WHEN ([\s\S]*?)\s+)?BEGIN SELECT RAISE\(ABORT, '([^']*)'\); END;/g
+const triggerRe = /CREATE TRIGGER (?:IF NOT EXISTS )?(\w+)\s+BEFORE (INSERT|DELETE|UPDATE(?: OF \w+(?:, \w+)*)?) ON (\w+)\s+(?:WHEN ((?:(?!\bBEGIN\b|;)[\s\S])+?)\s+)?BEGIN SELECT RAISE\(ABORT, '([^']*)'\); END;/g
 // The tenant deletion guard (lib/db/tenant-guard.ts): one `SELECT <tenant id>;` per tenant the row names (a no-op on
 // SQLite), then `SELECT RAISE(ABORT, ...) WHERE <condition>`. Postgres takes a shared transaction-scoped advisory lock
 // on each tenant id instead, so a deletion step (which takes it exclusively) waits for that tenant's open writers.
@@ -67,8 +81,7 @@ function segments(s: string): { code: boolean; text: string }[] {
 }
 
 const LITERAL_TOKENS = /unixepoch|strftime|\blength\(|AUTOINCREMENT|\bINTEGER\b|\bREAL\b|\bBLOB\b/i
-const SQLITE_ONLY_CODE = /unixepoch|strftime|AUTOINCREMENT|\bRAISE\(|PRAGMA|json_extract|json_set|randomblob|zeroblob|\bGLOB\b|\bsoundex\(|\bjulianday\(|\bhex\(|\bquote\(|(?<!extract\(epoch from )\bnow\(\) *AS INTEGER/i
-const KNOWN_TYPES = /^(TEXT|INTEGER|REAL)\b/
+const KNOWN_TYPES = /^(TEXT|INTEGER|BIGINT|REAL)\b/
 
 const stmts = rest.split(/;\s*\n/).map(s => s.trim()).filter(Boolean)
 const translated: string[] = []
@@ -105,6 +118,10 @@ for (const raw of stmts) {
   s = s.replace(/unixepoch\(\)/g, 'floor(extract(epoch from now()))')
   // sqlite length(CAST(x AS BLOB)) counts bytes, which is PG octet_length.
   s = s.replace(/\blength\(CAST\((\w+) AS BLOB\)\)/g, 'octet_length($1)')
+  // Only this exact fixed-width lowercase hex CHECK uses SQLite's negated
+  // character class; keep the width test and reject every other GLOB shape.
+  s = s.replace(/\(length\(company_scorecard_dispatch_release\)=40 AND company_scorecard_dispatch_release NOT GLOB '\*\[\^0-9a-f\]\*'\)/g,
+    () => "company_scorecard_dispatch_release ~ '^[0-9a-f]{40}$'")
   const segs = segments(s)
   const rebuilt = segs.map(seg => {
     if (!seg.code) {
@@ -174,6 +191,21 @@ DROP TRIGGER IF EXISTS ${t.name} ON ${t.table};
 CREATE TRIGGER ${t.name} BEFORE ${ev} ON ${t.table} FOR EACH ROW EXECUTE FUNCTION dazl_guard_${t.name}();`)
 }
 
+if (handback) pgTriggers.push(`
+CREATE OR REPLACE FUNCTION dazl_guard_company_scorecard_no_handback() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (OLD.company_scorecard_claim_nonce IS NOT NULL AND OLD.status='running' AND NEW.status='pending') THEN
+    UPDATE scan_jobs SET status='failed', claimed_at=NULL, finished_at=floor(extract(epoch from now())),
+      error=CASE WHEN EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id=OLD.id AND c.status='reserved')
+        THEN 'accounting_uncertain' ELSE 'scorecard_dispatch_failed' END
+    WHERE id=OLD.id AND user_id=OLD.user_id AND status='running' AND attempts=OLD.attempts;
+    RETURN NULL;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS company_scorecard_no_handback ON scan_jobs;
+CREATE TRIGGER company_scorecard_no_handback BEFORE UPDATE OF status ON scan_jobs FOR EACH ROW EXECUTE FUNCTION dazl_guard_company_scorecard_no_handback();`)
+
 // PG only: row triggers never see TRUNCATE, so a table whose rows may never be deleted outside its own guard also
 // refuses TRUNCATE with a statement trigger (SQLite has no TRUNCATE). Listed by name, so no existing table changes.
 const NO_TRUNCATE = ['audit_events']
@@ -205,7 +237,7 @@ END $guard$;
 `
 const tables = finalStmts.filter(isTable).map(tableName)
 const header = `-- GENERATED by translate-schema.ts from the app's own sqlite migrations.
--- ${tables.length} tables, ${otherStmts.length} indexes, ${triggers.length + NO_TRUNCATE.length} triggers, ${seqTables.length} insertion-order sequences.
+-- ${tables.length} tables, ${otherStmts.length} indexes, ${triggers.length + NO_TRUNCATE.length + Number(handback)} triggers, ${seqTables.length} insertion-order sequences.
 -- Type mapping: INTEGER -> BIGINT (epoch seconds overflow int4 in 2038).
 -- Defaults: floor(extract(epoch from now())) - PG rounds, sqlite truncates.
 -- CHECK LIKE translated to lower() both sides - sqlite LIKE is ASCII case-insensitive.
@@ -218,7 +250,7 @@ writeFileSync(out, header + drop + finalStmts.join(';\n\n') + ';\n' + pgTriggers
 // lib/db/migrations/pg/0001_baseline.sql.
 if (process.env.PG_MIGRATION_OUT) {
   writeFileSync(process.env.PG_MIGRATION_OUT, `-- GENERATED by translate-schema.ts (PG_MIGRATION_OUT): baseline of the app's sqlite migrations.
--- ${tables.length} tables, ${otherStmts.length} indexes, ${triggers.length + NO_TRUNCATE.length} triggers, ${seqTables.length} insertion-order sequences. Do not edit; regenerate.
+-- ${tables.length} tables, ${otherStmts.length} indexes, ${triggers.length + NO_TRUNCATE.length + Number(handback)} triggers, ${seqTables.length} insertion-order sequences. Do not edit; regenerate.
 ` + finalStmts.join(';\n\n') + ';\n' + pgTriggers.join('\n') + '\n')
 }
 

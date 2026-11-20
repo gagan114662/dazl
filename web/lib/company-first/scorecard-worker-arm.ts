@@ -6,6 +6,7 @@ import { accountLimits } from '../llm/spend-pool.ts'
 import { runWithScanSpend, scanCapConfig } from '../scan/spend-cap.ts'
 import { authorizeScorecardSubject, type ScorecardSubjectInput } from './scorecard-admission.ts'
 import type { AuthorizedScorecardExecution } from './scorecard-dispatch.ts'
+import { withNewDiscoveryScratch } from './scorecard-evidence-scratch.ts'
 import { runProtectedBaseline, settleMeasuredScorecardArm } from './scorecard-baseline.ts'
 import { runProtectedCompanyFirstCandidate, type ProtectedCandidateBindings } from './company-first-protected-candidate.ts'
 
@@ -44,11 +45,17 @@ export async function runProtectedScorecardScanArm(primary:Database.Database, jo
       if (!proof) return
       const bindings=bindCandidate(proof,execution)
       if (!bindings) { outcome={state:'held',reason:'candidate_unbound'}; return }
-      const result=await runWithScanSpend({
-        db:primary,jobId:ticket.jobId,tenantId:ticket.tenantId,attempt:ticket.attempt,cap:scanCapConfig(),
-        claudeOnly:true,accountLimits:accountLimits(ticket.tenantId),scorecard:{ticket,lane:'new'},
-      },()=>runProtectedCompanyFirstCandidate(execution,bindings,signal))
-      if (result.state!=='measured' || signal.aborted) { outcome={state:'held',reason:'candidate_unbound'}; return }
+      let measured: Extract<Awaited<ReturnType<typeof runProtectedCompanyFirstCandidate>>,{state:'measured'}>|undefined
+      const allowed=await withNewDiscoveryScratch(primary,{tenantId:ticket.tenantId,actorId:ticket.actorId,jobId:ticket.jobId,
+        release:ticket.release,attempt:1},material.signedToken,material.signingKey,material.reviewedInput,async workspace=>{
+        const result=await runWithScanSpend({
+          db:primary,jobId:ticket.jobId,tenantId:ticket.tenantId,attempt:ticket.attempt,cap:scanCapConfig(),
+          claudeOnly:true,accountLimits:accountLimits(ticket.tenantId),scorecard:{ticket,lane:'new'},
+        },()=>runProtectedCompanyFirstCandidate(execution,bindings,AbortSignal.any([signal,workspace.signal]),workspace.db))
+        if(result.state==='measured')measured=result
+      })
+      if (!allowed || !measured || signal.aborted) { outcome={state:'held',reason:'candidate_unbound'}; return }
+      const result=measured
       const cost=await settleMeasuredScorecardArm(primary,execution)
       if (cost===null || signal.aborted) return
       outcome={state:'measured',arm:'new',caseOrdinal:ticket.ordinal,candidates:result.counts.candidates,

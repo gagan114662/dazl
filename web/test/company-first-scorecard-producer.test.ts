@@ -71,6 +71,17 @@ test('protected scorecard producer rolls back a bad signed subject and arms a si
           accountLimits:{day:2,month:5},claudeOnly:true,scorecard:{ticket,lane:ticket.lane}},async()=>{
           assert.throws(()=>outsideScanSpend(()=>{paidCallbacks++}),/scorecard_spend_refused/)
           await assert.rejects(reserveScanSpend('tinyfish.search',()=>0))
+          // Expected policy refusal vs a real database statement failure. Neither
+          // can commit job/account/bridge reservations or reach transport.
+          db.prepare("UPDATE memberships SET role='viewer' WHERE tenant_id=? AND member_id=?").run(tenantId,actorId)
+          await assert.rejects(reserveScanSpend('llm.anthropic',()=>0.25),{reason:'scorecard_spend_refused'})
+          db.prepare("UPDATE memberships SET role='owner' WHERE tenant_id=? AND member_id=?").run(tenantId,actorId)
+          db.exec(`CREATE TRIGGER fail_spend_fixture BEFORE INSERT ON company_scorecard_calls
+            BEGIN SELECT RAISE(ABORT, 'fixture ledger write failed'); END`)
+          await assert.rejects(reserveScanSpend('llm.anthropic',()=>0.25),{reason:'ledger_unavailable'})
+          db.exec('DROP TRIGGER fail_spend_fixture')
+          assert.equal(db.prepare("SELECT COUNT(*) FROM scan_spend_calls WHERE status='reserved'").pluck().get(),0)
+          assert.equal(db.prepare("SELECT COUNT(*) FROM company_scorecard_calls").pluck().get(),0)
           const hold=await reserveScanSpend('llm.anthropic',()=>0.25)
           assert.ok(hold)
           paidCallbacks++

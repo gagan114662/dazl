@@ -136,3 +136,14 @@ test('legal identity maps to the exact canonical display row; forged objects, an
   assert.equal(held(await f.read()),'evidence_mismatch','registrable-domain equality is not this exact ownership proof')
  }finally{f.db.close();f.p.close()}
 })
+
+
+test('current canonical ownership rejects the right token with an unrecognized provenance label',async()=>{
+  const f=await fixture()
+  try{
+    f.db.prepare("UPDATE lead_enrichments SET label=? WHERE lead_id=? AND kind='domain'").run('domain-basis-v1:old_or_unknown',lead)
+    const checked=await f.read()
+    assert.equal(checked.state,'held')
+    if(checked.state==='held')assert.ok(!checked.observed.includes('owned_buyer_listed_profile'))
+  }finally{f.db.close();f.p.close()}
+})

@@ -12,6 +12,59 @@ export type CareerSchemaObservation = Readonly<{
   location:Readonly<{locality:string;region:string;country:string}>
   ownedVisibleDate:boolean;
 }>
+/** Publisher-specific observation, not ownership, final signal, or Ready evidence. */
+export type ExternalCareerProof = Readonly<{
+  vendor:'workable'|'bamboohr'; sourceUrl:string; boardUrl:string; companyLinkSource:string;
+  companyKey:string; employer:string; title:string; postedDay:string; witnessedUntil:number;
+  location:CareerSchemaObservation['location'];
+}>
+type ReviewedTarget = (exact: Readonly<Pick<ExternalCareerProof,'title'|'location'>>) => boolean
+const external = new WeakMap<CareerSchemaObservation,ExternalCareerProof>()
+/** Only the private original from guarded reads; callers must supply current
+ * reviewed canonical role AND place confirmation, never query-matched guesses. */
+export function readExternalCareerProof(
+  row:CareerSchemaObservation,scope:Scope,site:Site,reviewedTarget:ReviewedTarget,clock=Date.now,
+):ExternalCareerProof|null{
+  const p=external.get(row), now=clock()
+  if(!p||!Number.isFinite(now)||now>=p.witnessedUntil||scope.tenant!==row.scope.tenant||scope.job!==row.scope.job||
+    scope.attempt!==row.scope.attempt||site.status!=='verified'||site.website!==row.ownedOrigin||
+    site.identitySource!==p.companyLinkSource||site.companyKey!==p.companyKey||site.candidateName!==p.employer)return null
+  try{return reviewedTarget(Object.freeze({title:p.title,location:p.location}))===true?p:null}catch{return null}
+}
+
+type SignalInput = Parameters<CompanyFirstPorts['verifyDatedSignal']>[0]['input']
+type SignalProof = NonNullable<Awaited<ReturnType<CompanyFirstPorts['verifyDatedSignal']>>>
+const ownedEvidence = new WeakMap<CareerSchemaObservation,Readonly<{sourceText:string;expiresAt:number}>>()
+const textScope=(a:Scope,b:Scope)=>a.tenant===b.tenant&&a.job===b.job&&a.attempt===b.attempt
+
+/** Turn one observed owner-published posting into a candidate only. The
+ * current reviewed role/place matchers stay authoritative; copies, ATS
+ * vendor observations, and markup-only dates are never accepted here. */
+export function matchOwnedCareerSignal(
+  scope:Scope,input:SignalInput,rows:readonly CareerSchemaObservation[],
+  matches: Readonly<{ role(title:string):boolean; place(location:CareerSchemaObservation['location']):boolean }>,
+  signal:AbortSignal, clock=Date.now,
+):SignalProof|null {
+  if(signal.aborted||input.event!=='hiring_posting'||input.postingUrl||rows.length>4)return null
+  try{
+    const candidates:SignalProof[]=[]
+    const current=clock()
+    if(!Number.isSafeInteger(current)||current<1)return null
+    for(const row of rows){
+      const proof=ownedEvidence.get(row), page=exact(row.sourceUrl)
+      if(!proof||current>=proof.expiresAt||!page||page.pathname==='/'||page.origin!==input.websiteOrigin||
+        row.ownedOrigin!==input.websiteOrigin||row.companyKey!==input.companyKey||!textScope(scope,row.scope)||
+        row.day<input.from||row.day>input.through||row.title.length<20||!matches.role(row.title)||!matches.place(row.location))continue
+      const literalDate='Posted '+row.day
+      if(!proof.sourceText.split(' | ').includes(row.title)||!proof.sourceText.split(' | ').includes(literalDate))continue
+      candidates.push({companyKey:input.companyKey,place:input.place,event:input.event,date:row.day,
+        sourceUrl:page.href,quote:row.title,literalSourceText:proof.sourceText,
+        dateProof:{kind:'first_party_event_date',sourceUrl:page.href,day:row.day,literalDate}})
+    }
+    return !signal.aborted&&candidates.length===1?candidates[0]:null
+  }catch{return null}
+}
+
 const txt=(v:unknown,n=200):v is string=>typeof v==='string'&&v===v.trim()&&!!v&&v.length<=n&&!/[\p{C}<>]/u.test(v)
 const obj=(v:unknown):Record<string,unknown>|null=>v!==null&&typeof v==='object'&&!Array.isArray(v)?v as Record<string,unknown>:null
 const fold=(v:string)=>v.normalize('NFC').replace(/\s+/gu,' ').trim().toLowerCase()
@@ -108,9 +161,12 @@ export async function discoverOwnedCareerSchema(
   if(signal.aborted||!u||u.origin!==site.website||site.status!=='verified'||site.candidateName!==candidate.name||
     ![scope.tenant,scope.job,scope.attempt,site.companyKey,candidate.name].every(v=>txt(v))||
     !day(window.from)||!day(window.through)||window.from>window.through)return none()
-  const scoped=Object.freeze({...scope}),today=new Date(clock()).toISOString().slice(0,10)
+  const started=clock()
+  if(!Number.isFinite(started))return none()
+  const scoped=Object.freeze({...scope}),today=new Date(started).toISOString().slice(0,10)
   if(window.through>today)return none()
   const jobs=new Map<string,string|undefined>(),boards=new Set<string>()
+  let identifiedBoard:string|undefined
   try{
     const root=await read(u.href,signal)
     if(signal.aborted||!currentPage(root,u.href))return none()
@@ -128,6 +184,7 @@ export async function discoverOwnedCareerSchema(
       const boardUrl=[...boards][0],board=exact(boardUrl)!,kind=vendor(board)
       const body=await read(boardUrl,signal)
       if(signal.aborted)return none()
+      if(currentPage(body,boardUrl)&&body.visibleText.split(' | ').map(fold).includes(fold(candidate.name)))identifiedBoard=boardUrl
       if(currentPage(body,boardUrl))for(const a of body.visibleLinks){
         const post=link(a.literalHref,board.origin)
         if(post?.origin===board.origin&&vendor(post)===kind?.replace('-board','-job'))jobs.set(post.href,boardUrl)
@@ -139,8 +196,22 @@ export async function discoverOwnedCareerSchema(
       const p=url===root.url?root:await read(url,signal)
       if(!currentPage(p,url))continue
       const d=decode(p,candidate.name,site.website,window.from,window.through,today)
-      if(d)out.push(Object.freeze({kind:'owned_linked_jobposting',scope:scoped,companyKey:site.companyKey,employer:candidate.name,
-        ownedOrigin:site.website,sourceUrl:url,linkSource:u.href,...(boardUrl?{boardUrl}:{}),...d}))
+      if(d){
+        const row:CareerSchemaObservation=Object.freeze({kind:'owned_linked_jobposting',scope:scoped,companyKey:site.companyKey,employer:candidate.name,
+          ownedOrigin:site.website,sourceUrl:url,linkSource:u.href,...(boardUrl?{boardUrl}:{}),...d})
+        if(d.ownedVisibleDate&&!boardUrl)ownedEvidence.set(row,Object.freeze({sourceText:p.visibleText,expiresAt:clock()+60_000}))
+        out.push(row)
+        const provider=vendor(exact(url)!),lines=p.visibleText.split(' | ').map(fold)
+        const witnessedUntil=started+60_000
+        // Explicit positive publisher status only; a generic Apply button, an
+        // unexpired validThrough, or absence of closure are not active proof.
+        if(boardUrl&&boardUrl===identifiedBoard&&(provider==='workable-job'||provider==='bamboo-job')&&
+          clock()<witnessedUntil&&lines.filter(line=>/^posted \d{4}-\d\d-\d\d$/u.test(line)).every(line=>line===fold('Posted '+d.day))&&lines.includes(fold('Posted '+d.day))&&lines.includes('applications open')&&
+          !lines.some(line=>/\b(?:closed|expired|archived|no longer (?:accepting|available)|not accepting)\b/u.test(line))){
+          external.set(row,Object.freeze({vendor:provider==='workable-job'?'workable':'bamboohr',sourceUrl:url,boardUrl,
+            companyLinkSource:u.href,companyKey:site.companyKey,employer:candidate.name,title:d.title,postedDay:d.day,location:d.location,witnessedUntil}))
+        }
+      }
     }
     return signal.aborted?none():Object.freeze(out)
   }catch{return none()}

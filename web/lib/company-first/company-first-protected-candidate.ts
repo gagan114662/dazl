@@ -1,6 +1,8 @@
+import type Database from 'better-sqlite3'
+import { preverifyCompanyFirstDiscovery } from './company-first-canonical-discovery.ts'
 // Server worker composition only. No route, public API, live flag or persistence.
 import { DISCOVERY_STRATEGIES } from './company-first-claude-request.ts'
-import { discoverOwnedCareerSchema, type CareerSchemaObservation } from './company-first-career-schema.ts'
+import { discoverOwnedCareerSchema, matchOwnedCareerSignal, type CareerSchemaObservation } from './company-first-career-schema.ts'
 import { asDb } from '../db/client.ts'
 import { parseRobots } from '../connectors/sitecrawl.ts'
 import { htmlToText } from '../scan/fetch-page.ts'
@@ -57,6 +59,10 @@ export interface ProtectedCandidateBindings {
   // authorization. The finder hooks below are only operation admission.
   verifyDatedSignal?: ReadProtectedSignal
   canonicalAts?: Omit<CanonicalAtsBinding,'readCurrentOwnedLink'>
+  canonicalCareer?: Readonly<{
+    matchesRole(title:string):boolean
+    matchesPlace(placeKey:string,location:CareerSchemaObservation['location']):boolean
+  }>
   contact?: CompanyFirstFinderPorts['contact']
 }
 export type ProtectedCandidateResult = Readonly<{
@@ -90,7 +96,7 @@ function beforeAbort<T>(signal:AbortSignal, operation:()=>Promise<T>):Promise<T|
 const eq = (a:Scope,b:Scope) => a.tenant===b.tenant && a.job===b.job && a.attempt===b.attempt
 
 export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScorecardExecution,
-  bindings:ProtectedCandidateBindings | null, outerSignal:AbortSignal):Promise<ProtectedCandidateResult>{
+  bindings:ProtectedCandidateBindings | null, outerSignal:AbortSignal, scratch?:Database.Database):Promise<ProtectedCandidateResult>{
   const signal=AbortSignal.any([outerSignal,AbortSignal.timeout(8*60_000)])
   const ticket=execution?.ticket, ctx=scanSpendContext()
   if(signal.aborted||!ticket||ticket.lane!=='new'||!ctx?.claudeOnly||!ctx.accountLimits||
@@ -207,7 +213,21 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
     canonicalUnknown=true
     return null
   }
+  if(!scratch || !scratch.memory || ('memory' in ctx.db && ctx.db===scratch)) return held('canonical_proof_unbound')
   const result=await runCompanyFirstFinder({enabled:true,signal},scope,finderCriteria,offer.requestedTitles,{
+    preverifyFinding:async (requested,finding,abort)=>{
+      if(!eq(requested,scope)||!await current(scope,true))return null
+      // Primary is the original canonical SQLite handle for this protected arm.
+      if(!('memory' in ctx.db))return null
+      const result=await preverifyCompanyFirstDiscovery(ctx.db,scratch,execution,[finding],async (_scope,u,s)=>{
+        const page=await reads.readPublicHtml(u,s)
+        return page?{requestedUrl:page.url,finalUrl:page.finalUrl,complete:true,page:{
+          text:page.visibleText,title:'',retrievedAt:Math.floor(Date.now()/1000),
+        }}:null
+      },abort)
+      if(result.state!=='preverified'||result.unavailableExactSources>0)return null
+      return result.literalVerifierPassed===1&&result.canonicalDated===1&&result.verifiedPlace===1
+    },
     evidence:{
       reserveBeforeDispatch:async r=>eq(r.scope,scope)&&!r.signal.aborted&&await current(scope,r.stage!=='discover'),
       isCurrent:s=>current(s,nativeCompleted),
@@ -268,6 +288,17 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
         }
         const hints=careerHypotheses.get(JSON.stringify([r.input.companyKey,r.input.websiteOrigin]))
         const schema=schemaCandidates.get(JSON.stringify([r.input.companyKey,r.input.websiteOrigin]))
+        const reviewedCareer=bindings.canonicalCareer
+        // A reviewed owner-published JobPosting must pass its current exact
+        // role/place match. Do not retry a held, governed page via a looser reader.
+        if(reviewedCareer&&r.input.event==='hiring_posting'&&!r.input.postingUrl&&schema?.some(x=>x.ownedVisibleDate)){
+          if(!await current(scope,true)||!await bound(ownership.readCurrentAuthorizedSource))return null
+          const proof=matchOwnedCareerSignal(scope,r.input,schema,{
+            role:title=>reviewedCareer.matchesRole(title),
+            place:location=>reviewedCareer.matchesPlace(r.input.place,location),
+          },r.signal)
+          return proof&&isRecentCompanyFirstSignal(proof.date)&&await current(scope,true)?proof:null
+        }
         const signalProof = await verifyDatedSignal(Object.freeze({...r,...(hints?.length?{careerHypotheses:hints}:{}),...(schema?.length?{publicCareerSchema:schema}:{})}))
         return signalProof && isRecentCompanyFirstSignal(signalProof.date) ? signalProof : null
       },

@@ -51,7 +51,13 @@ export type Hold = 'identity_unknown' | 'duplicate_company' | 'signal_unknown' |
 export type Finding = Readonly<{ state: 'held'; reason: Hold; count: number }> |
   Readonly<{ name: string; state: 'signal_verified'; site: VerifiedSite; signal: Readonly<Omit<Signal, 'literalSourceText' | 'dateProof' | 'companySizeFacts'>> }>
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
-type AtsWitness = Readonly<{ scope: Scope; postingUrl: string; ownedLinkSource: string; firstPublishedDay: string }>
+type AtsWitness = Readonly<{ scope: Scope; postingUrl: string; ownedLinkSource: string; firstPublishedDay: string; originalSignal:Signal }>
+const issuedOwnSignals = new WeakMap<SignalFinding,Scope>()
+// A first-party record branded only after the discovery attempt is rechecked.
+export function isCoreVerifiedOwnFinding(finding:SignalFinding,scope:Scope):boolean{
+  const bound=issuedOwnSignals.get(finding)
+  return !!bound&&bound.tenant===scope.tenant&&bound.job===scope.job&&bound.attempt===scope.attempt
+}
 const issuedAts = new WeakMap<SignalFinding, AtsWitness>()
 
 // Read-only provenance check. Only an original frozen finding published by a
@@ -62,6 +68,12 @@ export function isCoreVerifiedAtsFinding(finding: SignalFinding, scope: Scope): 
   return !!witness && witness.scope.tenant === scope?.tenant && witness.scope.job === scope?.job &&
     witness.scope.attempt === scope?.attempt && witness.postingUrl === finding.signal.sourceUrl &&
     witness.firstPublishedDay === finding.signal.date && url(witness.ownedLinkSource)?.origin === finding.site.website
+}
+
+// Internal protected bridge only: recover the exact stage object, not public
+// report text or a reconstructed copy.
+export function originalCoreAtsSignal(finding:SignalFinding,scope:Scope):Signal|undefined {
+  return isCoreVerifiedAtsFinding(finding,scope)?issuedAts.get(finding)?.originalSignal:undefined
 }
 
 export type Report = Readonly<{
@@ -219,15 +231,17 @@ export async function runCompanyFirst(
     }
     const finding: SignalFinding = { name: candidate.name, state: 'signal_verified', site,
       signal: { companyKey: site.companyKey, place: c.place, event: c.event, date: value.date, sourceUrl: source.href, quote: value.quote } }
+    Object.freeze(finding.signal)
+    Object.freeze(finding)
     if (source.origin !== site.website && source.href === postingUrl && postingLinkSource && proof.kind === 'ats_first_published') {
-      Object.freeze(finding.signal)
-      Object.freeze(finding)
-      pendingAts.push([finding, Object.freeze({ scope: scopeSnapshot, postingUrl, ownedLinkSource: postingLinkSource, firstPublishedDay: proof.day })])
+      pendingAts.push([finding, Object.freeze({ scope: scopeSnapshot, postingUrl, ownedLinkSource: postingLinkSource, firstPublishedDay: proof.day, originalSignal:value })])
     }
     findings.push(finding)
   }
   if (await within(signal, () => ports.isCurrent(scopeSnapshot)) !== true || signal.aborted) return empty('superseded_or_expired')
   for (const [finding, witness] of pendingAts) issuedAts.set(finding, witness)
+  for(const finding of findings) if(finding.state==='signal_verified'&&
+    url(finding.signal.sourceUrl)?.origin===finding.site.website)issuedOwnSignals.set(finding, scopeSnapshot)
   const signalsVerified = findings.length
   for (const [reason, count] of counts) findings.push({ state: 'held', reason, count })
   return { state: 'checked', findings, observed: { discovered: candidates.length, website_verified: visited.filter(v => !!v.site).length,
