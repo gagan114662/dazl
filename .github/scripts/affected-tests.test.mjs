@@ -18,21 +18,21 @@ function runShards(cwd, selection) {
   assert.equal(blocks.length, 2, 'each database lane must have its shard runner')
   const env = {...process.env, SEL: selection}
   delete env.NODE_TEST_CONTEXT
-  for (const [body] of blocks) {
-    const nodes = []
+  for (const [lane, [body]] of blocks.entries()) {
+    // Count actual test callbacks, not reporter output: Node's TAP can print
+    // the same test label for both its subtest header and its result.
+    const trace = join(cwd, `consumers-${lane}.log`)
+    writeFileSync(trace, '')
+    env.FIXTURE_CONSUMER_TRACE = trace
     for (let shard = 1; shard <= 4; shard++) {
       const command = body.replaceAll('${{ github.event_name }}', 'pull_request').replaceAll('${{ matrix.shard }}', String(shard))
       const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', command], {
         cwd: join(cwd, 'web'), env, encoding: 'utf8',
       })
       assert.equal(result.status, 0, result.stdout + result.stderr)
-      nodes.push(result.stdout)
     }
-    const all = nodes.join('\n')
-    for (const label of ['fixture direct consumer', 'fixture indirect consumer']) {
-      assert.equal(all.split(label).length - 1, 1, `${label} must execute exactly once per database lane`)
-    }
-    assert.doesNotMatch(all, /nested fixture must not execute/)
+    assert.deepEqual(readFileSync(trace, 'utf8').split('\n').filter(Boolean).sort(), ['direct', 'indirect'],
+      'both top-level consumer callbacks execute exactly once per database lane')
   }
 }
 
@@ -48,8 +48,8 @@ function repo(t) {
   writeFileSync(join(cwd, 'web/test/helpers/net-fence.ts'), 'export {}')
   writeFileSync(join(cwd, 'web/test/crm-webhook-unknown-ui.test.mjs'), 'export {}')
   writeFileSync(join(cwd, 'web/lib/other.ts'), 'export {}')
-  writeFileSync(join(cwd, 'web/test/gate-check.test.ts'), "import test from 'node:test'; test('fixture direct consumer',()=>{}); // test/fixtures/gate-check")
-  writeFileSync(join(cwd, 'web/test/indirect.test.ts'), "import test from 'node:test'; import './helpers/runtime.mts'; test('fixture indirect consumer',()=>{})")
+  writeFileSync(join(cwd, 'web/test/gate-check.test.ts'), "import test from 'node:test'; import {appendFileSync} from 'node:fs'; test('fixture direct consumer',()=>appendFileSync(process.env.FIXTURE_CONSUMER_TRACE, 'direct\\n')); // test/fixtures/gate-check")
+  writeFileSync(join(cwd, 'web/test/indirect.test.ts'), "import test from 'node:test'; import {appendFileSync} from 'node:fs'; import './helpers/runtime.mts'; test('fixture indirect consumer',()=>appendFileSync(process.env.FIXTURE_CONSUMER_TRACE, 'indirect\\n'))")
   writeFileSync(join(cwd, 'web/test/helpers/runtime.mts'), "import {statSync} from 'node:fs'; statSync(new URL('../fixtures/gate-check/pass.test.mjs',import.meta.url))")
   writeFileSync(join(cwd, 'web/test/other.test.ts'), "import '../lib/other.ts'")
   writeFileSync(join(cwd, 'web/test/fixtures/gate-check/pass.test.mjs'), 'export {}')
