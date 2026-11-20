@@ -11,7 +11,7 @@ const bioUrl = origin + '/team/leslie-example', linkedin = 'https://www.linkedin
 const address = 'leslie.example@fictional.example'
 const literal = 'The exact current hiring event appears on this page.'
 const dateLiteral = 'November 13, 2026', date = '2026-11-13'
-function fixture(mode: 'ok'|'wrong_gate'|'held'|'uncertain'|'aborted') {
+function fixture(mode: 'ok'|'wrong_gate'|'wrong_source'|'wrong_quote'|'wrong_bio'|'held'|'uncertain'|'aborted') {
   const calls: string[] = []
   let settled = true
   let reserved = false
@@ -38,8 +38,9 @@ function fixture(mode: 'ok'|'wrong_gate'|'held'|'uncertain'|'aborted') {
       async corroborateProfile() { io('profile'); return {url:linkedin,name:buyer,title,company:name,current:true} },
     },
     async checkExistingHolds() { calls.push('gate'); return {scope:mode==='wrong_gate'?{...scope,attempt:'0'}:scope,
-      companyKey:'same-company',website:origin,eventSource:posting,eventDate:date,
-      person:buyer,title,linkedIn:linkedin,email:address,emailSource:bioUrl,verdict:'ready'} },
+      companyKey:'same-company',website:origin,identitySource:origin+(mode==='wrong_source'?'/other-identity':'/about'),
+      event:criteria.event,eventSource:posting,eventDate:date,literalQuote:mode==='wrong_quote'?'A different claim from this source.':literal,
+      person:buyer,title,buyerBio:mode==='wrong_bio'?origin+'/team/other':bioUrl,linkedIn:linkedin,email:address,emailSource:bioUrl,verdict:'ready'} },
   }
   return {ports,calls}
 }
@@ -61,7 +62,7 @@ test('exact observed signal before person and a complete currently bound final r
  assert.deepEqual(calls,['reserve:discover','discover','reserve:website','website','reserve:signal','signal','reserve:directory','directory','reserve:bio','bio','reserve:profile','profile','gate'])
 })
 test('valid old gate failure or wrong attempt never exposes a held company, source or identity',async()=>{
- for(const mode of ['held','wrong_gate'] as const) {
+ for(const mode of ['held','wrong_gate','wrong_source','wrong_quote','wrong_bio'] as const) {
   const {calls,ports}=fixture(mode)
   const got=await runCompanyFirstFinder({enabled:true},scope,criteria,[title],ports)
   assert.deepEqual(got.ready,[])

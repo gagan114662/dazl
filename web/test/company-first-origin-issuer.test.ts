@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { issueCompanyFirstWebsite, type CanonicalOffice, type IndependentEntity, type OwnedIdentityBlock, type OriginIssuerPorts } from '../lib/company-first/company-first-origin-issuer.ts'
+import { issueCompanyFirstWebsite, readIssuerOwnedPosting, type CanonicalOffice, type IndependentEntity, type OwnedIdentityBlock, type OriginIssuerPorts } from '../lib/company-first/company-first-origin-issuer.ts'
 
 const scope = { tenant: 'local-fixture-tenant', job: 'job-0', attempt: 'attempt-0' }
 const own = 'https://company.example', identity = own + '/identity', robots = own + '/robots.txt'
@@ -56,7 +56,7 @@ test('independent exact record followed by two reserved owned reads corroborates
 
 test('exact published legal ID proves identity without claiming an unverified place',async () => {
   const initial = fixture()
-  const { canonicalOffice: _office, ...record } = initial.record
+  const record = { ...initial.record }; delete record.canonicalOffice
   const html = '<html><head><title>' + candidate.name + '</title></head><body><p>' + candidate.name + '; ' + id.legalId + '</p></body></html>'
   const f = fixture({
     async readIndependentRecords() { return [record] },
@@ -150,5 +150,29 @@ test('authority snapshots reject replaced and mutated records or hints even afte
     })
     assert.deepEqual(await issueCompanyFirstWebsite({...on,signal:ac.signal},scope,mutableCandidate,office.placeKey,f.ports),{state:'held',reason:'superseded_or_expired'})
     assert.equal(n,2)
+  }
+})
+
+test('only the opted-in exact literal owned ATS backlink becomes a scope and deadline bound witness',async()=>{
+  const posting='https://job-boards.greenhouse.io/fixture/jobs/111'
+  const link='<a href="'+posting+'">Open position</a>'
+  for(const [markup,enabled,expected] of [[link,true,true],[link,false,false],['<div hidden>'+link+'</div>',true,false],[link+link,true,false],[link.replace('/111','/222'),true,false]] as const){
+    const html=visible().replace('</body>',markup+'</body>')
+    const f=fixture({},html)
+    const out=await issueCompanyFirstWebsite({enabled:true,bindOwnedPosting:enabled},scope,{...candidate,hintUrl:posting},office.placeKey,{
+      ...f.ports,async readIndependentRecords(){return [{...f.record,exactLinkedHintUrl:posting}]},
+    })
+    assert.equal(out.state,'verified')
+    if(out.state!=='verified')continue
+    const limit=Date.now()+20_000
+    const witness=readIssuerOwnedPosting(out.site,scope,limit)
+    assert.equal(!!witness,expected)
+    assert.equal(out.site.posting?.postingUrl,expected?posting:undefined)
+    if(witness){
+      assert.equal(witness.linkSource,identity);assert.equal(witness.expiresAtMs,limit)
+      assert.equal(readIssuerOwnedPosting({...out.site},scope,limit),null)
+      assert.equal(readIssuerOwnedPosting(out.site,{...scope,attempt:'foreign'},limit),null)
+      assert.equal(readIssuerOwnedPosting(out.site,scope,Date.now()-1),null)
+    }
   }
 })

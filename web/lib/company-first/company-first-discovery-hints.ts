@@ -104,23 +104,33 @@ export async function companyHintsFromDynamicSearch(confirmed:Confirmed,receipt:
   catch{return stop('not_settled')}
   async function current(){try{return !signal.aborted&&await ports.isCurrentAndSettled(scope)===true&&!signal.aborted}catch{return false}}
   const found=new Map<string,Candidate>(), collisions=new Set<string>()
-  let reads=0
-  for(const url of urls){
-    if(reads>=8)break
+  // Paid dispatch stays serial. Once this exact call is settled, at most
+  // two no-cost, independently guarded public pages may overlap. Process
+  // results in citation order and release nothing after revocation.
+  const ordered=[...urls]
+  let cursor=0, reads=0
+  while(cursor<ordered.length && reads<8){
+    const wave:string[]=[]
+    while(cursor<ordered.length&&reads<8&&wave.length<2){
+      const url=ordered[cursor++]
+      let allowed=false
+      try{allowed=ports.allowPublicUrl(url)===true}catch{/* refused */}
+      if(allowed){wave.push(url);reads++}
+    }
+    const viewed=await Promise.all(wave.map(async url=>{
+      if(!await current())return {url,page:null}
+      try{return {url,page:await ports.readPublicHtml(url,signal)}}
+      catch{return {url,page:null}}
+    }))
     if(!await current())return stop('stale')
-    let allowed=false
-    try{allowed=ports.allowPublicUrl(url)===true}catch{/* refused */}
-    if(!allowed)continue
-    reads++
-    let page:Page|null=null
-    try{page=await ports.readPublicHtml(url,signal)}catch{/* no usable guarded public response */}
-    if(!await current())return stop('stale')
-    if(!page||page.url!==url||page.finalUrl!==url||page.contentType!=='text/html')continue
-    const name=hintName(page)
-    if(!name)continue
-    const key=norm(name)
-    if(found.has(key))collisions.add(key)
-    else found.set(key,Object.freeze({name,hintUrl:url}))
+    for(const {page,url} of viewed){
+      if(!page||page.url!==url||page.finalUrl!==url||page.contentType!=='text/html')continue
+      const name=hintName(page)
+      if(!name)continue
+      const key=norm(name)
+      if(found.has(key))collisions.add(key)
+      else found.set(key,Object.freeze({name,hintUrl:url}))
+    }
   }
   return {state:'hints' as const,hints:[...found].filter(([k])=>!collisions.has(k)).map(([,x])=>x)}
 }

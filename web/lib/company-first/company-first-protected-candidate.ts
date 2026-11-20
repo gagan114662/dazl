@@ -7,10 +7,14 @@ import { htmlToText } from '../scan/fetch-page.ts'
 import { scanSpendContext } from '../scan/spend-cap.ts'
 import { observedSafeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
-import { runCompanyFirstNativeTransport, type NativeTransportPorts } from './company-first-native-transport.ts'
+import { proveReciprocalCompanySite, readReciprocalOwnedPosting, type ReciprocalSiteAuthority } from './company-first-reciprocal-site.ts'
+import { readNativeCandidateCallId, runCompanyFirstNativeTransport, type NativeTransportPorts } from './company-first-native-transport.ts'
 import { discoverOwnedRipplingPostings, type RipplingPostingHypothesis } from './company-first-rippling.ts'
 import { companyFirstPublicReader, type PublicPageReadAuthority } from './company-first-public-reader.ts'
-import { issueCompanyFirstWebsite, type OriginIssuerPorts } from './company-first-origin-issuer.ts'
+import type { WebsiteProof } from './company-first-website-proof.ts'
+import { createCanonicalAtsSignal, type CanonicalAtsBinding } from './company-first-canonical-ats-signal.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
+import { readIssuerOwnedPosting, issueCompanyFirstWebsite, type OriginIssuerPorts } from './company-first-origin-issuer.ts'
 import { runCompanyFirstFinder, type CompanyFirstFinderPorts } from './company-first-pipeline.ts'
 import { evaluatePrivateCandidateProof, type CandidateEvidence, type CandidateKey, type Claim, type PrivateCandidateProofStore } from './company-first-private-proof.ts'
 import type { CompanyFirstPorts, Scope } from './company-first-evidence.ts'
@@ -33,22 +37,26 @@ type AuthoritySnapshot = (claim:Claim,signal:AbortSignal)=>Promise<BoundLane|nul
 type OwnerAuthority = Pick<OriginIssuerPorts,'readIndependentRecords'|'readOwnedIdentityBlocks'|'authorizeAndReserve'> & Readonly<{
   readCurrentAuthorizedSource:AuthoritySnapshot
 }>
+type IssuedSite=Extract<WebsiteProof,{state:'verified'}>['site']
 type CanonicalRead = Readonly<{
   // Bound to canonical product attestations; not a finder-produced status.
   readCurrentProtectedSession: AuthoritySnapshot
-  store: PrivateCandidateProofStore
-  locateExactCandidate(claim:Claim,evidence:CandidateEvidence,signal:AbortSignal):Promise<CandidateKey|null>
+  store: {readCurrentSnapshot(claim:Claim,candidateId:string,site:IssuedSite):ReturnType<PrivateCandidateProofStore['readCurrentSnapshot']>}
+  locateExactCandidate(claim:Claim,evidence:CandidateEvidence,signal:AbortSignal,site:IssuedSite):Promise<CandidateKey|null>
 }>
 export interface ProtectedCandidateBindings {
   // All optional at deployment: absence is a hard no-dispatch, never a
   // fallback or a zero learned result. Bound only by protected worker code.
   readReviewedPublicDiscovery?: (ticket: AuthorizedScorecardExecution['ticket'], signal:AbortSignal)=>Promise<Offer|null>
   independentOwner?: OwnerAuthority
+  // Distinct protected reviewed policy, not fallback from a contradicted issuer.
+  reciprocalOwner?: Pick<ReciprocalSiteAuthority,'reserveCurrentRead'> & Readonly<{readCurrentAuthorizedSource:AuthoritySnapshot}>
   canonical?: CanonicalRead
   publicRead?: PublicPageReadAuthority
   // Trusted current typed signal/contact adapters, each owns exact read
   // authorization. The finder hooks below are only operation admission.
   verifyDatedSignal?: ReadProtectedSignal
+  canonicalAts?: Omit<CanonicalAtsBinding,'readCurrentOwnedLink'>
   contact?: CompanyFirstFinderPorts['contact']
 }
 export type ProtectedCandidateResult = Readonly<{
@@ -115,22 +123,26 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
     }catch{return false}
   }
   if(!await current(scope))return held('not_authorized')
-  if(!bindings?.independentOwner?.readIndependentRecords||!bindings.independentOwner.readOwnedIdentityBlocks||
-     !bindings.independentOwner.authorizeAndReserve||!bindings.independentOwner.readCurrentAuthorizedSource)return held('independent_authority_unbound')
+  if(!bindings)return held('independent_authority_unbound')
+  const independent=bindings.independentOwner, reciprocal=bindings.reciprocalOwner
+  if(independent ? !independent.readIndependentRecords||!independent.readOwnedIdentityBlocks||!independent.authorizeAndReserve||!independent.readCurrentAuthorizedSource
+    : !reciprocal?.reserveCurrentRead||!reciprocal.readCurrentAuthorizedSource||!bindings.canonicalAts)return held('independent_authority_unbound')
+  const ownership=independent??reciprocal!
   if(!bindings.canonical?.store?.readCurrentSnapshot||!bindings.canonical.locateExactCandidate||!bindings.canonical.readCurrentProtectedSession)return held('canonical_proof_unbound')
-  const {independentOwner, canonical, publicRead, contact, verifyDatedSignal, readReviewedPublicDiscovery}=bindings
+  const {canonical, publicRead, contact, verifyDatedSignal, readReviewedPublicDiscovery}=bindings
   if(!publicRead?.reserveCurrentRead||!publicRead.isCurrent||!contact?.isCurrent||!contact.reserveBeforeDispatch||!contact.readDirectory||!contact.readBio||!contact.corroborateProfile||!verifyDatedSignal||!readReviewedPublicDiscovery)return held('protected_ports_unbound')
 
-  const bound=async (read:AuthoritySnapshot)=>{
+  const boundSnapshot=async (read:AuthoritySnapshot)=>{
     try{
       const r=await beforeAbort(signal,()=>read(claim,signal))
       return !signal.aborted && !!r && !!r.scope && eq(r.scope,scope) && r.lane==='new' && r.workspaceRevision===ticket.workspaceRevision &&
-        Number.isSafeInteger(r.expiresAtMs) && r.expiresAtMs>Date.now() && r.expiresAtMs<=ticket.expiresAt
-    }catch{return false}
+        Number.isSafeInteger(r.expiresAtMs) && r.expiresAtMs>Date.now() && r.expiresAtMs<=ticket.expiresAt ? r : null
+    }catch{return null}
   }
+  const bound=async (read:AuthoritySnapshot)=>!!await boundSnapshot(read)
   // An installed adapter is not proof that its exact current private session
   // and independent source are available. Resolve both before reading an offer.
-  if(!await bound(independentOwner.readCurrentAuthorizedSource))return held('independent_authority_unbound')
+  if(!await bound(ownership.readCurrentAuthorizedSource))return held('independent_authority_unbound')
   if(!await bound(canonical.readCurrentProtectedSession))return held('canonical_proof_unbound')
   const rawOffer=await beforeAbort(signal,()=>readReviewedPublicDiscovery(ticket,signal))
   if(!rawOffer||!rawOffer.criteria||typeof rawOffer.canonicalPlaceKey!=='string'||!rawOffer.canonicalPlaceKey.trim()||rawOffer.canonicalPlaceKey.length>200||!Array.isArray(rawOffer.requestedTitles)||!rawOffer.requestedTitles.length||
@@ -152,7 +164,25 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
   const reads=companyFirstPublicReader(scope,publicAuthority)
   const careerReads=companyFirstPublicReader(scope,publicAuthority)
   const careerHypotheses=new Map<string,readonly RipplingPostingHypothesis[]>()
+  const issuedSites=new Map<string,IssuedSite>()
+  const ambiguousAtsOwners=new Set<string>()
+  const configuredAts=bindings.canonicalAts
+  const canonicalAts=configuredAts?createCanonicalAtsSignal(scope,{
+    ...configuredAts,
+    async readCurrentOwnedLink(s,input,abort){
+      if(abort.aborted||!await current(s,true)||!await bound(ownership.readCurrentAuthorizedSource))return null
+      if(ambiguousAtsOwners.has(JSON.stringify([input.companyKey,input.websiteOrigin])))return null
+      const matches=[...issuedSites.values()].filter(site=>site.companyKey===input.companyKey&&site.website===input.websiteOrigin)
+      const link=matches.length===1?(independent ? readIssuerOwnedPosting(matches[0],s,ticket.expiresAt) : readReciprocalOwnedPosting(matches[0],s)):null
+      return link?.literalPostingHref===input.postingUrl&&!abort.aborted?link:null
+    },
+    async reserveCurrentPublisherRead(r){
+      return !r.signal.aborted&&await current(r.scope,true)&&await configuredAts.reserveCurrentPublisherRead(r)===true
+    },
+  }):null
   const schemaCandidates=new Map<string,readonly CareerSchemaObservation[]>()
+  const settledHints=new Map<string,string>()
+  const hintKey=(x:{name:string;hintUrl?:string})=>JSON.stringify([x.name,x.hintUrl??null])
   let nativeCompleted=false, canonicalUnknown=false
   let nativeFailed:'upstream_unavailable'|'upstream_unsettled'|null=null
   const finishProof:CompanyFirstFinderPorts['checkExistingHolds']=async (s,row,abort)=>{
@@ -164,10 +194,14 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
     })
     if(abort.aborted||!await current(s,true)||!await bound(canonical.readCurrentProtectedSession)){canonicalUnknown=true;return null}
     try{
-      const candidate=await canonical.locateExactCandidate(claim,expected,abort)
-      if(candidate&&await evaluatePrivateCandidateProof(canonical.store,claim,candidate,expected) && !abort.aborted && await current(s,true)){
-        return {scope:s,companyKey:expected.companyKey,website:expected.website,eventSource:expected.eventSource,eventDate:expected.eventDate,
-          person:expected.buyer,title:expected.title,linkedIn:expected.linkedin,email:expected.email,emailSource:expected.emailSource,verdict:'ready'}
+      const site=issuedSites.get(JSON.stringify([expected.companyKey,expected.website,expected.identitySource]))
+      const candidate=site?await canonical.locateExactCandidate(claim,expected,abort,site):null
+      if(site&&candidate&&await evaluatePrivateCandidateProof({
+        readCurrentSnapshot:(owner,id)=>canonical.store.readCurrentSnapshot(owner,id,site),
+      },claim,candidate,expected) && !abort.aborted && await current(s,true)){
+        return {scope:s,companyKey:expected.companyKey,website:expected.website,identitySource:expected.identitySource,event:expected.event,
+          eventSource:expected.eventSource,eventDate:expected.eventDate,literalQuote:expected.literalQuote,person:expected.buyer,
+          title:expected.title,buyerBio:expected.buyerBio,linkedIn:expected.linkedin,email:expected.email,emailSource:expected.emailSource,verdict:'ready'}
       }
     }catch{/* Missing/unavailable is not a canonical held decision. */}
     canonicalUnknown=true
@@ -178,21 +212,41 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
       reserveBeforeDispatch:async r=>eq(r.scope,scope)&&!r.signal.aborted&&await current(scope,r.stage!=='discover'),
       isCurrent:s=>current(s,nativeCompleted),
       discover:async ({signal:abort})=>{
-        if(!await bound(independentOwner.readCurrentAuthorizedSource)||!await bound(canonical.readCurrentProtectedSession)){
+        if(!await bound(ownership.readCurrentAuthorizedSource)||!await bound(canonical.readCurrentProtectedSession)){
           nativeFailed='upstream_unavailable';throw Error('upstream authority unavailable')
         }
         const r=await runCompanyFirstNativeTransport(execution,{...reads,readReviewedPublicDiscovery:async x=>x===ticket?offer:null},abort)
         if(r.state!=='settled'){nativeFailed=r.state==='unsettled'?'upstream_unsettled':'upstream_unavailable';throw Error('upstream unavailable')}
+        for(const hint of r.hints){
+          const callId=readNativeCandidateCallId(hint)
+          if(callId)settledHints.set(hintKey(hint),callId)
+        }
         nativeCompleted=true
         return r.hints
       },
       verifyWebsite:async ({input,signal:abort})=>{
-        if(!await bound(independentOwner.readCurrentAuthorizedSource))return null
-        const w=await issueCompanyFirstWebsite({enabled:true,signal:abort},scope,input,canonicalPlaceKey,{
-          ...independentOwner,read:issuerRead,parseRobots,parsePage:htmlToText,
-          authorizeAndReserve:async r=>await current(r.scope,true)&&await independentOwner.authorizeAndReserve(r)===true,
+        if(!await bound(ownership.readCurrentAuthorizedSource))return null
+        const w=independent ? await issueCompanyFirstWebsite({enabled:true,signal:abort,bindOwnedPosting:!!canonicalAts},scope,input,canonicalPlaceKey,{
+          ...independent,read:issuerRead,parseRobots,parsePage:htmlToText,
+          authorizeAndReserve:async r=>await current(r.scope,true)&&await independent.authorizeAndReserve(r)===true,
+        }) : await proveReciprocalCompanySite({enabled:true,signal:abort},scope,input,{
+          readCurrentNativePosting:async (s,c,check)=>{
+            const id=settledHints.get(hintKey(c))
+            if(!id||!c.hintUrl||check.aborted||!await current(s,true))return null
+            const source=await boundSnapshot(ownership.readCurrentAuthorizedSource)
+            if(!source||check.aborted)return null
+            const row=await db.get(`SELECT 1 FROM scan_spend_calls a JOIN company_scorecard_calls b
+              ON b.reservation_id=a.id AND b.tenant_id=a.user_id WHERE a.id=? AND a.scan_job_id=? AND a.user_id=?
+              AND a.attempt=? AND b.nonce=? AND b.lane=1 AND a.status='settled' AND a.settled_at IS NOT NULL`,
+            [id,ticket.jobId,ticket.tenantId,ticket.attempt,ticket.nonce])
+            return row&&!check.aborted&&Date.now()<source.expiresAtMs?{scope:s,candidateName:c.name,exactPostingUrl:c.hintUrl,settledCallId:id,expiresAtMs:source.expiresAtMs}:null
+          },
+          reserveCurrentRead:async r=>await current(r.scope,true)&&await reciprocal!.reserveCurrentRead(r)===true,
         })
         if(w.state!=='verified')return null
+        const siteKey=JSON.stringify([w.site.companyKey,w.site.website,w.site.identitySource])
+        if(canonicalAts&&issuedSites.has(siteKey))ambiguousAtsOwners.add(JSON.stringify([w.site.companyKey,w.site.website]))
+        issuedSites.set(siteKey,w.site)
         if(criteria.event==='hiring_posting'&&!w.site.posting){
           // Both source adapters share the same bounded, scoped reader.
           const pages=new Map<string,ReturnType<typeof careerReads.readCareerHtml>>()
@@ -208,6 +262,10 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
         return w.site
       },
       verifyDatedSignal:async r=>{
+        if(canonicalAts&&r.input.event==='hiring_posting'&&r.input.postingUrl&&atsPostingRef(r.input.postingUrl)?.kind==='greenhouse'){
+          // A failed governed exact read is a hold, not eligibility to fall back.
+          return canonicalAts(r)
+        }
         const hints=careerHypotheses.get(JSON.stringify([r.input.companyKey,r.input.websiteOrigin]))
         const schema=schemaCandidates.get(JSON.stringify([r.input.companyKey,r.input.websiteOrigin]))
         const signalProof = await verifyDatedSignal(Object.freeze({...r,...(hints?.length?{careerHypotheses:hints}:{}),...(schema?.length?{publicCareerSchema:schema}:{})}))

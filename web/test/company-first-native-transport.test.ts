@@ -9,7 +9,7 @@ import { qaClaudeOnlyBudget, QA_LOCAL_EXECUTION } from '../lib/scan/qa-provider-
 import { verifyScorecardTicket } from '../lib/company-first/scorecard-admission.ts'
 import { armProtectedScorecardJobSqlite } from '../lib/company-first/scorecard-producer.ts'
 import { dispatchScorecardAware } from '../lib/company-first/scorecard-dispatch.ts'
-import { runCompanyFirstNativeTransport, prepareNativeDiscoveryVariant, type NativeCompanySearch } from '../lib/company-first/company-first-native-transport.ts'
+import { readNativeCandidateCallId, runCompanyFirstNativeTransport, prepareNativeDiscoveryVariant, type NativeCompanySearch } from '../lib/company-first/company-first-native-transport.ts'
 import { DISCOVERY_STRATEGIES } from '../lib/company-first/company-first-claude-request.ts'
 import { runWithScanSpend, scanCapConfig } from '../lib/scan/spend-cap.ts'
 
@@ -28,8 +28,8 @@ const body = {
     {type:'text',text:'RAW_NEVER_RETURNED',citations:[{type:'web_search_result_location',url:seen,encrypted_index:'raw',cited_text:'raw'}]},
   ],
 }
-type Mode='valid'|'wrong_context'|'wrong_ticket'|'no_cap'|'no_key'|'private_query'|'throttle'|'bad_json'|'oversize'|'timeout'|'refusal'|'overrun'|'lost_after_send'|'multi'|'multi_unknown'|'multi_underfunded'|'multi_bad_binding'|'multi_prior_reserved'|'multi_namesake'
-async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:number; reads:number; messages:string[]; rows: {status:string; actual_usd:number|null; id:string}[]}> {
+type Mode='valid'|'wrong_context'|'wrong_ticket'|'no_cap'|'no_key'|'private_query'|'throttle'|'bad_json'|'oversize'|'timeout'|'refusal'|'overrun'|'lost_after_send'|'multi'|'multi_unknown'|'multi_underfunded'|'multi_bad_binding'|'multi_prior_reserved'|'multi_namesake'|'multi_fair'
+async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:number; reads:number; peakFreeReads:number; messages:string[]; rows: {status:string; actual_usd:number|null; id:string}[]}> {
   const db = new Database(':memory:')
   const prior=process.env.DAZL_MASTER_KEY
   const master=Buffer.alloc(32,7)
@@ -65,9 +65,11 @@ async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:n
     const dbPort=sqliteDb(db)
     const rows=()=>db.prepare(`SELECT s.id,s.status,s.actual_usd FROM scan_spend_calls s JOIN company_scorecard_calls c ON c.reservation_id=s.id
       WHERE s.scan_job_id=? ORDER BY s.created_at`).all(next.jobId) as {status:string;actual_usd:number|null;id:string}[]
-    let result:NativeCompanySearch|undefined, sends=0, reads=0
+    let result:NativeCompanySearch|undefined, sends=0, reads=0, freeInFlight=0, peakFreeReads=0
     const multi=mode.startsWith('multi'), messages:string[]=[]
-    const urls=[seen,'https://secondary.example/about',seen]
+    const first=Array.from({length:8},(_,i)=>`https://first-${i}.example/about`)
+    const later=Array.from({length:5},(_,i)=>`https://later-${i}.example/about`)
+    const urls=mode==='multi_fair'?[...first,...later]:[seen,'https://secondary.example/about',seen]
     const criteria={category:mode==='private_query'?'Fixture private@example.test':'Example Category',
       place:'Example Market',event:'Hiring',from:'2026-11-01',through:'2026-11-30'}
     const routed=await dispatchScorecardAware(dbPort,{id:next.jobId,user_id:tenantId,attempts:1},async()=>{throw Error('no legacy path')},{
@@ -91,6 +93,7 @@ async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:n
             const request=JSON.parse(String(req?.body))
             messages.push(request.messages[0].content)
             assert.equal(request.tools[0].max_uses,1)
+            assert.equal(freeInFlight,0,'paid calls stay sequential after current free read wave')
             assert.deepEqual(rows().map(r=>r.status),[...Array.from({length:sends-1},()=> 'settled'),'reserved'])
             if(mode==='multi_unknown'&&sends===2)throw Error('fixture ambiguous later transmission')
             if(mode==='timeout')throw Error('fake network timeout, no retry')
@@ -99,15 +102,25 @@ async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:n
             if(mode==='oversize')return new Response('x'.repeat(513*1024),{headers:{'content-type':'application/json'}})
             if(mode==='lost_after_send')db.prepare("UPDATE scan_jobs SET status='failed' WHERE id=?").run(next.jobId)
             const selected=multi?JSON.parse(JSON.stringify(body).replaceAll(seen,urls[(sends-1)%urls.length])):body
+            if(mode==='multi_fair'){
+              const pageUrls=sends===1?first:[later[sends-2]]
+              selected.content[2].content=pageUrls.map(url=>({type:'web_search_result',url,title:'fixture',page_age:null,encrypted_content:'fixture'}))
+              selected.content[4].citations=pageUrls.map(url=>({type:'web_search_result_location',url,encrypted_index:'fixture',cited_text:'fixture'}))
+            }
             return Response.json(mode==='refusal'?{...selected,stop_reason:'refusal'}:selected)
           },
           allowPublicUrl:url=>urls.includes(url),
           async readPublicHtml(url){
             reads++
+            if(mode==='multi_fair'){
+              peakFreeReads=Math.max(peakFreeReads,++freeInFlight)
+              await new Promise(resolve=>setImmediate(resolve))
+              freeInFlight--
+            }
             assert.ok(urls.includes(url))
             assert.deepEqual(rows().map(r=>[r.status,r.actual_usd]),Array.from({length:sends},()=>['settled',0.0125]))
             if(mode==='multi_prior_reserved')db.prepare("UPDATE scan_spend_calls SET status='reserved',actual_usd=NULL,settled_at=NULL WHERE id=?").run(rows()[0].id)
-            const name=url===seen||mode==='multi_namesake'?'Sample Entity':'Second Entity'
+            const name=mode==='multi_fair'?'Fixture '+new URL(url).hostname.split('.')[0]:url===seen||mode==='multi_namesake'?'Sample Entity':'Second Entity'
             return {url,finalUrl:url,contentType:'text/html',visibleText:'Company info for '+name,
               jsonLd:[JSON.stringify({'@context':'https://schema.org','@type':'WebPage',url,mainEntity:{'@type':'Organization',name}})]}
           },
@@ -125,7 +138,7 @@ async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:n
     })
     assert.deepEqual(routed,{route:'scorecard',status:'callback_returned'})
     assert.ok(result)
-    return {result,sends,reads,messages,rows:rows()}
+    return {result,sends,reads,peakFreeReads,messages,rows:rows()}
   } finally {
     db.close()
     if(prior===undefined)delete process.env.DAZL_MASTER_KEY
@@ -136,6 +149,11 @@ async function exercise(mode:Mode): Promise<{result:NativeCompanySearch; sends:n
 test('real authenticated worker context + own key reserves and settles before hints; only fixed endpoint',async()=>{
   const x=await exercise('valid')
   assert.deepEqual(x.result,{state:'settled',actualMicros:12500,hints:[{name:'Sample Entity',hintUrl:seen}]})
+  if(x.result.state!=='settled')assert.fail('settled result expected')
+  const candidate=x.result.hints[0]
+  assert.ok(readNativeCandidateCallId(candidate))
+  assert.equal(readNativeCandidateCallId({...candidate}),null)
+
   assert.equal(x.sends,1);assert.equal(x.reads,1);assert.equal(x.rows.length,1)
   assert.doesNotMatch(JSON.stringify(x.result),/RAW_NEVER_RETURNED|fixture-workspace|fixture-key/)
 })
@@ -191,4 +209,17 @@ test('distinct domains for one namesake never promote either merged hypothesis',
   const x=await exercise('multi_namesake')
   assert.deepEqual(x.result,{state:'settled',actualMicros:75000,hints:[]})
   assert.equal(x.sends,6)
+})
+
+test('a first angle with eight admissible guarded pages cannot starve the other five',async()=>{
+  const x=await exercise('multi_fair')
+  assert.equal(x.peakFreeReads,2,'free guarded reads overlap but never form an unbounded fanout')
+  assert.equal(x.sends,6)
+  assert.equal(x.reads,8)
+  assert.equal(x.result.state,'settled')
+  if(x.result.state!=='settled')return
+  assert.deepEqual(x.result.hints.map(h=>new URL(h.hintUrl!).hostname),[
+    'first-0.example','first-1.example','first-2.example',
+    'later-0.example','later-1.example','later-2.example','later-3.example','later-4.example',
+  ])
 })

@@ -114,6 +114,14 @@ function bounded<T>(signal:AbortSignal,work:()=>Promise<T>):Promise<T|null>{
   })
 }
 
+const verifiedOfficialRecords=new WeakSet<IndependentEntity>()
+export function isVerifiedOfficialEntity(record:IndependentEntity|undefined):boolean {
+  return !!record && verifiedOfficialRecords.has(record)
+}
+export function officialCompanyEntityKey(id:IndependentEntity['legalIdentity']):string{
+  return digest(id.issuerKey,id.jurisdictionKey,id.legalId)
+}
+
 export function createOfficialEntityReader(
   registry:ReviewedOfficialRegistry|null,
   binding:ReviewedEntityBinding|null,
@@ -141,7 +149,7 @@ export function createOfficialEntityReader(
   const fields=Object.freeze(Object.fromEntries(keys.map((k,i)=>[k,mapped[i]]))) as Readonly<Record<Field,Path>>
   const expires=Math.min(config.expiresAtMs,b.expiresAtMs)
   const reviewVersion=digest(config.reviewVersion,b.recordRevision)
-  const companyKey=digest(config.issuerKey,config.jurisdictionKey,b.legalId)
+  const companyKey=officialCompanyEntityKey({issuerKey:config.issuerKey,jurisdictionKey:config.jurisdictionKey,legalId:b.legalId})
   let dispatches=0
   return async (q,callerSignal)=>{
     if(!same(q.scope,b.scope)||url(q.exactHintUrl)?.origin!==q.hintedOrigin||!short(q.candidateName)||placeFold(q.candidateName)!==placeFold(b.legalName)||
@@ -178,6 +186,7 @@ export function createOfficialEntityReader(
         ...(hint?{exactLinkedHintUrl:hint.href}:{}),
         canonicalOffice:Object.freeze({placeKey:b.placeKey,countryKey:b.countryKey,street,locality,region,postal,country}),
       })
+      verifiedOfficialRecords.add(provenance)
       return Object.freeze([provenance])
     }catch{return null}
   }

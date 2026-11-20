@@ -7,7 +7,8 @@ import { currentnessHeld, leadWindowHeld } from '../outreach/currentness.ts'
 import { requiredGateHeld } from '../scan/held-state.ts'
 import { timingProofGap } from '../scan/timing-proof.ts'
 import { currentSiteContact, siteIdentity, whoOf } from '../scan/site-contact.ts'
-import { companyKey } from '../scan/evidence.ts'
+import { matchesIssuedCompanyIdentity } from './company-first-origin-issuer.ts'
+import type { WebsiteProof } from './company-first-website-proof.ts'
 import { profileFromListedLabel } from '../people/site-profile.ts'
 import { strictPublishedWorkEmailsForLeads } from '../people/work-email.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
@@ -49,7 +50,7 @@ function activePrimary(primary:Database.Database,x:VerifiedScorecardTicket,now:n
 
 export async function readPrivateCompanyFirstProof(primary:Database.Database, db:Database.Database, ticket:VerifiedScorecardTicket,
   subject:ScorecardSubjectInput, key:CandidateKey, expected:CandidateEvidence,
-  sources?:CanonicalStagesReader, clock=Date.now):Promise<Result> {
+  sources?:CanonicalStagesReader, clock=Date.now, issuedSite?:Extract<WebsiteProof,{state:'verified'}>['site']):Promise<Result> {
   const observed:VisibleSubset[]=[]
   const hold=(reason:Held):Result=>({state:'held',reason,observed:[...observed]})
   const t0=clock()
@@ -69,7 +70,9 @@ export async function readPrivateCompanyFirstProof(primary:Database.Database, db
           AND j.funded_by='user' AND j.csv_domain IS NULL AND j.watch_id IS NULL`).get(selected.id,claim.job,scratchTenant,claim.attempt) as Row|undefined
       if(!row||row.run_budget!==scorecardPinnedBudget()||row.query!==approved.subject.query||row.icp!==approved.subject.icp||
          row.seller!==approved.subject.seller||row.offer!==approved.subject.offer||row.sources!==approved.subject.sources) return {held:'wrong_claim'}
-      if(companyKey(row.company)!==evidence.companyKey||row.source_url!==evidence.eventSource||
+      if(!matchesIssuedCompanyIdentity(issuedSite,{scope:{tenant:claim.tenant,job:claim.job,attempt:String(claim.attempt)},
+        companyKey:evidence.companyKey,website:evidence.website,identitySource:evidence.identitySource,
+        persistedCompany:row.company,persistedDomain:row.company_domain},t0)||row.source_url!==evidence.eventSource||
          row.evidence_excerpt!==evidence.literalQuote||row.event_date!==evidence.eventDate||row.signal_kind!==evidence.event)
         return {held:'evidence_mismatch'}
       const at=new Date(t0)

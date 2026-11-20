@@ -30,8 +30,11 @@ export type NativeCompanySearch =
   | Readonly<{ state: 'settled_no_hints'; reason: 'ineligible' | 'estimate_exceeded' | 'stale'; actualMicros: number }>
   | Readonly<{ state: 'settled'; hints: readonly Candidate[]; actualMicros: number }>
 const attempts = new WeakSet<object>()
+const settledCandidateCall = new WeakMap<Candidate,string>()
+export const readNativeCandidateCallId = (candidate:Candidate): string|null=>settledCandidateCall.get(candidate)??null
 const URL = 'https://api.anthropic.com/v1/messages'
 const MAX_SEARCHES = 3
+const MAX_DISCOVERY_PAGES = 8
 const usdm = (n: unknown) => {
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return null
   const micros = Math.round(n * 1_000_000)
@@ -126,13 +129,15 @@ export async function runCompanyFirstNativeTransport(execution: AuthorizedScorec
   attempts.add(ctx)
   let actualTotal=0
   const approved = new Map<string,Readonly<{reserved:number;actual:number}>>()
-  const merged=new Map<string,Candidate>(), conflicts=new Set<string>()
+  const merged=new Map<string,{hint:Candidate;callId:string}>(), conflicts=new Set<string>()
   const pages=new Map<string,Awaited<ReturnType<NativeTransportPorts['readPublicHtml']>>>()
   // Do not expand public page reads in proportion to paid search calls.
+  let remainingAngles=steps.length
   const readPublicHtml:NativeTransportPorts['readPublicHtml']=async(url,abort)=>{
     if(abort.aborted)return null
     if(pages.has(url))return pages.get(url)??null
-    if(pages.size>=8)return null
+    // Keep one unused slot per later angle; cache hits spend no new slot.
+    if(pages.size>=MAX_DISCOVERY_PAGES-remainingAngles)return null
     pages.set(url,null)
     const page=await ports.readPublicHtml(url,abort)
     if(!abort.aborted)pages.set(url,page)
@@ -169,6 +174,7 @@ export async function runCompanyFirstNativeTransport(execution: AuthorizedScorec
   }).catch(()=>false)
 
   for(const {prepared,reserveMicros,strategy} of steps){
+    remainingAngles--
     if(signal.aborted)return {state:'settled_no_hints',reason:'stale',actualMicros:actualTotal}
     if(!await joined())return approved.size?{state:'unsettled',reason:'settlement'}:refuse('not_authorized')
     let hold: Awaited<ReturnType<typeof reserveScanSpend>>
@@ -232,17 +238,17 @@ export async function runCompanyFirstNativeTransport(execution: AuthorizedScorec
       return {state:'settled_no_hints',reason:signal.aborted?'stale':'ineligible',actualMicros:actualTotal}
     if(hints.state!=='refused')for(const hint of hints.hints){
       const name=hint.name.normalize('NFC').replace(/\s+/g,' ').trim().toLowerCase()
-      const prev=merged.get(name)
+      const prev=merged.get(name)?.hint
       if(prev&&prev.hintUrl!==hint.hintUrl) {
         // Same named companies on different domains are not a company binding.
         if(!prev.hintUrl||!hint.hintUrl||new globalThis.URL(prev.hintUrl).origin!==new globalThis.URL(hint.hintUrl).origin)conflicts.add(name)
-      } else if(!prev)merged.set(name,hint)
+      } else if(!prev)merged.set(name,{hint,callId:holdId})
     }
     approved.set(holdId,Object.freeze({reserved:reserveMicros,actual:actualMicros}))
   }
   if(signal.aborted)return {state:'settled_no_hints',reason:'stale',actualMicros:actualTotal}
   if(!await joined())return {state:'unsettled',reason:'settlement'}
-  const hints=[...merged].filter(([name])=>!conflicts.has(name)).map(([,candidate])=>candidate)
+  const hints=[...merged].filter(([name])=>!conflicts.has(name)).map(([,candidate])=>{settledCandidateCall.set(candidate.hint,candidate.callId);return candidate.hint})
   // A valid no-hint result is distinguishable from an invalid transport.
   return {state:'settled',hints,actualMicros:actualTotal}
 }

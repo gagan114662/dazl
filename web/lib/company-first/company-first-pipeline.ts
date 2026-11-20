@@ -7,8 +7,8 @@ type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
 type ContactProof = Extract<CompanyFirstContactResult, { status: 'contact_proof' }>
 type Ready = Readonly<{ signal: SignalFinding; contact: ContactProof }>
 type GateReceipt = Readonly<{
-  scope: Scope; companyKey: string; website: string; eventSource: string; eventDate: string;
-  person: string; title: string; linkedIn: string; email: string; emailSource: string; verdict: 'ready' | 'held';
+  scope: Scope; companyKey: string; website: string; identitySource: string; event: string; eventSource: string; eventDate: string;
+  literalQuote: string; person: string; title: string; buyerBio: string; linkedIn: string; email: string; emailSource: string; verdict: 'ready' | 'held';
 }>
 type Policy = Readonly<{ enabled: boolean; signal?: AbortSignal }>
 export interface CompanyFirstFinderPorts {
@@ -33,9 +33,10 @@ function read<T>(signal: AbortSignal, f: () => Promise<T>): Promise<T | undefine
 }
 const isExactReady = (g: GateReceipt | null | undefined, s: Scope, r: Ready) =>
   g?.verdict === 'ready' && g.scope?.tenant === s.tenant && g.scope?.job === s.job && g.scope?.attempt === s.attempt &&
-  g.companyKey === r.signal.site.companyKey && g.website === r.signal.site.website &&
-  g.eventSource === r.signal.signal.sourceUrl && g.eventDate === r.signal.signal.date &&
-  g.person === r.contact.buyer.name && g.title === r.contact.buyer.title && g.linkedIn === r.contact.buyer.linkedin &&
+  g.companyKey === r.signal.site.companyKey && g.website === r.signal.site.website && g.identitySource === r.signal.site.identitySource &&
+  g.event === r.signal.signal.event && g.eventSource === r.signal.signal.sourceUrl && g.eventDate === r.signal.signal.date &&
+  g.literalQuote === r.signal.signal.quote && g.person === r.contact.buyer.name && g.title === r.contact.buyer.title &&
+  g.buyerBio === r.contact.buyer.bioUrl && g.linkedIn === r.contact.buyer.linkedin &&
   g.email === r.contact.published.address && g.emailSource === r.contact.published.sourceUrl
 
 export async function runCompanyFirstFinder(

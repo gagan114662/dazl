@@ -1,6 +1,9 @@
 // Unmounted pre-lead issuer. Provider/search hints propose a candidate; they
 // never supply the independent record or establish an owner. No I/O defaults.
 import { verifyCompanyWebsite, type WebsitePorts, type WebsiteProof } from './company-first-website-proof.ts'
+import { isVerifiedOfficialEntity, officialCompanyEntityKey } from './company-first-official-entity.ts'
+import { hasExactOwnedPosting } from './company-first-owned-posting.ts'
+import type { PublicAtsPorts } from './company-first-ats-read.ts'
 import type { Candidate, Scope } from './company-first-evidence.ts'
 
 export type CanonicalOffice = Readonly<{
@@ -52,6 +55,33 @@ function legalId(value: Binding | undefined): Binding | null {
   return Object.freeze({ issuerKey: value.issuerKey, jurisdictionKey: value.jurisdictionKey, legalId: value.legalId })
 }
 const sameId = (a: Binding, b: Binding) => a.issuerKey === b.issuerKey && a.jurisdictionKey === b.jurisdictionKey && a.legalId === b.legalId
+type IssuedSite = Extract<WebsiteProof,{state:'verified'}>['site']
+type IssuedIdentity = Readonly<{scope:Scope; companyKey:string; displayName:string; exactOrigin:string; identityUrl:string;
+  legalIdentity:Binding; reviewVersion:string; validThrough:number}>
+type OwnedLink=NonNullable<Awaited<ReturnType<PublicAtsPorts['readCurrentOwnedLink']>>>
+const issuedPostingLinks=new WeakMap<IssuedSite,OwnedLink>()
+export function readIssuerOwnedPosting(site:IssuedSite, scope:Scope, ticketExpiry:number):OwnedLink|null{
+  const link=issuedPostingLinks.get(site)
+  const expiresAtMs=Math.min(ticketExpiry,link?.expiresAtMs??0)
+  return link&&sameScope(link.scope,scope)&&Number.isSafeInteger(ticketExpiry)&&expiresAtMs>Date.now()
+    ? Object.freeze({...link,expiresAtMs}) : null
+}
+const issuedIdentities=new WeakMap<IssuedSite,IssuedIdentity>()
+
+// This is the lookup key of the reviewed public registry adapter. Display
+// names are separately compared as exact persisted names, not used as IDs.
+export function matchesIssuedCompanyIdentity(site:IssuedSite|undefined, expected:Readonly<{
+  scope:Scope; companyKey:string; website:string; identitySource:string; persistedCompany:string; persistedDomain:string|null
+}>, now=Date.now()):boolean{
+  const own=site&&issuedIdentities.get(site)
+  if(!own||!Number.isSafeInteger(now)||now>=own.validThrough||Date.now()>=own.validThrough||
+    !sameScope(own.scope,expected.scope)||own.companyKey!==expected.companyKey||own.displayName!==expected.persistedCompany||
+    own.exactOrigin!==expected.website||own.identityUrl!==expected.identitySource||!expected.persistedDomain)return false
+  // Compare the specific proven host/origin, not a public-suffix or display-name alias.
+  const domain=publicUrl('https://'+expected.persistedDomain+'/')
+  return !!domain&&domain.origin===own.exactOrigin&&domain.pathname==='/'&&!domain.search&&!domain.hash&&
+    domain.hostname===expected.persistedDomain
+}
 function canonicalOffice(value: CanonicalOffice | undefined): CanonicalOffice | null {
   if (!value || ![value.placeKey, value.countryKey, value.street, value.locality, value.region, value.postal, value.country].every(x => short(x))) return null
   return Object.freeze({ placeKey: value.placeKey, countryKey: value.countryKey, street: value.street, locality: value.locality, region: value.region, postal: value.postal, country: value.country })
@@ -87,13 +117,17 @@ function compile(records: readonly IndependentEntity[] | null, q: RecordLookup) 
 }
 
 export async function issueCompanyFirstWebsite(
-  policy: Readonly<{ enabled?: boolean; signal?: AbortSignal }>,
+  policy: Readonly<{ enabled?: boolean; signal?: AbortSignal; bindOwnedPosting?:boolean }>,
   scope: Scope, candidate: Candidate, requiredPlaceKey: string | undefined, ports: OriginIssuerPorts,
 ): Promise<WebsiteProof> {
   if (policy.enabled !== true) return { state: 'held', reason: 'disabled' }
   if (requiredPlaceKey !== undefined && !short(requiredPlaceKey)) return OMIT
+  const issuingScope=Object.freeze({...scope})
   let initial: NonNullable<ReturnType<typeof compile>> | undefined
   let corroborated = false
+  let literalLegalId = false
+  let officialReadCount = 0
+  let literalOwnedPosting=false
   function confirms(body: string, exactUrl: string): boolean {
     if (!initial || typeof body !== 'string' || body.length > 128_000 || new TextEncoder().encode(body).byteLength > 128_000) return false
     // Multiple owner blocks are ambiguous in this small slice, even if one agrees.
@@ -111,16 +145,19 @@ export async function issueCompanyFirstWebsite(
     const officeMatches = !!office && !!initial.office && sameOffice(office, initial.office) &&
       [office.street, office.locality, office.region, office.postal, office.country].every(x => literalIn(literal, x))
     if ((b.office !== undefined && initial.office && !officeMatches) || (requiredPlaceKey && !officeMatches)) return false
-    return !!id || officeMatches
+    literalLegalId = !!id
+    return literalLegalId || officeMatches
   }
-  const verified = await verifyCompanyWebsite(policy, scope, candidate, {
+  const verified = await verifyCompanyWebsite(policy, issuingScope, candidate, {
     parsePage: ports.parsePage,
     parseRobots: ports.parseRobots,
     authorizeAndReserve: ports.authorizeAndReserve,
     async readIndependentOrigin(q, signal) {
       const query = Object.freeze({ ...q, ...(requiredPlaceKey ? { requiredPlaceKey } : {}) })
-      const current = compile(await ports.readIndependentRecords(query, signal), query)
+      const records=await ports.readIndependentRecords(query,signal)
+      const current = compile(records, query)
       if (!current || (initial && (!corroborated || current.witness !== initial.witness))) return null
+      if(isVerifiedOfficialEntity(records?.[0]))officialReadCount++
       initial ??= current
       return Object.freeze({ scope: q.scope, version: initial.reviewVersion, expiresAtMs: initial.expiresAtMs,
         candidateName: q.candidateName, companyKey: initial.companyKey, basis: 'independent_official_origin',
@@ -133,9 +170,31 @@ export async function issueCompanyFirstWebsite(
       if (url === initial?.identityUrl && response?.status === 200 && !response.truncated && !response.location && !options?.signal?.aborted) {
         try { corroborated = confirms(response.body, url) } catch { corroborated = false }
         if (!corroborated) return null
+        if(policy.bindOwnedPosting&&initial.hint)literalOwnedPosting=hasExactOwnedPosting(response.body,initial.hint)
       }
       return response
     },
   })
-  return verified.state === 'verified' && !corroborated ? OMIT : verified
+  if(verified.state!=='verified')return verified
+  if(!corroborated||!initial)return OMIT
+  // Office-only corroboration can verify a website but cannot establish a
+  // legal-ID-to-legacy-lead crosswalk. Retain true object identity, never a serializable token.
+  const read=initial as NonNullable<ReturnType<typeof compile>>
+  if(literalOwnedPosting&&read.hint&&!policy.signal?.aborted){
+    const posting=Object.freeze({linkSource:read.identityUrl,postingUrl:read.hint})
+    Object.assign(verified.site,{posting})
+    issuedPostingLinks.set(verified.site,Object.freeze({
+      scope:issuingScope,companyKey:read.companyKey,companyName:read.legalName,websiteOrigin:read.origin,
+      version:read.reviewVersion,expiresAtMs:read.expiresAtMs,kind:'observed_owned_link',linkSource:posting.linkSource,literalPostingHref:posting.postingUrl,
+    }))
+    Object.freeze(verified.site)
+  }
+  const now=Date.now()
+  if(literalLegalId&&officialReadCount===2&&officialCompanyEntityKey(read.id)===read.companyKey&&read.expiresAtMs>now&&!policy.signal?.aborted) {
+    Object.freeze(verified.site)
+    issuedIdentities.set(verified.site,Object.freeze({scope:issuingScope,companyKey:read.companyKey,
+      displayName:read.candidateName,exactOrigin:read.origin,identityUrl:read.identityUrl,legalIdentity:read.id,
+      reviewVersion:read.reviewVersion,validThrough:Math.min(read.expiresAtMs,now+120_000)}))
+  }
+  return verified
 }
