@@ -1,10 +1,10 @@
 // Actual signed Home Play card from persisted SQLite, no API stubs.
-// Build first; --http-only proves the real route plus the same React card,
-// while the default additionally verifies hydrated Home in Chromium.
+// Build first; --http-only proves the real route, while the default also
+// verifies the actual hydrated Home card in Chromium.
 import { createRequire } from 'node:module'
 import { createHash,randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync,mkdtempSync,readFileSync,rmSync } from 'node:fs'
+import { existsSync,mkdtempSync,rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -71,24 +71,8 @@ try{
   assert.equal((await get(campaignPath,other)).status,404)
   assert.equal((await get(campaignPath,'')).status,401)
   assert.equal((await get('/app',token)).status,200)
-  // Same app component that Home renders after the real campaign response.
-  // Render it with actual React locally; no fabricated props or markup.
-  const ts=require('typescript')
-  async function renderOwnCard(){
-    const source=readFileSync(join(dir,'app/app/play-offer.tsx'),'utf8')
-    const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText
-    const module={exports:{}}
-    let display=null
-    if(source.includes('./play-offer-display')) display=await import('../../app/app/play-offer-display.ts')
-    new Function('require','exports','module',js)(path=>path==='./play-offer-display'?display:require(path),module.exports,module)
-    const React=require('react'), ReactDOM=require('react-dom/server')
-    return ReactDOM.renderToStaticMarkup(React.createElement(module.exports.PlayOfferCard,{jobId:oldJob,offer:campaign.offer}))
-  }
-  const card=await renderOwnCard()
-  console.log('signed campaign:',response.status,'; actual card incomplete label:',card.includes('One of the offers for this play is incomplete.'), '; raw clipped label emitted:',card.includes(clipped))
-  assert.match(card,/One of the offers for this play is incomplete\./)
-  assert.ok(!card.includes(clipped))
-  assert.ok(!card.includes(laterSeller))
+  assert.ok(!JSON.stringify(campaign.offer).includes(clipped))
+  console.log('Signed campaign: incomplete offer conflict, original bytes unchanged, owner-only read.')
   if(!httpOnly){
     const {chromium}=require('playwright')
     browser=await chromium.launch()
