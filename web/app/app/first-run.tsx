@@ -1,4 +1,5 @@
 'use client'
+import { OptionalRegistryNote } from './optional-registry-note'
 import { useEffect, useMemo, useState } from 'react'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from './trial-refusal-notice'
 import { useRouter } from 'next/navigation'
@@ -442,6 +443,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                         onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} />
                     </form>
                     {claudeSearchOption}
+                    <OptionalRegistryNote />
                     <p className="text-xs text-[var(--ink-3)] mt-3">Or start with one of these:</p>
                     <div className="mt-2 flex flex-col gap-2">
                       {plays.slice(0, 3).map(p => <button key={p} type="button" disabled={busy || noPool || poolUnknown || !!trialRefused} className="chip w-full justify-between text-left" onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); if (!noPool && !poolUnknown) void start(p, true) }} data-testid="first-play"><span className="min-w-0 break-words">{p}</span><Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
@@ -543,6 +545,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
         {claudeSearchOption}
+        <OptionalRegistryNote />
         <div className="ask">
           <textarea id="ask" rows={2} required minLength={3} maxLength={600} placeholder="Find people who..." value={ask} onChange={e => { setAsk(e.target.value); setAskIsSuggestion(false); setTrialRefused(null); setLinkNote(null) }} />
           <button className="btn-primary send" disabled={busy || ask.trim().length < 3 || !!trialRefused}><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{busy ? 'Starting...' : 'Find leads'}</span></button>

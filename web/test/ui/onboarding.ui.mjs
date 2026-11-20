@@ -154,6 +154,10 @@ await sentence().fill('Oxford accounting practices recruiting an office manager'
 const optIn = page.getByTestId('claude-search-opt-in')
 const startSearch = page.getByRole('button', { name: 'Find leads' })
 await optIn.waitFor()
+const registryNote = page.getByTestId('optional-registry-note')
+await registryNote.waitFor({state:'visible'})
+assert.match(await registryNote.textContent(), /a bonus where available.*They’re not required to run a search/)
+
 assert.equal(await optIn.isChecked(), false)
 scanBodies.length = 0
 await optIn.check()

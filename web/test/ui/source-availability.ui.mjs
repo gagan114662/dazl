@@ -86,6 +86,14 @@ try {
   assert.doesNotMatch(unavailable, /\b(instagram|facebook|xiaohongshu|bilibili|linkedin|reddit)\b/, 'no raw lowercase platform ids')
   assert.equal(await page.getByTestId('more-sources').getByText(/Instagram|instagram/).count(), 0, 'a platform the server does not offer is never offered as a checkbox, even if connected earlier')
   assert.doesNotMatch(await page.getByTestId('sources-usable').textContent(), /Web search index|LinkedIn|Reddit|X posts/, 'opt-in X is not claimed as searched')
+  const more = page.getByTestId('more-sources')
+  await more.locator('summary').click()
+  const bonus = more.getByTestId('optional-registry-note')
+  await bonus.waitFor({state:'visible'})
+  assert.match(await bonus.textContent(), /a bonus where available.*They’re not required to run a search/)
+  assert.equal(await bonus.locator('input,button,a').count(),0, 'registry note has no source activation action')
+  await more.locator('summary').click()
+
   // Instinct #255: enabled sources are capabilities, never a promise that a scan searches them.
   assert.equal(await page.getByText(/every scan searches|searches:/i).count(), 0, 'no "every scan searches" claim')
   assert.match(await page.getByTestId('sources-enrichment').textContent(), /does not discover leads/)
