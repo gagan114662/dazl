@@ -72,6 +72,30 @@ bothEngines('whole scan status: tenant scope, same-id poison other store, record
   } finally { setDb(null); poisonRaw.close() }
 })
 
+bothEngines('diagnostics use the stored attempt and preserve legacy run report JSON for the owner only', async ({ db }) => {
+  const job = await createJob(db, 'A', { business_name: 'fixtures only', industry: 'services', location: 'Example' })
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 2 WHERE id = ?", [job])
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = 'no_candidates' WHERE id = ?", [job])
+  const older = { attempt: 2, extracted_candidates: 99, stop: { code: 'accounting_uncertain' } }
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', [job, JSON.stringify(older)])
+  const archived = await readScanStatus(db, 'A', job)
+  assert.deepEqual(archived?.run_report, [older], 'legacy payload is returned as stored')
+  assert.equal(archived?.pipeline_diagnostic.extraction_candidates, null)
+  assert.equal(archived?.pipeline_diagnostic.native_safe_result_urls, null)
+  assert.equal(archived?.pipeline_diagnostic.stop_hint, 'inspect_evidence_coverage')
+  assert.equal(await readScanStatus(db, 'B', job), undefined)
+
+  const current = { extracted_candidates: 0, funnel: { verified: 0 }, native_web_search: { evidence_diagnostic: { safe_urls: 2 } } }
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 2, ?)', [job, JSON.stringify(current)])
+  const fresh = await readScanStatus(db, 'A', job)
+  assert.deepEqual(fresh?.run_report, [older, current], 'absent embedded attempt is not injected into legacy JSON')
+  assert.equal(fresh?.pipeline_diagnostic.extraction_candidates, 0)
+  assert.equal(fresh?.pipeline_diagnostic.verified, 0)
+  assert.equal(fresh?.pipeline_diagnostic.native_safe_result_urls, 2)
+  assert.equal(fresh?.pipeline_diagnostic.native_publisher_attempted, null)
+  assert.equal(await readScanStatus(db, 'B', job), undefined)
+})
+
 test('status adapter preserves legacy same-handle reaping and dispatch; read service never selects or mutates another store', () => {
   const route = readFileSync(new URL('../app/api/scan/status/route.ts', import.meta.url), 'utf8')
   assert.match(route, /getJob\(raw, user\.tenantId, jobId\)/)

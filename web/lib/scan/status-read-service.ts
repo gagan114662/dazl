@@ -4,13 +4,14 @@ import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
 import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readRefusedModelCalls, readLastActivity } from './status-reads.ts'
 import { compareActual, type RunEstimate } from './price-estimate.ts'
-import { readRunReport } from './run-report.ts'
+import { readRunReportRows } from './run-report.ts'
 import { effectiveStatus, enrichState } from './enrichment.ts'
 import { emptyExtractionReason } from './extraction-note.ts'
 import { progressOf, outcomeInputs } from './progress.ts'
 import { scanOutcome } from './scan-outcome.ts'
 import { readFirst5 } from './first5-db.ts'
 import type { Db } from '../db/client.ts'
+import { currentScanPipelineDiagnostic } from './pipeline-diagnostic.ts'
 
 // What a scan never stored, so a reader cannot mistake absence for a zero. Fixed list, not derived from data.
 const NOT_RECORDED = ['search_queries', 'raw_search_hits', 'fetched_pages']
@@ -32,7 +33,11 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   // Owner-scoped model request/token totals; recorded:false (all null) when nothing was stored. Never a fabricated zero.
   const model_usage = await readModelUsage(db, tenantId, job.id)
   // Per-stage run report (queries, every result URL with date/selected/text/own-fetch, each candidate's fate and reason, funnel, model): null = not recorded.
-  const run_report = await readRunReport(db, tenantId, job.id)
+  const reportRows = await readRunReportRows(db, tenantId, job.id)
+  const run_report = reportRows?.map(row => row.report) ?? null
+  // A report from an older claim cannot describe the current attempt.
+  const currentStatus = effectiveStatus(job)
+  const pipeline_diagnostic = currentScanPipelineDiagnostic(reportRows, job.attempts, job.error, currentStatus === 'done' || currentStatus === 'failed' ? job.lead_count : null)
   // Why a scan that searched and read pages still extracted nothing (counts only). null when extraction produced candidates or was not recorded.
   const empty_reason = emptyExtractionReason((run_report as { extraction?: never }[] | null)?.at(-1)?.extraction)
   const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && run_report))
@@ -71,6 +76,6 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   // #1082: the platform's fair share of the operator search budget limited this run: say so instead of a normal-looking run
   const cap = (run_report as { capacity?: { searches?: number; fetches?: number } | null }[] | null)?.at(-1)?.capacity ?? null
   const capacity_note = cap && ((cap.searches ?? 0) > 0 || (cap.fetches ?? 0) > 0) ? 'Platform search capacity reached today: results are thinner.' : null
-  return { ...(first5 ? { first5 } : {}), cost, provider_issues, progress, outcome, resolution, stop_refusal_reason, capacity_note, last_progress_at, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null }
+  return { ...(first5 ? { first5 } : {}), cost, provider_issues, progress, outcome, resolution, stop_refusal_reason, capacity_note, last_progress_at, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, pipeline_diagnostic, empty_reason, not_recorded: notRecorded, query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null }
 
 }

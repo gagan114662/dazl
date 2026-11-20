@@ -150,10 +150,15 @@ export function runReportFor(db: Database.Database, tenantId: string, jobId: str
   } catch { return null }
 }
 
-// runReportFor on the Db layer (SQLite or Postgres): the same query and the same null for "not recorded".
-export async function readRunReport(db: Db, tenantId: string, jobId: string): Promise<unknown[] | null> {
+// Keep the authoritative database attempt separate from the legacy JSON payload.
+export async function readRunReportRows(db: Db, tenantId: string, jobId: string): Promise<{ attempt: number; report: unknown }[] | null> {
   try {
     const rows = await db.all<{ attempt: number; report: string }>(RUN_REPORT_SQL, [jobId, tenantId])
-    return rows.length ? rows.map(r => JSON.parse(r.report)) : null
+    return rows.length ? rows.map(r => ({ attempt: r.attempt, report: JSON.parse(r.report) as unknown })) : null
   } catch { return null }
+}
+
+// Legacy payload order and missing/unreadable semantics are unchanged.
+export async function readRunReport(db: Db, tenantId: string, jobId: string): Promise<unknown[] | null> {
+  return (await readRunReportRows(db, tenantId, jobId))?.map(r => r.report) ?? null
 }
