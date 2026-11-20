@@ -15,7 +15,16 @@ export const QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE = 'Claude Web Search requires 
 export function isFirst5NativeSearchRequest(mode: unknown, budget: unknown): boolean {
   if (mode !== 'first5' || !budget || typeof budget !== 'object' || Array.isArray(budget)) return false
   const b = budget as Record<string, unknown>
-  return Object.keys(b).length === 1 && Object.hasOwn(b, 'web_search') && b.web_search === QA_NATIVE_WEB_SEARCH_POLICY
+  return Object.hasOwn(b, 'web_search') && b.web_search === QA_NATIVE_WEB_SEARCH_POLICY &&
+    (Object.keys(b).length === 1 || isManualNativeTargetRequest(mode, budget))
+}
+// Deliberately inside the exact budget object: a server without this contract
+// rejects the extra key rather than starting a play without its scope acknowledgment.
+export function isManualNativeTargetRequest(mode: unknown, budget: unknown): boolean {
+  if (mode !== 'first5' || !budget || typeof budget !== 'object' || Array.isArray(budget)) return false
+  const b = budget as Record<string, unknown>
+  return Object.keys(b).length === 2 && Object.hasOwn(b, 'web_search') && Object.hasOwn(b, 'target_review') &&
+    b.web_search === QA_NATIVE_WEB_SEARCH_POLICY && b.target_review === 'manual_v1'
 }
 export const QA_LOCAL_EXECUTION = 'local_once_v1'
 export const isClaudeOnlyRequestMode = (mode: unknown): boolean => mode === FIRST5_CLAUDE_ONLY_MODE || mode === PINNED_FIRST5_CLAUDE_ONLY_MODE
