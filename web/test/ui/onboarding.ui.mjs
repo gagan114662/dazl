@@ -94,7 +94,7 @@ await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); awa
 await page.getByTestId('ready-step').waitFor({ timeout: 15000 }); await shot('ready')
 const registryNote = page.getByTestId('ready-step').getByTestId('optional-registry-note')
 await registryNote.waitFor({state:'visible'})
-assert.match(await registryNote.textContent(), /a bonus where available.*They’re not required to run a search/)
+assert.match(await registryNote.textContent(), /bonus evidence where available.*not checked by default or required to run a search/)
 
 assert.ok(!calls.includes('POST /api/scan'), 'the ready screen starts nothing on its own')
 await page.getByRole('button', { name: 'Edit what dazl inferred' }).click()
