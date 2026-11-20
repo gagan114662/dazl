@@ -1,3 +1,4 @@
+import { atsPostingRef, atsPublisherRef } from '../lib/sources/ats-posting.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import test from 'node:test'
@@ -299,4 +300,27 @@ test('uncited shortlist keeps ATS boards distinct and skips a blocked origin and
   assert.deepEqual(x.publisherRequests, [blocked, alpha, beta])
   assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 3)
   assert.equal(x.nativeReport.evidence_diagnostic.publisher_failures.blocked, 1)
+})
+
+test('uncited shortlist prioritizes distinct official ATS board roots within the existing five slots', async () => {
+  const alpha = 'https://jobs.lever.co/alpha', beta = 'https://jobs.lever.co/beta'
+  const outside = ['a', 'b', 'c', 'd'].map(host => `https://${host}.example/source`)
+  const x = await simulate({ diverseFixture: { results: [alpha, beta, ...outside], cited: [], blocked: [] } })
+  assert.deepEqual(x.publisherRequests, [alpha, beta, ...outside.slice(0, 3)])
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 5)
+})
+
+test('ATS root identity is ranking-only and restricted to documented board hosts and path shape', () => {
+  for (const [host, kind] of [['jobs.lever.co', 'lever'], ['jobs.ashbyhq.com', 'ashby'],
+    ['boards.greenhouse.io', 'greenhouse'], ['job-boards.greenhouse.io', 'greenhouse']]) {
+    const root = `https://${host}/alpha/`
+    assert.deepEqual(atsPublisherRef(root), { kind, org: 'alpha' })
+    assert.equal(atsPostingRef(root), null)
+  }
+  assert.deepEqual(atsPublisherRef('https://boards.greenhouse.io/alpha/jobs/123'), { kind: 'greenhouse', org: 'alpha' })
+  for (const raw of ['https://jobs.lever.co/', 'https://jobs.lever.co/alpha/unknown', 'https://jobs.lever.co/%61lpha',
+    'https://jobs.lever.co/alpha?token=beta', 'https://jobs.lever.co.evil.example/alpha',
+    'http://jobs.lever.co/alpha', 'https://user@jobs.lever.co/alpha', 'https://jobs.lever.co:444/alpha']) {
+    assert.equal(atsPublisherRef(raw), null, raw)
+  }
 })
