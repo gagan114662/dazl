@@ -91,7 +91,7 @@ function dispatched<T>(signal: AbortSignal, op: () => Promise<T>): Promise<T | t
     const abort = () => finish(FAILED)
     const finish = (v: T | typeof FAILED) => { signal.removeEventListener('abort', abort); resolve(v) }
     signal.addEventListener('abort', abort, { once: true })
-    void Promise.resolve().then(() => signal.aborted ? FAILED : op()).then(finish, () => finish(FAILED))
+    void Promise.resolve().then((): Promise<T | typeof FAILED> | typeof FAILED => signal.aborted ? FAILED : op()).then(finish, () => finish(FAILED))
   })
 }
 function bounded<T>(signal: AbortSignal, op: () => Promise<T>): Promise<T | undefined> {
@@ -213,9 +213,10 @@ export function findPublishedOwnDomainEmail(buyerName: string, ownPages: readonl
   for (const p of Array.isArray(ownPages) ? ownPages : []) {
     const u = httpsUrl(p?.url)
     if (!u || u.origin !== site.origin || typeof p.text !== 'string' || p.text.length > 200_000) continue
-    const lines = p.text.split(/\r?\n/).map(l => l.normalize('NFKC').trim()).filter(Boolean)
-    const people = lines.map(l => l.split(/[,|–—-]/)[0].trim()).filter(l => personName(l) && l.length <= 60)
-    lines.forEach((line, i) => {
+    const text: string = p.text
+    const lines: string[] = text.split(/\r?\n/).map((l: string) => l.normalize('NFKC').trim()).filter(Boolean)
+    const people: string[] = lines.map((l: string) => (l.split(/[,|–—-]/)[0] ?? '').trim()).filter((l: string) => personName(l) && l.length <= 60)
+    lines.forEach((line: string, i: number) => {
       if (!fold(line).includes(n)) return
       for (let j = i; j < Math.min(lines.length, i + 4); j++) {
         // Stop at the next person's card.
