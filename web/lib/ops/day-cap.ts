@@ -13,12 +13,14 @@ export const APPLY_STEP = 'apply it with the prod deploy, which regenerates the 
 
 // Replace the file whole or not at all: write a new file beside it (same dir, same mode and owner when permitted),
 // flush it, then rename it over the original. A failure removes the temp file and leaves the original untouched.
-export function writeEnvAtomically(file: string, text: string, beforeRename: () => void = () => {}): void {
+export function writeEnvAtomically(file: string, text: string, beforeRename: () => void = () => {}, write: (fd: number, b: Buffer, off: number) => number = (fd, b, off) => writeSync(fd, b, off, b.length - off)): void {
   const st = statSync(file)
   const tmp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`)
   const fd = openSync(tmp, 'wx', st.mode & 0o777)
   try {
-    try { writeSync(fd, text); fsyncSync(fd) } finally { closeSync(fd) }
+    const buf = Buffer.from(text, 'utf8')
+    // a write may take fewer bytes than asked: keep writing until every byte is in, then flush
+    try { for (let off = 0; off < buf.length;) { const n = write(fd, buf, off); if (!(n > 0)) throw new Error('env write made no progress'); off += n } fsyncSync(fd) } finally { closeSync(fd) }
     try { chownSync(tmp, st.uid, st.gid) } catch { /* not permitted as this user: the file stays the operator's */ }
     beforeRename()
     renameSync(tmp, file)

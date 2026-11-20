@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { setDayCap, writeEnvAtomically, APPLY_STEP } from '../lib/ops/day-cap.ts'
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, writeSync, readdirSync, statSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { windowCap } from '../lib/llm/spend-pool.ts'
@@ -37,4 +37,15 @@ test('the env file is replaced atomically, keeps its mode, and a failed write le
 test('the printed apply step is the deploy that regenerates the release env, never a bare restart', () => {
   assert.match(APPLY_STEP, /deploy-prod\.sh/)
   assert.doesNotMatch(APPLY_STEP, /restart/i)
+})
+
+// Qodo on #1441 (6): a short write (the OS writing fewer bytes than asked) must not leave a truncated replacement.
+test('short writes are completed before the rename', () => {
+  const d = mkdtempSync(join(tmpdir(), 'cap-')), f = join(d, 'run.env')
+  try {
+    writeFileSync(f, 'A=1\n')
+    const oneByte = (fd: number, b: Buffer, off: number) => writeSync(fd, b, off, Math.min(1, b.length - off))
+    writeEnvAtomically(f, 'LONG_KEY=a-long-value\nB=2\n', undefined, oneByte)
+    assert.equal(readFileSync(f, 'utf8'), 'LONG_KEY=a-long-value\nB=2\n')
+  } finally { rmSync(d, { recursive: true, force: true }) }
 })
