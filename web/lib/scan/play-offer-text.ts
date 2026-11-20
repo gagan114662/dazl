@@ -54,20 +54,26 @@ type Found = { offer: string; tail: string; sentence: number; sentences: string[
 // its own "for", sentence punctuation, or another pair of parentheses.
 function offerSentences(q: string): {text:string; grammar:string}[] {
   const parts: {text:string; grammar:string}[] = []
-  let depth = 0, start = 0, grammar = ''
+  let depth = 0, start = 0, outerOpen = -1, grammar = ''
   const push = (end:number) => { if (grammar.trim()) parts.push({text:q.slice(start,end),grammar}); grammar = '' }
   for (let i=0;i<q.length;i++) {
     const ch=q[i]
-    if (ch==='(') { depth++; grammar+='x'; continue }
+    if (ch==='(') { if (!depth) outerOpen=i; depth++; grammar+='x'; continue }
     if (ch===')' && depth) { depth--; grammar+='x'; continue }
     if (depth) { grammar+='x'; continue }
     // A period inside a brand/domain (e.g. buyer.example) is not a sentence end.
-    if (ch===';' || ch==='\n' || ((ch==='.' || ch==='!' || ch==='?') && (i+1===q.length || /\s/.test(q[i+1])))) {
+    const tightClause = (ch==='.' || ch==='!' || ch==='?') &&
+      /^(?:find|look\s+for|search\s+for|target|identify|exclude|(?:i|we)\s+(?:sell|offer|provide))\s+\S/i.test(q.slice(i+1))
+    if (tightClause || ch===';' || ch==='\n' || ((ch==='.' || ch==='!' || ch==='?') && (i+1===q.length || /\s/.test(q[i+1])))) {
       push(i); start=i+1; continue
     }
     grammar+=ch
   }
-  if (!depth) push(q.length) // don't ask anyone to choose a cut-off qualifier
+  if (depth) {
+    // Retain the complete top-level prefix, not bytes inside a cut-off qualifier.
+    grammar=grammar.slice(0,outerOpen-start)
+    push(outerOpen)
+  } else push(q.length)
   return parts
 }
 function findOffer(text: string | null | undefined): Found | null {

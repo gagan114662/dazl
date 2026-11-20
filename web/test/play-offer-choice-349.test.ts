@@ -19,7 +19,7 @@ test('the full parenthetical offer label survives nested grammar and punctuation
   const choice=effectiveOffer({query:q},'Workspace plumbing subscription')
   assert.equal(choice.conflict?.stated,selection)
   assert.equal(statedOffer('Find companies (note: we sell unrelated tooling) in Oslo'),null)
-  assert.equal(statedOffer('We sell Example.ai (unfinished'),null)
+  assert.equal(statedOffer('We sell Example.ai (unfinished'),'Example.ai')
 })
 
 test('inference on the product runner uses the explicitly selected play offer without mutating the saved seller snapshot',async()=>{
@@ -44,4 +44,19 @@ test('inference on the product runner uses the explicitly selected play offer wi
     if(old===undefined)delete process.env.DAZL_MASTER_KEY;else process.env.DAZL_MASTER_KEY=old
     db.close()
   }
+})
+
+test('unfinished trailing qualifiers do not erase a complete stated offer or reveal nested grammar',()=>{
+  const choice=effectiveOffer({query:'We sell CRM setup to studios (not finished'},'Workspace fleet software')
+  assert.equal(choice.conflict?.stated,'CRM setup')
+  assert.equal(statedOffer('We sell CRM setup (for studios (not finished'),'CRM setup')
+  assert.equal(statedOffer('Find studios (we sell CRM setup'),null)
+  assert.equal(statedOffer('We sell (unfinished'),null)
+})
+
+test('tight sentence punctuation separates targeting clauses while preserving dotted labels',()=>{
+  assert.equal(statedOffer('We sell CRM setup.Find studios in Oslo'),'CRM setup')
+  assert.equal(statedOffer('Offer: Example.ai.Find studios in Oslo'),'Example.ai')
+  assert.equal(statedOffer('We sell Example.AI and Dotted.Brand services to studios'),'Example.AI and Dotted.Brand services')
+  assert.equal(statedOffer('We sell Example.ai (for (small) firms.Find a better workflow) to studios'),'Example.ai (for (small) firms.Find a better workflow)')
 })
