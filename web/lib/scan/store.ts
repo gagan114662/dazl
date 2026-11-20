@@ -1,5 +1,4 @@
 import { migrateScanSpendCap } from './spend-cap.ts'
-import { migrateScorecardDispatchColumnsSqlite } from '../company-first/scorecard-dispatch.ts'
 import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
 import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
 import { RENDER_TIMEOUT_MS } from './fetch-page.ts'
@@ -119,7 +118,6 @@ export function migrateScan(db: Database.Database): void {
   migrateRunReport(db)
   migrateInsertionOrder(db, ['scan_jobs', 'leads']) // insert_seq (lib/db/insertion-order.ts); after any table rebuild above
   migrateScanSpendCap(db) // the per-scan hard spend cap's ledger columns and call rows (lib/scan/spend-cap.ts)
-  migrateScorecardDispatchColumnsSqlite(db)
   // The optional local pin fence is installed by its admission transaction, not the portable bootstrap.
 }
 

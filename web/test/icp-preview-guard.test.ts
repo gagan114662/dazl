@@ -123,7 +123,19 @@ test('a settle failure AFTER the provider call is accounting_pending: the call w
     assert.deepEqual(out, { error: 'accounting_pending' })
     assert.equal(fetches.length, 1, 'the provider WAS called: this preview itself may be billed (wallet-truthful copy, never "no new charge")')
     const again = await previewIcp(db, 'A', 'fintech founders', { master, providers: realProviders, fetchImpl: answering(GOOD) })
-    assert.deepEqual(again, { error: 'spend_unavailable' })
+    assert.deepEqual(again, { error: 'preview_accounting_blocked' })
     assert.equal(fetches.length, 1, 'no second provider call while the earlier cost is unrecorded')
   })
+})
+
+test('a current unsettled reservation reports a wait, without touching it or running the preview', async () => {
+  const db = setup()
+  fetches.length = 0
+  const before = Math.floor(Date.now() / 1_000)
+  db.prepare("INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 0, ?)").run('A', 'p:testcall', 0.1, before)
+  await withEnv({ ...NONE, DAZL_RUN_MAX_USD_USERS: 'A:5', DAZL_SPEND_BUSY_WAIT_MS: '0' }, async () => {
+    assert.deepEqual(await previewIcp(db, 'A', 'regional laboratory buyers', { master, providers: realProviders, fetchImpl: answering(GOOD) }), { error: 'preview_spend_busy' })
+    assert.equal(fetches.length, 0)
+  })
+  assert.deepEqual((await poolRows(sqliteDb(db), 'A')).map(r => [r.period, r.reserved_usd, r.updated_at]), [['p:testcall', 0.1, before]])
 })

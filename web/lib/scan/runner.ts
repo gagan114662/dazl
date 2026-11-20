@@ -2,7 +2,7 @@ import { runClaudeWebSearch, ClaudeSearchError, CLAUDE_SEARCH_MODEL, type Claude
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
-import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD, strictLocalTopologySupported } from './qa-provider-policy.ts'
+import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
 import { counterpartySignal } from './counterparty.ts'
 import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
@@ -27,7 +27,7 @@ import { getDomain } from 'tldts'
 import { atsPublisherRef, heldCopyBoard } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
-import { isMissingSchema, draftOffer } from './play-offer-text.ts'
+import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
 import { markWatchLeads } from '../watch.ts'
@@ -57,9 +57,6 @@ import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendA
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
-import { dispatchScorecardAware, type AuthorizedScorecardExecution, type ProtectedScorecardWorker } from '../company-first/scorecard-dispatch.ts'
-import { authorizeScorecardSubject, scorecardPinnedBudget, verifyExistingScorecardClaim } from '../company-first/scorecard-admission.ts'
-import { requireScorecardWorkspace } from '../company-first/scorecard-workspace.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, nativeQueryIcpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
 import { getMemory, isExcluded, memoryPromptBlock, type Memory } from '../memory.ts'
@@ -367,7 +364,7 @@ export function feedbackGate(db: Database.Database, tenantId: string) {
 }
 const auditDrop = (audit: CandidateAudit[]) => (rows: LeadDraft[], reason: string) => { for (const l of rows) audit.push({ key: `${dedupKey(l)}|${l.source_url}`, company: l.company, url: l.source_url, outcome: 'dropped', reason }) }
 
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>, onOwnedPlace?: (candidate: LeadDraft) => void): Promise<VerifyOutcome> {
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
@@ -503,13 +500,9 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // Location agreement: when the request names a place, a cited page that names a DIFFERENT place (and not ours) is a mismatch and stays
     // in review (kept, labelled, never qualified or drafted). A page that names no place at all is not rejected here (small-business pages
     // often name only a street or neighbourhood); contacts are stricter: profile results and linked domains must name the place.
-    const placeVerdict = ownPlaceAgreement(page, geo, c.company, c.excerpt)
-    // Optional protected scorecard measurement observes existing first-party
-    // verification; unknown/no-geography and held provider copies are not
-    // recorded as positive. It does not change the legacy gate.
-    if (placeVerdict === 'agrees') onOwnedPlace?.(c)
-    if (placeVerdict === 'mismatch') {
-      const k = dedupKey(c); const why = `location_${placeVerdict}`
+    const where = ownPlaceAgreement(page, geo, c.company, c.excerpt)
+    if (where === 'mismatch') {
+      const k = dedupKey(c); const why = `location_${where}`
       if (!review.has(k)) review.set(k, { ...c, contact: null, review_reason: why })
       else drop('duplicate')
       note(c, 'review', why); continue
@@ -644,29 +637,7 @@ export function scanJobBudgetMs(env: Record<string, string | undefined> = proces
 // would have been reaped and run again while still running. Every phase boundary now renews it, under the same fence (this
 // attempt, still running), so a live scan keeps its claim and one whose process is gone, or that is stuck inside one await,
 // stops renewing and is reaped.
-type PrivateLegacyBinding = Readonly<{
-  financeDb: Database.Database; execution: AuthorizedScorecardExecution;
-  placeMeter: { measured: boolean; positive: Set<string> }
-}>
-const privateLegacyAuthority = new WeakMap<Job, PrivateLegacyBinding>()
-
 export function assertOwned(db: Database.Database, job: Job): void {
-  const binding = privateLegacyAuthority.get(job)
-  if (binding) {
-    const ticket = binding.execution.ticket
-    if (Date.now() >= ticket.expiresAt || !binding.financeDb.prepare(`SELECT 1 FROM scan_jobs j
-       JOIN company_scorecard_claims c ON c.job_id=j.id AND c.attempt=j.attempts
-       JOIN company_scorecard_cohorts p ON p.cohort=c.cohort AND p.tenant_id=j.user_id
-       JOIN organizations o ON o.id=j.user_id
-       JOIN memberships m ON m.tenant_id=o.id AND m.member_id=p.actor_id AND m.role='owner'
-       WHERE j.id=? AND j.user_id=? AND j.attempts=? AND j.status='running' AND j.error IS NULL
-        AND j.company_scorecard_claim_nonce=? AND j.company_scorecard_dispatch_release=?
-        AND j.company_scorecard_dispatch_started_at IS NOT NULL AND c.status='running' AND c.lane=0
-        AND c.expires_at=? AND p.actor_id=? AND p.release=? AND p.next_ordinal=c.ordinal
-        AND o.company_first_scorecard_enabled=1 AND o.company_first_scorecard_revision=p.workspace_revision
-        AND NOT EXISTS (SELECT 1 FROM tenant_tombstones x WHERE x.deleted_tenant IN (o.id,p.actor_id))`)
-       .get(ticket.jobId, ticket.tenantId, ticket.attempt, ticket.nonce, ticket.release, ticket.expiresAt, ticket.actorId, ticket.release)) throw new ScanStopped()
-  }
   if (db.prepare("UPDATE scan_jobs SET claimed_at = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(Math.floor(Date.now() / 1000), job.id, job.attempts).changes !== 1) throw new ScanStopped()
   const d = jobDeadlines.get(job)
   if (d && d.now() > d.at) throw new ScanTimedOut()
@@ -818,13 +789,10 @@ export function fallbackStopCode(ledger: SourceRunLedger, first5 = false): strin
 // the run's own stages account for those, and it would relabel a genuine source failure as a budget stop.
 const MODEL_LIMIT_REASONS = ['over_limit', 'over_cap']
 export function earlierLimitRefusal(db: Database.Database, job: { id: string; user_id: string; attempts: number }): string | null {
-  const binding = privateLegacyAuthority.get(job as Job)
-  const ledgerDb = binding?.financeDb ?? db
-  const tenantId = binding?.execution.ticket.tenantId ?? job.user_id
   try {
     // by (user_id, scan_job_id): the table's index, and the job's own tenant
-    const r = ledgerDb.prepare(`SELECT reason FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND attempt = ? AND status = 'refused'
-      AND (reason = ? OR (kind LIKE 'llm.%' AND reason IN (${MODEL_LIMIT_REASONS.map(() => '?').join(',')}))) ORDER BY created_at, rowid LIMIT 1`).get(tenantId, job.id, job.attempts, OWNER_POOL_LIMIT_REASON, ...MODEL_LIMIT_REASONS) as { reason: string } | undefined
+    const r = db.prepare(`SELECT reason FROM scan_spend_calls WHERE user_id = ? AND scan_job_id = ? AND attempt = ? AND status = 'refused'
+      AND (reason = ? OR (kind LIKE 'llm.%' AND reason IN (${MODEL_LIMIT_REASONS.map(() => '?').join(',')}))) ORDER BY created_at, rowid LIMIT 1`).get(job.user_id, job.id, job.attempts, OWNER_POOL_LIMIT_REASON, ...MODEL_LIMIT_REASONS) as { reason: string } | undefined
     return r?.reason ?? null
   } catch (e) {
     // the stop then keeps its older name: recorded, never silent
@@ -861,14 +829,7 @@ export function refusalCode(e: SpendRefused, ledger?: SourceRunLedger): string {
 // Shared failure handling: a rejected key fails the job outright; anything else retries
 // until MAX_ATTEMPTS, then fails. Returns the run outcome.
 function hasUnsettledCall(db: Database.Database, job: Job): boolean {
-  const binding = privateLegacyAuthority.get(job)
-  const ledgerDb = binding?.financeDb ?? db
-  const tenantId = binding?.execution.ticket.tenantId ?? job.user_id
-  try {
-    return binding
-      ? !!ledgerDb.prepare("SELECT 1 FROM scan_spend_calls WHERE scan_job_id = ? AND user_id = ? AND status = 'reserved' LIMIT 1").get(job.id, tenantId)
-      : !!ledgerDb.prepare("SELECT 1 FROM scan_spend_calls WHERE scan_job_id = ? AND attempt = ? AND status = 'reserved' LIMIT 1").get(job.id, job.attempts)
-  } catch { return !!binding }
+  try { return !!db.prepare("SELECT 1 FROM scan_spend_calls WHERE scan_job_id = ? AND attempt = ? AND status = 'reserved' LIMIT 1").get(job.id, job.attempts) } catch { return false }
 }
 function failOrRetry(db: Database.Database, job: Job, e: unknown, ledger?: SourceRunLedger): 'done' | 'failed' | 'retry' {
   if (e instanceof ScanTimedOut) { finish(db, job, 'failed', 'scan_timeout', null, null, ledger); return 'failed' }
@@ -1324,82 +1285,7 @@ function holdTrialBudget(db: Database.Database, job: Job): void {
 
 // Production trace capture (lib/evals/capture.ts) is OFF unless DAZL_TRACE_CAPTURE=1: then this attempt is recorded and,
 // once it ends, its redacted trace is stored. Off, the run is exactly runJobUntraced.
-type ScorecardDependencies = Readonly<{
-  release: ProtectedScorecardWorker['release']
-  materialFor: ProtectedScorecardWorker['materialFor']
-  runPrivateLane(execution: AuthorizedScorecardExecution): Promise<void>
-}>
-
-// The same entry is used by legacy, shared-queue and ordinary public call
-// sites. A tagged scorecard job is never reinterpreted as an ordinary scan.
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
-  const result = await dispatchScorecardAware(sqliteDb(db), job, () => runOrdinaryScan(db, job, deps))
-  return result.route === 'legacy' ? result.status : 'failed'
-}
-
-// Called by the protected scorecard controller after atomic private
-// admission, never by request-supplied flags or the ordinary pending queue.
-export async function runAdmittedScorecardJob(
-  db: Database.Database, job: Job, protectedWorker: ScorecardDependencies,
-): Promise<'done' | 'failed'> {
-  const result = await dispatchScorecardAware(sqliteDb(db), job, async () => 'failed', {
-    release: protectedWorker.release, materialFor: protectedWorker.materialFor,
-    async runPrivate(execution) {
-      // A scorecard controller must explicitly provide private storage for
-      // every arm. Never call the ordinary runner against the primary store.
-      await protectedWorker.runPrivateLane(execution)
-    },
-  })
-  if (result.route !== 'scorecard' || result.status !== 'callback_returned') return 'failed'
-  const row = db.prepare("SELECT status, error FROM scan_jobs WHERE id=? AND user_id=? AND attempts=?")
-    .get(job.id, job.user_id, job.attempts) as { status: string; error: string | null } | undefined
-  return row?.status === 'done' && row.error === null ? 'done' : 'failed'
-}
-
-const strictScorecardBaselineTopology = () => !process.env.DATABASE_URL && strictLocalTopologySupported('sqlite')
-
-// Called only inside the protected canonical scratch callback. The real
-// legacy verifier writes/reads only its private in-memory schema; all provider
-// admission, tenant-owned key lookup and canonical settlement are primary.
-// No Key/credential is copied into the scratch database or returned.
-export async function runAuthorizedLegacyInMemory(
-  financeDb: Database.Database, scratch: Database.Database, claim: Pick<Job,'id'|'user_id'|'attempts'>,
-  execution: AuthorizedScorecardExecution,
-): Promise<'done' | 'failed'> {
-  const ticket = execution.ticket
-  if (!scratch.memory || scratch === financeDb || !strictScorecardBaselineTopology() ||
-      execution.vendor !== 'anthropic' || execution.funding !== 'workspace_owned' || ticket.lane !== 'old' ||
-      ticket.jobId !== claim.id || ticket.attempt !== claim.attempts) return 'failed'
-  if (!await verifyExistingScorecardClaim(sqliteDb(financeDb), ticket, requireScorecardWorkspace)) return 'failed'
-  const dbs = scratch.pragma('database_list') as { name: string; file: string }[]
-  if (dbs.some(d => d.file || (d.name !== 'main' && d.name !== 'temp'))) return 'failed'
-  const row = scratch.prepare(`SELECT * FROM scan_jobs WHERE id=? AND user_id=? AND attempts=?
-    AND status='running' AND funded_by='user' AND csv_domain IS NULL AND watch_id IS NULL AND error IS NULL`)
-    .get(claim.id, claim.user_id, claim.attempts) as (Job & { offer?: string | null }) | undefined
-  if (!row?.query || row.run_budget !== scorecardPinnedBudget() ||
-      !authorizeScorecardSubject(ticket, { query: row.query, icp: row.icp, sources: row.sources, seller: row.seller, offer: row.offer })) return 'failed'
-  const job = Object.freeze({ ...row })
-  const binding: PrivateLegacyBinding = { financeDb, execution, placeMeter: { measured: false, positive: new Set<string>() } }
-  privateLegacyAuthority.set(job, binding)
-  try {
-    assertOwned(scratch, job)
-    if (await runJobUntraced(scratch, job, {}, binding) !== 'done') return 'failed'
-    if (binding.placeMeter.measured) {
-      // Physically private scratch only. Store no company strings or proof
-      // snippets, and fail incomplete if the real candidate count disagrees.
-      const n = binding.placeMeter.positive.size
-      const counted = scratch.prepare("SELECT candidates FROM scan_jobs WHERE id=? AND user_id=? AND attempts=? AND status='done'")
-        .get(job.id,job.user_id,job.attempts) as { candidates: number|null } | undefined
-      if (typeof counted?.candidates === 'number' && Number.isSafeInteger(counted.candidates) && n <= counted.candidates) {
-        scratch.exec('CREATE TEMP TABLE IF NOT EXISTS company_scorecard_place_metric (job_id TEXT PRIMARY KEY, n INTEGER NOT NULL CHECK(n>=0))')
-        scratch.prepare('INSERT INTO company_scorecard_place_metric (job_id,n) VALUES (?,?)').run(job.id,n)
-      }
-    }
-    return 'done'
-  } finally { privateLegacyAuthority.delete(job) }
-}
-
-async function runOrdinaryScan(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const capture = beginScanTrace(job, deps)
   if (!capture) return runJobUntraced(db, job, deps)
   let outcome = 'threw'
@@ -1410,34 +1296,27 @@ async function runOrdinaryScan(db: Database.Database, job: Job, deps: RunDeps): 
 // in this scan's spend context, so every paid provider call it makes reserves its worst case on this job's ledger row
 // before the request and is refused past the cap (CAD 5, DAZL_SCAN_CAP_CAD can only lower it; so can the request's own
 // run_budget.max_usd).
-async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps, scorecardRun?: PrivateLegacyBinding): Promise<'done' | 'failed' | 'retry'> {
-  const companyFirst = !scorecardRun && hasCompanyFirstBudget(job.run_budget)
+async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
+  const companyFirst = hasCompanyFirstBudget(job.run_budget)
   if (companyFirst && !companyFirstDiscoveryEnabled(job, process.env.DAZL_COMPANY_FIRST_TENANT_ID)) {
     finish(db, job, 'failed', 'discovery_disabled')
     return 'failed'
   }
-  const claudeOnly = companyFirst || qaClaudeOnlyJob(job.run_budget)
+  const claudeOnly = qaClaudeOnlyJob(job.run_budget) || companyFirst
   const requested = job.csv_domain ? null : parseRunBudget(job.run_budget)?.max_usd ?? null
   const requestMaxUsd = claudeOnly ? Math.min(requested ?? QA_SPEND_MAX_USD, QA_SPEND_MAX_USD) : requested
   // #846/#847: the owner's day/month caps. An owner the operator named, on a query job, is reserved by the runner's own
   // PooledGuard (runJobCapped); every other scan's model calls reserve the owner's caps at the transport, with this cap.
   // CSV jobs included (XHawk on #1154): a named account's CSV scan takes the same PooledGuard, so its unsettled-accounting marker stops it too
-  if (scorecardRun) {
-    const financeTenant = scorecardRun.execution.ticket.tenantId
-    return runWithScanSpend({
-      db: scorecardRun.financeDb, jobId: job.id, tenantId: financeTenant, attempt: job.attempts,
-      cap: scanCapConfig(), requestMaxUsd, claudeOnly:true, accountLimits:accountLimits(financeTenant),
-      scorecard: { ticket:scorecardRun.execution.ticket, lane:'old' },
-    }, () => runJobCapped(db,job,deps,scorecardRun))
-  }
   const pooledByRunner = ownerLimits(job.user_id) !== null
-  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps, undefined, companyFirst))
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
 }
 
-async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scorecardRun?: PrivateLegacyBinding, companyFirst = false): Promise<'done' | 'failed' | 'retry'> {
+async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
   const partial: { candidates: LeadDraft[] | null; outcome: VerifyOutcome | null } = { candidates: null, outcome: null } // what a trial scan stopped by its budget keeps
   let trialGuard: SpendGuard | null = null
-  const claudeOnly = companyFirst || qaClaudeOnlyJob(job.run_budget)
+  const companyFirst = hasCompanyFirstBudget(job.run_budget)
+  const claudeOnly = qaClaudeOnlyJob(job.run_budget) || companyFirst
   const ledger = new SourceRunLedger()
   ledger.attach(db, job.id, job.attempts)   // live per-source progress for the status route
   const budget = job.csv_domain ? null : deps.jobBudgetMs ?? scanJobBudgetMs()
@@ -1445,13 +1324,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scor
   // Trial-funded jobs run on the shared operator key from the server environment; everything
   // else runs on the job owner's own key. The operator key is never read from the tenant DB.
   const op = job.funded_by === 'trial' ? operatorKey() : null
-  const credentialsDb = scorecardRun?.financeDb ?? db
-  const financeTenant = scorecardRun?.execution.ticket.tenantId ?? job.user_id
-  const vendor = job.funded_by === 'trial' ? op?.vendor ?? null : pickVendor(credentialsDb, financeTenant)
-  if (scorecardRun && vendor !== 'anthropic') return 'failed'
+  const vendor = job.funded_by === 'trial' ? op?.vendor ?? null : pickVendor(db, job.user_id)
   // readKey, not getKey: a getKey throw here escaped runJob's try, the runner swallowed
   // it, and the job crash-looped in 'running' forever instead of failing visibly.
-  const read = vendor && job.funded_by !== 'trial' ? readKey(credentialsDb, financeTenant, vendor, deps.master) : { key: null, unreadable: false }
+  const read = vendor && job.funded_by !== 'trial' ? readKey(db, job.user_id, vendor, deps.master) : { key: null, unreadable: false }
   const key = job.funded_by === 'trial' ? op?.key ?? null : read.key // only ever this job's owner
   if (claudeOnly && vendor !== 'anthropic') {
     finish(db, job, 'failed', companyFirst ? 'no_api_key' : 'qa_provider_disabled', null, null, ledger)
@@ -1490,9 +1366,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scor
     // flight up to its deadline rather than stopping, and stops (budget_stopped) on one that never settled.
     // The pool guard's label is its typed refusal reason: a pool refusal reports owner_pool_limit, never the per-run
     // budget's over_limit, so the stop provenance says WHICH numeric control refused (#1006).
-    // Scorecard accounts reserve this same owner window in the canonical call
-    // transaction, along with the per-job and shared case caps. Never double-book.
-    const poolGuard = owner && !scorecardRun ? new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000, job.id)) : null
+    const poolGuard = owner ? new PooledGuard(sharedPool(db, job.user_id, owner, undefined, PENDING_STALE_S * 1000, job.id)) : null
     if (poolGuard) poolGuard.label = OWNER_POOL_LIMIT_REASON
     const spendGuards = [...(jobGuard ? [jobGuard] : []), ...(poolGuard ? [poolGuard] : [])]
     const spendLimit = spendGuards.length ? 1 : null
@@ -1526,7 +1400,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scor
       let icp = job.icp ? normalizeIcp(safeJson(job.icp)) : null
       if (!icp) {
         assertOwned(db, job)
-        const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl, job.seller ?? undefined)
+        // Inference previously used the workspace seller snapshot even after
+        // the person explicitly chose what this play sells. Preserve that snapshot
+        // for history/repeat matching, but never pass its conflicting offer to ICP inference.
+        const selected = db.prepare('SELECT offer FROM scan_jobs WHERE id = ? AND user_id = ?').pluck().get(job.id, job.user_id)
+        const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl, cleanOffer(selected) || job.seller || undefined)
         icp = r.icp
         db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(JSON.stringify(icp), r.inferred ? 1 : 2, job.id, job.attempts)
       }
@@ -2054,10 +1932,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scor
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    const observedGeo = icpForSources?.where ?? []
-    const observeOwnedPlace = scorecardRun && observedGeo.length > 0 ? (c: LeadDraft) => { scorecardRun.placeMeter.positive.add(dedupKey(c)) } : undefined
-    if (scorecardRun && observeOwnedPlace) scorecardRun.placeMeter.measured = true
-    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, observedGeo, boardDates, observeOwnedPlace)
+    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -2078,7 +1953,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scor
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
-          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [], undefined, observeOwnedPlace)
+          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
@@ -2147,7 +2022,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scor
               // D3: a round-two lead may cite a page only round one fetched (or vice versa for a later re-check);
               // both were read within this one attempt, so the verifier gets the union, not round two's pages alone.
               const held = HeldText.merge(diag.held, diag2.held)
-              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates, observeOwnedPlace)
+              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
               const seenKeys = new Set(outcome.leads.map(dedupKey))
               for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
               const seenReview = new Set(outcome.review.map(dedupKey))
@@ -2187,7 +2062,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps, scor
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, observedGeo, undefined, observeOwnedPlace)
+          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))
@@ -2601,7 +2476,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
       // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
       const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
       const firstParty = new Map<string, { pages: number; stored: number }>()
-      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(nativeOnly ? { nativeOnly: true } : {}), ...(companyFirst ? { companyFirstContacts: true } : {}), ...(findSites ? { findSites } : {}),
+      await crawlJob(db, job.user_id, job.id, { ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}),
         onBuyerRead: ({ site, pages, stored }) => {
           const earlier = firstParty.get(site)
           firstParty.set(site, { pages: Math.max(earlier?.pages ?? 0, pages), stored: Math.max(earlier?.stored ?? 0, stored) })
@@ -2768,7 +2643,7 @@ export async function kickRunner(db: Database.Database, deps: RunDeps = {}): Pro
 
 // Preview for the "what are you looking for" form: infers the ICP with the tenant's own key
 // so the user can read and edit it before the scan runs.
-export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'provider_failed' | 'trial_key_invalid' | 'key_unreadable' | 'spend_limit' | 'spend_unavailable' | 'model_unpriced' | 'accounting_pending' }> {
+export async function previewIcp(db: Database.Database, tenantId: string, query: string, deps: Pick<RunDeps, 'providers' | 'fetchImpl' | 'master'> = {}, ip?: string): Promise<{ icp: Icp; inferred: boolean } | { error: 'no_api_key' | 'key_rejected' | 'provider_failed' | 'trial_key_invalid' | 'key_unreadable' | 'spend_limit' | 'spend_unavailable' | 'preview_accounting_blocked' | 'preview_spend_busy' | 'model_unpriced' | 'accounting_pending' }> {
   const vendor = pickVendor(db, tenantId)
   const read = vendor ? readKey(db, tenantId, vendor, deps.master) : { key: null, unreadable: false }
   const key = read.key
@@ -2813,6 +2688,8 @@ export async function previewIcp(db: Database.Database, tenantId: string, query:
     if (spendRefused(e)) {
       if (e.reason === 'model_unpriced') return { error: 'model_unpriced' }
       if (e.reason === 'over_limit' || e.reason === OWNER_POOL_LIMIT_REASON) return { error: 'spend_limit' }
+      if (e.reason === 'accounting_unsettled') return { error: 'preview_accounting_blocked' }
+      if (e.reason === 'busy') return { error: 'preview_spend_busy' }
       return { error: 'spend_unavailable' }
     }
     console.error('icp preview failed:', e instanceof Error ? e.message : e)

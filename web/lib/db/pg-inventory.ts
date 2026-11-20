@@ -73,7 +73,6 @@ export interface Inventory {
 // The product areas #354's acceptance names, by path. First match wins.
 const AREAS: [RegExp, string][] = [
   [/auth|gmail\/(oauth|connect|callback|disconnect)|secrets-rewrap|llm\/key-store/, 'auth & keys'],
-  [/^lib\/company-first\//, 'scans'],
   [/billing|plans|checkout|stripe/, 'billing'],
   [/outreach\/(service|send|send-budget|ledger|autopilot|followups|sequences|attribution|conversion)|unsubscribe|app\/api\/(outreach\/(route|\[id\]|autopilot|sequences|settings|conversion)|onboarding\/)/, 'sends'],
   [/replies|inbox|reopen|threads/, 'inbox'],

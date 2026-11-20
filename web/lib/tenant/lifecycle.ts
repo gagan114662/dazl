@@ -41,13 +41,8 @@ const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', '
 // Credentials and sign-in state: removed first, so nothing can act as the tenant while the rest is erased.
 export const CREDENTIAL_TABLES = ['sessions', 'oauth_states', 'oauth_identities', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']
 // Left out of an export entirely (token material, no value to the tenant) and redacted columns.
-const PRIVATE_SCORECARD_TABLES = new Set(['company_scorecard_cohorts','company_scorecard_claims','company_scorecard_calls'])
-export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session tokens (hashed); never exported', oauth_states: 'one-time OAuth state and PKCE verifiers; never exported',
-  company_scorecard_cohorts: 'private approved evaluation ordering and provenance; never exported',
-  company_scorecard_claims: 'private evaluation authorization bindings; never exported',
-  company_scorecard_calls: 'private evaluation reservation bindings; never exported',
-}
-export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash|claim_token|company_scorecard_claim_nonce|company_scorecard_dispatch_started_at|company_scorecard_dispatch_release)$|secret/
+export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session tokens (hashed); never exported', oauth_states: 'one-time OAuth state and PKCE verifiers; never exported' }
+export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash|claim_token)$|secret/
 // Kept whatever the policy: append-only audit records that hold no tenant content (lib/scan/evidence-copies.ts: who
 // purged evidence, why, and counts). Reported on the tombstone as retained, like any policy retention.
 export const ALWAYS_RETAINED: Record<string, string> = {
@@ -220,7 +215,6 @@ function validPolicy(p: DeletionPolicy | undefined, scope: Map<string, Scope>): 
   if (!p || (p.suppressions !== 'retain' && p.suppressions !== 'erase')) throw new Error('deletion policy must decide suppressions: retain or erase')
   for (const t of p.retainTables ?? []) {
     if (!scope.has(t)) throw new Error(`retainTables: ${t} is not a tenant-scoped table`)
-    if (PRIVATE_SCORECARD_TABLES.has(t)) throw new Error(`retainTables: ${t} holds private scorecard metadata and is always deleted`)
     if (CREDENTIAL_TABLES.includes(t)) throw new Error(`retainTables: ${t} holds credentials and is always deleted`)
   }
   return { suppressions: p.suppressions, retainTables: [...(p.retainTables ?? [])].sort() }

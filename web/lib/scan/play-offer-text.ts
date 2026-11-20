@@ -25,7 +25,7 @@ export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
   // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
-  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string } }
+  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true } }
   | { offer: null; source: 'none'; conflict: null }
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
@@ -37,13 +37,12 @@ export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.repl
 // Plain targeting ("dental practices in NYC hiring a receptionist"), exclusions ("Exclude agencies selling CRM to
 // founders.", "Do not target people selling services to dental practices.") and negations ("We don't sell to agencies.",
 // "We are not selling hardware.") state none, and neither does "We sell to <buyers>" (a target, not an offer).
-const SENTENCE_STOP = /[.!?;\n]/
 const LEAD = String.raw`(?:^|[,;:\u2013\u2014]\s*|\s-\s*)(?:(?:hi|hello|note|fyi|also|and|but|so|ps)[,:]?\s+)?`
 const SPEAKER = String.raw`(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)`
-const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'i')
-const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'i')
-const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'i')
-const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:\\s*(.{3,150})$`, 'i')
+const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
+const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
+const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'di')
+const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:\\s*(.{3,150})$`, 'di')
 // a capture that is a target ("to dental practices") or itself an exclusion is not an offer. Whole words only (an offer
 // like "insurance", "inbound marketing", "attribution software" or "no-code tools" starts with the same letters); the
 // one stem kept is exclud(e|es|ed|ing), since every form of it is an exclusion.
@@ -51,16 +50,58 @@ const NOT_AN_OFFER = /^(?:(?:to|for|into|in|at|within|only|except|no|not)(?![\p{
 // The first offer a text states: the offer, the rest of that sentence after it (buyers, "but not ..." clauses), and
 // which sentence it was in.
 type Found = { offer: string; tail: string; sentence: number; sentences: string[] }
+// Only top-level grammar is structural. A nested qualifier can contain
+// its own "for", sentence punctuation, or another pair of parentheses.
+const LATER_SELLER = /(?:^|[.!?;,\n:]\s*|\s+(?:and|but|then)\s+)(?:(?:and|but|also)\s+)?(?:(?:i|we|i'm|we're)\s+(?:also\s+)?(?:(?:am|are|can)\s+(?:also\s+)?)?(?:sell|selling|offer|offering|provide|providing)\s+(?!to\b|for\b|only\b|not\b)\S|(?:(?:our|my)\s+)?(?:offer|offering|product|service)s?\s*:\s*\S)/iu
+function offerSentences(q: string) {
+  const parts: {text:string; grammar:string}[] = []
+  const open:number[] = [], closed = new Map<number, number>()
+  let start = 0, grammar = '', ambiguous = false
+  const push = (end:number) => { if (grammar.trim()) parts.push({text:q.slice(start,end),grammar}); grammar = '' }
+  for (let i=0;i<q.length;i++) {
+    const ch=q[i]
+    if (ch==='(') { open.push(i); grammar+='x'; continue }
+    if (ch===')' && open.length) { closed.set(open.pop()!,i); grammar+='x'; continue }
+    if (open.length) { grammar+='x'; continue }
+    // A period inside a brand/domain (e.g. buyer.example) is not a sentence end.
+    const tightClause = (ch==='.' || ch==='!' || ch==='?') &&
+      /^(?:find|look\s+for|search\s+for|target|identify|exclude|(?:i|we)\s+(?:sell|offer|provide))\s+\S/i.test(q.slice(i+1))
+    if (tightClause || ch===';' || ch==='\n' || ((ch==='.' || ch==='!' || ch==='?') && (i+1===q.length || /\s/.test(q[i+1])))) {
+      push(i); start=i+1; continue
+    }
+    grammar+=ch
+  }
+  const outerOpen=open[0]
+  if (outerOpen!==undefined) {
+    // Scan the uncertain tail for a reason to require a choice, never to
+    // extract an alternative. Completely closed inner qualifiers are opaque.
+    let tail=''
+    for(let i=outerOpen+1;i<q.length;i++){
+      const end=closed.get(i)
+      if(end!==undefined){tail+=' ';i=end;continue}
+      tail+=q[i]==='(' ? '; ' : q[i]
+    }
+    ambiguous=LATER_SELLER.test(tail.trim())
+    // Retain the complete top-level prefix, not bytes inside a cut-off qualifier.
+    grammar=grammar.slice(0,outerOpen-start)
+    push(outerOpen)
+  } else push(q.length)
+  return {parts,ambiguous}
+}
 function findOffer(text: string | null | undefined): Found | null {
   const q = (text ?? '').replace(/[ \t]+/g, ' ').trim()
   if (!q) return null
-  const sentences = q.split(SENTENCE_STOP).map(x => x.trim()).filter(Boolean)
-  for (const [i, sentence] of sentences.entries()) {
+  const entries=offerSentences(q).parts, sentences=entries.map(x=>x.text.trim())
+  for (const [i, sentence] of entries.entries()) {
+    const grammar=sentence.grammar.trimEnd()
     for (const p of [TO_FOR, SELLING_TO_FOR, LABEL, BARE]) {
-      const m = p.exec(sentence)
-      if (!m) continue
-      const o = cleanOffer(m[1].replace(/^(?:our|my|a|an)\s+/i, ''))
-      if (o.length >= 3 && !NOT_AN_OFFER.test(o)) return { offer: o, tail: sentence.slice(m.index + m[0].indexOf(m[1]) + m[1].length).trim(), sentence: i, sentences }
+      // Keep offsets while removing leading whitespace for the anchored patterns.
+      const left=grammar.length-grammar.trimStart().length
+      const at=p.exec(grammar.trimStart())?.indices?.[1]
+      if (!at) continue
+      const [start,end]=[at[0]+left,at[1]+left]
+      const o = cleanOffer(sentence.text.slice(start,end).replace(/^(?:our|my|a|an)\s+/i, ''))
+      if (o.length >= 3 && !NOT_AN_OFFER.test(o)) return { offer:o,tail:sentence.text.slice(end).trim(),sentence:i,sentences }
     }
   }
   return null
@@ -550,6 +591,8 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
   const recorded = offerOfSeller(play.seller)
   const base = recorded ?? (cleanOffer(profileSells) || null)
+  if (offerSentences(play.query ?? '').ambiguous)
+    return { offer:null, source:'conflict', conflict:{ stated:null, recorded:base??'', ambiguous:true } }
   const stated = statedOffer(play.query)
   // a request that withdraws an offer never resolves to a saved one by default: explicit choice only
   const w = readWithdrawal(play.query)

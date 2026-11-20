@@ -33,7 +33,6 @@ test('every raw module is placed in a product area', () => {
   assert.equal(areaOf('lib/outreach/send-budget.ts'), 'sends')
   assert.equal(areaOf('lib/outreach/replies.ts'), 'inbox')
   assert.equal(areaOf('lib/auth-db.ts'), 'auth & keys')
-  assert.equal(areaOf('lib/company-first/scorecard-producer.ts'), 'scans')
   assert.deepEqual(buildInventory(root).modules.filter(m => m.area === 'other').map(m => m.file), [])
 })
 

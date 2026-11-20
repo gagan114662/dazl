@@ -9,7 +9,7 @@ import { NOT_DIRECT, TENANT_COLUMNS } from '../../lib/tenant/scope.ts'
 
 type Col = { name: string; type: string; notnull: number; dflt_value: unknown; pk: number }
 export const marker = (tag: string, table: string) => `${tag}~${table}`
-const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running', company_scorecard_claim_nonce: null, company_scorecard_dispatch_started_at: null, company_scorecard_dispatch_release: null }, work_email_lookups: { status: 'unverified', provider: 'pdl' } } // work_email_lookups: its CHECKs tie the address to the status (#1036)
+const PRESET: Record<string, Record<string, unknown>> = { scan_jobs: { status: 'running' }, work_email_lookups: { status: 'unverified', provider: 'pdl' } } // work_email_lookups: its CHECKs tie the address to the status (#1036)
 const SKIP = new Set(['users', 'tenant_tombstones', 'tenant_tombstone_keys'])
 
 export function tenantTablesSqlite(db: Database.Database): Map<string, Col[]> {
@@ -54,15 +54,14 @@ export type SeededSqlite = { tag: string; tenant: string; ids: Record<string, st
 export function seedTenantSqlite(db: Database.Database, tenant: string, tag: string): SeededSqlite {
   const tables = tenantTablesSqlite(db)
   db.prepare("INSERT OR IGNORE INTO users (id, email, password_hash, salt, business_name) VALUES (?, ?, 'x', 'y', ?)").run(tenant, `${tag}@example.test`, marker(tag, 'users'))
-  db.prepare("INSERT OR IGNORE INTO organizations (id, name, kind, created_by, created_at) VALUES (?, ?, 'personal', ?, 1)").run(tenant, `${tenant} workspace`, tenant)
   const via = (t: string) => { const nd = NOT_DIRECT[t]; return nd && 'via' in nd ? nd.via : null }
   const refsOf = (t: string) => [...(via(t) ? [via(t)![1]] : []), ...(db.prepare(`PRAGMA foreign_key_list("${t}")`).all() as { table: string }[]).map(f => f.table)].filter(r => r !== t && tables.has(r))
   const depth = (t: string, seen = new Set<string>()): number => seen.has(t) ? 0 : Math.max(0, ...refsOf(t).map(r => 1 + depth(r, new Set([...seen, t]))))
-  const ids: Record<string, string> = {}, seededRows:Record<string,Record<string,unknown>> = {users:{id:tenant},organizations:{id:tenant}}, failed: Record<string, string> = {}
+  const ids: Record<string, string> = {}, failed: Record<string, string> = {}
   for (const t of [...tables.keys()].sort((a, b) => depth(a) - depth(b) || a.localeCompare(b))) {
     const v = via(t)
     // foreign keys point at this tenant's own row in the referenced table
-    const fks = new Map((db.prepare(`PRAGMA foreign_key_list("${t}")`).all() as { from: string; table: string; to:string }[]).map(f => [f.from, f]))
+    const fks = new Map((db.prepare(`PRAGMA foreign_key_list("${t}")`).all() as { from: string; table: string }[]).map(f => [f.from, f.table]))
     const values: Record<string, unknown> = {}
     const id = `${tag}${randomBytes(6).toString('hex')}`
     let missing = ''
@@ -70,7 +69,7 @@ export function seedTenantSqlite(db: Database.Database, tenant: string, tag: str
       if (TENANT_COLUMNS.includes(c.name)) values[c.name] = tenant
       else if (PRESET[t]?.[c.name] !== undefined) values[c.name] = PRESET[t][c.name]
       else if (v && c.name === v[0]) { if (ids[v[1]]) values[c.name] = ids[v[1]]; else missing = `no ${v[1]} row` }
-      else if (fks.has(c.name)) { const ref=fks.get(c.name)!; const value=seededRows[ref.table]?.[ref.to]; if(value!==undefined)values[c.name]=value; else if(c.notnull)missing=`no ${ref.table} row for ${c.name}` }
+      else if (fks.has(c.name)) { const ref = fks.get(c.name)!; if (ids[ref]) values[c.name] = ids[ref]; else if (c.notnull) missing = `no ${ref} row for ${c.name}` }
       else if (c.name === 'id' && /INT/i.test(c.type) && c.pk) continue
       else if (c.name === 'id') values[c.name] = id
       else if (/INT|REAL|NUM/i.test(c.type)) { if (c.notnull && c.dflt_value === null) values[c.name] = 1 }
@@ -82,9 +81,7 @@ export function seedTenantSqlite(db: Database.Database, tenant: string, tag: str
       const cols = Object.keys(values)
       try {
         const r = db.prepare(`INSERT INTO "${t}" (${cols.map(c => `"${c}"`).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map(c => values[c] as never))
-        const key=tables.get(t)!.find(c=>c.pk===1)?.name
-        ids[t]=String(values.id??(key?values[key]:undefined)??r.lastInsertRowid)
-        seededRows[t]={...values,...(key&&values[key]===undefined?{[key]:r.lastInsertRowid}:{})}
+        ids[t] = String(values.id ?? r.lastInsertRowid)
         break
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)

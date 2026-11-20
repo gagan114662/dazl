@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
 import { bothEngines } from './helpers/engines.ts'
-import { createJob } from '../lib/scan/store-db.ts'
+import { cancelJob, createJob } from '../lib/scan/store-db.ts'
 import { readScanStatus } from '../lib/scan/status-read-service.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb, setDb } from '../lib/db/client.ts'
@@ -70,6 +70,65 @@ bothEngines('whole scan status: tenant scope, same-id poison other store, record
     const invalid = await readScanStatus(db, 'A', job)
     assert.equal(invalid?.run_report, null); assert.equal(invalid?.cost, null)
   } finally { setDb(null); poisonRaw.close() }
+})
+
+bothEngines('diagnostics use the stored attempt and preserve legacy run report JSON for the owner only', async ({ db }) => {
+  const job = await createJob(db, 'A', { business_name: 'fixtures only', industry: 'services', location: 'Example' })
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 2 WHERE id = ?", [job])
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = 'no_candidates' WHERE id = ?", [job])
+  const older = { attempt: 2, extracted_candidates: 99, stop: { code: 'accounting_uncertain' } }
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', [job, JSON.stringify(older)])
+  const archived = await readScanStatus(db, 'A', job)
+  assert.deepEqual(archived?.run_report, [older], 'legacy payload is returned as stored')
+  assert.equal(archived?.pipeline_diagnostic.extraction_candidates, null)
+  assert.equal(archived?.pipeline_diagnostic.native_safe_result_urls, null)
+  assert.equal(archived?.pipeline_diagnostic.stop_hint, 'inspect_evidence_coverage')
+  assert.equal(await readScanStatus(db, 'B', job), undefined)
+
+  const current = { extracted_candidates: 0, funnel: { verified: 0 }, native_web_search: { evidence_diagnostic: { safe_urls: 2 } } }
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 2, ?)', [job, JSON.stringify(current)])
+  const fresh = await readScanStatus(db, 'A', job)
+  assert.deepEqual(fresh?.run_report, [older, current], 'absent embedded attempt is not injected into legacy JSON')
+  assert.equal(fresh?.pipeline_diagnostic.extraction_candidates, 0)
+  assert.equal(fresh?.pipeline_diagnostic.verified, 0)
+  assert.equal(fresh?.pipeline_diagnostic.native_safe_result_urls, 2)
+  assert.equal(fresh?.pipeline_diagnostic.native_publisher_attempted, null)
+  assert.equal(await readScanStatus(db, 'B', job), undefined)
+})
+
+bothEngines('status: early key failure or cancel keeps its hint even without a report; an active retry does not inherit one', async ({ db }) => {
+  const keyFailure = await createJob(db, 'A', { business_name: 'fixture', industry: 'services', location: 'Example' })
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [keyFailure])
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = 'key_rejected' WHERE id = ?", [keyFailure])
+  const failed = await readScanStatus(db, 'A', keyFailure)
+  assert.equal(failed?.run_report, null)
+  assert.equal(failed?.pipeline_diagnostic.stop_hint, 'review_key_configuration')
+
+  const trial = await createJob(db, 'A', { business_name: 'fixture', industry: 'services', location: 'Example' })
+  await db.run("UPDATE scan_jobs SET funded_by = 'trial', status = 'running', attempts = 1 WHERE id = ?", [trial])
+  await db.run("UPDATE scan_jobs SET status = 'failed', error = 'key_rejected' WHERE id = ?", [trial])
+  const trialFailed = await readScanStatus(db, 'A', trial)
+  assert.equal(trialFailed?.run_report, null)
+  assert.equal(trialFailed?.error, 'trial_key_invalid')
+  assert.equal(trialFailed?.pipeline_diagnostic.stop_hint, 'review_trial_availability')
+
+  const cancelled = await createJob(db, 'A', { business_name: 'fixture', industry: 'services', location: 'Example' })
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 2, error = 'accounting_uncertain' WHERE id = ?", [cancelled])
+  const previous = { stop: { code: 'accounting_uncertain' }, extracted_candidates: 12 }
+  await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', [cancelled, JSON.stringify(previous)])
+  const retry = await readScanStatus(db, 'A', cancelled)
+  assert.equal(retry?.pipeline_diagnostic.stop_hint, null)
+  assert.equal(retry?.pipeline_diagnostic.extraction_candidates, null)
+  assert.deepEqual(await cancelJob(db, 'A', cancelled), { ok: true, was_running: true })
+  const stopped = await readScanStatus(db, 'A', cancelled)
+  assert.equal(stopped?.pipeline_diagnostic.stop_hint, 'stopped_by_request')
+  assert.equal(stopped?.pipeline_diagnostic.extraction_candidates, null)
+
+  const queued = await createJob(db, 'A', { business_name: 'fixture', industry: 'services', location: 'Example' })
+  assert.deepEqual(await cancelJob(db, 'A', queued), { ok: true, was_running: false })
+  const stoppedBeforeDispatch = await readScanStatus(db, 'A', queued)
+  assert.equal(stoppedBeforeDispatch?.run_report, null)
+  assert.equal(stoppedBeforeDispatch?.pipeline_diagnostic.stop_hint, 'stopped_by_request')
 })
 
 test('status adapter preserves legacy same-handle reaping and dispatch; read service never selects or mutates another store', () => {

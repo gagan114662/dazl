@@ -51,6 +51,11 @@ jobs:
       - name: Release manifest
         run: node ../ops/release-manifest.mjs write . release.json && cat release.json
       # Playwright is not an app dependency: installed for this job only, the lockfile untouched
+      # Playwright's Chromium download is cached per version (it took up to 7.5 min uncached); --with-deps still installs the OS libraries every run
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browser-full-v1-1.63.0-${{ runner.os }}-${{ runner.arch }}
       - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
       - name: Every /app page loads (no page/console error, no missing asset)
         run: npm run test:smoke

@@ -36,7 +36,19 @@ test('the gates NEVER-AGAIN.md names are still wired', () => {
   assert.match(read('web/test/request-log.test.ts'), /test\('the route list matches the route files under app\//, '#7')
   assert.match(JSON.parse(read('web/package.json')).scripts.test, /test\/\*\.test\.ts/, '#7: npm test runs test/*.test.ts')
   // CI gates (2026-11-16): web-ci runs the full `npm test` post-merge on main (and on PRs that touch shared plumbing)
-  assert.match(read('.github/workflows/web-ci.yml'), /then npm test\b|run: npm test/, '#7: web-ci runs npm test')
+  // web-ci shards the exact `npm test` file list 4 ways; a guard fails the run if package.json's test script drifts from it
+  const webci = read('.github/workflows/web-ci.yml')
+  assert.ok(webci.includes(`[ "$(node -p 'require("./package.json").scripts.test')" = "$want" ]`), '#7: web-ci guards the npm test script')
+  assert.ok(webci.includes("want='" + JSON.parse(read('web/package.json')).scripts.test + "'"), '#7: web-ci shard list is exactly npm test')
+  assert.match(webci, /then all=\$\(ls test\/\*\.test\.ts test\/crm-webhook-unknown-ui\.test\.mjs\)/, '#7: web-ci runs the full npm test list on main')
+  // Qodo finding on #1437: building the list is not running it. Each shard job must actually invoke the npm test runner
+  // command (same env, net fence and --test) on its slice, or the release-gate invariant has no regression check.
+  const runner = JSON.parse(read('web/package.json')).scripts.test.replace(/--test .*$/, '--test "${mine[@]}"')
+  for (const name of ['sqlite-shard', 'postgres-shard']) {
+    const m = webci.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][\\w-]*:\\n|(?![\\s\\S]))`, 'm'))
+    assert.ok(m, `#7: ${name} job exists`)
+    assert.ok(m[1].split('\n').some(l => l.trim() === runner), `#7: ${name} runs the npm test runner on its shard`)
+  }
   assert.match(read('ops/prod/test_prod_prebuilt.py'), /def test_the_deploy_script_contains_no_build_step/, '#1 prod')
   assert.match(read('ops/staging/deploy.sh'), /REFUSED: no on-box build/, '#1 staging')
   assert.match(read('.github/workflows/release-preflight.yml'), /unittest discover -s ops -p 'test_\*\.py'/, '#1: ops/test_never_again.py runs')

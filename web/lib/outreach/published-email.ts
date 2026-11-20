@@ -35,7 +35,7 @@ const BASIS_RANK: { [token: string]: { kind: DomainBasisKind; rank: number } } =
   evidence_link_domain_label: { kind: 'linked', rank: 3 },
   evidence_own_domain: { kind: 'own_domain', rank: 4 },
 }
-export const parseDomainRow = (x: { value: string; label?: string | null }) => {
+const parseDomainRow = (x: { value: string; label?: string | null }) => {
   const [domain, token = ''] = x.value.toLowerCase().split('|')
   const t = (x.label ?? '').startsWith('domain-basis-v1:') ? (x.label ?? '').slice('domain-basis-v1:'.length) : ''
   return { domain, basis: t === token ? BASIS_RANK[t] : undefined }

@@ -45,10 +45,7 @@ const NATIVE_SEARCH = {
   endpoint: 'https://api.anthropic.com/v1/messages', file: 'lib/llm/claude-web-search.ts',
   gate: 'lib/scan/native-search-reserve.ts', kind: 'llm.anthropic.web_search' as const,
 }
-const SCORECARD_NATIVE_FILE = 'lib/company-first/company-first-native-transport.ts'
-const SCORECARD_WIRE_HELPER = 'lib/company-first/company-first-claude-request.ts'
-const inventoriedNativeSearch = (endpoint: string, rel: string) =>
-  endpoint === NATIVE_SEARCH.endpoint && [NATIVE_SEARCH.file, SCORECARD_NATIVE_FILE, SCORECARD_WIRE_HELPER].includes(rel)
+const inventoriedNativeSearch = (endpoint: string, rel: string) => endpoint === NATIVE_SEARCH.endpoint && rel === NATIVE_SEARCH.file
 // Files that may NAME a paid endpoint without calling it (labels, not requests).
 const NAMES_ONLY: Record<string, string> = {
   'lib/evals/trace.ts': 'maps recorded request URLs to labels for trace capture; makes no request',
@@ -176,21 +173,6 @@ test('inventory: each gated module reserves its kind before its request, and daz
     assert.ok(/reserveScanSpend\(/.test(src), `${p.file} (${e}) reserves on the scan cap`)
   }
   assert.deepEqual(SOURCES.filter(s => s.rel !== 'lib/scan/spend-cap.ts' && /cache_control/.test(s.text)).map(s => s.rel), [], 'a cache write would be billed above the reserved input price')
-  // The protected arm also has to reserve through the exact same canonical
-  // ledger before sending. Its real fenced test sees the joined reserved row
-  // at transport and verifies missing/stale claim has no provider POST.
-  const candidate = SOURCES.find(s => s.rel === SCORECARD_NATIVE_FILE)!.text
-  assert.match(candidate, /from '\.\.\/scan\/spend-cap\.ts'/)
-  const reserve = candidate.indexOf("await reserveScanSpend('llm.anthropic.web_search',")
-  const transport = candidate.indexOf('await (ports.fetcher ?? fetch)(URL')
-  assert.ok(reserve >= 0 && transport > reserve, 'scorecard native physical request follows the canonical reserve')
-  const wire = SOURCES.find(s => s.rel === SCORECARD_WIRE_HELPER)!.text
-  const consume = wire.indexOf('await ports.consumeLiveLease(lease)')
-  const callback = wire.indexOf('await ports.send({url:endpoint')
-  assert.ok(consume >= 0 && callback > consume && !/\bfetch\(/.test(wire),
-    'scorecard request builder has no HTTP of its own and checks the live lease before handing off')
-  assert.deepEqual(SOURCES.filter(s => /\bexecutePrepared\(/.test(s.text)).map(s => s.rel), [SCORECARD_NATIVE_FILE],
-    'only the canonical transport may grant the helper a physical sender')
   const nativeGate = SOURCES.find(s => s.rel === NATIVE_SEARCH.gate)!.text
   assert.match(nativeGate, /from '\.\/spend-cap\.ts'/, 'native search adapter imports the scan gate')
   assert.ok(nativeGate.includes(`reserveScanSpend('${NATIVE_SEARCH.kind}',`), 'native search reserves its own spend kind')

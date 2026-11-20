@@ -1268,7 +1268,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
-    const ownedJob = db.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { run_budget: string | null } | undefined
+    let ownedJob: { run_budget: string | null } | undefined
+    try {
+      ownedJob = db.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as typeof ownedJob
+    } catch (error) {
+      // A legacy database without this column cannot contain a flagged job.
+      // Keep its ordinary crawl, but do not treat any other read error as unflagged.
+      if (!(error instanceof Error) || !/^no such column: run_budget$/i.test(error.message)) throw error
+      if (db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId)) ownedJob = { run_budget: null }
+    }
     if (!ownedJob) return
     const companyFirstContacts = !!deps.companyFirstContacts || hasCompanyFirstBudget(ownedJob.run_budget)
     const nativeOnly = companyFirstContacts || !!deps.nativeOnly
