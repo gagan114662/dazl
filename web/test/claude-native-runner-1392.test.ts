@@ -1,3 +1,4 @@
+import { fetchPageDetailed } from '../lib/scan/fetch-page.ts'
 import { atsPostingRef, atsPublisherRef } from '../lib/sources/ats-posting.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -18,7 +19,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -100,6 +101,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
         if (sparseUsage) assert.deepEqual(db.prepare("SELECT status,actual_usd FROM scan_spend_calls WHERE scan_job_id='job' AND kind='llm.anthropic.web_search'").get(),
           { status: 'settled', actual_usd: 0.037 }, 'native billing is durable before publisher evidence is read')
         if (failedPublisher || diverseFixture?.blocked.includes(page)) return { fail: 'blocked' }
+        if (diverseFixture?.missing?.includes(page)) return { fail: 'not_found' }
         return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: thinPublisher ? 'too short' : 'Published evidence about a commercial roofing company. '.repeat(8) }
       },
     })
@@ -280,12 +282,13 @@ test('settled pre-4.6 geo fallback persists only a fixed diagnostic, never raw p
   }
 })
 
-test('native shortlist promotes admitted citations but never fetches citation-only URLs or exceeds five attempts', async () => {
+test('native shortlist promotes admitted citations and never fetches citation-only URLs', async () => {
   const blocked = ['a', 'b', 'c', 'd', 'e'].map(host => `https://${host}.example/blocked`)
   const x = await simulate({ diverseFixture: { results: [...blocked, url], cited: ['https://citation-only.example/', url], blocked } })
-  assert.deepEqual(x.publisherRequests, [url, ...blocked.slice(0, 4)])
-  assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 5)
-  assert.equal(x.nativeReport.evidence_diagnostic.publisher_failures.blocked, 4)
+  assert.deepEqual(x.publisherRequests, [url, ...blocked])
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 6)
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_lookahead_attempted, 1)
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_failures.blocked, 5)
   assert.equal(x.nativeReport.evidence_diagnostic.evidence_items, 1)
   assert.deepEqual(x.sequence.filter(s => s.startsWith('native-')), ['native-count', 'native-send'])
   const alreadyReadable = await simulate({ diverseFixture: { results: [url, ...blocked], cited: [], blocked } })
@@ -323,4 +326,31 @@ test('ATS root identity is ranking-only and restricted to documented board hosts
     'http://jobs.lever.co/alpha', 'https://user@jobs.lever.co/alpha', 'https://jobs.lever.co:444/alpha']) {
     assert.equal(atsPublisherRef(raw), null, raw)
   }
+})
+
+
+test('thin native source batch looks ahead to distinct admitted publishers without another native call', async () => {
+  const blocked = ['a', 'b', 'c'].map(host => `https://${host}.example/blocked`)
+  const missing = 'https://missing.example/gone', extra = ['f','g','h','i'].map(host => `https://${host}.example/evidence`)
+  const repeat = 'https://news.a.example/alternate-identity'
+  const x = await simulate({ diverseFixture: { results: [...blocked, missing, url, repeat, ...extra],
+    cited: ['https://citation-only.example/'], blocked, missing: [missing, ...extra.slice(1)] } })
+  assert.deepEqual(x.publisherRequests, [...blocked, missing, url, ...extra.slice(0, 3)])
+  assert.deepEqual(x.nativeReport.evidence_diagnostic.publisher_failures, { blocked: 3, not_found: 3 })
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 8)
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_lookahead_attempted, 3)
+  assert.equal(x.nativeReport.evidence_diagnostic.evidence_items, 2)
+  assert.equal(x.nativeReport.actual_usd, 0.037)
+  assert.deepEqual(x.sequence.filter(s => s.startsWith('native-')), ['native-count', 'native-send'])
+  const baseline = await simulate({ diverseFixture: { results: [url, extra[0]], cited: [], blocked: [] } })
+  assert.equal(x.sequence.filter(s => s === 'model').length, baseline.sequence.filter(s => s === 'model').length)
+})
+
+
+test('native hop fencing refuses a URL before any network or rendering work', async () => {
+  const inspected: string[] = []
+  assert.deepEqual(await fetchPageDetailed('https://blocked.example/topic', async () => {
+    assert.fail('refused hop must not render')
+  }, undefined, { allow: url => { inspected.push(url.origin); return false }, blocked: () => assert.fail('refused hop was not requested') }), { fail: 'refused' })
+  assert.deepEqual(inspected, ['https://blocked.example'])
 })

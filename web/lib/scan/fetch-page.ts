@@ -258,13 +258,14 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
 }
 
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
-export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal): Promise<Page | FetchFail> {
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: { allow: (url: URL) => boolean; blocked: (url: URL) => void }): Promise<Page | FetchFail> {
   // #533: a posting on a public ATS board is read from the board's own API record, never from the posting page
   const posting = atsPostingRef(rawUrl)
   try {
     let url = new URL(posting ? atsRecordUrl(posting) : rawUrl)
     for (let i = 0; i <= MAX_REDIRECTS; i++) {
       if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443')) return { fail: 'refused' }
+      if (hopPolicy && !hopPolicy.allow(url)) return { fail: 'refused' }
       const host = url.hostname.replace(/^\[|\]$/g, '')
       if (isIP(host) && !isPublicIp(host)) return { fail: 'refused' }
       if (signal?.aborted) return { fail: 'error' }
@@ -303,6 +304,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         thin = classifyThin(html, t.text)
         if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }
       }
+      if (thin === 'blocked') hopPolicy?.blocked(url)
       // a board API that refused the record is a refusal: never sent to the rendering service
       if (posting) return { fail: thin ?? 'error' }
       // blocked or JavaScript-only: try the rendering service if one is configured

@@ -17,8 +17,10 @@ export interface Candidate {
   timing_note?: string | null // how the date was read from the page, or a season/"soon" label with no date (scan/page-timing.ts)
 }
 
+export type JudgeAttribution = { kind: 'heading' | 'ats_employer'; label: string; matchedQuote: string }
+
 export type Verdict =
-  | { ok: true; confidence: number; contact: string | null; dateStatus: 'verified' | 'unverified' | 'undated'; retrievedAt: number; passage: string }
+  | { ok: true; confidence: number; contact: string | null; dateStatus: 'verified' | 'unverified' | 'undated'; retrievedAt: number; passage: string; judgeAttribution?: JudgeAttribution }
   | { ok: false; reason: string }
 
 export const MAX_AGE_DAYS = Number(process.env.SCAN_MAX_AGE_DAYS || 365)
@@ -301,7 +303,8 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   // Mentions elsewhere on the page do not count: that is how a rival's story gets pinned on the wrong company.
   const key = companyKey(c.company)
   if (key.length < 2) return { ok: false, reason: 'no_company' }
-  const entityOk = hasPhrase(loose, key) || pageHeadingNames(page, key)
+  const quoteNamesCompany = hasPhrase(loose, key)
+  const entityOk = quoteNamesCompany || pageHeadingNames(page, key)
   if (!entityOk) return { ok: false, reason: 'entity_mismatch' }
 
   let confidence = 70
@@ -332,5 +335,11 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   confidence = Math.max(0, Math.min(100, confidence))
   if (confidence < MIN_CONFIDENCE) return { ok: false, reason: 'low_confidence' }
   const passage = text.slice(Math.max(0, at - 800), at + excerpt.length + 800)
-  return { ok: true, confidence, contact, dateStatus, retrievedAt: page.retrievedAt, passage }
+  // Only propagate the same fetched page field that actually bound the entity. A board slug
+  // remains a legacy verifier fallback, not an employer label for the semantic judge.
+  const label = !quoteNamesCompany ? (page.board ? page.board.company : page.title) : null
+  const judgeAttribution: JudgeAttribution | undefined = label && label.length <= 240
+    ? { kind: page.board ? 'ats_employer' : 'heading', label, matchedQuote: text.slice(at, at + excerpt.length) }
+    : undefined
+  return { ok: true, confidence, contact, dateStatus, retrievedAt: page.retrievedAt, passage, ...(judgeAttribution ? { judgeAttribution } : {}) }
 }
