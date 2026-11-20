@@ -1,6 +1,7 @@
 // Protected additive lift from the Quest prototype's public JobPosting reader.
 // Existing root/site, transport, date, and canonical location holds still apply.
 import type { Candidate, CompanyFirstPorts, Scope } from './company-first-evidence.ts'
+import { readReciprocalOwnedCareerPermalink, readReciprocalOwnedPosting } from './company-first-reciprocal-site.ts'
 import type { ObservedCareerPage } from './company-first-public-reader.ts'
 
 type Site = NonNullable<Awaited<ReturnType<CompanyFirstPorts['verifyWebsite']>>>
@@ -123,14 +124,25 @@ function decode(p:ObservedCareerPage,employer:string,origin:string,from:string,t
   try{
     for(const s of p.jsonLd){
       if(s.length>16_384)return null
-      const o=obj(json(s))
-      if(!o||!schemaContext(o['@context']))continue
-      const graph=o['@graph']
-      if(graph!==undefined&&(!Array.isArray(graph)||graph.length>20))return null
-      if(o['@type']==='JobPosting')jobs.push(o)
-      for(const item of Array.isArray(graph)?graph:[]){
-        const node=obj(item)
-        if(node?.['@type']==='JobPosting')jobs.push(node)
+      const payload=json(s), roots=Array.isArray(payload)?payload:[payload]
+      let visited=roots.length
+      if(visited>20)return null
+      for(const root of roots){
+        if(Array.isArray(root))return null
+        const o=obj(root)
+        if(!o)continue
+        if(o['@type']==='JobPosting'){
+          if(!schemaContext(o['@context']))return null
+          jobs.push(o)
+        }
+        if(!schemaContext(o['@context']))continue
+        const graph=o['@graph']
+        if(graph===undefined)continue
+        if(!Array.isArray(graph)||(visited+=graph.length)>20)return null
+        for(const item of graph){
+          const node=obj(item)
+          if(node?.['@type']==='JobPosting')jobs.push(node)
+        }
       }
     }
   }catch{return null}
@@ -215,4 +227,26 @@ export async function discoverOwnedCareerSchema(
     }
     return signal.aborted?none():Object.freeze(out)
   }catch{return none()}
+}
+
+/** A verified employer's own permalink is separate evidence, never an ATS
+ * page renamed as first-party. The owned visible page must reproduce the same
+ * vendor-reported posting title/day plus the exact approved role and place. */
+export async function verifyReciprocalOwnedCareerSignal(scope:Scope,site:Site,input:SignalInput,read:Read,
+  matches:Readonly<{role(title:string):boolean;place(location:CareerSchemaObservation['location']):boolean}>,
+  signal:AbortSignal,clock=Date.now):Promise<SignalProof|null>{
+  const permit=readReciprocalOwnedCareerPermalink(site,scope),u=exact(permit?.url),now=clock()
+  if(!permit||!u||signal.aborted||site.companyKey!==input.companyKey||site.website!==input.websiteOrigin||
+    u.origin!==site.website||u.pathname==='/'||readReciprocalOwnedPosting(site,scope)?.literalPostingHref!==input.postingUrl||!day(input.from)||!day(input.through)||
+    !day(permit.day)||permit.day<input.from||permit.day>input.through)return null
+  try{
+    const page=await read(u.href,signal)
+    if(signal.aborted||!currentPage(page,u.href)||readReciprocalOwnedCareerPermalink(site,scope)!==permit)return null
+    const d=decode(page,site.candidateName,site.website,input.from,input.through,new Date(now).toISOString().slice(0,10))
+    if(!d?.ownedVisibleDate||d.title!==permit.title||d.day!==permit.day)return null
+    const row:CareerSchemaObservation=Object.freeze({kind:'owned_linked_jobposting',scope:Object.freeze({...scope}),
+      companyKey:site.companyKey,employer:site.candidateName,ownedOrigin:site.website,sourceUrl:u.href,linkSource:site.identitySource,...d})
+    ownedEvidence.set(row,Object.freeze({sourceText:page.visibleText,expiresAt:clock()+60_000}))
+    return matchOwnedCareerSignal(scope,{...input,postingUrl:undefined},[row],matches,signal,clock)
+  }catch{return null}
 }

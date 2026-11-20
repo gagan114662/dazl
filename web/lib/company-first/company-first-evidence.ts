@@ -1,6 +1,8 @@
 // Unmounted company-first evidence core. Ports are trusted server-side adapters,
 // not request callbacks. A qualified signal is not a Ready or contact decision.
 import { getDomain } from 'tldts'
+import { isReviewedCompanySizePair } from './company-first-size-reader.ts'
+import { isRecentCompanyFirstSignal } from './company-first-signal-freshness.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 
 export type Scope = Readonly<{ tenant: string; job: string; attempt: string }>
@@ -31,11 +33,14 @@ type Signal = Readonly<{
   // The trusted reader must tie the date to this exact event/record. A page's
   // crawl/update day or a date found elsewhere is never a valid date proof.
   dateProof: DateProof
-  companySizeFacts?: readonly CompanySizeFact[];
 }>
 type Call<T> = Readonly<{ input: Readonly<T>; signal: AbortSignal }>
 export type Reservation = Readonly<{ scope: Scope; stage: Stage; ordinal: number; signal: AbortSignal }>
+export type SizeReadInput=Readonly<{scope:Scope;companyKey:string;websiteOrigin:string;target:CompanySizeBand}>
 export interface CompanyFirstPorts {
+  // Separate provider-free exact-source reader. Must own per-source
+  // reservations and current, independent source identity verification.
+  readCompanySize?: (call: Call<SizeReadInput>)=>Promise<readonly CompanySizeFact[]|null>
   // Must affirm the exact current authorized attempt and reserve its operation
   // before each transport. No provider payloads or credentials cross this port.
   reserveBeforeDispatch: (request: Reservation) => Promise<boolean>
@@ -49,7 +54,7 @@ export interface CompanyFirstPorts {
 }
 export type Hold = 'identity_unknown' | 'duplicate_company' | 'signal_unknown' | 'size_unconfirmed' | 'reservation_unavailable'
 export type Finding = Readonly<{ state: 'held'; reason: Hold; count: number }> |
-  Readonly<{ name: string; state: 'signal_verified'; site: VerifiedSite; signal: Readonly<Omit<Signal, 'literalSourceText' | 'dateProof' | 'companySizeFacts'>> }>
+  Readonly<{ name: string; state: 'signal_verified'; site: VerifiedSite; signal: Readonly<Omit<Signal, 'literalSourceText' | 'dateProof'>> }>
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
 type AtsWitness = Readonly<{ scope: Scope; postingUrl: string; ownedLinkSource: string; firstPublishedDay: string; originalSignal:Signal }>
 const issuedOwnSignals = new WeakMap<SignalFinding,Scope>()
@@ -115,7 +120,7 @@ function validSizeBand(b: CompanySizeBand | null | undefined): b is CompanySizeB
   return !!b && Number.isSafeInteger(b.min) && Number.isSafeInteger(b.max) && b.min >= 0 && b.max >= b.min
 }
 function confirmsSize(facts: readonly CompanySizeFact[] | undefined, target:CompanySizeBand, scope:Scope, site:VerifiedSite, now:number):boolean {
-  if (!Array.isArray(facts) || facts.length !== 2) return false
+  if (!Array.isArray(facts) || facts.length !== 2 || !isReviewedCompanySizePair(facts,now)) return false
   const owner = url(site.website)
   const domains = new Set<string>(), datasets = new Set<string>()
   let lower = target.min, upper = target.max, independent = false
@@ -219,22 +224,31 @@ export async function runCompanyFirst(
       holdOne(reserved ? 'signal_unknown' : 'reservation_unavailable'); continue
     }
     const proof = value.dateProof
-    if (!day(value.date) || value.date < c.from || value.date > c.through || !proof ||
+    if (!isRecentCompanyFirstSignal(value.date) || value.date < c.from || value.date > c.through || !proof ||
         proof.day !== value.date || url(proof.sourceUrl)?.href !== source.href ||
         (source.origin === site.website ?
           proof.kind !== 'first_party_event_date' || !validText(proof.literalDate, 100) || !value.literalSourceText.includes(proof.literalDate) :
           proof.kind !== 'ats_first_published')) {
       holdOne('signal_unknown'); continue
     }
-    if (companySize && !confirmsSize(value.companySizeFacts,companySize,scopeSnapshot,site,Date.now())) {
-      holdOne('size_unconfirmed'); continue
+    const evidenceDay=value.date,evidenceQuote=value.quote,proofKind=proof.kind
+    if(companySize){
+      const read=ports.readCompanySize
+      const facts=read&&await within(signal,()=>ports.isCurrent(scopeSnapshot))===true
+        ? await within(signal,()=>read(Object.freeze({input:Object.freeze({scope:scopeSnapshot,companyKey:site.companyKey,
+          websiteOrigin:site.website,target:companySize}),signal}))) : null
+      if(!facts||!confirmsSize(facts,companySize,scopeSnapshot,site,Date.now())||
+          await within(signal,()=>ports.isCurrent(scopeSnapshot))!==true){
+        holdOne('size_unconfirmed');continue
+      }
     }
+    if(!isRecentCompanyFirstSignal(evidenceDay)){holdOne('signal_unknown');continue}
     const finding: SignalFinding = { name: candidate.name, state: 'signal_verified', site,
-      signal: { companyKey: site.companyKey, place: c.place, event: c.event, date: value.date, sourceUrl: source.href, quote: value.quote } }
+      signal: { companyKey: site.companyKey, place: c.place, event: c.event, date: evidenceDay, sourceUrl: source.href, quote: evidenceQuote } }
     Object.freeze(finding.signal)
     Object.freeze(finding)
-    if (source.origin !== site.website && source.href === postingUrl && postingLinkSource && proof.kind === 'ats_first_published') {
-      pendingAts.push([finding, Object.freeze({ scope: scopeSnapshot, postingUrl, ownedLinkSource: postingLinkSource, firstPublishedDay: proof.day, originalSignal:value })])
+    if (source.origin !== site.website && source.href === postingUrl && postingLinkSource && proofKind === 'ats_first_published') {
+      pendingAts.push([finding, Object.freeze({ scope: scopeSnapshot, postingUrl, ownedLinkSource: postingLinkSource, firstPublishedDay: evidenceDay, originalSignal:value })])
     }
     findings.push(finding)
   }

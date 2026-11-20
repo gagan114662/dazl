@@ -1,7 +1,11 @@
-import { test } from 'node:test'
+import { createReviewedCompanySizeReader } from '../lib/company-first/company-first-size-reader.ts'
+import { before, after, mock, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runCompanyFirstFinder, type CompanyFirstFinderPorts } from '../lib/company-first/company-first-pipeline.ts'
 import type { CompanySizeFact } from '../lib/company-first/company-first-evidence.ts'
+
+before(()=>{mock.method(Date,'now',()=>Date.parse('2026-11-20T12:00:00Z'))})
+after(()=>mock.restoreAll())
 
 const scope = { tenant: 'fixture-tenant', job: 'fixture-job', attempt: '1' }
 const criteria = { category: 'service-category', place: 'bound-location', event: 'active-event', from: '2026-11-01', through: '2026-11-20' }
@@ -84,14 +88,14 @@ test('uncertain accounting drops output and prevents later provider or gate disp
 })
 
 test('an explicit size target requires two current, independent, range-agreeing company facts before buyer reads',async()=>{
-  const observedDay=new Date().toISOString().slice(0,10)
+  const observedDay=new Date(Date.now()).toISOString().slice(0,10)
   const one:CompanySizeFact={scope,companyKey:'same-company',sourceUrl:origin+'/annual-filing',datasetKey:'company-filing',
     observedDay,basis:'first_party_disclosure',employees:{min:30,max:60}}
   const two:CompanySizeFact={...one,sourceUrl:'https://official-secondary.example/record/42',datasetKey:'independent-ledger',
     basis:'independent_primary_record',employees:{min:40,max:70}}
   const targeted={...criteria,companySize:{min:20,max:80}}
   for(const [facts,ok] of [
-    [[one,two],true],[[one],false],
+    [[one,two],true],[[one],false],[[one,{...two,datasetKey:'same-controller'}],false],[[one,{...two,datasetKey:'nonliteral'}],false],
     [[one,{...two,datasetKey:one.datasetKey}],false],
     [[one,{...two,sourceUrl:'https://data.fictional.example/filing'}],false],
     [[one,{...two,scope:{...scope,attempt:'older'}}],false],
@@ -101,11 +105,26 @@ test('an explicit size target requires two current, independent, range-agreeing 
     [[one,{...two,employees:{min:60,max:88}}],false],
     [[one,{...two,employees:{min:61,max:75}}],false],
   ] as const){
-    const {ports,calls}=fixture('ok'), original=ports.evidence.verifyDatedSignal
-    ports.evidence.verifyDatedSignal=async request=>{
-      assert.deepEqual(request.input.companySize,targeted.companySize)
-      const observed=await original(request)
-      return observed?{...observed,companySizeFacts:facts}:null
+    const {ports,calls}=fixture('ok')
+    ports.evidence.readCompanySize=async request=>{
+      assert.deepEqual(request.input.target,targeted.companySize)
+      const makeSrc=(f:CompanySizeFact,i:number)=>({url:f.sourceUrl,basis:f.basis,datasetKey:f.datasetKey,producerKey:'publisher-'+i,
+        controllerKey:'controller-'+(f.datasetKey==='same-controller'?0:i),recordKey:'record-'+i,employeesLabel:'Employee count',measurementDateLabel:'As of'})
+      const expiresAtMs=Date.now()+60_000
+      const companySizeReader=createReviewedCompanySizeReader({
+        async currentReviewedSources(){
+          if(facts.length!==2)return null
+          return {scope:facts[1].scope,companyKey:facts[1].companyKey,websiteOrigin:origin,version:'fixture-review',
+            expiresAtMs,sources:[makeSrc(facts[0],0),makeSrc(facts[1],1)]}
+        },
+        async reserveExactRead(){return true},
+        async readExactRecord(url){
+          const i=facts.findIndex(f=>f.sourceUrl===url),f=facts[i]
+          return f?{url,recordKey:'record-'+i,producerKey:'publisher-'+i,employees:f.employees,observedDay:f.observedDay,
+            visibleRecord:`Employee count: ${f.employees.min}-${f.employees.max+(f.datasetKey==='nonliteral'?1:0)}\nAs of: ${f.observedDay}`}:null
+        },
+      })
+      return companySizeReader(request)
     }
     const got=await runCompanyFirstFinder({enabled:true},scope,targeted,[title],ports)
     assert.equal(got.ready.length,ok?1:0)
@@ -132,4 +151,36 @@ test('absent canonical observation does not become a measured zero or contact pe
  const got=await runCompanyFirstFinder({enabled:true},scope,criteria,[title],ports)
  assert.equal(got.state,'unavailable');assert.equal(got.observed,null)
  assert.equal(calls.includes('reserve:directory'),false)
+})
+
+
+test('size claimed by the signal or in unissued facts is held without buyer reads',async()=>{
+  const targeted={...criteria,companySize:{min:20,max:80}}
+  const one:CompanySizeFact={scope,companyKey:'same-company',sourceUrl:origin+'/employees',datasetKey:'primary',
+    observedDay:new Date(Date.now()).toISOString().slice(0,10),basis:'first_party_disclosure',employees:{min:25,max:30}}
+  const two:CompanySizeFact={...one,sourceUrl:'https://public-record.example/employees',datasetKey:'secondary',basis:'independent_primary_record'}
+  const {ports,calls}=fixture('ok')
+  ports.evidence.readCompanySize=async()=>[one,two]
+  const r=await runCompanyFirstFinder({enabled:true},scope,targeted,[title],ports)
+  assert.deepEqual(r.observed?.evidence?.holds,{size_unconfirmed:1})
+  assert.equal(calls.includes('directory'),false)
+})
+
+test('the UTC hard cutoff is rechecked after canonical verification and before Ready',async()=>{
+ const {ports,calls}=fixture('ok'), original=ports.checkExistingHolds
+ const setTime=Date.now as typeof Date.now
+ let now=Date.parse(date)+45*86_400_000+86_399_999
+ // This override is isolated to the test, then the file clock is restored.
+ Date.now=()=>now
+ try{
+  ports.checkExistingHolds=async (...request)=>{
+    const receipt=await original(...request)
+    now++
+    return receipt
+  }
+  const got=await runCompanyFirstFinder({enabled:true},scope,criteria,[title],ports)
+  assert.equal(calls.includes('directory'),true)
+  assert.equal(got.observed?.final_held,1)
+  assert.equal(got.ready.length,0)
+ }finally{Date.now=setTime}
 })

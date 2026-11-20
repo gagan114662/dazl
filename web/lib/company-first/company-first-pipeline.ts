@@ -1,3 +1,4 @@
+import { isRecentCompanyFirstSignal } from './company-first-signal-freshness.ts'
 // Fresh module only. No product router, provider, repository flag or storage is
 // mounted here. Only a trusted application adapter may enable and bind a run.
 import { runCompanyFirst, type CompanyFirstPorts, type Criteria, type Finding, type Scope } from './company-first-evidence.ts'
@@ -5,10 +6,12 @@ import { proveCompanyFirstContact, type CompanyFirstContactReaders, type Company
 
 type SignalFinding = Extract<Finding, { state: 'signal_verified' }>
 type ContactProof = Extract<CompanyFirstContactResult, { status: 'contact_proof' }>
-type Ready = Readonly<{ signal: SignalFinding; contact: ContactProof }>
+export type CompanyFirstPrechecked = Readonly<{ signal: SignalFinding; contact: ContactProof }>
+type Ready = CompanyFirstPrechecked
+import type { OwnedRoleProof } from './company-first-private-proof.ts'
 type GateReceipt = Readonly<{
   scope: Scope; companyKey: string; website: string; identitySource: string; event: string; eventSource: string; eventDate: string;
-  literalQuote: string; person: string; title: string; buyerBio: string; linkedIn: string; email: string; emailSource: string; verdict: 'ready' | 'held';
+  literalQuote: string; person: string; title: string; buyerBio: string; linkedIn: string|null; ownRole?:OwnedRoleProof; email: string; emailSource: string; verdict: 'ready' | 'held';
 }>
 type Policy = Readonly<{ enabled: boolean; signal?: AbortSignal }>
 export interface CompanyFirstFinderPorts {
@@ -17,6 +20,9 @@ export interface CompanyFirstFinderPorts {
   // standalone evaluation remains unchanged when the optional port is absent.
   preverifyFinding?(scope: Scope, finding: SignalFinding, signal: AbortSignal): Promise<boolean|null>
   contact: CompanyFirstContactReaders
+  // Protected provider step starts only after every selected candidate's
+  // native search, source verification and contact reads have settled.
+  prepareFinalHolds?(scope: Scope, rows: readonly CompanyFirstPrechecked[], signal: AbortSignal): Promise<boolean>
   // Never a caller-supplied status field. Evaluates the SAME production holds
   // and a fully bound candidate using a trusted server-side adapter.
   checkExistingHolds(scope: Scope, row: Ready, signal: AbortSignal): Promise<GateReceipt | null>
@@ -40,7 +46,7 @@ const isExactReady = (g: GateReceipt | null | undefined, s: Scope, r: Ready) =>
   g.event === r.signal.signal.event && g.eventSource === r.signal.signal.sourceUrl && g.eventDate === r.signal.signal.date &&
   g.literalQuote === r.signal.signal.quote && g.person === r.contact.buyer.name && g.title === r.contact.buyer.title &&
   g.buyerBio === r.contact.buyer.bioUrl && g.linkedIn === r.contact.buyer.linkedin &&
-  g.email === r.contact.published.address && g.emailSource === r.contact.published.sourceUrl
+  JSON.stringify(g.ownRole??null)===JSON.stringify(r.contact.buyer.ownRole??null) && g.email === r.contact.published.address && g.emailSource === r.contact.published.sourceUrl
 
 export async function runCompanyFirstFinder(
   policy: Policy, rawScope: Scope, criteria: Criteria, requestedTitles: readonly string[], ports: CompanyFirstFinderPorts,
@@ -58,6 +64,7 @@ export async function runCompanyFirstFinder(
   const observations = { signal_verified: 0, evidence_held: 0, contact_proven: 0, contact_held: 0, final_held: 0 }
   const contactHolds = new Map<string, number>()
   const ready: Ready[] = []
+  const prechecked: Ready[] = []
   for (const finding of evidence.findings) {
     if (finding.state !== 'signal_verified') { observations.evidence_held += finding.count; continue }
     if (ports.preverifyFinding) {
@@ -66,8 +73,9 @@ export async function runCompanyFirstFinder(
       if (accept==null) return stop('unavailable')
       if (!accept) { observations.evidence_held++; continue }
     }
-    observations.signal_verified++
     if (await stillCurrent() !== true) return stop('superseded_or_unsettled')
+    if(!isRecentCompanyFirstSignal(finding.signal.date)){observations.evidence_held++;continue}
+    observations.signal_verified++
     const contact = await proveCompanyFirstContact(finding, requestedTitles, scope, ports.contact, signal)
     if (await stillCurrent() !== true) return stop('superseded_or_unsettled')
     if (contact.status !== 'contact_proof') {
@@ -76,10 +84,16 @@ export async function runCompanyFirstFinder(
       continue
     }
     observations.contact_proven++
-    const row = { signal: finding, contact }
+    prechecked.push(Object.freeze({ signal: finding, contact }))
+  }
+  if (prechecked.length && ports.prepareFinalHolds &&
+      (await read(signal, () => ports.prepareFinalHolds!(scope, Object.freeze(prechecked), signal)) !== true || await stillCurrent() !== true))
+    return stop('superseded_or_unsettled')
+  for (const row of prechecked) {
+    if (await stillCurrent() !== true) return stop('superseded_or_unsettled')
     const receipt = await read(signal, () => ports.checkExistingHolds(scope, row, signal))
     if (await stillCurrent() !== true) return stop('superseded_or_unsettled')
-    if (!isExactReady(receipt, scope, row)) { observations.final_held++; continue }
+    if (!isRecentCompanyFirstSignal(row.signal.signal.date) || !isExactReady(receipt, scope, row)) { observations.final_held++; continue }
     ready.push(row)
   }
   if (await stillCurrent() !== true || signal.aborted) return stop('superseded_or_unsettled')

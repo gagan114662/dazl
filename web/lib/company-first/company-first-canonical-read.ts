@@ -9,6 +9,7 @@ import { requiredGateHeld } from '../scan/held-state.ts'
 import { timingProofGap } from '../scan/timing-proof.ts'
 import { currentSiteContact, siteIdentity, whoOf } from '../scan/site-contact.ts'
 import { matchesIssuedCompanyIdentity } from './company-first-origin-issuer.ts'
+import { readReciprocalOwnedPosting, readReciprocalOwnedCareerPermalink } from './company-first-reciprocal-site.ts'
 import type { WebsiteProof } from './company-first-website-proof.ts'
 import { profileFromListedLabel } from '../people/site-profile.ts'
 import { strictPublishedWorkEmailsForLeads } from '../people/work-email.ts'
@@ -26,7 +27,7 @@ type Result = {state:'held';reason:Held;observed:readonly VisibleSubset[]} |
 export type CanonicalStagesReader = (db:Database.Database, claim:Claim, key:CandidateKey) => ProofSnapshot|null
 
 type Row = Record<string,unknown> & {id:string; company:string; company_domain:string|null; source_url:string; evidence_excerpt:string|null;
-  event_date:string|null; signal_kind:string|null; query:string|null; icp:string|null; seller:string|null; offer:string|null;
+  event_date:string|null; event_date_proof:string|null; signal_kind:string|null; query:string|null; icp:string|null; seller:string|null; offer:string|null;
   sources:string|null; run_budget:string|null }
 // Real primary dispatch authorization is distinct from the scratch tenant
 // alias. Never infer the actor from SQLite leads or the caller's expected row.
@@ -71,10 +72,27 @@ export async function readPrivateCompanyFirstProof(primary:Database.Database, db
           AND j.funded_by='user' AND j.csv_domain IS NULL AND j.watch_id IS NULL`).get(selected.id,claim.job,scratchTenant,claim.attempt) as Row|undefined
       if(!row||row.run_budget!==scorecardPinnedBudget()||row.query!==approved.subject.query||row.icp!==approved.subject.icp||
          row.seller!==approved.subject.seller||row.offer!==approved.subject.offer||row.sources!==approved.subject.sources) return {held:'wrong_claim'}
-      if(!matchesIssuedCompanyIdentity(issuedSite,{scope:{tenant:claim.tenant,job:claim.job,attempt:String(claim.attempt)},
+      const proofScope={tenant:claim.tenant,job:claim.job,attempt:String(claim.attempt)}
+      const reciprocal=issuedSite?readReciprocalOwnedPosting(issuedSite,proofScope):null
+      const permalink=issuedSite?readReciprocalOwnedCareerPermalink(issuedSite,proofScope):null
+      const ownsReciprocalEvent=!!permalink&&permalink.url===evidence.eventSource&&
+        permalink.title===evidence.literalQuote&&permalink.day===evidence.eventDate&&row.event_date_proof==='page_bound'
+      const persistedSite=row.company_domain?new URL('https://'+row.company_domain+'/'):null
+      const reciprocalOwned=!!reciprocal&&reciprocal.expiresAtMs>t0&&
+        reciprocal.companyKey===evidence.companyKey&&reciprocal.companyName===row.company&&
+        reciprocal.websiteOrigin===evidence.website&&reciprocal.linkSource===evidence.identitySource&&
+        (reciprocal.literalPostingHref===evidence.eventSource||ownsReciprocalEvent)&&!!persistedSite&&persistedSite.hostname===row.company_domain&&
+        persistedSite.origin===reciprocal.websiteOrigin
+      // The model grade's persisted taxonomy calls a literal posting hiring;
+      // the owned-source proof calls the same event hiring_posting. Only an
+      // exact verified date on this same source permits that translation.
+      const matchingEvent=row.signal_kind===evidence.event||(evidence.event==='hiring_posting'&&
+        ['hiring','hiring_relevant_role','open_role_language'].includes(row.signal_kind??'')&&
+        (row.event_date_proof==='ats_structured'||row.event_date_proof==='page_bound'))
+      if((!reciprocalOwned&&!matchesIssuedCompanyIdentity(issuedSite,{scope:proofScope,
         companyKey:evidence.companyKey,website:evidence.website,identitySource:evidence.identitySource,
-        persistedCompany:row.company,persistedDomain:row.company_domain},t0)||row.source_url!==evidence.eventSource||
-         row.evidence_excerpt!==evidence.literalQuote||row.event_date!==evidence.eventDate||row.signal_kind!==evidence.event)
+        persistedCompany:row.company,persistedDomain:row.company_domain},t0))||row.source_url!==evidence.eventSource||
+         row.evidence_excerpt!==evidence.literalQuote||row.event_date!==evidence.eventDate||!matchingEvent)
         return {held:'evidence_mismatch'}
       const at=new Date(t0)
       const enrichments=enrichmentsForLeads(db,scratchTenant,[row.id])[row.id]??[]
@@ -88,14 +106,22 @@ export async function readPrivateCompanyFirstProof(primary:Database.Database, db
       const domain=siteIdentity(evidence.website)
       if(!site.confirmed||!domain||site.domain!==domain||domainRelationship(db,scratchTenant,row.id,row.company_domain)!=='established'||
          !enrichments.some(r=>{
-           if(r.connector!=='sitecrawl'||r.kind!=='domain'||r.source_url!==evidence.identitySource)return false
+           if(r.connector!=='sitecrawl'||r.kind!=='domain'||r.source_url!==(ownsReciprocalEvent?evidence.eventSource:evidence.identitySource))return false
            const provenance=parseDomainRow(r)
            return provenance.basis?.kind==='own_domain'&&siteIdentity(provenance.domain)===domain
          })||
          site.person?.value!==`${evidence.buyer}, ${evidence.title}`||site.person.source_url!==evidence.buyerBio||
          profileFromListedLabel(site.person.label??null)!==evidence.linkedin)return {held:'buyer_proof_missing'}
-      // The official link is only listed, not independently current. Do not
-      // mint the owned-buyer/contact attestation from a sitecrawl label.
+      // A company-listed LinkedIn URL is a link, not a role verification.
+      // The first-party role path must also match the company-owned literal
+      // quote and the exact guarded live fetch timestamp stored with this lead.
+      if(evidence.ownRole){
+        const proof=evidence.ownRole
+        if(proof.sourceUrl!==evidence.buyerBio||proof.fetchedAtMs>t0||t0-proof.fetchedAtMs>=10*60_000||
+          !enrichments.some(r=>r.connector==='sitecrawl'&&r.kind==='current_role'&&r.source_url===proof.sourceUrl&&
+            r.value===proof.quote&&r.retrieved_at===Math.floor(proof.fetchedAtMs/1000)&&r.label===String(proof.fetchedAtMs)))
+          return {held:'buyer_proof_missing'}
+      } else if(!evidence.linkedin)return {held:'buyer_proof_missing'}
       observed.push('owned_buyer_listed_profile')
       const exactTarget=`${evidence.buyer}|${evidence.title}`
       const email=strictPublishedWorkEmailsForLeads(db,scratchTenant,[row.id],Math.floor(t0/1000))[row.id]??[]

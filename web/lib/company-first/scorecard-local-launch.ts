@@ -8,6 +8,8 @@ import { reserveStrictLocalSlot } from '../scan/strict-local-launch.ts'
 import { authorizeScorecardSubject, verifyScorecardTicket, type ScorecardSubjectInput } from './scorecard-admission.ts'
 import { armProtectedScorecardJobSqlite } from './scorecard-producer.ts'
 import { runProtectedScorecardScanArm } from './scorecard-worker-arm.ts'
+import { preflightProtectedStagingScorecard } from './scorecard-staging-preflight.ts'
+import { allowStagingProof, type StagingProofRequest } from './scorecard-staging-proof.ts'
 import { requireScorecardWorkspace } from './scorecard-workspace.ts'
 
 type Scope = Readonly<{ tenantId: string; actorId: string; release: string }>
@@ -19,6 +21,10 @@ type Ports = Readonly<{
   // HTTP body or a global default. The loader configures a binder; it must
   // not fetch, dispatch, or spend while preparing it.
   signer: Uint8Array | null
+  stagingCaseOne?: Readonly<{
+    host: Parameters<typeof preflightProtectedStagingScorecard>[1]
+    proofRequest: StagingProofRequest
+  }>
   loadBinding(scope: Scope & Readonly<{ jobId: string; lane: 'old' | 'new' }>): Promise<Binder | null>
 }>
 const refused = Object.freeze({ state: 'held', reason: 'unauthorized_or_incomplete' } as const)
@@ -32,16 +38,22 @@ export async function launchReviewedLocalScorecardArm(db: Database.Database, tru
         typeof ports.loadBinding !== 'function') return refused
     const signingKey = Uint8Array.from(ports.signer)
     const scope = Object.freeze({ tenantId: trustedScope.tenantId, actorId: trustedScope.actorId, release: trustedScope.release })
+    const staging=ports.stagingCaseOne
+    const mode=staging?'staging-case-one' as const:undefined
     const { signedToken, jobId } = input
-    const ticket = verifyScorecardTicket(signedToken, signingKey, { ...scope, jobId, attempt: 1 }, Date.now())
+    const ticket = verifyScorecardTicket(signedToken, signingKey, { ...scope, jobId, attempt: 1 }, Date.now(),mode)
     if (!ticket || ticket.lane === 'judge') return refused
+    const requireStaging=()=>!staging||(!db.readonly&&
+      preflightProtectedStagingScorecard(db,staging.host,ticket).state==='preflight_passed'&&
+      allowStagingProof(ticket,staging.proofRequest))
+    if(!requireStaging()) return refused
     const proof = authorizeScorecardSubject(ticket, input.reviewedInput)
     if (!proof) return refused
     const reviewedInput = proof.subject // snapshot canonical bytes; no caller mutation across await
     const eligible = await sqliteDb(db).tx(t => requireScorecardWorkspace(t, ticket))
     if (!eligible || signal.aborted) return refused
     const bind = await ports.loadBinding(Object.freeze({ ...scope, jobId, lane: ticket.lane }))
-    if (typeof bind !== 'function' || signal.aborted || process.env.DATABASE_URL || !strictLocalTopologySupported('sqlite')) return refused
+    if (typeof bind !== 'function' || signal.aborted || process.env.DATABASE_URL || !strictLocalTopologySupported('sqlite') || !requireStaging()) return refused
     // Producer rechecks signed subject/expiry, workspace, quota, vendor and
     // attempt in the real IMMEDIATE transaction after async binding preparation.
     releaseSlot = reserveStrictLocalSlot()
@@ -52,8 +64,8 @@ export async function launchReviewedLocalScorecardArm(db: Database.Database, tru
     // Never hand back or retry an admitted attempt. Any interruption is
     // covered by the existing durable private marker and reaper.
     return await runProtectedScorecardScanArm(db, Object.freeze(job), {
-      release: scope.release, signedToken, signingKey, reviewedInput,
-    }, bind, signal)
+      release: scope.release, signedToken, signingKey, reviewedInput, mode,
+    }, bind, signal,staging?.proofRequest)
   } catch {
     // No identity, private subject, key, signature, or raw exception leaves this boundary.
     return refused

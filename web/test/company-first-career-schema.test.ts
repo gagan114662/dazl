@@ -47,6 +47,29 @@ test('real guarded static paths for Workable, BambooHR and first-party structure
     assert.equal(got.rows[0].ownedVisibleDate,board===null)
   }
 })
+test('bounded JSON-LD arrays keep one exact owned or publisher job, never an ambiguous second claim',async()=>{
+  for(const [board,job] of [
+    ['https://apply.workable.com/example-employer/','https://apply.workable.com/j/EX2019131/'],
+    ['https://fixture-employer.bamboohr.com/careers','https://fixture-employer.bamboohr.com/careers/42'],
+    [null,origin+'/careers/typed-position'],
+  ] as const){
+    const row=schema(job), wrapper={'@context':'https://schema.org','@graph':[row]}, decoy={'@context':'https://schema.org','@type':'WebPage',url:job}
+    const pages:Record<string,string>={[root]:html(a(board??job))}
+    if(board)pages[board]=html('<p>'+name+'</p>'+a(job))
+    const proof=(nodes:unknown)=>readPages({...pages,[job]:posting(JSON.stringify(nodes)).replace('</body>','<p>Applications open</p></body>')})
+    for(const nodes of [[decoy,row],[decoy,wrapper]]){
+      const {rows}=await proof(nodes)
+      assert.equal(rows.length,1)
+      assert.equal(rows[0].sourceUrl,job)
+      assert.equal(rows[0].day,posted)
+      if(board)assert.equal(readExternalCareerProof(rows[0],scope,site,()=>true,now)?.boardUrl,board)
+      else assert.equal(rows[0].ownedVisibleDate,true)
+    }
+    for(const nodes of [[row,wrapper],[row,[]],[row,{...row,'@context':'https://other.example'}],Array(20).fill(decoy).concat(row)]){
+      assert.deepEqual((await proof(nodes)).rows,[])
+    }
+  }
+})
 test('keeps holds on missing/modified/future date, wrong link or employer, remote, ambiguity, and hidden links',async()=>{
   const u=origin+'/careers/typed-position'
   const row=schema(u)

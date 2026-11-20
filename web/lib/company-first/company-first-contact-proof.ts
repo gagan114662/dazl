@@ -2,6 +2,8 @@
 // lookup activation, display, outreach, or Ready decision. All supplied readers
 // are proof adapters, not search engines: they must return observed public data.
 import { isCoreVerifiedAtsFinding, type Finding, type Scope } from './company-first-evidence.ts'
+import { readGuardedOwnRoleReceipt, type GuardedOwnRoleReceipt } from './company-first-guarded-contact.ts'
+import type { OwnedRoleProof } from './company-first-private-proof.ts'
 
 export interface OfficialDirectory {
   url: string
@@ -40,13 +42,24 @@ export interface CompanyFirstContactReaders {
   reserveBeforeDispatch(request: { scope: Scope; stage: ContactStage; signal: AbortSignal }): Promise<boolean>
   readDirectory(verifiedOrigin: string, signal: AbortSignal): Promise<OfficialDirectory | null>
   readBio(exactBioUrl: string, signal: AbortSignal): Promise<OfficialBio | null>
+  verifyOwnRole?(originalBio: OfficialBio, exactFinding: SignalFinding, signal: AbortSignal): Promise<GuardedOwnRoleReceipt | null>
   corroborateProfile(exactAlreadyPublishedUrl: string, signal: AbortSignal): Promise<PublicProfileCorroboration | null>
 }
 type Hold = 'missing_signal_proof' | 'missing_requested_role' | 'directory_unavailable' | 'buyer_unconfirmed' |
-  'bio_unconfirmed' | 'profile_unconfirmed' | 'email_unconfirmed' | 'contact_scope_unavailable'
+  'bio_unconfirmed' | 'profile_unconfirmed' | 'role_unverified' | 'email_unconfirmed' | 'contact_scope_unavailable'
 export type CompanyFirstContactResult =
   | { status: 'held'; reason: Hold }
-  | { status: 'contact_proof'; buyer: { name: string; title: string; bioUrl: string; linkedin: string }; published: { address: string; sourceUrl: string } }
+  | { status: 'contact_proof'; buyer: { name: string; title: string; bioUrl: string; linkedin: string|null; ownRole?:OwnedRoleProof }; published: { address: string; sourceUrl: string } }
+export type ProvenCompanyFirstContact = Extract<CompanyFirstContactResult,{status:'contact_proof'}>
+const issuedContacts = new WeakMap<ProvenCompanyFirstContact,{scope:Scope;finding:unknown;bio:OfficialBio}>()
+export function isIssuedCompanyFirstContact(contact:ProvenCompanyFirstContact,scope:Scope,finding:unknown):boolean{
+  const saved=issuedContacts.get(contact)
+  return !!saved&&saved.finding===finding&&saved.scope.tenant===scope.tenant&&saved.scope.job===scope.job&&saved.scope.attempt===scope.attempt
+}
+export function readIssuedContactBio(value:ProvenCompanyFirstContact,scope:Scope,finding:SignalFinding):OfficialBio|null {
+  return isIssuedCompanyFirstContact(value,scope,finding)?issuedContacts.get(value)?.bio??null:null
+}
+
 const held = (reason: Hold): CompanyFirstContactResult => ({ status: 'held', reason })
 const fold = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
 const sane = (x: unknown, max = 120): x is string => typeof x === 'string' && x.length <= max && !!x.trim() && !/[\p{C}]/u.test(x)
@@ -145,7 +158,11 @@ export async function proveCompanyFirstContact(
       !navigationSource || navigationSource.origin !== origin || (navigationSource.href !== identity.href && navigationSource.pathname !== '/') ||
       navigationSource.href === directory.href || dir.navigation.linkedUrl !== directory.href ||
       !Array.isArray(dir.people) || dir.people.length > 80) return held('directory_unavailable')
-  const selected = dir.people.filter(p => p && exactName(p.name) && sane(p.title) && ordinaryTitle(p.title) && roles.has(fold(p.title)))
+  const permitted = dir.people.filter(p => p && exactName(p.name) && sane(p.title) && ordinaryTitle(p.title))
+  // Reviewed title order is meaningful. Do not confuse a reachable
+  // lower-priority role with ambiguity at the first available target role.
+  const primaryRole = [...roles].find(role => permitted.some(p => fold(p.title) === role))
+  const selected = primaryRole === undefined ? [] : permitted.filter(p => fold(p.title) === primaryRole)
   if (selected.length !== 1) return held('buyer_unconfirmed')
   const person = selected[0]
   if (dir.people.filter(p => p && exactName(p.name) && fold(p.name) === fold(person.name)).length !== 1) return held('buyer_unconfirmed')
@@ -167,18 +184,32 @@ export async function proveCompanyFirstContact(
       ? [{ index, alternate: paired[2] }] : []
   })
   if (nameLines.length !== 1 || fold(lines[nameLines[0].index + 1] ?? '') !== fold(person.title)) return held('bio_unconfirmed')
-  if (!Array.isArray(bio.profiles) || bio.profiles.length !== 1) return held('profile_unconfirmed')
-  const link = bio.profiles[0]
-  if (!link || typeof link.url !== 'string' || !LINKEDIN.test(link.url) ||
-      !exactName(link.named) || fold(link.named) !== fold(person.name)) return held('profile_unconfirmed')
+  const oneLink = Array.isArray(bio.profiles)&&bio.profiles.length===1?bio.profiles[0]:null
+  const link = oneLink&&LINKEDIN.test(oneLink.url)&&exactName(oneLink.named)&&fold(oneLink.named)===fold(person.name)?oneLink.url:null
   if (!await permit('profile')) return held('contact_scope_unavailable')
-  const profile = await bounded(abort, () => readers.corroborateProfile(link.url, abort))
+  let ownRole:OwnedRoleProof|undefined
+  const role=readers.verifyOwnRole?await bounded(abort,()=>readers.verifyOwnRole!(bio,finding,abort)):null
+  if(role&&role===readGuardedOwnRoleReceipt(bio,scopeSnapshot,finding)&&role.sourceUrl===bioUrl.href&&
+      role.linkedin===link&&fold(role.name)===fold(person.name)&&fold(role.title)===fold(person.title)&&
+      fold(role.company)===fold(company)){
+    ownRole=Object.freeze({sourceUrl:role.sourceUrl,quote:role.literalRoleQuote,fetchedAtMs:role.observedAtMs})
+  }
   if (await current() !== true) return held('contact_scope_unavailable')
-  if (!profile || profile.url !== link.url || profile.current !== true || !exactName(profile.name) || fold(profile.name) !== fold(person.name) ||
-      !sane(profile.company) || fold(profile.company) !== fold(company) || !sane(profile.title) || fold(profile.title) !== fold(person.title)) return held('profile_unconfirmed')
+  if (!ownRole) {
+    const unverified=readers.verifyOwnRole?'role_unverified':'profile_unconfirmed'
+    if(!link)return held(unverified)
+    if(readers.verifyOwnRole&&!await permit('profile'))return held(unverified)
+    const profile = await bounded(abort, () => readers.corroborateProfile(link, abort))
+    if (await current() !== true) return held('contact_scope_unavailable')
+    if (!profile || profile.url !== link || profile.current !== true || !exactName(profile.name) || fold(profile.name) !== fold(person.name) ||
+        !sane(profile.company) || fold(profile.company) !== fold(company) || !sane(profile.title) || fold(profile.title) !== fold(person.title)) return held(unverified)
+  }
   const address = literalNamedAddress(bio, [person.name, ...(nameLines[0].alternate ? [nameLines[0].alternate] : [])],
     identity.hostname.replace(/^www\./, ''), dir)
   if (!address) return held('email_unconfirmed')
-  return { status: 'contact_proof', buyer: { name: person.name, title: person.title, bioUrl: bioUrl.href, linkedin: link.url },
-    published: { address, sourceUrl: bioUrl.href } }
+  const result:ProvenCompanyFirstContact=Object.freeze({status:'contact_proof',
+    buyer:Object.freeze({name:person.name,title:person.title,bioUrl:bioUrl.href,linkedin:link,...(ownRole?{ownRole}:{})}),
+    published:Object.freeze({address,sourceUrl:bioUrl.href})})
+  issuedContacts.set(result,{scope:scopeSnapshot,finding,bio})
+  return result
 }

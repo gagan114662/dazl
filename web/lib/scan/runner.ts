@@ -108,7 +108,7 @@ export interface Job { spend_reserved_usd?: number | null; id: string; user_id: 
 export type LeadDraft = Candidate
 // The producing channel, known from the job row at write time. Monitor runs reuse query
 // jobs, so monitors stamp their kind when the run is recorded (see monitors.ts).
-export const sourceKind = (job: Job): 'watch' | 'csv' | 'query' =>
+export const sourceKind = (job: Pick<Job,'id'|'watch_id'|'csv_domain'>): 'watch' | 'csv' | 'query' =>
   job.watch_id ? 'watch' : job.csv_domain ? 'csv' : 'query'
 
 export interface VerifiedLead extends LeadDraft { evidence_origin?: typeof COPY_ORIGIN; own_fetch_failure?: string; evidence_copy_sha256?: string; evidence_copy_page?: HeldPage; confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string; icp_match?: string }
@@ -742,6 +742,18 @@ async function callResearch<T>(ledger: SourceRunLedger, source: string, f: () =>
   try { return await f() } catch (e) { ledger.record(source, e instanceof SpendRefused ? 'skipped_hold' : 'error'); throw e }
 }
 
+// Shared storage shape, not an ownership or eligibility gate. Both callers
+// own an IMMEDIATE transaction and have checked their exact running row.
+export function insertVerifiedLeadRows(db:Database.Database,
+  job:Pick<Job,'id'|'user_id'|'attempts'|'watch_id'|'csv_domain'>, leads:readonly Readonly<VerifiedLead>[]):{id:string;key:string}[] {
+  const ins = db.prepare(
+    'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  )
+  const inserted: {id:string;key:string}[] = []
+  for (const l of leads) { const id = randomBytes(12).toString('hex'); const result = ins.run(id, job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) inserted.push({id,key:`${dedupKey(l)}|${l.source_url}`}) }
+  return inserted
+}
+
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   else if (uncertainSpend.has(job) || spendAttemptUncertain()) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }
@@ -761,11 +773,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   return db.transaction((): boolean => {
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
-    const ins = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    const insertedKeys = new Set<string>()
-    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    const insertedKeys = new Set(insertVerifiedLeadRows(db, job, leads).map(row => row.key))
     const insReview = db.prepare(
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)',
     )

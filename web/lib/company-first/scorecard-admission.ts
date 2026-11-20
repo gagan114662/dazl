@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { QA_LOCAL_EXECUTION, qaClaudeOnlyBudget } from '../scan/qa-provider-policy.ts'
@@ -38,19 +38,28 @@ export const SCORECARD_ADMISSION_DDL = Object.freeze([
   )`,
 ])
 const authentic = new WeakMap<object, Uint8Array>()
+const stageOne = new WeakSet<object>()
+export function stagingCaseOneCohort(tenantId:string, release:string):string {
+  // One cohort per workspace and reviewed release, even if another owner,
+  // subject, grant, or workspace revision is later presented.
+  return createHash('sha256').update(JSON.stringify(['dazl-staging-case-one:v1',tenantId,release])).digest('hex')
+}
+const stagingEnv = (release:string) => process.env.DAZL_ENV==='staging' && process.env.DAZL_COMMIT_SHA===release && !process.env.DATABASE_URL
 export type VerifiedScorecardTicket = Readonly<Words>
 
 /** Token is an issuer's base64url JSON tuple payload plus its lowercase hex tag.
  * Caller must obtain the signing key from the protected issuer configuration;
  * do not log a token, key, tuple, or source scope. No default key or signer. */
-export function verifyScorecardTicket(token: string, key: Uint8Array, expected: Claim & { release: string }, now: number): VerifiedScorecardTicket | null {
+export function verifyScorecardTicket(token: string, key: Uint8Array, expected: Claim & { release: string }, now: number, mode?: 'staging-case-one'): VerifiedScorecardTicket | null {
   if (typeof token !== 'string' || token.length > 2000 || key.byteLength < 32 ||
       !Number.isSafeInteger(now) || now < 1) return null
+  const single=mode==='staging-case-one'
+  if(single&&!stagingEnv(expected.release)) return null
   const [encoded, tag, extra] = token.split('.')
   if (extra !== undefined || !/^[a-zA-Z0-9_-]+$/.test(encoded ?? '') || !sha(tag)) return null
   const bytes = Buffer.from(encoded, 'base64url')
   if (bytes.toString('base64url') !== encoded) return null
-  const mac = createHmac('sha256', key).update('dazl-scorecard-ticket:v1\n').update(encoded).digest()
+  const mac = createHmac('sha256', key).update(single?'dazl-staging-case-one-ticket:v1\n':'dazl-scorecard-ticket:v1\n').update(encoded).digest()
   if (!timingSafeEqual(mac, Buffer.from(tag, 'hex'))) return null
   try {
     const tuple = JSON.parse(bytes.toString('utf8'))
@@ -60,16 +69,21 @@ export function verifyScorecardTicket(token: string, key: Uint8Array, expected: 
         typeof jobId !== 'string' || !JOB.test(jobId) || !Number.isSafeInteger(attempt) || attempt < 1 ||
         tenantId !== expected.tenantId || actorId !== expected.actorId || jobId !== expected.jobId || attempt !== expected.attempt ||
         ![workspaceRevision, cohort, nonce, subjectMac].every(sha) || typeof release !== 'string' || !/^[a-f0-9]{40}$/.test(release) || release !== expected.release || !Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 7 ||
-        !LANES.includes(lane) || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt - now > 3_600_000 ||
-        !Array.isArray(presets) || presets.length !== 7 || !presets.every(sha) || new Set(presets).size !== 7) return null
+        !LANES.includes(lane) || !Number.isSafeInteger(expiresAt) || expiresAt <= now || expiresAt - now > (single?15*60_000:3_600_000) ||
+        !Array.isArray(presets) || presets.length !== (single?1:7) || !presets.every(sha) || new Set(presets).size !== presets.length ||
+        (single&&(lane!=='new'||ordinal!==1||attempt!==1||cohort!==stagingCaseOneCohort(tenantId,release)))) return null
     const ticket = Object.freeze({ tenantId, actorId, jobId, attempt, workspaceRevision, cohort, ordinal, nonce, expiresAt,
       subjectMac, release, lane, presets: Object.freeze([...presets] as string[]) })
     authentic.set(ticket, Uint8Array.from(key))
+    if(single) stageOne.add(ticket)
     return ticket
   } catch { return null }
 }
 const active = (x: VerifiedScorecardTicket, now: number) =>
-  !!x && authentic.has(x) && Number.isSafeInteger(now) && now > 0 && now < x.expiresAt
+  !!x && authentic.has(x) && Number.isSafeInteger(now) && now > 0 && now < x.expiresAt && (!stageOne.has(x)||stagingEnv(x.release))
+export function isStagingCaseOneTicket(x:VerifiedScorecardTicket):boolean {
+  return stageOne.has(x)&&active(x,Date.now())
+}
 const claimLock = (t: Tx, x: Claim, status: 'running' | 'done') =>
   t.run('UPDATE scan_jobs SET attempts = attempts WHERE id = ? AND user_id = ? AND attempts = ? AND status = ? AND error IS NULL',
     [x.jobId, x.tenantId, x.attempt, status])
@@ -116,12 +130,13 @@ export function* registerScorecardTicket(t: Tx, x: VerifiedScorecardTicket, gate
   if (!proof || subjects.get(proof)!==x || !active(x, clock())) return false
   if (!(yield* gate(t, x)) || (yield* claimLock(t, x, 'running')).changes !== 1 || !(yield* exactJob(t, x)) || !active(x, clock())) return false
   const step = LANES.indexOf(x.lane)
-  if (x.ordinal === 1 && step === 0) yield* t.run(`INSERT INTO company_scorecard_cohorts (cohort, tenant_id, actor_id, workspace_revision, release, roster, next_ordinal)
+  const single=stageOne.has(x)
+  if (x.ordinal === 1 && (step === 0 || single)) yield* t.run(`INSERT INTO company_scorecard_cohorts (cohort, tenant_id, actor_id, workspace_revision, release, roster, next_ordinal)
     VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT DO NOTHING`, binding(x))
   const lock = yield* t.run(`UPDATE company_scorecard_cohorts SET next_ordinal = next_ordinal
     WHERE cohort = ? AND tenant_id = ? AND actor_id = ? AND workspace_revision = ? AND release = ? AND roster = ? AND next_ordinal = ?`, [...binding(x), x.ordinal])
   if (lock.changes !== 1 || !active(x, clock())) return false
-  if (step > 0 && !(yield* t.get("SELECT 1 FROM company_scorecard_claims WHERE cohort=? AND ordinal=? AND lane=? AND status='complete'", [x.cohort,x.ordinal,step-1]))) return false
+  if (!single && step > 0 && !(yield* t.get("SELECT 1 FROM company_scorecard_claims WHERE cohort=? AND ordinal=? AND lane=? AND status='complete'", [x.cohort,x.ordinal,step-1]))) return false
   return (yield* t.run(`INSERT INTO company_scorecard_claims
     (nonce, tenant_id, cohort, ordinal, job_id, subject_mac, attempt, expires_at, lane, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running') ON CONFLICT DO NOTHING`,

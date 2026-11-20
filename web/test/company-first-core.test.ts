@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { before, after, mock, test } from 'node:test'
 import { runCompanyFirst, type Candidate, type CompanyFirstPorts, type Reservation } from '../lib/company-first/company-first-evidence.ts'
+
+before(()=>{mock.method(Date,'now',()=>Date.parse('2026-09-26T12:00:00Z'))})
+after(()=>mock.restoreAll())
 
 const scope = { tenant: 'private-tenant', job: 'private-job', attempt: 'private-attempt' }
 const criteria = { category: 'sector-key', place: 'canonical-place-key', event: 'open-role', from: '2026-09-01', through: '2026-09-30' }
@@ -186,4 +189,16 @@ test('external deadline while a website port is active denies later reservation 
   assert.deepEqual(trace.map(x => Array.isArray(x) ? x.slice(0, 2) : x), [
     ['reserve', 'discover'], ['discover', { category: criteria.category, place: criteria.place }], ['reserve', 'website'],
   ])
+})
+
+
+test('a broad brief cannot bypass the absolute UTC 45-day signal cap',async()=>{
+ const now=Date.now()
+ for(const age of [45,46,-1]){
+   const date=new Date(now-age*86_400_000).toISOString().slice(0,10)
+   const {ports}=fake({async verifyDatedSignal(){return {...signal,date,dateProof:{...signal.dateProof,day:date,literalDate:date},
+     literalSourceText:signal.quote+' '+date}}})
+   const r=await runCompanyFirst(on,scope,{...criteria,from:'2000-01-01',through:'2999-12-31'},ports)
+   assert.equal(r.findings.some(f=>f.state==='signal_verified'),age===45,String(age))
+ }
 })

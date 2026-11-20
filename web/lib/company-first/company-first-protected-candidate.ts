@@ -1,8 +1,11 @@
+import { allowStagingProof, hasSettledStagingProofAuthority, projectStagingSample, type StagingProofRequest, type StagingProof } from './scorecard-staging-proof.ts'
 import type Database from 'better-sqlite3'
-import { preverifyCompanyFirstDiscovery } from './company-first-canonical-discovery.ts'
+import { preverifyCompanyFirstDiscovery, verifySingleCanonicalDraft, readCanonicalVerifiedDraftFacts, type CanonicalDraftFacts, type CanonicalVerifiedDraftReceipt } from './company-first-canonical-discovery.ts'
+import { gradeCanonicalVerifiedDrafts, isCurrentCanonicalGrading, isFinalCanonicalGrading, type CanonicalGradedDraftReceipt } from './company-first-protected-grading.ts'
+import { readTenantKey } from '../llm/key-store.ts'
 // Server worker composition only. No route, public API, live flag or persistence.
 import { DISCOVERY_STRATEGIES } from './company-first-claude-request.ts'
-import { discoverOwnedCareerSchema, matchOwnedCareerSignal, type CareerSchemaObservation } from './company-first-career-schema.ts'
+import { discoverOwnedCareerSchema, matchOwnedCareerSignal, verifyReciprocalOwnedCareerSignal, type CareerSchemaObservation } from './company-first-career-schema.ts'
 import { asDb } from '../db/client.ts'
 import { parseRobots } from '../connectors/sitecrawl.ts'
 import { htmlToText } from '../scan/fetch-page.ts'
@@ -12,15 +15,17 @@ import type { SafeGet } from '../sources/types.ts'
 import { proveReciprocalCompanySite, readReciprocalOwnedPosting, type ReciprocalSiteAuthority } from './company-first-reciprocal-site.ts'
 import { readNativeCandidateCallId, runCompanyFirstNativeTransport, type NativeTransportPorts } from './company-first-native-transport.ts'
 import { discoverOwnedRipplingPostings, type RipplingPostingHypothesis } from './company-first-rippling.ts'
-import { companyFirstPublicReader, type PublicPageReadAuthority } from './company-first-public-reader.ts'
+import { companyFirstPublicReader, type ObservedContactPage, type PublicPageReadAuthority } from './company-first-public-reader.ts'
 import type { WebsiteProof } from './company-first-website-proof.ts'
 import { createCanonicalAtsSignal, type CanonicalAtsBinding } from './company-first-canonical-ats-signal.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 import { readIssuerOwnedPosting, issueCompanyFirstWebsite, type OriginIssuerPorts } from './company-first-origin-issuer.ts'
 import { runCompanyFirstFinder, type CompanyFirstFinderPorts } from './company-first-pipeline.ts'
-import { evaluatePrivateCandidateProof, type CandidateEvidence, type CandidateKey, type Claim, type PrivateCandidateProofStore } from './company-first-private-proof.ts'
-import type { CompanyFirstPorts, Scope } from './company-first-evidence.ts'
-import { verifyExistingScorecardClaim } from './scorecard-admission.ts'
+import type { CandidateKey, Claim } from './company-first-private-proof.ts'
+import type { CanonicalStagesReader } from './company-first-canonical-read.ts'
+import { prepareCanonicalContact, stageCanonicalContactRow, verifyCanonicalContact, type CanonicalContactPacket } from './company-first-final-proof-adapter.ts'
+import type { CompanyFirstPorts, Finding, Scope } from './company-first-evidence.ts'
+import { authorizeScorecardSubject, verifyExistingScorecardClaim, type ScorecardSubjectInput } from './scorecard-admission.ts'
 import type { AuthorizedScorecardExecution } from './scorecard-dispatch.ts'
 import { requireScorecardWorkspace } from './scorecard-workspace.ts'
 import { isRecentCompanyFirstSignal } from './company-first-signal-freshness.ts'
@@ -40,11 +45,21 @@ type OwnerAuthority = Pick<OriginIssuerPorts,'readIndependentRecords'|'readOwned
   readCurrentAuthorizedSource:AuthoritySnapshot
 }>
 type IssuedSite=Extract<WebsiteProof,{state:'verified'}>['site']
-type CanonicalRead = Readonly<{
-  // Bound to canonical product attestations; not a finder-produced status.
+type IssuedFinding=Extract<Finding,{state:'signal_verified'}>
+export type StagedCandidate=Readonly<{id:string;packet:CanonicalContactPacket;finding:IssuedFinding;site:IssuedSite;facts:CanonicalDraftFacts;homepage?:ObservedContactPage}>
+export type CanonicalRead = Readonly<{
   readCurrentProtectedSession: AuthoritySnapshot
-  store: {readCurrentSnapshot(claim:Claim,candidateId:string,site:IssuedSite):ReturnType<PrivateCandidateProofStore['readCurrentSnapshot']>}
-  locateExactCandidate(claim:Claim,evidence:CandidateEvidence,signal:AbortSignal,site:IssuedSite):Promise<CandidateKey|null>
+  reviewedSubject:ScorecardSubjectInput
+  prepareScratch?(input:Readonly<{primary:Database.Database;scratch:Database.Database;execution:AuthorizedScorecardExecution;signal:AbortSignal}>):Promise<boolean>
+  // Existing product rule runner, operating only on the guarded scratch.
+  // It must return exact keys for affirmative rows, not take candidate or
+  // confidence statuses as proofs. Missing installation is unavailable.
+  finishStagedCandidates(input:Readonly<{
+    primary:Database.Database; scratch:Database.Database; execution:AuthorizedScorecardExecution
+    candidates:readonly StagedCandidate[]; signal:AbortSignal
+  }>):Promise<ReadonlyMap<string,CandidateKey>|null>
+  readStages:CanonicalStagesReader
+  currentCompletedPolicy?(signal:AbortSignal):Promise<boolean>
 }>
 export interface ProtectedCandidateBindings {
   // All optional at deployment: absence is a hard no-dispatch, never a
@@ -58,6 +73,7 @@ export interface ProtectedCandidateBindings {
   // Trusted current typed signal/contact adapters, each owns exact read
   // authorization. The finder hooks below are only operation admission.
   verifyDatedSignal?: ReadProtectedSignal
+  readCompanySize?: CompanyFirstPorts['readCompanySize']
   canonicalAts?: Omit<CanonicalAtsBinding,'readCurrentOwnedLink'>
   canonicalCareer?: Readonly<{
     matchesRole(title:string):boolean
@@ -69,6 +85,14 @@ export type ProtectedCandidateResult = Readonly<{
   state:'held'; reason:'not_authorized'|'independent_authority_unbound'|'canonical_proof_unbound'|
     'protected_ports_unbound'|'reviewed_offer_unavailable'|'upstream_unavailable'|'upstream_unsettled'|'canonical_proof_unavailable'|'superseded_or_unsettled'
 }> | Readonly<{state:'measured'; counts:Readonly<{ candidates:number; rightPlaceSignals:number; proven:number }>}>
+const pendingStagingProof = new WeakMap<ProtectedCandidateResult, {ticket:AuthorizedScorecardExecution['ticket']; proof:StagingProof}>()
+export async function takeSettledStagingCandidateProof(result:ProtectedCandidateResult, execution:AuthorizedScorecardExecution,
+  primary:Database.Database, request:StagingProofRequest|undefined, signal:AbortSignal):Promise<StagingProof|undefined> {
+  const pending=pendingStagingProof.get(result)
+  if(!pending||pending.ticket!==execution.ticket) return
+  pendingStagingProof.delete(result)
+  return await hasSettledStagingProofAuthority(asDb(primary),execution.ticket,request,signal)?pending.proof:undefined
+}
 const held = (reason: Extract<ProtectedCandidateResult,{state:'held'}>['reason']):ProtectedCandidateResult => ({state:'held',reason})
 
 // The issuer authorizes the exact URL and performs its own robots check before
@@ -96,7 +120,7 @@ function beforeAbort<T>(signal:AbortSignal, operation:()=>Promise<T>):Promise<T|
 const eq = (a:Scope,b:Scope) => a.tenant===b.tenant && a.job===b.job && a.attempt===b.attempt
 
 export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScorecardExecution,
-  bindings:ProtectedCandidateBindings | null, outerSignal:AbortSignal, scratch?:Database.Database):Promise<ProtectedCandidateResult>{
+  bindings:ProtectedCandidateBindings | null, outerSignal:AbortSignal, scratch?:Database.Database, stagingRequest?:StagingProofRequest):Promise<ProtectedCandidateResult>{
   const signal=AbortSignal.any([outerSignal,AbortSignal.timeout(8*60_000)])
   const ticket=execution?.ticket, ctx=scanSpendContext()
   if(signal.aborted||!ticket||ticket.lane!=='new'||!ctx?.claudeOnly||!ctx.accountLimits||
@@ -106,9 +130,19 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
   if(db.kind!=='sqlite'||!await verifyExistingScorecardClaim(db,ticket,requireScorecardWorkspace)||signal.aborted)return held('not_authorized')
   const scope=Object.freeze({tenant:ticket.tenantId,job:ticket.jobId,attempt:String(ticket.attempt)})
   const claim=Object.freeze({tenant:ticket.tenantId,job:ticket.jobId,attempt:ticket.attempt,actor:ticket.actorId})
+  const primary='memory' in ctx.db ? ctx.db : null
+  const verified=new Map<IssuedFinding,CanonicalVerifiedDraftReceipt>()
+  const graded=new Map<IssuedFinding,CanonicalGradedDraftReceipt>()
+  let gradingStarted=false
   const current=async (asked:Scope, afterNative=false)=>{
     if(signal.aborted||!eq(asked,scope)||Date.now()>=ticket.expiresAt)return false
     try {
+      if(gradingStarted){
+        if(!primary||!scratch||!graded.size)return false
+        for(const [finding,receipt] of graded)if(!isCurrentCanonicalGrading(receipt,primary,scratch,execution,finding)&&
+           !isFinalCanonicalGrading(receipt,primary,scratch,execution,finding))return false
+        return !signal.aborted
+      }
       return await db.tx(function*(tx){
         if(!(yield* requireScorecardWorkspace(tx,ticket)))return false
         const owned=yield* tx.get(`SELECT 1 FROM scan_jobs j JOIN company_scorecard_claims c ON c.nonce=j.company_scorecard_claim_nonce
@@ -134,8 +168,9 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
   if(independent ? !independent.readIndependentRecords||!independent.readOwnedIdentityBlocks||!independent.authorizeAndReserve||!independent.readCurrentAuthorizedSource
     : !reciprocal?.reserveCurrentRead||!reciprocal.readCurrentAuthorizedSource||!bindings.canonicalAts)return held('independent_authority_unbound')
   const ownership=independent??reciprocal!
-  if(!bindings.canonical?.store?.readCurrentSnapshot||!bindings.canonical.locateExactCandidate||!bindings.canonical.readCurrentProtectedSession)return held('canonical_proof_unbound')
+  if(!bindings.canonical?.finishStagedCandidates||!bindings.canonical.readStages||!bindings.canonical.readCurrentProtectedSession)return held('canonical_proof_unbound')
   const {canonical, publicRead, contact, verifyDatedSignal, readReviewedPublicDiscovery}=bindings
+  const reviewed=authorizeScorecardSubject(ticket,canonical.reviewedSubject)
   if(!publicRead?.reserveCurrentRead||!publicRead.isCurrent||!contact?.isCurrent||!contact.reserveBeforeDispatch||!contact.readDirectory||!contact.readBio||!contact.corroborateProfile||!verifyDatedSignal||!readReviewedPublicDiscovery)return held('protected_ports_unbound')
 
   const boundSnapshot=async (read:AuthoritySnapshot)=>{
@@ -149,7 +184,7 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
   // An installed adapter is not proof that its exact current private session
   // and independent source are available. Resolve both before reading an offer.
   if(!await bound(ownership.readCurrentAuthorizedSource))return held('independent_authority_unbound')
-  if(!await bound(canonical.readCurrentProtectedSession))return held('canonical_proof_unbound')
+  if(!await bound(canonical.readCurrentProtectedSession)||!reviewed)return held('canonical_proof_unbound')
   const rawOffer=await beforeAbort(signal,()=>readReviewedPublicDiscovery(ticket,signal))
   if(!rawOffer||!rawOffer.criteria||typeof rawOffer.canonicalPlaceKey!=='string'||!rawOffer.canonicalPlaceKey.trim()||rawOffer.canonicalPlaceKey.length>200||!Array.isArray(rawOffer.requestedTitles)||!rawOffer.requestedTitles.length||
      rawOffer.requestedTitles.length>12||!rawOffer.requestedTitles.every(t=>typeof t==='string'&&t.trim()&&t.length<=120)||
@@ -169,6 +204,8 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
   }
   const reads=companyFirstPublicReader(scope,publicAuthority)
   const careerReads=companyFirstPublicReader(scope,publicAuthority)
+  const sourceReads=companyFirstPublicReader(scope,publicAuthority)
+  const homeReads=companyFirstPublicReader(scope,publicAuthority)
   const careerHypotheses=new Map<string,readonly RipplingPostingHypothesis[]>()
   const issuedSites=new Map<string,IssuedSite>()
   const ambiguousAtsOwners=new Set<string>()
@@ -191,42 +228,99 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
   const hintKey=(x:{name:string;hintUrl?:string})=>JSON.stringify([x.name,x.hintUrl??null])
   let nativeCompleted=false, canonicalUnknown=false
   let nativeFailed:'upstream_unavailable'|'upstream_unsettled'|null=null
+  type PacketScope=Parameters<typeof prepareCanonicalContact>[0]
+  const checks=new Map<IssuedFinding,{ scope:PacketScope; packet:CanonicalContactPacket; site:IssuedSite; id:string }>()
+  let finalized:ReadonlyMap<string,CandidateKey>=new Map()
   const finishProof:CompanyFirstFinderPorts['checkExistingHolds']=async (s,row,abort)=>{
-    const expected=Object.freeze({
-      companyKey:row.signal.site.companyKey,website:row.signal.site.website,identitySource:row.signal.site.identitySource,
-      event:row.signal.signal.event,eventSource:row.signal.signal.sourceUrl,eventDate:row.signal.signal.date,literalQuote:row.signal.signal.quote,
-      buyer:row.contact.buyer.name,title:row.contact.buyer.title,buyerBio:row.contact.buyer.bioUrl,linkedin:row.contact.buyer.linkedin,
-      email:row.contact.published.address,emailSource:row.contact.published.sourceUrl,
-    })
-    if(abort.aborted||!await current(s,true)||!await bound(canonical.readCurrentProtectedSession)){canonicalUnknown=true;return null}
+    const exact=checks.get(row.signal)
+    if(!exact)return null
+    const key=finalized.get(exact.id)
+    if(!key)return null
+    if(key.id!==exact.id||abort.aborted||!await current(s,true)||canonical.currentCompletedPolicy&&await canonical.currentCompletedPolicy(abort)!==true){canonicalUnknown=true;return null}
     try{
-      const site=issuedSites.get(JSON.stringify([expected.companyKey,expected.website,expected.identitySource]))
-      const candidate=site?await canonical.locateExactCandidate(claim,expected,abort,site):null
-      if(site&&candidate&&await evaluatePrivateCandidateProof({
-        readCurrentSnapshot:(owner,id)=>canonical.store.readCurrentSnapshot(owner,id,site),
-      },claim,candidate,expected) && !abort.aborted && await current(s,true)){
-        return {scope:s,companyKey:expected.companyKey,website:expected.website,identitySource:expected.identitySource,event:expected.event,
-          eventSource:expected.eventSource,eventDate:expected.eventDate,literalQuote:expected.literalQuote,person:expected.buyer,
-          title:expected.title,buyerBio:expected.buyerBio,linkedIn:expected.linkedin,email:expected.email,emailSource:expected.emailSource,verdict:'ready'}
+      if(await verifyCanonicalContact(exact.packet,exact.scope,reviewed.subject,key,exact.site,canonical.readStages)&&
+         !abort.aborted&&await current(s,true)){
+        const {signal:found,contact}=row
+        return {scope:s,companyKey:found.site.companyKey,website:found.site.website,identitySource:found.site.identitySource,event:found.signal.event,
+          eventSource:found.signal.sourceUrl,eventDate:found.signal.date,literalQuote:found.signal.quote,person:contact.buyer.name,
+          title:contact.buyer.title,buyerBio:contact.buyer.bioUrl,linkedIn:contact.buyer.linkedin,...(contact.buyer.ownRole?{ownRole:contact.buyer.ownRole}:{}),email:contact.published.address,emailSource:contact.published.sourceUrl,verdict:'ready'}
       }
-    }catch{/* Missing/unavailable is not a canonical held decision. */}
+    }catch{/* No fallback from an unreadable verifier. */}
     canonicalUnknown=true
     return null
   }
-  if(!scratch || !scratch.memory || ('memory' in ctx.db && ctx.db===scratch)) return held('canonical_proof_unbound')
+  if(!scratch || !scratch.memory || !primary || primary===scratch) return held('canonical_proof_unbound')
+  if(canonical.prepareScratch&&await canonical.prepareScratch(Object.freeze({primary,scratch,execution,signal}))!==true)
+    return held('canonical_proof_unbound')
   const result=await runCompanyFirstFinder({enabled:true,signal},scope,finderCriteria,offer.requestedTitles,{
     preverifyFinding:async (requested,finding,abort)=>{
       if(!eq(requested,scope)||!await current(scope,true))return null
       // Primary is the original canonical SQLite handle for this protected arm.
-      if(!('memory' in ctx.db))return null
-      const result=await preverifyCompanyFirstDiscovery(ctx.db,scratch,execution,[finding],async (_scope,u,s)=>{
-        const page=await reads.readPublicHtml(u,s)
+      if(!primary)return null
+      const readPage:Parameters<typeof verifySingleCanonicalDraft>[4]=async (_scope,u,s)=>{
+        const page=await sourceReads.readPublicHtml(u,s)
         return page?{requestedUrl:page.url,finalUrl:page.finalUrl,complete:true,page:{
           text:page.visibleText,title:'',retrievedAt:Math.floor(Date.now()/1000),
         }}:null
-      },abort)
+      }
+      // Preserve exact verifier outcomes and consume the evidence later, after
+      // all native/source/contact reads have finished. Do not fetch a page twice.
+      let verification:CanonicalVerifiedDraftReceipt|null=null
+      const result=await preverifyCompanyFirstDiscovery(primary,scratch,execution,[finding],readPage,abort,
+        receipt=>{verification=receipt})
       if(result.state!=='preverified'||result.unavailableExactSources>0)return null
-      return result.literalVerifierPassed===1&&result.canonicalDated===1&&result.verifiedPlace===1
+      if(!verification)return false
+      verified.set(finding,verification)
+      return true
+    },
+    prepareFinalHolds:async (requested,rows,abort)=>{
+      if(!primary||gradingStarted||!eq(requested,scope)||abort.aborted||!await current(scope,true))return false
+      const items=rows.slice(0,5).flatMap(row=>{
+        const verification=verified.get(row.signal)
+        return verification?[{finding:row.signal,verification}]:[]
+      })
+      if(items.length!==Math.min(rows.length,5))return false
+      const facts=new Map<IssuedFinding,CanonicalDraftFacts>()
+      for(const item of items){
+        const verifiedFacts=readCanonicalVerifiedDraftFacts(item.verification,scratch,execution,item.finding)
+        if(!verifiedFacts)return false
+        facts.set(item.finding,verifiedFacts)
+      }
+      const withHomepage=[]
+      for(const item of items){
+        if(abort.aborted||!await current(scope,true))return false
+        const homepage=await homeReads.readContactHtml(item.finding.site.website+'/',abort)
+        withHomepage.push(Object.freeze({...item,homepage}))
+      }
+      const auth=await readTenantKey(db,ticket.tenantId,'anthropic')
+      if(!auth.key||auth.unreadable||abort.aborted||!await current(scope,true))return false
+      gradingStarted=true
+      const receipts=await gradeCanonicalVerifiedDrafts(primary,scratch,execution,withHomepage,auth.key,abort)
+      if(!receipts||receipts.length!==items.length||abort.aborted)return false
+      for(const [i,item] of items.entries())graded.set(item.finding,receipts[i])
+      const staged:StagedCandidate[]=[]
+      for(const row of rows.slice(0,5)){
+        const found=row.signal
+        const grade=graded.get(found)
+        const site=issuedSites.get(JSON.stringify([found.site.companyKey,found.site.website,found.site.identitySource]))
+        const verifiedFacts=facts.get(found)
+        if(!grade||!site||!verifiedFacts)return false
+        const stageScope=Object.freeze({primary,scratch,execution,finding:found,signal:abort})
+        const packet=prepareCanonicalContact(stageScope,grade,row.contact)
+        if(!packet)continue
+        const id=stageCanonicalContactRow(packet,stageScope)
+        if(!id)return false
+        checks.set(found,{scope:stageScope,packet,site,id})
+        const homepage=withHomepage.find(x=>x.finding===found)?.homepage??undefined
+        staged.push(Object.freeze({id,packet,finding:found,site,facts:verifiedFacts,homepage}))
+      }
+      if(!staged.length)return current(scope,true)
+      const finished=await canonical.finishStagedCandidates(Object.freeze({primary,scratch,execution,candidates:Object.freeze(staged),signal:abort}))
+      if(!finished||abort.aborted)return false
+      const ids=new Set(staged.map(x=>x.id))
+      if([...finished].some(([id,key])=>!ids.has(id)||id!==key.id))return false
+      finalized=new Map(finished)
+      return current(scope,true)
     },
     evidence:{
       reserveBeforeDispatch:async r=>eq(r.scope,scope)&&!r.signal.aborted&&await current(scope,r.stage!=='discover'),
@@ -281,9 +375,21 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
         }
         return w.site
       },
+      ...(bindings.readCompanySize?{readCompanySize:async (r:Parameters<NonNullable<CompanyFirstPorts['readCompanySize']>>[0])=>
+        !r.signal.aborted&&await current(r.input.scope,true)?await bindings.readCompanySize!(r):null}:{}),
       verifyDatedSignal:async r=>{
         if(canonicalAts&&r.input.event==='hiring_posting'&&r.input.postingUrl&&atsPostingRef(r.input.postingUrl)?.kind==='greenhouse'){
-          // A failed governed exact read is a hold, not eligibility to fall back.
+          const exactSite=[...issuedSites.values()].filter(site=>site.companyKey===r.input.companyKey&&site.website===r.input.websiteOrigin)
+          const reviewedCareer=bindings.canonicalCareer
+          if(reciprocal&&reviewedCareer&&exactSite.length===1&&await current(scope,true)){
+            const own=await verifyReciprocalOwnedCareerSignal(scope,exactSite[0],r.input,careerReads.readCareerHtml,{
+              role:title=>reviewedCareer.matchesRole(title),
+              place:location=>reviewedCareer.matchesPlace(r.input.place,location),
+            },r.signal)
+            if(own&&await current(scope,true))return own
+          }
+          // The ATS source still gets its ordinary exact check; it cannot
+          // satisfy an own-domain event requirement if the first-party read failed.
           return canonicalAts(r)
         }
         const hints=careerHypotheses.get(JSON.stringify([r.input.companyKey,r.input.websiteOrigin]))
@@ -314,8 +420,18 @@ export async function runProtectedCompanyFirstCandidate(execution:AuthorizedScor
   if(nativeFailed)return held(nativeFailed)
   if(canonicalUnknown)return held('canonical_proof_unavailable')
   if(result.state!=='checked'||!nativeCompleted||!result.observed?.evidence||!await current(scope,true))return held('superseded_or_unsettled')
-  // No identifiers, URLs, roles, addresses, raw observations, or Ready rows
-  // come out. Canonical proof required per final success; no synthetic holds.
-  return {state:'measured',counts:Object.freeze({candidates:result.observed.evidence.discovered,
-    rightPlaceSignals:result.observed.signal_verified,proven:result.ready.length})}
+  // Aggregate default. Canonical proof required per final success; no synthetic holds.
+  const counts=Object.freeze({candidates:result.observed.evidence.discovered,
+    rightPlaceSignals:result.observed.signal_verified,proven:result.ready.length})
+  if(!allowStagingProof(ticket,stagingRequest)) return {state:'measured',counts}
+  // Ephemeral minimized buffer. The worker can release it only after the
+  // primary settlement CAS and a fresh owner check.
+  const samples=result.ready.flatMap(row=>{
+    const sample=projectStagingSample(row.signal.name,row.signal.site.website,row.contact.buyer.name)
+    return sample ? [sample] : []
+  }).slice(0,5)
+  const heldCount=result.observed.evidence_held+result.observed.contact_held+result.observed.final_held
+  const measured=Object.freeze({state:'measured' as const,counts})
+  pendingStagingProof.set(measured,{ticket,proof:Object.freeze({held:heldCount,samples:Object.freeze(samples)})})
+  return measured
 }

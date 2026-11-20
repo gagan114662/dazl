@@ -9,7 +9,7 @@ import { armProtectedScorecardJobSqlite } from '../lib/company-first/scorecard-p
 import { dispatchScorecardAware } from '../lib/company-first/scorecard-dispatch.ts'
 import {createCanonicalAtsSignal} from '../lib/company-first/company-first-canonical-ats-signal.ts'
 import {runCompanyFirst} from '../lib/company-first/company-first-evidence.ts'
-import {preverifyCompanyFirstDiscovery} from '../lib/company-first/company-first-canonical-discovery.ts'
+import {preverifyCompanyFirstDiscovery,verifySingleCanonicalDraft,takeCanonicalVerifiedDraft} from '../lib/company-first/company-first-canonical-discovery.ts'
 import {recordFeedback} from '../lib/scan/feedback.ts'
 import {withNewDiscoveryScratch} from '../lib/company-first/scorecard-evidence-scratch.ts'
 import {createQueryJob} from '../lib/scan/store.ts'
@@ -82,6 +82,29 @@ test('only authentic own or exact bound ATS discovery reaches canonical verifica
             assert.equal(measured.literalVerifierPassed,1)
             assert.equal(measured.verifiedPlace,1);assert.equal(measured.canonicalReady,null)
           }
+          const finding=report.findings[0]
+          assert.ok(finding?.state==='signal_verified')
+          const wrongScratch=new Database(':memory:')
+          try {
+            assert.equal(await verifySingleCanonicalDraft(db,wrongScratch,execution,finding,async()=>assert.fail('wrong scratch'),signal),null)
+          } finally { wrongScratch.close() }
+          const receipt=await verifySingleCanonicalDraft(db,scratch,execution,finding,read,signal)
+          assert.ok(receipt)
+          assert.equal(JSON.stringify(receipt),'{}')
+          assert.equal(takeCanonicalVerifiedDraft(receipt,scratch,execution,{...finding}),null)
+          assert.equal(takeCanonicalVerifiedDraft(receipt,scratch,{...execution},finding),null)
+          const draft=takeCanonicalVerifiedDraft(receipt,scratch,execution,finding)
+          assert.ok(draft)
+          assert.equal(draft.source_url,url);assert.equal(draft.excerpt,quote);assert.equal(draft.event_date,day)
+          assert.equal(draft.fit,undefined)
+          assert.equal(takeCanonicalVerifiedDraft(receipt,scratch,execution,finding),null)
+          assert.equal(await verifySingleCanonicalDraft(db,scratch,execution,finding,async(s,u)=>{
+            const p=await read(s,u);return {...p,finalUrl:u+'/wrong'}
+          },signal),null)
+          const abort=new AbortController()
+          const revokedReceipt=await verifySingleCanonicalDraft(db,scratch,execution,finding,read,abort.signal)
+          assert.ok(revokedReceipt);abort.abort()
+          assert.equal(takeCanonicalVerifiedDraft(revokedReceipt,scratch,execution,finding),null)
           const changed=await preverifyCompanyFirstDiscovery(db,scratch,execution,report.findings,async(s,u)=>{
             const p=await read(s,u);return {...p,page:{...p.page,text:quote.replace('Oslo','Paris')}}
           },signal)
