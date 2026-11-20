@@ -277,7 +277,7 @@ const LAST_ONLY = new Set(['lebanon', 'peru', 'panama', 'mexico', 'china', 'cuba
 const STATE_FORMS = new Set<string>([...Object.values(US_STATES), ...Object.keys(US_STATES).map(k => k.toLowerCase()), 'district of columbia', 'washington dc', 'dc'])
 const US_STATE_NAME = /^(?:new (?:york|jersey|mexico|hampshire)|north (?:carolina|dakota)|south (?:carolina|dakota)|west virginia|rhode island)$/
 
-export const trimCanadianPostalTail = (segment: string): string => segment.replace(/(?:^|\s+)[a-z]\d[a-z] ?\d[a-z]\d$/i, '').trim()
+export const trimCanadianPostalTail = (segment: string): string => segment.replace(/(?:^|\s+)[a-z]\d[a-z] ?\d[a-z]\d\.?$/i, '').trim()
 const trimPostal = (seg: string) => trimCanadianPostalTail(strip(seg).replace(/^(?:\d[\d -]*\s+)/, '').replace(/\s+\d[\d -]*$/, ''))
 
 // One segment -> its ISO alpha-2, or null. `last`: the segment is the final one of the text (where an address writes its country).

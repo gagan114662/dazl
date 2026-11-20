@@ -498,3 +498,11 @@ test('#1424 a UK own-company postal address can prove a guessed domain on its co
     if (!expected) NOTHING(r)
   }
 })
+
+test('#1424 Canadian postal tail with terminal punctuation preserves the hint', () => {
+  for (const w of ['Toronto, ON M5S 1T8.', 'Toronto, ON, M5S1T8.', 'Toronto, Ontario M5S 1T8.', 'Toronto, Ontario M5S 1T8., Canada']) {
+    assert.deepEqual(sc.countryTlds([w]), ['ca'], w)
+  }
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, CA M5S 1T8.']), [])
+  assert.deepEqual(sc.countryTlds(['Synthetic Place, ON M5S 1T8., Denmark']), [])
+})

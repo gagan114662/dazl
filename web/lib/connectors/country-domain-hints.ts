@@ -1,7 +1,7 @@
 // Candidate suffixes only. A suffix is never evidence that a business or event is in a country.
-// ISO alpha-2 keys: https://www.iso.org/iso-3166-country-codes.html
-// Top-level delegations: https://www.iana.org/domains/root/db
-// Compound public boundaries: https://publicsuffix.org/list/ (validated against bundled tldts in tests).
+// ISO alpha-2 keys: International Organization for Standardization (ISO)
+// Top-level delegations: IANA Root Zone Database
+// Compound public boundaries: Public Suffix List (validated against bundled tldts in tests).
 // This is a conservative hint list, not a list of permitted registration namespaces or supported markets.
 const COUNTRY_SUFFIXES: Readonly<Record<string, readonly string[]>> = {
   AE: ['ae'], AT: ['at'], AU: ['com.au'], BE: ['be'], BR: ['com.br'], CA: ['ca'],
