@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireUser } from '@/lib/scan/service'
+import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { readHasKey } from '@/lib/llm/key-store'
@@ -11,6 +11,9 @@ import { trialAllowanceLeft, trialPrincipal, trialRefusal } from '@/lib/billing/
 import { readTrialStatus } from '@/lib/scan/trial'
 import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
 import { offerAdmission } from '@/lib/scan/offer-admission'
+import { readSellerLine } from '@/lib/auth-db'
+import { confirmedPlayOffer } from '@/lib/scan/play-offer'
+import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { cleanText } from '@/lib/validate'
 import { MAX_QUERY } from '@/lib/scan/icp'
 import { captureError } from '@/lib/ops/errors'
@@ -28,7 +31,12 @@ export async function POST(req: NextRequest) {
   const db = await getDb()   // the Db layer, not the raw SQLite handle
   // #1436: the same offer check POST /api/scan runs, before the cost panel: a request naming a different offer than the
   // saved profile is asked about first, so the panel never shows a run on the saved, unrelated profile.
-  const offerCheck = await offerAdmission(db, user.tenantId, cleanText(body?.query, MAX_QUERY), body?.offer)
+  const query = cleanText(body?.query, MAX_QUERY)
+  const offerCheck = await offerAdmission(query, body?.offer, {
+    sellerLine: () => readSellerLine(db, user.tenantId),
+    confirmedOffer: async seller => (await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller))?.offer ?? null,
+    tenantOffer: () => readTenantOffer(getScanDb(), user.tenantId),
+  })
   if (!offerCheck.ok) {
     if (offerCheck.status === 503) captureError(offerCheck.cause, { source: 'route', where: '/api/scan/estimate', method: 'POST', tenantId: user.tenantId })
     return NextResponse.json(offerCheck.body, { status: offerCheck.status })

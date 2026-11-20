@@ -197,7 +197,7 @@ test('#1436: a "seller = ..." request beside the saved dental profile asks befor
   const n0 = jobs()
   setUser({ id: O, business_name: 'Dental Seller', email: `${O.slice(0, 4)}@example.test` } as never)
   await (await getDb()).run('DELETE FROM rate_limits')
-  const est = async (body: unknown) => { const r = await ESTIMATE(new NextRequest('http://localhost/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `10.9.1.${++ip}` }, body: JSON.stringify(body) })); return { status: r.status, ...(await r.json()) as Record<string, unknown> } }
+  const est = async (body: unknown) => { const r = await ESTIMATE(new NextRequest('http://localhost/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `10.9.1.${++ip}` }, body: JSON.stringify(body) })); return { status: r.status, ...(await r.json()) as Record<string, unknown> } as Record<string, unknown> & { status: number } }
   assert.deepEqual(await est({ query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED }, 'the cost panel is not shown before the offer is chosen')
   assert.deepEqual(await scan(O, { query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED })
   assert.equal(jobs(), n0, 'nothing queued')
