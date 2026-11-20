@@ -11,6 +11,8 @@ const ownFetchOf = (m: Map<string, string> | undefined, url: string): string | n
 
 export interface CandidateAudit { key: string; company: string; url: string; outcome: 'passed' | 'review' | 'dropped'; reason: string | null; evidence_origin?: string | null }
 export interface UrlRecord { url: string; hit_date: string | null; walled: boolean; selected: boolean; tinyfish_text_chars: number | null; own_fetch: string | null }
+export type JudgeReplyClass = 'supports' | 'contradicts' | 'explicit_unclear' | 'prefixed_unclear' | 'blank' | 'unrecognized' | 'unavailable'
+export type JudgeReplyCounts = Partial<Record<JudgeReplyClass, number>>
 export interface ReportParts {
   // #1082: units the platform's fair share of the operator search budget left out (the run's results are thinner)
   capacity?: { searches: number; fetches: number }
@@ -22,6 +24,7 @@ export interface ReportParts {
   extraction?: import('./extraction-note.ts').ExtractionNote | null
   audit?: CandidateAudit[]
   ownFetch?: Map<string, string>
+  judge_replies?: JudgeReplyCounts // aggregate closed enum only; no model text or passage
   dropCounts?: Record<string, number>
   model?: { requests_recorded: number; requests_with_reported_tokens: number; input_tokens: number | null; output_tokens: number | null; tokens_complete: boolean }
   observed?: { search: boolean; extraction: boolean; verification: boolean }
@@ -29,7 +32,7 @@ export interface ReportParts {
   // per-query outcome classes. Counts and status codes only - never payloads, URLs or response bodies.
   news?: { attempted: number; failed: number; limited: number; malformed: number; failure_classes: Record<string, number>; http_statuses: Record<string, number>; query_classes: Record<string, number>; retried?: number; gave_up?: boolean } | null   // #1157: one retry after a backoff; gave_up = the retry failed too, so the remaining queries were not sent
   // Native Anthropic Web Search has aggregate billed usage, not a per-result token breakdown.
-  native_web_search?: { estimated_usd: number; actual_usd: number | null; counted_prompt_tokens: number; assumed_result_tokens: number; assumed_tool_overhead_tokens: number; reported_input_tokens: number | null; reported_cache_read_tokens?: number; reported_cache_write_5m_tokens?: number; reported_cache_write_1h_tokens?: number; reported_output_tokens: number | null; searches: number | null; max_searches: number; max_output_tokens: number; expected_model: string; inference_geo_diagnostic?: 'not_available' | 'unrecognized_price_neutral'; evidence_diagnostic?: import('../llm/claude-web-search.ts').ClaudeSearchEvidenceDiagnostic & { publisher_attempted: number; publisher_returned: number; publisher_failures: Partial<Record<import('./fetch-page.ts').FetchFail['fail'] | 'other', number>>; publisher_usable: number; evidence_items: number }; rejected_usage?: import('../llm/claude-web-search-estimate.ts').ClaudeUsageSnapshot; estimate_exceeded: boolean | null; soft_estimate: true }
+  native_web_search?: { estimated_usd: number; actual_usd: number | null; counted_prompt_tokens: number; assumed_result_tokens: number; assumed_tool_overhead_tokens: number; reported_input_tokens: number | null; reported_cache_read_tokens?: number; reported_cache_write_5m_tokens?: number; reported_cache_write_1h_tokens?: number; reported_output_tokens: number | null; searches: number | null; max_searches: number; max_output_tokens: number; expected_model: string; inference_geo_diagnostic?: 'not_available' | 'unrecognized_price_neutral'; evidence_diagnostic?: import('../llm/claude-web-search.ts').ClaudeSearchEvidenceDiagnostic & { publisher_attempted: number; publisher_lookahead_attempted?: number; publisher_returned: number; publisher_failures: Partial<Record<import('./fetch-page.ts').FetchFail['fail'] | 'other', number>>; publisher_usable: number; evidence_items: number }; rejected_usage?: import('../llm/claude-web-search-estimate.ts').ClaudeUsageSnapshot; estimate_exceeded: boolean | null; soft_estimate: true }
   // Why the scan stopped when it did: the bounded stop code written as the job error, and the exact spend-refusal reason
   // when one caused it (spend-guard.ts). The code alone must never have to carry a reason it does not mean. When an
   // earlier refusal names the stop but a later refusal also happened (e.g. the trailing research_unbounded), the later
@@ -87,6 +90,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     candidates: fates.slice(0, MAX_CANDIDATES),
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
+    ...(p.judge_replies ? { judge_replies: p.judge_replies } : {}),
     news: p.news ?? null, stop: p.stop ?? null,
     ...(p.native_web_search ? { native_web_search: p.native_web_search } : {}),
     source_skips: (p.source_skips ?? []).slice(0, 20).map(x => ({ source: cut(x.source, 80), status: cut(x.status, 120), reason: cut(x.reason, 300) })),
