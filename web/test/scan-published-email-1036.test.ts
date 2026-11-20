@@ -8,6 +8,7 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
+import { revealDisplayEmails } from '../lib/people/email-reveal.ts'
 import { enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { readContextLabel } from '../lib/outreach/contact-context.ts'
 
@@ -61,6 +62,13 @@ test('nothing for an address in another person\'s card, for a first-name address
   }
   const ca = await scan({}, TEAM, ['Toronto, ON'], `<html><body>${PROSE}<p>Bluebonnet Realty, 100 Example Ave, Toronto, ON M5V 2T6, Canada</p><a href="/team">Our Team</a><a href="/contact">Contact</a></body></html>`)
   assert.ok(!ca.emails.some(e => e.value === 'maya@bluebonnetrealty.com'), 'a non-US site keeps no personal address, so none is shown')
+})
+
+test('a parser declaration or processing instruction is never selected as decoded address evidence', () => {
+  for (const markup of ['<!DOCTYPE html Maya Thornton: maya [at] bluebonnetrealty [dot] com >',
+    '<?foo Maya Thornton: maya [at] bluebonnetrealty [dot] com ?>']) {
+    assert.equal(revealDisplayEmails(`<p>${markup}</p>`).offsets.size, 0, markup)
+  }
 })
 
 test('strict Toronto and UK crawls record a visibly co-published name/email solely in the display table', async () => {
@@ -133,6 +141,22 @@ test('strict Toronto and UK crawls record a visibly co-published name/email sole
         pages['/team'] = teamPage.replace('<p>Maya Thornton: maya@bluebonnetrealty.com</p>', wrapped)
         await run(); assert.deepEqual(saved(), [], wrapped)
       }
+      // Both exact Qodo High shapes, on a company page with separately recognized buyer evidence.
+      const paragraph = '<p>Maya Thornton: maya@bluebonnetrealty.com</p>'
+      const unsafeDisplays = [
+        ['joined inline suffix (brackets)', `<p>Maya Thornton: ${bracket}<span>extra</span></p>`],
+        ['joined inline suffix (Cloudflare)', `<p>Maya Thornton: ${cf}<span>extra</span></p>`],
+        ['declaration only', `<p><!DOCTYPE html Maya Thornton: ${bracket} ></p>`],
+        ['processing instruction only', `<p><?foo Maya Thornton: ${bracket} ?></p>`],
+      ]
+      const leakedDisplays: string[] = []
+      for (const [fixture, wrapped] of unsafeDisplays) {
+        pages['/team'] = teamPage.replace(paragraph, wrapped)
+        await run(); if (saved().length) leakedDisplays.push(fixture)
+      }
+      assert.deepEqual(leakedDisplays, [], 'no hidden or joined candidate is persisted')
+      pages['/team'] = '<!DOCTYPE html>' + teamPage.replace(paragraph, `<p>Maya Thornton: ${bracket}</p><p>Contact our team.</p>`)
+      await run(); verify()
       // Each fake outer close is text to the browser; it must not escape the opaque root.
       for (const raw of ['textarea', 'iframe', 'plaintext']) {
         pages['/team'] = teamPage.replace('<p>Maya Thornton: maya@bluebonnetrealty.com</p>',

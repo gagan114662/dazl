@@ -186,7 +186,12 @@ claim), on both engines, including two SQLite connections to one file as two ins
   past the stale-marker period, only if the pinned own-key search is still unresolved and fully reserved in the
   old job and its original UTC day and month. Neither row is deleted or repriced; the old run still cannot
   replay or settle from a delayed callback after losing ownership. A missing link, an active attempt, an unrelated
-  marker or a non-scan guard still blocks as before.
+  marker or a non-scan guard still blocks as before. A legacy marker can qualify only from the strict normal
+  finish receipt (explicit unknown native actual), named-owner estimate evidence, exact owned native error
+  ledgers and exact old-period accounting. A bare stale reaper is not that evidence. On the first permitted
+  distinct reservation the app durably attests that association without adjusting the old charge or marker,
+  so report retention does not change admission. A missing job, call, or original accounting window still
+  fails closed; withdrawal of the tenant removes its accounting records under the tenant lifecycle rules.
 
 ## A request that may have been billed is never re-run automatically (#363)
 

@@ -46,7 +46,7 @@ test('usage settlement prices aggregate input, output, cache TTLs and the actual
     { ...response(), usage: { ...usage, cache_read_input_tokens: undefined } },
     { ...response(), usage: { ...usage, server_tool_use: {} } },
     { ...response(), usage: { ...usage, server_tool_use: { ...usage.server_tool_use, web_fetch_requests: 1 } } },
-    { ...response(), usage: { ...usage, inference_geo: 'us' } },
+    { ...response(), usage: { ...usage, inference_geo: 'not_available' } },
   ]) assert.equal(parseClaudeSearchUsage(bad), null)
 })
 
@@ -208,4 +208,119 @@ test('native paid transport abort leaves the reservation held and does not retry
   assert.equal(deadlines[0], 20_000)
   assert.ok(deadlines[1] > 0 && deadlines[1] <= 150_000)
   assert.deepEqual(marks, ['uncertain'])
+})
+
+test('fixed no-cache Messages request settles the official sparse Web Search usage shape', async () => {
+  const response = { ...fullStandardResponse, type: 'message', role: 'assistant',
+    usage: { input_tokens: 6039, output_tokens: 931, server_tool_use: { web_search_requests: 1 } },
+  }
+  assert.equal(parseClaudeSearchUsage(response), null, 'the general parser cannot assume what the request sent')
+  const marks: string[] = []
+  let calls = 0
+  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+    if (++calls === 1) return Response.json({ input_tokens: counted })
+    const sent = JSON.parse(String(init?.body))
+    assert.equal('cache_control' in sent, false)
+    assert.equal('thinking' in sent, false)
+    assert.deepEqual(sent.messages, [{ role: 'user', content: prompt }])
+    assert.ok(sent.tools.every((tool: object) => !Object.hasOwn(tool, 'cache_control')))
+    return Response.json(response)
+  })
+  assert.equal(calls, 2)
+  assert.deepEqual(result.citedUrls, ['https://roof.example/news'])
+  assert.deepEqual(marks, ['settle:0.042082'])
+})
+
+test('unsafe 2xx usage retains the full hold and exposes only the exact closed diagnostic, never response values', async () => {
+  const sparse = { input_tokens: 6039, output_tokens: 931, server_tool_use: { web_search_requests: 1 } }
+  const message = { ...fullStandardResponse, type: 'message', role: 'assistant', usage: sparse }
+  for (const [body, diagnostic] of [
+    [{ ...message, usage: null }, 'usage_envelope'],
+    [{ ...message, model: 'private-provider-data' }, 'usage_model'],
+    [{ ...message, usage: { ...sparse, inference_geo: { value: 'private-provider-data' } } }, 'usage_geo'],
+    [{ ...message, usage: { ...sparse, speed: 'fast' } }, 'usage_speed'],
+    [{ ...message, usage: { ...sparse, service_tier: 'priority' } }, 'usage_tier'],
+    [{ ...message, usage: { ...sparse, input_tokens: null } }, 'usage_input_count'],
+    [{ ...message, usage: { ...sparse, output_tokens: null } }, 'usage_output_count'],
+    [{ ...message, usage: { ...sparse, server_tool_use: null } }, 'usage_search_count'],
+    [{ ...message, usage: { ...sparse, server_tool_use: { web_fetch_requests: 0 } } }, 'usage_search_count'],
+    [{ ...message, usage: { ...sparse, server_tool_use: { web_search_requests: 1, private_counter: null } } }, 'usage_other_tool'],
+    [{ ...message, usage: { ...sparse, cache_read_input_tokens: 1 } }, 'usage_cache_totals'],
+    [{ ...message, usage: { ...sparse, cache_read_input_tokens: null, cache_creation_input_tokens: null, cache_creation: { ephemeral_5m_input_tokens: 1 } } }, 'usage_cache_totals'],
+    [{ ...message, usage: { ...sparse, cache_creation: { ephemeral_1h_input_tokens: 20 } } }, 'usage_cache_totals'],
+    [{ ...message, role: 'private-provider-data' }, 'usage_cache_totals'],
+    [{ ...message, usage: { ...sparse, cache_read_input_tokens: 0, cache_creation_input_tokens: 1 } }, 'usage_cache_split'],
+  ] as const) {
+    let requests = 0
+    const marks: string[] = []
+    await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(marks), async () =>
+      Response.json(++requests === 1 ? { input_tokens: counted } : body)
+    ), e => {
+      const err = e as { code?: string; diagnostic?: string; message?: string }
+      assert.equal(err.code, 'usage_uncertain')
+      assert.equal(err.diagnostic, diagnostic)
+      assert.equal(err.message, 'usage_uncertain')
+      return true
+    })
+    assert.equal(requests, 2)
+    assert.deepEqual(marks, ['uncertain'])
+  }
+})
+
+
+test('the pinned pre-4.6 uncached Messages request prices documented nullable/zero cache fields and us/global geo at standard rates', async () => {
+  const usage = { input_tokens: 8_000, output_tokens: 200, server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } }
+  for (const cache of [
+    { cache_read_input_tokens: null, cache_creation_input_tokens: null, cache_creation: null },
+    { cache_read_input_tokens: 0, cache_creation_input_tokens: null, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } },
+    { cache_creation_input_tokens: 0 },
+  ]) {
+    for (const geo of ['us', 'global']) {
+      const marks: string[] = []
+      let sent = 0
+      const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+        if (++sent === 1) return Response.json({ input_tokens: counted })
+        assert.equal('inference_geo' in JSON.parse(String(init?.body)), false)
+        return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant', usage: { ...usage, ...cache, inference_geo: geo } })
+      })
+      assert.equal(result.usage.usd, 0.037)
+      assert.deepEqual(marks, ['settle:0.037000'])
+      assert.equal(sent, 2)
+    }
+  }
+})
+
+test('explicitly zero searches with nullable cache counters settles only tokens and produces no sources', async () => {
+  const marks: string[] = []
+  let sent = 0
+  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async () => {
+    if (++sent === 1) return Response.json({ input_tokens: counted })
+    return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant',
+      content: [{ type: 'text', text: 'No search was needed.' }],
+      usage: { input_tokens: 8_000, output_tokens: 200, cache_read_input_tokens: null,
+        cache_creation_input_tokens: null, cache_creation: null, server_tool_use: { web_search_requests: 0 } } })
+  })
+  assert.equal(result.usage.searches, 0)
+  assert.deepEqual(marks, ['settle:0.027000'])
+  assert.deepEqual(result.citedUrls, [])
+  assert.equal(result.outcome, 'unavailable')
+})
+
+test('pinned pre-4.6 request settles Toronto-shaped counters despite an unrecognized geo string', async () => {
+  const marks: string[] = []
+  let sent = 0
+  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+    assert.equal(Object.hasOwn(JSON.parse(String(init?.body)), 'inference_geo'), false)
+    if (++sent === 1) return Response.json({ input_tokens: counted })
+    return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant',
+      content: [{ type: 'text', text: 'No cited sources in this billing fixture.' }],
+      usage: { inference_geo: 'synthetic_unrecognized_label', service_tier: 'standard', speed: 'standard',
+        input_tokens: 22_129, output_tokens: 748, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+        server_tool_use: { web_search_requests: 2, web_fetch_requests: 0 } } })
+  })
+  assert.equal(sent, 2)
+  assert.equal(result.usage.searches, 2)
+  assert.deepEqual(marks, ['settle:0.097607'])
+  assert.deepEqual(result.citedUrls, [])
 })

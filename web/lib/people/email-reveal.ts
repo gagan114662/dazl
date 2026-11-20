@@ -77,11 +77,23 @@ const displayHidden = (tag: string) => {
   return values('style').length > 0
 }
 const leftDisplay = (left: string) => /[ \t\r\n(]$/u.test(left)
-const rightDisplay = (right: string) => /^(?:[\s<)]|[.,;!?](?:[\s<]|$)|$)/u.test(right)
+// No HTML or CSS renderer: a tag in general is not a delimiter. Recognize only the
+// actual structural end of the current standard block. Inline/unknown markup abstains.
+const DISPLAY_BLOCK_END = /^<\/(address|article|aside|dd|div|dt|figcaption|footer|h[1-6]|header|li|main|p|pre|section|td|th)\s*>/i
+const rightDisplay = (right: string, parent?: string) => {
+  const edge = (tail: string) => tail === '' || /^\s/u.test(tail) ||
+    (parent !== undefined && DISPLAY_BLOCK_END.exec(tail)?.[1].toLowerCase() === parent)
+  return edge(right) || right.startsWith(')') || (/^[.,;!?]/.test(right) && edge(right.slice(1)))
+}
 
 export function revealDisplayEmails(visible: string): { html: string; offsets: Set<number> } {
   const offsets = new Set<number>()
   if (visible.length > 512_000 || !/data-cfemail|[[({]\s*at\s*[\])}]/i.test(visible)) return { html: visible, offsets }
+  // The optional decoder does not parse arbitrary declarations or processing
+  // instructions; their contents could masquerade as a text node. Allow only a
+  // canonical leading HTML5 doctype, treating it as opaque rather than deleting it.
+  visible = visible.replace(/^(\s*)<!doctype html\s*>/i, '$1' + DISPLAY_OPAQUE)
+  if (/<[!?]/.test(visible)) return { html: visible, offsets }
   // Optionally hide markup without joining text nodes; known hidden ancestors are opaque.
   const tags = [...visible.matchAll(DISPLAY_TAG)]
   const clouds = new Map([...visible.matchAll(DISPLAY_CF)].map(m => [m.index, m]))
@@ -97,7 +109,7 @@ export function revealDisplayEmails(visible: string): { html: string; offsets: S
     // Only one text node; line/tab/control boundaries can't assemble an address across records.
     let shortened = 0
     push(text.replace(BRACKETED, (whole, local: string, host: string, tld: string, offset: number) => {
-      if (!leftDisplay(text.slice(Math.max(0, offset - 1), offset)) || !rightDisplay(visible.slice(from + offset + whole.length, from + offset + whole.length + 3)) ||
+      if (!leftDisplay(text.slice(Math.max(0, offset - 1), offset)) || !rightDisplay(visible.slice(from + offset + whole.length, from + offset + whole.length + 32), open.at(-1)?.name) ||
           /[\r\n\t<>&\uFFFC]/u.test(whole)) return whole
       const addr = `${local}@${host.replace(DOT, '.')}.${tld}`
       if (!ADDRESS.test(addr)) return whole
@@ -117,7 +129,7 @@ export function revealDisplayEmails(visible: string): { html: string; offsets: S
     appendText(tag.index)
     const cloud = clouds.get(tag.index)
     if (cloud && !hidden && leftDisplay(visible.slice(Math.max(from, tag.index - 1), tag.index)) &&
-        rightDisplay(visible.slice(tag.index + cloud[0].length, tag.index + cloud[0].length + 3))) {
+        rightDisplay(visible.slice(tag.index + cloud[0].length, tag.index + cloud[0].length + 32), open.at(-1)?.name)) {
       const address = decodeCfEmail(cloud[1] ?? cloud[2], true)
       if (address) { offsets.add(length); push(address); from = tag.index + cloud[0].length; continue }
     }

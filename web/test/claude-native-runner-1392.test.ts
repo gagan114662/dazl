@@ -1,3 +1,4 @@
+import { atsPostingRef, atsPublisherRef } from '../lib/sources/ats-posting.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import test from 'node:test'
@@ -17,7 +18,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; uncertainResponse?: 'http' | 'body' | 'usage'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [] }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[] } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -36,7 +37,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
   const previousFetch = globalThis.fetch
   const sequence: string[] = []
   const messages: { url: string; body: Record<string, unknown>; key: string | null }[] = []
-  const denied: string[] = []
+  const denied: string[] = [], publisherRequests: string[] = []
   try {
     migrateAllSqlite(db)
     saveKey(db, 'workspace', 'anthropic', 'sk-ant-workspace-fixture', master)
@@ -65,16 +66,42 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (uncertainResponse === 'http') return new Response('raw-response-sentinel', { status: 529 })
       if (uncertainResponse === 'body') return new Response('raw-response-sentinel')
       if (uncertainResponse === 'usage') return Response.json({ model: CLAUDE_SEARCH_MODEL, content: 'raw-response-sentinel', usage: {} })
+      if (uncertainResponse === 'projected') return Response.json({
+        model: CLAUDE_SEARCH_MODEL, content: 'raw-response-sentinel', id: 'hidden-request-id',
+        usage: { input_tokens: 8_000, output_tokens: 10_000_001, cache_read_input_tokens: null, service_tier: 'priority',
+          inference_geo: 'secret-enum-value', speed: 'standard', cache_creation: { ephemeral_5m_input_tokens: 3, arbitrary: 'private-cache-value' },
+          server_tool_use: { web_search_requests: 2, web_fetch_requests: 0, provider_private_tool: 1 } },
+      })
       return Response.json({
-        model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn',
-        content: [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
-        usage: { input_tokens: overage ? 100_000 : 8_000, output_tokens: 200, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } },
+        model: CLAUDE_SEARCH_MODEL, stop_reason: 'end_turn', role: 'assistant', type: 'message',
+        content: noNativeUrls ? [
+          { type: 'web_search_tool_result', content: { type: 'opaque-private-sentinel' } },
+          { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'opaque-private-sentinel' }] },
+          { type: 'web_search_tool_result', content: [] },
+          ...['too_many_requests', 'invalid_tool_input', 'max_uses_exceeded', 'query_too_long', 'request_too_large', 'unavailable', '__proto__', 'opaque-private-sentinel'].map(error_code =>
+            ({ type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code } })),
+        ] : diverseFixture ? [
+          { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
+          { type: 'text', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
+        ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
+        usage: { input_tokens: overage ? 100_000 : 8_000, output_tokens: 200,
+          ...(acceptedGeo !== undefined ? { inference_geo: acceptedGeo } : {}),
+          ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
+          server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } },
       })
     }
     globalThis.fetch = io
     const status = await runJob(db, job, {
       master, fetchImpl: io, score: false, ground: false, judge: null,
-      fetchPage: async page => { sequence.push('publisher-page'); assert.equal(page, url); return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: 'Published evidence about a commercial roofing company. '.repeat(8) } },
+      fetchPage: async page => {
+        sequence.push('publisher-page')
+        publisherRequests.push(page)
+        if (!diverseFixture) assert.equal(page, url)
+        if (sparseUsage) assert.deepEqual(db.prepare("SELECT status,actual_usd FROM scan_spend_calls WHERE scan_job_id='job' AND kind='llm.anthropic.web_search'").get(),
+          { status: 'settled', actual_usd: 0.037 }, 'native billing is durable before publisher evidence is read')
+        if (failedPublisher || diverseFixture?.blocked.includes(page)) return { fail: 'blocked' }
+        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: thinPublisher ? 'too short' : 'Published evidence about a commercial roofing company. '.repeat(8) }
+      },
     })
     const end = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(job.id)
     const ledger = db.prepare('SELECT status, reason, reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id=? ORDER BY rowid').all(job.id)
@@ -91,7 +118,9 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       second = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(id)
     }
     const nativeStatus = db.prepare("SELECT status FROM scan_source_runs WHERE job_id=? AND collector='search:anthropic_web'").get(job.id)
-    return { status, sequence, messages, denied, end, ledger, jobSpend, pool, second, nativeStatus }
+    const reportRow = db.prepare('SELECT report FROM scan_run_report WHERE job_id=? AND attempt=1').get(job.id) as { report: string } | undefined
+    return { status, sequence, messages, denied, publisherRequests, end, ledger, jobSpend, pool, second, nativeStatus,
+      nativeReport: reportRow ? JSON.parse(reportRow.report).native_web_search : undefined }
   } finally {
     globalThis.fetch = previousFetch
     for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
@@ -164,7 +193,7 @@ test('unknown native search billing stops the old play without permanently block
 })
 
 test('post-send failure diagnostics distinguish response paths without releasing unknown spend', async () => {
-  for (const [uncertainResponse, reason] of [['http', 'http_error'], ['body', 'response_unreadable'], ['usage', 'usage_uncertain']] as const) {
+  for (const [uncertainResponse, reason] of [['http', 'http_error'], ['body', 'response_unreadable'], ['usage', 'usage_envelope']] as const) {
     const x = await simulate({ uncertainResponse })
     assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
     assert.deepEqual(x.sequence, ['native-count', 'native-send'])
@@ -185,4 +214,113 @@ test('authenticated 429 stops this play, reverses all reservations and lets a se
     assert.equal(row.reported_usd, 0)
   }
   assert.equal(x.sequence.filter(x => x === 'native-send').length, 2)
+})
+
+
+test('the real runner settles sparse documented native usage before reading publisher evidence', async () => {
+  const x = await simulate({ sparseUsage: true })
+  assert.deepEqual(x.sequence.slice(0, 3), ['native-count', 'native-send', 'publisher-page'])
+  assert.deepEqual(x.ledger[0], { status: 'settled', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: 0.037 })
+})
+
+
+test('a refusal writes only bounded billing fields on the tenant run report and never settles or fetches evidence', async () => {
+  const x = await simulate({ uncertainResponse: 'projected' })
+  assert.deepEqual(x.end, { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(x.sequence, ['native-count', 'native-send'])
+  assert.deepEqual(x.nativeStatus, { status: 'error:usage_tier' })
+  assert.equal(x.nativeReport.actual_usd, null)
+  assert.equal(x.nativeReport.reported_input_tokens, null)
+  assert.equal(x.nativeReport.searches, null)
+  assert.deepEqual(x.nativeReport.rejected_usage, {
+    rejection: 'usage_tier', usage: 'object', model: CLAUDE_SEARCH_MODEL,
+    inference_geo: 'unrecognized', speed: 'standard', service_tier: 'priority', input_tokens: 8000,
+    output_tokens: 'outside_diagnostic_bound', cache_read_input_tokens: 'null', cache_creation_input_tokens: 'absent',
+    cache_creation: 'object', ephemeral_5m_input_tokens: 3, ephemeral_1h_input_tokens: 'absent',
+    server_tool_use: 'object', web_search_requests: 2, web_fetch_requests: 0, other_tool_counts: 'nonzero_or_invalid',
+  })
+  assert.doesNotMatch(JSON.stringify(x.nativeReport), /secret-enum-value|hidden-request-id|raw-response-sentinel|private-cache-value|provider_private_tool/)
+  assert.deepEqual(x.ledger, [{ status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null }])
+})
+
+test('settled unavailable searches distinguish discarded transport results from thin publisher pages', async () => {
+  const noUrls = await simulate({ noNativeUrls: true })
+  const thin = await simulate({ thinPublisher: true })
+  const blocked = await simulate({ failedPublisher: true })
+  for (const x of [noUrls, thin, blocked]) {
+    assert.deepEqual(x.nativeStatus, { status: 'unavailable' })
+    assert.equal(x.nativeReport.actual_usd, 0.037)
+    assert.doesNotMatch(JSON.stringify(x.nativeReport), /opaque-private-sentinel|too short/)
+  }
+  const present = { stop: 'end_turn', result_blocks: 1, non_array_result_blocks: 0, empty_result_blocks: 0,
+    malformed_result_blocks: 0, result_errors: {}, result_entries: 1, safe_urls: 1, publisher_attempted: 1,
+    publisher_returned: 1, publisher_failures: {}, publisher_usable: 0, evidence_items: 0 }
+  assert.deepEqual(noUrls.nativeReport.evidence_diagnostic, { stop: 'end_turn', result_blocks: 11, non_array_result_blocks: 9,
+    empty_result_blocks: 1, malformed_result_blocks: 1, result_errors: { too_many_requests: 1, invalid_tool_input: 1,
+      max_uses_exceeded: 1, query_too_long: 1, request_too_large: 1, unavailable: 1, other: 2 },
+    result_entries: 1, safe_urls: 0, publisher_attempted: 0, publisher_returned: 0, publisher_failures: {}, publisher_usable: 0, evidence_items: 0 })
+  assert.deepEqual(thin.nativeReport.evidence_diagnostic, present)
+  assert.deepEqual(blocked.nativeReport.evidence_diagnostic, { ...present, publisher_returned: 0, publisher_failures: { blocked: 1 } })
+})
+
+test('settled pre-4.6 geo fallback persists only a fixed diagnostic, never raw provider metadata', async () => {
+  const injected = 'secret-geo-sentinel\n<script>injection</script>'
+  const x = await simulate({ sparseUsage: true, acceptedGeo: injected })
+  assert.equal(x.nativeReport.actual_usd, 0.037)
+  assert.equal(x.nativeReport.inference_geo_diagnostic, 'unrecognized_price_neutral')
+  assert.doesNotMatch(JSON.stringify(x.nativeReport), /secret-geo-sentinel|<script>/)
+  assert.deepEqual(x.ledger[0], { status: 'settled', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: 0.037 })
+  const documented = await simulate({ sparseUsage: true, acceptedGeo: 'not_available' })
+  assert.equal(documented.nativeReport.actual_usd, 0.037)
+  assert.equal(documented.nativeReport.inference_geo_diagnostic, 'not_available')
+  for (const acceptedGeo of ['us', 'global', undefined]) {
+    const known = await simulate({ sparseUsage: true, acceptedGeo })
+    assert.equal(known.nativeReport.actual_usd, 0.037)
+    assert.equal(Object.hasOwn(known.nativeReport, 'inference_geo_diagnostic'), false)
+  }
+})
+
+test('native shortlist promotes admitted citations but never fetches citation-only URLs or exceeds five attempts', async () => {
+  const blocked = ['a', 'b', 'c', 'd', 'e'].map(host => `https://${host}.example/blocked`)
+  const x = await simulate({ diverseFixture: { results: [...blocked, url], cited: ['https://citation-only.example/', url], blocked } })
+  assert.deepEqual(x.publisherRequests, [url, ...blocked.slice(0, 4)])
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 5)
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_failures.blocked, 4)
+  assert.equal(x.nativeReport.evidence_diagnostic.evidence_items, 1)
+  assert.deepEqual(x.sequence.filter(s => s.startsWith('native-')), ['native-count', 'native-send'])
+  const alreadyReadable = await simulate({ diverseFixture: { results: [url, ...blocked], cited: [], blocked } })
+  assert.equal(x.sequence.filter(s => s === 'model').length, alreadyReadable.sequence.filter(s => s === 'model').length)
+})
+
+test('uncited shortlist keeps ATS boards distinct and skips a blocked origin and publisher', async () => {
+  const blocked = 'https://publisher.example/blocked', repeat = 'https://publisher.example/repeat'
+  const subdomain = 'https://news.publisher.example/different-origin'
+  const alpha = 'https://boards.greenhouse.io/alpha/jobs/1', beta = 'https://boards.greenhouse.io/beta/jobs/2'
+  const x = await simulate({ diverseFixture: { results: [blocked, repeat, subdomain, alpha, beta], cited: [], blocked: [blocked] } })
+  assert.deepEqual(x.publisherRequests, [blocked, alpha, beta])
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 3)
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_failures.blocked, 1)
+})
+
+test('uncited shortlist prioritizes distinct official ATS board roots within the existing five slots', async () => {
+  const alpha = 'https://jobs.lever.co/alpha', beta = 'https://jobs.lever.co/beta'
+  const outside = ['a', 'b', 'c', 'd'].map(host => `https://${host}.example/source`)
+  const x = await simulate({ diverseFixture: { results: [alpha, beta, ...outside], cited: [], blocked: [] } })
+  assert.deepEqual(x.publisherRequests, [alpha, beta, ...outside.slice(0, 3)])
+  assert.equal(x.nativeReport.evidence_diagnostic.publisher_attempted, 5)
+})
+
+test('ATS root identity is ranking-only and restricted to documented board hosts and path shape', () => {
+  for (const [host, kind] of [['jobs.lever.co', 'lever'], ['jobs.ashbyhq.com', 'ashby'],
+    ['boards.greenhouse.io', 'greenhouse'], ['job-boards.greenhouse.io', 'greenhouse']]) {
+    const root = `https://${host}/alpha/`
+    assert.deepEqual(atsPublisherRef(root), { kind, org: 'alpha' })
+    assert.equal(atsPostingRef(root), null)
+  }
+  assert.deepEqual(atsPublisherRef('https://boards.greenhouse.io/alpha/jobs/123'), { kind: 'greenhouse', org: 'alpha' })
+  for (const raw of ['https://jobs.lever.co/', 'https://jobs.lever.co/alpha/unknown', 'https://jobs.lever.co/%61lpha',
+    'https://jobs.lever.co/alpha?token=beta', 'https://jobs.lever.co.evil.example/alpha',
+    'http://jobs.lever.co/alpha', 'https://user@jobs.lever.co/alpha', 'https://jobs.lever.co:444/alpha']) {
+    assert.equal(atsPublisherRef(raw), null, raw)
+  }
 })
