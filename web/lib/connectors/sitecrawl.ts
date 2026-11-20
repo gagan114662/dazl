@@ -24,8 +24,8 @@ import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
-import { placeAgreement, cityScoped, geoTerms, US_STATES } from '../scan/place-agreement.ts'
-import { resolveSegment } from '../scan/countries.ts'
+import { placeAgreement, cityScoped, geoTerms, ownProbePlace, US_STATES } from '../scan/place-agreement.ts'
+import { isCountryOrRegion, resolveSegment, regionOf, trimCanadianPostalTail } from '../scan/countries.ts'
 import { candidateDomainSuffixes, countryDomainHints } from './country-domain-hints.ts'
 import { addressAgreement, streetKeys, firstPlaceLabel, leadPlaceLabel, recordContactRejection } from '../scan/contact-agreement.ts'
 
@@ -382,6 +382,13 @@ function probeCountry(where: readonly string[]): string | null {
   for (const place of where) {
     if (!place.trim()) continue
     const segments = place.split(',').map(s => s.trim())
+    // Strip a Canadian postal suffix only when attached to (or immediately
+    // following) a recognized Canadian province, not an arbitrary place.
+    for (let i = 1; i < segments.length; i++) {
+      const prefix = trimCanadianPostalTail(segments[i])
+      if (prefix !== segments[i] && regionOf(prefix)?.startsWith('CA-')) segments[i] = prefix
+      else if (prefix !== segments[i] && !prefix && regionOf(segments[i - 1])?.startsWith('CA-')) segments.splice(i--, 1)
+    }
     if (segments.some(s => !s)) return null
     const matches = new Set<string>()
     let terminal = false
@@ -830,16 +837,20 @@ function publishedDisplayOffice(pages: LocationPage[], where: string[], company:
     p.offices.some(o => o.ownSection && officeHeading(o.heading, o.address) && office(o.address)))
 }
 
-function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean): LocationProof | undefined {
+function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean, guessed: boolean): LocationProof | undefined {
   if (!where.length) return undefined
   const key = norm(company)
   if (key.length < 3 || company.length > 160) return undefined
   const requestedPlaces = new Set(geoTerms(where).map(norm))
-  const agrees = (fragment: string) => placeAgreement(fragment, where, company) === 'agrees' && !ownAddressElsewhere(fragment, where)
+  const agrees = (fragment: string, alreadyBound = false) => (guessed
+    ? probeScopeAgreement(fragment, where, company, alreadyBound) : placeAgreement(fragment, where, company)) === 'agrees' &&
+    !ownAddressElsewhere(fragment, where)
   for (const { url, statements, offices, footerOffices, hiringMarkets } of pages) {
-    const footer = footerOffices.find(({ heading, address }) => requestedPlaces.has(norm(heading)) && !FOREIGN_SUBJECT.test(address) && agrees(address))
+    const footer = footerOffices.find(({ heading, address }) => requestedPlaces.has(norm(heading)) && !FOREIGN_SUBJECT.test(address) && agrees(address, true))
     if (footer) return { url, excerpt: `${footer.heading}: ${footer.address}` }
-    const market = hiringMarkets.find(({ heading, employer }) => norm(employer) === key && agrees(heading))
+    // The existing exact same-company ATS link binds the hiring heading.
+    // It still has to name the asked locality, not just the country.
+    const market = hiringMarkets.find(({ heading, employer }) => norm(employer) === key && agrees(heading, true))
     if (market) return { url, excerpt: `employer's own hiring page lists ${market.heading}` }
     if (alternateOfficeOnly || new URL(url).pathname === '/') continue
     for (const paragraph of statements) {
@@ -849,7 +860,10 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
         const matchesCompany = words.slice(0, Math.min(10, words.length)).some((_, index) =>
           norm(words.slice(0, index + 1).join(' ')) === key && OFFICE_CLAIM.test(words.slice(index + 1).join(' ')))
         const homeBase = HOME_BASE_CLAIM.exec(sentence)?.[1]
-        if ((matchesCompany || FIRST_PERSON_OFFICE.test(sentence) || (homeBase && requestedPlaces.has(norm(homeBase)))) && agrees(sentence)) return { url, excerpt: sentence }
+        const labeledAddress = guessed && /^LOCATION\s*:?\s+\d/.test(sentence) && POSTAL_ADDRESS.test(sentence) && streetKeys(sentence).length > 0 &&
+          /\/(?:contact(?:-us)?|locations?|offices?)(?:\/|$)/i.test(new URL(url).pathname)
+        if (((matchesCompany || FIRST_PERSON_OFFICE.test(sentence) || labeledAddress) && agrees(sentence)) ||
+            (homeBase && requestedPlaces.has(norm(homeBase)) && agrees(sentence, true))) return { url, excerpt: sentence }
       }
     }
     for (const { heading, address, ownSection } of offices) {
@@ -857,7 +871,7 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
       const words = heading.split(/\s+/)
       const companyAndPlace = words.some((_, index) => norm(words.slice(0, index + 1).join(' ')) === key && requestedPlaces.has(norm(words.slice(index + 1).join(' '))))
       // An office directory heading must be the place alone or the exact company followed by the place.
-      if (!(companyAndPlace || (ownSection && requestedPlaces.has(norm(heading)))) || !agrees(address)) continue
+      if (!(companyAndPlace || (ownSection && requestedPlaces.has(norm(heading)))) || !agrees(address, true)) continue
       return { url, excerpt: `${heading}: ${address}` }
     }
   }
@@ -1103,11 +1117,28 @@ function writtenAsCityState(home: string, place: string): boolean {
   for (const m of home.matchAll(CITY_STATE)) { if (m[2] in US_STATES && norm(m[1]) === place) return true }
   return false
 }
+// All guessed domains use this same verification regardless of public suffix.
+function probeScopeAgreement(text: string, where: string[], company: string, alreadyBound = false) {
+  const verdict = placeAgreement(text, where, company)
+  if (verdict === 'mismatch' || verdict === 'no_geography') return verdict
+  const scopes = where.map(w => w.split(',').map(s => s.trim()).filter(Boolean)).filter(parts => parts.length)
+  const qualified = scopes.some(parts => parts.some(isCountryOrRegion))
+  const separated = scopes.flatMap(([head, ...tail]) => !isCountryOrRegion(head) && (tail.some(isCountryOrRegion) || qualified) ? [head] : [])
+  const regions = scopes.flatMap(([head]) => regionOf(head) ? [trimCanadianPostalTail(head)] : [])
+  const narrow = separated.length ? separated : regions
+  if (!narrow.length) return verdict
+  if (verdict === 'agrees' && ownProbePlace(text, narrow, company, alreadyBound)) return verdict
+  return 'scope_unconfirmed'
+}
 export function probeLocationAgrees(home: string | undefined, where: string[], lead: { company: string; signal?: string | null; evidence_excerpt?: string | null }, evidence?: { homeNorm: string | undefined; places: string[] }): boolean {
   const text = home ?? ''
   if (!text) return false
   if (where.length > 0 && ownAddressElsewhere(text, where)) return false   // the site's own address is in another state
-  if (where.length > 0 && placeAgreement(text, where, lead.company) === 'agrees') return true
+  if (where.length > 0) {
+    const verdict = probeScopeAgreement(text, where, lead.company)
+    if (verdict === 'agrees') return true
+    if (verdict === 'mismatch' || verdict === 'scope_unconfirmed') return false
+  }
   // A scan that declares NO geography has only the lead's evidence to say where it is: a place that evidence names (weekdays, months, social names and the company's own name excluded) and the site's homepage repeats.
   // ...and with no declared geography the repeated place must be written as a place on the homepage ("City, ST"), not merely appear in running text.
   if (where.length === 0 && evidence && placeConsistent(evidence.homeNorm, evidence.places) && evidence.places.some(p => writtenAsCityState(text, p))) return true
@@ -1492,11 +1523,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const recordNoGeo = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
         const basis = basisOf.get(cand)
         const guessed = basis === 'name_probe'
-        const vHome = r.homeText ? placeAgreement(r.homeText, where, l.company) : 'unconfirmed'
+        const vHome = r.homeText ? (guessed ? probeScopeAgreement(r.homeText, where, l.company) : placeAgreement(r.homeText, where, l.company)) : 'unconfirmed'
         const homeLocationOk = guessed ? probeLocationAgrees(r.homeText, where, l, { homeNorm: r.homeNorm, places }) : placeConsistent(r.homeNorm, places)
         const homeElsewhere = !!r.homeText && ownAddressElsewhere(r.homeText, where)
         locationProof = !unread(r) && basis !== 'evidence_own_domain' && (!homeLocationOk || vHome === 'mismatch' || homeElsewhere)
-          ? siteLocationProof(r.locationPages ?? [], where, l.company, vHome !== 'unconfirmed' || !!firstPlaceLabel(r.homeText ?? ''))
+          ? siteLocationProof(r.locationPages ?? [], where, l.company, vHome === 'mismatch' || (vHome !== 'scope_unconfirmed' && (vHome !== 'unconfirmed' || !!firstPlaceLabel(r.homeText ?? ''))), guessed)
           : undefined
         if (!unread(r) && !homeLocationOk && !locationProof && ((guessed && !recordNoGeo) || (!guessed && basis !== 'evidence_own_domain' && places.length > 0))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
