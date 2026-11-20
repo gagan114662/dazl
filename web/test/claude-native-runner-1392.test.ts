@@ -384,3 +384,29 @@ test('native default freshness favors current events without asserting a date on
   assert.match(text, /Porto, Portugal/)
   assert.doesNotMatch(text, /last 30 days/)
 })
+
+test('native vacancy sourcing follows the requested event without keyword routing or changing paid request limits', async () => {
+  const cases = [
+    { query: 'Find employers hiring refrigeration technicians in Faro', where: ['Faro, Portugal'], signals: ['Hiring'], role: 'refrigeration technicians' },
+    { query: 'Find employers seeking refrigeration technicians in Nelson', where: ['Nelson, New Zealand'], signals: [], role: 'seeking refrigeration technicians' },
+    { query: 'Find workshops opening a new location and growing their market position in Porto', where: ['Porto, Portugal'], signals: ['Expansion'], role: 'market position' },
+    { query: 'Find cold storage companies expanding in Dunedin, not hiring', where: ['Dunedin, New Zealand'], signals: ['Hiring'], role: 'not hiring' },
+  ]
+  for (const { role, ...fixture } of cases) {
+    const x = await simulate({ ...fixture, industries: ['Cold storage'] })
+    const paid = x.messages.find(m => Array.isArray(m.body.tools))!
+    const counted = x.messages.find(m => m.url.endsWith('/count_tokens'))!
+    const prompt = (paid.body.messages as { content: string }[])[0].content
+    assert.match(prompt, /Only for a requested current job vacancy,.*individual vacancy permalink.*employer['’]s own careers site/)
+    assert.match(prompt, /category lists.*discovery only/)
+    assert.match(prompt, /For non-hiring events, .* do not substitute vacancies/)
+    assert.match(prompt, /A new location or market position is not a job vacancy/)
+    assert.match(prompt, /Do not treat hiring as requested when the explicit play excludes it, even if saved profile signals mention hiring/)
+    assert.ok(prompt.includes(fixture.where[0]), fixture.query)
+    assert.ok(prompt.includes(role), fixture.query)
+    assert.deepEqual(paid.body.messages, counted.body.messages)
+    assert.equal(paid.body.max_tokens, 3000)
+    assert.deepEqual(paid.body.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }])
+    assert.deepEqual(x.sequence.filter(s => s.startsWith('native-')), ['native-count', 'native-send'])
+  }
+})
