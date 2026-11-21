@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
 import type { HomeResults } from '@/lib/outreach/home-results'
 import type { HomeReady } from '@/lib/outreach/home-ready'
 import { holdWords } from '@/lib/outreach/hold-words'
-import { signalLabel } from '@/lib/outreach/home-results'
+import { signalLabel } from '@/lib/outreach/signal-label'
 
 const REPLY_WORD: Record<string, string> = { positive: 'Interested', negative: 'Not interested', other: 'Replied', opt_out: 'Opted out', uncertain: 'Replied' }
 const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })

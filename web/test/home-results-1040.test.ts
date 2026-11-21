@@ -264,3 +264,20 @@ bothEngines('#1040: Replied and Interested count reply threads - shared threads 
   assert.deepEqual(r.by_signal.map(s => [s.signal, s.contacted, s.replied]), [['hiring', 2, 3], ['raised_funding', 1, 0]])
   assert.equal(r.by_signal.reduce((n, s) => n + (s.replied ?? 0), 0), r.tiles.replied, 'by signal adds up to the Replied tile')
 })
+
+// #1062 (council on #1475): on both stores, a finished company-first scan's candidate that its final checks do not show is not a new lead and
+// not a latest lead; an ordinary scan's lead is. Postgres has no company-first reader yet (lib/db/client.ts: SQLite only), so there every lead
+// of a company-first scan stays off Home - fail closed, as on its run page; this pins that it never shows there as a lead.
+bothEngines('#1062: a company-first scan\'s held candidates are not new leads or latest leads on Home', async ({ db }) => {
+  const now = Math.floor(Date.now() / 1000), at = now - 86400
+  const cf = 'f'.repeat(24), plain = 'g'.repeat(24)
+  for (const id of [cf, plain]) await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, created_at) VALUES (?, 'H', 'x', '(from request)', '-', 'companies that raised a Series A', 'running', ?)", [id, at])
+  await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, review_reason, created_at) VALUES ('held-lead', ?, 'Held Co', 'raised a Series A', 'https://held.example/a', 'quote_unconfirmed', ?)", [cf, at])
+  await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, created_at) VALUES ('plain-lead', ?, 'Plain Co', 'raised a Series A', 'https://plain.example/a', ?)", [plain, at])
+  await db.run("UPDATE scan_jobs SET status = 'done', enrich_started_at = ?, enrich_finished_at = ?, run_budget = ? WHERE id = ?", [at, at + 60, JSON.stringify({ discovery_source: 'company_first_v1' }), cf])
+  await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", [plain])
+  const r = await homeResults(db, 'H', now)
+  assert.equal(r.tiles.leads, 1, 'only the ordinary lead is a new lead')
+  assert.deepEqual(r.latest_leads.map(l => l.company), ['Plain Co'])
+  assert.equal(r.by_signal.reduce((n, s) => n + s.leads, 0), 1, 'the by-signal rows add up to the tile')
+})
