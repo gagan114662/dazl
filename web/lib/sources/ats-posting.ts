@@ -158,7 +158,8 @@ function headerOf(kind: AtsKind, job: Record<string, unknown>, title: string, lo
 // name>" when the board states one, else the posting title alone; it is display only for every company check
 // (evidence.ts pageHeadingNames reads the board identity instead).
 // slug null: no slug identity at all (a held copy of a Greenhouse posting, below): only a quote naming the company binds it.
-export interface BoardIdentity { title: string; company: string | null; slug: string | null }
+// record: the text is the board's own API record (atsPageText), not a held copy of the posting page (heldCopyBoard)
+export interface BoardIdentity { title: string; company: string | null; slug: string | null; record?: true }
 
 // #1126 (XHawk on #1143): a TinyFish copy held for a posting URL whose board API read was blocked is still a board
 // posting, never an ordinary page whose title is phrase-matched (that title is the board page's own, e.g. "<title> @
@@ -177,7 +178,7 @@ export function atsPageText(rec: AtsRecord, descriptionText: string): { text: st
   return {
     text: [rec.header || rec.title, body, `Job posting on the ${rec.board} job board.`].filter(Boolean).join(' ').slice(0, 100_000),
     title: (rec.company ? `${rec.title} @ ${rec.company}` : rec.title).slice(0, 300),
-    board: { title: rec.title, company: rec.company || null, slug: rec.org },
+    board: { title: rec.title, company: rec.company || null, slug: rec.org, record: true },
   }
 }
 

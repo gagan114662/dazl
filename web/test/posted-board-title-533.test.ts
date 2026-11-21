@@ -131,5 +131,28 @@ test('#533 live: on a board record a snippet-punctuated header quote and an inne
     // an ordinary page (no board record) keeps the strict rule: an inner gap still fails
     const plain: Page = { text: page.text, title: page.title, retrievedAt: page.retrievedAt }
     assert.equal((v(ROGO_QUOTE, plain) as { reason?: string }).reason, 'excerpt_not_on_page')
+    // ...and so does a held copy of the posting page (board identity from the URL, not the board's API record)
+    const copy: Page = { ...plain, board: { title: page.title, company: null, slug: 'rogo' } }
+    assert.equal((v(ROGO_QUOTE, copy) as { reason?: string }).reason, 'excerpt_not_on_page')
+    // more than four pieces is not a quote
+    const five = 'Post-Sales Operations Manager. Location ... New York City. Employment Type ... Full time Location Type On-site ... Department GTM Rogo is hiring ... a Post-Sales Operations Manager to run'
+    assert.equal((v(five) as { reason?: string }).reason, 'excerpt_not_on_page')
+  } finally { restore() }
+})
+
+test('#533 review: a gapped board quote hands the judge only the words around each piece, never the record text between them', async () => {
+  const filler = 'Unquoted record text about benefits and perks. '.repeat(2000)
+  const board = { jobs: [{ ...ROGO_BOARD.jobs[0], descriptionPlain: `Post-Sales Operations Manager for the onboarding team. ${filler} Full time role based in New York City with renewals scope.` }] }
+  const restore = fakeHttps({ rogo: board })
+  try {
+    const read1 = await read(ROGO_URL) as Page
+    // the board states its employer name (as a Greenhouse record does), so the judge is given the matched quote
+    const page: Page = { ...read1, board: { ...read1.board!, company: 'Rogo' } }
+    // the quote does not name the company, so the board's identity binds it and the judge gets a matched quote
+    const r = verifyEvidence({ company: 'Rogo', signal: ROGO_SIGNAL, source_url: ROGO_URL, excerpt: 'Post-Sales Operations Manager for the onboarding team ... Full time role based in New York City', event_date: null } as never, page)
+    assert.equal(r.ok, true, JSON.stringify(r).slice(0, 300))
+    const ok = r as { passage: string; judgeAttribution?: { matchedQuote: string } }
+    assert.ok(ok.passage.length < 4000, `passage ${ok.passage.length} chars`)
+    assert.equal(ok.judgeAttribution?.matchedQuote, 'post sales operations manager for the onboarding team ... full time role based in new york city')
   } finally { restore() }
 })
