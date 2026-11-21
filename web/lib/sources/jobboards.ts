@@ -48,12 +48,25 @@ const NY_ITEM = `(?:(?:ny|new york|usa|us|united states|${WORK})(?:\\s+\\d{5}(?:
 const parens = (item: string) => `(?:\\s*\\(\\s*${item}(?:${SEP}${item})*\\s*\\))?`
 const LONDON_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:(?:greater|central|north|south|west)\\s+london|london|east\\s+london(?=${SEP}${UKM}\\b))(?:\\s+(?:area|metro(?:politan)?\\s+area))?${parens(UK_ITEM)}(?:${SEP}${UK_ITEM})*${parens(UK_ITEM)}\\s*$`, 'i')
 const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|manhattan|brooklyn|queens|the bronx|bronx|staten island)${parens(NY_ITEM)}(?:${SEP}${NY_ITEM})*${parens(NY_ITEM)}\\s*$`, 'i')
-// #1205: "London, Ontario" / "London, ON" / "London, Kentucky" are NOT the UK's London (they were answered with UK postings). A London
-// qualified by a non-UK province / state / country is left to the other resolvers (London, KY is a US city; London, Ontario a Canadian one).
-const NON_UK_LONDON = /\blondon\s*,?\s*(?:ontario|canada|kentucky|ohio|arkansas|texas)\b/i
-const NON_UK_LONDON_CODE = /\b[Ll]ondon\s*,\s*(?:ON|ONT|KY|OH|AR|TX|CA)\b/
+// #1205: "London, Ontario" / "London, ON" / "London, Indiana" / "London, WV" are NOT the UK's London (they were answered with UK postings). A London
+// qualified by ANY place outside the UK is left to the other resolvers (London, IN is a US city; London, Ontario a Canadian one): the qualifier
+// is read by the same resolvers the rest of the place code uses (a country, a US state, a Canadian province), never a list of names here.
+// A full name may follow with or without a comma ("London Ontario"); a code only after a comma and in capitals ("London, IN", never "London in 2025").
+function nonUkLondon(q: string): boolean {
+  for (const m of q.matchAll(/\blondon\b(\s*,)?\s*([\p{L}.'-]+(?:\s+[\p{L}.'-]+){0,2})/giu)) {
+    const comma = !!m[1], words = m[2].split(/\s+/)
+    for (let n = words.length; n >= 1; n--) {
+      const seg = words.slice(0, n).join(' ').replace(/\.$/, '')
+      if (seg.length <= 2 ? !(comma && /^[A-Z]{2}$/.test(seg)) : !comma && seg.length === 3 && /^[A-Z]{3}$/.test(seg)) continue // a code ("IN", "ONT") only after a comma, in capitals
+      const country = resolveSegment(seg, true), region = regionOf(seg)
+      if (country) { if (country !== 'GB') return true; continue }
+      if (region) { if (countryOfRegion(region) !== 'GB') return true; continue }
+    }
+  }
+  return false
+}
 const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; ok: (l: string) => boolean }[] = [
-  { ask: { test: q => /\blondon\b/i.test(q) && !NON_UK_LONDON.test(q) && !NON_UK_LONDON_CODE.test(q) }, name: 'London', ok: l => LONDON_OK.test(l) },
+  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
   { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
 ]
@@ -93,6 +106,7 @@ export function genericPlace(query: string): Place | null {
       if (!l) return false
       if (!re.test(norm(l))) return false
       const named = countriesIn(l); if (!(named.length === 0 || named.every(c => c === country))) return false
+      if (country !== 'GB' && LONDON_OK.test(l)) return false // #1205: a UK London location ("Greater London", a bare "London") is not a London elsewhere
       // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK)
       return regionsIn(l).every(r => countryOfRegion(r) === country)
     })
@@ -131,7 +145,8 @@ function cityPlaceOf(cityIn: string, region: string): Place | null {
   // or a remote posting ("Remote - Austin, TX": not located in the city, the same rule as London/NYC) is never this city
   const cityRe = new RegExp(city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
   const otherState = (l: string) => { const rest = l.replace(cityRe, ' '); return Object.entries(STATES).some(([a, name]) => a !== abbr && (new RegExp(`,\\s*${a}\\b`).test(rest) || new RegExp(`\\b${name}\\b`, 'i').test(rest))) }
-  const foreign = (l: string) => countriesIn(l).some(c => c !== 'US')
+  // #1205: a location the UK London place claims ("Greater London", a bare "London") is in the UK, even when it names no country
+  const foreign = (l: string) => countriesIn(l).some(c => c !== 'US') || LONDON_OK.test(l)
   // #1205: a Canadian province is another country too ("London, ON" is not London, KY)
   const otherRegion = (l: string) => regionsIn(l).some(r => countryOfRegion(r) !== 'US')
   return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l) && !otherRegion(l)) }
