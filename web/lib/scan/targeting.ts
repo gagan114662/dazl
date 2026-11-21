@@ -189,8 +189,9 @@ const STOPPED_AFTER = /\b(?:on\s+hold|on\s+ice|postpon\w*|delay(?:s|ed)?|shelv(?
 const AFTER_AUX = /^(?:\s*(?:is|was|are|were|has|have|had|been|being|now|put|proves?))*\s*:?\s*$/i
 const AFTER_TAIL = /^(?:\s*(?:%|in\s+place|across\b.*|for\s+now|until\b.*|indefinitely|this\s+(?:year|quarter|month)|(?:within|in\s+the|over|during|last|recently|since)\b.*))?\s*$/i
 // A completed hire undone, or a raise / hiring that stopped, in the same breath: "hired SDRs and fired them", "hired a VP Sales, then fired
-// him", "raised funding but stopped".
-const UNDONE = /,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:fired|let\s+(?:\S+\s+){1,2}go|laid\s+\S+\s+off)\b|,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:stopped|ceased|quit|paused|halted)\s*$/i
+// him", "raised funding but stopped". Only the hire itself is undone: "hired a CRO and fired their agency" is still a hire.
+const HIRED_OBJ = String.raw`(?:them|him|her|(?:the|our|their|its)\s+(?:new\s+)?(?:team|staff|hires?|reps?|sdrs?|bdrs?|aes?))`
+const UNDONE = new RegExp(String.raw`,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:fired\s+${HIRED_OBJ}|let\s+${HIRED_OBJ}\s+go|laid\s+${HIRED_OBJ}\s+off)\b|,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:stopped|ceased|quit|paused|halted)\s*$`, 'i')
 const CLAUSE_END = /[.;!?,]|\b(?:and|or|but|while|who|that|which)\b/i
 // A role word right after the hiring verb is the role ("hiring cap table managers"); "fewer" right after it shrinks the hire ("hired fewer SDRs").
 const FEWER_AFTER = /^\s*fewer\b(?!\s+than)/i
@@ -300,7 +301,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
       // The stop words are not part of the role ("hiring SDRs postponed" is NOT hiring SDRs, "hired fewer SDRs" is NOT a hire of SDRs).
       const r = c.role, cue = mid[0].replace(/^,?\s*/, '').toLowerCase(), at = r.toLowerCase().indexOf(cue)
       if (at === 0) c.role = r.slice(cue.length).trim().replace(/^[^a-z]*$/i, '')
-      else if (at > 0) c.role = r.slice(0, at).replace(/(?:\s+(?:and|then|but|is|was|are|were|has|have|had|been|being|now|put|proves?|role|roles|position))+\s*:?\s*$/i, '').trim()
+      else if (at > 0) c.role = r.slice(0, at).replace(/(?:\s+(?:and|then|but|is|was|are|were|has|have|had|been|being|now|put|proves?|role|roles|position))+\s*:?\s*$/i, '').trim().replace(/^(?:a|an|the)$/i, '')
     }
     ambiguities.push({ text: hit[0].trim(), readings: [`${c.text} (a positive condition)`, `NOT ${c.text} (the request says it stopped, was rejected or shrank)`], chosen: `NOT ${c.text}: the request says it stopped, was rejected or shrank` })
     negated[i] = true
