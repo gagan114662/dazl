@@ -144,6 +144,8 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['AdmissionRefused
   'LeaseLost', 'LinkLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused', 'VerifierError', 'VerifySlotRefused',
 
   'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
+  // lib/scan/runner.ts: a later discovery angle cannot fit without consuming verification headroom.
+  'OptionalAngleNoRoom',
   // lib/workers (runtime workers): a refused catalog or lifecycle change; a reviewed handler past its timeout.
   'WorkerError', 'HandlerTimeout',
   // lib/scan/feedback.ts (#385): a lead verdict that cannot be recorded as asked; a feedback store that cannot be read.
