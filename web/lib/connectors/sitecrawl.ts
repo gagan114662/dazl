@@ -192,14 +192,22 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
       if (!res.ok) return null
       const j = (await res.json()) as { results?: { url?: string; html?: string; status_code?: number; success?: boolean; redirected_url?: string }[] }
       const r = j.results?.[0]; if (!r) return null
-      const finalUrl = r.redirected_url || r.url
-      if (typeof finalUrl !== 'string') return null
-      try {
-        const target = new URL(finalUrl)
-        if (target.protocol !== 'https:' || target.username || target.password || target.port ||
-            target.hostname.replace(/^www\./, '') !== u.hostname.replace(/^www\./, '')) return null
-      } catch { return null }
-      return { status: r.status_code ?? (r.success ? 200 : 0), body: String(r.html ?? '').slice(0, MAX_BYTES), finalUrl }
+      const status = r.status_code ?? (r.success ? 200 : 0)
+      const hasSource = Object.hasOwn(r, 'url'), hasRedirect = Object.hasOwn(r, 'redirected_url')
+      const validRendererUrl = (value: unknown): value is string => {
+        if (typeof value !== 'string' || !value || value !== value.trim()) return false
+        try {
+          const target = new URL(value)
+          return target.protocol === 'https:' && !target.username && !target.password && !target.port &&
+            target.hostname.replace(/^www\./, '') === u.hostname.replace(/^www\./, '')
+        } catch { return false }
+      }
+      if ((hasSource && !validRendererUrl(r.url)) || (hasRedirect && !validRendererUrl(r.redirected_url))) return null
+      // Legacy ordinary readers may omit both fields. Never infer the final
+      // URL when they report a redirect without usable redirect metadata.
+      if (status >= 300 && status < 400 && !hasRedirect) return null
+      const finalUrl = r.redirected_url ?? r.url ?? url
+      return { status, body: String(r.html ?? '').slice(0, MAX_BYTES), finalUrl }
     } catch { return null }
   }
 }
