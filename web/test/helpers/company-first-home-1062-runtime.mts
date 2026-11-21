@@ -11,6 +11,8 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { markCompanyFirstBudget } from '../../lib/company-first/product-discovery.ts'
+import { migrateCompanyFirstPublishedDisplay } from '../../lib/people/company-first-published-display.ts'
+import { seed } from './company-first-visible-seed.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as readyGET } from '../../app/api/home/ready/route.ts'
 import { GET as resultsGET } from '../../app/api/home/results/route.ts'
@@ -69,5 +71,43 @@ test('Home (ready lines, checked list, latest leads) and Past scans read the com
     assert.equal(c.qualification.needsReview, 0, `${url}: nothing to review`)
     assert.equal(c.qualification.heldByChecks, run.held.length, `${url}: held by checks = the run page's held count`)
     assert.equal(c.next.label, `${run.held.length} leads are held by checks (read-only): open the run to see why`, `${url}: the link text counts what the run page holds`)
+  }
+})
+
+// Positive control and the unfinished-checks reason (council on #1475): a company-first scan whose gate SHOWS one lead (River Ledger, verified
+// display proof) and holds another (Other Co). The shown lead stays a lead everywhere; only the held one is held. Then a new enrichment
+// attempt starts: until the checks finish, every lead of the scan is "final checks not finished", never "needs your review" and never a lead.
+test('Home and Past scans: a lead the gate shows stays a lead; until the checks finish nothing of the scan is a lead or needs review', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); migrateCompanyFirstPublishedDisplay(db)
+  setScanDb(db)
+  const s = await seed(db)
+  setUser({ id: s.tenant, business_name: 'Seller' })
+  db.prepare("UPDATE scan_jobs SET status='done', candidates=2, dropped=0, enrich_started_at=?, enrich_finished_at=? WHERE id=?").run(s.at - 60, s.at, s.id)
+  const run = await (await leadsGET(new NextRequest(`http://test/api/leads?job_id=${s.id}`))).json() as { leads: { company: string }[]; held: { company: string }[] }
+  assert.deepEqual([run.leads.map(l => l.company), run.held.map(h => h.company)], [['River Ledger'], ['Other Co']], 'run page: one shown, one held')
+
+  const readyOf = async () => new Map((await (await readyGET(new NextRequest('http://test/api/home/ready'))).json() as { companies: { company: string; reason: string }[] }).companies.map(c => [c.company, c.reason]))
+  const resultsOf = async () => await (await resultsGET(new NextRequest('http://test/api/home/results'))).json() as { tiles: { leads: number }; latest_leads: { company: string }[] }
+  const cardOf = async (url: string) => (await (await campaignsGET(new NextRequest(url))).json() as { campaigns: { id: string; next: { label: string }; qualification: { needsReview: number; sourceChecked: number; heldByChecks?: number } }[] }).campaigns.find(c => c.id === s.id)!
+
+  let ready = await readyOf()
+  assert.equal(ready.get('Other Co'), 'held by the final checks', 'the held lead: held by the final checks')
+  assert.ok(!['held by the final checks', 'final checks not finished'].includes(ready.get('River Ledger') ?? ''), `the shown lead is judged by its own checks (${ready.get('River Ledger')})`)
+  let results = await resultsOf()
+  assert.deepEqual([results.tiles.leads, results.latest_leads.map(l => l.company)], [1, ['River Ledger']], 'the shown lead is a lead; the held one is not')
+  for (const url of ['http://test/api/campaigns?view=history', 'http://test/api/campaigns']) {
+    const c = await cardOf(url)
+    assert.deepEqual([c.qualification.sourceChecked, c.qualification.heldByChecks, c.qualification.needsReview], [1, 1, 0], `${url}: the shown lead counted, the held one held`)
+  }
+
+  // a new enrichment attempt: the scan's final checks have not run for it yet
+  db.prepare('UPDATE scan_jobs SET enrich_started_at = ?, enrich_finished_at = NULL WHERE id = ?').run(Math.floor(Date.now() / 1000) - 60, s.id)
+  ready = await readyOf()
+  assert.deepEqual([ready.get('River Ledger'), ready.get('Other Co')], ['final checks not finished', 'final checks not finished'], 'checks running: not finished, never "needs your review"')
+  results = await resultsOf()
+  assert.deepEqual([results.tiles.leads, results.latest_leads], [0, []], 'checks running: no lead of the scan is a lead yet')
+  for (const url of ['http://test/api/campaigns?view=history', 'http://test/api/campaigns']) {
+    const c = await cardOf(url)
+    assert.deepEqual([c.next.label, c.qualification.needsReview], ['Search still running', 0], `${url}: still running`)
   }
 })

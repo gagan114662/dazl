@@ -12,5 +12,5 @@ test('Home and Past scans: company-first held candidates are never "need your re
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 1/); assert.match(r.stdout, /# fail 0/)
+  assert.match(r.stdout, /# pass 2/); assert.match(r.stdout, /# fail 0/)
 })
