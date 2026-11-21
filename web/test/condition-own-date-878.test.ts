@@ -72,3 +72,18 @@ test('#878 a board-dated posting still dates its own hiring condition; the raise
   const own = planProofs(plan, { ...lead, event_date_proof: 'page_bound' }, [], { query: q, icp: null, salesGatePassed: false, competitors: null, graded: true })
   assert.deepEqual([own.C2.truth, own.C2.date], ['pass', day(11)])
 })
+
+test('#878 (review) on a board-dated lead: a raise with no clock stays proven without a date; a clock counted from that raise cannot be checked', () => {
+  const ctx = { icp: null, salesGatePassed: false, competitors: null, graded: true }
+  const lead: ProofLead = { company: CLAY.company, company_domain: CLAY.domain, evidence_excerpt: `Clay is hiring Account Executives to join our sales team. ${CLAY.quote}`, signal: 'hiring Account Executives', source_url: CLAY.url, event_date: day(11), event_date_proof: 'ats_structured' }
+  // no window on the raise: nothing to check, so it passes as before, but it never carries the posting day as its date
+  const q1 = 'B2B software companies that raised a Series D and are hiring account executives'
+  const p1 = planProofs(compileTargeting(q1), lead, [], { ...ctx, query: q1 })
+  assert.deepEqual([p1.C1.truth, p1.C1.date], ['pass', undefined], p1.C1.reason)
+  // hiring counted from the raise: the raise has no day of its own, so the gap cannot be checked
+  const q2 = 'B2B software companies that raised a Series D in the last 90 days and hired account executives within 30 days of the raise'
+  const plan2 = compileTargeting(q2)
+  const p2 = planProofs(plan2, lead, [], { ...ctx, query: q2 })
+  assert.equal(evaluatePlan(plan2, p2).truth, 'unknown')
+  for (const k of Object.keys(p2)) assert.notEqual(p2[k].truth === 'pass' && p2[k].date === day(11) && /raise/.test(p2[k].reason), true, `${k}: ${p2[k].reason}`)
+})
