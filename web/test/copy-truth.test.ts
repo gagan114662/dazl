@@ -22,17 +22,19 @@ test('copy matches behaviour: no "approve every send" vs autopilot contradiction
   for (const p of ['app/app/seo/brief-panel.tsx', 'app/app/seo/newsjack-panel.tsx']) assert.match(read(p), /markdownToPlain\(/, p)
 })
 
-test('homepage claims match behaviour (Instinct #326, #1042): example demo labelled, first play daily, held not dropped, provider costs at Pro', () => {
+test('homepage claims match behaviour (Instinct #326, #1042, #1428): example demo labelled, first search daily, held not dropped, free beta only', () => {
   const page = read('app/page.tsx'); const demo = read('app/landing-demo.tsx')
   // #1042 (decision 2026-11-12): the first play's automatic repeat runs every day (lib/play-repeat.ts, lib/play-cadence.ts);
-  // a play saved by hand still runs weekly. So the homepage may say "every day" only about the first Play.
+  // a play saved by hand still runs weekly. So the homepage and the demo may say "every day" only about the first search
+  // (#1428: the public pages call a Play a search, and the demo shows that first search).
   assert.match(read('lib/play-cadence.ts'), /DAY_S = 86400/)
   assert.match(read('lib/play-cadence.ts'), /watchIntervalS = \(auto: boolean\): number => auto \? DAY_S : WEEK_S/)
   assert.match(read('lib/play-repeat.ts'), /REPEAT_INTERVAL_S = DAY_S/)
-  assert.match(page, /Your first Play runs again every day/)
-  assert.equal(page.match(/\bdaily\b|every day/gi)?.length, 2, 'the step title and its first-Play sentence only')
-  assert.doesNotMatch(demo, /\bdaily\b|every day/i)
-  assert.match(demo, /Live · runs weekly/)
+  assert.match(page, /Your first search runs again every day/)
+  assert.equal(page.match(/\bdaily\b|every day/gi)?.length, 2, 'the step title and its first-search sentence only')
+  // the demo shows a first search going live: it repeats daily, so the demo says so and never "weekly"
+  assert.match(demo, /Live · runs every day/)
+  assert.doesNotMatch(demo, /weekly/i)
   // The demo's people and companies are invented: labelled on screen and for screen readers.
   assert.match(demo, /data-testid="demo-label">Illustrative example · made-up companies and people</)
   assert.match(demo, /'Illustrative example of a dazl run, with made-up companies and people/)
@@ -43,13 +45,10 @@ test('homepage claims match behaviour (Instinct #326, #1042): example demo label
   assert.doesNotMatch(ex, /url: 'http/, 'made-up leads link no source')
   // Leads that fail a check are kept as held research for review, not deleted.
   assert.doesNotMatch(page, /are dropped|drops what fails/)
-  assert.match(page, /held for your review, out of the ready-to-contact list/)
-  // Pro is a flat dazl fee; AI usage on the user's own key is billed by the provider, stated on the Pro card itself.
-  const pro = page.slice(page.indexOf('>Pro<'), page.indexOf('Start free, upgrade any time'))
-  // The card renders the one disclosure the product truth record carries (lib/plans.ts PRICE_DISCLOSURE, #402).
-  assert.match(pro, /\{PRICE_DISCLOSURE\}/)
-  assert.match(read('lib/plans.ts'), /PRICE_DISCLOSURE = '[^']*your provider bills that usage separately/)
-  assert.doesNotMatch(page, /no overages/i)
+  assert.match(page, /A lead that fails a check is kept out of your ready list, with the reason/)
+  // #1428 (owner decision): launch shows the free beta only; no paid plan, price or provider-billing wording to keep true.
+  assert.doesNotMatch(page, />Pro<|\$49|PRICE_DISCLOSURE|no overages/i)
+  assert.match(page, /<FreeBetaCard \/>/)
 })
 
 test('homepage approval wording matches the sending contract (Instinct #338): approval per email unless Autopilot is on', () => {
@@ -76,14 +75,14 @@ test('homepage evidence and coverage claims match what a scan returns (Instinct 
   const page = read('app/page.tsx'), demo = read('app/landing-demo.tsx')
   // Undated, unconfirmed or blocked candidates stay held for review: only ready leads carry the checked evidence.
   assert.doesNotMatch(page, /Every lead (comes|shows)|Each lead comes|Evidence for every lead/)
-  assert.match(page, /Leads marked ready come with the quoted line/)
-  assert.match(page, /stay held for your review, with the reason/)
-  // Any business is welcome; results are not promised for every market.
+  assert.match(page, /Each ready lead comes with the line that shows the signal, linked to its source/)
+  assert.match(page, /kept out of your ready list, with the reason/)
+  // Results are not promised for every market (#1428 dropped the coverage sentence; no promise replaces it).
   assert.doesNotMatch(page, /works out who buys from you\./)
-  assert.match(page, /What it finds depends on the public evidence available for your market/)
-  // The demo shows held leads beside ready ones, never only a headline count.
+  assert.doesNotMatch(page, /every market|any market|guarantee/i)
+  // The demo shows the leads still being checked beside ready ones, never only a headline count.
   assert.doesNotMatch(demo, /5 leads found/)
-  assert.match(demo, /held for your review/)
+  assert.match(demo, /2 more still being checked/)
 })
 
 test('onboarding "brain ready" copy matches behaviour: no approve-every-send, no unconditional follow-up stop, no contact-today promise', () => {

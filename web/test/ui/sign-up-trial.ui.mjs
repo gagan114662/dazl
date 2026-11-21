@@ -23,8 +23,8 @@ try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.spli
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 
 // #1095: the trial scans come with Google sign-in (lib/trial-copy.ts signUpPlanLine)
-const TRIAL_LINE = /Sign in with Google \(or link it later\) for 3 free trial scans first/
-const FALLBACK_LINE = /Free plan: 50 scans a month with your own AI key\. Upgrade any time\./
+const TRIAL_LINE = /Continue with Google \(or link it later\) for 3 free scans, no card/
+const FALLBACK_LINE = /A scan is one search: dazl looks for businesses that need what you sell right now and checks the proof behind each one\.(?! Continue with Google)/
 
 async function withServer(env, fn) {
   const port = pickUiPort(); const base = `http://127.0.0.1:${port}`

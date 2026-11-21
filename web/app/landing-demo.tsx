@@ -4,11 +4,11 @@ import { EXAMPLES } from '@/lib/landing-examples'
 
 // The homepage demo: the real flow, played on a loop, labelled as an illustrative example while its data is made up
 // (lib/landing-examples.ts). A website is typed, the checks tick through, five leads are found (three shown with their
-// evidence) and the Play goes live; each loop shows a different business and country, and the chips pick one. Reduced
+// evidence) and the saved search goes live; each loop shows a different business and country, and the chips pick one. Reduced
 // motion shows the finished state.
 const CHECKS = ['Reading your site', 'Building your profile', 'Searching hiring & funding news', 'Checking evidence']
 const N = EXAMPLES.scenarios.length
-// Timeline in steps of TICK ms: typing, one step per check, leads, then the live Play, then hold and loop.
+// Timeline in steps of TICK ms: typing, one step per check, leads, then the live saved search, then hold and loop.
 const TICK = 650
 const TYPE_END = 4, CHECKS_END = TYPE_END + CHECKS.length, LEADS_AT = CHECKS_END + 1, PLAY_AT = LEADS_AT + 3, LOOP = PLAY_AT + 7
 
@@ -27,7 +27,7 @@ export default function LandingDemo() {
   const typed = t >= TYPE_END ? URL_TEXT : URL_TEXT.slice(0, Math.ceil((URL_TEXT.length * t) / TYPE_END))
   const done = t >= LEADS_AT
   return (
-    <div className="lp-demo" data-testid="landing-demo" data-step={t >= PLAY_AT ? 'live' : done ? 'leads' : t >= TYPE_END ? 'checks' : 'typing'} aria-label={EXAMPLES.real ? 'A dazl run: a website in, checks, leads found with their evidence, a Play that runs weekly' : 'Illustrative example of a dazl run, with made-up companies and people: a website in, checks, leads found, a Play that runs weekly'}>
+    <div className="lp-demo" data-testid="landing-demo" data-step={t >= PLAY_AT ? 'live' : done ? 'leads' : t >= TYPE_END ? 'checks' : 'typing'} aria-label={EXAMPLES.real ? 'A dazl run: a website in, checks, leads found with their evidence, a saved search that runs every day' : 'Illustrative example of a dazl run, with made-up companies and people: a website in, checks, leads found, a saved search that runs every day'}>
       {!EXAMPLES.real && <div className="text-xs font-medium text-[var(--ink-3)] mb-2 text-center" data-testid="demo-label">Illustrative example · made-up companies and people</div>}
       <div className="flex flex-wrap justify-center gap-1.5 mb-3" role="group" aria-label="Pick a business to see its run" data-testid="demo-chips">
         {EXAMPLES.scenarios.map((x, i) => <button key={x.id} type="button" className="chip text-xs" aria-pressed={i === sc} onClick={() => setRun({ t: still ? PLAY_AT : 0, sc: i })}>{x.chip}</button>)}
@@ -48,7 +48,7 @@ export default function LandingDemo() {
       <div className={`lp-card mt-3 p-4 sm:p-5 lp-fade ${done ? 'lp-in' : ''}`}>
         <div className="flex items-center justify-between mb-3">
           <div className="font-semibold">3 leads ready</div>
-          <span className="text-xs text-[var(--ink-3)]">2 more held for your review</span>
+          <span className="text-xs text-[var(--ink-3)]">2 more still being checked</span>
         </div>
         <div className="grid gap-2">
           {LEADS.map((l, i) => (
@@ -58,7 +58,6 @@ export default function LandingDemo() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0"><span className="font-semibold">{l.name}</span> <span className="text-[var(--ink-2)] text-sm">{l.title} · {l.company}</span></div>
-                    <span className="pill pill-mint shrink-0">fit {l.fit}/5</span>
                   </div>
                   <blockquote className="lp-quote mt-2">“{l.quote}”</blockquote>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2 text-xs" data-testid="demo-evidence">
@@ -75,7 +74,7 @@ export default function LandingDemo() {
       </div>
       <div className={`lp-card mt-3 p-4 flex items-center justify-between gap-3 lp-fade ${t >= PLAY_AT ? 'lp-in' : ''}`} data-testid="demo-play">
         <div className="min-w-0"><div className="font-semibold">{S.play}</div><div className="text-sm text-[var(--ink-2)]">{S.where}</div></div>
-        <span className="live-dot shrink-0">Live · runs weekly</span>
+        <span className="live-dot shrink-0">Live · runs every day</span>
       </div>
     </div>
   )

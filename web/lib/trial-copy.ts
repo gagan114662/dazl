@@ -96,9 +96,9 @@ export function trialRefusalNotice(reason: unknown, here: string, account: { ver
 // The money allowance (account_total_cap) is called the free trial allowance; every refusal ends with the one next step, the account's own key.
 // The sign-up page's plan line (#1095): the free trial scans come with Google sign-in, never promised to the email path.
 export function signUpPlanLine(trialFunded: boolean): string {
-  return trialFunded
-    ? 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.'
-    : 'Free plan: 50 scans a month with your own AI key. Upgrade any time.'
+  // #1428: say what a scan is in plain words; never ask for a key on the sign-up page.
+  const scan = 'A scan is one search: dazl looks for businesses that need what you sell right now and checks the proof behind each one.'
+  return trialFunded ? `${scan} Continue with Google (or link it later) for 3 free scans, no card.` : scan
 }
 
 export function trialRefusedCopy(reason: unknown): string {

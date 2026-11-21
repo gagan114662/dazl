@@ -1,9 +1,9 @@
 "use client"
 import { useEffect, useState } from 'react'
-import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
+import Wordmark from '../wordmark'
 
 export default function SignIn() {
   const router = useRouter()
@@ -18,8 +18,8 @@ export default function SignIn() {
       google_email_unverified: 'Your Google email is not verified, so we cannot use it.',
       google_email_exists: 'An account with this email already exists. Sign in with your password.', too_many: 'Too many attempts. Try again later.', unavailable: 'Sign-in is briefly unavailable. Try again in a moment.',
     }
-    if (e && m[e]) setError(m[e])
-    if (new URLSearchParams(window.location.search).get('reset') === '1') setError('Your password is changed and every device was signed out. Sign in with the new password.')
+    const msg = new URLSearchParams(window.location.search).get('reset') === '1' ? 'Your password is changed and every device was signed out. Sign in with the new password.' : e && m[e] ? m[e] : ''
+    if (msg) queueMicrotask(() => setError(msg))
   }, [])
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -37,14 +37,14 @@ export default function SignIn() {
   }
 
   return (
-    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+    <main id="main" className="app-ui min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
-        <Link href="/" className="text-xl font-medium tracking-tight flex items-center justify-center min-h-11 mb-4">dazl<span className="text-[#111]">.</span></Link>
+        <div className="flex justify-center mb-4"><Wordmark /></div>
         <h1 className="text-2xl font-medium mb-1 text-center">Sign in</h1>
         <p className="text-[#555] text-sm mb-6 text-center">Enter your email to continue</p>
         <ClaimContextBanner business={claim.business} action="Sign in" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>
-        <p className="text-xs text-[#555] text-center mt-2 mb-4">Free scans need Google sign-in.</p>
+        <div className="mb-4" />
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">

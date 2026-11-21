@@ -1,9 +1,9 @@
 "use client"
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
 import { signUpPlanLine } from '@/lib/trial-copy'
+import Wordmark from '../wordmark'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
 
 // sentWithoutScript / errorWithoutScript (#1116): the outcome of a NATIVE post of this form (it was submitted before or
@@ -45,9 +45,9 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
   // capped address and a failed send, so the page never claims delivery it cannot know happened.
   if (sent || sentWithoutScript) {
     return (
-      <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+      <main id="main" className="app-ui min-h-screen flex items-center justify-center glow px-4 py-10">
         <div className="card p-8 sm:p-10 w-full max-w-sm text-center" role="status">
-          <Link href="/" className="text-xl font-medium tracking-tight block mb-6">dazl<span className="text-[#111]">.</span></Link>
+          <div className="flex justify-center mb-6"><Wordmark /></div>
           <h1 className="text-2xl font-medium mb-3">Check your email</h1>
           <p className="text-[#555] text-sm mb-4">If {sent ? <span className="text-[#111]">{sent}</span> : 'the address you entered'} can receive mail from us, a link to confirm it is on its way. Open it, then sign in. The link works once, for 24 hours.</p>
           <p className="text-[#555] text-sm mb-4">Nothing arrived? Sign in with your password and we&apos;ll try to send a new link.</p>
@@ -58,16 +58,16 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
   }
 
   return (
-    <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
+    <main id="main" className="app-ui min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
-        <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></Link>
+        <div className="flex justify-center mb-6"><Wordmark /></div>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
         <p className="text-[#555] text-sm mb-6 text-center">
           {signUpPlanLine(trialFunded)}
         </p>
         <ClaimContextBanner business={claim.business} action="Create your account" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>
-        <p className="text-xs text-[#555] text-center mt-2 mb-4">Free scans need Google sign-in.</p>
+        <div className="mb-4" />
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         {/* action (#1116): before or without the script, the browser posts the form to the same route the script calls, which
@@ -100,8 +100,8 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
         <p className="mt-4 text-sm text-[#666] text-center">
           Already have an account? <a href="/sign-in" className="text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
         </p>
-        <p className="mt-3 text-xs text-[#6b6b6b] text-center">
-          <a href="/terms" className="underline underline-offset-2 hover:text-[#111]">Terms of Service</a> · <a href="/privacy" className="underline underline-offset-2 hover:text-[#111]">Privacy Policy</a>
+        <p className="mt-3 text-xs text-[#6b6b6b] text-center" data-testid="signup-terms">
+          By creating an account you agree to the <a href="/terms" className="underline underline-offset-2 hover:text-[#111]">Terms</a> and <a href="/privacy" className="underline underline-offset-2 hover:text-[#111]">Privacy Policy</a>.
         </p>
       </div>
     </main>

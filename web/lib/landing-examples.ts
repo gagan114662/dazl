@@ -8,6 +8,11 @@ const L = (name: string, title: string, company: string, fit: number, quote: str
 export const EXAMPLES: { real: boolean; scenarios: Scenario[] } = {
   real: false,
   scenarios: [
+    { id: 'dental-nyc', chip: 'Dental · New York', site: 'brightsmile-dental.example', play: 'NYC dental practices opening a new location', where: 'New York · expansion and hiring news', leads: [
+      L('Maya Lindqvist', 'Founder', 'Northside Ortho', 5, 'We’re opening our second clinic in Park Slope this spring.', 'brooklynpaper.example', '14 Oct 2026', 'A second clinic means a second front desk to book.'),
+      L('Omar Haddad', 'Practice owner', 'Kite Family Dental', 5, 'Now hiring two front-desk coordinators.', 'kitefamilydental.example', '9 Oct 2026', 'Hiring for scheduling is the problem you solve.'),
+      L('Rosa Delgado', 'Practice manager', 'Astoria Smiles', 4, 'Astoria Smiles adds Saturday hours and a fourth chair.', 'qns.example', '2 Oct 2026', 'More chairs and hours, more appointments to fill.'),
+    ] },
     { id: 'saas-london', chip: 'B2B SaaS · London', site: 'ledgerline.example', play: 'Seed-funded UK startups hiring their first sales rep', where: 'London · funding and hiring news', leads: [
       L('Hannah Okoro', 'Co-founder & CEO', 'Parcelwise', 5, 'Parcelwise raises £2.4M seed to expand across the UK.', 'uktechnews.example', '21 Oct 2026', 'New money and a sales hire coming: they will need a sales process.'),
       L('Tom Ashby', 'Founder', 'Brightdesk', 5, 'We’re hiring our first Account Executive in London.', 'brightdesk.example', '17 Oct 2026', 'A first sales hire is the moment to set up outbound.'),
@@ -17,11 +22,6 @@ export const EXAMPLES: { real: boolean; scenarios: Scenario[] } = {
       L('Daniel Tremblay', 'Marketing Director', 'Maple & Oak Furniture', 5, 'Maple & Oak opens its first flagship store on Queen West.', 'blogto.example', '19 Oct 2026', 'A flagship opening needs a launch campaign.'),
       L('Aisha Rahman', 'Founder', 'Glow Botanics', 4, 'Glow Botanics launches in 120 Shoppers Drug Mart stores.', 'retail-insider.example', '12 Oct 2026', 'National retail launch, small in-house team.'),
       L('Marc Gagnon', 'VP Growth', 'Tidewater Payments', 4, 'Tidewater Payments unveils new brand ahead of US expansion.', 'betakit.example', '6 Oct 2026', 'A rebrand before expansion is agency work.'),
-    ] },
-    { id: 'dental-nyc', chip: 'Dental group · New York', site: 'brightsmile-dental.example', play: 'NYC dental practices opening a new location', where: 'New York · expansion and hiring news', leads: [
-      L('Maya Lindqvist', 'Founder', 'Northside Ortho', 5, 'We’re opening our second clinic in Park Slope this spring.', 'brooklynpaper.example', '14 Oct 2026', 'A second clinic means a second front desk to book.'),
-      L('Omar Haddad', 'Practice owner', 'Kite Family Dental', 5, 'Now hiring two front-desk coordinators.', 'kitefamilydental.example', '9 Oct 2026', 'Hiring for scheduling is the problem you solve.'),
-      L('Rosa Delgado', 'Practice manager', 'Astoria Smiles', 4, 'Astoria Smiles adds Saturday hours and a fourth chair.', 'qns.example', '2 Oct 2026', 'More chairs and hours, more appointments to fill.'),
     ] },
     { id: 'cre-gurugram', chip: 'Commercial real estate · Gurugram', site: 'axisspaces.example', play: 'Companies expanding offices in Gurugram and Delhi NCR', where: 'Gurugram · expansion and funding news', leads: [
       L('Rohan Mehta', 'Head of Admin', 'Zentro Logistics', 5, 'Zentro to double its Gurugram headcount to 400 by March.', 'economictimes.example', '20 Oct 2026', 'Doubling headcount means a bigger office.'),

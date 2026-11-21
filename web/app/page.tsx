@@ -4,7 +4,8 @@ import Banner from './banner'
 import LandingDemo from './landing-demo'
 
 import { SITE_BASE, SITE_TITLE, publicMeta } from '@/lib/site'
-import { PLAN_PRICE_USD_MONTHLY, PRICE_DISCLOSURE } from '@/lib/plans'
+import FreeBetaCard from './free-beta-card'
+import Wordmark from './wordmark'
 
 // Self-referencing canonical (Indexing audit finding: the homepage had none, so the
 // apex and www duplicates competed). Kept on the page, not the root layout, so child
@@ -16,12 +17,12 @@ export const metadata: Metadata = {
 
 const STEPS = [
   { n: '1', title: 'Paste your website', desc: 'That is the only thing you type. dazl reads your site and works out who buys from you and which signals to watch for. You can edit it.' },
-  { n: '2', title: 'Get new leads every day', desc: 'Your first Play runs again every day, searching hiring, funding and expansion news. Each ready lead comes with the line that shows the signal, linked to its source.' },
+  { n: '2', title: 'Get new leads every day', desc: 'Your first search runs again every day, looking for hiring, funding and expansion news. Each ready lead comes with the line that shows the signal, linked to its source.' },
   { n: '3', title: 'Approve and send', desc: 'dazl drafts the message from the evidence. You approve each email before it sends, unless you turn on Autopilot. Email goes from your own Gmail.' },
 ]
 const PROOF = [
   ['Quoted and linked', 'Each ready lead shows the exact line from its source page, with the link.'],
-  ['Company and date checked', 'dazl confirms the page names the company and that the date is recent. Leads that fail a check are held for your review, out of the ready-to-contact list.'],
+  ['Company and date checked', 'dazl confirms the page names the company and that the date is recent. A lead that fails a check is kept out of your ready list, with the reason.'],
   ['You approve each send, unless you turn on Autopilot', 'Email goes from your own Gmail. Autopilot is off unless you turn it on. Once on, and after you have approved your first sends, later emails can send without your individual review, within the sending limit you set.'],
 ]
 
@@ -30,24 +31,23 @@ export default function Home() {
     <main id="main" className="app-ui lp min-h-screen flex flex-col">
       <Banner />
       <nav className="flex items-center justify-between gap-4 px-4 sm:px-6 md:px-10 py-5 max-w-6xl mx-auto w-full">
-        <span className="text-[22px] font-semibold tracking-tight">dazl</span>
+        <Wordmark />
         <div className="hidden md:flex gap-8 text-sm font-medium">
           <a href="#how" className="lp-navlink hover:opacity-70">How it works</a>
           <a href="#pricing" className="lp-navlink hover:opacity-70">Pricing</a>
         </div>
         <div className="flex gap-2">
           <Link href="/sign-in" className="btn-ghost">Sign in</Link>
-          <a href="/api/auth/google" className="btn-primary">Start free</a>
+          <a href="/sign-up" className="btn-primary">Start free</a>
         </div>
       </nav>
 
       <section className="px-4 sm:px-6 pt-12 md:pt-20 pb-10 max-w-4xl mx-auto w-full text-center">
         <h1 className="lp-h1">Your website in.<br />Verified leads out.</h1>
-        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">dazl reads your site and finds companies with a buying signal right now. Leads marked ready come with the quoted line, the source link and the date, checked against the company. Leads dazl cannot confirm stay held for your review, with the reason.</p>
-        <p className="text-sm font-semibold mt-4" data-testid="hero-contrast">Evidence for every ready lead, not a list of guesses.</p>
-        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">Made for any business, anywhere: paste your website and dazl drafts who buys from you. What it finds depends on the public evidence available for your market.</p>
+        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed" data-testid="hero-sub">Paste your website. dazl finds businesses that need what you sell right now, shows you the proof, and drafts the email from your Gmail.</p>
+        <p className="text-sm font-semibold mt-4" data-testid="hero-contrast">Proof behind every lead, not a database dump.</p>
         <div className="flex flex-wrap gap-3 mt-8 justify-center">
-          <a href="/api/auth/google" className="btn-primary btn-lg" data-testid="hero-cta">Start free</a>
+          <a href="/sign-up" className="btn-primary btn-lg" data-testid="hero-cta">Start free</a>
           <a href="#how" className="btn-ghost btn-lg">See how it works</a>
         </div>
       </section>
@@ -83,27 +83,14 @@ export default function Home() {
       </section>
 
       <section id="pricing" className="px-4 sm:px-6 py-16 max-w-6xl mx-auto w-full">
-        <h2 className="lp-h2 text-center mb-10">Simple pricing</h2>
-        <div className="grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
-          <div className="lp-card p-7">
-            <div className="text-sm font-medium text-[var(--ink-2)] mb-1">Free</div>
-            <div className="text-4xl font-semibold mb-2">${PLAN_PRICE_USD_MONTHLY.free}</div>
-            <p className="text-[var(--ink-2)] text-sm mb-6">Start free.</p>
-            <a href="/api/auth/google" className="btn-ghost w-full text-center block">Start free</a>
-          </div>
-          <div className="lp-card p-7">
-            <div className="text-sm font-medium mb-1">Pro</div>
-            <div className="text-4xl font-semibold mb-2">${PLAN_PRICE_USD_MONTHLY.pro}<span className="text-base font-medium text-[var(--ink-2)]">/mo</span></div>
-            <p className="text-[var(--ink-2)] text-sm mb-6">One flat price. {PRICE_DISCLOSURE} Fair-use limits apply.</p>
-            <a href="/api/auth/google" className="btn-primary w-full text-center block">Start free, upgrade any time</a>
-          </div>
-        </div>
+        <h2 className="lp-h2 text-center mb-10">Free while in beta</h2>
+        <FreeBetaCard />
       </section>
 
       <footer className="mt-auto border-t border-[var(--line)]">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--ink-2)]">
           <span className="font-semibold text-[var(--ink)]">dazl</span>
-          <span>© 2026 dazl · <a href="/terms" className="hover:text-[var(--ink)]">Terms</a> · <a href="/privacy" className="hover:text-[var(--ink)]">Privacy</a> · <Link href="/sign-in" className="hover:text-[var(--ink)]">Sign in</Link></span>
+          <span>© 2026 dazl · <a href="/about" className="hover:text-[var(--ink)]">About</a> · <a href="/contact" className="hover:text-[var(--ink)]">Contact</a> · <a href="/terms" className="hover:text-[var(--ink)]">Terms</a> · <a href="/privacy" className="hover:text-[var(--ink)]">Privacy</a> · <a href="mailto:support@dazl.ai" className="hover:text-[var(--ink)]">support@dazl.ai</a> · <Link href="/sign-in" className="hover:text-[var(--ink)]">Sign in</Link></span>
         </div>
       </footer>
     </main>

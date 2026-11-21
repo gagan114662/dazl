@@ -79,9 +79,11 @@ test('Home never asks for an AI key once one is saved; seller profile stays visi
   assert.deepEqual(rows.find(x => x.id === 'key'), { id: 'key', label: 'AI key', state: 'done', detail: 'saved', fix: null })
   assert.match(rows.find(x => x.id === 'site')!.detail, /Booking software/)
   assert.doesNotMatch(rd('../app/app/outreach/send-readiness.tsx'), /Every email still needs your approval/)
-  // the sign-up line (lib/trial-copy.ts signUpPlanLine, rendered by sign-up-form.tsx) names the own-key plan in both modes
+  // the sign-up line (lib/trial-copy.ts signUpPlanLine, rendered by sign-up-form.tsx) says what a scan is in both modes;
+  // #1428: it never asks for a key, and offers the free scans only where a trial is funded
   const { signUpPlanLine } = await import('../lib/trial-copy.ts')
-  for (const funded of [true, false]) assert.match(signUpPlanLine(funded), /with your own AI key/)
+  for (const funded of [true, false]) { assert.match(signUpPlanLine(funded), /^A scan is one search:/); assert.doesNotMatch(signUpPlanLine(funded), /\bkey\b/i) }
+  assert.match(signUpPlanLine(true), /3 free scans/); assert.doesNotMatch(signUpPlanLine(false), /free scans/)
   assert.match(rd('../app/sign-up/sign-up-form.tsx'), /signUpPlanLine\(/)
 })
 

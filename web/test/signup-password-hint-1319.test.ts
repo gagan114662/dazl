@@ -22,6 +22,7 @@ test('#1319 password rules survive a no-JavaScript render and describe the passw
         case 'next/link': return { __esModule: true, default: 'a' }
         case '@/lib/invite-return': return {}
         case '@/lib/trial-copy': return { signUpPlanLine: () => 'Free plan' }
+        case '../wordmark': return { __esModule: true, default: () => null }
         case '../preview/claim/context-banner': return { useClaimContext: () => ({ googleHref: '/api/auth/google' }), ClaimContextBanner: () => null }
         default: return require(id)
       }

@@ -100,7 +100,7 @@ test('#1095: when the account cannot be read, google_required still offers Link 
 
 test('#1095: sign-up says the free trial scans come with Google sign-in, never promised to the email path', () => {
   const on = signUpPlanLine(true)
-  assert.equal(on, 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.')
+  assert.equal(on, 'A scan is one search: dazl looks for businesses that need what you sell right now and checks the proof behind each one. Continue with Google (or link it later) for 3 free scans, no card.')
   assert.doesNotMatch(on, /New accounts may get 3 trial scans/)
-  assert.equal(signUpPlanLine(false), 'Free plan: 50 scans a month with your own AI key. Upgrade any time.')
+  assert.equal(signUpPlanLine(false), 'A scan is one search: dazl looks for businesses that need what you sell right now and checks the proof behind each one.')
 })
