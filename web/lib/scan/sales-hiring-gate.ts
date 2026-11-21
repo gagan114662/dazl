@@ -12,6 +12,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
+import { isCountryOrRegion } from './countries.ts'
 import { releaseHeld } from './held-state.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 export { salesHiringRequired, salesGateOr }
@@ -32,7 +33,17 @@ import { WHY_MAX } from './score.ts'
 // A standing pool cannot be told from a segment by shape ("Account Executive – Sales Talent Pool: Register Your Interest" on a live
 // board, review at b86f2172), so those are a short named list: a title naming one anywhere is held.
 const STANDING_POOL = /\b(?:talent\s+(?:pool|community|network|pipeline)|register\s+your\s+interest|future\s+opportunit(?:y|ies)|general\s+(?:interest|application)|evergreen|intern(?:ship)?s?)\b/i
-const LEVEL = /^(?:senior|sr\.?|junior|jr\.?|principal|staff|lead|founding|first|associate|enterprise|strategic|commercial|corporate|mid[-\s]?market|midmarket|smb|sme|named|major|key|global|regional|field|inside|outside|growth|new|business|[A-Z]{2,6})$/
+// #1185 (1,147 live account-executive titles, 111 Greenhouse boards): the segment words real boards put on the role are wider than the first
+// list - Territory, Majors, Core, Hunter, Digital Native, Emerging, Startup, Federal / Public Sector, Large Enterprise - and a segment or a
+// country can follow the role without a separator ("Account Executive Large Enterprise", "Enterprise Account Executive Mexico"). Still a
+// closed list (an unlisted word before the role still holds the title): these are sales coverage words, none of them a title of its own.
+const SEGMENT_WORDS = 'enterprise|strategic|commercial|corporate|mid[-\\s]?market|midmarket|smb|sme|named|majors?|key|global|regional|field|inside|outside|growth|new|business|territory|core|hunters?|digital|natives?|emerging|startups?|federal|public|sector|large|geo'
+const SEGMENT = new RegExp(`^(?:${SEGMENT_WORDS})$`, 'i')
+// before the role only: a level, a segment, or a word that qualifies the seller ("Sales Account Executive", "Specialist Account Executive",
+// "SMB Customer Account Executive", "Flex Territory", "Bilingual Territory") - after the role these would read as another title, so they are not in SEGMENT
+const LEVEL = new RegExp(`^(?:senior|sr\\.?|junior|jr\\.?|principal|staff|lead|founding|first|associate|flex|sales|specialist|customer|bilingual|${SEGMENT_WORDS}|[A-Z]{2,6})$`)
+// the words main allowed before the role (before #1185): a title using only these keeps exactly main's reading of what follows the role
+const BASE_LEVEL = /^(?:senior|sr\.?|junior|jr\.?|principal|staff|lead|founding|first|associate|enterprise|strategic|commercial|corporate|mid[-\s]?market|midmarket|smb|sme|named|major|key|global|regional|field|inside|outside|growth|new|business|[A-Z]{2,6})$/
 const AFTER_ROLE = /^\s*(?:$|[,\-–—(/|:]|(?:I{1,3}|IV|V|[1-5])\s*(?:$|[,\-–—(/|:]))/
 const SEGMENT_ROLE = /^\s*[,\-–—(/|:]\s*(?:team\s+)?(?:manager|lead|director|head|vp|recruiter|engineer|trainer|coordinator|assistant)s?\b/i
 export function titleIsRole(title: string, roles: RequestedHiringRole[]): RequestedHiringRole | null {
@@ -50,9 +61,54 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
   // (CAE) Manager") is skipped, so the word after it is judged as coming straight after the role
   const before = title.slice(0, hit.index).trim().replace(/\bmid\s+market\b/gi, 'Mid-Market'), after = title.slice(hit.index + hit[0].length).replace(/^\s*\([A-Z]{2,6}\)/, '')
   // level words are matched whatever their case; a segment code (SLED, MSP, EMEA) only as written in capitals
-  if (before && !before.split(/\s+/).every(w => LEVEL.test(w) || LEVEL.test(w.toLowerCase()))) return null
-  if (!AFTER_ROLE.test(after) || SEGMENT_ROLE.test(after)) return null
+  const words = before ? before.split(/\s+/) : []
+  if (!words.every(w => LEVEL.test(w) || LEVEL.test(w.toLowerCase()))) return null
+  // a title that is the role only through a word #1185 added before it is read strictly after a separator too (council review at 950f702)
+  const widened = !words.every(w => BASE_LEVEL.test(w) || BASE_LEVEL.test(w.toLowerCase()))
+  if (!afterRoleOk(after, widened)) return null
   return m
+}
+const SEP = /[,\-–—(/|:]/
+// a place, read by the generic country / region reader (countries.ts: the ISO 3166 table and US / Canadian / UK regions), never a list
+// written here: capitalised as a name, and three letters or more unless written as a two-capital code ("UK", "TX"; "Co" / "In" are words)
+const isPlace = (t: string) => (t.length >= 3 ? /^[A-Z]/.test(t) : /^[A-Z]{2}$/.test(t)) && isCountryOrRegion(t)
+// what follows the role: the end, a separator or a level as before; or, written straight after it with no separator, segment words and/or a
+// country or region ("Mid Market - Spain", "Mexico", "Large Enterprise Public Sector", "UK/I"). Any other word there ("Manager",
+// "Team", "Support Specialist", "Co-op") is another title and holds it. On that path, what follows the next separator may only be a level or a
+// place ("Mid Market - Spain", "UK/I"): anything else ("Mexico - Chief of Staff", "Mexico, Sales Manager") is held (council review at ce42877).
+// council review at 9b67ea4 / 950f702: when the title is the role only through a word #1185 added, no other title may follow a separator
+// ("Sales Account Executive - Sales Manager", "Customer Account Executive / Customer Success Manager", "... / Solutions Consultant"). A part
+// is another title when it has the job-ad heading's other-title shape, or when it ENDS in a person noun by its form (-er, -or, -ist, -ant,
+// -ative, -utive, -ian, -yst, -tect: Manager, Administrator, Receptionist, Consultant, Representative) or lead / head / VP / staff / intern / rep / associate - judged by shape,
+// not by a list of job titles. A part made only of level / segment words or a place (generic reader) is not a title ("Digital Native", "Spain").
+function otherTitleAfter(after: string): boolean {
+  return after.split(/[,\-–—(/|:)&+]/).map(x => x.trim()).some(p => {
+    const w = p.split(/\s+/).filter(x => /\w/.test(x))
+    if (!w.length) return false
+    // the title noun, not a segment word or capitals code trailing it ("Receptionist Enterprise", "Receptionist MSP", "Financial Sector": council review at b2703b9 / b7cb313)
+    const core = w.filter(x => !SEGMENT.test(x) && !/^[A-Z]{2,6}$/.test(x)), last = (core.length ? core : w)[(core.length ? core : w).length - 1].toLowerCase().replace(/[^a-z]/g, '').replace(/s$/, '')
+    // another title first, before any place reading (council review at 3f7062d: "Sales Manager, TX"): the job-ad other-title shape, a last word
+    // that is a title head by that same shape ("Customer Success Manager"), chief of staff, or a sales role of its own ("/ SDR")
+    if (TITLE_SUFFIX.test(p) || TITLE_SUFFIX.test(last) || /^\s*chief\s+of\s+staff\b/i.test(p) || matchedHiringRole(p, GENERIC_GTM_ROLES)) return true
+    // segment words or a capitals code ("Digital Native", "FSI") or a place by the generic reader are not a title. A city name the reader does
+    // not know is judged like any other word: "Rochester, MN" is held, fail closed (council review at b2703b9: "Office Administrator, CA")
+    if (w.every(x => SEGMENT.test(x) || /^[A-Z]{2,6}$/.test(x)) || isPlace(p)) return false
+    return /(?:er|or|ist|ant|ative|utive|ian|yst|tect)$/.test(last) || /^(?:lead|head|vp|staff|intern|chief|rep|associate)$/.test(last)
+  })
+}
+function afterRoleOk(after: string, widened: boolean): boolean {
+  if (AFTER_ROLE.test(after)) return !SEGMENT_ROLE.test(after) && !(widened && otherTitleAfter(after))
+  const a = after.replace(/\bmid[\s-]+market\b/gi, 'Midmarket')
+  if (!/^\s/.test(a)) return false
+  const cut = a.search(SEP), run = (cut < 0 ? a : a.slice(0, cut)).trim(), tail = cut < 0 ? '' : a.slice(cut).replace(/^[\s,\-–—(/|:]+/, '').replace(/\)\s*$/, '').trim()
+  if (!run) return false
+  const w = run.split(/\s+/)
+  let k = 0; while (k < w.length && SEGMENT.test(w[k])) k++
+  // the place may start at any point inside the segment words ("New York": "New" is also a segment word)
+  let ok = k === w.length
+  for (let j = 0; j <= k && !ok; j++) ok = isPlace(w.slice(j).join(' '))
+  if (!ok) return false
+  return !tail || /^(?:I{1,3}|IV|V|[1-5])$/.test(tail) || isPlace(tail)
 }
 // #1121 (dogfood, prod 03f0e8eb): the lead's OWN verified quote is the company's job ad naming the requested vacancy - "As a Sales Development
 // Representative at Mercury, you'll be ...", "Founding Sales Development Representative (SDR) Chesky United States", "Sales Development
