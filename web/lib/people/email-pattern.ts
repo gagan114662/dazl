@@ -170,7 +170,7 @@ export function sameNamedPublication(n: Name, ctx: AddressContext[] | undefined)
 // recorded for her, or none; the link's own name is the address or words asking to write (nothing that could be a person); and no other
 // heading is stacked on hers. Only with that recorded title (`title`): without it a heading is never a pairing.
 const squash = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
-const LINK_WORDS = new Set(['email', 'e', 'mail', 'me', 'send', 'an', 'contact', 'write', 'to', 'us', 'message'])
+const LINK_WORDS = new Set(['email', 'e', 'mail', 'me', 'send', 'an', 'contact', 'write', 'to', 'message'])
 function cardPairs(card: NonNullable<AddressContext['card']>, local: string, n: Name, title: string): boolean {
   if (card.stacked) return false
   const head = withoutOwnName(card.heading, n)

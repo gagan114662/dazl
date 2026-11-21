@@ -81,6 +81,10 @@ for (const [label, team] of [
   ['the link text names another person in lower case', MT({ link: 'email ana' })],
   ['an image inside the link names another person', MT({ link: '<img src="/img/o.jpg" alt="Owen Pike">' })],
   ['the link\'s title names another person', `<div class="agent-card"><h3>Maya Thornton</h3><p>${OWNER}</p><a href="mailto:maya@${SITE}" title="Email Owen Pike">Email</a></div>`],
+  // council (sonnet): the heading is in one part of the page and the mailto in another
+  ['the mailto is in the footer, the heading in the section above', `<section><h3>Maya Thornton</h3><p>${OWNER}</p></section><footer><a href="mailto:maya@${SITE}">Email</a></footer>`],
+  ['the mailto is in the next list item', `<ul><li><h3>Maya Thornton</h3><p>${OWNER}</p></li><li><a href="mailto:maya@${SITE}">Email</a></li></ul>`],
+  ['an "Email us" link', MT({ link: 'Email us' })],
   ['the mailto has a second recipient', MT({}, `mailto:maya@${SITE},owen@${SITE}`)],
   ['the mailto has a second recipient after a semicolon', MT({}, `mailto:maya@${SITE};owen@${SITE}`)],
 ] as const) {

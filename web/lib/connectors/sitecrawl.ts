@@ -1400,6 +1400,8 @@ export function mailtoCard(html: string, quoteAt: number): { heading: string; be
   if (!last) return undefined
   const after = seg.slice(last.index + last[0].length)
   if (/<(?:a|img|svg|picture|input|button|select|textarea|h[1-6])[\s>/]/i.test(after)) return undefined
+  // one card only: leaving a section, list item, table cell or more than one <div> on the way is another part of the page (a footer's "Email")
+  if (/<\/(?:section|article|li|ul|ol|dl|footer|header|aside|main|nav|table|tr|td|form)\s*>/i.test(after) || (after.match(/<\/div\s*>/gi)?.length ?? 0) > 1) return undefined
   const before = seg.slice(0, last.index)
   let open = -1
   for (const m of before.matchAll(new RegExp(`<h${last[1]}[\\s>]`, 'gi'))) open = m.index
