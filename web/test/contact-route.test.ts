@@ -176,3 +176,20 @@ test('createDraft refuses an undeliverable address; catch-all still drafts', () 
   const catchAll = add('sales@northside.example'); rec(catchAll, '@northside.example|catch_all')
   assert.doesNotThrow(() => createDraft(db, 'A', catchAll, 'Acme'))
 })
+
+test('#384 createDraft: a direct address the crawl recorded beside a newer crawled address still needs its website confirmed', () => {
+  const db = new Database(':memory:')
+  migrateScan(db); migrateOutreach(db); seedOffers(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'dental', location: 'Toronto' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const id = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, human_confirmed_at, human_confirmed_from) VALUES (?, ?, 'Company Dental', 'hello@company.example', 'opened a new office', 'https://news.example/story', 'Company Dental opened a new office', 85, 1800000000, 'test_review')").run(id, job)
+  const crawl = (kind: string, value: string, url: string, at: number, label: string | null = null) => addEnrichment(db, 'A', id, { connector: 'sitecrawl', kind, value, label, confidence: null, source_url: url, source_date: '2026-10-24', retrieved_at: at })
+  // The 11-06 audit shape (name-guessed website, hello@ read 1 Jan 2021) plus a newer crawled address on the same site.
+  crawl('domain', 'company.example|name_probe', 'https://company.example/', 1609459200, 'domain-basis-v1:name_probe')
+  crawl('email', 'hello@company.example', 'https://company.example/contact', 1609459200)
+  crawl('email', 'sales@company.example', 'https://company.example/team', 1792800513)
+  const rows = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?").all(id) as RouteRow[]
+  assert.equal(domainReviewFor({ id, contact: 'hello@company.example' }, rows).state, 'required')
+  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /domain_unconfirmed/)
+})
