@@ -2382,7 +2382,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         trace.note('people_search', firstPartyNote.status, firstPartyNote.reason, { ...firstPartyNote.detail, lane: 'first_party', public_profiles: publicProfiles })
       } else trace.note('people_search', 'skipped', skippedReason)
     }
-    if (claudeOnly) noteFirstPartyPeople('not_called_claude_only', 'Claude-only QA: no confirmed company buyer page inspected; TinyFish was not called')
+    if (claudeOnly) noteFirstPartyPeople('not_called_claude_only', 'Claude-only play: no confirmed company buyer page inspected; TinyFish was not called')
     else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
     else if (!peopleSearchEnabled()) noteFirstPartyPeople('not_configured', 'No first-party buyer-page read; TinyFish public profile search is not configured')
     else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
@@ -2684,7 +2684,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, under its OWN short budget
     // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
     // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
-    if (nativeOnly) trace.note('email_verify', 'skipped', 'Claude-only QA: mailbox verifier was not called')
+    if (nativeOnly) trace.note('email_verify', 'skipped', 'Claude-only play: mailbox verifier was not called')
     else if (emailGuessEnabled()) {
       const verifier = verifierFromEnv(process.env, deps.fetchImpl)
       if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')

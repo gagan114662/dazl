@@ -1,12 +1,11 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { FIRST5_CLAUDE_ONLY_MODE, PINNED_FIRST5_CLAUDE_ONLY_MODE, QA_CLAUDE_ONLY, isFirst5RequestMode, qaClaudeOnlyBudget, qaClaudeOnlyJob, qaClaudeOnlyTransport, strictLocalTopologySupported } from '../lib/scan/qa-provider-policy.ts'
+import { QA_CLAUDE_ONLY, isFirst5RequestMode, qaClaudeOnlyBudget, qaClaudeOnlyJob, qaClaudeOnlyTransport, strictLocalTopologySupported } from '../lib/scan/qa-provider-policy.ts'
 
-test('first-play request recognizes only the ordinary and exact versioned narrowing modes', () => {
+test('first-play request recognizes only the ordinary first5 mode', () => {
   assert.equal(isFirst5RequestMode('first5'), true)
-  assert.equal(isFirst5RequestMode(FIRST5_CLAUDE_ONLY_MODE), true)
-  assert.equal(isFirst5RequestMode(PINNED_FIRST5_CLAUDE_ONLY_MODE), true)
-  for (const mode of [undefined, null, false, '', '*', 'first5_claude_only_v2', QA_CLAUDE_ONLY, { provider_policy: QA_CLAUDE_ONLY }]) {
+  // #1398: the former QA-only modes are not first-play modes (refused as unknown)
+  for (const mode of [undefined, null, false, '', '*', 'first5_claude_only_v1', 'first5_claude_only_pinned_v2', 'first5_claude_only_v2', QA_CLAUDE_ONLY, { provider_policy: QA_CLAUDE_ONLY }]) {
     assert.equal(isFirst5RequestMode(mode), false)
   }
 })
@@ -36,7 +35,7 @@ test('native search requires the exact production first-play option and a strict
   const { isFirst5NativeSearchRequest, QA_NATIVE_WEB_SEARCH_POLICY: marker, QA_LOCAL_EXECUTION: execution, qaClaudeOnlyNativeSearchJob } = await import('../lib/scan/qa-provider-policy.ts')
   assert.equal(isFirst5RequestMode('first5_claude_only_search_v3'), false)
   assert.equal(isFirst5NativeSearchRequest('first5', { web_search: marker }), true)
-  for (const m of [undefined, FIRST5_CLAUDE_ONLY_MODE, PINNED_FIRST5_CLAUDE_ONLY_MODE, 'first5_claude_only_search_v3'])
+  for (const m of [undefined, 'first5_claude_only_v1', 'first5_claude_only_pinned_v2', 'first5_claude_only_search_v3'])
     assert.equal(isFirst5NativeSearchRequest(m, { web_search: marker }), false)
   for (const b of [undefined, {}, [marker], { web_search: false }, { web_search: marker, max_usd: 5 }, { web_search_policy: marker }])
     assert.equal(isFirst5NativeSearchRequest('first5', b), false)

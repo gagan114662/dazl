@@ -270,7 +270,7 @@ bothEngines('scan spend cap: a saved run budget refusal is over_cap, and the out
 })
 
 
-bothEngines('Claude-only QA transport: other vendors cannot reserve even at zero; normal tenant unchanged', async ({ db }) => {
+bothEngines('Claude-only play transport: other vendors cannot reserve even at zero; normal tenant unchanged', async ({ db }) => {
   await job(db, 'qa-job', A)
   await job(db, 'ordinary-job', B)
   const kindList = ['llm.openai', 'tinyfish.search', 'tinyfish.fetch', 'render', 'apollo.org', 'pdl.people'] as const
