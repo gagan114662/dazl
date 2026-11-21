@@ -17,6 +17,7 @@ import { setDb, pgDb, type Db } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
 import { createPasswordUser, createSession } from '../../lib/auth-db.ts'
+import { setErrorSinks, type ErrorRecord } from '../../lib/ops/errors.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
@@ -25,8 +26,11 @@ Object.assign(process.env, { SYSTEM_MAIL_SMTP_URL: 'smtp://fixture.invalid', SYS
 // The mail transport, captured. While `held` is set every send waits on it, as on a slow mail server.
 const mails: { to: string; subject: string }[] = []
 let held: Promise<void> | null = null
+let failing = false
+const errors: ErrorRecord[] = []
+setErrorSinks([r => { errors.push(r) }])
 const { setTransportForTests } = await import('../../lib/system-mail.ts')
-setTransportForTests(async m => { if (held) await held; mails.push({ to: m.to, subject: m.subject }) })
+setTransportForTests(async m => { if (held) await held; if (failing) throw new Error('fixture mail server refused'); mails.push({ to: m.to, subject: m.subject }) })
 
 const resetRequest = await import('../../app/api/auth/reset/request/route.ts')
 const sendVerification = await import('../../app/api/auth/email/send-verification/route.ts')
@@ -43,7 +47,7 @@ const forgot = (email: string, ip?: string) => resetRequest.POST(post('/api/auth
 const TOO_MANY = { status: 429, body: JSON.stringify({ error: 'Too many requests. Try again later.' }) }
 
 async function scenario(db: Db, engine: string) {
-  mails.length = 0
+  mails.length = 0; errors.length = 0
   await createPasswordUser({ id: 'known_841', email: 'known@example.test', name: 'K', business_name: 'K Co', password_hash: 'h'.repeat(128), salt: 's'.repeat(32) }, db)
 
   // 1. same answer, same timing class: the mail server is held open, so an answer that waits on the send never comes
@@ -74,12 +78,29 @@ async function scenario(db: Db, engine: string) {
   // the email limit counts the address whatever the case it is typed in
   assert.deepEqual({ status: (await forgot('KNOWN@Example.Test')).status }, { status: 429 }, `[${engine}] the same address in other case`)
 
+  // a refused request does no deferred work: only requests 1-3 for the known address mailed it
+  await settleAfter()
+  assert.deepEqual(mails.map(m => m.to), Array(3).fill('known@example.test'), `[${engine}] mail after the per-email 429s`)
+
   // 2b. per IP: 10 an hour from one IP, each for a different address; the 11th gets the same generic 429
   const ip = freshIp()
   for (let i = 1; i <= 10; i++) assert.equal((await forgot(`ip-${i}-841@example.test`, ip)).status, 200, `[${engine}] IP request ${i}`)
   const ipOver = await answer(await forgot('ip-11-841@example.test', ip))
   assert.deepEqual({ status: ipOver.status, body: ipOver.body }, TOO_MANY, `[${engine}] the 11th request from one IP inside the window`)
   await settleAfter()
+  assert.equal(mails.length, 3, `[${engine}] unknown addresses and the per-IP 429 mail nobody`)
+
+  // a mail server that fails: still the same 200, the failure is recorded, nothing escapes the deferred work
+  failing = true
+  try {
+    const sent = await answer(await forgot('known-fail@example.test'))
+    await createPasswordUser({ id: 'known_fail_841', email: 'known-fail2@example.test', name: 'F', business_name: 'F Co', password_hash: 'h'.repeat(128), salt: 's'.repeat(32) }, db)
+    const known = await answer(await forgot('known-fail2@example.test'))
+    await settleAfter()
+    assert.deepEqual(known, sent, `[${engine}] a failed send answers like an unknown address`)
+    assert.equal(known.status, 200)
+    assert.deepEqual(errors.map(e => e.where), ['/api/auth/reset/request'], `[${engine}] the failed send is recorded once`)
+  } finally { failing = false }
 
   // 3. verification resend: 3 an hour per account and per email, 10 an hour per IP, every one the generic 429
   const resend = async (session: string, ip?: string) => answer(await withJar(new Map([['dazl_session', session]]), () => sendVerification.POST(post('/api/auth/email/send-verification', {}, ip))))
@@ -92,6 +113,8 @@ async function scenario(db: Db, engine: string) {
   assert.equal((await resend(sessions[3], shared)).status, 200, `[${engine}] 10th resend from one IP`)
   const resendIpOver = await resend(sessions[3], shared)
   assert.deepEqual({ status: resendIpOver.status, body: resendIpOver.body }, TOO_MANY, `[${engine}] the 11th resend from one IP inside the window`)
+  const mailed = mails.length
+  assert.equal(mailed, 3 + 10, `[${engine}] 10 verification links sent`)
   // per account: v1's 4th send from a fresh IP
   const resendAcctOver = await resend(sessions[0])
   assert.deepEqual({ status: resendAcctOver.status, body: resendAcctOver.body }, TOO_MANY, `[${engine}] the 4th resend for one account inside the window`)
@@ -100,6 +123,8 @@ async function scenario(db: Db, engine: string) {
   await createPasswordUser({ id: 'v5_841', email: 'v1-841@example.test', name: 'v5', business_name: 'v5', password_hash: 'h'.repeat(128), salt: 's'.repeat(32) }, db)
   const resendEmailOver = await resend(await createSession('v5_841', db))
   assert.deepEqual({ status: resendEmailOver.status, body: resendEmailOver.body }, TOO_MANY, `[${engine}] the 4th resend to one email inside the window`)
+  for (const a of [resendIpOver, resendAcctOver, resendEmailOver]) assert.ok(Number(a.retryAfter) > 0, `[${engine}] Retry-After on a resend 429`)
+  assert.equal(mails.length, mailed, `[${engine}] a refused resend sends nothing`)
   console.log(`AUTH ENUMERATION 841 ok ${engine}`)
 }
 

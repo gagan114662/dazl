@@ -14,13 +14,12 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!systemMailAvailable()) return NextResponse.json({ error: 'Email delivery is not available. Try again later.' }, { status: 503 })
+  // checked in order, each refusal returned before the next counter is spent, so one exhausted limit never uses up another
   const hour = 60 * 60 * 1000
-  const ip = await rateLimit(`verify-send-ip:${clientIp(req)}`, 10, hour)
-  const acct = await rateLimit(`verify-send:${user.actorId}`, 3, hour)
-  const mail = await rateLimit(`verify-send-email:${createHash('sha256').update(user.email.toLowerCase()).digest('hex').slice(0, 32)}`, 3, hour)
-  if (!ip.ok || !acct.ok || !mail.ok) {
-    const retry = Math.max(ip.retryAfterS, acct.retryAfterS, mail.retryAfterS)
-    return NextResponse.json({ error: 'Too many requests. Try again later.' }, { status: 429, headers: { 'Retry-After': String(retry) } })
+  for (const [key, limit] of [[`verify-send-ip:${clientIp(req)}`, 10], [`verify-send:${user.actorId}`, 3],
+    [`verify-send-email:${createHash('sha256').update(user.email.toLowerCase()).digest('hex').slice(0, 32)}`, 3]] as const) {
+    const l = await rateLimit(key, limit, hour)
+    if (!l.ok) return NextResponse.json({ error: 'Too many requests. Try again later.' }, { status: 429, headers: { 'Retry-After': String(l.retryAfterS) } })
   }
   return NextResponse.json({ ok: true, sent: await sendVerification(await getDb(), user.actorId) })
 }
