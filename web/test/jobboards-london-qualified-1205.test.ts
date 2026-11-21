@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
-import { placeIn, placeSkipReason } from '../lib/sources/jobboards.ts'
+import { placeIn, placeSkipReason, profilePlace } from '../lib/sources/jobboards.ts'
 import { regionOf } from '../lib/scan/countries.ts'
 
 const LOCS = ['London, UK', 'London, England, United Kingdom', 'London, IN', 'Greater London']
@@ -55,7 +55,8 @@ test('#1205 a London qualified by any US state (name or code), Canadian province
   const UK = ['London, UK', 'London, England', 'London, England, United Kingdom', 'Greater London', 'London', 'London EC2A 2BB', 'London, SE1', 'City of London', 'London Bridge', 'Remote - London']
   for (const q of ['in London, Indiana', 'in London, IN', 'in London, West Virginia', 'in London, WV', 'in London, GA', 'in London, Alberta', 'in London, AB',
     'in London, Ontario', 'in London, ON', 'in London, ONT', 'in London, Kentucky', 'in London, Ontario, Canada', 'in London, Canada', 'in London Ontario', 'in London, Australia',
-    'in London, Ky.', 'in London, W.Va.', 'in London, Ky', 'in london, ky', 'in london, in', 'London (Ontario)', 'London (KY)', 'London ON', 'in London, Ont.', 'in London/Ontario', 'in London | ON', 'in London, (Ontario)']) {
+    'in London, Ky.', 'in London, W.Va.', 'in London, Ky', 'in london, ky', 'in london, in', 'London (Ontario)', 'London (KY)', 'London ON', 'in London, Ont.', 'in London/Ontario', 'in London | ON', 'in London, (Ontario)',
+    'in London \u2013 ON', 'in London \u2013 Ontario', 'in London\u2014Ontario', 'in London-Ontario', 'in London - ON', 'in London, Ontario-based startups hiring']) {
     const p = placeIn(q)
     // either the intended London (refusing every UK posting) or a named reason the job boards could not place it, never a silent UK London
     // (a place written in lower case is skipped too; its reason is the general one, since the reason reads a capitalised place name)
@@ -70,7 +71,8 @@ test('#1205 a London qualified by any US state (name or code), Canadian province
   assert.equal(placeIn('in London, KY')?.ok('London, KY 40741'), true, 'a namesake London accepts a posting naming its own state')
   // the UK London is unchanged: bare, with a UK marker, or followed by words that are not a place
   for (const q of ['hiring sales staff in London', 'in London, UK', 'in London, England', 'London UK B2B SaaS startups hiring sales staff', 'in London, United Kingdom',
-    'London-based fintechs hiring SDRs', 'in London, hiring account executives', 'in London, the startups hiring', 'in London, EC1A', 'in London, AI startups hiring', 'SaaS in London, US startups hiring', 'in London, UAE founders hiring', 'in London, Eng.', 'in London, in 2025 hiring']) {
+    'London-based fintechs hiring SDRs', 'in London, hiring account executives', 'in London, the startups hiring', 'in London, EC1A', 'in London, AI startups hiring', 'SaaS in London, US startups hiring', 'in London, UAE founders hiring', 'in London, Eng.', 'in London, in 2025 hiring', 'in London, NE1 4AB', 'London-based fintechs hiring', 'in London \u2013 hiring now',
+    'fintechs in London, e.g. Monzo', 'in London, etc.', 'in London, St. Albans area', 'SaaS in London, Inc. 500 list', 'in London, Gt. Britain']) {
     const p = placeIn(q)
     assert.equal(p?.name, 'London', `${q} stays the UK London`)
     assert.equal(p!.ok('London, UK'), true, q)
@@ -93,3 +95,11 @@ for (const where of ['London (Ontario)', 'London, Ky.']) {
     for (const i of [0, 1, 3]) assert.ok(!qualified.includes(gh(i)), `UK posting '${LOCS[i]}' is not a qualified lead`)
   })
 }
+
+test('#1205 a profile in another country never takes the UK London for a bare "London"; a UK or unset profile keeps it', () => {
+  for (const c of ['CA', 'Canada', 'US', 'United States']) assert.equal(profilePlace('London', c), null, `a ${c} profile's bare London is not the UK's`)
+  assert.equal(profilePlace('London, Ontario', 'CA')?.name, 'London', 'a Canadian profile naming its province keeps its London')
+  assert.equal(placeIn('in London, Ontario')!.ok('London, UK'), false)
+  for (const c of ['UK', 'United Kingdom', 'GB', null]) assert.equal(profilePlace('London', c)?.name, 'London', `${c} profile keeps the UK London`)
+  assert.equal(profilePlace('New York City', 'US')?.name, 'New York City', 'a US profile keeps New York City')
+})
