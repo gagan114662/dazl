@@ -40,8 +40,11 @@ function safeDocumentControls(root:Node,raw:string):boolean{
    if(n.tagName==='meta'&&attr(n,'http-equiv')?.trim().toLowerCase()==='refresh')return false
    if(n.tagName==='base'){
     const parent=n.parentNode,loc=n.sourceCodeLocation?.startTag
-    if(baseSeen||!parent||!isEl(parent)||parent.tagName!=='head'||!parent.sourceCodeLocation?.startTag||!loc||
-      attr(n,'href')!=='/'||!/^<base[ \t\r\n]+href[ \t\r\n]*=[ \t\r\n]*(["'])\/\1[ \t\r\n]*>$/i.test(raw.slice(loc.startOffset,loc.endOffset)))return false
+    // parse5 may put a token after a raw </head> back into the head.
+    // A parser-inserted head is fine, but not that late recovery behavior.
+    if(baseSeen||!parent||!isEl(parent)||parent.tagName!=='head'||!loc||
+      /<\/(?:head|body)(?=[\s/>])|<body(?=[\s/>])/i.test(raw.slice(0,loc.startOffset))||
+      attr(n,'href')!=='/'||!/^<base[ \t\r\n]+href[ \t\r\n]*=[ \t\r\n]*(["'])\/\1[ \t\r\n]*\/?>$/i.test(raw.slice(loc.startOffset,loc.endOffset)))return false
     baseSeen=true
    }
   }

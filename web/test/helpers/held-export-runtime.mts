@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
+import { setDb, sqliteDb } from '../../lib/db/client.ts'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateScan, createJob } from '../../lib/scan/store.ts'
 import { markCompanyFirstBudget } from '../../lib/company-first/product-discovery.ts'
@@ -69,5 +70,49 @@ test('CSV scoped and workspace exports exclude held marked company-first; ready 
     const out=await all.text()
     assert.deepEqual(parseCsv(out).map(r=>r.Company).sort(),['CurrentMachineReady','OrdinaryLegacy'])
     assert.equal(out.includes('held@fixture.example'),false)
+  } finally {db.close()}
+})
+
+
+test('capped CSV reports a held row used part of the bounded candidate window',async()=>{
+  const db=new Database(':memory:');migrateScan(db);migrateConnectors(db);setScanDb(db);setUser({id:'A',business_name:'Fixture'})
+  try {
+    const marked=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    const ordinary=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    db.prepare("UPDATE scan_jobs SET status='running',attempts=1 WHERE id IN (?,?)").run(marked,ordinary)
+    db.prepare('UPDATE scan_jobs SET run_budget=? WHERE id=?').run(markCompanyFirstBudget(null),marked)
+    const insert=db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,created_at) VALUES(?,?,?,'event','https://fixture.example',?)")
+    db.transaction(()=>{
+      insert.run(hex(),marked,'Held Not Exported',10_000)
+      for(let i=1;i<=5000;i++)insert.run(hex(),ordinary,'Ordinary'+i,i)
+    })()
+    const r=await exportGET(get('/api/leads/export'));assert.equal(r.status,200)
+    assert.equal(r.headers.get('x-dazl-export-truncated'),'true')
+    assert.equal(r.headers.get('x-dazl-export-candidate-limit'),'5000')
+    const rows=parseCsv(await r.text())
+    assert.equal(rows.length,4999)
+    assert.equal(rows.some(x=>x.Company==='Held Not Exported'||x.Company==='Ordinary1'),false)
+  } finally {db.close()}
+})
+
+test('unsupported marked PostgreSQL proof returns 503, never a partial successful CSV',async()=>{
+  const db=new Database(':memory:');migrateScan(db);migrateConnectors(db);setScanDb(db);setUser({id:'A',business_name:'Fixture'})
+  try {
+    const marked=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    const ordinary=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    db.prepare("UPDATE scan_jobs SET status='running',attempts=1 WHERE id IN (?,?)").run(marked,ordinary)
+    db.prepare('UPDATE scan_jobs SET run_budget=? WHERE id=?').run(markCompanyFirstBudget(null),marked)
+    const put=db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url) VALUES(?,?,?,'event','https://fixture.example')")
+    put.run(hex(),ordinary,'Ordinary')
+    // Exercise the real route's engine branch through the test Db only.
+    setDb({...sqliteDb(db),kind:'pg'})
+    const scoped=await exportGET(get('/api/leads/export?job_id='+marked))
+    assert.equal(scoped.status,503,'an empty but explicitly marked job is not a successful report')
+    assert.equal(scoped.headers.get('cache-control'),'no-store')
+    assert.equal((await exportGET(get('/api/leads/export?job_id='+ordinary))).status,200)
+    put.run(hex(),marked,'Do not partially export')
+    const all=await exportGET(get('/api/leads/export'))
+    assert.equal(all.status,503)
+    assert.match((await all.json()).error,/No CSV was generated/)
   } finally {db.close()}
 })

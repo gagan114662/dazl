@@ -98,7 +98,7 @@ import { recordNeedEvidence, type NeedSummary, complaintDemandArtifact } from '.
 import { recordTimingProof } from './timing-proof.ts'
 import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
-import { parseWindowDays, splitByWindow, windowStatus } from './window.ts'
+import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 
@@ -1327,6 +1327,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
   const claudeOnly = qaClaudeOnlyJob(job.run_budget) || companyFirst
   const ledger = new SourceRunLedger()
   ledger.attach(db, job.id, job.attempts)   // live per-source progress for the status route
+  const companyFirstWindow = companyFirstJobWindow(job)
+  if (companyFirstWindow?.days === null) {
+    finish(db, job, 'failed', 'invalid_target_review', null, null, ledger)
+    return 'failed'
+  }
   const budget = job.csv_domain ? null : deps.jobBudgetMs ?? scanJobBudgetMs()
   if (budget) { const now = deps.clock ?? Date.now; jobDeadlines.set(job, { at: now() + budget, now }) }
   // Trial-funded jobs run on the shared operator key from the server environment; everything
@@ -1423,8 +1428,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         icp = { ...icp, window_days: win }
         db.prepare("UPDATE scan_jobs SET icp = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(JSON.stringify(icp), job.id, job.attempts)
       }
-      icpForSources = companyFirst ? { ...icp, window_days: Math.min(icp.window_days ?? 45, 45) } : icp
-      prompt = buildIcpPrompt(job.query, icp)
+      icpForSources = companyFirstWindow?.days != null ? { ...icp, window_days: companyFirstWindow.days } : icp
+      prompt = buildIcpPrompt(job.query, icpForSources)
     }
     // MISSION v2 (LEAD_ENGINE=research): the research engine (lib/research/scan-job.ts) runs instead of the discovery below when every stage
     // exists and the profile names a place and a category; otherwise (null) this scan runs the old engine unchanged. Its model calls go through
@@ -2128,7 +2133,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     } else if (complete && outcome.leads.length > 0 && (deps.score !== false)) {
       const icpText = gradingTarget + scoringSellerContext(db, job.user_id, job.id, memory ?? null)
       assertOwned(db, job)
-      const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl, { windowDays: parseWindowDays(job.query ?? '') ?? icpForSources?.window_days ?? null, now: deps.now ?? new Date() })
+      const grades = await scoreLeads(providers_[vendor], key, icpText, outcome.leads, deps.fetchImpl, { windowDays: companyFirstWindow?.days ?? parseWindowDays(job.query ?? '') ?? icpForSources?.window_days ?? null, now: deps.now ?? new Date() })
       if (grades) {
         // ICP match gate: a mismatch on a criterion the ICP specifies moves the lead
         // to the hidden lane with the reason named. 'unknown' never gates.

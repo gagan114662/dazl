@@ -149,6 +149,19 @@ test('ordinary claimed query uses the company-first source for exactly the confi
   assert.equal(open.end && (open.end as { error: string }).error, 'no_candidates', 'a source page alone did not become a lead')
 })
 
+test('company-first discovery uses the narrower request window rather than a wider saved target', async () => {
+  const run = await simulate({
+    ordinary: true, companyFirstTenant: 'workspace', windowDays: 90,
+    query: q + ' in the past 10 days', now: new Date('2026-11-20T12:00:00Z'),
+  })
+  const native = run.messages.find(m => Array.isArray(m.body.tools))
+  assert.ok(native, 'the standard guarded search ran')
+  const prompt = JSON.stringify(native.body)
+  assert.match(prompt, /10 days/)
+  assert.match(prompt, /2026-11-10/)
+  assert.doesNotMatch(prompt, /45 days/)
+})
+
 test('company-first never replays a settled search after a later fault or worker reclaim', async () => {
   const input = { ordinary: true, companyFirstTenant: 'workspace' }
   const fault = await simulate({ ...input, publisherError: true })

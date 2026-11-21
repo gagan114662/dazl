@@ -10,6 +10,11 @@ test('exactly one literal root-relative base preserves exact current person card
  assert.deepEqual(strictOwnContactCards(doc(''),host),expected)
  assert.deepEqual(strictOwnContactCards(doc('<base href="/">'),host),expected)
  assert.deepEqual(strictOwnContactCards(doc("<base href='/'>"),host),expected)
+ for(const root of ['<base href="/"/>','<base href="/" />']) {
+  assert.deepEqual(strictOwnContactCards(doc(root),host),expected)
+  assert.deepEqual(strictOwnContactCards('<!doctype html><html><meta charset="utf-8">'+root+'<body>'+card+'</body></html>',host),expected)
+ }
+ assert.deepEqual(strictOwnContactCards('<!doctype html><base href="/">'+card,host),expected)
 })
 test('unproved absolute, path-changing, duplicate, target and unsafe bases or refresh cannot produce a proof',()=>{
  for(const head of [
@@ -22,4 +27,7 @@ test('unproved absolute, path-changing, duplicate, target and unsafe bases or re
  ])assert.deepEqual(strictOwnContactCards(doc(head),host),[],head)
  assert.deepEqual(strictOwnContactCards(doc('','<section hidden><base href="/"></section>'),host),[])
  assert.deepEqual(strictOwnContactCards(doc('<base href="/">','<section hidden><base href="//foreign.example/"></section>'),host),[])
+ for(const prefix of ['<html><head></head>','<!doctype html></head>','<body>','text before the head','<p>body already started</p>'])
+  assert.deepEqual(strictOwnContactCards(prefix+'<base href="/"/>'+card,host),[],prefix)
+ assert.deepEqual(strictOwnContactCards('<!doctype html><base href="/"/><base href="/">'+card,host),[])
 })
