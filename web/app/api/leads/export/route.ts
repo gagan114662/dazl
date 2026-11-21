@@ -90,7 +90,7 @@ export async function GET(req: NextRequest) {
       selected.set(row.job_id,ids)
     }
     const gates=new Map<string,ReadonlySet<string>|null>()
-    for(const row of page){
+    for(const [index,row] of page.entries()){
       seen++
       lastRead=typeof row.lead_id==='string'?row.lead_id:null
       after=parseExportLeadCursor(row.created_at,row.export_insert_seq)??undefined
@@ -103,13 +103,17 @@ export async function GET(req: NextRequest) {
           if(held&&!await markedCurrentnessHeldDb(db,user.tenantId,row.job_id,lastRead,at,held))rows.push(row)
         }
       }catch{/* Unreadable current proof keeps a marked row out of the export. */}
-      if(rows.length===EXPORT_ROW_LIMIT)break
+      if(rows.length===EXPORT_ROW_LIMIT){
+        // There may be unexamined rows in this batch even without a lookahead.
+        more ||= index + 1 < page.length
+        break
+      }
     }
     if(!more)break
   }
-  // A caller can resume the bounded window with the same scope and options
-  // when too many held rows were checked to fill the file in this response.
-  const next=more&&seen===EXPORT_WORK_LIMIT&&rows.length<EXPORT_ROW_LIMIT?lastRead:null
+  // Resume after the last examined row when either budget stops this page.
+  // Do not advance over unchecked rows (or emit a cursor at true exhaustion).
+  const next=more?lastRead:null
   const continuation = new URLSearchParams()
   if(jobId)continuation.set('job_id',jobId)
   if(includeFixtures)continuation.set('include_fixtures','1')

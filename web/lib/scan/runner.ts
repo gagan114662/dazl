@@ -1626,7 +1626,6 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       }
       const seenPublisherUrls = new Set<string>()
       const blockedOrigins = new Set<string>(), blockedPublishers = new Set<string>()
-      const seenCompany = new Set<string>()
       type Aggregate = {est:ClaudeSearchEstimate;usage:ClaudeSearchUsage}
       const finishedSearches:Aggregate[]=[]
       const angles = companyFirst && reviewedOffer
@@ -1637,7 +1636,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
       const phaseDeadline=jobDeadlines.get(job)
       for (const [angleIndex, angle] of angles.slice(0,CLAUDE_COMPANY_FIRST_MAX_CALLS).entries()) {
-      if (angleIndex > 0 && (seenCompany.size >= 5 || totalPublisherReads >= 10 || spendAttemptUncertain() || spendAttemptRejected()!==null ||
+      // The optional second paid wave is a fallback for an empty discovery set.
+      // Once any candidate exists, send it through the normal verifier now;
+      // a later unknown or over-estimate call must not discard usable observations.
+      if (angleIndex > 0 && ((leads?.length ?? 0) > 0 || totalPublisherReads >= 10 || spendAttemptUncertain() || spendAttemptRejected()!==null ||
         earlierLimitRefusal(db,job) || (phaseDeadline && phaseDeadline.at-phaseDeadline.now()<45_000))) break
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days
@@ -1651,13 +1653,15 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         evidenceDiagnostic?: NonNullable<import('./run-report.ts').ReportParts['native_web_search']>['evidence_diagnostic']) => {
         const ep=(key:'estimatedUsd'|'countedInputTokens'|'assumedSearchInputTokens'|'assumedToolOverheadTokens'|'maxSearches'|'maxOutputTokens')=>
           finishedSearches.reduce((sum,r)=>sum+r.est[key],est[key])
+        const prior = finishedSearches.reduce((sum, r) => sum + r.usage.usd, 0)
         const up=(key:'usd'|'inputTokens'|'outputTokens'|'cacheReadTokens'|'cacheWrite5mTokens'|'cacheWrite1hTokens'|'searches')=>
-          usage ? finishedSearches.reduce((sum,r)=>sum+r.usage[key],usage[key]) : null
+          usage || finishedSearches.length ? finishedSearches.reduce((sum,r)=>sum+r.usage[key],usage?.[key] ?? 0) : null
         ledger.report({ native_web_search: {
-          estimated_usd: ep('estimatedUsd'), actual_usd: up('usd'),
+          estimated_usd: ep('estimatedUsd'), actual_usd: usage ? up('usd') : null,
+          ...(!usage && finishedSearches.length ? { prior_settled_usd: prior, usage_incomplete: true as const } : {}),
           counted_prompt_tokens: ep('countedInputTokens'), assumed_result_tokens: ep('assumedSearchInputTokens'), assumed_tool_overhead_tokens: ep('assumedToolOverheadTokens'),
           reported_input_tokens: up('inputTokens'), reported_output_tokens: up('outputTokens'),
-          ...(usage ? { reported_cache_read_tokens: up('cacheReadTokens')!, reported_cache_write_5m_tokens: up('cacheWrite5mTokens')!, reported_cache_write_1h_tokens: up('cacheWrite1hTokens')! } : {}),
+          ...(usage || finishedSearches.length ? { reported_cache_read_tokens: up('cacheReadTokens')!, reported_cache_write_5m_tokens: up('cacheWrite5mTokens')!, reported_cache_write_1h_tokens: up('cacheWrite1hTokens')! } : {}),
           searches: up('searches'), max_searches: ep('maxSearches'), max_output_tokens: ep('maxOutputTokens'),
           ...(evidenceDiagnostic ? { evidence_diagnostic: evidenceDiagnostic } : {}),
           ...(usage?.inferenceGeoDiagnostic ? { inference_geo_diagnostic: usage.inferenceGeoDiagnostic } : {}),
@@ -1761,7 +1765,6 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
             return !!l.company.trim()&&excerpt.length>=20&&text.includes(excerpt)&&
               hasPhrase(norm((p?.title??'')+' '+(p?.text??'')),norm(l.company))
           }).map(l => ({ ...l, name: '', contact: null })) : parsed
-          if(companyFirst)for(const l of extra)seenCompany.add(companyKey(l.company))
           ledger.evidenceCandidates(items.map(e => ({ ...e, source })), extra)
           nativeCandidates = extra.length
           if (extra.length) leads = [...(leads ?? []), ...extra]

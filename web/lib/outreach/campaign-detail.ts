@@ -1,6 +1,7 @@
 import type { Db } from '../db/client.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults, type CompanyFirstResultCounts } from '../scan/company-first-results.ts'
+import { hasSentHistory } from './campaign-view.ts'
 import { windowHeld } from './currentness.ts'
 import { requiredGateHeldForJob } from '../scan/held-state.ts'
 
@@ -47,6 +48,6 @@ export async function campaignDetail(db: Db, tenantId: string, jobId: string): P
     FROM outreach_messages m JOIN leads l ON l.id = m.lead_id
     WHERE m.tenant_id = ? AND l.scan_job_id = ? ORDER BY m.created_at DESC, m.insert_seq DESC`, [tenantId, job.id])
   // The row was read: an empty spend column means no paid call was recorded (0), the same as the status read and the history list.
-  return { job: { ...job, spend_usd: job.spend_usd ?? 0 }, leads, messages: marked ? messages.filter(m => proof?.readyIds.has(m.lead_id)) : messages,
+  return { job: { ...job, spend_usd: job.spend_usd ?? 0 }, leads, messages: marked ? messages.filter(m => hasSentHistory(m) || proof?.readyIds.has(m.lead_id)) : messages,
     ...(marked ? { company_first_counts: proof?.counts ?? null } : {}) }
 }

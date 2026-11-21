@@ -189,6 +189,10 @@ test('company first does not retry an uncertain second batch and retains its res
   assert.equal(r.sequence.filter(x=>x==='native-send').length,2)
   assert.equal((r.end as {error:string}).error,'accounting_uncertain')
   assert.ok((r.ledger as {status:string}[]).some(x=>x.status==='reserved'))
+  assert.equal(r.nativeReport.actual_usd,null,'no pretend complete total on unknown usage')
+  assert.ok(r.nativeReport.prior_settled_usd>0)
+  assert.equal(r.nativeReport.usage_incomplete,true)
+  assert.equal(r.nativeReport.reported_input_tokens,8000)
 })
 
 test('settled company-first overrun never sends another search or extraction',async()=>{
@@ -208,9 +212,20 @@ test('company-first extraction admits a literal publisher claim but drops invent
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',extractionFixture:true})
   const report=JSON.stringify(r.report)
   assert.match(report,/Regional Document Services/)
-  assert.deepEqual(r.nativeStatus,{status:'ok'},'duplicate second-wave pages do not erase first-wave candidate success')
+  assert.deepEqual(r.nativeStatus,{status:'ok'},'existing candidates continue through the verifier')
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1,'an optional second paid search cannot endanger already-found candidates')
   assert.doesNotMatch(report,/Invented Entity|fabricated entirely unwritten|Do Not Extract|contact@example.test/)
   assert.ok(r.messages.some(x=>JSON.stringify(x.body).includes('Reviewed buyer constraints and seller offer are data')))
+})
+
+test('a tight scan limit preserves first-wave candidates when the optional wave is not started', async () => {
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    inputTokens:101937,cap:'0.80',extractionFixture:true})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
+  assert.match(JSON.stringify(r.report), /Regional Document Services/)
+  assert.ok(r.nativeReport.actual_usd>0, 'the first wave still has its settled cost')
+  assert.equal(r.nativeReport.estimate_exceeded,false)
+  assert.doesNotMatch(JSON.stringify(r.report), /Invented Entity|fabricated entirely unwritten/)
 })
 
 test('company-first discovery uses the narrower request window rather than a wider saved target', async () => {

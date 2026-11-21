@@ -100,7 +100,7 @@ function crowdedExport(heldCount:number){
     ])addEnrichment(db,'A',id,{connector,kind,value,label,source_url:source,confidence:null,source_date:day,retrieved_at:t})
   }
   assert.deepEqual(recordTimingProof(db,{id:job,user_id:'A'}),{proven:2,held:0})
-  return {db,job,held,foreign}
+  return {db,job,held,foreign,ready}
 }
 
 test('keyset CSV walks past over 5,000 held, then exports same-time and older proven rows in order',async()=>{
@@ -153,4 +153,32 @@ test('unsupported marked PostgreSQL proof returns 503, never a partial successfu
     assert.equal(all.status,503)
     assert.match((await all.json()).error,/No CSV was generated/)
   } finally {db.close()}
+})
+
+test('hitting CSV row limit inside final fetched batch resumes after last examined, excluding held rows',async()=>{
+  const {db,foreign,ready}=crowdedExport(1)
+  try {
+    const ordinary=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    db.prepare("UPDATE scan_jobs SET status='running',attempts=1 WHERE id=?").run(ordinary)
+    const put=db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,created_at) VALUES(?,?,?,'event','https://fixture.example',?)")
+    const created=Math.floor(Date.now()/1000)+60
+    db.transaction(()=>{for(let i=0;i<4999;i++)put.run(hex(),ordinary,'Ordinary '+i,created)})()
+    const path='/api/leads/export?include_fixtures=1'
+    const first=await exportGET(get(path))
+    assert.equal(first.status,200)
+    const names=parseCsv(await first.text()).map(r=>r.Company)
+    assert.equal(names.length,5000)
+    assert.equal(names.at(-1),'Tied Proven Result')
+    assert.ok(!names.includes('Held Not Exported'))
+    assert.equal(first.headers.get('x-dazl-export-next-cursor'),ready)
+    assert.equal(first.headers.get('x-dazl-export-truncated'),'true')
+    assert.equal(first.headers.get('link'),'<'+path+'&cursor='+ready+'>; rel="next"')
+    const next=await exportGET(get(path+'&cursor='+ready))
+    assert.equal(next.status,200)
+    assert.deepEqual(parseCsv(await next.text()).map(r=>r.Company),['Older Proven Result'])
+    assert.equal(next.headers.get('x-dazl-export-next-cursor'),null)
+    assert.equal((await exportGET(get(path+'&cursor='+foreign))).status,409)
+    setUser({id:'B',business_name:'Fixture'})
+    assert.equal((await exportGET(get(path+'&cursor='+ready))).status,409)
+  } finally { db.close() }
 })
