@@ -1,9 +1,10 @@
+import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstJobWindow, parseWindowDays, windowStatus } from '../scan/window.ts'
 import { requiredGateHeld } from '../scan/held-state.ts'
 import { uncheckableCause } from '../lead-state.ts'
-import { timingProofGap } from '../scan/timing-proof.ts'
+import { timingProofGap, timingProofGapDb } from '../scan/timing-proof.ts'
 import { researchProofGap } from '../research/proof.ts'
 // A legacy nearby-year verdict proves no event association. Human confirmation
 // remains a user's review choice, not a machine freshness or consent verdict.
@@ -64,4 +65,15 @@ export function windowHeld(row: { event_date: string | null; icp: string | null;
  days ??= parseWindowDays(row.query ?? '')
  if (days === null && corrupt) return true
  return windowStatus(row.event_date, days, now) !== 'inside'
+}
+
+// Only the marked CSV projection needs this reader. The caller supplies
+// the canonical batched required-gate decision for this exact owned job.
+export async function markedCurrentnessHeldDb(db:Db,tenant:string,job:string,lead:string,now:Date,requiredHeld:ReadonlySet<string>):Promise<boolean>{
+ if(db.kind!=='sqlite'||requiredHeld.has(lead))return true
+ const row=await db.get<{review_reason:string|null;human_confirmed_from:string|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null}>(
+   'SELECT l.review_reason,l.human_confirmed_from,l.event_date,j.icp,j.query,j.run_budget FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.id=? AND j.user_id=?',
+   [lead,job,tenant])
+ return !row||!hasCompanyFirstBudget(row.run_budget)||windowHeld(row,now)||!!uncheckableCause(row.review_reason)||
+   !!uncheckableCause(row.human_confirmed_from)||(await timingProofGapDb(db,tenant,lead,now))!==null
 }

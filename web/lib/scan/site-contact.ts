@@ -52,11 +52,16 @@ const ROWS_SQL = "SELECT connector, kind, value, label, source_url FROM lead_enr
 // reuse rows already read under the same tenant; they are filtered here either way.
 export function currentSiteContact(db: Database.Database, tenantId: string, lead: { id: string; company_domain: string | null }, who: string, rows?: SiteRow[]): SiteContact {
   const confirmed = !!lead.company_domain && domainConfirmed(db, tenantId, lead.id, lead.company_domain)
-  const ld = confirmed ? siteIdentity(lead.company_domain) : null
+  return siteContactFromRows(lead.company_domain, confirmed, who,
+    confirmed && siteIdentity(lead.company_domain) ? rows ?? db.prepare(ROWS_SQL).all(lead.id, tenantId) as SiteRow[] : [])
+}
+
+export function siteContactFromRows(domain:string|null,confirmed:boolean,who:string,rows:SiteRow[]):SiteContact {
+  const ld = confirmed ? siteIdentity(domain) : null
   if (!ld) return { confirmed, domain: null, person: null, route: null }
   // Canonical order (not DB return order): the timing proof hashes the chosen person/route, so the same rows must always pick the same
   // contact whatever the engine, query plan or copy returns first (#943 review). Source, kind, value, label are all stable text.
-  const own = (rows ?? db.prepare(ROWS_SQL).all(lead.id, tenantId) as SiteRow[]).filter(r => onCompanySite(r, ld)).sort(canonical)
+  const own = rows.filter(r => onCompanySite(r, ld)).sort(canonical)
   return {
     confirmed, domain: ld,
     person: own.find(r => r.kind === 'person' && personMatchesRole(r.value, who || 'founder')) ?? null,
