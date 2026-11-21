@@ -143,7 +143,7 @@ const BUILTIN_ERRORS = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceEr
 export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['AdmissionRefused', 'SessionCheckTimeout', 'OptionalAngleNoRoom', 'CopyRefused', 'CopyVerifyError', 'CreditRefused', 'EnrichError', 'FixtureError', 'GmailError', 'GmailSendError', 'GmailUnconfirmedSend', 'InboxFixtureError', 'InboxQueryError', 'JobFeedError', 'LeadRelockNeeded', 'RealCheckNotRead',
   'LeaseLost', 'LinkLost', 'MemberError', 'MemoryError', 'OutreachError', 'PlayResearchError', 'ProviderError', 'RaceLost', 'ScanStopped', 'ScanTimedOut', 'SequenceError', 'SourceReviewError', 'SpendAccountingFailed', 'SpendRefused', 'VerifierError', 'VerifySlotRefused',
 
-  'SessionCheckTimeout', 'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
+  'StaleLeaseWrite', 'StatementFailedInTx', 'Timeout',
   // lib/workers (runtime workers): a refused catalog or lifecycle change; a reviewed handler past its timeout.
   'WorkerError', 'HandlerTimeout',
   // lib/scan/feedback.ts (#385): a lead verdict that cannot be recorded as asked; a feedback store that cannot be read.
