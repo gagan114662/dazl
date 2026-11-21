@@ -1,4 +1,5 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
+import { carriedExcluded } from '../scan/carry-gate.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
 import {requiredGateHeld} from '../scan/held-state.ts'
@@ -79,6 +80,19 @@ export class OutreachError extends Error {
 // Tenant-scoped, checked again after every async preparation before a send.
 export function leadHeld(db: Database.Database, tenantId: string, leadId: string): boolean {
   return !!db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? AND l.fit = 0 AND l.intent IS NULL').get(leadId, tenantId)
+    || leadCarryExcluded(db, tenantId, leadId)
+}
+
+// Why leadHeld holds this lead: an exclusion is reported as one, never as a grading failure.
+export function leadHoldCode(db: Database.Database, tenantId: string, leadId: string): 'lead_excluded' | 'lead_ungraded' {
+  return leadCarryExcluded(db, tenantId, leadId) ? 'lead_excluded' : 'lead_ungraded'
+}
+
+// A reviewed exclusion carried into a different-offer play (lib/scan/carry-gate.ts): the lead is never drafted, approved
+// or sent. Part of leadHeld, so every approval, send, follow-up and sequence check that holds a lead holds this one too.
+export function leadCarryExcluded(db: Database.Database, tenantId: string, leadId: string): boolean {
+  const r = db.prepare('SELECT l.company, l.company_domain, l.contact, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { company: string; company_domain: string | null; contact: string | null; icp: string | null } | undefined
+  return !!r && carriedExcluded(r.icp, r)
 }
 
 // Evidence eligibility, re-checked at every approval and every send. A draft or sequence
@@ -306,6 +320,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   if (!lead) throw new OutreachError('not_found')
   // A test-only inbox fixture contact (#369) is never drafted to, whatever else holds the lead.
   if (isInboxFixtureAddress(lead.contact ?? '')) throw new OutreachError('fixture_recipient')
+  if (leadCarryExcluded(db, tenantId, leadId)) throw new OutreachError('lead_excluded')
   if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
   if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
@@ -441,6 +456,7 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   const m = getMsg(db, tenantId, id)
   if (!m) throw new OutreachError('not_found')
   if (m.status !== 'draft') throw new OutreachError('not_a_draft')
+  if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
   if (!skipAccount && !getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
   if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
@@ -464,6 +480,7 @@ export function approveBlockReason(db: Database.Database, tenantId: string, id: 
 export function approve(db: Database.Database, tenantId: string, id: string, sequenceSet = false): void {
   const m = approveChecks(db, tenantId, id, sequenceSet)
   db.transaction(() => {
+    if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
     // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
@@ -518,7 +535,7 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
   if (isInboxFixtureAddress(pre.to_email)) throw new OutreachError('fixture_recipient')
   if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
-  if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
+  if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError(leadHoldCode(db, tenantId, pre.lead_id))
   if (!testFixtureSend(db,tenantId,pre) && currentnessHeld(db,tenantId,pre.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, pre) && !leadEvidenceEligible(db, tenantId, pre.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
@@ -615,7 +632,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   }
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
-  if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
+  if (leadHeld(db,tenantId,m.lead_id)) release(leadHoldCode(db,tenantId,m.lead_id))
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) release('lead_currentness_unconfirmed')
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))

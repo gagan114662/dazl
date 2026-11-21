@@ -83,6 +83,39 @@ test('a plain request to find customers for the signed workspace offers that cho
   assert.equal(jobs(db).length, 0)
 })
 
+test('carried exclusions: same oversize refusal before quoting and admission; valid list queues unchanged', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); setScanDb(db); as(db)
+  try {
+    const body = { query: Q, offer: 'Independent compliance consulting' }
+    const huge = { ...body, carry_exclude: Array.from({ length: 10 }, (_, i) => `Excluded ${i} ` + 'x'.repeat(155)) }
+    const quote = await est(huge)
+    assert.equal(quote.status, 400)
+    const refusal = await quote.json()
+    assert.match(refusal.error, /Too many reviewed exclusions.*Shorten or remove/)
+    assert.equal(refusal.estimate, undefined)
+    const refused = await scan(huge)
+    assert.equal(refused.status, 400)
+    assert.deepEqual(await refused.json(), refusal)
+    // A truthy invalid profile is not a valid reason to bypass carry validation and see a quote.
+    const malformed = { ...huge, icp: 'not a reviewed profile' }
+    for (const request of [est, scan]) {
+      const invalid = await request(malformed)
+      assert.equal(invalid.status, 400)
+      assert.deepEqual(await invalid.json(), { error: 'The profile needs a summary' })
+    }
+    assert.equal(jobs(db).length, 0)
+    const allowed = { ...body, carry_exclude: ['Former client Example Inc.', 'Competitor sample.example'] }
+    const accepted = await est(allowed)
+    assert.equal(accepted.status, 200)
+    const { estimate } = await accepted.json()
+    assert.equal(typeof estimate.ack, 'string')
+    assert.equal(jobs(db).length, 0)
+    assert.equal((await scan({ ...allowed, estimate_ack: estimate.ack })).status, 202)
+    assert.equal(db.prepare('SELECT icp FROM scan_jobs').pluck().get(), JSON.stringify({ carry_exclude: allowed.carry_exclude }))
+    assert.equal(db.prepare('SELECT count(*) FROM scan_spend_calls').pluck().get(), 0)
+  } finally { db.close() }
+})
+
 test('estimate: a menu of providers with unit prices and a projected range; it queues nothing and counts nothing', async () => {
   const db = setup(); as(db)
   const r = await est({ query: Q }); const j = await r.json() as { estimate: { rows: { id: string; unit_usd: string; usd: { min: number; max: number } | null }[]; total: { min: number; max: number }; verdict: { ok: boolean }; assumptions: string[]; ack: string } }

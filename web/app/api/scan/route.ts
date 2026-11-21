@@ -9,6 +9,7 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, budgetedIcp, icpLoss, normalizeIcp } from '@/lib/scan/icp'
+import { carryAdmission } from '@/lib/scan/carry-exclusions'
 import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { countActiveJobs, createJob, createQueryJob, pinAdmittedStrictJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
@@ -60,6 +61,9 @@ export async function POST(req: NextRequest) {
   if (lost.length) return NextResponse.json({ error: 'profile_lossy', message: 'Part of this profile would be cut or ignored. Fix the listed fields - nothing was dropped silently.', loss: lost }, { status: 400 })
   const icp = body?.icp === undefined || body?.icp === null ? null : normalizeIcp(body.icp)
   if (body?.icp !== undefined && body?.icp !== null && !icp) return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
+  // Reviewed exclusions carried into a different-offer play (lib/scan/carry-exclusions.ts): refused whole if they cannot fit.
+  const carry = !icp ? carryAdmission(body?.carry_exclude) : { ok: true as const, stub: null }
+  if (!carry.ok) return NextResponse.json({ error: carry.error }, { status: 400 })
   const manualTarget = isManualNativeTargetRequest(body?.mode, body?.budget)
   if (manualTarget && (!icp || body?.reviewed !== undefined || body?.research_decisions !== undefined)) {
     return NextResponse.json({ error: 'invalid_target_review', message: 'Confirm the target for this search separately from saved research decisions. Nothing started.' }, { status: 400 })
@@ -257,7 +261,7 @@ export async function POST(req: NextRequest) {
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, runBudget)
       if (websiteApproval && !recordQueuedWebsiteApproval(db, websiteApproval, jid)) {
         refused = NextResponse.json({ error: 'website_review_stale' }, { status: 409 })

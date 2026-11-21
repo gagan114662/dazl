@@ -2,8 +2,10 @@ import { getMasterKey } from '@/lib/secrets'
 import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { issueWebsiteApproval, WEBSITE_PROFILE_REVIEW_MODE } from '@/lib/scan/website-profile-provenance'
 import { NextRequest, NextResponse } from 'next/server'
-import { requireUser } from '@/lib/scan/service'
+import { getScanDb, requireUser } from '@/lib/scan/service'
+import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { sameOriginJson } from '@/lib/same-origin'
+import { carryAdmission } from '@/lib/scan/carry-exclusions'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { readHasKey } from '@/lib/llm/key-store'
 import { getDb } from '@/lib/db/client'
@@ -16,7 +18,7 @@ import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
 import { readSellerLine } from '@/lib/auth-db'
 import { budgetedIcp, MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { cleanText } from '@/lib/validate'
-import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer, profileOffer } from '@/lib/scan/play-offer'
+import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -35,6 +37,12 @@ export async function POST(req: NextRequest) {
   const websiteReview = body?.mode === WEBSITE_PROFILE_REVIEW_MODE
   if (websiteReview !== (body?.website_draft_receipt !== undefined)) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
 
+  // the same carried-exclusion admission POST /api/scan applies, so no cost panel is shown for a list it would refuse
+  if (body?.carry_exclude !== undefined && body?.icp != null && !normalizeIcp(body.icp)) {
+    return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
+  }
+  const carry = body?.icp ? { ok: true as const } : carryAdmission(body?.carry_exclude)
+  if (!carry.ok) return NextResponse.json({ error: carry.error }, { status: 400 })
   const supplied = body?.offer !== undefined && body?.offer !== null
   if (supplied && !completeOffer(body.offer)) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   if (query.length >= 3 && !supplied) {
@@ -42,10 +50,12 @@ export async function POST(req: NextRequest) {
     // but before presenting a cost panel for the wrong saved buyer context.
     try {
       const seller = await readSellerLine(db, user.tenantId)
-      const confirmed = await confirmedPlayOffer(db, user.tenantId, query, seller)
+      // the same stores POST /api/scan reads (scan store for confirmations and the tenant offer), so the cost panel
+      // and scan admission can never disagree on a deploy where the two handles differ
+      const confirmed = await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller)
       if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
       if (!confirmed) {
-        const result = effectiveOffer({ seller, query }, await profileOffer(db, user.tenantId))
+        const result = effectiveOffer({ seller, query }, readTenantOffer(getScanDb(), user.tenantId))
         const conflict = result.conflict ?? (body?.icp && body.reviewed === false
           ? carriedWorkspaceOfferConflict(query, user.business_name, seller, result.offer) : null)
         if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated,

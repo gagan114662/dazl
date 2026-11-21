@@ -1,4 +1,5 @@
 import { runClaudeWebSearch, ClaudeSearchError, CLAUDE_SEARCH_MODEL, CLAUDE_COMPANY_FIRST_MAX_CALLS, type ClaudeSearchEstimate, type ClaudeSearchUsage } from '../llm/claude-web-search.ts'
+import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
@@ -26,7 +27,7 @@ import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { getDomain } from 'tldts'
 import { atsPublisherRef, heldCopyBoard } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
-import { fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
+import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -1418,7 +1419,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // for history/repeat matching, but never pass its conflicting offer to ICP inference.
         const selected = db.prepare('SELECT offer FROM scan_jobs WHERE id = ? AND user_id = ?').pluck().get(job.id, job.user_id)
         const r = await inferIcp(providers_[vendor], key, job.query, deps.fetchImpl, cleanOffer(selected) || job.seller || undefined)
-        icp = r.icp
+        // reviewed exclusions carried across an offer change (lib/scan/carry-exclusions.ts) apply to the fresh profile
+        icp = applyCarriedExclusions(r.icp, job.icp)
+        // never trimmed to fit: a carried list that leaves no room for the inferred profile stops the run, saying why
+        if (icp !== r.icp && !budgetedIcp(icp).ok) throw new Error('profile_too_large: the carried exclusions and the new profile do not fit together; shorten the exclusions')
         db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND status = 'running' AND attempts = ?").run(JSON.stringify(icp), r.inferred ? 1 : 2, job.id, job.attempts)
       }
       // The user's recency window, read from the request itself (#198): kept on the stored profile so it is shown and
