@@ -26,21 +26,21 @@ const BOARD = (opts: { name: string; site: string | null }) => (async (input: st
   return new Response('', { status: 404 })
 }) as typeof fetch
 
-async function runAts(fetchImpl: typeof fetch | undefined, homeName = 'LevelUp Leads') {
+async function runAts(fetchImpl: typeof fetch | undefined, homeName = 'LevelUp Leads', signal?: AbortSignal) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
-  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: [] }), job)
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, ON'] }), job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run('L1', job, 'LevelUp Leads', null, 'Hiring its first SDR', 'https://lists.example/first-sdr', 'LevelUp Leads is hiring its first Sales Development Representative.', 90, 85)
+    .run('L1', job, 'LevelUp Leads', null, 'Hiring its first SDR', 'https://lists.example/first-sdr', 'LevelUp Leads in Toronto, ON is hiring its first Sales Development Representative.', 90, 85)
   const get: Get = async url => {
     const u = new URL(url)
-    if (u.hostname === 'lists.example') return { status: 200, body: LIST('LevelUp Leads is hiring its first Sales Development Representative.'), finalUrl: url }
+    if (u.hostname === 'lists.example') return { status: 200, body: LIST('LevelUp Leads in Toronto, ON is hiring its first Sales Development Representative.'), finalUrl: url }
     if (u.hostname.replace(/^www\./, '') !== 'levelupleads.org') return null
     if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
-    const b = ({ '/': HOME(homeName), '/contact': CONTACT } as Record<string, string>)[u.pathname]
+    const b = ({ '/': HOME(homeName).replace('<a href="/contact">', 'Visit us: 100 King St W, Toronto, ON M5X 1A9 <a href="/contact">'), '/contact': CONTACT } as Record<string, string>)[u.pathname]
     return b !== undefined ? { status: 200, body: b, finalUrl: url } : { status: 404, body: '', finalUrl: url }
   }
-  await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, redirectOf: async () => null, now: Date.parse('2026-11-21T09:00:00Z'), ...(fetchImpl ? { atsLookup: true, atsFetch: fetchImpl } : {}) })
+  await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, redirectOf: async () => null, now: Date.parse('2026-11-21T09:00:00Z'), ...(fetchImpl ? { atsLookup: true, atsFetch: fetchImpl } : {}), ...(signal ? { signal } : {}) })
   return (db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain
 }
 
@@ -49,6 +49,14 @@ test('a domainless lead takes the website its own ATS board (found by name slug)
 })
 test('without the ATS lookup the same lead stays unresolved (main behaviour)', async () => {
   assert.equal(await runAts(undefined), null)
+})
+test('review: the site is recorded as a name probe (found from the name, not linked) and the crawl deadline cancels a stalled board lookup', async () => {
+  const ac = new AbortController(); let saw = false
+  const stall = (async (_u: unknown, init?: RequestInit) => { saw = !!init?.signal; return await new Promise<Response>((_, rej) => init?.signal?.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })))) }) as typeof fetch
+  setTimeout(() => ac.abort(), 50)
+  const t0 = Date.now()
+  await runAts(stall, 'LevelUp Leads', ac.signal)
+  assert.ok(saw && Date.now() - t0 < 4000)
 })
 test('a board matched by name only, with no website, gives nothing', async () => {
   assert.equal(await runAts(BOARD({ name: 'LevelUp Leads', site: null })), null)

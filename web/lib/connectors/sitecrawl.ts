@@ -1571,11 +1571,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // name a company website whose label IS the company name; that site is then read and name-checked like any other. A board
       // matched by name alone (no website) gives nothing: same-name boards are the classic wrong-company case.
       if (!anchored && !citedSites.length && deps.atsLookup && !deps.signal?.aborted) {
-        const gb = await atsGtmBoard(l.company, null, deps.atsFetch ?? fetch, { now: deps.now }).catch(() => null)
+        // the crawl deadline cancels every board request (listing, board name, details), not just each one's own timeout
+        const base = deps.atsFetch ?? fetch, sig = deps.signal
+        const atsFetch = (sig ? ((u: string | URL | Request, init?: RequestInit) => base(u, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, sig]) : sig })) : base) as typeof fetch
+        const gb = await atsGtmBoard(l.company, null, atsFetch, { now: deps.now }).catch(() => null)
         const d = gb && !gb.contradictory && gb.hiring?.via === 'board_name' ? gb.hiring.domain : null
         const host = d ? registrable(d.replace(/^www\./, '').toLowerCase()) : ''
         if (host && siteHostOk(host) && !SOCIAL.test(host) && notBlockedHost(host) && nameLabel(host) === norm(l.company) && !sites.includes(host)) {
-          sites.push(host); citedSites.push(host); basisOf.set(host, 'evidence_link_text'); sourceOf.set(host, gb!.hiring!.boardUrl)
+          // found from the company NAME, not a page link: recorded as a name probe, so the strict no-place/location refusals of a guess apply
+          sites.push(host); citedSites.push(host); basisOf.set(host, 'name_probe'); sourceOf.set(host, gb!.hiring!.boardUrl)
         }
       }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
