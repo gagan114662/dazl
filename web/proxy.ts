@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { logRequest, newRequestId, requestLogLine } from '@/lib/ops/request-log'
-import { hasLiveSession } from '@/lib/auth-db'
+import { getDb } from '@/lib/db/client'
+import { checkSessionWithin } from '@/lib/auth-gate'
 import { isServerActionProbe } from '@/lib/ops/server-action-probe'
 
 // Runs before /app pages and /api routes (Node runtime). Gives each request an id (lib/ops/request-log.ts), logs it
@@ -34,7 +35,9 @@ export async function proxy(req: NextRequest) {
 
 async function signedIn(token: string | undefined): Promise<boolean> {
   if (!token) return false
-  try { return await hasLiveSession(token) } catch { return true }
+  // Bounded like the layout (lib/auth-gate.ts, #1463): a stalled lookup is logged and the request goes on, and the
+  // layout's own bounded check then shows the error boundary instead of a page that never arrives.
+  try { return await checkSessionWithin(token, { getDb }) } catch { return true }
 }
 
 // The third entry is lib/ops/server-action-probe.ts SERVER_ACTION_PROBE_MATCHER, written out: Next reads this object statically.
