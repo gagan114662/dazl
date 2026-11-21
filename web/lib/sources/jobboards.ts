@@ -51,17 +51,25 @@ const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|m
 // #1205: "London, Ontario" / "London, ON" / "London, Indiana" / "London, WV" are NOT the UK's London (they were answered with UK postings). A London
 // qualified by ANY place outside the UK is left to the other resolvers (London, IN is a US city; London, Ontario a Canadian one): the qualifier
 // is read by the same resolvers the rest of the place code uses (a country, a US state, a Canadian province), never a list of names here.
-// A full name may follow with or without a comma ("London Ontario"); a qualifier in parentheses counts as one after a comma ("London (Ontario)").
+// A full name may follow with or without a comma ("London Ontario"); a qualifier in parentheses or after a slash or bar counts as one after a comma
+// ("London (Ontario)", "London/Ontario", "London | ON").
 // A two-letter code counts after a comma / parenthesis in capitals ("London, IN hiring"), in any case when it closes its clause ("london, ky"),
 // and with no comma only in capitals closing its clause ("London ON"): never the word "in" of "London in 2025". An abbreviation no resolver
 // reads and no UK marker ("London, Ky.", "London, W.Va.") is a qualifier too: the London is not taken for the UK's, and the job boards then
 // name why they could not place it.
 function nonUkLondon(q: string): boolean {
-  for (const m of q.matchAll(/\blondon\b\s*(,|\()?\s*([\p{L}.'-]+(?:\s+[\p{L}.'-]+){0,2})/giu)) {
+  for (const m of q.matchAll(/\blondon\b\s*([,(|/]\s*\(?)?\s*([\p{L}.'-]+(?:\s+[\p{L}.'-]+){0,2})/giu)) {
     const qualified = !!m[1], words = m[2].split(/\s+/)
     const closes = (n: number) => n === words.length && /^\s*(?:$|[,.;:()!?/|\u2013-])/.test(q.slice((m.index ?? 0) + m[0].length))
     for (let n = words.length; n >= 1; n--) {
       const raw = words.slice(0, n).join(' '), seg = raw.replace(/\.$/, '')
+      // an abbreviation ("Ky.", "W.Va.", "Ont.") right after the comma: a non-UK one is a qualifier, a UK one ("Eng.") is not, and one no resolver
+      // reads is not taken for the UK either
+      if (n === 1 && qualified && /^[\p{L}.]{2,6}$/u.test(raw) && raw.endsWith('.')) {
+        const c = resolveSegment(seg, true), r = regionOf(seg), bare = seg.replace(/\./g, '').toLowerCase()
+        if (c ? c !== 'GB' : r ? countryOfRegion(r) !== 'GB' : !UKM.slice(3, -1).split('|').some(w => w.replace(/\\/g, '').startsWith(bare))) return true
+        continue
+      }
       if (seg.length <= 2 && !(qualified ? /^[A-Z]{2}$/.test(seg) || closes(n) : /^[A-Z]{2}$/.test(seg) && closes(n))) continue
       if (seg.length === 3 && !qualified && /^[A-Z]{3}$/.test(seg)) continue // a capitals code ("ONT") only after a comma
       const country = resolveSegment(seg, true), region = regionOf(seg)
@@ -69,7 +77,6 @@ function nonUkLondon(q: string): boolean {
       if (country && seg.length <= 3 && !closes(n)) continue
       if (country) { if (country !== 'GB') return true; continue }
       if (region) { if (countryOfRegion(region) !== 'GB') return true; continue }
-      if (n === 1 && qualified && /^[\p{L}.]{2,6}$/u.test(raw) && raw.endsWith('.') && !UKM.slice(3, -1).split('|').some(w => w.replace(/\\/g, '').startsWith(seg.replace(/\./g, '').toLowerCase()))) return true
     }
   }
   return false

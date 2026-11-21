@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 import { placeIn, placeSkipReason } from '../lib/sources/jobboards.ts'
+import { regionOf } from '../lib/scan/countries.ts'
 
 const LOCS = ['London, UK', 'London, England, United Kingdom', 'London, IN', 'Greater London']
 const NAMES = ['Thames', 'Westminster', 'Hoosier', 'Camden']
@@ -54,7 +55,7 @@ test('#1205 a London qualified by any US state (name or code), Canadian province
   const UK = ['London, UK', 'London, England', 'London, England, United Kingdom', 'Greater London', 'London', 'London EC2A 2BB', 'London, SE1', 'City of London', 'London Bridge', 'Remote - London']
   for (const q of ['in London, Indiana', 'in London, IN', 'in London, West Virginia', 'in London, WV', 'in London, GA', 'in London, Alberta', 'in London, AB',
     'in London, Ontario', 'in London, ON', 'in London, ONT', 'in London, Kentucky', 'in London, Ontario, Canada', 'in London, Canada', 'in London Ontario', 'in London, Australia',
-    'in London, Ky.', 'in London, W.Va.', 'in London, Ky', 'in london, ky', 'in london, in', 'London (Ontario)', 'London (KY)', 'London ON', 'in London, Ont.']) {
+    'in London, Ky.', 'in London, W.Va.', 'in London, Ky', 'in london, ky', 'in london, in', 'London (Ontario)', 'London (KY)', 'London ON', 'in London, Ont.', 'in London/Ontario', 'in London | ON', 'in London, (Ontario)']) {
     const p = placeIn(q)
     // either the intended London (refusing every UK posting) or a named reason the job boards could not place it, never a silent UK London
     // (a place written in lower case is skipped too; its reason is the general one, since the reason reads a capitalised place name)
@@ -76,3 +77,19 @@ test('#1205 a London qualified by any US state (name or code), Canadian province
     assert.equal(p!.ok('London, IN'), false, `${q} refuses London, IN`)
   }
 })
+
+test('#1205 the province data reads the "Ont" form of Ontario', () => {
+  for (const f of ['Ont', 'ONT', 'Ont.']) assert.equal(regionOf(f), 'CA-on', f)
+})
+
+for (const where of ['London (Ontario)', 'London, Ky.']) {
+  test(`#1205 runJob: a request for ${where} never reads a UK London posting: the job boards resolve no UK place and say why`, async () => {
+    const { http, seen } = board()
+    const x = await runFixture(fx(http, where))
+    assert.equal(seen.filter(u => /boards-api\.greenhouse\.io/.test(u)).length, 0, 'no board was read for the UK London')
+    const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }
+    assert.match(run.status, /^skipped_no_place:[a-z]+:/, `a named reason: ${run.status}`)
+    const qualified = x.leads.filter(l => !l.review_reason).map(l => l.source_url)
+    for (const i of [0, 1, 3]) assert.ok(!qualified.includes(gh(i)), `UK posting '${LOCS[i]}' is not a qualified lead`)
+  })
+}
