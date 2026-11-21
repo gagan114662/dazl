@@ -87,8 +87,8 @@ function nonUkLondon(q: string): boolean {
 // #1205: a city that shares its name with a built-in city place (London) is that other city only when a posting names its own state,
 // province or country, and never for a remote posting: "London EC2A 2BB", "City of London", "Remote - London" are the UK's London.
 const namesakeOfBuiltIn = (city: string): boolean => CITY_PLACES.some(c => norm(c.name) === norm(city))
-const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; country: string; ok: (l: string) => boolean }[] = [
-  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', country: 'GB', ok: l => LONDON_OK.test(l) },
+const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; country: string; shared?: true; ok: (l: string) => boolean }[] = [
+  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', country: 'GB', shared: true, ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
   { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', country: 'US', ok: l => NYC_OK.test(l) },
 ]
@@ -214,10 +214,11 @@ export function profilePlace(where: string, country?: string | null): { text: st
   const own = country && country.trim() ? countryCode(country) : null
   const foreign = !!listed && !!own && countryCode(listed) !== own
   const direct = foreign ? null : placeIn(`in ${where}`)
-  // #1205: a profile in another country never takes a built-in city of its own: a Canadian or US profile's bare "London" is not the UK's London
-  // (no place: the job boards name why), and a London written with its province or state resolves above as that London
+  // #1205: a profile in another country never reads a BARE shared city name as the built-in city: a Canadian or US profile's "London" is not the
+  // UK's London (no place: the job boards name why). Only the bare name of a city other places share (`shared`): "London, UK" or "New York City"
+  // name their place whatever the profile's country, and a London written with its province or state resolves above as that London.
   const builtIn = direct && CITY_PLACES.find(c => c.name === direct.name && c.ask.test(`in ${where}`))
-  if (builtIn && own && builtIn.country !== own) return null
+  if (builtIn?.shared && own && builtIn.country !== own && norm(where) === norm(builtIn.name)) return null
   if (direct) return { text: where.trim(), name: direct.name }
   if (!isUs) return null
   const b = bareUsCity(where); if (!b) return null

@@ -102,4 +102,8 @@ test('#1205 a profile in another country never takes the UK London for a bare "L
   assert.equal(placeIn('in London, Ontario')!.ok('London, UK'), false)
   for (const c of ['UK', 'United Kingdom', 'GB', null]) assert.equal(profilePlace('London', c)?.name, 'London', `${c} profile keeps the UK London`)
   assert.equal(profilePlace('New York City', 'US')?.name, 'New York City', 'a US profile keeps New York City')
+  // only a BARE shared name is withheld: a place written with its country, or an unshared built-in city, stays whatever the profile's country
+  for (const [w, c, name] of [['New York City', 'UK', 'New York City'], ['NYC', 'Germany', 'New York City'], ['Brooklyn', 'UK', 'New York City'],
+    ['London, UK', 'US', 'London'], ['London, England', 'Canada', 'London']] as const) assert.equal(profilePlace(w, c)?.name, name, `${w} for a ${c} profile`)
+  assert.equal(placeIn(`in ${profilePlace('London, UK', 'US')!.text}`)!.ok('London, UK'), true, 'a US profile naming London, UK gets UK postings')
 })
