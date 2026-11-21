@@ -1,3 +1,4 @@
+import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 // Strict-origin work email through the real route, isolated from the shared staging fixture.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -13,6 +14,8 @@ import { saveCredential, setEnrichFallback } from '../lib/connectors/store.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { workEmailPageRead, type WorkEmailRow } from '../lib/people/work-email.ts'
+import { recordTimingProof } from '../lib/scan/timing-proof.ts'
+import { addEnrichment } from '../lib/connectors/store.ts'
 import { recordEmailGuesses } from '../lib/people/email-pattern.ts'
 
 let fetches = 0
@@ -85,6 +88,25 @@ test('strict-origin work email route serves published-only GET/POST without expo
     assert.deepEqual(evidence(await reload()), evidence([foundView.lookup]), 'GET reload reconstructs published result')
     assert.deepEqual(evidence(list()), evidence([foundView.lookup]), 'page preload agrees with POST')
     assert.deepEqual(list('B'), [])
+    db.prepare('UPDATE scan_jobs SET run_budget = ? WHERE id = ?').run(markCompanyFirstBudget(null), job)
+    assert.deepEqual(await reload(), [], 'held marked work email GET reveals no existing publication')
+    assert.deepEqual(list(), [], 'held marked preload reveals neither stale flags nor address')
+    const heldPost = await post()
+    assert.equal(heldPost.status,422)
+    assert.equal((await heldPost.json()).lookup,undefined)
+    const date = new Date((now-86400)*1000).toISOString().slice(0,10)
+    db.prepare("UPDATE leads SET evidence_excerpt=?,event_date=?,event_date_proof='page_bound' WHERE id=?").run('Harbor Dental is hiring.',date,lead)
+    add.run(randomBytes(12).toString('hex'),lead,'email',email,null,bio,now)
+    addEnrichment(db,'A',lead,{connector:'scan:actionable',kind:'actionability',value:'Actionable: recorded named buyer and published route',
+      label:target,confidence:null,source_url:bio,source_date:date,retrieved_at:now})
+    assert.deepEqual(recordTimingProof(db,{id:job,user_id:'A'}),{proven:1,held:0})
+    assert.deepEqual(evidence(await reload()), evidence([foundView.lookup]), 'normal company-first uses the same first-party-only read')
+    assert.deepEqual(evidence(list()), evidence([foundView.lookup]))
+    assert.equal((await (await post()).json()).status, 'published')
+    assert.equal(fetches, tracked, 'normal company-first did not call a broker or mailbox API')
+    // Ordinary strict-origin preload keeps its existing query budget. Marked
+    // rows additionally revalidate machine currentness per company result.
+    db.prepare('UPDATE scan_jobs SET run_budget = ? WHERE id = ?').run(qaClaudeOnlyBudget(null),job)
     const more = Array.from({ length: 10 }, () => randomBytes(12).toString('hex'))
     const insertLead = db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES (?, ?, '', 'Harbor Dental', 'hiring', ?)")
     for (const id of more) insertLead.run(id, job, bio)

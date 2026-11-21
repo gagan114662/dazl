@@ -55,6 +55,7 @@ export interface RunEstimate {
 }
 export interface EstimateInput {
   budget: RunBudget | null
+  companyFirst?: boolean
   qaClaudeOnly?: boolean
   qaNativeWebSearch?: boolean
   payer: 'you' | 'trial'
@@ -138,7 +139,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const lo = modelCost(p, calls.min, c.inK.min, c.outK.min), hi = modelCost(p, calls.max, c.inK.max, c.outK.max)
     rows.push({ id: c.id, label: c.label, provider: 'AI model', kind: 'model', unit: '1M tokens', unit_usd: modelUnit, units: calls, usd: lo === null || hi === null ? null : { min: lo, max: hi }, capped, note: off ? (c.optional === 'judge' ? 'Off: you skipped the judge' : 'Not a hiring request') : `${calls.min === calls.max ? calls.max : `${calls.min}-${calls.max}`} call(s), ${c.inK.min}-${c.inK.max}k tokens in, ${c.outK.min}-${c.outK.max}k out each` })
   }
-  const native = i.qaClaudeOnly === true && i.qaNativeWebSearch === true && i.payer === 'you'
+  const native = (i.companyFirst === true || (i.qaClaudeOnly === true && i.qaNativeWebSearch === true)) && i.payer === 'you'
   if (native) {
     // Pre-play menu estimate only. The real reservation counts the exact submitted prompt before the paid call.
     const search = claudeSearchEstimate(8_000)
@@ -146,7 +147,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       id: 'anthropic_native_web_search', label: 'Claude Web Search', provider: 'Anthropic', kind: 'search',
       unit: 'search', unit_usd: '$0.01 per search plus model tokens', units: { min: 0, max: search.maxSearches },
       usd: { min: 0, max: search.estimatedUsd }, capped,
-      note: 'Optional, one Anthropic Sonnet call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
+      note: (i.companyFirst ? 'Company-first discovery. One' : 'Optional, one') + ' Anthropic Sonnet call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
     })
   }
   // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,
@@ -156,8 +157,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const tfSearch = num(env.DAZL_PRICE_TINYFISH_SEARCH_USD), tfFetch = num(env.DAZL_PRICE_TINYFISH_FETCH_USD)
   const fp = i.firstPlayPeopleSearches
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
-  if (i.qaClaudeOnly) {
-    rows.push({ id: 'qa_public_sources', label: native ? 'Free public sources' : 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Claude-only QA: no TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
+  if (i.qaClaudeOnly || i.companyFirst) {
+    rows.push({ id: 'qa_public_sources', label: native ? 'Free public sources' : 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: (i.companyFirst ? 'Company-first: no' : 'Claude-only QA: no') + ' TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
   } else if (b?.first5) {
     // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
     rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })

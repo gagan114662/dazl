@@ -1,3 +1,4 @@
+import { markCompanyFirstBudget } from '../../lib/company-first/product-discovery.ts'
 // #1062 route seam: GET /api/leads (real handler, stubbed session, no network) carries the draft guard's required-gate verdict
 // (gate_held), and Home's / the Leads view's one verdict (lib/lead-state.ts heldState via reviewIsActionable) reads it: a lead whose
 // required check has not passed is research, never a review item or an opportunity - including one with a reviewable review_reason.
@@ -39,4 +40,10 @@ test('#1062 GET /api/leads: gate_held is the draft guard verdict, and Home/Leads
   assert.deepEqual(split.review.map(l => l.id), ['review'])
   assert.ok(!split.opportunities.some(l => l.id === 'deny'), 'the DEFAULT-DENY lead is never an opportunity')
   assert.deepEqual(split.research.map(r => r.lead.id).sort(), ['deny', 'reviewheld'])
+  db.prepare('UPDATE scan_jobs SET run_budget = ? WHERE id = ?').run(markCompanyFirstBudget(null), job)
+  for (const query of ['', '&all=1']) {
+    const strict = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${job}${query}`))
+    assert.equal(strict.status, 200)
+    assert.deepEqual((await strict.json()).leads, [], 'held hypotheses stay out of the normal Leads feed')
+  }
 })

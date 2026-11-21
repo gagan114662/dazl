@@ -27,13 +27,13 @@ export interface CampaignDetail {
 export async function campaignDetail(db: Db, tenantId: string, jobId: string): Promise<CampaignDetail | null> {
   const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, coalesce(spend_reserved_usd, 0) + coalesce(spend_cap_reserved_usd, 0) AS spend_usd, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
   if (!job) return null
-  const w = await db.get<{ icp: string | null }>('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?', [job.id, tenantId])
+  const w = await db.get<{ icp: string | null; run_budget: string | null }>('SELECT icp, run_budget FROM scan_jobs WHERE id = ? AND user_id = ?', [job.id, tenantId])
   const rows = await db.all<Omit<CampaignDetail['leads'][number], 'window_held' | 'gate_held'> & { event_date: string | null }>(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, human_confirmed_from, quarantined_at, quarantine_reason, event_date
     FROM leads WHERE scan_job_id = ? ORDER BY insert_seq`, [job.id])
   const now = new Date()
   // The draft guard's own verdict (lib/scan/held-state.ts), read for the whole scan on this Db (#1062).
   const gateHeld = await requiredGateHeldForJob(db, tenantId, job.id)
-  const leads = rows.map(({ event_date, ...l }) => ({ ...l, window_held: windowHeld({ event_date, icp: w?.icp ?? null, query: job.query }, now), gate_held: gateHeld.has(l.id) }))
+  const leads = rows.map(({ event_date, ...l }) => ({ ...l, window_held: windowHeld({ event_date, icp: w?.icp ?? null, query: job.query, run_budget: w?.run_budget ?? null }, now), gate_held: gateHeld.has(l.id) }))
   // Newest first, so the first message per lead is its latest.
   const messages = await db.all<CampaignDetail['messages'][number]>(`SELECT m.id, m.lead_id, m.to_email, m.subject, m.status, m.created_at, m.sent_at
     FROM outreach_messages m JOIN leads l ON l.id = m.lead_id

@@ -11,7 +11,10 @@ import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
 import { migrateMemory } from '../lib/memory.ts'
-import { currentnessHeld } from '../lib/outreach/currentness.ts'
+import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
+import { currentnessHeld, leadWindowHeld } from '../lib/outreach/currentness.ts'
 import { draftBlockReason } from '../lib/outreach/service.ts'
 import { recordTimingProof, timingProofGap, TIMING_PROOF_CONNECTOR } from '../lib/scan/timing-proof.ts'
 import { fitRationale, TIMING_UNCONFIRMED_NOTE } from '../lib/scan/score.ts'
@@ -151,4 +154,40 @@ test('route seam: two equal-fit companies rank apart only when proof supports it
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /# pass 3/); assert.match(result.stdout, /# fail 0/)
+})
+
+
+test('Company First held rows cannot use legacy review confirmation or old confirmation to draft', async () => {
+  const marked = setup({actionable:null}, { query:'organizations with recent office openings', icp:null })
+  const legacy = setup({actionable:null})
+  try {
+    marked.db.prepare('UPDATE scan_jobs SET run_budget=? WHERE id=?').run(markCompanyFirstBudget(null),marked.job.id)
+    assert.equal(await confirmLeadReview(sqliteDb(marked.db),'B','L1'),false)
+    assert.equal(await confirmLeadReview(sqliteDb(marked.db),'A','L1'),false)
+    // Simulate an already-recorded confirmation from before the guard shipped.
+    marked.db.prepare("UPDATE leads SET human_confirmed_at=1,human_confirmed_from='legacy_currentness_review' WHERE id='L1'").run()
+    assert.equal(currentnessHeld(marked.db,'A','L1'),true)
+    assert.equal(draftBlockReason(marked.db,'A','L1'),'lead_currentness_unconfirmed')
+    assert.equal(await confirmLeadReview(sqliteDb(legacy.db),'A','L1'),true)
+    assert.equal(currentnessHeld(legacy.db,'A','L1'),false)
+  } finally {marked.db.close();legacy.db.close()}
+})
+
+test('Company First machine proof uses durable 45-day max and preserves a narrower author window', () => {
+  for(const [query,icp,w,fresh] of [
+    ['find recent office openings',null,45,44],['find openings in the last 90 days',JSON.stringify({window_days:90}),45,44],
+    ['find openings in the last 30 days',JSON.stringify({window_days:90}),30,29],
+  ] as const){
+    const {db,job}=setup({event_date:day(fresh)},{query,icp})
+    try {
+      db.prepare('UPDATE scan_jobs SET run_budget=? WHERE id=?').run(markCompanyFirstBudget(null),job.id)
+      assert.deepEqual(recordTimingProof(db,job),{proven:1,held:0})
+      assert.equal(currentnessHeld(db,'A','L1'),false)
+      assert.equal(leadWindowHeld(db,'A','L1'),false)
+      db.prepare("UPDATE leads SET event_date=? WHERE id='L1'").run(day(w+1))
+      assert.equal(currentnessHeld(db,'A','L1'),true)
+      assert.equal(leadWindowHeld(db,'A','L1'),true)
+      assert.deepEqual(recordTimingProof(db,job),{proven:0,held:1})
+    } finally {db.close()}
+  }
 })

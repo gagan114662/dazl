@@ -317,8 +317,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       if (reviewedBody && j.error==='invalid_target_review') {
         return setError('Could not verify the target review. Review the search again. Nothing started.')
       }
-      if (useClaudeSearch && r.ok && (!j.job_id || j.provider_policy !== 'claude_only_v1'
-        || j.execution !== 'local_once_v1' || j.web_search_policy !== CLAUDE_SEARCH_POLICY)) {
+      const claudePolicyConfirmed = j.web_search_policy === CLAUDE_SEARCH_POLICY
+        && ((j.provider_policy === 'claude_only_v1' && j.execution === 'local_once_v1')
+          || (j.discovery_source === 'company_first_v1' && j.execution === 'queued'))
+      if (useClaudeSearch && r.ok && (!j.job_id || !claudePolicyConfirmed)) {
         return setError('The server did not confirm the Claude Web Search policy. Check your scan history before trying again.')
       }
       if (useClaudeSearch && j.error === 'qa_search_requires_own_key') {
