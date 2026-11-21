@@ -27,7 +27,7 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
   const picks: { url: string; hits: number; posted: string }[] = []
   for (const b of [...boards.values()].slice(0, MAX_BOARDS_PER_ANGLE)) {
     if (clock() >= deadline) break
-    const res = await o.http(boardApi(b), { accept: 'application/json' }).catch(() => null)
+    const res = await o.http(boardApi(b), { accept: 'application/json', signal: AbortSignal.timeout(Math.max(1, deadline - clock())) }).catch(() => null)
     if (!res || res.status !== 200 || res.truncated || looksLikeHtml(res.body)) continue
     let body: unknown
     try { body = JSON.parse(res.body) } catch { continue }
