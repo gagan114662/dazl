@@ -39,10 +39,10 @@ export function companyKey(company: string): string {
 // Scripts written without spaces between words (Han, kana, Thai ...): a phrase there cannot be word-bounded by spaces, so it is a plain substring match.
 const UNSPACED = /[\u0e00-\u0eff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/
 // companyKey splits a name at '.', '@' and '+' ("Nextech3D.ai" -> "nextech3d ai"), so the text is also read with those joiners between
-// letters/digits split the same way: "Nextech3D.ai appoints ..." names Nextech3D.ai (prod run 65b84dfb dropped it as entity_mismatch).
-const splitJoiners = (s: string) => s.replace(/(?<=[\p{L}\p{N}])[.@+](?=[\p{L}\p{N}])/gu, ' ')
+// letters/digits split the same way, ONLY when the company's own name has such a joiner (an "Acme" lead never matches "Acme.ai"): "Nextech3D.ai appoints ..." names Nextech3D.ai (prod run 65b84dfb dropped it as entity_mismatch).
+export const splitJoiners = (s: string) => s.replace(/(?<=[\p{L}\p{N}])[.@+](?=[\p{L}\p{N}])/gu, ' ')
 const phraseIn = (hay: string, phrase: string) => UNSPACED.test(phrase) ? hay.includes(phrase) : new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay)
-export const hasPhrase = (hay: string, phrase: string) => !!phrase && (phraseIn(hay, phrase) || (!/[.@+]/.test(phrase) && phraseIn(splitJoiners(hay), phrase)))
+export const hasPhrase = (hay: string, phrase: string) => !!phrase && phraseIn(hay, phrase)
 
 // The extraction contract demands a verbatim quote; models paraphrase anyway, and the strict
 // verifier then rejects real signals (excerpt_not_on_page). Where the pipeline already holds the
@@ -307,8 +307,9 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   // Mentions elsewhere on the page do not count: that is how a rival's story gets pinned on the wrong company.
   const key = companyKey(c.company)
   if (key.length < 2) return { ok: false, reason: 'no_company' }
-  const quoteNamesCompany = hasPhrase(loose, key)
-  const entityOk = quoteNamesCompany || pageHeadingNames(page, key)
+  const dotted = /[.@+]/.test(c.company)
+  const quoteNamesCompany = hasPhrase(loose, key) || (dotted && hasPhrase(splitJoiners(loose), key))
+  const entityOk = quoteNamesCompany || pageHeadingNames(page, key) || (dotted && !page.board && hasPhrase(splitJoiners(norm(page.title)), key))
   if (!entityOk) return { ok: false, reason: 'entity_mismatch' }
 
   let confidence = 70

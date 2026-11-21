@@ -13,3 +13,7 @@ test('another company is still a mismatch', () => {
   const q = 'Othertech.io Corporation appoints a SaaS sales chief to lead its enterprise growth this quarter.'
   assert.equal((verifyEvidence(cand('Nextech3D.ai', q), page('Markets news', q)) as { reason?: string }).reason, 'entity_mismatch')
 })
+test('review: an "Acme" lead is not named by "Acme.ai" (another company)', () => {
+  const q = 'Acme.ai Corporation appoints a SaaS sales chief to lead its enterprise growth this quarter.'
+  assert.equal((verifyEvidence(cand('Acme', q), page('Markets news', q)) as { reason?: string }).reason, 'entity_mismatch')
+})
