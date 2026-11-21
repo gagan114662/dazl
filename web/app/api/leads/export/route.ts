@@ -10,8 +10,12 @@ import { jobWindowDays } from '@/lib/scan/window'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
 import { bestPeople } from '@/lib/people/best-person'
 import { audit } from '@/lib/audit-route'
+import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
+import { markedCurrentnessHeldDb } from '@/lib/outreach/currentness'
+import { requiredGateHeldForJob } from '@/lib/scan/held-state'
 import { denied } from '@/lib/workspace-access'
 
+const EXPORT_CANDIDATE_LIMIT = 5000
 const COLUMNS = [
   { key: 'company', label: 'Company' },
   // The person to reach first (same ranking as the leads page: the scan's buyer roles). Found, not verified as current.
@@ -54,16 +58,43 @@ export async function GET(req: NextRequest) {
   // Default export is real leads only; ?include_fixtures=1 is the explicit opt-in
   // that keeps the verification fixture rows in the file.
   const includeFixtures = req.nextUrl.searchParams.get('include_fixtures') === '1'
-  const rows = await exportLeads(db, user.tenantId, jobId || undefined, 5000, includeFixtures)
+  const unavailable = () => NextResponse.json({ error: 'Company First currentness cannot be verified on this database. No CSV was generated.' },
+    { status: 503, headers: { 'cache-control': 'no-store' } })
+  const marked = (budget: unknown) => hasCompanyFirstBudget(typeof budget === 'string' ? budget : null)
+  if (db.kind !== 'sqlite' && jobId) {
+    const job = await db.get<{run_budget:string|null}>('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId,user.tenantId])
+    if (marked(job?.run_budget)) return unavailable()
+  }
+  // One sentinel row makes the fixed candidate cap honest without expanding
+  // the bounded proof work or changing ordinary row ordering.
+  const candidates = await exportLeads(db,user.tenantId,jobId||undefined,EXPORT_CANDIDATE_LIMIT+1,includeFixtures,true)
+  if (db.kind !== 'sqlite' && candidates.some(row => marked(row.job_run_budget))) return unavailable()
+  const at = new Date()
+  const rows: Record<string,unknown>[] = []
+  const gates = new Map<string,ReadonlySet<string>|null>()
+  let omittedMarked = false
+  for (const row of candidates.slice(0,EXPORT_CANDIDATE_LIMIT)) {
+    if (!marked(row.job_run_budget)) { rows.push(row);continue }
+    try {
+      if (typeof row.lead_id==='string' && typeof row.job_id==='string') {
+        if(!gates.has(row.job_id))gates.set(row.job_id,await requiredGateHeldForJob(db,user.tenantId,row.job_id).catch(()=>null))
+        const held=gates.get(row.job_id)
+        if(held&&!await markedCurrentnessHeldDb(db,user.tenantId,row.job_id,row.lead_id,at,held)) { rows.push(row);continue }
+      }
+    }catch{/* Unreadable current proof keeps a marked row out of the export. */}
+    omittedMarked = true
+  }
+  const truncated = omittedMarked && candidates.length > EXPORT_CANDIDATE_LIMIT
   const via = await readGdeltAttribution(db, user.tenantId, rows.map(r => String(r.lead_id)))
   const people = await bestPeople(db, user.tenantId, rows as { lead_id: string; job_id: string }[])
-  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: (() => { const lead = { intent: typeof r.intent === 'number' ? r.intent : null, event_date: typeof r.event_date === 'string' ? r.event_date : null, event_date_proof: typeof r.event_date_proof === 'string' ? r.event_date_proof : null, signal: typeof r.signal === 'string' ? r.signal : null, signal_kind: typeof r.signal_kind === 'string' ? r.signal_kind : null }; const w = jobWindowDays({ query: typeof r.job_query === 'string' ? r.job_query : null, icp: typeof r.job_icp === 'string' ? r.job_icp : null }); const o = { windowDays: w, timingRequired: w != null || TIMING_REQUESTED.test(typeof r.job_query === 'string' ? r.job_query : '') }; return eventDateCopy(lead.event_date, typeof r.date_status === 'string' ? r.date_status : null, surfaceStoredIntent(lead, o).timing, { dayVerified: eventDayVerified(lead), windowMissed: timingUnconfirmedReason(lead, o) === 'out_of_window' }) })(), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
-  await audit(user, req, { action: 'export.leads', resource: jobId ? 'scan_job' : 'leads', id: jobId || null, summary: { rows: rows.length, fixtures: includeFixtures } })
+  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: (() => { const lead = { intent: typeof r.intent === 'number' ? r.intent : null, event_date: typeof r.event_date === 'string' ? r.event_date : null, event_date_proof: typeof r.event_date_proof === 'string' ? r.event_date_proof : null, signal: typeof r.signal === 'string' ? r.signal : null, signal_kind: typeof r.signal_kind === 'string' ? r.signal_kind : null }; const w = jobWindowDays({ query: typeof r.job_query === 'string' ? r.job_query : null, icp: typeof r.job_icp === 'string' ? r.job_icp : null, run_budget: typeof r.job_run_budget === 'string' ? r.job_run_budget : null }); const o = { windowDays: w, timingRequired: w != null || TIMING_REQUESTED.test(typeof r.job_query === 'string' ? r.job_query : '') }; return eventDateCopy(lead.event_date, typeof r.date_status === 'string' ? r.date_status : null, surfaceStoredIntent(lead, o).timing, { dayVerified: eventDayVerified(lead), windowMissed: timingUnconfirmedReason(lead, o) === 'out_of_window' }) })(), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
+  await audit(user, req, { action: 'export.leads', resource: jobId ? 'scan_job' : 'leads', id: jobId || null, summary: { rows: rows.length, fixtures: includeFixtures, ...(truncated ? { candidate_limit: EXPORT_CANDIDATE_LIMIT, truncated: true } : {}) } })
   return new NextResponse(csv, {
     headers: {
       'content-type': 'text/csv; charset=utf-8',
       'content-disposition': `attachment; filename="dazl-leads${jobId ? `-${jobId}` : ''}.csv"`,
       'cache-control': 'no-store',
+      ...(truncated ? { 'x-dazl-export-truncated': 'true', 'x-dazl-export-candidate-limit': String(EXPORT_CANDIDATE_LIMIT) } : {}),
     },
   })
 }

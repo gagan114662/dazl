@@ -1,3 +1,4 @@
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import type { Db } from '../db/client.ts'
 
 // Human confirmation of a needs-review lead. dazl could not verify these leads, so the
@@ -13,10 +14,14 @@ const owns = "scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id = ?)"
 // not in review, or already confirmed - the caller reports "nothing changed".
 // On the Db layer (SQLite or Postgres); the time comes from the caller's clock (epoch seconds, as strftime gave).
 export async function confirmLeadReview(db: Db, userId: string, leadId: string, nowS = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  const scan = await db.get<{ run_budget: string | null }>(
+    'SELECT j.run_budget FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId,userId])
+  if (!scan || hasCompanyFirstBudget(scan.run_budget)) return false
   const r = await db.run(
     `UPDATE leads SET human_confirmed_at = ?, human_confirmed_from = COALESCE(review_reason, 'legacy_currentness_review'), review_reason = NULL
-     WHERE id = ? AND ${owns} AND (review_reason IS NOT NULL OR confidence IS NOT NULL) AND human_confirmed_at IS NULL`,
-    [nowS, leadId, userId])
+     WHERE id = ? AND scan_job_id IN (SELECT id FROM scan_jobs WHERE user_id = ? AND COALESCE(run_budget,'') = ?)
+       AND (review_reason IS NOT NULL OR confidence IS NOT NULL) AND human_confirmed_at IS NULL`,
+    [nowS, leadId, userId, scan.run_budget ?? ''])
   return r.changes === 1
 }
 

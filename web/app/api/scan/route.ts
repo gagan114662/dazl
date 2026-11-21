@@ -12,6 +12,7 @@ import { countActiveJobs, createJob, createQueryJob, pinAdmittedStrictJob } from
 import { hasKey } from '@/lib/llm/key-store'
 import { planQuota, readPlan, scansThisMonth } from '@/lib/plans'
 import { getDb } from '@/lib/db/client'
+import { companyFirstDiscoveryEnabled, markCompanyFirstBudget } from '@/lib/company-first/product-discovery'
 import { normalizeSources } from '@/lib/sources'
 import { reserveStrictLocalSlot, runStrictLocalJob } from '@/lib/scan/strict-local-launch'
 import type { Job } from '@/lib/scan/runner'
@@ -129,13 +130,14 @@ export async function POST(req: NextRequest) {
   // option is a separate opt-in carried in the otherwise-rejected budget envelope.
   const first5 = isFirst5RequestMode(body?.mode)
   const nativeSearch = isFirst5NativeSearchRequest(body?.mode, body?.budget)
-  const claudeOnly = nativeSearch || isClaudeOnlyRequestMode(body?.mode)
+  const companyFirst = companyFirstDiscoveryEnabled({ user_id: user.tenantId, funded_by: 'user', query }, process.env.DAZL_COMPANY_FIRST_TENANT_ID)
+  const claudeOnly = !companyFirst && (nativeSearch || isClaudeOnlyRequestMode(body?.mode))
   if (body?.mode !== undefined && !first5) return NextResponse.json({ error: 'unknown_mode' }, { status: 400 })
   if (first5 && budgetSupplied && !nativeSearch) return NextResponse.json({ error: 'invalid_budget', detail: 'mode first5 only accepts the explicit Claude Web Search option' }, { status: 400 })
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
   if (!nb.ok) return NextResponse.json({ error: 'invalid_budget', detail: nb.error }, { status: 400 })
 
-  const runBudget = claudeOnly ? qaClaudeOnlyBudget(nb.value, nativeSearch) : nb.value
+  const runBudget = companyFirst ? markCompanyFirstBudget(nb.value) : claudeOnly ? qaClaudeOnlyBudget(nb.value, nativeSearch) : nb.value
   const db = getScanDb()
   if (claudeOnly && !strictLocalTopologySupported((await getDb()).kind)) {
     return NextResponse.json({ error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }, { status: 503 })
@@ -143,12 +145,12 @@ export async function POST(req: NextRequest) {
   // Keyless accounts fall back to the shared trial key: 3 scans per account, throttled per IP
   // per day. With no trial configured, queuing a keyless job would hang forever and burn a scan.
   const nativeKeyRefusal = () => NextResponse.json({ error: 'qa_search_requires_own_key', message: QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE }, { status: 409 })
-  if (nativeSearch && pickVendor(db, user.tenantId) !== 'anthropic') return nativeKeyRefusal()
+  if ((nativeSearch || companyFirst) && pickVendor(db, user.tenantId) !== 'anthropic') return nativeKeyRefusal()
   let funded: 'user' | 'trial' = 'user'
   let principal: { id: string; email: string } | null = null
   const ip = clientIp(req)
   if (!hasKey(db, user.tenantId)) {
-    if (nativeSearch) return nativeKeyRefusal()
+    if (nativeSearch || companyFirst) return nativeKeyRefusal()
     // The free trial belongs to the account that founded this workspace (its Google sign-in and email are what the
     // trial's abuse limits check), so only that account, acting in its own workspace, can draw on it.
     // The free trial belongs to the account that founded this workspace (its Google sign-in and email are what the
@@ -184,7 +186,7 @@ export async function POST(req: NextRequest) {
   // estimate (limit, mode or key changed since) is returned for a fresh confirmation (409 estimate_changed). No paid call happens here.
   const estDb = await getDb()
   const est = await estimateForBody(body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', model: funded === 'user' ? await keyedModel(estDb, user.tenantId) : null, enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
-  if (claudeOnly && !est.ok) return NextResponse.json({ error: est.error, detail: est.detail, message: est.message }, { status: est.status })
+  if ((claudeOnly || companyFirst) && !est.ok) return NextResponse.json({ error: est.error, detail: est.detail, message: est.message }, { status: est.status })
   if (est.ok) {
     if (est.estimate.verdict.reason === 'budget_unknown') return NextResponse.json({ error: 'budget_unknown', message: est.estimate.verdict.message, estimate: est.estimate }, { status: 503, headers: { 'Retry-After': '30' } })
     if (est.estimate.verdict.reason === 'accounting_unsettled') return NextResponse.json({ error: 'accounting_unsettled', message: est.estimate.verdict.message, estimate: est.estimate }, { status: 409 })
@@ -233,7 +235,7 @@ export async function POST(req: NextRequest) {
     // this process or in another process sharing the store serialize here, and exactly one sees the slot free. A refusal throws
     // before any write, so no job, no trial count, and (below) the linked reservation is released.
     launched = db.transaction(() => {
-      if (nativeSearch && pickVendor(db, user.tenantId) !== 'anthropic') { refused = nativeKeyRefusal(); throw new AdmissionRefused() }
+      if ((nativeSearch || companyFirst) && pickVendor(db, user.tenantId) !== 'anthropic') { refused = nativeKeyRefusal(); throw new AdmissionRefused() }
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
@@ -251,6 +253,7 @@ export async function POST(req: NextRequest) {
     }).immediate()
     if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION, ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}), ...(manualTarget && sized?.ok ? { accepted_target: target(sized.icp) } : {}) }, { status: 202 })
     after(() => kickRunner(db))
+    if (companyFirst) return NextResponse.json({ job_id, discovery_source: 'company_first_v1', execution: 'queued', ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}), ...(manualTarget && sized?.ok ? { accepted_target: target(sized.icp) } : {}) }, { status: 202 })
     // A supplied budget is answered with exactly which paid surfaces it allows or refuses and what the limit is NOT.
     return NextResponse.json(nb.budget ? { job_id, budget: describeRunBudget(nb.budget, { firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0, firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 }, trial: funded === 'trial' }) } : { job_id }, { status: 202 })
   } catch (e) {
