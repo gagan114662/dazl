@@ -16,7 +16,7 @@ test('#1435 the fixed qualification prompt names no market, sector or category',
   assert.doesNotMatch(fixedText, /\bsaas\b|\bsoftware\b|\bb2b\b|\bcrm\b|consulting/i)
   // the general rule it carried is kept, in category-neutral words
   assert.match(fixedText, /what the target itself sells/i)
-  assert.match(fixedText, /customers'? (?:own )?(?:sector|kind of business)/i)
+  assert.match(fixedText, /kind of business its customers are is a separate fact/)
   assert.match(fixedText, /no need for the seller's offer/)
 })
 
@@ -31,6 +31,11 @@ test('#1435 an unseen category gets the same customer-sector warning: the target
     ['Independent veterinary practices', 'Their customers are pet owners, not veterinary practices.'],
     ['Commercial bakeries with their own retail shops', 'Their customers are walk-in shoppers, not commercial bakeries.'],
     ['Freight forwarders', 'The customers are importers rather than freight forwarders.'],
+    // council round 1: a list of customers, and ordinary criteria words ("looking for", "target market") that put no condition on customers
+    ['B2B SaaS startups in London', 'The customers are insurers, carriers, and brokers, not software companies.'],
+    ['Dental clinics looking for a new booking system', 'Their customers are patients, not dental clinics.'],
+    ['Target market: independent veterinary practices', 'Their customers are pet owners, not veterinary practices.'],
+    ['Startups that raised funding for expansion in the last 90 days', 'Its customers are hospitals, not startups.'],
   ]) {
     const f = grade(criteria, note)
     assert.equal(f.assessment_conflict?.kind, 'customer_sector_not_target_business', criteria)
@@ -40,7 +45,7 @@ test('#1435 an unseen category gets the same customer-sector warning: the target
 
 test('#1435 controls: criteria that do condition the customers, other grounds, and non-negative verdicts are never flagged', () => {
   // wrong-customer control: the criteria put a condition on who the target sells to, so a customer-sector no is legitimate
-  for (const criteria of ['Agencies that sell to hospitals', 'Wholesalers serving restaurants', 'Firms whose customers must be insurers', 'Suppliers targeting municipalities', 'Commercial bakeries supplying cafes', 'Studios providing photography to hotels', 'Payroll bureaus for dental practices', 'Consultancies that work with hospitals'])
+  for (const criteria of ['Agencies that sell to hospitals', 'Wholesalers serving restaurants', 'Firms whose customers must be insurers', 'Suppliers targeting municipalities', 'Commercial bakeries supplying cafes', 'Studios providing photography to hotels', 'Consultancies that work with hospitals', 'Agencies whose clients are law firms'])
     assert.equal(grade(criteria, 'Their customers are retailers, not hospitals.').assessment_conflict, undefined, criteria)
   // wrong-company / wrong-place grounds are not a customer premise
   for (const note of ['The page is about another company.', 'Headquarters are outside the target region.', 'Customers include clinics; the target itself is a distributor, not a clinic.'])
