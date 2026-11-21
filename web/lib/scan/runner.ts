@@ -1217,6 +1217,8 @@ const newsErrorName = (note: NewsNote): string => {
   const kinds = (['network', 'http', 'empty_body', 'parse'] as const).filter(k => c[k] > 0)
   return `error:${kinds.length === 1 ? kinds[0] : 'mixed'}`
 }
+// #685: the recovery search's statuses that mean it COMPLETED (every request answered): only then may a held lead say other press was searched and none verified.
+const RECOVERY_COMPLETE = new Set(['ok', 'empty', 'no_candidates'])
 export function newsStatus(leads: LeadDraft[] | null, note: NewsNote): string {
   // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
   // A provider rate-limit is its own state, never an outage or an empty result: the provider answered and told us to slow down.
@@ -2124,14 +2126,17 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
     const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
-    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
+    // #685: "searched" only once the recovery search has COMPLETED (below); a search that errored, was stopped or came back partial says it did not complete.
+    recoveryRan = blocked.length > 0 ? { searched: false, why: 'the other-press search did not complete: not_started' } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
       const note: NewsNote = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
       try {
         assertOwned(db, job)
         const found = await newsLeads(job, icpForSources!, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, blocked.map(b => b.query))
-        ledger.record('fallback:news', newsStatus(found, note), note.searched ? note.hits : null)
+        const recoveryStatus = newsStatus(found, note)
+        ledger.record('fallback:news', recoveryStatus, note.searched ? note.hits : null)
+        recoveryRan = RECOVERY_COMPLETE.has(recoveryStatus) ? { searched: true } : { searched: false, why: `the other-press search did not complete: ${recoveryStatus}` }
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
@@ -2139,6 +2144,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
+        recoveryRan = { searched: false, why: 'the other-press search did not complete: error' }   // the rethrown stops below never reach recordRecovery
         if (e instanceof SpendRefused) ledger.record('fallback:news', note.searched ? partialHold(e) : 'skipped_hold') // hold-stopped partial is neither "skipped" nor an outage
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
