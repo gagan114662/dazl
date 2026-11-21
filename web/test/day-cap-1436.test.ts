@@ -8,11 +8,13 @@ import { windowCap } from '../lib/llm/spend-pool.ts'
 
 test('sets one workspace day cap, keeps every other entry and setting, and the cap reader sees it', () => {
   const env = 'A=1\nDAZL_RUN_MAX_USD_USERS=other:3,ws1:2.40\nB=2\n'
-  const r = setDayCap(env, 'ws1', '5')
-  assert.equal(r.text, 'A=1\nDAZL_RUN_MAX_USD_USERS=other:3,ws1:5\nB=2\n')
+  const r = setDayCap(env, 'ws1', '8')
+  assert.equal(r.text, 'A=1\nDAZL_RUN_MAX_USD_USERS=other:3,ws1:8\nB=2\n')
   assert.equal(r.before, 'ws1:2.40')
   const line = r.text.split('\n')[1].split('=')[1]
-  assert.deepEqual(windowCap('day', 'ws1', { DAZL_RUN_MAX_USD_USERS: line }).usd, 5)
+  const workspaceCap = windowCap('day', 'ws1', { DAZL_RUN_MAX_USD_USERS: line }).usd
+  assert.equal(workspaceCap, 8)
+  assert.equal(Math.round(workspaceCap * 100) - 185, 615, 'USD 6.15 remains after the USD 1.85 reservation')
   assert.deepEqual(windowCap('day', 'other', { DAZL_RUN_MAX_USD_USERS: line }).usd, 3)
 })
 test('adds the line when missing; refuses bad ids, non-numbers, zero and amounts above the ceiling', () => {
