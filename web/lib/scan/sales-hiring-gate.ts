@@ -402,14 +402,17 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       // whole slug) and dated it by the board's own first-published day (ats_structured). When that day is inside the hiring clock and the
       // record's own TITLE is the requested role (opts.postingTitles: the title the verifier read from the record, by posting), the posting IS
       // the role evidence: no website domain is needed to find the board again (the trial's own-board leads had none and were held).
-      if (roles.length && !or) {
+      // Run 9697d013 (LiveKit, Uare.ai): the own board-dated posting is proof for an open-vacancy hiring branch of an OR request too (a completed-hire
+      // branch returned above), and for a request that names no title (by the generic sales titles). Its title must still be the role.
+      {
+        const ownRoles = roles.length ? roles : GENERIC_GTM_ROLES
         const ats = atsPostingRef(l.source_url), pk = postingKey(l.source_url)
         const t = l.event_date ? Date.parse(l.event_date) : NaN
         const own = !!ats && l.event_date_proof === 'ats_structured' && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
         // Run 2593ed95 (Wellhub): a lead whose own board-dated posting came in without the verifier's title record (company-first discovery)
         // reads that title from the same board API record, for exactly this posting; an unreadable record leaves it unproven, as before.
         const title = own && pk ? opts.postingTitles?.get(pk) ?? (ats ? await boardRecordTitle(ats, fetchImpl) : '') : ''
-        const m = title ? titleIsRole(title, roles) : null
+        const m = title ? titleIsRole(title, ownRoles) : null
         if (ats && m) {
           const board = BOARD_LABEL[ats.kind]
           // one posting, one hiring row: an enrichment for this posting already stored under any of its URLs is not written again (XHawk on #1155)
@@ -419,7 +422,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         }
         // #1121: the lead's own verified quote is its job ad naming the requested role, and the lead's own date is inside the hiring clock
         // a structured posting title the verifier read and rejected is the vacancy: the quote never overrides it (review at 541c6f4e)
-        const ad = !title && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000 ? jobAdQuoteRole(l.evidence_excerpt, l.company, roles) : null
+        const ad = roles.length && !or && !title && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000 ? jobAdQuoteRole(l.evidence_excerpt, l.company, roles) : null
         if (ad) {
           setWhy.run((`Hiring for ${ad.term}: named in its own job ad${l.event_date ? `, dated ${l.event_date.slice(0, 10)}` : ''}. This may relate to your offer; buying need isn't verified. ` + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id)
           passed++; passedIds.push(l.id); continue
