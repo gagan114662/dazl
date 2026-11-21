@@ -25,3 +25,13 @@ test('toEvidence without focus keeps the 1200-character head for every other sou
   const [f] = toEvidence([{ url: 'https://acme.test/news', title: 'n', snippet: '', date: null } as never], [{ url: 'https://acme.test/news', text, title: 'n' }], undefined, 30, { terms: ['funding'], limit: 4000 })
   assert.match(f.quote, /Acme raised new funding/)
 })
+test('review: the old 1200-character head is always kept on a long page', () => {
+  const page = 'x'.repeat(700) + ' An early signal sentence here. ' + 'y '.repeat(5000)
+  assert.match(focusText(page, ['funding'], 4000), /An early signal sentence here/)
+})
+test('review: a menu term repeated early cannot crowd out a later, rarer term', () => {
+  const page = 'Intro. '.repeat(200) + 'Sales menu entry. '.repeat(300) + 'Acme closed new funding this month. ' + 'End. '.repeat(100)
+  const out = focusText(page, ['sales', 'funding'], 4000)
+  assert.ok(out.length <= 4000)
+  assert.match(out, /Acme closed new funding this month/)
+})

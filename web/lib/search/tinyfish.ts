@@ -516,22 +516,28 @@ export function focusTerms(request: string): string[] {
 }
 export function focusText(text: string, terms: string[], limit: number): string {
   if (text.length <= limit || !terms.length) return text.slice(0, limit)
-  const head = Math.min(600, Math.floor(limit / 4)), radius = 220
-  const lower = text.toLowerCase(), spans: [number, number][] = [[0, head]]
-  for (const term of terms) {
+  // The old 1200-character head is always kept, so no page loses what extraction saw before.
+  const head = Math.min(1200, Math.floor(limit / 3)), radius = 220
+  const lower = text.toLowerCase()
+  const hits = terms.map(term => {
     const re = new RegExp(`(?<![\\p{L}\\p{N}])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'gu')
-    for (const m of lower.matchAll(re)) spans.push([Math.max(0, m.index! - radius), Math.min(text.length, m.index! + term.length + radius)])
+    return [...lower.matchAll(re)].map(m => m.index!).filter(i => i >= head).map(i => [Math.max(head, i - radius), Math.min(text.length, i + term.length + radius)] as [number, number])
+  }).filter(h => h.length).sort((a, b) => a.length - b.length)   // rarer terms first: a menu word repeated 40 times goes last
+  // Round-robin across terms (each term's 1st window, then each term's 2nd...), so early repeats of one term cannot use up the room.
+  const order: [number, number][] = []
+  for (let k = 0; order.length < 400 && hits.some(h => h.length > k); k++) for (const h of hits) if (h[k]) order.push(h[k])
+  const chosen: [number, number][] = [[0, head]]
+  let used = head
+  for (const s of order) {
+    if (chosen.some(c => s[0] >= c[0] && s[1] <= c[1])) continue
+    const cost = s[1] - s[0] + 3
+    if (used + cost > limit) continue
+    chosen.push(s); used += cost
   }
-  spans.sort((a, b) => a[0] - b[0])
+  chosen.sort((a, b) => a[0] - b[0])
   const merged: [number, number][] = []
-  for (const s of spans) { const last = merged[merged.length - 1]; if (last && s[0] <= last[1]) last[1] = Math.max(last[1], s[1]); else merged.push([...s]) }
-  let out = ''
-  for (const [a, b] of merged) {
-    const piece = text.slice(a, b).trim()
-    if (out.length + piece.length + 3 > limit) { const room = limit - out.length - 3; if (room > 40) out += (out ? ' … ' : '') + piece.slice(0, room); break }
-    out += (out ? ' … ' : '') + piece
-  }
-  return out
+  for (const c of chosen) { const last = merged[merged.length - 1]; if (last && c[0] <= last[1]) last[1] = Math.max(last[1], c[1]); else merged.push([...c]) }
+  return merged.map(([a, b]) => text.slice(a, b).trim()).join(' … ').slice(0, limit)
 }
 export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[], rank?: (url: string) => number, cap = 30, focus?: { terms: string[]; limit: number }): Evidence[] {
   const byUrl = new Map(pages.map(p => [p.url.replace(/\/$/, ''), p]))
