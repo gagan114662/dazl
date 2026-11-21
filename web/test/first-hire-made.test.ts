@@ -92,7 +92,7 @@ test('malformed and hostile requests: nothing throws, nothing is invented, compi
 // ---- the clause proof: a completed hire needs a source showing the completed hire ----
 const ctx = { query: OR_B, icp: ICP_B, salesGatePassed: true, competitors: null, graded: true, now: NOW }
 const hireCond = (): Condition => planConditions(compileTargeting(OR_B, ICP_B).root).find(x => x.cond.kind === 'hire_made')!.cond
-const lead = (quote: string | null, date: string | null = ago(11)): ProofLead => ({ company: 'Pastco', company_domain: 'pastco.example', evidence_excerpt: quote, signal: 'made its first sales hire', source_url: 'https://news.example/pastco', event_date: date })
+const lead = (quote: string | null, date: string | null = ago(11)): ProofLead => ({ company: 'Pastco', company_domain: 'pastco.example', evidence_excerpt: quote, signal: 'made its first sales hire', source_url: 'https://news.example/pastco', event_date: date , event_date_proof: null })
 const POSTING: ProofRow = { connector: 'signals:greenhouse-gtm', kind: 'hiring', value: '1 sales/GTM role posted, newest ' + ago(12), label: 'Account Executive', source_url: 'https://boards.greenhouse.io/pastco/jobs/1', source_date: ago(12) }
 const ROLE_POSTING: ProofRow = { connector: 'signals:careers-gtm', kind: 'hiring-role', value: 'Open role on its careers page: Sales Representative - posted ' + ago(5), label: 'Requested role: sales', source_url: 'https://pastco.example/careers/1', source_date: ago(5) }
 

@@ -25,7 +25,7 @@ const OPEN_OR = 'London B2B SaaS startups that raised seed funding or are hiring
 const AND_B = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days and are hiring sales staff.'
 const ICP_B = JSON.stringify({ summary: 'London B2B SaaS startups', where: ['London, UK'], who: ['Founder', 'Head of Sales'], signals: ['raised seed funding in the last 90 days', 'made their first sales hire in the last 90 days'], exclude: ['agencies'] })
 const hire = (): Condition => planConditions(compileTargeting(OR_B, ICP_B).root).find(x => x.cond.kind === 'hire_made')!.cond
-const lead = (q: string, company = 'Pastco'): ProofLead => ({ company, company_domain: `${company.toLowerCase()}.example`, evidence_excerpt: q, signal: 'made its first sales hire', source_url: 'https://news.example/pastco', event_date: ago(11) })
+const lead = (q: string, company = 'Pastco'): ProofLead => ({ company, company_domain: `${company.toLowerCase()}.example`, evidence_excerpt: q, signal: 'made its first sales hire', source_url: 'https://news.example/pastco', event_date: ago(11) , event_date_proof: null })
 const ctx = { query: OR_B, icp: ICP_B, salesGatePassed: false, competitors: null, graded: true, now: NOW }
 const truth = (q: string, company = 'Pastco') => conditionProof(hire(), lead(q, company), [], ctx).truth
 

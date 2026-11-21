@@ -9,6 +9,7 @@ import Nav from './nav'
 import { NAV_TOGGLE_ID } from './nav-toggle'
 import MainFocus from './main-focus'
 import { Icon } from './ui/icons'
+import { OPENING_ID, stallWatchScript } from '@/lib/stall-recovery'
 
 async function AuthGate({ children }: { children: React.ReactNode }) {
   // #988: the session check reads the clock (expiry). Opt this subtree into request time first, so the prerender never
@@ -45,9 +46,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           that focus when the page swaps its loading view for the loaded one, or hydration re-creates the subtree. */}
       <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto">
         <Suspense fallback={
-          <div className="p-4 sm:p-8" role="status">
+          <div id={OPENING_ID} className="p-4 sm:p-8" role="status">
             <p className="text-sm font-medium">Opening your workspace…</p>
             <p className="mt-1 text-sm text-[var(--ink-2)]">If this screen stays here, reload the page to try again.</p>
+            {/* #1463: reloads once if the streamed page never arrives, then shows a Reload button (lib/stall-recovery.ts) */}
+            <script dangerouslySetInnerHTML={{ __html: stallWatchScript() }} />
           </div>
         }>
           <AuthGate>{children}</AuthGate>
