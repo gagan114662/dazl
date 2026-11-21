@@ -15,6 +15,7 @@ import { leadHoldReason, timingOptsFor } from '@/lib/outreach/lead-hold'
 import type { PreviewLead } from '@/lib/journey'
 import { companyKey } from '@/lib/scan/evidence'
 import { RESULTS_WINDOW_DAYS } from '@/lib/outreach/home-results'
+import { companyFirstShown, gateHoldReason, heldByChecksOf } from '@/lib/outreach/campaigns'
 
 export const READY_LEADS_MAX = 600    // leads judged per Home load (each costs a few indexed reads; batching them is #1181)
 export const SCAN_READ_MAX = 500      // listLeads' own ceiling per scan
@@ -40,17 +41,21 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
   const db = getScanDb()
   // The tenant's own scans (never test-only runs) holding leads the tile can judge - found in the window, shown on Leads
   // (not a poor fit), not rejected, not a fixture, not seen before - by their newest such lead, with how many each holds.
-  const jobs = db.prepare(`SELECT j.id, MAX(l.created_at) AS last, COUNT(*) AS n FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id
+  const jobs = db.prepare(`SELECT j.id, j.run_budget, j.status, j.enrich_started_at, j.enrich_finished_at, MAX(l.created_at) AS last, COUNT(*) AS n FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id
     WHERE j.user_id = ? AND l.created_at >= ? AND NOT (j.industry = 'test only' AND j.location = 'test only')
       AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL AND COALESCE(l.source_kind, '') <> 'test' AND COALESCE(l.seen_before, 0) = 0
-    GROUP BY j.id ORDER BY last DESC, j.id DESC`).all(tenantId, since) as { id: string; n: number }[]
+    GROUP BY j.id ORDER BY last DESC, j.id DESC`).all(tenantId, since) as { id: string; n: number; run_budget: string | null; status: string; enrich_started_at: number | null; enrich_finished_at: number | null }[]
+  // #1062: a company-first scan shows only the leads its final checks let through (companyFirstResults, the run page's own gate), judged from
+  // this one read of the scans; the rest are held by those checks (or by checks still running), never "needs your review". Fails closed.
+  const shown = await companyFirstShown(db, tenantId, jobs, at)
   // One verdict per COMPANY, matched the way "seen before" matches (lib/scan/store.ts markSeenBefore): the same domain, or
   // the same normalised name. READY wins: a company is ready when any of its judged leads is ready (that lead shows ready
   // on its scan's Leads page); otherwise it is held for the reason of the first lead met (newest scan first).
   type Verdict = ReadyCompany
   const companies: Verdict[] = [], byKey = new Map<string, Verdict>()
   let checked = 0, judgedLeads = 0, capped = false
-  scan: for (const { id, n } of jobs) {
+  scan: for (const j of jobs) {
+    const { id, n } = j, byChecks = heldByChecksOf(j, shown)
     const job = getJob(db, tenantId, id) as { id: string; query: string | null; icp: string | null } | undefined
     if (!job) continue
     const timingOpts = timingOptsFor(job)
@@ -66,7 +71,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
       if (judgedLeads >= maxLeads) { capped = true; whole = false; break }
       judgedLeads++
       // the hold fields exactly as GET /api/leads computes them, for this lead only
-      const why = leadHoldReason(db, tenantId, l as never, enr[l.id] ?? [], timingOpts, at)   // lib/outreach/lead-hold.ts: the one rule
+      const why = byChecks(l.id) ? gateHoldReason(j, shown) : leadHoldReason(db, tenantId, l as never, enr[l.id] ?? [], timingOpts, at)   // lib/outreach/lead-hold.ts: the one rule
       if (!v) { v = { lead_id: l.id, company: l.company || 'Unnamed company', job_id: id, ready: !why, reason: why ?? '' }; companies.push(v) }
       else if (!why) { v.ready = true; v.reason = ''; v.job_id = id; v.lead_id = l.id; v.company = l.company || v.company }   // held in a newer scan, ready in this one: ready wins
       for (const k of keys) byKey.set(k, v)
