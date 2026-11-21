@@ -27,21 +27,23 @@ export function pendingWebsiteReviewSnapshot(db: Database.Database, tenantId: st
   return db.prepare("SELECT query,offer,icp FROM scan_jobs WHERE id=? AND user_id=? AND status='pending'")
     .get(jobId, tenantId) as {query:string;offer:string;icp:string}|undefined
 }
-export function consumeWebsiteReviewAudit(db: Database.Database, event: AuditEvent, oldest: number, nonce: string, at: number): boolean {
+export function consumeWebsiteReviewAudit(db: Database.Database, event: AuditEvent, auditId: string, oldest: number, nonce: string, at: number): boolean {
   if (!db.inTransaction || !/^[a-f0-9]{24}$/.test(nonce)) return false
   // Canonical auditEventArgs serializes this constrained hex nonce via
   // JSON.stringify; the complete delimited receipt member is a portable match.
   const consumed = db.prepare("SELECT 1 FROM audit_events WHERE tenant_id=? AND action=? AND at>=? AND summary LIKE ? ESCAPE '!'")
     .get(event.tenantId, event.action, oldest, `%"receipt!_id":"${nonce}"%`)
   if (consumed) return false
+  const args = auditEventArgs(event, at)
+  args[0] = auditId
   db.prepare(`INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, correlation_id, at, seq)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) + 1 FROM audit_events))`).run(...auditEventArgs(event, at))
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) + 1 FROM audit_events))`).run(...args)
   return true
 }
-export function storedWebsiteReviewSnapshot(db: Database.Database, tenantId: string, jobId: string, action: string) {
+export function storedWebsiteReviewSnapshot(db: Database.Database, tenantId: string, jobId: string, action: string, auditId: string) {
   return db.prepare(`SELECT j.query,j.offer,j.icp,a.summary FROM scan_jobs j JOIN audit_events a
     ON a.tenant_id=j.user_id AND a.resource_id=j.id AND a.action=? AND a.resource_type='scan_job' AND a.decision='allowed'
-    WHERE j.user_id=? AND j.id=? ORDER BY a.seq DESC LIMIT 1`).get(action, tenantId, jobId) as
+    WHERE a.id=? AND j.user_id=? AND j.id=?`).get(action, auditId, tenantId, jobId) as
     {query:string;offer:string;icp:string;summary:string}|undefined
 }
 

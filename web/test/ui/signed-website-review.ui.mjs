@@ -99,7 +99,7 @@ try {
   assert.equal(await sourced.locator(`a[href="${site}multiple"]`).count(),1)
   const question=page.getByTestId('research-question')
   await question.getByRole('button',{name:'Fixture Analytics',exact:true}).click()
-  await page.getByTestId('research-answered').filter({hasText:'Fixture Analytics'}).waitFor()
+  await page.getByTestId('research-answered').filter({hasText:'Which of your offers is this play for?'}).waitFor()
   await capture('website-offer-pick')
   // Merely reviewing or picking an offer does not price or queue a play.
   assert.deepEqual(posts,['/api/scan/icp-from-url'])
@@ -140,6 +140,11 @@ try {
   const price=await priced
   assert.equal(price.status(),200)
   assert.ok((await price.json()).website_approval_receipt)
+  const quotedResearch=price.request().postDataJSON().icp.research
+  const typedAnswer=quotedResearch.ans
+  assert.equal(typedAnswer?.q,'Who buys this?')
+  assert.equal(typedAnswer?.t,'dispatch leaders')
+  assert.equal(quotedResearch.offers.find(row=>row.i===typedAnswer.o)?.n,offer)
   await page.getByTestId('estimate-confirm-run').waitFor()
   await capture('website-reviewed-estimate')
   assert.equal(db.prepare('SELECT count(*) FROM scan_jobs').pluck().get(),0)
@@ -154,6 +159,8 @@ try {
   const proof=await proofResponse.json()
   assert.equal(proof.website_profile_review,'confirmed')
   assert.deepEqual(proof.icp.who,['operations managers','dispatch leaders'])
+  assert.deepEqual(run.request().postDataJSON().icp.research.ans,typedAnswer)
+  assert.deepEqual(proof.icp.research.ans,typedAnswer)
   assert.ok(proof.icp.research.hyps.some(h=>h.t==='sales managers'&&h.s==='rejected'))
   assert.equal(db.prepare('SELECT offer FROM scan_jobs WHERE id=?').pluck().get(job_id),offer)
   assert.equal(db.prepare('SELECT count(*) FROM scan_spend_calls').pluck().get(),0,'worker never dispatches a scan')

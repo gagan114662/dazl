@@ -10,6 +10,8 @@ type Approved=Readonly<{scope:Scope;nonce:string;until:number;digest:string}>
 const authenticated=new WeakSet<Approved>()
 export const WEBSITE_PROFILE_REVIEW_MODE='website_profile_review_v1'
 export const WEBSITE_PROFILE_REVIEW_ACTION='scan.website_profile.review_confirmed'
+// Audit id is derived per tenant and job for indexed polling, not a new exposed identifier.
+const queuedAuditId=(tenantId:string,jobId:string)=>createHash('sha256').update(JSON.stringify(['website-profile-review/v1',tenantId,jobId])).digest('hex').slice(0,24)
 const revision=(s:Snapshot)=>createHash('sha256').update(JSON.stringify([s.query,s.offer,s.icpJson])).digest('hex')
 function mac(key:Buffer,serialized:string){
   return createHmac('sha256',key).update('dazl/website-profile-review/v1\0'+serialized).digest()
@@ -63,13 +65,13 @@ export function recordQueuedWebsiteApproval(db:Database.Database,proof:Approved,
   const row=pendingWebsiteReviewSnapshot(db, tenantId, jobId)
   if(!row||!row.query||!row.offer||!row.icp||revision({query:row.query,offer:row.offer,icpJson:row.icp})!==proof.digest)return false
   return consumeWebsiteReviewAudit(db,{tenantId,actorId,action:WEBSITE_PROFILE_REVIEW_ACTION,resourceType:'scan_job',resourceId:jobId,
-    summary:{receipt_id:proof.nonce,snapshot:'v1:'+proof.digest}},Math.floor((now-20*60_000)/1000),proof.nonce,Math.floor(now/1000))
+    summary:{receipt_id:proof.nonce,snapshot:'v1:'+proof.digest}},queuedAuditId(tenantId,jobId),Math.floor((now-20*60_000)/1000),proof.nonce,Math.floor(now/1000))
 }
 
 /** Canonical current read marker derived only from an actual bound atomic row. */
 export function readQueuedWebsiteApproval(db:Database.Database,tenantId:string,jobId:string):boolean{
   try{
-    const row=storedWebsiteReviewSnapshot(db,tenantId,jobId,WEBSITE_PROFILE_REVIEW_ACTION)
+    const row=storedWebsiteReviewSnapshot(db,tenantId,jobId,WEBSITE_PROFILE_REVIEW_ACTION,queuedAuditId(tenantId,jobId))
     return !!row&&!!row.query&&!!row.offer&&!!row.icp&&JSON.parse(row.summary).snapshot==='v1:'+revision({query:row.query,offer:row.offer,icpJson:row.icp})
   }catch{return false}
 }
