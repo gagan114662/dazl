@@ -654,6 +654,16 @@ const COMPANY_FIRST_TARGET_CANDIDATES = 8
 const COMPANY_FIRST_DOWNSTREAM_RESERVE_USD = 0.25
 class OptionalAngleNoRoom extends Error { constructor() { super('optional_angle_no_room') } }
 // Read-only, never latching: does this scan's recorded cap still have room for usd? Unknown state answers no (the angle is optional).
+// Read-only, never latching: does every owner pool behind these guards still have room for usd? A pool that cannot say answers no.
+async function poolRoomFor(guards: SpendGuard[], usd: number): Promise<boolean> {
+  for (const g of guards) {
+    if (!(g instanceof PooledGuard)) continue
+    if (g.refused || !g.pool.headroom) return false
+    const room = await g.pool.headroom().catch(() => -Infinity)
+    if (!(room >= usd)) return false
+  }
+  return true
+}
 async function scanCapRoomFor(usd: number): Promise<boolean> {
   const ctx = scanSpendContext()
   if (!ctx) return false
@@ -662,7 +672,13 @@ async function scanCapRoomFor(usd: number): Promise<boolean> {
   const row = await scanSpendRow(ctx.db, ctx.jobId, ctx.tenantId).catch(() => undefined)
   if (!row || !Number.isFinite(row.spend_cap_reserved_usd)) return false
   const bound = row.spend_cap_usd === null ? cap : Math.min(cap, row.spend_cap_usd)
-  return row.spend_cap_reserved_usd + usd <= bound
+  if (!(row.spend_cap_reserved_usd + usd <= bound)) return false
+  // The owner's day/month account windows every priced step of the scan is also counted on (null: the runner's own PooledGuard does).
+  if (ctx.accountLimits) {
+    const room = await sharedPool(ctx.db, ctx.tenantId, ctx.accountLimits).headroom?.().catch(() => -Infinity)
+    if (!(typeof room === 'number' && room >= usd)) return false
+  }
+  return true
 }
 // #386 lookalike scans (lib/scan/lookalike-discovery.ts lookalikeOf): the run never brings back an account the tenant
 // supplied (customer, won opportunity, competitor, negative example). A block that is present but unreadable is UNKNOWN,
@@ -1712,6 +1728,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           // verification of candidates already found). Room for the angle's own estimate on every guard and on the scan cap.
           if (companyFirst && angleIndex > 0 && totalNativeCandidates > 0 &&
             (spendGuards.some(g => g.refused || !(g.reservedUsd + est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD <= g.limitUsd)) ||
+              !(await poolRoomFor(spendGuards, est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD)) ||
               !(await scanCapRoomFor(est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD)))) throw new OptionalAngleNoRoom()
           const hold = await reserveNativeSearch(spendGuards, est.estimatedUsd, () => assertOwned(db, job))
           paidPrepared = est
@@ -1729,7 +1746,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (spendAttemptUncertain() || !usage) { ledger.record(source, 'error:usage_unknown'); finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }
         // An optional later angle that settled above its estimate ends discovery, never the run: its actual cost is known and
         // settled, and candidates already found go on to the verifier.
-        if (over && companyFirst && angleIndex > 0 && totalNativeCandidates > 0 && !spendGuards.some(g => g.refused) && await scanCapRoomFor(0)) { ledger.record(source, 'partial_hold:estimate_exceeded'); finishedSearches.push({est,usage}); break }
+        if (over && companyFirst && angleIndex > 0 && totalNativeCandidates > 0 && !spendGuards.some(g => g.refused) && await poolRoomFor(spendGuards, COMPANY_FIRST_DOWNSTREAM_RESERVE_USD) && await scanCapRoomFor(COMPANY_FIRST_DOWNSTREAM_RESERVE_USD)) { ledger.record(source, 'partial_hold:estimate_exceeded'); finishedSearches.push({est,usage}); break }
         if (over) { ledger.record(source, 'partial_hold:estimate_exceeded'); finish(db, job, 'failed', 'native_search_estimate_exceeded', null, null, ledger); return 'failed' }
         // Prefer cited evidence, then stable publisher diversity; public ATS postings and board roots use the documented
         // board org as the publisher. Only admitted tool-result URLs go through the existing guarded fetch.

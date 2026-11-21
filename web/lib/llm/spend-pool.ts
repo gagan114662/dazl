@@ -214,6 +214,8 @@ export interface SharedPool {
   markFailed(pendingId: string): Promise<void>
   // Write this process's unwritten failure marks for the owner; false when the store still does not take them.
   flushFailed(): Promise<boolean>
+  // Read-only: the smallest room left (limit - reserved) across the windows now; Infinity with no limits. Never reserves or latches.
+  headroom?(nowS?: number): Promise<number>
 }
 
 function windows(limits: PoolLimits): [PoolWindow, number][] {
@@ -251,6 +253,14 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       if (!(await flush())) retryLater()
     },
     flushFailed: flush,
+    async headroom(nowS = clock()) {
+      let room = Infinity
+      for (const [w, limit] of ws) {
+        const row = await db.get<{ reserved_usd: number | string }>('SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id = ? AND period = ?', [owner, periodOf(w, nowS)])
+        room = Math.min(room, limit - Number(row?.reserved_usd ?? 0))
+      }
+      return room
+    },
     async reserve(usd, nowS = clock(), pendingId, busyUntil = Date.now() + busyWaitMs) {
       if (!(Number.isFinite(usd) && usd >= 0)) throw new SpendRefused('reservation_invalid')
       if (ws.length === 0 || (usd === 0 && !pendingId)) return nowS

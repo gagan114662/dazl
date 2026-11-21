@@ -28,12 +28,13 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000 }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
     DAZL_SCAN_CAP_CAD: cap,
     DAZL_SCAN_CAP_FX_CAD_PER_USD: '1.50',
+    ...(dayUsd ? { DAZL_OWNER_DAY_MAX_USD: dayUsd } : {}),
     NEWS_SEARCH_ENABLED: '0',
     LEAD_ENGINE: '',
     DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture',
@@ -637,4 +638,14 @@ test('#1457 (c): a later angle whose over-estimate settle leaves no cap room fai
     confirmedOffer: 'Independent commercial document services', extractionFixture: true, secondWave: 'over', overTokens: 600_000, cap: '1.5' })
   assert.equal(r.sequence.filter(x => x === 'native-send').length, 2)
   assert.equal(r.end && (r.end as { error?: string }).error, 'native_search_estimate_exceeded', JSON.stringify(r.end))
+})
+
+test('#1457 review: the owner day window (not just the scan cap) must have room for the optional angle and grading', async () => {
+  // df4f657f: the account day limit, not the CAD 5 scan cap, was the tight one. Day 0.84 USD: search fits, search + reserve does not.
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+    confirmedOffer: 'Independent commercial document services', extractionFixture: true, dayUsd: '0.84' })
+  assert.equal(r.sequence.filter(x => x === 'native-send').length, 1, JSON.stringify(r.end))
+  assert.ok(!(r.ledger as { status: string }[]).some(x => x.status === 'refused'))
+  assert.equal(r.report.observed.verification, true)
+  assert.match(JSON.stringify(r.report), /Regional Document Services/)
 })
