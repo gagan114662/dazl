@@ -312,7 +312,7 @@ function boardQuoteAt(text: string, looseQuote: string): { passage: string; matc
     if (i < 0) return null
     spans.push([i, i + p.length]); from = i + p.length
   }
-  // the passage is the words around each matched piece, never the record text between pieces (which nobody quoted)
+  // the passage is up to 800 characters around each matched piece (windows close together overlap), never the whole stretch between pieces
   return { passage: spans.map(([a, b]) => hay.slice(Math.max(0, a - 800), b + 800)).join(' ... '), matched: pieces.join(' ... ') }
 }
 export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verdict {

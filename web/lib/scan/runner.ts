@@ -70,6 +70,7 @@ import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
+import { HIRING_KINDS } from '../play-alerts.ts'
 import { isHiringTrigger } from './scoreboard.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
@@ -764,9 +765,11 @@ async function callResearch<T>(ledger: SourceRunLedger, source: string, f: () =>
   try { return await f() } catch (e) { ledger.record(source, e instanceof SpendRefused ? 'skipped_hold' : 'error'); throw e }
 }
 
-// #533: a board-bound posting (verifyLeads) is stored as hiring; a graded hiring kind from scoring (hiring_relevant_role) is kept
+// #533: a board-bound posting (verifyLeads) is stored as hiring, unless the grader lists it only as another dated event
+// (raised_funding, a launch) or a standing signal (press_mention): that grade is kept, so the board's day never dates it as hiring (lib/monitor-events.ts dated).
+// A graded requested-role kind (hiring_relevant_role) is kept; another hiring-type grade (job_board_presence ...) reads as hiring.
 export const boundKind = (bound: string | null | undefined, graded: string | null): string | null =>
-  bound !== 'hiring' ? graded : graded === 'hiring' || graded === 'hiring_relevant_role' ? graded : 'hiring'
+  bound !== 'hiring' || graded === 'hiring_relevant_role' ? graded : !graded || HIRING_KINDS.has(graded) ? 'hiring' : graded
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   else if (uncertainSpend.has(job) || spendAttemptUncertain()) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }

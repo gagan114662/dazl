@@ -177,7 +177,7 @@ test('#533 live: on a board record a snippet-punctuated header quote and an inne
   } finally { restore() }
 })
 
-test('#533 review: a gapped board quote hands the judge only the words around each piece, never the record text between them', async () => {
+test('#533 review: a gapped board quote hands the judge only the words around each piece, never the whole record between them', async () => {
   const filler = 'Unquoted record text about benefits and perks. '.repeat(2000)
   const board = { jobs: [{ ...ROGO_BOARD.jobs[0], descriptionPlain: `Post-Sales Operations Manager for the onboarding team. ${filler} Full time role based in New York City with renewals scope.` }] }
   const restore = fakeHttps({ rogo: board })
