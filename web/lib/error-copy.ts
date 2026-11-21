@@ -52,7 +52,6 @@ export function knownErrorCopy(code: unknown): string | null {
 const CODE = /\b[a-z]+_[a-z_]+\b/
 const START_COPY: Record<string, string> = {
   no_api_key: 'Add your AI key in Settings first. A search needs it.',
-  trial_unavailable: "The free trial can't run this search. Link Google in Settings for free scans, or add your own AI key.",
   trial_exhausted: 'Your free scans are used up. Add your own AI key in Settings to keep scanning.',
   quota_exceeded: "You have used this month's scans on your plan. Upgrade in Settings.",
   over_budget: 'This search would go over your spending limit, so nothing was started. Lower the search or raise the limit in Settings.',

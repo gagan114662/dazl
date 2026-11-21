@@ -39,7 +39,7 @@ const RAW = /\b(trial_unavailable|google_required|domain_used|attempts_cap|accou
 const req = (path: string, method: string, body?: unknown) => new NextRequest(`http://localhost${path}`, {
   method, headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': '203.0.113.7' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
 
-// The prod live check's account and search (Hermes-PC on dazl.ai 194e9ada, 2026-11-13): a confirmed password account
+// The prod live check's account and search (the prod live check, 2026-11-13): a confirmed password account
 // (signed up through the form, confirmed through the emailed link), no key, no Google, and its search
 // "Dental clinics in Austin hiring a front desk manager".
 const PROD_QUERY = 'Dental clinics in Austin hiring a front desk manager'

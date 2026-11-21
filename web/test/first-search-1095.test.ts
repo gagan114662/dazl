@@ -25,7 +25,7 @@ test('#1095 the real sign-up, /api/usage and /api/scan routes: a new password ac
   assert.match(r.stdout, /FIRST SEARCH 1095 ROUTES ok/)
 })
 
-test('#1095 the prod /api/usage answer (Hermes-PC, dazl.ai 194e9ada: password account, no key, trial blocked google_required, 3 left) offers Link Google, never key-only', () => {
+test('#1095 the /api/usage answer the prod live check saw (2026-11-13: password account, no key, trial blocked google_required, 3 left) offers Link Google, never key-only', () => {
   const prod = { plan: 'free', scans_used: 0, scan_limit: 50, has_key: false, billing_status: null, trial: { funded: false, remaining: 3, cap: 3, blocked: 'google_required' } }
   const offer = firstSearchOffer(prod)
   assert.equal(offer.kind, 'refused')
@@ -51,6 +51,7 @@ test('#1095 every answer /api/usage can give maps to an offer in words: a search
   }
   assert.equal(firstSearchOffer({ has_key: false, trial: null }).kind, 'refused', 'a member with no trial of their own: words and the key, never a silent box')
   assert.equal(firstSearchOffer({ has_key: false, trial: { funded: true, remaining: 0, cap: 3, blocked: null } }).kind, 'refused', 'funded with nothing left never claims a free search')
+  assert.equal(firstSearchOffer({ has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: 'google_required' } }).kind, 'refused', 'a blocked trial is refused even if marked funded (fails closed)')
 })
 
 test('#1095 the ready step shows the offer\'s notice up front (before any search is run) and its heading', () => {

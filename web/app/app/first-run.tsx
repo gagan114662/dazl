@@ -137,7 +137,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         setLinkNote(linked)
         const pending = takePendingSearch()
         if (pending && !linked.ok) savePendingSearch(pending.query, pending.step ?? undefined, pending.at) // kept for the next attempt, same expiry
-        if (pending) { setAsk(pending.query); setAskIsSuggestion(false) }
+        if (pending?.query.trim()) { setAsk(pending.query); setAskIsSuggestion(false) }
         // a failed link: the refusal is back with its way forward (Link Google again, or the password first)
         if (!linked.ok) setTrialRefused({ reason: 'google_required', query: pending?.query ?? '' })
         const at = pending?.step

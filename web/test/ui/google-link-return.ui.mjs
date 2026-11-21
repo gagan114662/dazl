@@ -53,7 +53,7 @@ const b = await chromium.launch()
 // What GET /api/usage answers: by default a funded trial; a new password account's real answer is USAGE_PASSWORD.
 const USAGE_FUNDED = { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } }
 // #1095: what the real GET /api/usage answers a brand-new password account (test/helpers/first-search-1095-runtime.mts
-// asserts this exact trial block through the real sign-up and usage routes; Hermes-PC saw the same on dazl.ai 194e9ada).
+// asserts this exact trial block through the real sign-up and usage routes; the prod live check of 2026-11-13 saw the same).
 const USAGE_PASSWORD = { plan: 'free', scans_used: 0, scan_limit: 50, has_key: false, billing_status: null, trial: { funded: false, remaining: 3, cap: 3, blocked: 'google_required' } }
 async function open(width, url, pending, profile = PROFILE, linkCookie = null, usage = USAGE_FUNDED) {
   const fresh = !/google=reauth_required/.test(url) // the server said the session is stale: so does /api/auth/reauth
@@ -66,7 +66,7 @@ async function open(width, url, pending, profile = PROFILE, linkCookie = null, u
     if (u.origin !== base) return route.abort()
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-    if (p === '/api/usage') return json(usage)
+    if (p === '/api/usage') return usage === 'fail' ? json({ error: 'unavailable' }, 500) : json(usage)
     if (p === '/api/settings/profile') return json(profile)
     if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
@@ -115,6 +115,7 @@ try {
         assert.match(await page.getByTestId('google-link-note').innerText(), copy, `${label}: the note`)
         assert.equal(await page.getByTestId('first-ask').inputValue(), QUERY, `${label}: the same search is back`)
         await wayForward(page, ok, result, label)
+        if (ok) assert.equal(await page.getByTestId('ready-trial-refusal').count(), 0, `${label}: a funded trial shows no refusal`)
         assert.equal(await page.getByTestId('ready-cta').isEnabled(), ok, `${label}: Run is ${ok ? 'enabled' : 'disabled while the refusal and its way forward show'}`)
         assert.equal(new URL(page.url()).searchParams.get('google'), null, `${label}: ?google= read once and removed`)
         assert.equal(await saved(page) !== null, !ok, `${label}: ${ok ? 'consumed after success' : 'kept for the next attempt after a failure'}`)
@@ -234,6 +235,17 @@ try {
         assert.equal(await page.locator('[data-testid="ready-cta"]:enabled').count(), 0, `${label}: no run can start`)
         await noOverflow(page, label)
         if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `app-ready-linked-domain-used-${width}.png`), fullPage: true })
+      } finally { await ctx.close() }
+    })
+    // #1095 (council): back from a Google link that worked, but the allowance could not be read: no "run it" over a page
+    // that cannot start a run; the retry is offered instead.
+    await check(`/app ready, linked but usage unreadable @${width}`, async () => {
+      const { ctx, page } = await open(width, '/app?google=linked', 'ready', PROFILE, null, 'fail')
+      const label = `/app ready linked usage-fail @${width}`
+      try {
+        await page.getByTestId('ready-step').waitFor({ timeout: 8000 })
+        assert.doesNotMatch(await page.getByTestId('google-link-note').innerText(), /run it/, `${label}: no "run it" while nothing can run`)
+        assert.equal(await page.getByTestId('usage-retry').count(), 1, `${label}: the retry`)
       } finally { await ctx.close() }
     })
     // #1095 (Hermes review): the cost panel for a run the free trial refused claims no payer (never "Paid by the shared

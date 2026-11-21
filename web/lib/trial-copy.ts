@@ -75,7 +75,7 @@ export function firstSearchOffer(usage: { has_key?: unknown; trial?: { funded?: 
   if (usage.has_key === true) return { kind: 'own_key', heading: 'Runs on your own AI key' }
   const t = usage.trial ?? null
   const left = t && typeof t.remaining === 'number' && Number.isFinite(t.remaining) ? Math.max(0, Math.trunc(t.remaining)) : 0
-  if (t && t.funded === true && left > 0) return { kind: 'trial', left, heading: `${left} free search${left === 1 ? '' : 'es'} to start` }
+  if (t && t.funded === true && left > 0 && (t.blocked ?? null) === null) return { kind: 'trial', left, heading: `${left} free search${left === 1 ? '' : 'es'} to start` }
   const reason = t && typeof t.blocked === 'string' ? t.blocked : null
   return { kind: 'refused', reason, heading: reason === 'google_required' ? 'Link Google to start free' : 'Add your AI key to start' }
 }
