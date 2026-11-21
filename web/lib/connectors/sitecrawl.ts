@@ -11,6 +11,7 @@ import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
+import { parse, type DefaultTreeAdapterMap } from 'parse5'
 import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
@@ -211,6 +212,29 @@ const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).jo
 // addresses only runs for names: https.request skips `lookup` for an IP), never a single label ("localhost").
 export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) && !/(^|\.)0x[0-9a-f]*(\.|$)/i.test(h) && !h.split('.').every(p => /^(0x[0-9a-f]+|0[0-7]*|\d+)$/i.test(p)) }   // also no hex / octal / numeric label forms of an address, whatever the caller normalised
 const labelMatches = (label: string, want: string) => label.length >= 4 && (label === want || (want.startsWith(label) && label.length >= 6) || (label.startsWith(want) && want.length >= 6))
+
+// One uninterrupted, directly visible publisher text block, not a company name
+// at the end of a larger name or markup spanning unrelated directory entries.
+const tidyCitationText = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim()
+function publisherNamesCitedSite(html: string, quote: string): boolean {
+  if (Buffer.byteLength(html) > 128_000) return false
+  type Node = DefaultTreeAdapterMap['node']
+  const nodes: Node[] = [parse(html)]
+  let seen = 0
+  while (nodes.length && seen++ < 12_000) {
+    const node = nodes.pop()!
+    if ('tagName' in node) {
+      if (/^(?:head|script|style|noscript|template|svg|iframe|textarea|select|button|details)$/.test(node.tagName) ||
+          node.attrs.some(a => /^(?:hidden|inert|style|class)$/.test(a.name) || a.name === 'aria-hidden' && a.value !== 'false')) continue
+      if (/^(?:p|li|td|dd)$/.test(node.tagName) && node.childNodes.length === 1) {
+        const text = node.childNodes[0]
+        if ('value' in text && tidyCitationText(text.value) === quote) return true
+      }
+    }
+    if ('childNodes' in node) for (const child of node.childNodes) nodes.push(child)
+  }
+  return false
+}
 
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
@@ -1454,22 +1478,39 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // the bounded official-site lookup may still find this company elsewhere (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
-      // cf_runner stage 2: when the evidence page links no company site (an aggregator list), a homepage the scan's own search cited is a
-      // candidate only if its domain label IS the company's name (same test as a linked site's label). It is then read and checked like a
-      // linked site (name and, when asked, place), and that cited page is recorded as where the site came from.
+      // Search citations are scan-wide hints, not lead attribution. A publisher may name a website in plain text
+      // ("Full Company Name (company.example)") without linking it. Require that exact pairing in THIS lead's
+      // stored verified excerpt and re-read the exact publisher source before treating a matching citation as a
+      // candidate. Use the full name here: the crawler's looser domain label and homepage checks cannot distinguish
+      // namesakes or entities with overlapping names. Keep the publisher, not the search citation, as provenance.
       const citedSites: string[] = []
-      if (!anchored && deps.citedUrls?.length) {
-        // the cited list is scan-wide, so a cited homepage is taken only on an exact name label, and never when its label also fits another
-        // lead's name in this scan ("Acme" must not take "Acme Holdings"' acme.org): an ambiguous cite stays with the name guesses
-        const want = norm(l.company), otherWants = [...new Set(leads.map(o => norm(o.company)))].filter(o => o !== want), evOwn = (() => { try { return registrable(new URL(ev?.finalUrl ?? l.source_url).hostname) } catch { return '' } })()
-        if (want.length >= 4) for (const raw of deps.citedUrls) {
-          let u: URL; try { u = new URL(raw) } catch { continue }
-          const host = registrable(u.hostname)
-          if (host === evOwn || SOCIAL.test(host) || !siteHostOk(host) || !notBlockedHost(host) || nameLabel(host) !== want || otherWants.some(o => labelMatches(nameLabel(host), o)) || sites.includes(host)) continue
-          // not 'anchored': a cited site that fails its checks must not stop the name guesses; and its basis keeps the evidence-place
-          // comparison (a link-label basis would skip it when no place is requested), so a same-name company elsewhere is refused
-          sites.push(host); citedSites.push(host); basisOf.set(host, 'evidence_link_text'); sourceOf.set(host, u.href)
-          break
+      if (!anchored && deps.citedUrls?.length && ev && ev.status >= 200 && ev.status < 300 && ev.finalUrl === l.source_url) {
+        const verified = !supplied ? (l.review_reason === null ? l : undefined) : db.prepare(`SELECT company, source_url, evidence_excerpt FROM leads
+          WHERE id = ? AND scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL`).get(l.id, jobId) as
+          { company: string; source_url: string; evidence_excerpt: string | null } | undefined
+        if (verified?.company === l.company && verified.source_url === l.source_url && verified.evidence_excerpt) {
+          const quote = tidyCitationText(verified.evidence_excerpt)
+          const name = tidyCitationText(verified.company)
+          const prefix = name + ' ('
+          const close = quote.indexOf(')', prefix.length)
+          const namedHost = quote.startsWith(prefix) && close > prefix.length
+            ? quote.slice(prefix.length, close).replace(/^www\./, '') : ''
+          const evOwn = (() => { try { return registrable(new URL(ev.finalUrl).hostname) } catch { return '' } })()
+          const want = norm(verified.company)
+          const otherWants = [...new Set(leads.map(o => norm(o.company)))].filter(o => o !== want)
+          if (name.length >= 4 && quote.length >= 30 && quote.length <= 1000 &&
+              siteHostOk(namedHost) && namedHost === registrable(namedHost) && namedHost !== evOwn &&
+              ownSiteHost('https://' + namedHost) === namedHost && notBlockedHost(namedHost) &&
+              nameLabel(namedHost) === want && !otherWants.some(o => labelMatches(nameLabel(namedHost), o)) &&
+              deps.citedUrls.some(raw => {
+                try {
+                  const u = new URL(raw)
+                  return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
+                    u.hostname.replace(/^www\./, '') === namedHost
+                } catch { return false }
+              }) && publisherNamesCitedSite(ev.body,quote)) {
+            sites.push(namedHost); citedSites.push(namedHost); basisOf.set(namedHost, 'evidence_link_text')
+          }
         }
       }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
@@ -1507,7 +1548,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // are rejected by the homepage name check inside crawlSite.
         if (probed >= MAX_PROBES_PER_SCAN) {
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 })
-          if (structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); return }
+          if (citedSites.length === 0 && structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); return }
           sites = [...new Set([...citedSites, ...structured])]; unresolved = 'probe_limit_reached'   // no name guess and no search ran for this lead
         } else {
           probed++
