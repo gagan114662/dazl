@@ -10,7 +10,7 @@ import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplac
 import { auditAt, autopilotAvailable, CONSENT_VERSION, DEFAULT_DAILY, getState, pause } from './autopilot.ts'
 import { hasConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
-import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, leadHoldCode, recipientAllowed, testFixtureSend, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, domainReviewStatus, leadEvidenceEligible, leadHeld, leadHoldCode, recipientAllowed, testFixtureSend, unsubToken, type Deps, type DomainReviewStatus } from './service.ts'
 import { llmFollowupText } from './draft-llm.ts'
 import { getMasterKey } from '../secrets.ts'
 import { displayStopReason } from './lifecycle.ts'
@@ -77,11 +77,12 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
     // The identity check and the claim are one write transaction (the lock the review action takes). A held thread is stopped for good,
     // like a withdrawn lead confirmation: re-confirming the website does not restart it.
     // An unreadable review state is a retryable fault: skip this round without stopping the thread.
-    const claim = db.transaction((): { changes: number } | 'required' | 'unreadable' | 'quarantined' => {
+    const claim = db.transaction((): { changes: number } | Exclude<DomainReviewStatus, 'ok'> => {
       const st = domainReviewStatus(db, tenantId, t.lead_id, t.to_email)
       if (st !== 'ok') return st
       return db.prepare("INSERT OR IGNORE INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES (?, ?, ?, 'sending', ?)").run(tenantId, t.thread_id, t.followups_sent, now)
     }).immediate()
+    if (claim === 'recipient_provenance_missing') { skip(claim); continue }
     if (claim === 'unreadable') { skip('review_unreadable'); continue }
     // A quarantined lead stops its thread for good, like an unconfirmed website (releasing it does not restart it).
     if (claim === 'quarantined') { db.prepare("UPDATE followup_threads SET stopped = 'lead_quarantined' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id); skip('lead_quarantined'); continue }
@@ -127,7 +128,7 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
       if (stAfter !== 'ok') {
         db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId,t.thread_id,t.followups_sent)
         if (stAfter === 'required' || stAfter === 'quarantined') db.prepare("UPDATE followup_threads SET stopped = ? WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(stAfter === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed', tenantId, t.thread_id)
-        skip(stAfter === 'required' ? 'domain_unconfirmed' : stAfter === 'quarantined' ? 'lead_quarantined' : 'review_unreadable'); continue
+        skip(stAfter === 'required' ? 'domain_unconfirmed' : stAfter === 'quarantined' ? 'lead_quarantined' : stAfter === 'unreadable' ? 'review_unreadable' : stAfter); continue
       }
       // Shared authority recheck (send-authority.ts), after every await on this path (token, follow-up text) and immediately
       // before the handoff: tenant switches, suppression, ledger consent and the sending identity as they are NOW.
