@@ -6,7 +6,7 @@ import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
 import { companyFirstDiscoveryEnabled } from '../company-first/product-discovery.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
-import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_SPEND_MAX_USD, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
+import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_SPEND_MAX_USD, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
@@ -47,7 +47,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   if (!nb.ok) return { ok: false, status: 400, error: 'invalid_budget', detail: nb.error }
   const query = cleanText(b.query, MAX_QUERY)
   const companyFirst = companyFirstDiscoveryEnabled({ user_id: ctx.tenantId, funded_by: 'user', query }, process.env.DAZL_COMPANY_FIRST_TENANT_ID)
-  const qaClaudeOnly = !companyFirst && (qaNativeWebSearch || isClaudeOnlyRequestMode(b.mode))
+  const qaClaudeOnly = !companyFirst && qaNativeWebSearch
   if (qaClaudeOnly && !strictLocalTopologySupported(ctx.db.kind)) return { ok: false, status: 503, error: 'qa_isolation_unavailable', message: 'This deployment cannot isolate the Claude-only worker. Nothing was started.' }
   if ((qaNativeWebSearch || companyFirst) && (!ctx.hasOwnKey || ctx.model !== anthropicProvider.configuredModel!())) return { ok: false, status: 409, error: 'qa_search_requires_own_key', message: QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE }
   const qaCap = qaClaudeOnly || companyFirst ? scanCapConfig() : null

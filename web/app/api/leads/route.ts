@@ -21,6 +21,10 @@ import { currentBuyingNeed, needReadContext, type NeedRecord } from '@/lib/scan/
 import { leadLookalikeFit, lookalikeOf } from '@/lib/scan/lookalike-discovery'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 
+const FINAL_GAP_REASON: Partial<Record<string, string>> = {
+  not_actionable: 'no_named_buyer_with_contact_route', domain_unconfirmed: 'company_domain_unconfirmed', no_domain: 'no_company_domain',
+  timing_unproven: 'event_date_unproven', unresolved_recency_bound: 'no_date_window', no_record: 'timing_proof_not_recorded',
+}
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
@@ -43,10 +47,20 @@ export async function GET(req: NextRequest) {
   // nothing here can make a held candidate actionable (the hold itself is unchanged).
   // Only once the job's final visibility checks have run, as the SAME snapshot that computed visibleIds says (results.final): before that
   // every row would look held. A separate read of the job could describe another enrichment attempt (Qodo on #1466).
+  // The final check that keeps a verified (review_reason-free) candidate off the page, named - the same checks currentnessHeld runs, in its order.
+  const finalCheckReason = (id: string, eventDate: string | null): string => {
+    const now = new Date()
+    try {
+      if (leadWindowHeld(scanDb, user.tenantId, id, now)) return eventDate ? 'outside_requested_window' : 'event_date_unproven'
+      if (requiredGateHeld(scanDb, user.tenantId, id)) return 'required_gate_failed'
+      const gap = timingProofGap(scanDb, user.tenantId, id, now)
+      return gap ? (FINAL_GAP_REASON[gap] ?? gap) : 'held_by_final_checks'
+    } catch { return 'held_by_final_checks' }
+  }
   const held = companyFirst && results?.final ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null; quarantined_at?: number | null }[])
     // a lead the user rejected (quarantined) is counted as rejected everywhere, never as held
     .filter(l => !results?.visibleIds.has(l.id) && l.quarantined_at == null)
-    .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? 'held_by_final_checks' })) : []
+    .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? finalCheckReason(l.id, l.event_date) })) : []
   const sequences = await db.sequenceStatusByLead(user.tenantId)
   const enr = await db.enrichmentsForLeads(user.tenantId, leads.map(l => l.id))
   const evts = await db.eventsForLeads(user.tenantId, leads)
