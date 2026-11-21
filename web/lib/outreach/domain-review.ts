@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { PUBLISHED_EMAIL_RE, domainBasisFor, pickCrawledEmail, type DomainBasisKind, type PublishedEmailLead } from './published-email.ts'
+import { PUBLISHED_EMAIL_RE, domainBasisFor, pickCrawledEmail, sameAddressCrawlRecord, type DomainBasisKind, type PublishedEmailLead } from './published-email.ts'
 
 // Identity review for a crawled address. Pure (no db, no network) so the server gate and the page apply one rule.
 // It answers one question only: did the user check that the website behind a crawled address belongs to the company?
@@ -21,11 +21,13 @@ const NO_REVIEW: DomainBasisKind[] = ['own_domain']
 
 export function domainReviewFor(lead: { id: string; contact?: string | null }, enrichments: Row[] | undefined): ReviewDecision {
   const none: ReviewDecision = { state: 'not_required', domain: null, basis: null, basisSourceUrl: null, email: null, binding: null }
-  const e = pickCrawledEmail(enrichments)
-  // A contact email is a cited-page address and needs no review, unless it is the very address the crawl recorded: then the
-  // crawl is its only recorded origin, equality with the contact does not prove the cited page printed it, and the review applies.
+  // A contact email is a cited-page address and needs no review, unless the crawl recorded that very address (on any crawled
+  // page, not only the newest - the same record the card and the draft cite, sameAddressCrawlRecord): then equality with the
+  // contact does not prove the cited page printed it, and the review of that record's website applies (#384).
   const contact = (lead.contact ?? '').trim().toLowerCase()
-  if (PUBLISHED_EMAIL_RE.test(contact) && (!e || e.value.trim().toLowerCase() !== contact)) return none
+  const same = sameAddressCrawlRecord(lead.contact ?? null, enrichments)
+  if (PUBLISHED_EMAIL_RE.test(contact) && !same) return none
+  const e = same ?? pickCrawledEmail(enrichments)
   if (!e) return none
   const email = e.value.trim().toLowerCase()
   const b = domainBasisFor(email, enrichments)
