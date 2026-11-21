@@ -500,14 +500,59 @@ export function pageUseSplit(items: { url: string }[], pages: { url: string; tex
 // hit at position 39 of 40, cap 30). Order: rank, then pages we actually fetched before snippet-only results, then first
 // pages of distinct hosts before second pages (breadth), then search order. Undated results are ranked by the caller; nothing
 // here turns a discovery timestamp into an event date.
-export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[], rank?: (url: string) => number, cap = 30): Evidence[] {
+// A long page's signal is rarely in its first lines: an ATS board or a company's own news page opens with navigation and
+// filters, and the requested role or announcement sits thousands of characters in. With request terms, a long page keeps
+// its head plus the windows that name those terms (request-derived, nothing hardcoded), in page order, up to limit.
+const FOCUS_STOP = new Set(['find','that','with','their','them','this','from','have','into','show','shows','last','days','your','what','which','doing','still','companies','employees','dated','signal','buying','buyer','other','about','where','when','more','than','only','also','just','like','over'])
+// Request words worth a window: longer words that are not request scaffolding, plus written acronyms (SDR, BDR, VP, CEO).
+export function focusTerms(request: string): string[] {
+  const out: string[] = []
+  for (const raw of request.match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? []) {
+    const w = raw.toLowerCase()
+    if (/^\p{N}/u.test(w) || FOCUS_STOP.has(w)) continue
+    if (w.length >= 4 || (raw.length >= 2 && raw === raw.toUpperCase() && /\p{Lu}/u.test(raw))) out.push(w)
+  }
+  return [...new Set(out)].slice(0, 40)
+}
+export function focusText(text: string, terms: string[], limit: number): string {
+  if (text.length <= limit || !terms.length) return text.slice(0, limit)
+  // The old 1200-character head is always kept, so no page loses what extraction saw before.
+  const head = Math.min(1200, Math.floor(limit / 3)), radius = 220
+  const lower = text.toLowerCase()
+  const hits = terms.map(term => {
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'gu')
+    return [...lower.matchAll(re)].map(m => m.index!).filter(i => i >= head).map(i => [Math.max(head, i - radius), Math.min(text.length, i + term.length + radius)] as [number, number])
+  }).filter(h => h.length).sort((a, b) => a.length - b.length)   // rarer terms first: a menu word repeated 40 times goes last
+  // Round-robin across terms (each term's 1st window, then each term's 2nd...), so early repeats of one term cannot use up the room.
+  const order: [number, number][] = []
+  for (let k = 0; order.length < 400 && hits.some(h => h.length > k); k++) for (const h of hits) if (h[k]) order.push(h[k])
+  const chosen: [number, number][] = [[0, head]]
+  // Charge what the merged output would actually emit (overlaps counted once, ' … ' joins included).
+  const emitted = (spans: [number, number][]) => {
+    const s = [...spans].sort((a, b) => a[0] - b[0]); let len = 0, parts = 0, cur: [number, number] | null = null
+    for (const x of s) { if (cur && x[0] <= cur[1]) cur[1] = Math.max(cur[1], x[1]); else { if (cur) { len += cur[1] - cur[0]; parts++ } cur = [x[0], x[1]] } }
+    if (cur) { len += cur[1] - cur[0]; parts++ }
+    return len + 3 * Math.max(0, parts - 1)
+  }
+  for (const s of order) {
+    if (chosen.some(c => s[0] >= c[0] && s[1] <= c[1])) continue
+    if (emitted([...chosen, s]) > limit) continue
+    chosen.push(s)
+  }
+  chosen.sort((a, b) => a[0] - b[0])
+  const merged: [number, number][] = []
+  for (const c of chosen) { const last = merged[merged.length - 1]; if (last && c[0] <= last[1]) last[1] = Math.max(last[1], c[1]); else merged.push([...c]) }
+  return merged.map(([a, b]) => text.slice(a, b).trim()).join(' … ').slice(0, limit)
+}
+export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[], rank?: (url: string) => number, cap = 30, focus?: { terms: string[]; limit: number }): Evidence[] {
   const byUrl = new Map(pages.map(p => [p.url.replace(/\/$/, ''), p]))
   const seen = new Set<string>()
   const items: { e: Evidence; page: boolean; idx: number; host: string }[] = []
   for (const h of hits) {
     const k = h.url.replace(/\/$/, ''); if (seen.has(k)) continue; seen.add(k)
     const page = byUrl.get(k)
-    const text = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim().slice(0, 1200)
+    const flat = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim()
+    const text = page && focus ? focusText(flat, focus.terms, focus.limit) : flat.slice(0, 1200)
     let host = ''; try { host = new URL(h.url).hostname.toLowerCase() } catch { host = h.url }
     if (text.length >= 20) items.push({ e: { source: h.via === 'gdelt' ? 'news:gdelt' : 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date, ...(h.observed ? { updated: h.observed } : {}) }, page: !!page, idx: items.length, host })
   }
