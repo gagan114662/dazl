@@ -113,8 +113,10 @@ async function scenario(db: Db, engine: string) {
   assert.equal((await resend(sessions[3], shared)).status, 200, `[${engine}] 10th resend from one IP`)
   const resendIpOver = await resend(sessions[3], shared)
   assert.deepEqual({ status: resendIpOver.status, body: resendIpOver.body }, TOO_MANY, `[${engine}] the 11th resend from one IP inside the window`)
+  // the IP refusal spent none of v4's own counters: its 2nd and 3rd sends from another IP still go out
+  for (let i = 2; i <= 3; i++) assert.equal((await resend(sessions[3])).status, 200, `[${engine}] v4 send ${i} after its IP was refused`)
   const mailed = mails.length
-  assert.equal(mailed, 3 + 10, `[${engine}] 10 verification links sent`)
+  assert.equal(mailed, 3 + 12, `[${engine}] 12 verification links sent`)
   // per account: v1's 4th send from a fresh IP
   const resendAcctOver = await resend(sessions[0])
   assert.deepEqual({ status: resendAcctOver.status, body: resendAcctOver.body }, TOO_MANY, `[${engine}] the 4th resend for one account inside the window`)
