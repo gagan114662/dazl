@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { createSign, generateKeyPairSync, randomBytes, scryptSync } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
+import { settleAfter } from './next-server-after-shim.mjs'
 import { setScanDb, trapScanDb } from './tenant-route-db.ts'
 import { withJar } from './pg-session-headers.ts'
 import { getDb, setDb, sqliteDb, pgDb, type Db } from '../../lib/db/client.ts'
@@ -120,6 +121,7 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: Record<string, unkn
   // 2. a reset link proves ownership too.
   out.push(await call('signup rob', withJar(new Map(), () => signup.POST(post('/api/auth/signup', { email: 'rob@example.test', password: strong(2), name: 'Rob', business_name: 'Rob Co' })))))
   out.push(await call('reset request rob', resetRequest.POST(post('/api/auth/reset/request', { email: 'rob@example.test' }))))
+  await settleAfter() // the reset mail goes out after the answer (#841)
   const tr = link('rob@example.test', 'reset')
   assert.ok(tr, 'a reset link went to the address')
   out.push(await call('reset rob', reset.POST(post('/api/auth/reset', { token: tr, password: strong(3) }))))

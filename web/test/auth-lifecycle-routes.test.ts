@@ -9,7 +9,7 @@ test('unverified signup stays pending; verify/reset links and verified sign-in a
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
-    '--loader', './test/helpers/workspace-session-loader.mjs', '--test', './test/helpers/auth-lifecycle-routes-runtime.mts'],
+    '--loader', './test/helpers/auth-after-loader.mjs', '--test', './test/helpers/auth-lifecycle-routes-runtime.mts'],
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)

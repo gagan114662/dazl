@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { scryptSync, timingSafeEqual } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
+import { settleAfter } from './next-server-after-shim.mjs'
 import { withJar } from './pg-session-headers.ts'
 import { setScanDb } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
@@ -50,6 +51,7 @@ test('forgot password reveals nothing; a reset link works once and signs out eve
     await text(await resetRequest.POST(req('/api/auth/reset/request', { email: 'gee@example.test' }))),
     await text(await resetRequest.POST(req('/api/auth/reset/request', { email: 'nobody@example.test' }))),
     await text(await resetRequest.POST(req('/api/auth/reset/request', { email: 'not an email' })))]
+  await settleAfter() // the reset mail goes out after the answer (#841)
   assert.equal(new Set(answers).size, 1, answers.join('\n'))
 
   const s1 = await createSession('P'), s2 = await createSession('P')
@@ -98,7 +100,7 @@ test('expired links do nothing at the routes; change email answers the same whet
   const sx = await createSession('X')
   const expire = (purpose: string) => raw.prepare('UPDATE email_tokens SET expires_at = 1 WHERE user_id = ? AND purpose = ?').run('X', purpose)
   // reset link past its 30 minutes: refused, the password and every session stay as they were
-  await resetRequest.POST(req('/api/auth/reset/request', { email: 'xan@example.test' }))
+  await resetRequest.POST(req('/api/auth/reset/request', { email: 'xan@example.test' })); await settleAfter()
   const rt = link('X', 'reset')!; assert.ok(rt); expire('reset')
   assert.deepEqual(await (await reset.POST(req('/api/auth/reset', { token: rt, password: 'a new password 42' }))).json(), { error: 'invalid_link' })
   assert.ok(await getSessionUser(sx), 'an expired reset link signs nobody out')
