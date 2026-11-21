@@ -271,23 +271,6 @@ class ProdPrebuiltTest(unittest.TestCase):
         self.assert_untouched(r, 'free')
         self.assertNotIn('.tgz', self.log('curl.log'))
 
-    def test_direct_fetch_preserves_old_files_on_mounted_cache_root(self):
-        self.publish()
-        cache = self.t / 'dl'
-        cache.mkdir()
-        old = cache / f'prod-next-{A}.tgz'
-        old.write_bytes(b'fixture stale')
-        os.utime(old, (1, 1))
-        mountpoint = self.t / 'bin' / 'mountpoint'
-        mountpoint.write_text('#!/bin/sh\ncase "$3" in */dl) exit 0;; *) exit 32;; esac\n')
-        mountpoint.chmod(0o755)
-        r = subprocess.run(['bash', self.PULL, 'fetch', B], env=self.env(), capture_output=True, text=True, timeout=60)
-        out = r.stdout + r.stderr
-        self.assertEqual(r.returncode, 0, out)
-        self.assertIn('keeping all old artifacts in mounted or unverified cache root', out)
-        self.assertTrue(old.is_file())
-        self.assertTrue((cache / f'prod-next-{B}.tgz').is_file())
-
     def test_disk_floor_counts_the_unpacked_build(self):
         # the downloads alone fit, the unpacked build does not: refused before anything is downloaded
         import shutil

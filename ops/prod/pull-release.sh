@@ -29,23 +29,6 @@ DOWNLOAD_BUDGET_S=${PROD_DOWNLOAD_BUDGET_S:-1800}
 log() { echo "prod-prebuilt: $*"; }
 fail() { echo "prod-prebuilt: $*" >&2; exit 1; }
 is_sha() { [[ ${1:-} =~ ^[0-9a-f]{40}$ ]]; }
-# A direct pull can still reclaim its own old cache, but only exact files
-# written by this tool. The v2 deploy normally already removed these, so df
-# observes actual space reclaimed rather than hypothetical directory sizes.
-is_old_cache() {
-  local f=$1 wanted=$2 n=${1##*/} sha protected age=${PROD_MIN_STALE_CACHE_AGE:-0} now modified
-  [ -f "$f" ] && [ ! -L "$f" ] && [ "$(stat -c %h -- "$f")" = 1 ] &&
-    [ "$(stat -c %u -- "$f")" = "$(id -u)" ] && [ -z "$(findmnt -rn -M "$f" 2>/dev/null || true)" ] &&
-    [[ $n =~ ^prod-((next|modules)-([0-9a-f]{40})\.tgz(\.(sha256|part))?|modules-([0-9a-f]{40})\.unpacked|lock-([0-9a-f]{40})\.sha256)$ ]] || return 1
-  sha=${BASH_REMATCH[3]}${BASH_REMATCH[6]}${BASH_REMATCH[7]}
-  [ "$sha" != "$wanted" ] || return 1
-  for protected in ${PROD_PROTECTED_PREBUILT_SHAS:-}; do
-    [[ $protected =~ ^([0-9a-f]{8}|[0-9a-f]{40})$ ]] || return 1
-    [[ $sha = "$protected"* ]] && return 1
-  done
-  [[ $age =~ ^(0|[1-9][0-9]{0,4})$ ]] || return 1
-  now=$(date +%s) && modified=$(stat -c %Y -- "$f") && (( now - modified >= age ))
-}
 sha256() { sha256sum -- "$1" | cut -c1-64; }
 
 # The manifest, validated: prints "next_sha next_bytes next_unpacked mods_sha mods_bytes mods_unpacked lock_sha", or fails.
@@ -95,18 +78,6 @@ fetch() {
   [[ ${next_sha:-} =~ ^[0-9a-f]{64}$ ]] || fail "the manifest of $sha was refused; nothing downloaded"
   # the disk floor: what is still to download, plus both archives unpacked, must leave PROD_MIN_FREE_BYTES free
   install -d -m 755 "$DL"
-  [ "$(realpath -e -- "$DL")" = "$DL" ] && [ "$(stat -c %u -- "$DL")" = "$(id -u)" ] &&
-    (( (8#$(stat -c %a -- "$DL") & 8#22) == 0 )) || fail "untrusted cache directory; nothing downloaded"
-  local slot
-  for slot in "prod-next-$sha.tgz" "prod-next-$sha.tgz.part" "prod-next-$sha.tgz.sha256" \
-              "prod-modules-$sha.tgz" "prod-modules-$sha.tgz.part" "prod-modules-$sha.tgz.sha256" \
-              "prod-modules-$sha.unpacked" "prod-lock-$sha.sha256"; do
-    local existing="$DL/$slot"
-    [ -e "$existing" ] || [ -L "$existing" ] || continue
-    [ -f "$existing" ] && [ ! -L "$existing" ] && [ "$(stat -c %h -- "$existing")" = 1 ] &&
-      [ "$(stat -c %u -- "$existing")" = "$(id -u)" ] && [ -z "$(findmnt -rn -M "$existing" 2>/dev/null || true)" ] ||
-      fail "unsafe current prebuilt cache path $slot; nothing downloaded"
-  done
   local have=0 n
   for n in "prod-next-$sha.tgz:$next_sha" "prod-modules-$sha.tgz:$mods_sha"; do
     local f="$DL/${n%%:*}"; [ -f "$f" ] && [ ! -L "$f" ] && [ "$(sha256 "$f")" = "${n##*:}" ] && have=$(( have + $(stat -c %s -- "$f") ))
@@ -122,12 +93,10 @@ fetch() {
   [ -d "$rel_fs" ] || rel_fs=/
   if [ -n "$bk_fs" ]; then while [ ! -d "$bk_fs" ]; do bk_fs=$(dirname -- "$bk_fs"); done; fi
   # superseded downloads (an earlier commit's archives) are removed before this commit's are fetched: counted as free
-  local stale=0 reclaim=0 mount_rc=0
-  mountpoint -q -- "$DL" || mount_rc=$?
-  if [ "$mount_rc" = 32 ]; then reclaim=1
-  else log "keeping all old artifacts in mounted or unverified cache root"; fi
+  local stale=0
   for f in "$DL"/*; do
-    [ "$reclaim" = 1 ] && is_old_cache "$f" "$sha" || continue
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    case "$(basename "$f")" in "prod-next-$sha.tgz"|"prod-modules-$sha.tgz") continue ;; esac
     stale=$(( stale + $(stat -c %s -- "$f") ))
   done
   declare -A on=()
@@ -143,9 +112,10 @@ fetch() {
     unset "on[$dev]"
   done
   # superseded downloads go first (only this commit's verified files are kept)
-  for f in "$DL"/*; do
-    [ "$reclaim" = 1 ] && is_old_cache "$f" "$sha" || continue
-    rm -f -- "$f"
+  for f in "$DL"/* "$DL"/.[!.]*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    case "$(basename "$f")" in "prod-next-$sha.tgz"|"prod-modules-$sha.tgz") [ -f "$f" ] && [ ! -L "$f" ] && continue ;; esac
+    rm -rf -- "$f"
   done
   get() { # name sha256 bytes
     local f="$DL/$1" spent left

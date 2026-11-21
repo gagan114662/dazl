@@ -5,12 +5,11 @@
 #   deploy-prod.sh <40-hex sha>    blue/green deploy of the PREBUILT build of <sha> (never builds on the box)
 #   deploy-prod.sh --rollback      point dazl.ai back at the previous release (still running), verified
 #   deploy-prod.sh --stop-port P   stop the release on port P to free memory; REFUSES if Caddy points at P
-#   deploy-prod.sh --cleanup-plan <sha>  dry-run inventory for the next exact commit; never deletes
 #   deploy-prod.sh --status        live port, both ports' commit/instance, unit states, rollback target
 #
 # Deploy steps (any failure before the switch leaves dazl.ai untouched; any failure after it switches back):
 #   0. preflight: one deploy at a time (global lock), live port read from Caddy, live release answers, enough RAM
-#   1. guarded stale artifact cleanup; verified sqlite .backup (online backup API + integrity_check) before deploying
+#   1. verified sqlite .backup of the prod DB (online backup API + integrity_check), BEFORE anything else changes
 #   2. pull-release.sh fetch: download the GitHub-built prebuilt artifact, verify size + sha256 + .build-commit
 #   3. source checkout + pull-release.sh extract (as the app user); env = live process env + run env, parsed as data
 #   4. migrate (as the app user)
@@ -44,8 +43,7 @@ DB=${PROD_DB:-/home/ubuntu/dazl-data/dazl-pr16.db}
 RELEASE_ROOT=${PROD_RELEASE_ROOT:-/home/ubuntu}
 RELEASE_ROOT=${RELEASE_ROOT%/}
 BACKUPS=${PROD_BACKUP_DIR:-/var/lib/dazl-prod-backups}
-KEEP_BACKUPS=${PROD_KEEP_BACKUPS-5}
-CACHE=${PROD_PREBUILT_DIR:-/var/cache/dazl-prod-prebuilt}
+KEEP_BACKUPS=${PROD_KEEP_BACKUPS-10}
 APP_USER=${PROD_APP_USER:-ubuntu}
 RUN_ENV=${PROD_RUN_ENV:-/home/ubuntu/dazl-pr16-run.env}
 REPO_URL=${PROD_REPO_URL:-https://github.com/gagan114662/dazl.git}
@@ -91,7 +89,7 @@ read -r PORT_A PORT_B <<< "$PORTS"
 [[ $PORT_A =~ ^31[0-9]{2}$ && $PORT_B =~ ^31[0-9]{2}$ && $PORT_A != "$PORT_B" ]] || die "PROD_PORTS must be two different 31xx ports; nothing done"
 [[ $STABLE_S =~ ^[0-9]{1,3}$ ]] || die "PROD_STABLE_S must be 0-999; nothing done"
 [[ $MIN_AVAIL_MB =~ ^[0-9]{1,5}$ ]] || die "PROD_MIN_AVAIL_MB must be a number; nothing done"
-[[ $KEEP_BACKUPS =~ ^[1-9][0-9]{0,3}$ ]] && (( KEEP_BACKUPS >= 5 )) || die "PROD_KEEP_BACKUPS must be >= 5; nothing done"
+[[ $KEEP_BACKUPS =~ ^[1-9][0-9]{0,3}$ ]] || die "PROD_KEEP_BACKUPS must be >= 1; nothing done"
 other_port() { [ "$1" = "$PORT_A" ] && echo "$PORT_B" || echo "$PORT_A"; }
 
 # files root runs must be root-owned and not group/world-writable, in root-owned directories
@@ -218,144 +216,8 @@ public_smoke() {
   return 1
 }
 
-# A dry run and a real deploy enumerate the same rollback-safe candidates while
-# holding the deployment lock. Uncertain live references disable release pruning.
-prune_releases() {
-  local mode=$1 live_web=$2 wanted=$3 root prev='' port='' listeners p cwd d owner protected
-  root=$(realpath -e -- "$RELEASE_ROOT") || return 0
-  if [ "$root" != "$RELEASE_ROOT" ] || [ "$root" = / ] ||
-     ! release_web "$live_web" || [ "${live_web%/*/*}" != "$root" ]; then
-    log "not pruning releases: live directory is outside the canonical release root"; return 0
-  fi
-  if [ -e "$STATE" ] || [ -L "$STATE" ]; then
-    [ -f "$STATE" ] && [ ! -L "$STATE" ] || { log "not pruning releases: unsafe rollback state"; return 0; }
-    prev=$(sed -n 's/^PREV_SHA=//p' "$STATE"); port=$(sed -n 's/^PREV_PORT=//p' "$STATE")
-    if [[ $prev =~ ^[0-9a-f]{40}$ ]] && [[ $port = "$PORT_A" || $port = "$PORT_B" ]]; then
-      prev="$root/dazl-${prev:0:8}-prod"
-    elif [[ $port != none || -n $prev ]]; then
-      log "not pruning releases: unreadable rollback reference"; return 0
-    fi
-  fi
-  listeners=$(ss -l -t -n -p -H) || { log "not pruning releases: cannot enumerate listeners"; return 0; }
-  local -a busy=()
-  for p in $(printf '%s\n' "$listeners" | grep -oP 'pid=\K[0-9]+' | sort -u); do
-    cwd=$(readlink "/proc/$p/cwd" 2>/dev/null) || { log "not pruning releases: a listener directory is unreadable"; return 0; }
-    busy+=("$cwd")
-  done
-  for p in "$PORTCONF"/*.conf; do
-    [ -e "$p" ] || [ -L "$p" ] || continue
-    [ -f "$p" ] && [ ! -L "$p" ] && [ -r "$p" ] || { log "not pruning releases: unsafe port config"; return 0; }
-  done
-  for d in "$root"/dazl-*-prod; do
-    [ -d "$d" ] && [ ! -L "$d" ] && [[ ${d##*/} =~ ^dazl-[0-9a-f]{8}-prod$ ]] || continue
-    [ "$d" != "${live_web%/web}" ] && [ "$d" != "$prev" ] && [ "$d" != "$wanted" ] || continue
-    for protected in "${busy[@]}" "$DB" "$BACKUPS" "$CACHE" "$OPS" "$PORTCONF" "$RUN_ENV" "$CADDY"; do
-      [[ $protected = "$d" || $protected = "$d/"* ]] && continue 2
-      protected=$(realpath -m -- "$protected") || { log "not pruning releases: unresolved protected path"; return 0; }
-      [[ $protected = "$d" || $protected = "$d/"* ]] && continue 2
-    done
-    if grep -qxF "DAZL_RELEASE=$d" "$PORTCONF"/*.conf 2>/dev/null; then continue; fi
-    if ! python3 -I - "$d" <<'PY'
-import os, re, sys, time
-def unescape(p):
-    return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), p)
-path = sys.argv[1]
-if os.path.realpath(path) != path:
-    sys.exit(1)
-with open('/proc/self/mountinfo', encoding='utf-8') as f:
-    for line in f:
-        point = unescape(line.split()[4])
-        if point == os.path.dirname(path) or point == path or point.startswith(path + '/'):
-            sys.exit(1)
-cutoff = time.time_ns() - 3600 * 1_000_000_000
-def failed(err):
-    raise err
-try:
-    if os.lstat(path).st_mtime_ns > cutoff:
-        sys.exit(1)
-    for directory, dirs, files in os.walk(path, followlinks=False, onerror=failed):
-        for name in dirs + files:
-            if os.lstat(os.path.join(directory, name)).st_mtime_ns > cutoff:
-                sys.exit(1)
-except OSError:
-    sys.exit(1)
-PY
-    then continue; fi
-    owner=$(stat -c %U -- "$d") || continue
-    [ "$owner" = "$APP_USER" ] && [ "$owner" != root ] || continue
-    if [ "$mode" = plan ]; then log "would remove unused release $d"
-    else log "removing unused release $d"; as_app rm -rf --one-file-system -- "$d" || log "could not remove all of $d"; fi
-  done
-}
-
-prune_disk_files() { # mode, target sha; postbackup only prunes old verified backups
-  python3 -I - "$1" "$2" "$DB" "$BACKUPS" "$CACHE" "$KEEP_BACKUPS" "${protected_cache:-}" <<'PY'
-import os, re, stat, subprocess, sys, time
-mode, wanted, db, backups, cache, keep, protected_cache = sys.argv[1:]
-keep = int(keep)
-protected = set()
-with open('/proc/self/mountinfo', encoding='utf-8') as f:
-    mounts = {re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), line.split()[4]) for line in f}
-for name in (db, db + '-wal', db + '-shm'):
-    try:
-        s = os.stat(name)
-        protected.add((s.st_dev, s.st_ino))
-    except FileNotFoundError:
-        pass
-
-def safe_entries(root, allowed):
-    if not os.path.lexists(root):
-        return []
-    s = os.lstat(root)
-    if (not os.path.isabs(root) or root == '/' or os.path.realpath(root) != root
-        or not stat.S_ISDIR(s.st_mode) or s.st_uid != os.geteuid() or s.st_mode & 0o022):
-        raise SystemExit('refusing unsafe cleanup root: ' + root)
-    # Only exit 32 means a known non-mount. Keep on error as well as a mount.
-    rc = subprocess.run(['mountpoint', '-q', '--', root], check=False).returncode
-    if root in mounts or rc != 32:
-        print('keeping all artifacts in mounted or unverified cleanup root: ' + root, flush=True)
-        return []
-    out = []
-    with os.scandir(root) as files:
-        for f in files:
-            if f.path in mounts or not allowed(f.name):
-                continue
-            s = f.stat(follow_symlinks=False)
-            if (stat.S_ISREG(s.st_mode) and s.st_uid == os.geteuid() and s.st_nlink == 1
-                and (s.st_dev, s.st_ino) not in protected):
-                out.append((s.st_mtime_ns, f.name, f.path, s.st_dev, s.st_ino))
-    return out
-
-def remove(kind, items):
-    for _, _, path, dev, inode in items:
-        s = os.lstat(path)
-        if not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or s.st_nlink != 1 or (s.st_dev, s.st_ino) != (dev, inode):
-            raise SystemExit('cleanup candidate changed: ' + path)
-        print(('would remove ' if mode == 'plan' else 'removing ') + kind + ' ' + path, flush=True)
-        if mode != 'plan':
-            os.unlink(path)
-
-def old_cache(n):
-    m = re.fullmatch(r'prod-(?:next-([0-9a-f]{40})\.tgz(?:\.sha256|\.part)?|modules-([0-9a-f]{40})\.(?:tgz(?:\.sha256|\.part)?|unpacked)|lock-([0-9a-f]{40})\.sha256)', n)
-    if m is None:
-        return False
-    sha = next(g for g in m.groups() if g is not None)
-    return sha != wanted and not any(sha.startswith(p) for p in protected_cache.split())
-if mode != 'postbackup':
-    cutoff = time.time_ns() - 3600 * 1_000_000_000
-    remove('stale prebuilt cache', [entry for entry in safe_entries(cache, old_cache) if entry[0] <= cutoff])
-backups = safe_entries(backups, lambda n: bool(re.fullmatch(r'predeploy-[0-9a-f]{8}-[0-9]{8}T[0-9]{6}\.db', n)))
-newest = sorted(backups, reverse=True)
-if newest:
-    print(f'retained verified-pattern predeploy backups: {min(keep,len(newest))}; cleanup eligible: {max(0,len(newest)-keep)}', flush=True)
-remove('old predeploy backup', newest[keep:])
-PY
-}
-
 [ ! -L "$OPS" ] || die "$OPS is a symlink; nothing done"
-if [ "${1:-}" != --cleanup-plan ]; then
-  install -d -m 700 "$OPS"; install -d -m 755 "$(dirname "$PORTCONF")"; install -d -m 755 "$PORTCONF"
-fi
+install -d -m 700 "$OPS"; install -d -m 755 "$(dirname "$PORTCONF")"; install -d -m 755 "$PORTCONF"
 
 status() {
   local live p; live=$(live_port); echo "live port (Caddy $CADDY_SITE): ${live:-?}"
@@ -395,9 +257,7 @@ case "${1:-}" in
     log "ROLLED BACK: dazl.ai now $PREV_SHA on :$PREV_PORT; $NEW_SHA still running on :$cur (rollback again to return)"; exit 0 ;;
 esac
 
-cleanup_mode=apply
-if [ "${1:-}" = --cleanup-plan ]; then cleanup_mode=plan; shift; fi
-SHA=${1:?usage: deploy-prod.sh <40-hex sha> | --rollback | --stop-port <port> | --status | --cleanup-plan <40-hex sha>}
+SHA=${1:?usage: deploy-prod.sh <40-hex sha> | --rollback | --stop-port <port> | --status}
 [[ $SHA =~ ^[0-9a-f]{40}$ ]] || die "not a full commit: $SHA"
 S8=${SHA:0:8}
 DIR=$RELEASE_ROOT/dazl-$S8-prod
@@ -420,37 +280,7 @@ log "memory before: $(free -m | awk '/^Mem/{print "used "$3" MB, available "$7" 
 as_app test -w "$DB" || die "$DB is not writable by $APP_USER; nothing done"
 as_app test -w "$(dirname -- "$DB")" || die "$(dirname -- "$DB") is not writable by $APP_USER; nothing done"
 
-# Diagnostic only; a missing reading cannot relax the existing prebuilt disk floor.
-cleanup_space() { # phase
-  local label fs dev avail
-  for label in release cache backup; do
-    case "$label" in release) fs=$RELEASE_ROOT;; cache) fs=$CACHE;; backup) fs=$BACKUPS;; esac
-    while [ ! -d "$fs" ] && [ "$fs" != / ]; do fs=$(dirname -- "$fs"); done
-    dev=$(stat -c %d -- "$fs") && avail=$(df -B1 --output=avail -- "$fs" | tail -n 1 | tr -d ' ') &&
-      [[ $dev =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]] || { log "cleanup $1 $label: available bytes unknown"; continue; }
-    log "cleanup $1 $label: device=$dev available_bytes=$avail"
-  done
-}
-# Reclaim only safe stale deploy artifacts before any backup or disk floor.
-# Keep the live release's archive too (fall back to its known directory
-# prefix if health does not identify a full SHA), and the recorded previous.
-protected_cache=$OLD_SHA
-if [ -z "$protected_cache" ] && release_web "$LIVE_WEB"; then
-  live_dir=${LIVE_WEB%/web}; live_dir=${live_dir##*/}
-  protected_cache=${live_dir:5:8}
-fi
-if [ -f "$STATE" ] && [ ! -L "$STATE" ]; then
-  prev_cache=$(sed -n 's/^PREV_SHA=//p' "$STATE")
-  [[ $prev_cache =~ ^[0-9a-f]{40}$ ]] && protected_cache="$protected_cache $prev_cache"
-fi
-log "cleanup retained release/archive refs (live, previous when known): ${protected_cache:-unavailable}"
-cleanup_space before
-if [ "$PRUNE" = 1 ]; then prune_releases "$cleanup_mode" "$LIVE_WEB" "$DIR"; fi
-prune_disk_files "$cleanup_mode" "$SHA" || die "guarded disk cleanup refused"
-cleanup_space after
-if [ "$cleanup_mode" = plan ]; then log "cleanup plan only: no release, cache, backup or live database changed"; exit 0; fi
-
-# --- 1. verified backup before any release or DB migrations
+# --- 1. verified backup FIRST
 [ ! -L "$BACKUPS" ] || die "$BACKUPS is a symlink; nothing done"
 install -d -m 700 "$BACKUPS"
 BK=$BACKUPS/predeploy-$S8-$(date +%Y%m%dT%H%M%S).db
@@ -463,7 +293,7 @@ r = sqlite3.connect(sys.argv[2]).execute('pragma integrity_check').fetchone()[0]
 if r != 'ok': sys.exit('integrity_check: %s' % r)
 PY
 mv -f -- "$BK.tmp" "$BK"
-prune_disk_files postbackup "$SHA" || die "predeploy backup is verified but retention refused"
+ls -1t "$BACKUPS"/predeploy-*.db 2>/dev/null | tail -n +$(( KEEP_BACKUPS + 1 )) | xargs -r rm -f --
 log "1/10 db backup $BK ($(stat -c %s "$BK") bytes, integrity ok)"
 
 # --- env for the new release: live process env + run env, parsed as DATA (never sourced by root)
@@ -517,8 +347,7 @@ db_bytes=$(stat -c %s -- "$BK")
 if [ "$DIR/web" = "$LIVE_WEB" ]; then
   die "$SHA is already the live release on :$LIVE (same directory); nothing to deploy"
 fi
-PROD_RELEASE_ROOT=$RELEASE_ROOT PROD_BACKUP_DIR=$BACKUPS PROD_BACKUP_BYTES=0 PROD_LIVE_LOCK_SHA=$live_lock \
-  PROD_PROTECTED_PREBUILT_SHAS="$protected_cache" PROD_MIN_STALE_CACHE_AGE=3600 bash "$PULL" fetch "$SHA" || die "prebuilt fetch/verify failed; prod untouched"
+PROD_RELEASE_ROOT=$RELEASE_ROOT PROD_BACKUP_DIR=$BACKUPS PROD_BACKUP_BYTES=0 PROD_LIVE_LOCK_SHA=$live_lock bash "$PULL" fetch "$SHA" || die "prebuilt fetch/verify failed; prod untouched"
 log "2/10 prebuilt artifact verified"
 # the spare's old release may run from $DIR (same sha redeployed): it is stopped in step 5 before $DIR is replaced
 SPARE_FROM_DIR=0
@@ -610,6 +439,20 @@ log "9/10 public smoke + ${STABLE_S}s stability ok"
 mv -f "$OPS/prod.env.next" "$OPS/prod.env"
 if [ -n "$OLD_SHA" ]; then write_state "$LIVE" "$OLD_SHA" "$SHA" "$NEW"; else write_state none "" "$SHA" "$NEW"; fi
 set_boot "$NEW"
-if [ "$PRUNE" = 1 ]; then prune_releases apply "$DIR/web" "${LIVE_WEB%/web}"; fi
+if [ "$PRUNE" = 1 ]; then
+  keep=" $DIR ${LIVE_WEB%/web} "
+  cwds=$(for p in $(ss -l -t -n -p -H | grep -oP 'pid=\K[0-9]+' | sort -u); do readlink "/proc/$p/cwd" 2>/dev/null || echo '?'; done)
+  if printf '%s\n' "$cwds" | grep -qxF '?'; then log "not pruning: a listener's directory cannot be read"
+  else
+    for d in "$RELEASE_ROOT"/dazl-*-prod; do
+      [ -d "$d" ] && [ ! -L "$d" ] || continue
+      case "$keep" in *" $d "*) continue ;; esac
+      printf '%s\n' "$cwds" | grep -q -- "^$d" && continue
+      grep -qxF "DAZL_RELEASE=$d" "$PORTCONF"/*.conf 2>/dev/null && continue
+      [ "$(stat -c %U -- "$d")" != root ] || continue
+      log "removing unused release $d"; as_user "$(stat -c %U -- "$d")" rm -rf -- "$d" 2>/dev/null || log "could not remove all of $d"
+    done
+  fi
+fi
 log "memory after: $(free -m | awk '/^Mem/{print "used "$3" MB, available "$7" MB"} /^Swap/{print "swap used "$3" MB"}' | tr '\n' ' ')"
 log "10/10 DONE: dazl.ai now $SHA on :$NEW (dazl-prod@$NEW, instance $NEW_INST). Switch at +$(( TSW - T0 ))s, total $(( $(date +%s) - T0 ))s. Previous ${OLD_SHA:-?} still running on :$LIVE: 'deploy-prod.sh --rollback' to switch back."

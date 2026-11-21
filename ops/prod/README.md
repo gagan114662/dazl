@@ -19,22 +19,3 @@ for byte, so what runs is a reviewed file in this repository (NEVER-AGAIN #1, #2
 
 **What the tests cannot run:** v2's happy path (the blue/green switch) needs the real host: systemd, `ss`, `/proc` cgroups, Caddy,
 and a guard that reads the real `/etc/caddy/Caddyfile`. `test_prod_v2.py` runs the refusals v2 makes before it changes anything.
-
-**Disk cleanup:** after a reviewed pair of v2 scripts has been installed and
-`check-installed.sh` matches, preview the next exact deployment without removing
-anything:
-
-```sh
-sudo /usr/local/lib/dazl-prod/deploy-prod.sh --cleanup-plan <40-hex-commit>
-```
-
-It uses the production deployment lock and checks the live Caddy port and
-process. The normal authorized deploy then removes only stale deploy artifacts:
-unused exact-name release directories owned by the app user; known older
-prebuilt archive/sidecar files; and old predeploy backup files beyond the five
-newest (or the higher `PROD_KEEP_BACKUPS` setting). Live, previous, target,
-configured and listening releases are kept, as are live/previous/target
-prebuilt caches and releases/caches modified in the last hour. A new backup gets its existing
-SQLite integrity check before any post-backup retention. Prebuilt download and
-extraction still obey the same disk floor. This does not clean browser caches,
-nightly/off-host backups, or the live database and its sidecars.
