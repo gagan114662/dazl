@@ -648,6 +648,10 @@ export function assertOwned(db: Database.Database, job: Job): void {
 // read or deadline guard stops it). Case 1 (prod run df4f657f) stopped after angle 1 with 2 candidates.
 const COMPANY_FIRST_TARGET_CANDIDATES = 8
 // Thrown before any reservation when an optional company-first angle would not fit under every guard.
+// What an optional angle must leave free on top of its own search estimate: its page extractions plus verification and
+// grading of every candidate already found. A refused grading call would hold verified leads at fit 0 (Qodo #1457).
+// Observed case-1 runs spent $0.14 in total on everything after search, so this is a generous floor.
+const COMPANY_FIRST_DOWNSTREAM_RESERVE_USD = 0.25
 class OptionalAngleNoRoom extends Error { constructor() { super('optional_angle_no_room') } }
 // Read-only, never latching: does this scan's recorded cap still have room for usd? Unknown state answers no (the angle is optional).
 async function scanCapRoomFor(usd: number): Promise<boolean> {
@@ -1707,8 +1711,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           // #1454: an optional later angle never asks a guard it cannot fit (a refused guard latches and would refuse the
           // verification of candidates already found). Room for the angle's own estimate on every guard and on the scan cap.
           if (companyFirst && angleIndex > 0 && totalNativeCandidates > 0 &&
-            (spendGuards.some(g => g.refused || !(g.reservedUsd + est.estimatedUsd <= g.limitUsd)) ||
-              !(await scanCapRoomFor(est.estimatedUsd)))) throw new OptionalAngleNoRoom()
+            (spendGuards.some(g => g.refused || !(g.reservedUsd + est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD <= g.limitUsd)) ||
+              !(await scanCapRoomFor(est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD)))) throw new OptionalAngleNoRoom()
           const hold = await reserveNativeSearch(spendGuards, est.estimatedUsd, () => assertOwned(db, job))
           paidPrepared = est
           reportSearch(est, null)
@@ -1725,7 +1729,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (spendAttemptUncertain() || !usage) { ledger.record(source, 'error:usage_unknown'); finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }
         // An optional later angle that settled above its estimate ends discovery, never the run: its actual cost is known and
         // settled, and candidates already found go on to the verifier.
-        if (over && companyFirst && angleIndex > 0 && totalNativeCandidates > 0) { ledger.record(source, 'partial_hold:estimate_exceeded'); finishedSearches.push({est,usage}); break }
+        if (over && companyFirst && angleIndex > 0 && totalNativeCandidates > 0 && !spendGuards.some(g => g.refused) && await scanCapRoomFor(0)) { ledger.record(source, 'partial_hold:estimate_exceeded'); finishedSearches.push({est,usage}); break }
         if (over) { ledger.record(source, 'partial_hold:estimate_exceeded'); finish(db, job, 'failed', 'native_search_estimate_exceeded', null, null, ledger); return 'failed' }
         // Prefer cited evidence, then stable publisher diversity; public ATS postings and board roots use the documented
         // board org as the publisher. Only admitted tool-result URLs go through the existing guarded fetch.

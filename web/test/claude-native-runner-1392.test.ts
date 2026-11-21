@@ -28,7 +28,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000 }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -115,7 +115,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
           { type: 'text', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
         ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: suppliedOnlyFirstWave && sent===2 ? netNewUrl : url }] }],
-        usage: { input_tokens: sent===2 && secondWave==='over' ? 300_000 : inputTokens ?? (overage ? 100_000 : 8_000), output_tokens: 200,
+        usage: { input_tokens: sent===2 && secondWave==='over' ? overTokens : inputTokens ?? (overage ? 100_000 : 8_000), output_tokens: 200,
           ...(acceptedGeo !== undefined ? { inference_geo: acceptedGeo } : {}),
           ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
           server_tool_use: { web_search_requests: inputTokens ? 2 : 1, web_fetch_requests: 0 } },
@@ -621,4 +621,20 @@ test('native vacancy sourcing follows the requested event without keyword routin
     assert.deepEqual(paid.body.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }])
     assert.deepEqual(x.sequence.filter(s => s.startsWith('native-')), ['native-count', 'native-send'])
   }
+})
+
+test('#1457 (b): an optional angle needs room for its search plus the downstream reserve, so found leads can still be graded', async () => {
+  // USD cap 0.84: the 0.69 search estimate alone would fit after the first wave, search + grading reserve does not.
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+    confirmedOffer: 'Independent commercial document services', extractionFixture: true, cap: '1.26' })
+  assert.equal(r.sequence.filter(x => x === 'native-send').length, 1)
+  assert.ok(!(r.ledger as { status: string }[]).some(x => x.status === 'refused'))
+  assert.equal(r.report.observed.verification, true)
+  assert.match(JSON.stringify(r.report), /Regional Document Services/)
+})
+test('#1457 (c): a later angle whose over-estimate settle leaves no cap room fails as before instead of grading into a refusal', async () => {
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+    confirmedOffer: 'Independent commercial document services', extractionFixture: true, secondWave: 'over', overTokens: 600_000, cap: '1.5' })
+  assert.equal(r.sequence.filter(x => x === 'native-send').length, 2)
+  assert.equal(r.end && (r.end as { error?: string }).error, 'native_search_estimate_exceeded', JSON.stringify(r.end))
 })
