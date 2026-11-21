@@ -99,6 +99,19 @@ function suffixAfterRole(title: string, role: RequestedHiringRole): boolean {
   return STANDING_POOL.test(after) || TITLE_SUFFIX.test(after)
 }
 // one posting, whichever of its public URLs names it (boards. / job-boards.greenhouse.io, /application, a query string)
+// The title on the board's own public API record for one posting (the record the verifier reads), or '' when it cannot be read.
+async function boardRecordTitle(ref: { kind: 'ashby' | 'greenhouse' | 'lever'; org: string; id: string }, fetchImpl: typeof fetch): Promise<string> {
+  const org = encodeURIComponent(ref.org), id = encodeURIComponent(ref.id)
+  const url = ref.kind === 'greenhouse' ? `https://boards-api.greenhouse.io/v1/boards/${org}/jobs/${id}`
+    : ref.kind === 'lever' ? `https://api.lever.co/v0/postings/${org}/${id}` : `https://api.ashbyhq.com/posting-api/job-board/${org}`
+  try {
+    const r = await fetchImpl(url, { headers: { accept: 'application/json', 'user-agent': 'dazl/1.0' }, redirect: 'error', signal: AbortSignal.timeout(8_000) })
+    if (!r.ok) return ''
+    const j = await r.json() as { title?: unknown; text?: unknown; jobs?: { id?: unknown; title?: unknown }[] }
+    const v = ref.kind === 'greenhouse' ? j.title : ref.kind === 'lever' ? j.text : j.jobs?.find(x => typeof x?.id === 'string' && x.id.toLowerCase() === ref.id)?.title
+    return typeof v === 'string' ? v.slice(0, 200) : ''
+  } catch { return '' }
+}
 export const postingKey = (url: string): string | null => { const r = atsPostingRef(url); return r ? `${r.kind}:${r.org.toLowerCase()}:${r.id}` : null }
 import { atsPostingRef } from '../sources/ats-posting.ts'
 
@@ -337,7 +350,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         const ats = atsPostingRef(l.source_url), pk = postingKey(l.source_url)
         const t = l.event_date ? Date.parse(l.event_date) : NaN
         const own = !!ats && l.event_date_proof === 'ats_structured' && Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= hireDays * 86_400_000
-        const title = own && pk ? opts.postingTitles?.get(pk) ?? '' : ''
+        // Run 2593ed95 (Wellhub): a lead whose own board-dated posting came in without the verifier's title record (company-first discovery)
+        // reads that title from the same board API record, for exactly this posting; an unreadable record leaves it unproven, as before.
+        const title = own && pk ? opts.postingTitles?.get(pk) ?? (ats ? await boardRecordTitle(ats, fetchImpl) : '') : ''
         const m = title ? titleIsRole(title, roles) : null
         if (ats && m) {
           const board = BOARD_LABEL[ats.kind]
