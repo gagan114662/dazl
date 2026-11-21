@@ -206,3 +206,16 @@ test('heldResearchSourceChecked is the sourceChecked-only slice of heldResearch,
   const [c] = listCampaigns(db, 'A')
   assert.deepEqual(c.qualification, { sourceChecked: 2, confirmedByYou: 1, needsReview: 0, research: 0, unverified: 0, held: 3, heldResearch: 2, heldResearchSourceChecked: 1, rejected: 0, heldByChecks: 0 })
 })
+
+// #1062 (council on #1475): heldByChecks counts every lead a company-first scan's final checks hold - the run page's held count - and each is
+// inside research or heldResearch. The held-by-checks step names them all; the research step counts only the OTHER research-only leads.
+test('next action: leads held by the final checks are named in full, other research-only leads apart', () => {
+  const base = { id: 'j', query: 'q', status: 'done', error: null, created_at: 0, discovery: { candidates: 3, leads: 3 }, qualification: { sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, held: 0, heldResearch: 0, heldResearchSourceChecked: 0, rejected: 0, heldByChecks: 0 }, contact: { withContact: 0, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }
+  const at = (q: object) => nextAction({ ...base, qualification: { ...base.qualification, ...q } }, 0)
+  // the prod shape (2593ed95): 3 held by the final checks, 2 of which the other checks already called research - all 3 are named
+  assert.equal(at({ research: 2, heldResearch: 1, heldByChecks: 3 }).label, '3 leads are held by checks (read-only): open the run to see why')
+  // one held lead plus one other research-only lead: the research step counts only the other one
+  assert.equal(at({ research: 2, heldByChecks: 1 }).label, '1 research-only lead: checking it cannot make it ready. Change the search')
+  // no other research: the held-by-checks step
+  assert.equal(at({ research: 1, heldByChecks: 1 }).label, '1 lead is held by checks (read-only): open the run to see why')
+})

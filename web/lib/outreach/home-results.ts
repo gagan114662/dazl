@@ -24,6 +24,8 @@
 // the time window, timing), so Home says "new leads" and links to Leads, never a "ready" number it cannot back.
 import type { Db } from '../db/client.ts'
 import { NOT_A_PERSON, PERSON_REPLY as PERSON_REPLY_CLASSES, sqlList } from './needs-owner.ts'
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { companyFirstShownDb, heldByChecksOf, type ShownJob } from './campaigns.ts'
 
 export const RESULTS_WINDOW_DAYS = 30
 const PERSON_REPLY: readonly string[] = PERSON_REPLY_CLASSES
@@ -48,9 +50,22 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const since = now - RESULTS_WINDOW_DAYS * 86400
   const marks = PERSON_REPLY.map(() => '?').join(', ')
   // leads found in the window, by type (the tenant's own scans only)
-  const leadRows = await db.all<{ kind: string | null; src: string | null; n: number | string }>(
-    `SELECT l.signal_kind AS kind, l.source_kind AS src, COUNT(*) AS n FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') GROUP BY l.signal_kind, l.source_kind`, [tenantId, since])
+  // #1062: ONE read of the window's leads with their scan's budget, status and enrichment marks. It feeds the company-first gate, the tile,
+  // the by-signal rows and Latest leads, so no second read can disagree with it. A company-first scan's leads are leads only where its final
+  // checks let them through (companyFirstResults, the run page's own gate); the rest are held candidates, never "new leads" or "latest
+  // leads". Fails closed: a store without the company-first reader (Postgres today: lib/db/client.ts has it on SQLite only) shows none of a
+  // company-first scan's leads, as its run page does not either.
+  const windowLeads = await db.all<{ id: string; job_id: string; kind: string | null; src: string | null; company: string | null; signal: string | null; created_at: number | string } & Omit<ShownJob, 'id'>>(
+    `SELECT l.id, l.scan_job_id AS job_id, l.signal_kind AS kind, l.source_kind AS src, l.company, l.signal, l.created_at,
+       j.run_budget, j.status, j.enrich_started_at, j.enrich_finished_at FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+     WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test')
+     ORDER BY l.created_at DESC, l.id DESC`, [tenantId, since])
+  const cfJobs = new Map<string, ShownJob>()
+  for (const l of windowLeads) if (!cfJobs.has(l.job_id) && hasCompanyFirstBudget(l.run_budget))
+    cfJobs.set(l.job_id, { id: l.job_id, run_budget: l.run_budget, status: l.status, enrich_started_at: l.enrich_started_at, enrich_finished_at: l.enrich_finished_at })
+  const shown = cfJobs.size ? await companyFirstShownDb(db, tenantId, [...cfJobs.values()], new Date(now * 1000)) : new Map()
+  const gated = new Map([...cfJobs.values()].map(j => [j.id, heldByChecksOf(j, shown)]))
+  const leadsShown = windowLeads.filter(l => !gated.get(l.job_id)?.(l.id))
   // first-touch emails sent in the window, by the lead's type
   const sentRows = await db.all<{ kind: string | null; src: string | null; sent: number | string }>(
     `SELECT l.signal_kind AS kind, l.source_kind AS src, COUNT(*) AS sent
@@ -78,15 +93,13 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const kind = (k: string | null, src: string | null) => k || (src ? `source:${src}` : 'unknown')
   const by = new Map<string, { signal: string; leads: number; contacted: number; replied: number }>()
   const row = (k: string) => { let r = by.get(k); if (!r) { r = { signal: k, leads: 0, contacted: 0, replied: 0 }; by.set(k, r) } return r }
-  for (const r of leadRows) row(kind(r.kind, r.src)).leads += Number(r.n)
+  for (const l of leadsShown) row(kind(l.kind, l.src)).leads += 1
   let interested = 0
   for (const r of sentRows) row(kind(r.kind, r.src)).contacted += Number(r.sent)
   for (const r of replyRows) { row(kind(r.kind, r.src)).replied += Number(r.replied); interested += Number(r.interested ?? 0) }
   const by_signal = [...by.values()].sort((a, b) => b.replied - a.replied || b.contacted - a.contacted || b.leads - a.leads || a.signal.localeCompare(b.signal))
   const sum = (k: 'leads' | 'contacted' | 'replied') => by_signal.reduce((n, r) => n + r[k], 0)
-  const latest_leads = (await db.all<{ id: string; company: string | null; signal: string | null; job_id: string; created_at: number | string }>(
-    `SELECT l.id, l.company, l.signal, l.scan_job_id AS job_id, l.created_at FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') ORDER BY l.created_at DESC, l.id DESC LIMIT 5`, [tenantId, since]))
+  const latest_leads = leadsShown.slice(0, 5)
     .map(r => ({ id: r.id, company: r.company || 'Unnamed company', signal: r.signal || '', job_id: r.job_id, created_at: Number(r.created_at) }))
   const latest_replies = (await db.all<{ thread_id: string; company: string | null; classification: string; received_at: number | string }>(
     `SELECT r.thread_id, l.company, r.classification, r.received_at FROM inbound_messages r
@@ -104,15 +117,5 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: replyReading, tiles, by_signal, latest_leads, latest_replies }
 }
 
-// The signal ids (lib/scan/score.ts SIGNALS, plus commenter imports' competitor_complaint) in plain words.
-// A source row holds only that channel's leads with no graded type (a graded lead counts under its type), so each label says so.
-const SOURCE_LABEL: Record<string, string> = {
-  query: 'Search', hiring_feed: 'Hiring feed', csv: 'CSV import', manual_source: 'Added by you',
-  watch: 'Watched search', monitor: 'Monitor', commenter: 'Commenters on a post', first_party: 'Your site visitors',
-}
-export function signalLabel(id: string): string {
-  if (id === 'unknown') return 'No signal type'
-  if (id.startsWith('source:')) { const s = id.slice(7); return `${SOURCE_LABEL[s] ?? `${s.charAt(0).toUpperCase()}${s.slice(1).replace(/_/g, ' ')}`} (signal type not graded)` }
-  const s = id.replace(/_/g, ' ')
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
+// signalLabel lives in ./signal-label.ts (browser-safe: Home's client imports it; this module reads the scan store's gate).
+export { signalLabel } from './signal-label.ts'
