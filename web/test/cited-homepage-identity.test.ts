@@ -137,3 +137,35 @@ test('a sole lead cannot claim a namesake domain cited for an absent organizatio
     LIST('LevelUp Leads is hiring its first Sales Development Representative.'))
   assert.equal(r.domain, null, JSON.stringify(r.audit))
 })
+
+for (const conflict of [false,true]) test(conflict
+  ? 'competing verified publisher claims for the same cited host remain unresolved'
+  : 'a prefix-sharing lead does not stop a separately attributed cited host', async () => {
+  const db = new Database(':memory:')
+  try {
+    migrateScan(db); migrateConnectors(db)
+    const job = createJob(db,'A',{ business_name:'S',industry:'x',location:'y' })
+    db.prepare("UPDATE scan_jobs SET status='running',icp=? WHERE id=?").run(JSON.stringify({ summary:'s',where:[] }),job)
+    const company = conflict ? 'LevelUp Leads Holdings' : 'LevelUp Leads Studio'
+    const ownerUrl = 'https://lists.example/owner', otherUrl = 'https://lists.example/other'
+    const ownerQuote = exactQuote('levelupleads.org')
+    const otherQuote = conflict ? company + ' (levelupleads.org) is hiring a project manager.' : company + ' is hiring a project manager.'
+    const insert = db.prepare('INSERT INTO leads (id,scan_job_id,company,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?)')
+    insert.run('owner',job,'LevelUp Leads','Hiring',ownerUrl,ownerQuote,90,90)
+    insert.run('other',job,company,'Hiring',otherUrl,otherQuote,90,80)
+    const get: Get = async url => {
+      if (url === ownerUrl || url === otherUrl) return { status:200,body:LIST(url === ownerUrl ? ownerQuote : otherQuote),finalUrl:url }
+      const u = new URL(url)
+      if (u.hostname.replace(/^www\./,'') !== 'levelupleads.org') return null
+      if (u.pathname === '/robots.txt') return { status:200,body:'User-agent: *\nAllow: /',finalUrl:url }
+      if (u.pathname === '/') return { status:200,body:HOME(conflict ? company : 'LevelUp Leads'),finalUrl:url }
+      return { status:404,body:'',finalUrl:url }
+    }
+    await crawlJob(db,'A',job,{ get,gapMs:0,env:{},citedUrls:['https://levelupleads.org/'],redirectOf:async()=>null })
+    assert.deepEqual(db.prepare('SELECT id,company_domain FROM leads WHERE scan_job_id=? ORDER BY id').all(job),[
+      { id:'other',company_domain:null },{ id:'owner',company_domain:conflict ? null : 'levelupleads.org' },
+    ])
+    assert.deepEqual(db.prepare("SELECT lead_id,source_url FROM lead_enrichments WHERE kind='domain'").all(),
+      conflict ? [] : [{ lead_id:'owner',source_url:ownerUrl }])
+  } finally { db.close() }
+})

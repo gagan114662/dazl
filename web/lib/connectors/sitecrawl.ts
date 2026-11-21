@@ -216,6 +216,15 @@ const labelMatches = (label: string, want: string) => label.length >= 4 && (labe
 // One uninterrupted, directly visible publisher text block, not a company name
 // at the end of a larger name or markup spanning unrelated directory entries.
 const tidyCitationText = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim()
+type CitationClaim = { company: string; evidence_excerpt?: string | null }
+function citationClaim(row: CitationClaim): { host: string; quote: string } | null {
+  const quote = tidyCitationText(row.evidence_excerpt ?? '')
+  const name = tidyCitationText(row.company)
+  const prefix = name + ' ('
+  if (name.length < 4 || quote.length < 30 || quote.length > 1000 || !quote.startsWith(prefix)) return null
+  const close = quote.indexOf(')', prefix.length)
+  return close > prefix.length ? { host: quote.slice(prefix.length,close).replace(/^www\./,''), quote } : null
+}
 function publisherNamesCitedSite(html: string, quote: string): boolean {
   if (Buffer.byteLength(html) > 128_000) return false
   type Node = DefaultTreeAdapterMap['node']
@@ -1452,6 +1461,25 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       return run
     }
     const evidenceGet = (url: string) => hostGet(url, deps.signal ? { signal: deps.signal } : undefined)
+    // Negative only: two persisted verified excerpts claiming the same host
+    // are unresolved; a company sharing only the label/prefix is not a claim.
+    // Read once, keeping the optional path closed if the lookup exceeds its bound.
+    const CLAIM_CAP = 100
+    let claimants: Map<string,string[]> | undefined
+    const unambiguousCitation = (host: string, leadId: string) => {
+      if (!claimants) {
+        const rows = db.prepare(`SELECT id, company, evidence_excerpt FROM leads
+          WHERE scan_job_id=? AND review_reason IS NULL AND confidence IS NOT NULL LIMIT ?`)
+          .all(jobId, CLAIM_CAP + 1) as (CitationClaim & { id: string })[]
+        claimants = new Map()
+        if (rows.length <= CLAIM_CAP) for (const row of rows) {
+          const claim = citationClaim(row)
+          if (claim) claimants.set(claim.host,[...(claimants.get(claim.host) ?? []),row.id])
+        }
+      }
+      const matching = claimants.get(host)
+      return matching?.length === 1 && matching[0] === leadId
+    }
     const readLead = async (l: (typeof leads)[number]): Promise<void> => {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       if (companyFirstContacts) {
@@ -1489,26 +1517,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           WHERE id = ? AND scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL`).get(l.id, jobId) as
           { company: string; source_url: string; evidence_excerpt: string | null } | undefined
         if (verified?.company === l.company && verified.source_url === l.source_url && verified.evidence_excerpt) {
-          const quote = tidyCitationText(verified.evidence_excerpt)
-          const name = tidyCitationText(verified.company)
-          const prefix = name + ' ('
-          const close = quote.indexOf(')', prefix.length)
-          const namedHost = quote.startsWith(prefix) && close > prefix.length
-            ? quote.slice(prefix.length, close).replace(/^www\./, '') : ''
+          const claim = citationClaim(verified)
+          const namedHost = claim?.host ?? ''
           const evOwn = (() => { try { return registrable(new URL(ev.finalUrl).hostname) } catch { return '' } })()
-          const want = norm(verified.company)
-          const otherWants = [...new Set(leads.map(o => norm(o.company)))].filter(o => o !== want)
-          if (name.length >= 4 && quote.length >= 30 && quote.length <= 1000 &&
-              siteHostOk(namedHost) && namedHost === registrable(namedHost) && namedHost !== evOwn &&
+          if (claim && siteHostOk(namedHost) && namedHost === registrable(namedHost) && namedHost !== evOwn &&
               ownSiteHost('https://' + namedHost) === namedHost && notBlockedHost(namedHost) &&
-              nameLabel(namedHost) === want && !otherWants.some(o => labelMatches(nameLabel(namedHost), o)) &&
+              nameLabel(namedHost) === norm(verified.company) &&
               deps.citedUrls.some(raw => {
                 try {
                   const u = new URL(raw)
                   return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
                     u.hostname.replace(/^www\./, '') === namedHost
                 } catch { return false }
-              }) && publisherNamesCitedSite(ev.body,quote)) {
+              }) && publisherNamesCitedSite(ev.body,claim.quote) && unambiguousCitation(namedHost,l.id)) {
             sites.push(namedHost); citedSites.push(namedHost); basisOf.set(namedHost, 'evidence_link_text')
           }
         }
