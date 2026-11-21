@@ -7,7 +7,8 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
-import { createDraft } from '../lib/outreach/service.ts'
+import { createDraft, domainReviewStatus } from '../lib/outreach/service.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { contactRoute, deliverabilityBlocked, emailDomainInvalid, type RouteLead, type RouteRow } from '../lib/outreach/contact-route.ts'
 import { approveState, leadCardSummary } from '../lib/scan/lead-card.ts'
 import { contactIdentity, type CardLead } from '../lib/scan/opportunity.ts'
@@ -192,4 +193,10 @@ test('#384 createDraft: a direct address the crawl recorded beside a newer crawl
   const rows = db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?").all(id) as RouteRow[]
   assert.equal(domainReviewFor({ id, contact: 'hello@company.example' }, rows).state, 'required')
   assert.throws(() => createDraft(db, 'A', id, 'Acme'), /domain_unconfirmed/)
+  assert.equal(domainReviewStatus(db, 'A', id, 'hello@company.example'), 'required', 'approve/send hold it too')
+  // Once the user confirms the website the review covers, the draft is made AND approve/send see the same confirmation.
+  const binding = domainReviewFor({ id, contact: 'hello@company.example' }, rows).binding!
+  assert.equal(setDomainReview(db, 'A', id, 'confirm', binding).status, 'confirmed')
+  assert.doesNotThrow(() => createDraft(db, 'A', id, 'Acme'))
+  assert.equal(domainReviewStatus(db, 'A', id, 'hello@company.example'), 'ok', 'the gate reviews the same record the confirmation bound')
 })
