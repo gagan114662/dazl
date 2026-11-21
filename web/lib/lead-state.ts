@@ -115,5 +115,7 @@ export function recoveryNote(l: { enrichments?: { connector: string; label: stri
   const reason = (r.label ?? '').replace(/^recovery:/, '')
   if (/^Recovery pass ran\b/.test(r.value)) return { ran: true, text: `dazl already searched other press for ${Object.hasOwn(LOOKED_FOR, reason) ? LOOKED_FOR[reason] : 'another source'}; none verified.` }
   const why = /^Recovery pass did not run \((.*)\)/.exec(r.value)?.[1] ?? ''
+  // #685: the pass started but its search of other press failed, was stopped or came back partial: never "already searched".
+  if (why.startsWith('the other-press search did not complete')) return { ran: false, text: 'The search of other press for it did not complete in this run.' }
   return { ran: false, text: `dazl did not search other sources for it: ${Object.hasOwn(NOT_RUN, why) ? NOT_RUN[why] : 'the search was not available for this run'}.` }
 }

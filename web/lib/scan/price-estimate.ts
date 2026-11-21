@@ -161,7 +161,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const fp = i.firstPlayPeopleSearches
   const firstPlayPeople = typeof fp === 'number' && Number.isSafeInteger(fp) && fp >= 0 ? Math.min(fp, FIRST_PLAY_MAX) : FIRST_PLAY_MAX
   if (i.qaClaudeOnly || i.companyFirst) {
-    rows.push({ id: 'qa_public_sources', label: native ? 'Free public sources' : 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: (i.companyFirst ? 'Company-first: no' : 'Claude-only QA: no') + ' TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
+    rows.push({ id: 'qa_public_sources', label: native ? 'Free public sources' : 'Public sources only', provider: 'Public sources', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: (i.companyFirst ? 'Company-first: no' : 'Claude-only play: no') + ' TinyFish, paid renderer, credit enrichment, or mailbox verifier' })
   } else if (b?.first5) {
     // #1037: leads come from free sources only, but the run then looks up who to contact with capped TinyFish people searches.
     rows.push({ id: 'sources_free', label: 'Free sources for the leads (first-scan mode)', provider: 'GDELT, job boards, SEC, site crawl', kind: 'free', unit: 'source read', unit_usd: 'free', units: { min: 0, max: 0 }, usd: { min: 0, max: 0 }, capped: false, note: 'Leads come from free sources first' })

@@ -10,8 +10,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: release-preflight-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # PRs: one group per PR. Pushes to main (#1504): one shared group; a newer main push cancels the older run.
+  group: ${{ github.event_name == 'push' && 'release-preflight-main' || format('release-preflight-{0}', github.event.pull_request.number || github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 jobs:
   fail-closed:
     runs-on: ubuntu-latest

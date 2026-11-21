@@ -424,14 +424,14 @@ test('review: a job lost WHILE a search is in flight aborts that request (owners
 })
 
 
-test('Claude-only QA first play preserves verified public leads but disables people-search vendor', async () => {
+test('Claude-only first play preserves verified public leads but disables people-search vendor', async () => {
   const people: string[] = []
   const r = await withEnv(TRIAL_ENV, () => runFixture(fx({ runBudget: qaClaudeOnlyBudget(FIRST5), fundedBy: 'trial', model: 'claude-sonnet-4-5' }, people)))
   assert.equal(r.job.status, 'done', JSON.stringify(r.job))
   assert.equal(r.calls.searches.length, 0)
   assert.equal(people.length, 0)
   assert.equal(stage(r)?.status, 'skipped')
-  assert.match(stage(r)?.reason ?? '', /Claude-only QA/)
+  assert.match(stage(r)?.reason ?? '', /Claude-only play/)
   assert.equal(rowPerson(r), null, 'the same public-source verified lead remains, without inventing a buyer')
 })
 
