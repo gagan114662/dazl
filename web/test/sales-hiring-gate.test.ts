@@ -981,3 +981,43 @@ test('#1201 non-vacuity: when the USER asks for seed funding the event is still 
   const ok2 = seed({ query, icp: JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['raised a Series B round'], exclude: [] }) })
   assert.equal((await applySalesHiringGate(ok2.db, ok2.job, serve(board()), { now: NOW })).passed, 1)
 })
+
+// Run 2593ed95 (Wellhub): the lead's own board-dated posting (gympass board) titled the requested role was held no_sales_hiring_evidence:
+// company-first leads reach the gate without the verifier's title record, the quote ("We are hiring a BDR") does not name the company, and
+// the domain lookup (wellhub.com -> slug "wellhub") cannot find a board published under another slug.
+function seedGenericOwn(title: string) {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const query = 'B2B SaaS companies hiring SDRs or BDRs in the last 30 days'
+  const icp = JSON.stringify({ signals: [], where: ['Vienna, Austria'] })
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
+  const url = 'https://job-boards.greenhouse.io/gympass/jobs/8956064002'
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', 'Wellhub', 'wellhub.com', 'hiring a BDR', ?, ?, 80, 80, '', ?, 'ats_structured', 'verified')")
+    .run(jobId, url, 'We are hiring a Business Development Representative (BDR) to join our Revenue team in Vienna ! This is a hybrid role', d(5).slice(0, 10))
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
+  return { db, job: { id: jobId, user_id: 'u1', query, icp }, titles: new Map([[postingKey(url)!, title]]) }
+}
+test('Wellhub (2593ed95): a sales-hiring request passes on the lead\'s own board-dated posting titled a sales role', async () => {
+  const { db, job, titles } = seedGenericOwn('Business Development Representative (BDR) - Austria (m/w/d)')
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: titles })
+  assert.deepEqual([r.passed, r.demoted], [1, 0])
+  assert.equal(lead(db).review_reason, null)
+})
+test('Wellhub (2593ed95): the same own posting titled a non-sales role stays held', async () => {
+  const { db, job, titles } = seedGenericOwn('Senior Software Engineer (m/w/d)')
+  const r = await applySalesHiringGate(db, job, serve({}), { now: NOW, postingTitles: titles })
+  assert.deepEqual([r.passed, r.demoted], [0, 1])
+  assert.equal(lead(db).review_reason, 'no_sales_hiring_evidence')
+})
+test('Wellhub (2593ed95): with no verifier title record, the gate reads the posting title from the board API record itself', async () => {
+  const { db, job } = seedGenericOwn('unused')
+  const r = await applySalesHiringGate(db, job, serve({ 'https://boards-api.greenhouse.io/v1/boards/gympass/jobs/8956064002': { id: 8956064002, title: 'Business Development Representative (BDR) - Austria (m/w/d)' } }), { now: NOW })
+  assert.deepEqual([r.passed, r.demoted], [1, 0])
+})
+test('Wellhub (2593ed95): an unreadable or non-sales board record still holds', async () => {
+  for (const m of [{}, { 'https://boards-api.greenhouse.io/v1/boards/gympass/jobs/8956064002': { id: 1, title: 'Senior Software Engineer (m/w/d)' } }]) {
+    const { db, job } = seedGenericOwn('unused')
+    const r = await applySalesHiringGate(db, job, serve(m), { now: NOW })
+    assert.deepEqual([r.passed, lead(db).review_reason], [0, 'no_sales_hiring_evidence'])
+  }
+})
