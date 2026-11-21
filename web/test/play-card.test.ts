@@ -48,3 +48,10 @@ test('widen window only when the request states the saved window as "<N> days"',
   assert.deepEqual(widenActions('Dental owners, past 60 days', { window_days: 90 }).map(x => x.label), ['Add a place'], 'a different number in the text is not the saved window')
   assert.deepEqual(widenActions('Dental owners in the past 365 days', { window_days: 365 }).map(x => x.label), ['Add a place'])
 })
+
+test('shortened fallback titles cut before a qualifier they cannot show completely', () => {
+  const q = 'Leadly (the AI platform for companies that review prospecting)'
+  assert.equal(playName(q, null), 'Leadly...')
+  assert.equal(playName('Leadly (AI tooling) for outbound sales teams', null), 'Leadly (AI tooling) for outbound sales...')
+  assert.equal(playName('Leadly (AI tooling (subject to approval) with more)', null), 'Leadly...')
+})

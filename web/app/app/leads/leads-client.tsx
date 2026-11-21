@@ -1,4 +1,6 @@
 'use client'
+import { CompanyFirstResultSummary } from '../company-first-result-summary'
+import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
@@ -61,6 +63,7 @@ import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { lastActivityNote } from '@/lib/scan/progress'
 import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
+import { canQuoteWebsiteDraft, websiteReviewOffer } from './website-review-offer'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
 import PlanViewCard from './plan-view'
@@ -81,7 +84,7 @@ const presetsFor = (l: { name: string; contact: string | null; event_date: strin
   REJECT_PRESETS.filter(p => p.needs === 'person' ? !!(l.name.trim() || l.contact) : p.needs === 'date' ? /^\d{4}-\d{2}-\d{2}$/.test(l.event_date ?? '') : true)
 const rejectReason = (why: string) => { const t = why.replace(/\s+/g, ' ').trim().slice(0, 120); return t ? `Rejected: ${t}` : 'Rejected' }
 const isRejection = (r: string | null | undefined) => !!r && /^Rejected(:|$)/.test(r)
-interface Lead { timing?: 'proof_backed' | 'unconfirmed'; timing_reason?: string | null; day_verified?: boolean; window_missed?: boolean; timing_note?: string | null; evidence_copy_id?: string | null; evidence_purged_at?: number | null; evidence_origin?: string | null; own_fetch_failure?: string | null; discovered_via?: string | null; discovered_via_link?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; window_held?: boolean; gate_held?: boolean; stored_intent?: number | null; stored_why?: string | null; fit_rationale?: string | null; timing_proof_gap?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; retrieved_at?: number; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
+interface Lead { company_first_published_email?: { address: string; source_url: string; display_only: true } | null; timing?: 'proof_backed' | 'unconfirmed'; timing_reason?: string | null; day_verified?: boolean; window_missed?: boolean; timing_note?: string | null; evidence_copy_id?: string | null; evidence_purged_at?: number | null; evidence_origin?: string | null; own_fetch_failure?: string | null; discovered_via?: string | null; discovered_via_link?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; source_kind?: string | null; contact_context?: {excerpt:string;source_url:string}|null; currentness_held?: boolean; window_held?: boolean; gate_held?: boolean; stored_intent?: number | null; stored_why?: string | null; fit_rationale?: string | null; timing_proof_gap?: string | null; source_check?: {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number} | null; sequence?: { status: string; step: number; next_due_at: number | null; stop_reason: string | null } | null; id: string; name: string; company: string; contact: string | null; signal: string; source_url: string; score: number; evidence_excerpt: string | null; event_date: string | null; date_status: string | null; confidence: number | null; review_reason: string | null; company_domain: string | null; human_confirmed_at: number | null; human_confirmed_from: string | null; fit: number | null; intent: number | null; action: number | null; why: string | null; signals: string | null; icp_match: string | null; watch_new?: number; seen_before?: number; stage?: string | null; enrichments?: { connector: string; kind: string; value: string; label: string | null; confidence: number | null; source_url: string; source_date: string; retrieved_at?: number; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; events?: { id: string; event_type: string; summary: string; source_url: string; source_published_at: string | null; last_seen_at: number; fresh: boolean; entity_status?: 'heuristic' | 'unconfirmed' | null }[]; priority?: { graded: boolean; fit: number | null; intent: number | null; action: number | null; evidence_score: number; reasons: string[]; uncounted: string[] } | null; lookalike?: { state: 'insufficient' | 'scored'; cohort_size: number; matches: number; matched_on: string[] } | null }
 interface Icp { summary: string; who: string[]; industries: string[]; sizes: string[]; where: string[]; signals: string[]; exclude: string[]; country?: string; language?: string; window_days?: number; research?: unknown }
 interface JobSummary { id: string; status: string; error: string | null; query: string | null; business_name: string; csv_domain: string | null; created_at: number; finished_at: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean }
 interface Watch { id: string; query: string; active: boolean; next_run_at: number | null; last_run_at: number | null; paused_reason: string | null; last_job_id: string | null; last_status: string | null; new_leads: number; auto?: boolean }
@@ -207,6 +210,9 @@ export default function LeadsClient() {
   // query or profile of a scan the user is looking at (whichever response arrives first). Synced on every render.
   const viewedJob = useRef('')
   const [draft, setDraft] = useState<Icp | null>(null)
+  const websiteDraft = useRef<{query:string; siteOffer:string; invalidated:boolean; receipt:string}|null>(null)
+  const reviewPanel = useRef<HTMLDivElement>(null)
+  const websiteReadInFlight = useRef(false)
   // The plan shown above Run (#876) is compiled HERE from exactly what Run sends: the request text now in the box and the profile now being edited. Any edit to either,
   // a website fill, or a restored saved run, recompiles it on the spot, so it can never describe an earlier request or profile.
   const draftPlan = useMemo(() => draft ? planView(compileTargeting(query, JSON.stringify(draft))) : null, [draft, query])
@@ -218,7 +224,7 @@ export default function LeadsClient() {
   const [budgetForm, setBudgetForm] = useState<BudgetForm>(EMPTY_BUDGET_FORM)
   const budgetCheck = budgetFromForm(budgetForm)
   // The profile shown as "Profile used", with the sentence it was used for (null when unknown).
-  const [icp, setIcp] = useState<{ icp: Icp; source: string; query?: string | null } | null>(null)
+  const [icp, setIcp] = useState<{ icp: Icp; source: string; query?: string | null; websiteReview?: boolean } | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
@@ -237,6 +243,7 @@ export default function LeadsClient() {
   // keyed to the job it was read for: a previous run's note never shows under another job
   const [capacityNote, setCapacityNote] = useState<{ job: string; text: string } | null>(null)
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [resultView, setResultView] = useState<{ jobId: string; counts: CompanyFirstResultCounts | null; marked: boolean } | null>(null)
   const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
   // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
   const [providerIssues, setProviderIssues] = useState<ProviderIssue[] | null>(null)
@@ -460,6 +467,7 @@ export default function LeadsClient() {
     // Duplicate clicks can arrive before React paints the disabled button.
     if (profilePreviewInFlight.current) return
     profilePreviewInFlight.current = true
+    websiteDraft.current = null
     setError(''); setDraft(null); setBusy(true)
     try {
       const r = await fetch('/api/scan/icp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query, ...(startIcp ? { prior_icp: startIcp } : {}) }) })
@@ -480,28 +488,39 @@ export default function LeadsClient() {
   // "Fill from my website": the returned profile is a draft for review - it is only
   // ever persisted if the user runs a scan with it. Nothing is auto-saved.
   async function fillFromSite() {
-    setError(''); setSiteBusy(true)
+    if (websiteReadInFlight.current) return
+    websiteReadInFlight.current = true
+    const requested = query
+    setError(''); setSiteBusy(true); setPendingEst(null)
     try {
       const r = await fetch('/api/scan/icp-from-url', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: siteUrl.trim() }) })
       const j = await r.json().catch(() => ({}))
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first - filling from your website runs on your key.' : j.error === 'invalid' || j.error === 'not_public' ? 'That address is not a public website.' : j.error === 'js_only' || j.error === 'not_html' ? 'We could not read enough text from that page (it may need JavaScript). Try your about page, or describe your buyers above.' : j.error === 'blocked' || j.error === 'timeout' ? 'That site did not let us read it. Describe your buyers above instead.' : 'Could not read that site. Describe your buyers above instead.')); return }
+      if (latestOfferQuery.current !== requested) return
+      if (!j.icp || !Array.isArray(j.icp.who)) {
+        setError('The site did not produce a profile to review. No search started.')
+        return
+      }
+      if (typeof j.website_draft_receipt !== 'string') {
+        setError('Could not verify where this website draft came from. No search started.')
+        return
+      }
       const filled = j.icp as Icp
       // A 'Who buys this?' answer carried across a recrawl is the person's own words: keep it visible in the draft.
       const ansT = asResearchBlock((filled as { research?: unknown }).research)?.ans?.t?.trim()
       if (ansT && !filled.who.some(x => x.trim().toLowerCase() === ansT.toLowerCase())) filled.who = [...filled.who, ansT]
+      const siteOffer = typeof j.sells === 'string' ? j.sells.trim() : ''
+      await startOffer(requested, siteOffer)
+      if (latestOfferQuery.current !== requested) return
+      websiteDraft.current = {query:requested,siteOffer,invalidated:false,receipt:j.website_draft_receipt}
       setDraft(filled)
-      // The play's offer starts from the request, then the business profile (same precedence as preview()), then -
-      // only while still empty - the one-line sells this read generated, which the form shows for review. The field
-      // stays the person's input: editable, nothing saved until they run with it (#379).
-      const genSells = typeof j.sells === 'string' ? j.sells.trim() : ''
-      await startOffer(query)
-      if (genSells) setOfferText(prev => (prev.trim().length >= 3 ? prev : genSells))
       let host = 'your website'
       try { host = new URL(j.source).hostname } catch { /* keep generic */ }
       setDraftNote({ text: `Filled from ${host}. Edit anything that is off, then run the scan.`, dropped: null })
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
+      websiteReadInFlight.current = false
       setSiteBusy(false)
     }
   }
@@ -529,11 +548,18 @@ export default function LeadsClient() {
   // The saved offer could not be read at review time: a reviewed run states its offer, so the server does not compare it
   // again. Run stays disabled until the check succeeds (fail closed), never treated as "nothing saved".
   const [offerUnread, setOfferUnread] = useState(false)
-  async function startOffer(q: string) {
+  async function startOffer(q: string, siteOffer?: string) {
     // read at review time, not once per page: the profile or Memory may have changed in another tab since
-    const base = await fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(p => p && (p.new_play_offer === null || typeof p.new_play_offer === 'string') ? { offer: p.new_play_offer as string | null } : null).catch(() => null)
+    const base = await fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).then(p => p && (p.new_play_offer === null || typeof p.new_play_offer === 'string') ? { offer: p.new_play_offer as string | null, business: typeof p.business_name === 'string' ? p.business_name : '', seller: typeof p.sells === 'string' ? p.sells : '' } : null).catch(() => null)
+    if (latestOfferQuery.current !== q) return
     setOfferUnread(!base)
     if (!base) { setOfferText(statedOffer(q) ?? ''); setOfferConflict(null); return }
+    if (siteOffer !== undefined) {
+      const choice = websiteReviewOffer(q, base, siteOffer)
+      setOfferText(choice.offer)
+      setOfferConflict(choice.conflict ? {...choice.conflict,saved:choice.conflict.recorded,direct:false,requested:q} : null)
+      return
+    }
     // the server's own resolution (effectiveOffer), with the base as the play's starting offer
     const c = effectiveOffer({ seller: null, query: q }, base.offer).conflict
     if (c) {
@@ -546,7 +572,7 @@ export default function LeadsClient() {
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
   // The price estimate shown before a run starts; the run begins only from its Confirm button (or is blocked with what to change).
-  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; query: string; withIcp: Icp | null; offer?: string; reviewed?: boolean } | null>(null)
+  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; query: string; withIcp: Icp | null; offer?: string; reviewed?: boolean; websiteApproval?:string } | null>(null)
   const latestOfferQuery = useRef(query)
   latestOfferQuery.current = query
   function receiveOfferConflict(status: number, payload: unknown, requested: string, reviewed?: boolean) {
@@ -559,39 +585,52 @@ export default function LeadsClient() {
     return true
   }
   async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean) {
+    if (websiteReadInFlight.current || !canQuoteWebsiteDraft(websiteDraft.current, latestOfferQuery.current, reviewed === true)) {
+      reviewPanel.current?.focus()
+      return
+    }
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
     setError(''); setStarting(true); setPendingEst(null); setOfferConflict(null)
     const requested = query
+    const websiteSource = websiteDraft.current?.receipt
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const body = JSON.stringify({ query: requested, ...(offer ? { offer } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const body = JSON.stringify({ query: requested, ...(websiteSource ? { mode: 'website_profile_review_v1', website_draft_receipt: websiteSource } : {}), ...(offer ? { offer } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
       if (latestOfferQuery.current !== requested || receiveOfferConflict(er.status, ej, requested, reviewed)) return
       // No estimate, no run: a paid scan is never started without showing what it will use.
       if (er.status === 400 && ej.error === 'profile_lossy') { setError(lossyProfileCopy(ej)); return }   // keep the draft open so it can be fixed
       if (!er.ok || !ej.estimate) { setError(ej.detail ? `The spend limit was not accepted: ${String(ej.detail).slice(0, 200)}` : 'Could not get a price estimate, so nothing was started. Try again.'); return }
-      setPendingEst({ est: ej.estimate as RunEstimate, query: requested, withIcp, offer, reviewed })
+      const websiteApproval = typeof ej.website_approval_receipt === 'string' ? ej.website_approval_receipt : undefined
+      if (websiteSource && !websiteApproval) { setError('The website review could not be verified. No search started.'); return }
+      setPendingEst({ est: ej.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, websiteApproval })
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
       setStarting(false)
     }
   }
-  async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean) {
-    if (requested !== latestOfferQuery.current) { setPendingEst(null); return }
+  async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean, websiteApproval?:string) {
+    if (requested !== latestOfferQuery.current || websiteReadInFlight.current ||
+      !canQuoteWebsiteDraft(websiteDraft.current, requested, reviewed === true) ||
+      (websiteDraft.current && (!websiteApproval || draft !== withIcp || offerText !== offer))) { setPendingEst(null); return }
     setError(''); setTrialRefused(null); setLinkNote(null); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query: requested, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, ...(websiteApproval ? { mode: 'website_profile_review_v1', website_approval_receipt: websiteApproval } : {}), research_decisions: asResearchBlock(withIcp?.research)?.decisions, query: requested, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
-      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed }); return }
+      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, websiteApproval }); return }
       if (receiveOfferConflict(r.status, j, requested, reviewed)) return
+      if (j.error === 'website_review_stale' || j.error === 'website_review_unavailable') {
+        setPendingEst(null); setError('The website review could not be verified. Read the site again before getting a new estimate. No search started.'); return
+      }
       // A refusal that clicking Confirm again cannot change (free scans or the month used up, no key, the hourly start limit): take the cost panel and its Confirm button down, so the page never keeps offering a button that does nothing.
       if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
       if (!r.ok && j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
       if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_unavailable' ? trialRefusedCopy(j.reason) : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
+      websiteDraft.current = null
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0
     } catch {
@@ -621,7 +660,7 @@ export default function LeadsClient() {
       const s = await r.json()
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(s.claimed_at ?? null); setLastProgressAt(typeof s.last_progress_at === 'number' ? s.last_progress_at : null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
-      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, query: typeof s.query === 'string' ? s.query : null })
+      if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, websiteReview:s.website_profile_review === 'confirmed', query: typeof s.query === 'string' ? s.query : null })
       // #1095: a search restored after linking Google stays in the box even when the open job has its own query
       if (typeof s.query === 'string' && s.query && queryShownFor.current !== jobId) { queryShownFor.current = jobId; if (restoredSearch.current) restoredSearch.current = false; else setQuery(s.query) } // only the first job load after a restore keeps the restored search
     }
@@ -633,7 +672,11 @@ export default function LeadsClient() {
   const loadLeads = async () => {
     if (!jobId) return
     const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
-    if (l.ok) { const j = await l.json(); setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null) }
+    if (l.ok) {
+      const j = await l.json()
+      setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null)
+      setResultView({ jobId, counts: j.company_first_counts ?? null, marked: j.company_first === true || j.company_first_counts != null })
+    }
   }
   useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
   // Interrupted enrichment lookups (a rate limit or crash left the outcome unknown): nothing retried itself, so a
@@ -787,9 +830,19 @@ export default function LeadsClient() {
   const businessIcp = startIcp
   const directChoice = offerConflict?.direct && offerConflict.requested === query ? offerConflict : null
   const reviewChoice = offerConflict && !offerConflict.direct ? offerConflict : null
+  const openWebsiteDraft = draft ? websiteDraft.current : null
+  const websiteDraftChanged = !canQuoteWebsiteDraft(openWebsiteDraft, query, true)
+  function invalidateWebsiteDraft(newQuery: string) {
+    if (websiteDraft.current && query !== newQuery) websiteDraft.current.invalidated = true
+  }
+  function discardWebsiteDraft() {
+    websiteDraft.current = null
+    setDraft(null); setPendingEst(null); setOfferConflict(null)
+  }
 
   const input = 'field'
   // #1238: repeats are collapsed only when something new remains (lib/scan/leads-view.ts visibleReadyLeads)
+  const currentView = resultView?.jobId === jobId ? resultView : null
   const visibleLeads = visibleReadyLeads(leads, showSeen)
   const repeats = readyRepeats(leads)
 
@@ -813,28 +866,28 @@ export default function LeadsClient() {
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
-      <form onSubmit={e => { e.preventDefault(); void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
+      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval)} onCancel={() => setPendingEst(null)} />}
+      <form onSubmit={e => { e.preventDefault(); if (openWebsiteDraft) reviewPanel.current?.focus(); else void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
-          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { setQuery(e.target.value); setPendingEst(null); setOfferConflict(null); setTrialRefused(null); setLinkNote(null) }}
+          <textarea id="play" ref={playBox} rows={jobId ? 1 : 2} required minLength={3} maxLength={600} value={query} onChange={e => { invalidateWebsiteDraft(e.target.value); setQuery(e.target.value); setPendingEst(null); setOfferConflict(null); setTrialRefused(null); setLinkNote(null) }}
             placeholder="Find people who..." />
-          <button disabled={busy || starting || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : 'Find leads'}</span></button>
+          <button disabled={busy || starting || siteBusy || scanActive || !!trialRefused} title={scanActive ? 'A scan is still running or finishing below' : undefined} className="btn-primary send"><Icon name="arrow" className="w-4 h-4 -rotate-90" /><span className="sr-only">{starting ? 'Starting...' : openWebsiteDraft ? 'Review website profile' : 'Find leads'}</span></button>
         </div>
         {!jobId && plays && <div className="mt-4 space-y-2" data-testid="play-suggestions">
           {([['business', 'From your business details:', plays.business], ['examples', 'Examples:', plays.examples]] as const).filter(([, , items]) => items.length > 0).map(([k, label, items]) =>
             <div key={k} className="flex flex-wrap items-center gap-2" data-testid={`play-suggestions-${k}`}>
               <span className="text-xs text-[var(--ink-3)] mr-1">{label}</span>
-              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { setQuery(t); setPendingEst(null); setOfferConflict(null); setTrialRefused(null); setLinkNote(null) }} className="chip">{t}</button>)}
+              {items.map(t => <button key={t} type="button" data-testid="play-suggestion" aria-pressed={query.trim() === t} onClick={() => { invalidateWebsiteDraft(t); setQuery(t); setPendingEst(null); setOfferConflict(null); setTrialRefused(null); setLinkNote(null) }} className="chip">{t}</button>)}
             </div>)}
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">
-          <button type="button" disabled={query.trim().length < 3 || busy || starting || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
+          <button type="button" disabled={query.trim().length < 3 || busy || starting || siteBusy || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
           {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
-        {businessIcp && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
+        {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
           {priorIcp ? 'Find leads reuses the profile from your previous play as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Review it in Build, or use Review profile first to build a new one from your sentence.'}
         </p>}
         </div>
@@ -958,7 +1011,11 @@ export default function LeadsClient() {
         </div>
       </details>
       {draft && (
-        <div className="card p-4 mb-6 text-sm">
+        <div className="card p-4 mb-6 text-sm" tabIndex={-1} ref={reviewPanel}>
+          {openWebsiteDraft && <div className="mb-3 text-sm">
+            <p>{websiteDraftChanged ? 'The request changed after this website profile was prepared. Read the site again or discard this draft before continuing.' : 'Review this website draft and choose the offer for this play before getting a price.'}</p>
+            <button type="button" className="btn-ghost btn-sm" onClick={discardWebsiteDraft}>Discard website draft</button>
+          </div>}
           {/* Above BOTH Run buttons: the spend limit and what it does not cover are read before anything starts. */}
           <BudgetPanel form={budgetForm} setForm={setBudgetForm} hasKey={keyState ? keyState.has_key : null} />
           <PlanViewCard plan={draftPlan} />
@@ -969,13 +1026,13 @@ export default function LeadsClient() {
               <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
               {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
             </div>
-            <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
             {offerUnread && <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm mb-2" role="alert" data-testid="offer-unread">
               <p>dazl could not read your saved offer, so it cannot check this request against it. Nothing runs until it can.</p>
-              <button type="button" className="btn-ghost btn-sm mt-2" onClick={() => void startOffer(query)} data-testid="offer-recheck">Check again</button>
+              <button type="button" className="btn-ghost btn-sm mt-2" onClick={() => void startOffer(query, openWebsiteDraft?.siteOffer)} data-testid="offer-recheck">Check again</button>
             </div>}
             {reviewChoice ? <OfferChooser c={reviewChoice} onChoose={o => { setOfferText(o); setOfferConflict(null) }} onWrite={() => { setOfferText(''); setOfferConflict(null) }} />
               : <>
@@ -994,7 +1051,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={n => setOfferText(n)} />}
-          <button onClick={() => run(draft, offerText, true)} disabled={starting || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
@@ -1016,7 +1073,7 @@ export default function LeadsClient() {
               the provenance takes its own full-width line. Nothing is hidden, truncated or shortened. The {' '} keeps the text and
               accessible name spaced (whitespace between flex items is not rendered); overflow-wrap:anywhere breaks an unbroken
               token (a pasted URL) inside the row instead of overflowing it. */}
-          <summary className="cursor-pointer min-h-11 flex flex-wrap items-center content-center gap-x-1"><span className="min-w-0 [overflow-wrap:anywhere]">Profile used: {icp.icp.summary}</span>{' '}<span className="min-w-0 [overflow-wrap:anywhere] text-gray-600">({icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : 'profile origin and approval not recorded'})</span></summary>
+          <summary className="cursor-pointer min-h-11 flex flex-wrap items-center content-center gap-x-1"><span className="min-w-0 [overflow-wrap:anywhere]">Profile used: {icp.icp.summary}</span>{' '}<span className="min-w-0 [overflow-wrap:anywhere] text-gray-600">({icp.websiteReview ? 'website draft; review confirmed for this play' : icp.source === 'inferred' ? 'worked out by dazl' : icp.source === 'user' ? 'stored profile; approval not recorded' : icp.source === 'request_only' ? 'request fallback; interpretation not verified' : icp.source === 'carried' ? 'carried from a saved profile; no new approval recorded' : 'profile origin and approval not recorded'})</span></summary>
           <ul className="mt-2 ml-4 list-disc text-xs">
             {icp.icp.who.length > 0 && <li>Who: {icp.icp.who.join('; ')}</li>}
             {icp.icp.where.length > 0 && <li>Where: {icp.icp.where.join('; ')}</li>}
@@ -1068,7 +1125,7 @@ export default function LeadsClient() {
       {jobId && status === 'done' && enrichInterrupted && (
         <div className="card p-4 mb-4 text-sm" role="status" data-testid="enrich-interrupted">
           <div>Contacts and fit checks did not finish for this scan.</div>
-          <div className="text-gray-400 text-xs">The stage that finds contacts and checks fit stopped before it ended (for example a restart). The leads below are real, but some may be missing contacts or fit grades. You can start a new scan.</div>
+          <div className="text-gray-400 text-xs">The stage that finds contacts and checks fit stopped before it ended (for example a restart). {visibleLeads.length > 0 ? 'The leads below are real, but some may be missing contacts or fit grades.' : 'No leads are shown here yet.'} You can start a new scan.</div>
         </div>
       )}
       {jobId && status === 'enriching' && (
@@ -1081,7 +1138,7 @@ export default function LeadsClient() {
           ]} />
           <div className="text-sm border-t border-[var(--line)] pt-3">
             <span className="font-semibold">Finishing - finding contacts and checking fit.</span>
-            <InfoTip>The leads below are not final yet. The scan is not done until this ends.</InfoTip>
+            <InfoTip>{visibleLeads.length > 0 ? 'The leads below are not final yet. ' : ''}The scan is not done until this ends.</InfoTip>
           </div>
         </div>
       )}
@@ -1139,7 +1196,8 @@ export default function LeadsClient() {
           {providerIssues.map((i, k) => <p key={`${i.connector}:${i.status}:${k}`}>{providerIssueText(i)}</p>)}
         </div>
       )}
-      {quality && status === 'done' && (
+      {currentView?.counts && status === 'done' && <CompanyFirstResultSummary counts={currentView.counts} />}
+      {quality && currentView && !currentView.marked && status === 'done' && (
         <p className="text-xs text-[var(--ink-2)] mb-3 flex flex-wrap items-center gap-1.5" data-testid="scan-quality">
           <span className="tag">{quality.candidates} found</span><span className="tag">{quality.passed ?? 0} source-checked</span><span className="tag">{quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review</span><span className="tag">{quality.dropped ?? 0} dropped</span>
           {Object.keys(quality.drop_reasons).length > 0 && <InfoTip label="Why leads were dropped">Dropped: {Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')}.</InfoTip>}
@@ -1232,7 +1290,11 @@ export default function LeadsClient() {
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           status === 'loading' || status === 'failed' || statusError ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{emptyLeadsMessage(status, 0, hiddenCount, quality?.needs_review, !showSeen && repeats.collapsible ? repeats.repeats : 0) ?? ''}</p>
+            : <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' && currentView?.marked && currentView.counts?.reviewable === 0
+              ? 'No leads passed the checks for review.'
+              : status === 'done' && currentView?.marked && !currentView.counts
+              ? 'Lead results could not be checked. Refresh to try again.'
+              : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? quality?.needs_review : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0) ?? ''}</p>
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
@@ -1329,6 +1391,13 @@ export default function LeadsClient() {
                   <div className="text-gray-500 text-[10px]" data-people-section="search-only">Search result only</div>
                   {searchOnly.length > 0 ? searchOnly.map(row) : <div className="text-gray-500">None.</div>}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
+                  {l.company_first_published_email?.display_only === true && !l.quarantined_at && (
+                    <div data-testid="company-first-published-email">
+                      <span className="text-[#111]">{l.company_first_published_email.address}</span>{' '}
+                      <span className="text-gray-500">Published work email (display only)</span>{' '}
+                      <a className="underline text-[#111]" href={l.company_first_published_email.source_url} target="_blank" rel="noopener noreferrer nofollow">company source</a>
+                    </div>
+                  )}
                   {/* #1036: Find work email for the buyer-role people, only on a lead whose website is settled (lib/people/work-email-eligible.ts). */}
                   {!l.quarantined_at && workEmailLeadEligible(l) && (() => {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)

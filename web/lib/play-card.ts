@@ -40,7 +40,17 @@ export function playName(query: string | null, icp: PlayIcp | null): string {
   const name = [place, who.toLowerCase(), happening].filter(Boolean).join(' ')
   if (who && name.length <= 48) return cap(name)
   const words = q.split(' ')
-  return cap(words.slice(0, 6).join(' ') + (words.length > 6 ? '...' : ''))
+  return cap(balanced(words.slice(0, 6).join(' ')) + (words.length > 6 ? '...' : ''))
+}
+// #1436: a shortened name never ends inside a parenthesis ("Leadly (the AI" reads as a broken label): cut before the
+// unclosed one instead.
+function balanced(s: string): string {
+  let depth = 0, open = -1
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(') { if (depth++ === 0) open = i }
+    else if (s[i] === ')' && depth > 0) depth--
+  }
+  return depth > 0 && open > 0 ? s.slice(0, open).trimEnd() : s
 }
 
 // Saved searches derive their identity from the request, never the profile shared by other plays.

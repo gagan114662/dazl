@@ -5,10 +5,12 @@ import { isJobId } from '@/lib/outreach/scan-drafts'
 import { leadStatus, scanMessages } from '@/lib/outreach/campaign-view'
 import { scanOutcome } from '@/lib/scan/scan-outcome'
 import { currentQual, currentRun, runStatus } from '@/lib/run-status'
+import { effectiveStatus } from '@/lib/scan/enrichment'
 
 import type { CampaignDetail } from '@/lib/outreach/campaign-detail'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import { PlayOfferCard } from '../../play-offer'
+import { CompanyFirstResultSummary } from '../../company-first-result-summary'
 
 // One campaign (= one scan): its play, every lead with where it stands, and its drafts and sends. Read-only: reviewing,
 // approving, drafting and sending stay on Leads and Outreach with their checks; this page only reports and links.
@@ -24,6 +26,7 @@ export default function CampaignView({ id }: { id: string }) {
   }, [id, valid])
   const job = data && typeof data === 'object' ? data.job : data
   const leads = data && typeof data === 'object' ? data.leads : data === 'failed' ? 'failed' : null
+  const counts = data && typeof data === 'object' ? data.company_first_counts : undefined
   const msgs = data && typeof data === 'object' ? data.messages : data === 'failed' ? 'failed' : null
 
   if (!valid || job === 'not_found') return (
@@ -39,9 +42,12 @@ export default function CampaignView({ id }: { id: string }) {
       {/* What this play sells (lib/scan/play-offer.ts): the same offer Home and its drafts use; a contested one is chosen here. */}
       {data && typeof data === 'object' && <div className="my-3" data-testid="campaign-offer"><PlayOfferCard jobId={id} offer={data.offer ?? null} onChange={o => setData(d => d && typeof d === 'object' ? { ...d, offer: o } : d)} /></div>}
       {job && typeof job === 'object' && (() => {
+        if (counts !== undefined && effectiveStatus(job) === 'done') return <p className="text-[#555] text-sm mb-1" data-testid="campaign-status" data-outcome="done">
+          Scan finished{job.created_at ? ` - started ${new Date(job.created_at * 1000).toLocaleDateString()}` : ''}.
+        </p>
         // The same recorded outcome and next step as the Leads history (lib/scan/scan-outcome.ts), restated from the
         // leads as they stand now (the Campaigns card does the same), so a run whose leads were all rejected says none passed.
-        const o = scanOutcome({ ...job, empty_reason: (job as { empty_reason?: string | null }).empty_reason ?? null, lead_count: Array.isArray(leads) ? leads.length : null })
+        const o = scanOutcome({ ...job, ...(counts !== undefined ? { needs_review: 0, verified: counts?.ready ?? 0 } : {}), empty_reason: (job as { empty_reason?: string | null }).empty_reason ?? null, lead_count: Array.isArray(leads) ? leads.length : null })
         const recorded = runStatus(o, Array.isArray(leads) ? leads.length : null)
         const run = Array.isArray(leads) ? currentRun(recorded, currentQual(leads), job.query) : recorded
         return <><span className={`pill mb-2 ${run.group === 'technical' ? 'pill-pink' : run.group === 'results' ? 'pill-mint' : run.group === 'running' ? 'pill-peach' : ''}`} data-testid="run-tag" data-group={run.group}>{run.tag}</span>
@@ -54,12 +60,13 @@ export default function CampaignView({ id }: { id: string }) {
       <p className="text-[#555] text-sm mb-6">Review, approve, draft and send on <Link className="underline" href={`/app/leads?job_id=${id}`}>Leads</Link> and <Link className="underline" href={`/app/outreach?job_id=${id}`}>Outreach</Link>; this page only shows where each lead stands. Sent is not delivered.</p>
 
       <h2 className="text-lg font-semibold mb-2">Leads</h2>
+      {counts && job && typeof job === 'object' && effectiveStatus(job) === 'done' && <CompanyFirstResultSummary counts={counts} />}
       {leads === null ? <p className="text-sm text-[#555] mb-6">Loading leads...</p>
         : leads === 'failed' ? <p className="text-sm mb-6" role="alert">Could not load this campaign&apos;s leads. Refresh to retry.</p>
-        : leads.length === 0 ? <p className="text-sm text-[#555] mb-6">No leads in this campaign.</p>
+        : leads.length === 0 ? <p className="text-sm text-[#555] mb-6">{counts && job && typeof job === 'object' && effectiveStatus(job) === 'done' ? 'No leads passed the checks for review.' : 'No leads in this campaign.'}</p>
         : <ul className="card divide-y divide-black/10 mb-8" aria-label="Campaign leads">
           {leads.map(l => {
-            const s = msgs === null ? null : leadStatus(l, Array.isArray(msgs) ? msgs : [])
+            const s = l.company_first_display_only ? { stage: 'review', text: 'Verified lead for review; not eligible for sending' } : msgs === null ? null : leadStatus(l, Array.isArray(msgs) ? msgs : [])
             // The company name always shows: on a phone the status goes under it; from sm it sits beside it, wrapping within
             // 55% of the row (Hermes-PC review at feeda320: the long research-only status hid the name at 390 px).
             return <li key={l.id} className="p-3 text-sm flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3" data-testid="campaign-lead">

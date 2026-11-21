@@ -62,7 +62,8 @@ const SPEAKER = String.raw`(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offe
 const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'di')
-const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:\\s*(.{3,150})$`, 'di')
+// "Seller: <offer>" / "seller = <offer>" is the same labelled statement (#1436 live check: a request's own seller line).
+const LABEL = new RegExp(`${LEAD}(?:(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:|(?:seller|sells)\\s*(?::|=))\\s*(.{3,150})$`, 'di')
 // a capture that is a target ("to dental practices") or itself an exclusion is not an offer. Whole words only (an offer
 // like "insurance", "inbound marketing", "attribution software" or "no-code tools" starts with the same letters); the
 // one stem kept is exclud(e|es|ed|ing), since every form of it is an exclusion.
@@ -72,7 +73,7 @@ const NOT_AN_OFFER = /^(?:(?:to|for|into|in|at|within|only|except|no|not)(?![\p{
 type Found = { offer: string; tail: string; sentence: number; sentences: string[] }
 // Only top-level grammar is structural. A nested qualifier can contain
 // its own "for", sentence punctuation, or another pair of parentheses.
-const LATER_SELLER = /(?:^|[.!?;,\n:]\s*|\s+(?:and|but|then)\s+)(?:(?:and|but|also)\s+)?(?:(?:i|we|i'm|we're)\s+(?:also\s+)?(?:(?:am|are|can)\s+(?:also\s+)?)?(?:sell|selling|offer|offering|provide|providing)\s+(?!to\b|for\b|only\b|not\b)\S|(?:(?:our|my)\s+)?(?:offer|offering|product|service)s?\s*:\s*\S)/iu
+const LATER_SELLER = /(?:^|[.!?;,\n:]\s*|\s+(?:and|but|then)\s+)(?:(?:and|but|also)\s+)?(?:(?:i|we|i'm|we're)\s+(?:also\s+)?(?:(?:am|are|can)\s+(?:also\s+)?)?(?:sell|selling|offer|offering|provide|providing)\s+(?!to\b|for\b|only\b|not\b)\S|(?:(?:our|my)\s+)?(?:offer|offering|product|service)s?\s*:\s*\S|(?:seller|sells)\s*(?::|=)\s*\S)/iu
 function offerSentences(q: string) {
   const parts: {text:string; grammar:string}[] = []
   const open:number[] = [], closed = new Map<number, number>()

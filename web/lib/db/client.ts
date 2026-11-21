@@ -7,6 +7,7 @@
 // job: a module ported to Db must use SQL both engines accept.
 import Database from 'better-sqlite3'
 import pg from 'pg'
+import type { CompanyFirstResults } from '../scan/company-first-results.ts'
 
 // Values both engines bind the same way. Booleans are not accepted: better-sqlite3 cannot bind them and PG would store
 // a real boolean, so a caller passes 0/1 for SQLite-style INTEGER flags (the schema's convention).
@@ -14,6 +15,7 @@ export type Param = string | number | bigint | null
 export interface RunResult { changes: number }
 export interface Db {
   readonly kind: 'sqlite' | 'pg'
+  companyFirstResults?(tenantId: string, jobId: string, now: Date): Promise<CompanyFirstResults | null>
   all<T = Record<string, unknown>>(sql: string, params?: Param[]): Promise<T[]>
   get<T = Record<string, unknown>>(sql: string, params?: Param[]): Promise<T | undefined>
   run(sql: string, params?: Param[]): Promise<RunResult>
@@ -170,9 +172,13 @@ export function sqliteDb(handle: Database.Database): Db {
     get: async <T>(sql: string, params: Param[] = []) => exec({ op: 'get', sql, params }) as T | undefined,
     run: async (sql: string, params: Param[] = []) => exec({ op: 'run', sql, params }) as RunResult,
   }
-  return {
+  const db: Db = {
     kind: 'sqlite',
     ...ops,
+    async companyFirstResults(tenantId, jobId, now) {
+      const { readBoundCompanyFirstResults } = await import('../scan/company-first-results.ts')
+      return readBoundCompanyFirstResults(handle, db, tenantId, jobId, now)
+    },
     async tx(body) {
       // Synchronous from BEGIN to COMMIT: the generator only ever waits on statements, which run immediately here.
       return handle.transaction(() => {
@@ -189,6 +195,7 @@ export function sqliteDb(handle: Database.Database): Db {
     },
     close: async () => { handle.close() },
   }
+  return db
 }
 
 // ---- Postgres ----

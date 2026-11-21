@@ -3,6 +3,8 @@ export const CLAUDE_SEARCH_MODEL = 'claude-sonnet-4-5-20250929'
 export const CLAUDE_SEARCH_MAX_USES = 2
 export const CLAUDE_SEARCH_MAX_OUTPUT = 3_000
 export const CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH = 25_000
+export const CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH = 50_000
+export const CLAUDE_COMPANY_FIRST_MAX_CALLS = 2
 const INITIAL_TOKEN_FACTOR = 1.2 // Anthropic calls count_tokens an estimate; the extra margin is local, not a hard bound.
 const ASSUMED_TOOL_OVERHEAD = 1_000 // count_tokens rejects server tools; local allowance for the uncounted tool prompt.
 export const USD_PER_SEARCH = 0.01
@@ -64,9 +66,9 @@ export interface ClaudeSearchEstimate {
   readonly hard: false
 }
 
-export function claudeSearchEstimate(countedInputTokens: number): ClaudeSearchEstimate {
+export function claudeSearchEstimate(countedInputTokens: number, policy?: 'company_first'): ClaudeSearchEstimate {
   if (!count(countedInputTokens) || countedInputTokens === 0 || countedInputTokens > 200_000) throw new ClaudeSearchError('count_failed')
-  const assumedSearchInputTokens = CLAUDE_SEARCH_MAX_USES * CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH
+  const assumedSearchInputTokens = CLAUDE_SEARCH_MAX_USES * (policy === 'company_first' ? CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH : CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH)
   const estimatedUsd = roundedUp(((Math.ceil(countedInputTokens * INITIAL_TOKEN_FACTOR) + ASSUMED_TOOL_OVERHEAD + assumedSearchInputTokens) * 3 + CLAUDE_SEARCH_MAX_OUTPUT * 15) / MICROS + CLAUDE_SEARCH_MAX_USES * USD_PER_SEARCH)
   return { model: CLAUDE_SEARCH_MODEL, countedInputTokens, assumedSearchInputTokens, assumedToolOverheadTokens: ASSUMED_TOOL_OVERHEAD, maxOutputTokens: CLAUDE_SEARCH_MAX_OUTPUT, maxSearches: CLAUDE_SEARCH_MAX_USES, estimatedUsd, hard: false }
 }

@@ -45,6 +45,8 @@ import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, s
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
 import { stagingFakePdl } from '../enrich/pdl.ts'
 import { runWithTenantSpend } from '../scan/spend-cap.ts'
+import { currentnessHeld } from '../outreach/currentness.ts'
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
@@ -147,6 +149,13 @@ export function workEmailPageRead(db: Database.Database, tenantId: string, leads
   return { providers, providers_by_lead, lookups: { ...lookups, ...strictLookups }, guesses: guessesForLeads(db, tenantId, ordinary, env) }
 }
 
+// The same durable owner/job machine proof as ordinary Leads/Ready. Older
+// native strict jobs intentionally retain their existing review behavior.
+function markedWorkEmailHeld(db:Database.Database,tenantId:string,lead:LeadRow,now:number):boolean{
+  if(!hasCompanyFirstBudget(lead.run_budget))return false
+  try { return currentnessHeld(db,tenantId,lead.id,new Date(now*1000)) } catch { return true }
+}
+
 // Strict GET and page preload reconstruct the same response as POST, with no cached lookup rows.
 // Fetch owned lead provenance, people/site data, and published candidates in bounded batches.
 export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantId: string, leadIds: string[], now = Math.floor(Date.now() / 1000)): Record<string, WorkEmailRow[]> {
@@ -155,15 +164,16 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
   for (let i = 0; i < ids.length; i += 200) {
     const part = ids.slice(i, i + 200)
     const owned = db.prepare(`SELECT ${LEAD_COLS} FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.id IN (${part.map(() => '?').join(',')})`).all(tenantId, ...part) as LeadRow[]
-    const strict = owned.filter(l => qaClaudeOnlyJob(l.run_budget))
-    const strictIds = strict.map(l => l.id)
+    const strict = owned.filter(l => qaClaudeOnlyJob(l.run_budget) || hasCompanyFirstBudget(l.run_budget))
+    for(const l of strict) out[l.id] = [] // ensure held strict rows never fall back to legacy lookup/guess data
+    const readable = strict.filter(l => !markedWorkEmailHeld(db,tenantId,l,now))
+    const strictIds = readable.map(l => l.id)
     const enriched = enrichmentsForLeads(db, tenantId, strictIds)
-    const projected = strict.map(l => ({ l, ctx: workEmailTargetContext(l, enriched[l.id] ?? [], now) }))
+    const projected = readable.map(l => ({ l, ctx: workEmailTargetContext(l, enriched[l.id] ?? [], now) }))
     const idsFor = (country: 'CA' | 'GB' | null) => projected.filter(r => r.ctx && publishedDisplayCountry(r.ctx.where) === country).map(r => r.l.id)
     const candidates = { ...publishedCandidateRowsForLeads(db, tenantId, idsFor(null)),
       ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
     for (const { l, ctx } of projected) {
-      out[l.id] = []
       if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
       if (!ctx) continue
       out[l.id] = ctx.people.map(person => strictPublishedRow(targetKey(person), person.name, ctx, candidates[l.id] ?? [], now)).filter(r => r.status === 'published')
@@ -323,6 +333,7 @@ async function lookupWorkEmail(
   const lead = db.prepare(`SELECT ${LEAD_COLS}
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, tenantId) as LeadRow | undefined
   if (!lead) return { status: 'lead_not_found', detail: 'lead not found' }
+  if (markedWorkEmailHeld(db,tenantId,lead,now)) return { status: 'not_eligible', detail: 'This lead remains held; no contact lookup ran.' }
   // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
   // person's handle or the other side of a post (the cited page is about someone else, so the row is not established as this
   // company's lead; the same rule as the Leads page and Find contact). It fails closed even when a website was recorded.
@@ -333,7 +344,7 @@ async function lookupWorkEmail(
   // provider: Apollo is skipped for it below), so no real key is ever charged for a synthetic person.
   const fixture = isWorkEmailFixtureLead(lead)
   if (fixture && !(fixtureAvailable(db, tenantId) && workEmailFixtureFakesOn(deps.env ?? process.env))) return { status: 'not_eligible', detail: 'this test-only fixture lead is looked up only on staging with the fake People Data Labs and the fake ZeroBounce' }
-  derived.publishedOnly = qaClaudeOnlyJob(lead.run_budget)
+  derived.publishedOnly = qaClaudeOnlyJob(lead.run_budget) || hasCompanyFirstBudget(lead.run_budget)
   if (derived.publishedOnly && fixture) return { status: 'not_eligible', detail: 'a strict-origin result must come from the company website' }
   const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
   const ctx = workEmailTargetContext(lead, rows, now)

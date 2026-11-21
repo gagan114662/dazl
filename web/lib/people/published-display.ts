@@ -1,3 +1,4 @@
+import { migrateCompanyFirstPublishedDisplay } from './company-first-published-display.ts'
 import type Database from 'better-sqlite3'
 import { sameSite } from '../connectors/sitecrawl.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
@@ -20,6 +21,7 @@ export function migratePublishedDisplay(db: Database.Database): void {
     source_url TEXT NOT NULL CHECK (length(source_url) <= 500),
     PRIMARY KEY (tenant_id, lead_id, person, address)
   )`)
+  migrateCompanyFirstPublishedDisplay(db)
 }
 
 // A selected recrawl supersedes the old snapshot before any fetch: a blocked/failed/aborted recheck

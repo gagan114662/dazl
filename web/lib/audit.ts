@@ -85,6 +85,11 @@ const INSERT = `INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, a
 export function* recordTx(t: Tx, e: AuditEvent, now = nowS()): TxBody<void> {
   yield* t.run(INSERT, row(e, now))
 }
+// Legacy scan admission owns a synchronous transaction on this raw store.
+export function recordRawSqliteTx(db: import('better-sqlite3').Database, e: AuditEvent, now = nowS()): void {
+  if (!db.inTransaction) throw new Error('audit transaction required')
+  db.prepare(INSERT).run(...row(e, now))
+}
 // On its own: for refusals (nothing else is written) and for changes made outside a Db transaction.
 export async function record(db: Db, e: AuditEvent, now = nowS()): Promise<void> {
   await db.run(INSERT, row(e, now))

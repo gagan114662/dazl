@@ -1,3 +1,6 @@
+import { getMasterKey } from '@/lib/secrets'
+import { applyReviewedDraft } from '@/lib/scan/seller-research'
+import { issueWebsiteApproval, WEBSITE_PROFILE_REVIEW_MODE } from '@/lib/scan/website-profile-provenance'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
@@ -11,7 +14,7 @@ import { trialAllowanceLeft, trialPrincipal, trialRefusal } from '@/lib/billing/
 import { readTrialStatus } from '@/lib/scan/trial'
 import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
 import { readSellerLine } from '@/lib/auth-db'
-import { MAX_QUERY } from '@/lib/scan/icp'
+import { budgetedIcp, MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { cleanText } from '@/lib/validate'
 import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer, profileOffer } from '@/lib/scan/play-offer'
 import { captureError } from '@/lib/ops/errors'
@@ -29,6 +32,9 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   const db = await getDb()   // the Db layer, not the raw SQLite handle
   const query = cleanText(body?.query, MAX_QUERY)
+  const websiteReview = body?.mode === WEBSITE_PROFILE_REVIEW_MODE
+  if (websiteReview !== (body?.website_draft_receipt !== undefined)) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
+
   const supplied = body?.offer !== undefined && body?.offer !== null
   if (supplied && !completeOffer(body.offer)) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   if (query.length >= 3 && !supplied) {
@@ -59,9 +65,20 @@ export async function POST(req: NextRequest) {
   const trialUsed = hasOwnKey || !refusal ? null : await readTrialStatus(db, user.tenantId, clientIp(req)).then(t => t.used).catch(() => null)
   // What is left of the trial's dollar allowance, for one line on the panel. A read that fails or a trial that is not configured gives no line, never a block.
   const trialAllowance = hasOwnKey ? null : await trialPrincipal(db, user).then(p => (p ? trialAllowanceLeft(db, p.id) : null)).catch(() => null)
-  const r = await estimateForBody(body, { db, tenantId: user.tenantId, hasOwnKey, trialRefusal: refusal, trialUsed, trialAllowance, model: await keyedModel(db, user.tenantId), enrichmentVendors: vendors })
+  const r = await estimateForBody(websiteReview ? { ...body, mode: undefined } : body, { db, tenantId: user.tenantId, hasOwnKey, trialRefusal: refusal, trialUsed, trialAllowance, model: await keyedModel(db, user.tenantId), enrichmentVendors: vendors })
   if (!r.ok) return NextResponse.json({ error: r.error, ...(r.detail ? { detail: r.detail } : {}), ...(r.message ? { message: r.message } : {}), ...(r.loss ? { loss: r.loss } : {}) }, { status: r.status })
+  let websiteApproval: string | null = null
+  if (body?.website_draft_receipt !== undefined) {
+    const offer = completeOffer(body.offer)
+    const icp = normalizeIcp(body.icp)
+    const final = offer && icp ? budgetedIcp(applyReviewedDraft(icp, offer, { reviewed: true })) : null
+    if (query.length >= 3 && body.reviewed === true && offer && final?.ok) {
+      try { websiteApproval = issueWebsiteApproval(getMasterKey(), user, body.website_draft_receipt, { query, offer, icpJson: final.json }) }
+      catch { return NextResponse.json({ error: 'website_review_unavailable' }, { status: 503 }) }
+    }
+    if (!websiteApproval) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
+  }
   // #1157: the web search allowance left today, for the warning before confirm. A failed read gives no line, never a block.
   const searchAllowance = await tenantAllowanceLeft(db, user.tenantId, Math.floor(Date.now() / 1000)).catch(() => null)
-  return NextResponse.json({ estimate: { ...r.estimate, search_allowance: searchAllowance } })
+  return NextResponse.json({ estimate: { ...r.estimate, search_allowance: searchAllowance }, ...(websiteApproval ? { website_approval_receipt: websiteApproval } : {}) })
 }

@@ -94,13 +94,18 @@ export function requiredGateHeld(db: Database.Database, tenantId: string, leadId
 // sync handle (the campaign page, lib/outreach/campaign-detail.ts, #1062). Three tenant-scoped reads, whatever the lead count: the leads, their
 // gate markers (lead_enrichments_lead index) and the scan's latest run report. Returns the held lead ids. A read that fails (other than a missing
 // table) throws: the caller answers an error, never a page that calls a held lead ready.
-export async function requiredGateHeldForJob(db: Db, tenantId: string, jobId: string): Promise<Set<string>> {
-  const rows = await db.all<GateRow & { id: string }>('SELECT l.id, l.review_reason, l.human_confirmed_from, l.confidence, l.company, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ?', [jobId, tenantId])
+export async function requiredGateHeldForJob(db: Db, tenantId: string, jobId: string, selectedIds?: readonly string[]): Promise<Set<string>> {
+  const ids=selectedIds===undefined?null:[...new Set(selectedIds)]
+  if (ids?.length===0) return new Set()
+  if (ids && ids.length>500) throw new Error('required gate selection too large')
+  const selected=ids?` AND l.id IN (${ids.map(()=>'?').join(',')})`:''
+  const params=[jobId,tenantId,...(ids??[])]
+  const rows = await db.all<GateRow & { id: string }>(`SELECT l.id, l.review_reason, l.human_confirmed_from, l.confidence, l.company, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ?${selected}`, params)
   const held = new Set<string>()
   if (!rows.length) return held
   // A missing table means nothing of that kind was written (the sync reader agrees); any other read error throws to the caller.
   const orNone = async <T,>(read: () => Promise<T>, none: T): Promise<T> => { try { return await read() } catch (e) { if (noTable(e)) return none; throw e } }
-  const marks = await orNone(() => db.all<{ lead_id: string; kind: string; value: string }>("SELECT e.lead_id, e.kind, e.value FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id WHERE l.scan_job_id = ? AND e.tenant_id = ? AND e.connector = 'scan:gate' AND e.kind IN ('gate_failed', 'gate_passed')", [jobId, tenantId]), [])
+  const marks = await orNone(() => db.all<{ lead_id: string; kind: string; value: string }>(`SELECT e.lead_id, e.kind, e.value FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id WHERE l.scan_job_id = ? AND e.tenant_id = ? AND e.connector = 'scan:gate' AND e.kind IN ('gate_failed', 'gate_passed')${selected}`, params), [])
   const rep = await orNone(() => db.get<{ report: string }>('SELECT r.report FROM scan_run_report r JOIN scan_jobs j ON j.id = r.job_id WHERE r.job_id = ? AND j.user_id = ? ORDER BY r.attempt DESC LIMIT 1', [jobId, tenantId]), undefined)
   const reportIds = rep ? reportHeldIds(rep.report) : new Set<unknown>()
   const failed = new Set<string>(), passes = new Map<string, Set<string>>()
