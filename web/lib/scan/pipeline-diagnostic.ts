@@ -110,10 +110,11 @@ export function scanPipelineDiagnostic(report: unknown, jobError: unknown, store
 
 // readRunReportRows returns the authoritative DB attempt. A re-claimed job must never inherit
 // diagnostic counts from an earlier failed or completed attempt.
-export function currentScanPipelineDiagnostic(reports: unknown, attempts: unknown, jobError: unknown, storedRows?: unknown, jobStatus?: unknown) {
+export function currentScanPipelineDiagnostic(reports: unknown, attempts: unknown, jobError: unknown, storedRows?: unknown, terminal = false) {
   const attempt = count(attempts)
   const row = attempt === null || !Array.isArray(reports) ? null : reports.findLast(r => obj(r).attempt === attempt)
-  // A newly claimed retry can still carry the last attempt's job.error.
-  // A terminal failure (including cancellation) writes its own error even if no report exists.
-  return scanPipelineDiagnostic(obj(row).report, row || jobStatus === 'failed' ? jobError : null, storedRows)
+  // A newly claimed (non-terminal) retry can still carry the last attempt's job.error.
+  // A terminal job's error was written by its current attempt, even when that attempt
+  // failed before writing a report row, so it still explains the stop.
+  return scanPipelineDiagnostic(obj(row).report, row || terminal ? jobError : null, storedRows)
 }
