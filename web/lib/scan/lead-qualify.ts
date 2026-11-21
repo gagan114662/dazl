@@ -73,8 +73,8 @@ END CONTEXT
 The seller offer and target criteria define the question, not facts about the company. The saved reason is unverified context. It may concern funding, hiring, or another signal; it is not evidence of fit, use case, or buying intent.
 
 Judge three things separately. "unknown" is a correct answer whenever the text does not show it.
-1. company_fit (yes/no/unknown): does the text show the company matches the seller's target profile? B2B SaaS describes the TARGET company's own software business selling to businesses; its customers need not be software companies. Assess what the target sells separately from who its customers are. A yes needs evidence for every material targeting condition. A no needs an explicit contradiction of a condition, not missing information or a quote merely naming founders. Otherwise use unknown. Do not add or waive targeting conditions.
-2. use_case (yes/no/unknown): does the text show a way this company's OWN team could use the seller's offer? The company's customers do not count. Existing CRM or in-house tools can show a use case; they do not by themselves prove no need for setup help or consulting, nor interest in buying it. A no needs explicit contradictory evidence, not absence.
+1. company_fit (yes/no/unknown): does the text show the company matches the seller's target profile? A condition on what kind of business the target must be is about what the target itself sells; the sector of the target's customers' own kind of business is a separate fact, and it matters only where the target criteria put a condition on the customers. Assess what the target sells separately from who its customers are. A yes needs evidence for every material targeting condition. A no needs an explicit contradiction of a condition, not missing information or a quote merely naming founders. Otherwise use unknown. Do not add or waive targeting conditions.
+2. use_case (yes/no/unknown): does the text show a way this company's OWN team could use the seller's offer? The company's customers do not count. Tools or in-house work the company already has can show a use case; they do not by themselves prove the company has no need for the seller's offer, nor interest in buying it. A no needs explicit contradictory evidence, not absence.
 3. buying_evidence (stated/none_seen/unknown): does the text explicitly show the company is looking for or evaluating this kind of product? A job posting does not count. none_seen means only that these pages, as shown, do not say so; it is not a claim about the company elsewhere.
 Every verdict other than unknown/none_seen needs a quote copied exactly from ONE page, plus that page's URL as quote_url. The quote must support the specific judgment and company, not merely occur on the page. Briefing text and related posts are not evidence about this company. Explain the exact targeting condition or own-team use the quote supports or contradicts. Your assessment is unverified research; literal matching cannot establish semantic support.
 
@@ -143,14 +143,14 @@ export function parseQualification(raw: string, included: { url: string; text: s
     evidence_scope: scope,
     caveat: LITERAL_CAVEAT,
   }
-  // A warning about an explicit reasoning premise, not a business-model classifier or a new verdict.
-  // Never infer SaaS from customers, or infer a target's fit from this diagnostic.
+  // A warning about an explicit reasoning premise, not a business-model classifier or a new verdict. Category-neutral (#1435):
+  // a "no" whose note rejects the target because of who ITS CUSTOMERS are ("their customers are X, not Y"), when the target
+  // criteria put no condition on the customers. Never infer a business model from customers, or a target's fit from this.
   const fit=result.company_fit
-  const requiresSoftwareCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+to|serv(?:e|es|ing)|customers?\s+(?:must\s+be|are|include)|target(?:s|ing)?)\s+(?:only\s+)?(?:b2b\s+)?software\s+(?:companies|businesses|vendors)\b/i.test(targetCriteria)
-  if(fit.verdict==='no'&&targetCriteria&&!requiresSoftwareCustomers&&/\bb2b\s+(?:saas|software)\b/i.test(targetCriteria)){
-   const rationale=fit.note
-   const customerExclusion=/\bcustomers?\s+(?:are|is)\s+[^.!?]{1,100},?\s*(?:not|rather than)\s+(?:software companies|businesses buying software services)\b/i.exec(rationale)
-   if(customerExclusion)fit.assessment_conflict={kind:'customer_sector_not_target_business',premise:customerExclusion[0],note:'Customer-sector premise flagged: B2B software can sell to non-software businesses. This warning concerns only the quoted customer comparison, not the entire no assessment. Other rejection reasons may still apply; they have not been assessed by this check. The raw verdict and note are unchanged. This does not establish the target business model or fit.'}
+  const criteriaConditionCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+to|serv(?:e|es|ing)|(?:whose\s+)?customers?\s+(?:must\s+be|are|include)|target(?:s|ing)?)\s+\S/i.test(targetCriteria)
+  if(fit.verdict==='no'&&targetCriteria&&targetCriteria.trim()&&!criteriaConditionCustomers){
+   const customerComparison=/\bcustomers?\s+(?:are|is)\s+[^.!?,;]{1,100}?(?:,\s*not|\s+rather\s+than)\s+[^.!?,;]{1,80}/i.exec(fit.note)
+   if(customerComparison)fit.assessment_conflict={kind:'customer_sector_not_target_business',premise:customerComparison[0],note:"Customer-sector premise flagged: a business's customers can be in a different sector from the business itself. This warning concerns only the quoted customer comparison, not the entire no assessment. Other rejection reasons may still apply; they have not been assessed by this check. The raw verdict and note are unchanged. This does not establish the target business model or fit."}
   }
   return result
 }

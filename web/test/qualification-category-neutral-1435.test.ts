@@ -2,7 +2,7 @@
 // one market. The fixed prompt text taught a rule about "B2B SaaS" and "software companies", and the diagnostic only ran
 // when the target criteria said "B2B SaaS/software" and the model's note compared against "software companies". Every
 // other market got neither the rule nor the warning. Retired baseline: the "B2B SaaS describes the TARGET company's own
-// software business..." prompt sentence, the /\bb2b\s+(?:saas|software)\b/ criteria gate, and the
+// software business..." and "Existing CRM or in-house tools ... setup help or consulting" prompt sentences, the /\bb2b\s+(?:saas|software)\b/ criteria gate, and the
 // "software companies|businesses buying software services" premise list in lib/scan/lead-qualify.ts.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -13,10 +13,11 @@ import { parseQualification, preparePrompt } from '../lib/scan/lead-qualify.ts'
 const fixedText = preparePrompt({ seller_offer: '', seller_icp: '', company: '', signal: '', pages: [{ url: 'https://synthetic.example/', text: 'x' }] }).prompt
 
 test('#1435 the fixed qualification prompt names no market, sector or category', () => {
-  assert.doesNotMatch(fixedText, /\bsaas\b|\bsoftware\b|\bb2b\b/i)
+  assert.doesNotMatch(fixedText, /\bsaas\b|\bsoftware\b|\bb2b\b|\bcrm\b|consulting/i)
   // the general rule it carried is kept, in category-neutral words
   assert.match(fixedText, /what the target itself sells/i)
   assert.match(fixedText, /customers'? (?:own )?(?:sector|kind of business)/i)
+  assert.match(fixedText, /no need for the seller's offer/)
 })
 
 const url = 'https://synthetic.example/about', quote = 'We run three clinics and see patients six days a week.'
