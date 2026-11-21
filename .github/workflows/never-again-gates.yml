@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: never-again-gates-${{ github.event.pull_request.number || github.ref }}
+  group: never-again-gates-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   never-again:
