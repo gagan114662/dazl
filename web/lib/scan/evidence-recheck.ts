@@ -38,7 +38,7 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  // date rules reject that day (stale, future, malformed: the verifier's DATE_REJECTS, which never take a proof); any other lead, or another
  // day, is bound by the page text or is undated
  const dateRejected=!literal.ok&&DATE_REJECTS.has(literal.reason)
- const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&(isHiringTrigger(lead.signal,lead.signal_kind)||(!lead.signal_kind&&signalNamesBoardPosting(lead.signal,lead.source_url,page.board?.title)))
+ const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&(isHiringTrigger(lead.signal,lead.signal_kind)||(!lead.signal_kind&&signalNamesBoardPosting(lead.signal,lead.source_url,page.board?.record?page.board.title:null)))
  const date=boardDated?{bound:true,proof:'ats_structured' as const}:lead.event_date?{...ownPostOr(eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company),lead.event_date,{request:lead.query,company:lead.company,url:lead.source_url,excerpt:candidate.excerpt,page}),proof:'page_bound' as const}:null
  const window=windowStatus(date?.bound?lead.event_date:null,parseWindowDays(lead.query??'')??icp.window_days,now)
  const counterparty=counterpartySignal(candidate,page,literal.ok?literal.passage:'')

@@ -400,7 +400,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // hiring on the lead or held row, so the board's day dates it here and readers of the stored row judge that day as a hiring posting's.
     // Only when no other kind is stored: a stored non-hiring kind still wins, as it does over the wording.
     const rawKind = (cRaw as LeadDraft & { signal_kind?: string | null }).signal_kind
-    const cIn: LeadDraft = !rawKind && page && !isFail(page) && signalNamesBoardPosting(cRaw.signal, cRaw.source_url, page.board?.title) ? { ...cRaw, signal_kind: 'hiring' } as LeadDraft : cRaw
+    const cIn: LeadDraft = !rawKind && page && !isFail(page) && signalNamesBoardPosting(cRaw.signal, cRaw.source_url, page.board?.record ? page.board.title : null) ? { ...cRaw, signal_kind: 'hiring' } as LeadDraft : cRaw
     // #460: an event day counts only when the FETCHED page states it for THIS company and THIS event (the same sentence as the quote, or a sentence naming the company and
     // describing the same event), or when a public job board's own structured publish date for exactly this posting URL was collected (structuredDates: Greenhouse
     // first_published / Lever createdAt / Ashby publishedAt from the job-board source - an ATS hostname alone proves no date exists). The model's date, a search-hit day,
