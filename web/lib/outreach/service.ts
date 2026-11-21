@@ -21,6 +21,10 @@ import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
 import { recheckSendAuthority } from './send-authority.ts'
 
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { domainRelationship } from '../signals/domain-basis.ts'
+import { onCompanySite, isFounderRoute, siteIdentity } from '../scan/site-contact.ts'
+
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
 
@@ -224,9 +228,9 @@ export function draftClaimContextFor(db: Database.Database, tenantId: string, le
 
 // True when the lead's address came from a crawl whose website still needs the user's identity review (never recorded, or withdrawn
 // after the draft was made). A draft made before this check existed, or whose confirmation was later withdrawn, cannot be approved or sent.
-export type DomainReviewStatus = 'ok' | 'required' | 'unreadable' | 'quarantined'
+export type DomainReviewStatus = 'ok' | 'required' | 'unreadable' | 'quarantined' | 'recipient_provenance_missing'
 export function domainReviewStatus(db: Database.Database, tenantId: string, leadId: string, recipient: string): DomainReviewStatus {
-  const lead = db.prepare('SELECT l.id, l.contact FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { id: string; contact: string | null } | undefined
+  const lead = db.prepare('SELECT l.id, l.contact, l.company_domain, l.source_url, j.run_budget FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { id: string; contact: string | null; company_domain: string | null; source_url: string | null; run_budget: string | null } | undefined
   if (!lead) return 'ok'
   // A quarantined lead (scan/quarantine.ts) is held at every send path that passes through this gate. An unreadable
   // quarantine state (older schema, read error) is held too: never sent on an unknown.
@@ -235,6 +239,19 @@ export function domainReviewStatus(db: Database.Database, tenantId: string, lead
   // If the crawl state cannot be read (table missing or a read error) where the address came from is unknowable: held, for every lead.
   // This is a retryable fault, not something the user can fix by confirming a website.
   try { rows = readCrawledRows(db, tenantId, leadId) } catch { return 'unreadable' }
+  if (hasCompanyFirstBudget(lead.run_budget)) {
+    // Actionability may be proven by a telephone. A stored approval for an email must still have
+    // independent published mail provenance; the display-only table is never an authority here.
+    const to = norm(recipient), site = siteIdentity(lead.company_domain)
+    try {
+      if (!site || !EMAIL_RE.test(to) || domainRelationship(db, tenantId, leadId, lead.company_domain) !== 'established')
+        return 'recipient_provenance_missing'
+      const fromEvidence = { connector: 'sitecrawl', kind: 'email', value: lead.contact ?? '', source_url: lead.source_url }
+      const published = [fromEvidence, ...rows].some(row => row.kind === 'email' && norm(row.value) === to &&
+        onCompanySite(row, site) && isFounderRoute(row))
+      if (!published) return 'recipient_provenance_missing'
+    } catch { return 'unreadable' }
+  }
   if (EMAIL_RE.test(norm(lead.contact ?? ''))) {
     // The recipient is judged only when the lead's own crawl recorded it. A recipient with no crawl record has another source
     // (the cited page) and stays outside this gate. The message's recipient and words are never rewritten. Equality with the
@@ -247,8 +264,9 @@ export function domainReviewStatus(db: Database.Database, tenantId: string, lead
 }
 export const domainReviewHeld = (db: Database.Database, tenantId: string, leadId: string, recipient: string): boolean => domainReviewStatus(db, tenantId, leadId, recipient) !== 'ok'
 // The error code for a held message: a missing review is something the user can act on, an unreadable state is a retry.
-export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: string, recipient: string): 'domain_unconfirmed' | 'review_unreadable' | 'lead_quarantined' => {
+export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: string, recipient: string): 'domain_unconfirmed' | 'review_unreadable' | 'lead_quarantined' | 'recipient_provenance_missing' => {
   const s = domainReviewStatus(db, tenantId, leadId, recipient)
+  if (s === 'recipient_provenance_missing') return s
   return s === 'quarantined' ? 'lead_quarantined' : s === 'unreadable' ? 'review_unreadable' : 'domain_unconfirmed'
 }
 
