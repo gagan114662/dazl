@@ -20,8 +20,9 @@ const tests = readdirSync(testDir).filter(f => /\.test\.(ts|mjs)$/.test(f))
 // #1463 follow-up: repo-wide guard tests read the whole source tree (error-class allowlist, paid-path and spend guards,
 // tenant/job isolation manifests, route error capture, test discovery). A change anywhere can break them without naming
 // them, so they run on EVERY PR whatever changed (main broke after #1451 this way). Missing names are skipped.
+// Each must fit the 5-minute PR shard budget: heavy suites (pg-table-isolation's two-instance test, ~260 s) run in the full suite.
 const ALWAYS = ['ops-sentry.test.ts', 'ops-errors.test.ts', 'paid-paths-guarded.test.ts', 'tenant-isolation-manifest.test.ts',
-  'job-isolation-manifest.test.ts', 'pg-table-isolation.test.ts', 'route-error-capture.test.ts', 'test-discovery.test.ts',
+  'job-isolation-manifest.test.ts', 'route-error-capture.test.ts', 'test-discovery.test.ts',
   'scan-spend-cap-paths.test.ts', 'owner-spend-inventory-850.test.ts', 'enrich-reserve-inventory-849.test.ts',
   'server-action-probes-1088.test.ts', 'preview-pipeline-fail-closed.test.ts', 'pg-fixture-honesty.test.ts']
 const out = new Set(ALWAYS.filter(t => tests.includes(t)).map(t => `test/${t}`))
