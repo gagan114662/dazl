@@ -39,14 +39,14 @@ const clauses = (db: Database.Database, id: string) => (db.prepare("SELECT value
 const actionability = (db: Database.Database, id: string) => (db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND connector = 'scan:actionable'").get(id) as { value: string }).value
 
 test('#878 a job board\'s posting day never dates the raise the posting mentions (real Clay and Rillet postings, the real writer)', () => {
-  const { db, job } = seed([{ id: 'clay', c: CLAY, date: day(11), proof: 'ats_structured' }, { id: 'rillet', c: RILLET, date: day(4), proof: 'ats_structured' }])
-  const y = recordActionability(db, job)
-  for (const id of ['clay', 'rillet']) {
-    const [c1] = clauses(db, id)
-    assert.match(c1.value, /^C1 raised a Series D in the last 30 days: unknown, no evidence date$/, `${id}: ${c1.value}`)
-    assert.doesNotMatch(c1.value, /evidence dated/, 'the posting day is not the raise day')
-    assert.match(actionability(db, id), /targeting not proven/)
-    assert.deepEqual(y.leads.find(l => l.company === (id === 'clay' ? 'Clay' : 'Rillet'))?.missing, ['targeting_not_proven'])
+  for (const [c, query, text] of [[CLAY, QUERY, 'raised a Series D in the last 30 days'], [RILLET, 'B2B software companies that raised funding in the last 30 days and are hiring sales reps', 'raised funding in the last 30 days']] as const) {
+    const { db, job } = seed([{ id: 'l', c, date: day(c === CLAY ? 11 : 4), proof: 'ats_structured' }], query)
+    const y = recordActionability(db, job)
+    const [c1] = clauses(db, 'l')
+    assert.equal(c1.value, `C1 ${text}: unknown, no evidence date`, c.company)
+    assert.equal(c1.source_date, day(0), 'the check day, never the posting day as evidence')
+    assert.match(actionability(db, 'l'), /targeting not proven/)
+    assert.deepEqual(y.leads[0].missing, ['targeting_not_proven'])
   }
 })
 

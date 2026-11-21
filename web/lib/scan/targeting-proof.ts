@@ -11,7 +11,9 @@ import { isGtmRole } from '../signals/ats-gtm.ts'
 import { parseWindowDays } from './window.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
 
-export interface ProofLead { company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string | null; source_url: string; event_date: string | null }
+// `event_date_proof`: what proved `event_date` (runner.ts). 'ats_structured' is a job board's own publish day for the cited POSTING: it dates a hiring
+// condition only, never a raise, an opening or a completed hire the posting's text mentions (#878: each condition on its own evidence date).
+export interface ProofLead { company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string | null; source_url: string; event_date: string | null; event_date_proof?: string | null }
 export interface ProofRow { connector: string; kind: string; value: string; source_url: string; source_date: string; label?: string | null }
 // `graded`: the lead already passed the ICP grade, which judges the profile's `exclude` list (classifyLeads evaluates the plan only after the fit gate).
 export interface ProofContext { query: string | null | undefined; icp: string | null | undefined; salesGatePassed: boolean; competitors: string[] | null; graded?: boolean; now?: number }
@@ -49,10 +51,17 @@ function eventShown(event: string | undefined, object: string | undefined, quote
 const clockOf = (c: Condition): number | null => c.since_days ?? c.within_days
 const roleWords = (r: string) => r.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w))
 
-function dated(ok: boolean, date: string | null, days: number | null, now: number, url: string, shown: string): Proof {
+// The lead's event day as THIS condition's evidence date: a job board's posting day (ats_structured) is the posting's day, so it dates a hiring
+// condition only. For any other condition the lead then has no day of its own (`boardOnly`), and a clock on it cannot be checked.
+const ownDay = (lead: ProofLead, kind: Condition['kind']): { date: string | null; boardOnly: boolean } =>
+  lead.event_date_proof === 'ats_structured' && kind !== 'hiring' ? { date: null, boardOnly: !!lead.event_date } : { date: lead.event_date, boardOnly: false }
+
+function dated(ok: boolean, day: { date: string | null; boardOnly: boolean }, days: number | null, now: number, url: string, shown: string): Proof {
   if (!ok) return { truth: 'unknown', reason: `no verified source shows ${shown}` }
+  const date = day.date
   const c = onClock(date, days, now)
   if (c === 'in') return { truth: 'pass', reason: `the verified source quote shows ${shown}${date ? `, dated ${date}` : ''}${days !== null ? ` (within ${days} days)` : ''}`, source_url: url, ...(date ? { date } : {}) }
+  if (c === 'undated' && day.boardOnly) return { truth: 'unknown', reason: `the source shows ${shown}, but its only date is the job board's day for the posting, so this condition has no date of its own and its ${days}-day clock cannot be checked`, source_url: url }
   if (c === 'undated') return { truth: 'unknown', reason: `the source shows ${shown} but carries no date, so its ${days}-day clock cannot be checked`, source_url: url }
   return { truth: 'unknown', reason: `the dated source (${date}) is outside this condition's ${days}-day window`, source_url: url, ...(date ? { date } : {}) }
 }
@@ -177,18 +186,20 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
     case 'funding': {
       const shows = quoteShowsEvent(quote, lead.signal, true, lead.company, stageOf(c.stage)) && (c.stage !== 'pre-seed' || /\bpre-?seed\b/i.test(quote))
       const what = `a completed ${c.stage ? `${c.stage} ` : ''}raise by this company`
-      if (shows) return dated(true, lead.event_date, clockOf(c), now, lead.source_url, what)
+      // A raise read off a board-dated posting has no day of its own (ownDay): it stays unknown on a clock. The gate's pass record does not
+      // stand in for it: the gate reads the lead's own quote without a date of its own (sales-hiring-gate.ts eventQuoteUsable, `own`).
+      if (shows) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, what)
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified the funding half on a source for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
       const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
-      return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
+      return dated(shows, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {
       // Dated postings are read in ownProofs (every one of them, so row order never decides); here: the lead's own quote, then the gate's record.
       const gtm = !c.role || isGtmRole(c.role)
-      if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, lead.event_date, clockOf(c), now, lead.source_url, 'this company hiring for the role')
+      if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified an open sales role for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no dated posting or verified quote shows this company hiring${c.role ? ` ${c.role}` : ''}` }
     }
@@ -196,7 +207,7 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       const want = roleWords(c.role ?? '')
       // Shared with the OR gate (sales-hiring-gate.ts) so both read a completed hire the same way: this company's own, affirmative, not conditional.
       const shows = quoteShowsCompletedHire(quote, lead.company, want, !!c.first)
-      return dated(shows, lead.event_date, clockOf(c), now, lead.source_url, `this company ${c.first ? 'made its first' : 'made a'} ${c.role || 'role'} hire`)
+      return dated(shows, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, `this company ${c.first ? 'made its first' : 'made a'} ${c.role || 'role'} hire`)
     }
   }
 }
