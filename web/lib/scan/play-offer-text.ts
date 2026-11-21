@@ -25,10 +25,30 @@ export type OfferSource = 'play' | 'recorded' | 'profile' | 'request'
 export type PlayOffer =
   | { offer: string; source: OfferSource; conflict: null }
   // stated: the offer the request names instead (null when it only withdraws one); withdrawn: what it says is no longer sold
-  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true } }
+  | { offer: null; source: 'conflict'; conflict: { stated: string | null; recorded: string; withdrawn?: string; ambiguous?: true; incomplete?: true; freshTarget?: true } }
   | { offer: null; source: 'none'; conflict: null }
 
 export const cleanOffer = (s: unknown): string => typeof s === 'string' ? s.replace(/\s+/g, ' ').trim().slice(0, MAX_OFFER) : ''
+
+// Confirmation must never make a clipped value authoritative. Normalize spacing but reject overlength
+// rather than storing a truncated choice. Unmatched closing punctuation (e.g. "1) Setup") is not clipping.
+export function completeOffer(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (text.length < 3 || text.length > MAX_OFFER) return null
+  return hasOpenOfferParenthesis(text) ? null : text
+}
+
+const clipped = (v: unknown): boolean => cleanOffer(v).length >= 3 && !completeOffer(v)
+
+function hasOpenOfferParenthesis(text: string): boolean {
+  let depth = 0
+  for (const char of text) {
+    if (char === '(') depth++
+    else if (char === ')' && depth > 0) depth--
+  }
+  return depth > 0
+}
 
 // The offer a request states, if it states one. Only a positive seller assertion counts, and only at the start of a
 // sentence or clause (after ",", ";", ":" or a dash), never words embedded in targeting or an exclusion:
@@ -42,7 +62,8 @@ const SPEAKER = String.raw`(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offe
 const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'di')
-const LABEL = new RegExp(`${LEAD}(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:\\s*(.{3,150})$`, 'di')
+// "Seller: <offer>" / "seller = <offer>" is the same labelled statement (#1436 live check: a request's own seller line).
+const LABEL = new RegExp(`${LEAD}(?:(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:|(?:seller|sells)\\s*(?::|=))\\s*(.{3,150})$`, 'di')
 // a capture that is a target ("to dental practices") or itself an exclusion is not an offer. Whole words only (an offer
 // like "insurance", "inbound marketing", "attribution software" or "no-code tools" starts with the same letters); the
 // one stem kept is exclud(e|es|ed|ing), since every form of it is an exclusion.
@@ -52,7 +73,7 @@ const NOT_AN_OFFER = /^(?:(?:to|for|into|in|at|within|only|except|no|not)(?![\p{
 type Found = { offer: string; tail: string; sentence: number; sentences: string[] }
 // Only top-level grammar is structural. A nested qualifier can contain
 // its own "for", sentence punctuation, or another pair of parentheses.
-const LATER_SELLER = /(?:^|[.!?;,\n:]\s*|\s+(?:and|but|then)\s+)(?:(?:and|but|also)\s+)?(?:(?:i|we|i'm|we're)\s+(?:also\s+)?(?:(?:am|are|can)\s+(?:also\s+)?)?(?:sell|selling|offer|offering|provide|providing)\s+(?!to\b|for\b|only\b|not\b)\S|(?:(?:our|my)\s+)?(?:offer|offering|product|service)s?\s*:\s*\S)/iu
+const LATER_SELLER = /(?:^|[.!?;,\n:]\s*|\s+(?:and|but|then)\s+)(?:(?:and|but|also)\s+)?(?:(?:i|we|i'm|we're)\s+(?:also\s+)?(?:(?:am|are|can)\s+(?:also\s+)?)?(?:sell|selling|offer|offering|provide|providing)\s+(?!to\b|for\b|only\b|not\b)\S|(?:(?:our|my)\s+)?(?:offer|offering|product|service)s?\s*:\s*\S|(?:seller|sells)\s*(?::|=)\s*\S)/iu
 function offerSentences(q: string) {
   const parts: {text:string; grammar:string}[] = []
   const open:number[] = [], closed = new Map<number, number>()
@@ -587,9 +608,14 @@ function withdrawsSaved(withdrawn: string, saved: string): boolean {
 }
 
 export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
-  const reviewed = cleanOffer(play.offer)
+  const reviewed = completeOffer(play.offer)
+  const incomplete = (): PlayOffer => ({ offer: null, source: 'conflict', conflict: { stated: null, recorded: '', incomplete: true } })
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
+  // Only a CLIPPED value (3+ characters, overlength or cut inside a parenthesis) is incomplete; text under 3 characters
+  // states no offer at all, as before, and falls through (an 'x' profile is no offer, not a hold).
+  if (clipped(play.offer)) return incomplete()
   const recorded = offerOfSeller(play.seller)
+  if ((recorded && clipped(recorded)) || (!recorded && clipped(profileSells))) return incomplete()
   const base = recorded ?? (cleanOffer(profileSells) || null)
   if (offerSentences(play.query ?? '').ambiguous)
     return { offer:null, source:'conflict', conflict:{ stated:null, recorded:base??'', ambiguous:true } }
@@ -607,11 +633,49 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   return { offer: null, source: 'none', conflict: null }
 }
 
+// An exact request to look for leads for the signed-in workspace can name
+// its business rather than use seller grammar. It proposes a choice only,
+// not a confirmed offer, and only when this would otherwise carry a profile
+// into a different offer. Never infer a name from the query or a domain.
+export function carriedWorkspaceOfferConflict(query: string, businessName: string, seller: string, recorded: string | null): NonNullable<PlayOffer['conflict']> | null {
+  const name = cleanOffer(businessName)
+  if (name.length < 3 || !recorded) return null
+  const m = /^(?:please\s+)?(?:find|look for|search for)\s+(?:(?:me|us)\s+)?(?:[1-9]\d?\s+)?(?:(?:new|qualified|high[- ]intent|relevant)\s+){0,3}(?:leads|customers|prospects)\s+for\s+(.+)$/iu.exec(query.trim())
+  if (!m || exact(m[1].slice(0, name.length)) !== exact(name)) return null
+  let tail = m[1].slice(name.length).trimStart()
+  if (tail.startsWith('(')) {
+    const literal = /^\(([^()\s]{1,200})\)/u.exec(tail)
+    const site = /\s-\s(\S+)$/u.exec(seller)?.[1]
+    const host = (v: string) => {
+      try {
+        const u = new URL(v.startsWith('https://') ? v : `https://${v}`)
+        return u.protocol === 'https:' && !u.username && !u.password && !u.port && !u.search && !u.hash ? u.hostname : null
+      } catch { return null }
+    }
+    if (!literal || !site || !host(literal[1]) || host(literal[1]) !== host(site)) return null
+    tail = tail.slice(literal[0].length).trimStart()
+  }
+  if (tail && !/^(?:[,;:—–]|[.!?](?:\s|$))/u.test(tail)) return null
+  return { stated: name, recorded, freshTarget: true }
+}
+
 // The tenant's own selling context, for a play without an offer of its own (#349): the Memory positioning set in
 // Settings, else what onboarding saved (users.sells), so nobody needs a second hidden form. Every drafting path (template,
 // rewrite, follow-ups), scoring and the offer card read it through these two functions, so they cannot disagree.
 export function tenantOffer(memoryPositioning: string | null | undefined, profileSells: string | null | undefined): string | null {
-  return cleanOffer(memoryPositioning) || cleanOffer(profileSells) || null
+  const source = [memoryPositioning, profileSells].find(v => v?.trim())?.replace(/\s+/g, ' ').trim()
+  if (!source) return null
+  const bound = cleanOffer(source)
+  if (source.length <= MAX_OFFER || !hasOpenOfferParenthesis(bound) || hasOpenOfferParenthesis(source)) return bound
+  // Settings allows longer positioning than a play can store. If an otherwise complete source
+  // crosses the play limit inside a parenthetical, keep the complete leading clause, never half
+  // an aside. A truly malformed source, or one with no usable leading clause, still needs review.
+  let depth = 0, opening = -1
+  for (let i = 0; i < bound.length; i++) {
+    if (bound[i] === '(') { if (depth === 0) opening = i; depth++ }
+    else if (bound[i] === ')' && depth > 0) depth--
+  }
+  return completeOffer(bound.slice(0, opening).trim()) ?? bound
 }
 // The offer a draft for a lead of this play states: the play's effective offer, with the tenant context as its base. A
 // contested play refuses (offer_conflict). offer null and no refusal: there is nothing to state.

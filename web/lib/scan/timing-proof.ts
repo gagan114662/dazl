@@ -53,6 +53,13 @@ function eventGap(row:LeadRow|undefined,now:Date):TimingProofGap|null {
   if (!row.company_domain) return 'no_domain'
   return null
 }
+// The same current, dated machine evidence requirement, without contact
+// route authorization. This is a separate input to the display-only reader.
+export function companyFirstEventCurrent(db: Database.Database, tenant: string, leadId: string, now: Date): boolean {
+  const row = db.prepare(LEAD_SQL).get(leadId, tenant) as LeadRow | undefined
+  return !!row && companyFirstJobWindow(row)?.days != null && eventGap(row, now) === null
+}
+
 function bindCurrent(row:LeadRow,site:SiteContact,act:ActRow[]):Verdict{
   if (!site.confirmed) return {gap:'domain_unconfirmed',binding:null}
   if (!site.person || !site.route || act.length !== 1 || !act[0].value.startsWith('Actionable:') || !act[0].label)

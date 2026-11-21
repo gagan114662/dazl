@@ -99,6 +99,17 @@ bothEngines('#1062 requiredGateHeldForJob is tenant-scoped: another tenant readi
   assert.deepEqual([...await requiredGateHeldForJob(db, 'B', 'jb')], ['theirs'])
 })
 
+bothEngines('#1062 selected gate IDs agree with whole-job holds and never cross job or owner',async({db})=>{
+  await seed(db)
+  const selected=['pass','failed','report','oldreport','wrongpass','theirs','plain','pass']
+  const full=await requiredGateHeldForJob(db,'A','js')
+  assert.deepEqual([...await requiredGateHeldForJob(db,'A','js',selected)].sort(),
+    [...full].filter(id=>selected.includes(id)).sort())
+  assert.deepEqual([...await requiredGateHeldForJob(db,'A','js',[])],[])
+  assert.deepEqual([...await requiredGateHeldForJob(db,'B','js',selected)],[])
+  await assert.rejects(requiredGateHeldForJob(db,'A','js',Array.from({length:501},(_,i)=>String(i))),/selection too large/)
+})
+
 test('#1062 parity: the campaign page batch read and the draft guard (requiredGateHeld) agree on every lead, including in-process holds and a release', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw); const db = sqliteDb(raw)
   await seed(db)

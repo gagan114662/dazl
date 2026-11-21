@@ -145,17 +145,48 @@ export function listJobs(db: Db, userId: string, limit = 20): Promise<JobSummary
 
 // CSV export: the tenant's visible leads (no hidden fit<=1, no quarantined), one job or all, newest first. Fixture
 // rows (source_kind 'test') only with includeFixtures. Read-only.
+export interface ExportLeadCursor { created_at: number; insert_seq: number }
 export function exportLeads(db: Db, userId: string, jobId?: string, limit = 5000, includeFixtures = false, includeBudget = false): Promise<Record<string, unknown>[]> {
+  return exportLeadRows(db,userId,jobId,limit,includeFixtures,includeBudget,false)
+}
+
+export function exportLeadPage(db:Db,userId:string,jobId:string|undefined,limit:number,includeFixtures:boolean,after?:ExportLeadCursor):Promise<Record<string,unknown>[]> {
+  return exportLeadRows(db,userId,jobId,limit,includeFixtures,true,true,after)
+}
+
+// Public continuation is the last processed lead's opaque ID, not the shared
+// insertion sequence. Always recover it in the same tenant and job scope.
+export async function exportLeadCursor(db:Db,userId:string,leadId:string,jobId?:string):Promise<ExportLeadCursor|null>{
+  const row=await db.get<{created_at:number|string;insert_seq:number|string}>(
+    `SELECT l.created_at,l.insert_seq FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+       WHERE j.user_id = ? AND l.id = ? ${jobId ? 'AND j.id = ?' : ''}`,jobId?[userId,leadId,jobId]:[userId,leadId])
+  return row?parseExportLeadCursor(row.created_at,row.insert_seq):null
+}
+
+export function parseExportLeadCursor(created:unknown,sequence:unknown):ExportLeadCursor|null{
+  const safe=(v:unknown)=>typeof v==='number'||(typeof v==='string'&&/^\d+$/.test(v))?Number(v):NaN
+  const created_at=safe(created),insert_seq=safe(sequence)
+  return Number.isSafeInteger(created_at)&&created_at>=0&&Number.isSafeInteger(insert_seq)&&insert_seq>=0
+    ? {created_at,insert_seq}:null
+}
+
+function exportLeadRows(db:Db,userId:string,jobId:string|undefined,limit:number,includeFixtures:boolean,includeBudget:boolean,
+  includeCursor:boolean,after?:ExportLeadCursor):Promise<Record<string,unknown>[]>{
+  const params:Param[]=jobId?[userId,jobId]:[userId]
+  if(after)params.push(after.created_at,after.created_at,after.insert_seq)
+  params.push(limit)
   return allHeld(db,
     `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
             l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
             l.event_date_proof, l.signal_kind, j.query AS job_query, j.icp AS job_icp,${includeBudget ? ' j.run_budget AS job_run_budget,' : ''}
             l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
+            ${includeCursor ? ', l.insert_seq AS export_insert_seq' : ''}
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? ${jobId ? 'AND j.id = ?' : ''} AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL
      ${includeFixtures ? '' : "AND (l.source_kind IS NULL OR l.source_kind != 'test')"}
+     ${after ? 'AND (l.created_at < ? OR (l.created_at = ? AND l.insert_seq > ?))' : ''}
      ORDER BY l.created_at DESC, l.insert_seq LIMIT ?`,
-    'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`, jobId ? [userId, jobId, limit] : [userId, limit])
+    'l.confidence, l.event_date, l.date_status, l.review_reason,', `${HELD_CONF}, l.event_date, l.date_status, ${HELD_REVIEW},`, params)
 }
 
 // Stop-requested, not provider-stopped: moves the job to failed/'cancelled' in one transaction (a pending job takes

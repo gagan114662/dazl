@@ -59,7 +59,7 @@ const CJK = 'ニューヨーク市内で過去九十日以内に開業または�
 const RTL = 'عيادات أسنان مستقلة في مدينة نيويورك افتتحت أو انتقلت خلال الأيام التسعين الماضية ويديرها طبيب الأسنان المالك أو مدير العيادة'
 // Every origin/approval label the summary can show, keyed by the icp_source the restore path receives. 'carried' (the
 // label of the staging finding) first, so its pixels are saved even when an earlier assertion fails.
-const LABELS = { carried: 'profile origin and approval not recorded', inferred: 'worked out by dazl', user: 'stored profile; approval not recorded', request_only: 'request fallback; interpretation not verified' }
+const LABELS = { carried: 'carried from a saved profile; no new approval recorded', inferred: 'worked out by dazl', user: 'stored profile; approval not recorded', request_only: 'request fallback; interpretation not verified' }
 let latest = null
 
 const b = await chromium.launch()

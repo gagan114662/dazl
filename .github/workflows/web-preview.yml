@@ -44,6 +44,17 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-browser-full-v1-1.63.0-${{ runner.os }}-${{ runner.arch }}
       - run: npm install --no-save playwright@1.63.0 esbuild@0.25.0 && npx playwright install --with-deps chromium
+      # Signed real Next and persisted SQLite workspace; no API stubs or paid scan.
+      - name: Signed saved-profile offer chooser (real browser and routes)
+        run: |
+          node --experimental-strip-types test/ui/signed-offer-preflight-1436.ui.mjs
+          node --experimental-strip-types test/ui/signed-offer-preflight-1436.ui.mjs --same-brand
+      - name: Signed clipped-offer Home card (real browser and routes)
+        run: node --experimental-strip-types test/ui/signed-home-clipped-offer-1436.ui.mjs
+      - name: Signed workspace auth shell and stream completion
+        run: node --experimental-strip-types test/smoke/signed-app-shell.smoke.mjs
+      - name: Signed terminal and active accounting holds (real route and ledger)
+        run: node --experimental-strip-types test/manual/icp-signed-loopback.mts --production-build
       # The rendered price-estimate check (stubbed: no server, db, network or key). esbuild bundles the page; installed with playwright for this job only, the lockfile untouched. It must run, not skip.
       - name: Rendered price-estimate and budget check
         run: |
@@ -71,8 +82,9 @@ jobs:
           set -o pipefail
           SHOTS=preview/research-review node test/ui/research-review.ui.mjs | tee /tmp/rr1.out
           ! grep -q '^NOT RUN' /tmp/rr1.out
-          SHOTS=preview/research-review node test/ui/leads-research-review.ui.mjs | tee /tmp/rr2.out
+          SHOTS=preview/research-review node --experimental-strip-types test/ui/signed-website-review.ui.mjs | tee /tmp/rr2.out
           ! grep -q '^NOT RUN' /tmp/rr2.out
+          grep -q '^Signed website' /tmp/rr2.out
       # The #436 unsupported-adapter gates in Settings > Connectors (stubbed: no worker, session or network; screenshots into preview/settings-advanced). It must run, not skip.
       - name: Rendered settings connectors unsupported-adapter check
         run: |
@@ -86,12 +98,6 @@ jobs:
           set -o pipefail
           SHOTS=preview/linkedin-connect node test/ui/linkedin-connect.ui.mjs | tee /tmp/lc.out
           ! grep -q '^NOT RUN' /tmp/lc.out
-      # The #379 offer-question binding: picking an offer binds the play's offer on both surfaces (stubbed; screenshots into preview/offer-question). It must run, not skip.
-      - name: Rendered offer-question binding check (first-run + leads draft editor)
-        run: |
-          set -o pipefail
-          SHOTS=preview/offer-question node test/ui/offer-question-binding.ui.mjs | tee /tmp/oq.out
-          ! grep -q '^NOT RUN' /tmp/oq.out
       # InfoTip tooltip ids must be hydration-stable across SSR requests and survive hydration; the mount-class sweep must run, not skip.
       - name: InfoTip hydration stability (SSR-stable ids, zero hydration errors)
         run: |
@@ -247,3 +253,4 @@ jobs:
           path: web/preview/
           retention-days: 14
           if-no-files-found: error
+

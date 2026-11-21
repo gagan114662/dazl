@@ -1,3 +1,4 @@
+import { readQueuedWebsiteApproval } from '@/lib/scan/website-profile-provenance'
 import { after, NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { getJob } from '@/lib/scan/store'
@@ -17,6 +18,7 @@ export async function GET(req: NextRequest) {
   // dispatch semantics below, unchanged. This comment documents behavior only.
   if (req.nextUrl.searchParams.get('readonly') === '1') {
     const payload = /^[a-f0-9]{24}$/.test(jobId) ? await readScanStatus(sqliteDb(raw), user.tenantId, jobId) : null
+    if (payload && readQueuedWebsiteApproval(raw, user.tenantId, jobId)) Object.assign(payload, { website_profile_review: 'confirmed' })
     return payload ? NextResponse.json(payload) : NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
   // Legacy getJob reaps before the owner read. Preserve that behavior and runner dispatch on this SAME raw scan store.
@@ -24,5 +26,6 @@ export async function GET(req: NextRequest) {
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (job.status === 'pending' && req.nextUrl.searchParams.get('passive') !== '1') after(() => kickRunner(raw))
   const payload = await readScanStatus(sqliteDb(raw), user.tenantId, jobId)
+  if (payload && readQueuedWebsiteApproval(raw, user.tenantId, jobId)) Object.assign(payload, { website_profile_review: 'confirmed' })
   return payload ? NextResponse.json(payload) : NextResponse.json({ error: 'Not found' }, { status: 404 })
 }

@@ -15,8 +15,8 @@ import type { Db, DbLike } from '../db/client.ts'
 import { asDb } from '../db/client.ts'
 import { readSellerLine } from '../auth-db.ts'
 
-export { MAX_OFFER, isMissingSchema, cleanOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, type OfferSource, type PlayOffer } from './play-offer-text.ts'
-import { effectiveOffer, cleanOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
+export { MAX_OFFER, isMissingSchema, cleanOffer, completeOffer, statedOffer, offerOfSeller, sameOffer, effectiveOffer, carriedWorkspaceOfferConflict, type OfferSource, type PlayOffer } from './play-offer-text.ts'
+import { effectiveOffer, cleanOffer, completeOffer, isMissingSchema, tenantOffer, type PlayOffer } from './play-offer-text.ts'
 
 // The effective offer of one play of this tenant (null: no such play of this tenant).
 export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string): Promise<PlayOffer | null> {
@@ -50,26 +50,35 @@ export async function newPlayOffer(db: Db, tenantId: string, profileSells: strin
 // now (the same seller snapshot). The next run of that play reuses it, so a London CRM request run again beside a saved
 // dental profile keeps the CRM offer instead of asking again or falling back to dental. A changed profile, another
 // request or another tenant never matches: the run then resolves its offer as a new play does (and is refused on a
-// conflict). null: nothing confirmed.
+// conflict). Null means no matching confirmation; a matching incomplete confirmation is distinct,
+// so it cannot silently fall back to another offer.
+type Confirmation = { offer: string; seller: string | null } | { offer: null; incomplete: true }
 const CONFIRMED_SQL = "SELECT offer, seller FROM scan_jobs WHERE user_id = ? AND query = ? AND offer IS NOT NULL AND offer_set_at IS NOT NULL AND COALESCE(seller, '') = ? ORDER BY offer_set_at DESC, created_at DESC, insert_seq DESC LIMIT 1"
-export async function confirmedPlayOffer(db: DbLike, tenantId: string, query: string, sellerLine: string): Promise<{ offer: string; seller: string | null } | null> {
+export async function confirmedPlayOffer(db: DbLike, tenantId: string, query: string, sellerLine: string): Promise<Confirmation | null> {
   if (typeof query !== 'string' || query.trim().length < 3) return null
   let row: { offer: string | null; seller: string | null } | undefined
   try { row = await asDb(db).get<{ offer: string | null; seller: string | null }>(CONFIRMED_SQL, [tenantId, query.trim(), (sellerLine ?? '').trim().slice(0, 300)]) } catch (e) { if (isMissingSchema(e)) return null; throw e }
-  const offer = cleanOffer(row?.offer)
-  return row && offer.length >= 3 ? { offer, seller: row.seller } : null
+  const offer = completeOffer(row?.offer)
+  return row ? (offer ? { offer, seller: row.seller } : { offer: null, incomplete: true }) : null
 }
-// The same, for a scheduled run of a saved play (weekly watch, monitor), which has no request body: matched against the
-// tenant's business profile as it is now (the seller snapshot POST /api/scan records).
-export async function scheduledPlayOffer(db: Db, tenantId: string, query: string): Promise<{ offer: string; seller: string | null } | null> {
+// A scheduler cannot ask the owner to confirm. The latest invalid choice for the exact tenant and query is
+// a hold even if Settings changed afterward. A valid choice from a different seller is still not reusable.
+const LATEST_CONFIRMED_SQL = "SELECT offer FROM scan_jobs WHERE user_id = ? AND query = ? AND offer IS NOT NULL AND offer_set_at IS NOT NULL ORDER BY offer_set_at DESC, created_at DESC, insert_seq DESC LIMIT 1"
+export async function scheduledPlayOffer(db: Db, tenantId: string, query: string): Promise<Confirmation | null> {
+  if (typeof query !== 'string' || query.trim().length < 3) return null
   let line = ''
-  try { line = await readSellerLine(db, tenantId) } catch (e) { if (!isMissingSchema(e)) throw e /* else: no profile table */ }
+  try {
+    const latest = await db.get<{ offer: string }>(LATEST_CONFIRMED_SQL, [tenantId, query.trim()])
+    if (!latest) return null
+    if (!completeOffer(latest.offer)) return { offer: null, incomplete: true }
+    line = await readSellerLine(db, tenantId)
+  } catch (e) { if (!isMissingSchema(e)) throw e /* else: no profile table or no per-play offer columns yet */ }
   return confirmedPlayOffer(db, tenantId, query, line)
 }
 
 // Sets the offer of one play of this tenant, and nothing else: the profile and every other play keep theirs.
 export async function setPlayOffer(db: Db, tenantId: string, jobId: string, offer: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
-  const o = cleanOffer(offer)
-  if (o.length < 3) return false
+  const o = completeOffer(offer)
+  if (!o) return false
   return (await db.run('UPDATE scan_jobs SET offer = ?, offer_set_at = ? WHERE id = ? AND user_id = ?', [o, now, jobId, tenantId])).changes === 1
 }

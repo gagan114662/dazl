@@ -320,3 +320,16 @@ test('explicit own-key native search opts into a soft reservation preview; legac
   assert.equal(trial.rows.some(r => r.id === 'anthropic_native_web_search'), false)
   assert.equal(native.rows.some(r => r.provider === 'TinyFish'), false)
 })
+
+test('company-first estimate covers the widened guarded search reservation and every allowed call', async () => {
+  const { claudeSearchEstimate, CLAUDE_COMPANY_FIRST_MAX_CALLS } = await import('../lib/llm/claude-web-search-estimate.ts')
+  const legacy = claudeSearchEstimate(8_000)
+  const strict = claudeSearchEstimate(8_000, 'company_first')
+  assert.ok(strict.estimatedUsd > legacy.estimatedUsd)
+  const result = estimateRun({ budget: { max_usd: 3.33, paid_fallback: false, credit_enrichment: false }, payer: 'you', companyFirst: true, env: {} })
+  const search = result.rows.find(r => r.id === 'anthropic_native_web_search')
+  assert.equal(search?.usd?.max, strict.estimatedUsd * CLAUDE_COMPANY_FIRST_MAX_CALLS)
+  assert.equal(search?.units.max, strict.maxSearches * CLAUDE_COMPANY_FIRST_MAX_CALLS)
+  assert.match(search?.note ?? '', /50,000/)
+  assert.equal(result.cap.max_usd, 3.33)
+})

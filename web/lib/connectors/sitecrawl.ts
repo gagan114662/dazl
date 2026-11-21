@@ -1,3 +1,4 @@
+import { COMPANY_FIRST_ROLE_LABEL, recordCompanyFirstPublishedDisplay, withdrawCompanyFirstPublishedDisplay } from '../people/company-first-published-display.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { strictOwnContactCards } from './strict-own-contacts.ts'
 import { currentReviewedDomain, domainRelationship } from '../signals/domain-basis.ts'
@@ -1268,14 +1269,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
-    let ownedJob: { run_budget: string | null } | undefined
+    let ownedJob: { run_budget: string | null; attempts: number } | undefined
     try {
-      ownedJob = db.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as typeof ownedJob
+      ownedJob = db.prepare('SELECT run_budget, attempts FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as typeof ownedJob
     } catch (error) {
       // A legacy database without this column cannot contain a flagged job.
       // Keep its ordinary crawl, but do not treat any other read error as unflagged.
-      if (!(error instanceof Error) || !/^no such column: run_budget$/i.test(error.message)) throw error
-      if (db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId)) ownedJob = { run_budget: null }
+      if (!(error instanceof Error) || !/^no such column: (?:run_budget|attempts)$/i.test(error.message)) throw error
+      if (db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId)) ownedJob = { run_budget: null, attempts: -1 }
     }
     if (!ownedJob) return
     const companyFirstContacts = !!deps.companyFirstContacts || hasCompanyFirstBudget(ownedJob.run_budget)
@@ -1423,6 +1424,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const readLead = async (l: (typeof leads)[number]): Promise<void> => {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       if (companyFirstContacts) {
+        await withdrawCompanyFirstPublishedDisplay(db, tenantId, l.id)
         // A selected refresh withdraws stale role/mail proof even when this
         // visit is withheld or cannot re-read the company page.
         db.prepare("DELETE FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'email', 'phone', 'contact')").run(tenantId, l.id)
@@ -1666,7 +1668,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           const card = exact[0]
           const observedElsewhere = [...strictPages.values()].flatMap(p => p.cards).filter(c => c !== card)
           if (observedElsewhere.some(c => cardKey(c.name) === cardKey(card.name) && cardKey(c.quote) !== cardKey(card.quote))) continue
-          const email = card.email && usEvidence(r.homeText, where).us && !observedElsewhere.some(c =>
+          const email = card.email && !observedElsewhere.some(c =>
             (c.email?.toLowerCase() === card.email?.toLowerCase() && cardKey(c.name) !== cardKey(card.name)) ||
             (cardKey(c.name) === cardKey(card.name) && !!c.email && c.email.toLowerCase() !== card.email?.toLowerCase())) ? card.email : null
           strictBuyers.push({ person: f.value, quote: card.quote, name: card.name, email, source: f.url, at: page.at })
@@ -1677,8 +1679,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           const buyer = strictBuyers[0]
           const dated = { source_url: buyer.source, source_date: new Date(buyer.at * 1000).toISOString().slice(0, 10), retrieved_at: buyer.at }
           addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: buyer.person,
-            label: 'Title on the company page: ' + buyer.quote, confidence: null, ...dated }); n++; named++
-          if (buyer.email) {
+            label: COMPANY_FIRST_ROLE_LABEL + buyer.quote, confidence: null, ...dated }); n++; named++
+          if (buyer.email && hasCompanyFirstBudget(ownedJob.run_budget)) {
+            await recordCompanyFirstPublishedDisplay(db, tenantId, l.id, jobId, ownedJob.attempts, { domain: site,
+              person: buyer.person, address: buyer.email, source_url: buyer.source, role_quote: buyer.quote, observed_at: buyer.at })
+          }
+          // Leave the independent pre-existing sender eligibility unchanged.
+          if (buyer.email && usEvidence(r.homeText, where).us) {
             addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: buyer.email,
               label: contextLabel({ excerpt: buyer.name + ' | ' + buyer.email, source_url: buyer.source }), confidence: null, ...dated }); n++
           }

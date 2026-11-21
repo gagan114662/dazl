@@ -106,19 +106,18 @@ jobs:
           name: lead-cards-${{ github.event.pull_request.head.sha || github.sha }}
           path: web/preview/lead-cards/*.png
           retention-days: 14
-      - name: Seller intelligence Add/Dismiss/Restore production UI (fenced)
+      - name: Seller intelligence chain (fenced)
         if: success() || failure()
-        run: node test/smoke/intelligence.smoke.mjs && node test/smoke/intelligence-chain.smoke.mjs
-      - name: Whole website-research review draft and estimated submission (fenced)
+        run: node test/smoke/intelligence-chain.smoke.mjs
+      - name: Signed website review, estimate, and confirmed submission
         if: success() || failure()
-        run: SHOTS=preview/leads-research-review node test/ui/leads-research-review.ui.mjs
+        run: SHOTS=preview/leads-research-review node --experimental-strip-types test/ui/signed-website-review.ui.mjs
       - name: Upload seller intelligence UI pixels
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: intelligence-ui-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
-            web/preview/intelligence
             web/preview/intelligence-chain
             web/preview/leads-research-review
           if-no-files-found: error

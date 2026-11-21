@@ -1,3 +1,5 @@
+import { getMasterKey } from '@/lib/secrets'
+import { recordQueuedWebsiteApproval, verifyWebsiteApproval, WEBSITE_PROFILE_REVIEW_MODE } from '@/lib/scan/website-profile-provenance'
 import { decisionRows } from '@/lib/scan/intelligence'
 import { captureSellerDecisions } from '@/lib/scan/store'
 import { randomBytes } from 'node:crypto'
@@ -29,7 +31,7 @@ import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
-import { cleanOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -48,6 +50,9 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   // Preferred input: free text, plus an optional profile the user already reviewed or edited.
   const query = cleanText(body?.query, MAX_QUERY)
+  const websiteReview = body?.mode === WEBSITE_PROFILE_REVIEW_MODE
+  if (websiteReview !== (body?.website_approval_receipt !== undefined)) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
+
   // #917: a supplied profile is the person's explicit criteria. Anything normalizeIcp would drop or cut (a 7th exclusion,
   // a 161-char item, a 301-char summary) is refused here, with field/item detail, before any offer read, reservation,
   // trial admission or queue insert - never silently narrowed into a wider scan.
@@ -71,12 +76,16 @@ export async function POST(req: NextRequest) {
   // refused until the caller chooses which one this play is for, before anything is queued or counted.
   const seller = await readSellerLine(await getDb(), user.tenantId)
   const offerSupplied = body?.offer !== undefined && body?.offer !== null
-  let offer = offerSupplied ? cleanOffer(body.offer) : ''
+  let offer = offerSupplied ? (completeOffer(body.offer) ?? '') : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   // The next run of the same play (#349): the offer this tenant already confirmed for this exact request, while the
   // profile says what it says now, is this run's offer too. Nothing confirmed: the checks below, unchanged.
   if (!offerSupplied && query.length >= 3) {
-    try { offer = (await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller))?.offer ?? '' } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
+    try {
+      const confirmed = await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller)
+      if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
+      offer = confirmed?.offer ?? ''
+    } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
   }
   if (query.length >= 3 && !offer) {
     // the same inputs drafting reads later (draftOffer: this play's seller snapshot, then the tenant's Memory positioning or
@@ -84,7 +93,8 @@ export async function POST(req: NextRequest) {
     let tenant: string | null
     try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
     const e = effectiveOffer({ seller, query }, tenant)
-    if (e.conflict) return NextResponse.json({ error: 'offer_conflict', stated: e.conflict.stated, saved: e.conflict.recorded, ...(e.conflict.ambiguous ? { ambiguous: true } : {}), ...(e.conflict.withdrawn ? { withdrawn: e.conflict.withdrawn } : {}) }, { status: 409 })
+    const conflict = e.conflict ?? (icp && body?.reviewed === false ? carriedWorkspaceOfferConflict(query, user.business_name, seller, e.offer) : null)
+    if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated, saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}), ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
   }
 
   // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's
@@ -118,6 +128,18 @@ export async function POST(req: NextRequest) {
   const sized = effective ? budgetedIcp(effective) : null
   if (sized && !sized.ok) return NextResponse.json(sized.reason === 'holds_too_large' ? { error: 'holds_too_large', message: 'This profile leaves no room to keep the decisions you have not finished reviewing, so nothing was saved or started. Shorten the profile a little.' } : { error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
 
+  let websiteApproval: ReturnType<typeof verifyWebsiteApproval> = null
+  if (body?.website_approval_receipt !== undefined) {
+    if (body?.reviewed === true && offerSupplied && offer && query.length >= 3 && sized?.ok) {
+      try { websiteApproval = verifyWebsiteApproval(getMasterKey(), user, body.website_approval_receipt, { query, offer, icpJson: sized.json }) }
+      catch (error) {
+        captureError(error, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
+        return NextResponse.json({ error: 'website_review_unavailable' }, { status: 503 })
+      }
+    }
+    if (!websiteApproval) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
+  }
+
   // Optional per-run cost controls. Validated BEFORE anything is queued or counted: an explicitly supplied budget that is not
   // strictly valid is rejected, never ignored, so a caller expecting a restricted run is never widened into a full one.
   const budgetSupplied = body !== null && typeof body === 'object' && 'budget' in body
@@ -127,7 +149,7 @@ export async function POST(req: NextRequest) {
   const nativeSearch = isFirst5NativeSearchRequest(body?.mode, body?.budget)
   const companyFirst = companyFirstDiscoveryEnabled({ user_id: user.tenantId, funded_by: 'user', query }, process.env.DAZL_COMPANY_FIRST_TENANT_ID)
   const claudeOnly = !companyFirst && (nativeSearch || isClaudeOnlyRequestMode(body?.mode))
-  if (body?.mode !== undefined && !first5) return NextResponse.json({ error: 'unknown_mode' }, { status: 400 })
+  if (body?.mode !== undefined && !first5 && !websiteReview) return NextResponse.json({ error: 'unknown_mode' }, { status: 400 })
   if (first5 && budgetSupplied && !nativeSearch) return NextResponse.json({ error: 'invalid_budget', detail: 'mode first5 only accepts the explicit Claude Web Search option' }, { status: 400 })
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)
   if (!nb.ok) return NextResponse.json({ error: 'invalid_budget', detail: nb.error }, { status: 400 })
@@ -180,9 +202,10 @@ export async function POST(req: NextRequest) {
   // refused with what to change (402 over_budget); a client that confirmed an estimate sends its ack, and a different current
   // estimate (limit, mode or key changed since) is returned for a fresh confirmation (409 estimate_changed). No paid call happens here.
   const estDb = await getDb()
-  const est = await estimateForBody(body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', model: funded === 'user' ? await keyedModel(estDb, user.tenantId) : null, enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
-  if ((claudeOnly || companyFirst) && !est.ok) return NextResponse.json({ error: est.error, detail: est.detail, message: est.message }, { status: est.status })
+  const est = await estimateForBody(websiteReview ? { ...body, mode: undefined } : body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', model: funded === 'user' ? await keyedModel(estDb, user.tenantId) : null, enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
+  if ((claudeOnly || companyFirst || websiteApproval) && !est.ok) return NextResponse.json({ error: est.error, detail: est.detail, message: est.message }, { status: est.status })
   if (est.ok) {
+    if (websiteApproval && typeof body?.estimate_ack !== 'string') return NextResponse.json({ error: 'estimate_changed', estimate: est.estimate }, { status: 409 })
     if (est.estimate.verdict.reason === 'budget_unknown') return NextResponse.json({ error: 'budget_unknown', message: est.estimate.verdict.message, estimate: est.estimate }, { status: 503, headers: { 'Retry-After': '30' } })
     if (est.estimate.verdict.reason === 'accounting_unsettled') return NextResponse.json({ error: 'accounting_unsettled', message: est.estimate.verdict.message, estimate: est.estimate }, { status: 409 })
     if (est.estimate.verdict.reason === 'model_unpriced') return NextResponse.json({ error: 'model_unpriced', message: est.estimate.verdict.message, change: est.estimate.verdict.change, estimate: est.estimate }, { status: 422 })
@@ -236,6 +259,10 @@ export async function POST(req: NextRequest) {
       if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
       if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, runBudget)
+      if (websiteApproval && !recordQueuedWebsiteApproval(db, websiteApproval, jid)) {
+        refused = NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
+        throw new AdmissionRefused()
+      }
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
       if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))
       // Kept with the job so the finished scan can show actual against what was confirmed.

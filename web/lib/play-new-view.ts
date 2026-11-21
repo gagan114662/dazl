@@ -59,6 +59,7 @@ export function runNowMessage(status: number, body: RunNowAnswer, timeZone?: str
     case 'runner_unavailable': return { ok: false, text: "Plays can't be run on demand right now. Its scheduled run still happens." }
     case 'quota_exceeded': return { ok: false, text: "This month's scans are used up, so it can't run now." }
     case 'scan_active': return { ok: false, text: 'A scan is already running or finishing. Try again when it ends.' }
+    case 'offer_conflict': return { ok: false, text: 'Confirm what this play sells before running it again.' }
     case 'too_soon': return { ok: false, text: body && 'retry_at' in body && typeof body.retry_at === 'number' ? `This play just ran. You can run it again after ${whenOf(body.retry_at, timeZone)}.` : 'This play just ran. Try again in an hour.' }
     case 'not_found': return { ok: false, text: 'This play no longer exists. Refresh the page.' }
     case 'too_many': return { ok: false, text: 'Too many runs started in the last hour. Try again later.' }

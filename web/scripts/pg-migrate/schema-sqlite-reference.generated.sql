@@ -139,6 +139,21 @@ CREATE TABLE company_events (
       UNIQUE (tenant_id, company_key, event_type, source_url)
     );
 
+CREATE TABLE company_first_published_email_display (
+   tenant_id TEXT NOT NULL,
+   lead_id TEXT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+   scan_job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
+   attempt INTEGER NOT NULL CHECK (attempt >= 0),
+   version INTEGER NOT NULL CHECK (version = 1),
+   domain TEXT NOT NULL CHECK (length(domain) <= 253),
+   person TEXT NOT NULL CHECK (length(person) <= 120),
+   address TEXT NOT NULL CHECK (length(address) <= 254),
+   source_url TEXT NOT NULL CHECK (length(source_url) <= 500),
+   role_quote TEXT NOT NULL CHECK (length(role_quote) <= 60),
+   observed_at INTEGER NOT NULL CHECK (observed_at > 0),
+   PRIMARY KEY (tenant_id, lead_id)
+ );
+
 CREATE TABLE connector_audit (
       id         TEXT PRIMARY KEY,
       tenant_id  TEXT NOT NULL,
@@ -1512,6 +1527,8 @@ CREATE TRIGGER tomb_commenter_rows BEFORE INSERT ON commenter_rows BEGIN SELECT 
 
 CREATE TRIGGER tomb_company_events BEFORE INSERT ON company_events BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_company_first_published_email_display BEFORE INSERT ON company_first_published_email_display BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_connector_audit BEFORE INSERT ON connector_audit BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_connector_claims BEFORE INSERT ON connector_claims BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1715,6 +1732,8 @@ CREATE TRIGGER tomb_upd_commenter_batches BEFORE UPDATE OF user_id ON commenter_
 CREATE TRIGGER tomb_upd_commenter_rows BEFORE UPDATE OF batch_id ON commenter_rows BEGIN SELECT (SELECT user_id FROM commenter_batches WHERE id = NEW.batch_id); SELECT (SELECT user_id FROM commenter_batches WHERE id = OLD.batch_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.batch_id IS NOT OLD.batch_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = NEW.batch_id) OR EXISTS (SELECT 1 FROM commenter_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.batch_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'commenter_batches' AND key = OLD.batch_id) OR EXISTS (SELECT 1 FROM commenter_batches p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.batch_id))); END;
 
 CREATE TRIGGER tomb_upd_company_events BEFORE UPDATE OF tenant_id ON company_events BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_company_first_published_email_display BEFORE UPDATE OF tenant_id ON company_first_published_email_display BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_connector_audit BEFORE UPDATE OF tenant_id ON connector_audit BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

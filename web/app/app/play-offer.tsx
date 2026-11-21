@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { displayablePlayOffer } from './play-offer-display'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 
 // What THIS play sells (#349; lib/scan/play-offer.ts), shown wherever the play is: Home, its campaign page and its
@@ -19,6 +20,7 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
   const [msg, setMsg] = useState('')
   if (offer === undefined) return null
   async function choose(value: string) {
+    if (!displayablePlayOffer(value)) return
     setBusy(true); setMsg('')
     const r = await fetch(`/api/campaigns/${jobId}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ offer: value }) }).catch(() => null)
     const j = await r?.json().catch(() => ({}))
@@ -30,13 +32,26 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
   const editor = <form className="mt-2 flex flex-col sm:flex-row gap-2" onSubmit={e => { e.preventDefault(); void choose(text) }}>
     <input className="field flex-1" aria-label="What this play sells" maxLength={150} value={text} onChange={e => setText(e.target.value)} placeholder="e.g. CRM setup and outbound consulting" data-testid="play-offer-input" />
     <div className="flex gap-2">
-      <button className="btn-primary btn-sm" disabled={busy || text.trim().length < 3} data-testid="play-offer-save">{busy ? 'Saving...' : 'Save for this play'}</button>
+      <button className="btn-primary btn-sm" disabled={busy || text.trim().length < 3 || !displayablePlayOffer(text)} data-testid="play-offer-save">{busy ? 'Saving...' : 'Save for this play'}</button>
       <button type="button" className="btn-ghost btn-sm" onClick={() => setEditing(false)}>Cancel</button>
     </div>
   </form>
   if (offer === null) return null
   if (offer.conflict) {
     const c = offer.conflict
+    const stated = displayablePlayOffer(c.stated)
+    const recorded = displayablePlayOffer(c.recorded)
+    const withdrawn = displayablePlayOffer(c.withdrawn)
+    if ((c.stated && !stated) || !recorded || (c.withdrawn && !withdrawn)) {
+      return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-conflict">
+        <p className="font-semibold">One of the offers for this play is incomplete.</p>
+        <p className="mt-1 text-[var(--ink-2)]">Confirm what this play sells before drafting. Only this play changes.</p>
+        {stated && <button className="btn-primary btn-sm mt-2" disabled={busy} onClick={() => void choose(stated)} data-testid="play-offer-use-stated">Use: {stated}</button>}
+        {!editing && <button className="btn-ghost btn-sm mt-2" onClick={() => { setText(''); setEditing(true) }} data-testid="play-offer-write">Write what this play sells</button>}
+        {editing && editor}
+        {msg && <p className="mt-1 text-xs" role="status">{msg}</p>}
+      </div>
+    }
     return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="play-offer-conflict">
       <p className="font-semibold">Which offer is this play for?</p>
       {c.stated
@@ -52,12 +67,14 @@ export function PlayOfferCard({ jobId, offer, onChange, compact }: { jobId: stri
       {msg && <p className="mt-1 text-xs" role="status">{msg}</p>}
     </div>
   }
+  const readable = displayablePlayOffer(offer.offer)
+  const incomplete = !!offer.offer && !readable
   return <div className={compact ? 'text-sm' : 'rounded-xl bg-[#f6f0ea] px-4 py-3 text-sm'} data-testid="play-offer">
     <div className="flex flex-wrap items-baseline gap-x-2">
       <span className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-3)]">This play sells</span>
-      <span className="font-medium" data-testid="play-offer-text">{offer.offer ?? 'Not set yet'}</span>
-      {offer.offer && <span className="text-xs text-[var(--ink-3)]">({SOURCE[offer.source] ?? offer.source})</span>}
-      {!editing && <button type="button" className="text-xs underline text-[var(--ink-2)]" onClick={() => { setText(offer.offer ?? ''); setEditing(true) }} data-testid="play-offer-change">Change</button>}
+      <span className="font-medium" data-testid="play-offer-text">{readable ?? (incomplete ? 'Saved offer is incomplete' : 'Not set yet')}</span>
+      {readable && <span className="text-xs text-[var(--ink-3)]">({SOURCE[offer.source] ?? offer.source})</span>}
+      {!editing && <button type="button" className="text-xs underline text-[var(--ink-2)]" onClick={() => { setText(readable ?? ''); setEditing(true) }} data-testid="play-offer-change">{incomplete ? 'Confirm offer' : 'Change'}</button>}
     </div>
     {editing && editor}
     {msg && <p className="mt-1 text-xs" role="status">{msg}</p>}

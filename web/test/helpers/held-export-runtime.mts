@@ -74,25 +74,63 @@ test('CSV scoped and workspace exports exclude held marked company-first; ready 
 })
 
 
-test('capped CSV reports a held row used part of the bounded candidate window',async()=>{
+function crowdedExport(heldCount:number){
   const db=new Database(':memory:');migrateScan(db);migrateConnectors(db);setScanDb(db);setUser({id:'A',business_name:'Fixture'})
-  try {
-    const marked=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
-    const ordinary=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
-    db.prepare("UPDATE scan_jobs SET status='running',attempts=1 WHERE id IN (?,?)").run(marked,ordinary)
-    db.prepare('UPDATE scan_jobs SET run_budget=? WHERE id=?').run(markCompanyFirstBudget(null),marked)
-    const insert=db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,created_at) VALUES(?,?,?,'event','https://fixture.example',?)")
-    db.transaction(()=>{
-      insert.run(hex(),marked,'Held Not Exported',10_000)
-      for(let i=1;i<=5000;i++)insert.run(hex(),ordinary,'Ordinary'+i,i)
-    })()
-    const r=await exportGET(get('/api/leads/export'));assert.equal(r.status,200)
-    assert.equal(r.headers.get('x-dazl-export-truncated'),'true')
-    assert.equal(r.headers.get('x-dazl-export-candidate-limit'),'5000')
-    const rows=parseCsv(await r.text())
-    assert.equal(rows.length,4999)
-    assert.equal(rows.some(x=>x.Company==='Held Not Exported'||x.Company==='Ordinary1'),false)
-  } finally {db.close()}
+  const job=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+  const other=createJob(db,'B',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+  db.prepare("UPDATE scan_jobs SET status='running',attempts=1 WHERE id IN (?,?)").run(job,other)
+  db.prepare('UPDATE scan_jobs SET run_budget=? WHERE id=?').run(markCompanyFirstBudget(null),job)
+  const t=Math.floor(Date.now()/1000),day=new Date((t-86400)*1000).toISOString().slice(0,10),source='https://fixture.example/evidence'
+  const insert=db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,created_at) VALUES(?,?,?,'event',?,?)")
+  const held=Array.from({length:heldCount},hex),ready=hex(),older=hex(),foreign=hex()
+  db.transaction(()=>{
+    for(const id of held)insert.run(id,job,'Held Not Exported',source,t)
+    // The first result ties the held rows' timestamp; insert_seq must decide
+    // its stable place. The other is older by date.
+    insert.run(ready,job,'Tied Proven Result',source,t)
+    insert.run(older,job,'Older Proven Result',source,t-60)
+    insert.run(foreign,other,'Foreign Result',source,t)
+  })()
+  for(const id of [ready,older]){
+    db.prepare("UPDATE leads SET company_domain='fixture.example',confidence=80,event_date=?,event_date_proof='page_bound',evidence_excerpt='opened a site',fit=4 WHERE id=?").run(day,id)
+    for(const [connector,kind,value,label] of [
+      ['sitecrawl','domain','fixture.example|evidence_own_domain','domain-basis-v1:evidence_own_domain'],
+      ['sitecrawl','person','Dana Lee, Owner','owner'],['sitecrawl','email','ready@fixture.example','printed on site'],
+      ['scan:actionable','actionability','Actionable: confirmed','Dana Lee, Owner'],
+    ])addEnrichment(db,'A',id,{connector,kind,value,label,source_url:source,confidence:null,source_date:day,retrieved_at:t})
+  }
+  assert.deepEqual(recordTimingProof(db,{id:job,user_id:'A'}),{proven:2,held:0})
+  return {db,job,held,foreign,ready}
+}
+
+test('keyset CSV walks past over 5,000 held, then exports same-time and older proven rows in order',async()=>{
+  const {db,job}=crowdedExport(5001)
+  try{
+    const res=await exportGET(get('/api/leads/export?job_id='+job))
+    assert.equal(res.status,200)
+    assert.deepEqual(parseCsv(await res.text()).map(r=>r.Company),['Tied Proven Result','Older Proven Result'])
+    assert.equal(res.headers.get('x-dazl-export-truncated'),null)
+  }finally{db.close()}
+})
+
+test('over work bound yields explicit owner-scoped cursor and resumes without gaps or duplicates',async()=>{
+  const {db,job,held,foreign}=crowdedExport(10001)
+  try{
+    const path='/api/leads/export?job_id='+job
+    const res=await exportGET(get(path))
+    assert.equal(res.status,200)
+    assert.deepEqual(parseCsv(await res.text()),[])
+    assert.equal(res.headers.get('x-dazl-export-truncated'),'true')
+    assert.equal(res.headers.get('x-dazl-export-candidate-limit'),'10000')
+    assert.equal(res.headers.get('x-dazl-export-next-cursor'),held[9999])
+    const link=res.headers.get('link')
+    assert.equal(link,'<'+path+'&cursor='+held[9999]+'>; rel="next"')
+    const next=await exportGET(get(path+'&cursor='+held[9999]))
+    assert.equal(next.status,200)
+    assert.deepEqual(parseCsv(await next.text()).map(r=>r.Company),['Tied Proven Result','Older Proven Result'])
+    assert.equal(next.headers.get('x-dazl-export-next-cursor'),null)
+    assert.equal((await exportGET(get(path+'&cursor='+foreign))).status,409)
+  }finally{db.close()}
 })
 
 test('unsupported marked PostgreSQL proof returns 503, never a partial successful CSV',async()=>{
@@ -115,4 +153,32 @@ test('unsupported marked PostgreSQL proof returns 503, never a partial successfu
     assert.equal(all.status,503)
     assert.match((await all.json()).error,/No CSV was generated/)
   } finally {db.close()}
+})
+
+test('hitting CSV row limit inside final fetched batch resumes after last examined, excluding held rows',async()=>{
+  const {db,foreign,ready}=crowdedExport(1)
+  try {
+    const ordinary=createJob(db,'A',{business_name:'Fixture',industry:'Services',location:'Anywhere'})
+    db.prepare("UPDATE scan_jobs SET status='running',attempts=1 WHERE id=?").run(ordinary)
+    const put=db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,created_at) VALUES(?,?,?,'event','https://fixture.example',?)")
+    const created=Math.floor(Date.now()/1000)+60
+    db.transaction(()=>{for(let i=0;i<4999;i++)put.run(hex(),ordinary,'Ordinary '+i,created)})()
+    const path='/api/leads/export?include_fixtures=1'
+    const first=await exportGET(get(path))
+    assert.equal(first.status,200)
+    const names=parseCsv(await first.text()).map(r=>r.Company)
+    assert.equal(names.length,5000)
+    assert.equal(names.at(-1),'Tied Proven Result')
+    assert.ok(!names.includes('Held Not Exported'))
+    assert.equal(first.headers.get('x-dazl-export-next-cursor'),ready)
+    assert.equal(first.headers.get('x-dazl-export-truncated'),'true')
+    assert.equal(first.headers.get('link'),'<'+path+'&cursor='+ready+'>; rel="next"')
+    const next=await exportGET(get(path+'&cursor='+ready))
+    assert.equal(next.status,200)
+    assert.deepEqual(parseCsv(await next.text()).map(r=>r.Company),['Older Proven Result'])
+    assert.equal(next.headers.get('x-dazl-export-next-cursor'),null)
+    assert.equal((await exportGET(get(path+'&cursor='+foreign))).status,409)
+    setUser({id:'B',business_name:'Fixture'})
+    assert.equal((await exportGET(get(path+'&cursor='+ready))).status,409)
+  } finally { db.close() }
 })

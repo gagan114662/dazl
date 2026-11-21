@@ -1,6 +1,7 @@
 // Engine-neutral production read. The current HTTP route supplies sqliteDb on its SAME raw scan handle: this does not
 // select DATABASE_URL, port the gate writer, or change runner/reaper behavior. Parent #920 requires further dependencies.
 import type { Db } from '../db/client.ts'
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { FIRST5_TARGET, first5LeadSql, first5LeadOf, first5Mode, first5Of, type LeadRow } from './first5.ts'
 
 export async function verifiedLeads(db: Db, userId: string, jobId: string, limit = FIRST5_TARGET) {
@@ -15,7 +16,8 @@ export async function verifiedLeads(db: Db, userId: string, jobId: string, limit
 }
 export async function isFirst5(db: Db, userId: string, jobId: string): Promise<boolean> {
   const row = await db.get<{ run_budget: string | null }>('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, userId])
-  return first5Mode(row?.run_budget)
+  // Company-first results are exposed only through the normal verified Leads/Campaign views.
+  return !hasCompanyFirstBudget(row?.run_budget) && first5Mode(row?.run_budget)
 }
 export async function readFirst5(db: Db, userId: string, jobId: string, input: Omit<Parameters<typeof first5Of>[0], 'leads'>) {
   if (!await isFirst5(db, userId, jobId)) return undefined
