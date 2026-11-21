@@ -71,7 +71,7 @@ function nonUkLondon(q: string): boolean {
       // Only a capitalised one that does not run into a name or number: "e.g.", "etc.", "St. Albans", "Inc. 500" are not qualifiers.
       if (n === 1 && qualified && /^\p{Lu}[\p{L}.]{1,5}$/u.test(raw) && raw.endsWith('.') && !/^[\p{Lu}\p{N}]/u.test(words[1] ?? '')) {
         const c = resolveSegment(seg, true), r = regionOf(seg), bare = seg.replace(/\./g, '').toLowerCase()
-        if (c ? c !== 'GB' : r ? countryOfRegion(r) !== 'GB' : !UKM.slice(3, -1).split('|').some(w => w.replace(/\\/g, '').startsWith(bare))) return true
+        if (c ? !ukMarker(c) : r ? !ukMarker(countryOfRegion(r)) : !UKM.slice(3, -1).split('|').some(w => w.replace(/\\/g, '').startsWith(bare))) return true
         continue
       }
       if (seg.length <= 2 && !(qualified ? /^[A-Z]{2}$/.test(seg) || closes(n) : /^[A-Z]{2}$/.test(seg) && closes(n))) continue
@@ -79,8 +79,8 @@ function nonUkLondon(q: string): boolean {
       const country = resolveSegment(seg, true), region = regionOf(seg)
       // a country CODE ("US", "UAE") qualifies London only when its clause ends there: in "London, US startups" it describes the startups
       if (country && seg.length <= 3 && !closes(n)) continue
-      if (country) { if (country !== 'GB') return true; continue }
-      if (region) { if (countryOfRegion(region) !== 'GB') return true; continue }
+      if (country) { if (!ukMarker(seg) && !ukMarker(country)) return true; continue }
+      if (region) { if (!ukMarker(seg) && !ukMarker(countryOfRegion(region))) return true; continue }
     }
   }
   return false
@@ -88,14 +88,17 @@ function nonUkLondon(q: string): boolean {
 // #1205: a city that shares its name with a built-in city place (London) is that other city only when a posting names its own state,
 // province or country, and never for a remote posting: "London EC2A 2BB", "City of London", "Remote - London" are the UK's London.
 const namesakeOfBuiltIn = (city: string): boolean => CITY_PLACES.some(c => norm(c.name) === norm(city))
-const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; country: string; shared?: true; ok: (l: string) => boolean }[] = [
-  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', country: 'GB', shared: true, ok: l => LONDON_OK.test(l) },
+const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; shared?: true; ok: (l: string) => boolean }[] = [
+  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', shared: true, ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
-  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', country: 'US', ok: l => NYC_OK.test(l) },
+  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
 ]
 const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
   { ask: /\b(?:united kingdom|great britain|england|uk)\b/i, name: 'United Kingdom', ok: l => /\b(?:united kingdom|england|scotland|wales|great britain|u\.k\.|uk|gb)\b/i.test(l) },
 ]
+// #1205: a place text (a qualifier, or a country code such as "GB") names the UK when the built-in UK places read it as theirs: the UK London's own
+// markers ("London, UK", "London, GB") or the United Kingdom place ("Scotland", "Wales"). No country is spelled here: the built-in places define it.
+function ukMarker(t: string): boolean { return LONDON_OK.test(`London, ${t}`) || COUNTRY_PLACES.some(c => c.ok(t)) }
 export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
 const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
 // Any other "<City>, <Country>" in the request (Toronto, Canada / toronto canada / Cambridge, UK / Gurugram India): a posting is in the place when its location names the city as a whole word, in any
@@ -129,7 +132,7 @@ export function genericPlace(query: string): Place | null {
       if (!l) return false
       if (!re.test(norm(l))) return false
       const named = countriesIn(l); if (!(named.length === 0 || named.every(c => c === country))) return false
-      if (country !== 'GB' && LONDON_OK.test(l)) return false // #1205: a UK London location ("Greater London", a bare "London") is not a London elsewhere
+      if (!ukMarker(country) && LONDON_OK.test(l)) return false // #1205: a UK London location ("Greater London", a bare "London") is not a London elsewhere
       // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK); a city read from
       // its province ("London, Alberta") is in that province, so a posting naming another one ("London, ON") is not it
       const regions = regionsIn(l)
@@ -220,7 +223,8 @@ export function profilePlace(where: string, country?: string | null): { text: st
   // UK's London (no place: the job boards name why). Only the bare name of a city other places share (`shared`): "London, UK" or "New York City"
   // name their place whatever the profile's country, and a London written with its province or state resolves above as that London.
   const builtIn = direct && CITY_PLACES.find(c => c.name === direct.name && c.ask.test(`in ${where}`))
-  if (builtIn?.shared && own && builtIn.country !== own && norm(where) === norm(builtIn.name)) return null
+  // a profile country that is set but cannot be read ("Irelnd") fails closed too: only an unset or a recognised home country keeps the bare name
+  if (builtIn?.shared && country?.trim() && !(own && builtIn.ok(`${builtIn.name}, ${own}`)) && norm(where) === norm(builtIn.name)) return null // its own country's code is one of its locations ("London, GB")
   if (direct) return { text: where.trim(), name: direct.name }
   if (!isUs) return null
   const b = bareUsCity(where); if (!b) return null

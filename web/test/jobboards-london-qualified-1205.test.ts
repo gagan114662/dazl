@@ -97,10 +97,10 @@ for (const where of ['London (Ontario)', 'London, Ky.']) {
 }
 
 test('#1205 a profile in another country never takes the UK London for a bare "London"; a UK or unset profile keeps it', () => {
-  for (const c of ['CA', 'Canada', 'US', 'United States', 'IE', 'DE', 'AU', 'IN', 'SG', 'Ireland']) assert.equal(profilePlace('London', c), null, `a ${c} profile's bare London is not the UK's`)
+  for (const c of ['CA', 'Canada', 'US', 'United States', 'IE', 'DE', 'AU', 'IN', 'SG', 'Ireland', 'Irelnd', 'Georgia']) assert.equal(profilePlace('London', c), null, `a ${c} profile's bare London is not the UK's`)
   assert.equal(profilePlace('London, Ontario', 'CA')?.name, 'London', 'a Canadian profile naming its province keeps its London')
   assert.equal(placeIn('in London, Ontario')!.ok('London, UK'), false)
-  for (const c of ['UK', 'United Kingdom', 'GB', null]) assert.equal(profilePlace('London', c)?.name, 'London', `${c} profile keeps the UK London`)
+  for (const c of ['UK', 'United Kingdom', 'GB', 'England', 'Great Britain', '', null]) assert.equal(profilePlace('London', c)?.name, 'London', `${c} profile keeps the UK London`)
   assert.equal(profilePlace('New York City', 'US')?.name, 'New York City', 'a US profile keeps New York City')
   // only a BARE shared name is withheld: a place written with its country, or an unshared built-in city, stays whatever the profile's country
   for (const [w, c, name] of [['New York City', 'UK', 'New York City'], ['NYC', 'Germany', 'New York City'], ['Brooklyn', 'UK', 'New York City'],
