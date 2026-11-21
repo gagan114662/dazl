@@ -227,7 +227,9 @@ export function profilePlace(where: string, country?: string | null): { text: st
   const builtIn = direct && CITY_PLACES.find(c => c.name === direct.name && c.ask.test(`in ${where}`))
   // a profile country that is set but cannot be read ("Irelnd") fails closed too: only an unset or a recognised home country keeps the bare name
   // A country the built-in places read as the city's own, as a code or a phrase ("GB", "England, UK", "Great Britain (UK)"), keeps it.
-  const home = own ? builtIn && builtIn.ok(`${builtIn.name}, ${own}`) : !!country && !!builtIn && country.split(/[,()]/).some(part => part.trim() && builtIn.ok(`${builtIn.name}, ${part.trim()}`))
+  // Every part must be the city's own country, code or region: "US, UK" or "Canada (UK)" also names another country and is not a UK home.
+  const parts = (country ?? '').split(/[,()]/).map(x => x.trim()).filter(Boolean)
+  const home = parts.length > 0 && parts.every(part => ukMarker(part) || ukMarker(countryFromField(part) ?? '-'))
   if (builtIn?.shared && country?.trim() && !home && norm(where) === norm(builtIn.name)) return null // its own country's code is one of its locations ("London, GB")
   if (direct) return { text: where.trim(), name: direct.name }
   if (!isUs) return null
