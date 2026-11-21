@@ -26,7 +26,13 @@ const C2 = ['hiring ban in place', 'hiring slowdown across the practice',
   ...['slump', 'hiatus', 'stoppage', 'shutdown', 'crunch', 'crisis', 'stall', 'stalls', 'rumours', 'rumors', 'denial', 'withdrawn'].map(w => `hiring ${w}`),
   ...['on ice', 'put on ice', 'in doubt', 'doubtful', 'uncertain', 'under review', 'in limbo', 'at risk', 'a mistake', 'unaffordable', 'proves futile', 'backfires', 'fizzles', 'going badly', 'withdrawn', 'gone', 'rumour', 'maybe'].map(w => `hiring SDRs ${w}`),
   'hiring office manager role withdrawn',
-  'Series A rumoured', 'Series A denied', 'funding round rumored', 'funding ban', 'funding slowdown', 'funding talks collapsed', 'funding round pulled', 'funding dried up']
+  'Series A rumoured', 'Series A denied',
+  // council review: stop wordings the first lists missed
+  'ceased hiring SDRs', 'hiring SDRs ceased', 'quit hiring SDRs', 'reduced hiring SDRs', 'scaled back hiring SDRs', 'trimmed SDR hiring', 'wound down hiring SDRs',
+  'hiring SDRs ended', 'ended hiring SDRs', 'Series A funding ended', 'hiring SDRs has stopped', 'raising funding has stopped', 'raised funding but stopped',
+  'we no longer raise funding', 'hiring SDRs: paused', 'hired SDRs and let our team go',
+  'hiring SDRs stopped', 'hiring SDRs paused', 'hiring SDRs is paused', 'hiring SDRs halted', 'funding rejected', 'funding declined', 'turned down VC funding',
+  'failed to raise funding', 'unable to raise funding', 'funding round failed', 'hired a VP Sales, then fired him', 'funding round rumored', 'funding ban', 'funding slowdown', 'funding talks collapsed', 'funding round pulled', 'funding dried up']
 
 for (const q of [...BODY, ...C1, ...C2]) {
   test(`#1163 "${q}" compiles to no positive funding / hiring / hire condition`, () => {
@@ -39,9 +45,9 @@ for (const q of [...BODY, ...C1, ...C2]) {
 }
 
 test('#1163 a stopped hiring condition keeps a clean role, and the plan view says NOT', () => {
-  for (const [q, role] of [['hiring SDRs postponed', 'SDRs'], ['hiring SDRs is off the table', 'SDRs'], ['hiring SDRs on hold', 'SDRs'], ['hiring office manager role withdrawn', 'office manager'], ['stopped hiring SDRs', 'SDRs']] as const) {
+  for (const [q, role] of [['hiring SDRs postponed', 'SDRs'], ['hiring SDRs is off the table', 'SDRs'], ['hiring SDRs on hold', 'SDRs'], ['hiring office manager role withdrawn', 'office manager'], ['stopped hiring SDRs', 'SDRs'], ['hiring SDRs has slowed', 'SDRs'], ['hiring SDRs has stopped', 'SDRs'], ['hiring down 30%', ''], ['hired a VP Sales, then fired him', 'VP Sales'], ['hired fewer SDRs', 'SDRs']] as const) {
     const [x] = triggers(q)
-    assert.deepEqual([x.cond.kind, x.negated, x.cond.role], ['hiring', true, role], q)
+    assert.deepEqual([x.cond.kind === 'hire_made' ? 'hiring' : x.cond.kind, x.negated, x.cond.role], ['hiring', true, role], q)
     assert.match(planView(compileTargeting(q)).summary, /^NOT C1 /, q)
   }
 })
@@ -55,7 +61,13 @@ test('#1163 ordinary positive requests stay positive (real roles, double negativ
     // a stop word elsewhere in the clause is not about the condition (council review: these were read NOT and would hide real leads)
     'companies hiring SDRs at capped salaries', 'hiring SDRs at Cap Gemini', 'hiring SDRs in a crunch market', 'hiring SDRs for a crisis management firm',
     'hiring SDRs after a rumor of acquisition', 'hiring SDRs gone remote', 'hiring SDRs in Gone Fishing Inc', 'companies hiring a restrictions analyst',
-    'hiring SDRs on hold music software', 'companies that lost a deal and raised Series A', 'hiring SDRs to stop churn', 'raised funding to avoid layoffs']) {
+    'hiring SDRs on hold music software', 'companies that lost a deal and raised Series A', 'hiring SDRs to stop churn', 'raised funding to avoid layoffs',
+    'Series A startups with fewer than 50 employees', 'companies with fewer than 50 employees hiring SDRs', 'dental clinics with fewer than 20 staff hiring a receptionist',
+    'raised funding from fewer than 5 investors', 'hiring cap table managers', 'hiring freezer technicians', 'Declining retail chains hiring store managers',
+    'Cancellation management software companies hiring SDRs', 'Scrap metal recyclers hiring drivers', 'hiring SDRs to fix sales delays', 'Lost Dog Rescue hiring a receptionist',
+    "agencies that aren't franchises hiring SDRs", "firms that don't outsource sales hiring SDRs", 'startups that lost their founder hiring SDRs',
+    'avoid agencies hiring SDRs', 'firms rather than agencies hiring SDRs', 'clinics hiring crisis counselors', 'airlines hiring cancellation agents',
+    'hiring a capped commission SDR', 'startups hiring SDRs with fewer than 50 employees', 'hiring SDRs again after a freeze', 'venture backed down-market SaaS']) {
     const t = triggers(q)
     assert.ok(t.length > 0, `${q}: no condition`)
     for (const x of t) assert.equal(x.negated, false, `${q}: ${x.cond.kind} "${x.cond.text}" read NEGATED`)
