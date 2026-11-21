@@ -688,3 +688,12 @@ test('an optional buyer label does not remove a company page from normal guarded
  const r=await simulate({ordinary,companyFirstTenant,diverseFixture:{results:[companyAbout],cited:[companyAbout],blocked:[],buyerSource:companyAbout}})
  assert.ok(r.publisherRequests.includes(companyAbout),'the exact event publisher remains eligible when the model labels it')
 })
+
+test('a company-first sales-hiring request asks every angle to prefer the public ATS boards (cf_runner discover wording); other requests do not', async () => {
+  const hiring = await simulate({ ordinary: true, windowDays: 45, companyFirstTenant: 'workspace', confirmedOffer: 'Independent commercial document services', query: 'Commercial roofing companies in London hiring sales representatives' })
+  const other = await simulate({ ordinary: true, windowDays: 45, companyFirstTenant: 'workspace', confirmedOffer: 'Independent commercial document services', query: 'Commercial roofing companies in London that opened a new office' })
+  const prompts = (r: { messages: { body: { tools?: unknown; messages?: unknown } }[] }) => r.messages.filter(x => Array.isArray(x.body.tools)).map(x => JSON.stringify(x.body.messages))
+  assert.ok(prompts(hiring).length > 0)
+  for (const p of prompts(hiring)) assert.match(p, /Strongly prefer postings hosted on boards\.greenhouse\.io/)
+  for (const p of prompts(other)) assert.doesNotMatch(p, /Strongly prefer postings hosted on boards\.greenhouse\.io/)
+})

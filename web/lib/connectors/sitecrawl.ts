@@ -28,6 +28,7 @@ import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
+import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, ownProbePlace, US_STATES } from '../scan/place-agreement.ts'
 import { isCountryOrRegion, resolveSegment, regionOf, trimCanadianPostalTail } from '../scan/countries.ts'
@@ -1435,7 +1436,7 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; buyerCitedUrls?: readonly string[]; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; buyerCitedUrls?: readonly string[]; atsLookup?: boolean; atsFetch?: typeof fetch; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
@@ -1713,6 +1714,22 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
               }) && publisherNamesCitedSite(ev.body,claim.quote) && unambiguousCitation(namedHost,l.id)) {
             sites.push(namedHost); citedSites.push(namedHost); basisOf.set(namedHost, 'evidence_link_text')
           }
+        }
+      }
+      // Company-first, domainless lead: the employer's own public ATS board, looked up by the company-name slug on the free ATS APIs
+      // (atsGtmBoard: a Greenhouse board's own name must agree with the company). It counts only when the board's fresh sales postings
+      // name a company website whose label IS the company name; that site is then read and name-checked like any other. A board
+      // matched by name alone (no website) gives nothing: same-name boards are the classic wrong-company case.
+      if (!anchored && !citedSites.length && deps.atsLookup && !deps.signal?.aborted) {
+        // the crawl deadline cancels every board request (listing, board name, details), not just each one's own timeout
+        const base = deps.atsFetch ?? fetch, sig = deps.signal
+        const atsFetch = (sig ? ((u: string | URL | Request, init?: RequestInit) => base(u, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, sig]) : sig })) : base) as typeof fetch
+        const gb = await atsGtmBoard(l.company, null, atsFetch, { now: deps.now }).catch(() => null)
+        const d = gb && !gb.contradictory && gb.hiring?.via === 'board_name' ? gb.hiring.domain : null
+        const host = d ? registrable(d.replace(/^www\./, '').toLowerCase()) : ''
+        if (host && siteHostOk(host) && !SOCIAL.test(host) && notBlockedHost(host) && nameLabel(host) === norm(l.company) && !sites.includes(host)) {
+          // found from the company NAME, not a page link: recorded as a name probe, so the strict no-place/location refusals of a guess apply
+          sites.push(host); citedSites.push(host); basisOf.set(host, 'name_probe'); sourceOf.set(host, gb!.hiring!.boardUrl)
         }
       }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an

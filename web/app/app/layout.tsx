@@ -3,7 +3,8 @@ import { Suspense } from 'react'
 import { cookies } from 'next/headers'
 import { connection } from 'next/server'
 import { redirect } from 'next/navigation'
-import { hasLiveSession } from '@/lib/auth-db'
+import { getDb } from '@/lib/db/client'
+import { checkSessionWithin } from '@/lib/auth-gate'
 import Nav from './nav'
 import { NAV_TOGGLE_ID } from './nav-toggle'
 import MainFocus from './main-focus'
@@ -14,7 +15,9 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
   // sees Date.now() (blocking-prerender-current-time) and the static shell cannot disagree with the first client render.
   await connection()
   const token = (await cookies()).get('dazl_session')?.value
-  if (!(await hasLiveSession(token))) redirect('/sign-in')
+  // Bounded (lib/auth-gate.ts): a stalled store or lookup now reaches the error boundary (Reload / Try again) and the
+  // server log, instead of leaving "Opening your workspace…" up forever (prod 2026-11-21).
+  if (!(await checkSessionWithin(token, { getDb }))) redirect('/sign-in')
 
   return <>{children}</>
 }
