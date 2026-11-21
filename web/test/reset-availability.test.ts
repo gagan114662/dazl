@@ -7,6 +7,17 @@ test('reset availability is runtime deployment-only; existing token reset remain
  assert.match(page,/await connection\(\)/);assert.match(page,/mailAvailable=\{systemMailAvailable\(\)\}/)
  assert.doesNotMatch(page,/getDb|emailStatus|findPasswordUser/)
  assert.equal(systemMailAvailable({}),false);assert.equal(systemMailAvailable({SYSTEM_MAIL_SMTP_URL:'smtp://fixture',SYSTEM_MAIL_FROM:'fixture@example.test'}),true)
- assert.match(form,/disabled=\{busy \|\| \(!token && !mailAvailable\)\}/)
+ assert.match(form,/disabled=\{busy \|\| \(!token && mailAvailable === false\)\}/) // mail known to be off: no send button
  assert.match(form,/Email delivery is not available right now/)
+})
+
+// #1428: /reset showed only "Loading account recovery..." for 5-9 s on dazl.ai while its runtime part streamed in. The
+// first HTML must already be the working form: the Suspense fallback renders the same form, mail state not yet known.
+test('#1428 /reset is usable in its first HTML: the fallback is the form itself, never a loading line',()=>{
+ const page=readFileSync('app/reset/page.tsx','utf8'),form=readFileSync('app/reset/reset-form.tsx','utf8')
+ assert.doesNotMatch(page,/Loading account recovery/)
+ assert.match(page,/fallback=\{<ResetForm mailAvailable=\{null\} \/>\}/)
+ // unknown mail state: the email form is offered (the request route answers 503 in words if mail is off), no promise made
+ assert.match(form,/mailAvailable: boolean \| null/)
+ assert.match(form,/disabled=\{busy \|\| \(!token && mailAvailable === false\)\}/)
 })

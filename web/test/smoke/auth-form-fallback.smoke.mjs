@@ -17,16 +17,15 @@ const FIX = {
   business_name: 'Smoke Fixture Co',
   password: 'smoke-fixture-value-9f2c-not-a-secret',
 }
-// /reset is deliberately not a browser case: its page renders the form behind a Suspense boundary
-// (app/reset/page.tsx awaits connection()), and a streamed Suspense fallback is only swapped for the real
-// content by an inline script - with JS disabled (or pre-hydration) the form is never actionable, so no
-// native submit can fire. test/auth-form-method.test.ts pins its method=post statically. Sign-up and
-// sign-in render their forms in the initial HTML: the real exposure, covered here.
+// #1428: /reset renders its form in the initial HTML too (the Suspense fallback is the form itself, mail state unknown),
+// so it is a browser case: with JS disabled the email field is there to fill, and a native submit is a POST that puts
+// nothing in the URL. Sign-up and sign-in render their forms in the initial HTML as well.
 const CASES = [
   // #1116: sign-up WORKS without its script: the form posts to /api/auth/signup, which creates the account and redirects
   // back with a code ("Check your email"), or into the app when this deployment sends no confirmation mail.
   { path: '/sign-up', works: true, fields: { name: FIX.name, email: FIX.email, business_name: FIX.business_name, password: FIX.password } },
   { path: '/sign-in', fields: { email: FIX.email, password: FIX.password } },
+  { path: '/reset', fields: { email: FIX.email } },
 ]
 
 const srv = await startServer()
