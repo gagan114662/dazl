@@ -21,9 +21,9 @@ export function directOfferProfile<T>(chosen:string,saved:string,carried:T|null,
 
 // The run a direct offer choice starts: the carried profile only for the same offer, and in every case the carried
 // profile's reviewed exclusions (who must never be contacted does not change with the offer).
-export function directOfferRun(chosen: string, saved: string, carried: Icp | null, freshTarget = false): { icp: Icp | null; carryExclude: string[] } {
+export function directOfferRun<T>(chosen: string, saved: string, carried: T | null, freshTarget = false): { icp: T | null; carryExclude: string[] } {
   const icp = directOfferProfile(chosen, saved, carried, freshTarget)
-  return { icp, carryExclude: icp ? [] : carriedExclusions(carried) }
+  return { icp, carryExclude: icp ? [] : carriedExclusions(carried as unknown as Icp | null) }
 }
 
 // The reviewed Run buttons use the same completeness rule the estimate and scan routes apply to a supplied offer, so a
