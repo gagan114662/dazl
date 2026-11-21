@@ -230,8 +230,7 @@ export function offerHashFor(db: Database.Database, tenantId: string, leadId: st
 }
 
 function setHold(db: Database.Database, tenantId: string, msgId: string, leadId: string, reason: typeof HOLD_REASONS[number], until: number | null): void {
-  // A draft that recorded the offer its words were written under keeps that record (#686): a hold never re-binds old words to a newer offer.
-  db.prepare("UPDATE outreach_messages SET hold_reason = ?, hold_until = ?, hold_policy = ?, offer_hash = COALESCE(offer_hash, ?) WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')")
+  db.prepare("UPDATE outreach_messages SET hold_reason = ?, hold_until = ?, hold_policy = ?, offer_hash = ? WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')")
     .run(reason, until, CONSENT_VERSION, reason === 'warmup_manual' ? null : offerHashFor(db, tenantId, leadId), msgId, tenantId)
 }
 

@@ -11,5 +11,5 @@ test('#686 draft preview, approve and send follow the play\'s current offer (rea
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 4\b/); assert.match(r.stdout, /# fail 0/)
+  assert.match(r.stdout, /# pass 6\b/); assert.match(r.stdout, /# fail 0/)
 })

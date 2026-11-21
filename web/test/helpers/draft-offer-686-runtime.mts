@@ -15,6 +15,9 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { saveSettings, sendBlockReason } from '../../lib/outreach/service.ts'
+import { polishDraft } from '../../lib/outreach/draft-llm.ts'
+import { saveKey } from '../../lib/llm/key-store.ts'
+import type { Provider } from '../../lib/llm/provider.ts'
 import { GET as LIST, POST as DRAFT } from '../../app/api/outreach/route.ts'
 import { PATCH as EDIT, POST as ACT } from '../../app/api/outreach/[id]/route.ts'
 import { POST as SET_OFFER } from '../../app/api/campaigns/[id]/route.ts'
@@ -95,4 +98,33 @@ test('#686 the unchanged offer and another play\'s change never mark a draft; an
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('legacy0000000000000000aa', ?, ?, 'sales@buyer.invalid', 's', 'an older body long enough for the checks', 'draft')").run(A, q.lead)
   await setOffer(q.job, CHOSEN)
   assert.equal((await preview('legacy0000000000000000aa')).offer_changed, false)
+})
+
+test('#686 a play whose offer becomes contested after drafting holds the draft; an edit then keeps it held', async () => {
+  const p = play()
+  const id = await draft(p.lead)
+  const hash0 = (db.prepare('SELECT offer_hash FROM outreach_messages WHERE id = ?').get(id) as { offer_hash: string }).offer_hash
+  // the play's request now states another offer than the one it was recorded with, and none is chosen: contested
+  db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(`${QUERY}. We sell CRM setup and outbound sales consulting.`, p.job)
+  assert.equal((await preview(id)).offer_changed, true)
+  assert.deepEqual(await approve(id), { status: 409, error: 'offer_changed' })
+  const r = await EDIT(req(`/api/outreach/${id}`, 'PATCH', { subject: 'A new subject line', body: 'Hi Pat, a rewritten body long enough for the checks.' }), ctx(id))
+  assert.equal(r.status, 200)
+  assert.equal((db.prepare('SELECT offer_hash FROM outreach_messages WHERE id = ?').get(id) as { offer_hash: string }).offer_hash, hash0, 'no current offer to bind to: the old record stays')
+  assert.deepEqual(await approve(id), { status: 409, error: 'offer_changed' }, 'still held until the play\'s offer is chosen')
+})
+
+test('#686 an AI rewrite records the offer it wrote under: a stale draft rewritten for the current offer is no longer marked', async () => {
+  const master = randomBytes(32)
+  saveKey(db, A, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
+  const providers = { anthropic: { completeDetailed: async () => ({ text: `Subject: Ramp-up coaching for your new AEs\n\nHi Pat, I saw Buyer is hiring an account executive. ${SELLER} offers ${CHOSEN}.`, model: 'm' }) } } as unknown as Record<string, Provider>
+  const p = play()
+  const id = await draft(p.lead)
+  await setOffer(p.job, CHOSEN)
+  assert.equal((await preview(id)).offer_changed, true)
+  const out = await polishDraft(db, A, id, SELLER, { master, providers })
+  assert.equal(out.rewritten, true, JSON.stringify(out))
+  assert.equal((await preview(id)).offer_changed, false)
+  await setOffer(p.job, RECORDED)
+  assert.equal((await preview(id)).offer_changed, true, 'the rewrite is bound to the offer it was written for')
 })

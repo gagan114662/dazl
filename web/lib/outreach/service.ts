@@ -449,7 +449,13 @@ export function listMessages(db: Database.Database, tenantId: string, d: Deps = 
   // confirmation (never presented as dazl's verification) or a withdrawn one.
   const sender = getSettings(db, tenantId)
   // offer_changed (#686): an unsent draft whose words were written for an offer the play no longer sells.
-  return rows.map(({ offer_hash, ...r }) => ({ ...r, offer_changed: (r.status === 'draft' || r.status === 'approved') && draftOfferChanged(db, tenantId, { lead_id: r.lead_id, offer_hash }), error: displayStopReason(r.error), send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
+  const nowDigest = new Map<string, string | null>() // one read of each lead's play offer per listing
+  const changed = (leadId: string, offerHash: string | null) => {
+    if (offerHash === null) return false
+    if (!nowDigest.has(leadId)) nowDigest.set(leadId, currentOfferDigest(db, tenantId, leadId))
+    return nowDigest.get(leadId) !== offerHash
+  }
+  return rows.map(({ offer_hash, ...r }) => ({ ...r, offer_changed: (r.status === 'draft' || r.status === 'approved') && changed(r.lead_id, offer_hash), error: displayStopReason(r.error), send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
