@@ -207,11 +207,15 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const total = sum(rows), cappedTotal = sum(rows.filter(r => r.capped))
   const reserved = Math.max(0, i.reservedUsd ?? 0), monthReserved = Math.max(0, i.reservedMonthUsd ?? 0)
   // The room left is the TIGHTER of what the day's limit and the month's limit allow; the label names the one that binds.
-  const dayLeft = Number.isFinite(limit) ? limit - reserved : Infinity, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
+  // The run's own max_usd is a PER-RUN ceiling (its job guard counts only this run's reservations), so today's pooled
+  // reservations come off the owner's day cap only, never off max_usd (case-1 runs were blocked once the day's earlier
+  // runs exceeded one run's max_usd while the day cap still had room).
+  const runMax = typeof b?.max_usd === 'number' ? b.max_usd : Infinity, ownerDay = i.ownerCapUsd ?? null
+  const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : Number.isFinite(limit) ? limit - reserved : Infinity, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
   const monthBinds = monthLeft < dayLeft
   const remaining = capped && !unknown ? Math.max(0, Math.min(dayLeft, monthLeft)) : null   // unknown reserved amounts -> unknown remaining, never 0
   const binding: 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : 'daily'
-  const shownLimit = monthBinds ? (monthCap as number) : limit, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
+  const dayCapShown = ownerDay ?? limit, shownLimit = monthBinds ? (monthCap as number) : dayCapShown, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null, trialRefusalWhy: string | null = null
@@ -298,7 +302,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
-  const cap = { max_usd: Number.isFinite(limit) ? limit : null, reserved_usd: reserved, remaining_usd: remaining, binding, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
+  const cap = { max_usd: Number.isFinite(dayCapShown) ? dayCapShown : null, reserved_usd: reserved, remaining_usd: remaining, binding, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
   const verdict = { ok, reason, message, change, warning, ...(trialRefusalWhy ? { trial_refusal: trialRefusalWhy } : {}) }
   // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
   // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
