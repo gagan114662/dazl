@@ -30,15 +30,15 @@ bothEngines('running_since: owner-scoped first call of any attempt; a retry keep
   const ins = "INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, ?, ?, ?, 'llm.anthropic', 0.08, 0.01, 'settled', NULL, ?, ?)"
   await db.run(ins, ['c1', 'A', job, 1, 1002, 1006])
   await db.run(ins, ['c2', 'A', job, 1, 1010, 1020])
-  await db.run("UPDATE scan_jobs SET claimed_at = 1020 WHERE id = ?", [job])   // the lease renewed by the settle
-  assert.equal((await readScanStatus(db, 'A', job))?.running_since, 1000)
+  await db.run("UPDATE scan_jobs SET claimed_at = 1020 WHERE id = ?", [job])   // the lease renewed by the settle: the scan started with its first call
+  assert.equal((await readScanStatus(db, 'A', job))?.running_since, 1002)
   // attempt 2 after a lost process: the user has been waiting since the first attempt began
   await db.run("UPDATE scan_jobs SET claimed_at = 1300, attempts = 2 WHERE id = ?", [job])
   await db.run(ins, ['c3', 'A', job, 2, 1301, 1305])
-  assert.equal((await readScanStatus(db, 'A', job))?.running_since, 1000)
+  assert.equal((await readScanStatus(db, 'A', job))?.running_since, 1002)
   // another tenant's rows on the same job id are never read
   await db.run(ins, ['x1', 'B', job, 1, 500, 501])
-  assert.equal((await readScanStatus(db, 'A', job))?.running_since, 1000)
+  assert.equal((await readScanStatus(db, 'A', job))?.running_since, 1002)
 })
 
 test('the running page counts its minutes from running_since, never from the lease (claimed_at)', () => {
