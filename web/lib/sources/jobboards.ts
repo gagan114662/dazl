@@ -52,7 +52,9 @@ const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|m
 // qualified by ANY place outside the UK is left to the other resolvers (London, IN is a US city; London, Ontario a Canadian one): the qualifier
 // is read by the same resolvers the rest of the place code uses (a country, a US state, a Canadian province), never a list of names here.
 // A full name may follow with or without a comma ("London Ontario"); a qualifier in parentheses or after a slash or bar counts as one after a comma
-// or dash ("London (Ontario)", "London/Ontario", "London | ON", "London \u2013 Ontario").
+// or dash ("London (Ontario)", "London/Ontario", "London | ON", "London \u2013 Ontario"). A London so qualified is never the UK's; whether it then
+// resolves to its own place is up to the other resolvers ("London, Ontario" does; "London Ontario" and "London (Ontario)" resolve none and the
+// job boards name why).
 // A two-letter code counts after a comma / parenthesis in capitals ("London, IN hiring"), in any case when it closes its clause ("london, ky";
 // an abbreviation with a period counts only capitalised, so "london, ky." resolves no place and fails closed),
 // and with no comma only in capitals closing its clause ("London ON"): never the word "in" of "London in 2025". An abbreviation no resolver
@@ -79,8 +81,8 @@ function nonUkLondon(q: string): boolean {
       const country = resolveSegment(seg, true), region = regionOf(seg)
       // a country CODE ("US", "UAE") qualifies London only when its clause ends there: in "London, US startups" it describes the startups
       if (country && seg.length <= 3 && !closes(n)) continue
-      if (country) { if (!ukMarker(seg) && !ukMarker(country)) return true; continue }
-      if (region) { if (!ukMarker(seg) && !ukMarker(countryOfRegion(region))) return true; continue }
+      if (country) { if (!ukMarker(country)) return true; continue }
+      if (region) { if (!ukMarker(countryOfRegion(region))) return true; continue }
     }
   }
   return false
@@ -224,7 +226,9 @@ export function profilePlace(where: string, country?: string | null): { text: st
   // name their place whatever the profile's country, and a London written with its province or state resolves above as that London.
   const builtIn = direct && CITY_PLACES.find(c => c.name === direct.name && c.ask.test(`in ${where}`))
   // a profile country that is set but cannot be read ("Irelnd") fails closed too: only an unset or a recognised home country keeps the bare name
-  if (builtIn?.shared && country?.trim() && !(own && builtIn.ok(`${builtIn.name}, ${own}`)) && norm(where) === norm(builtIn.name)) return null // its own country's code is one of its locations ("London, GB")
+  // A country the built-in places read as the city's own, as a code or a phrase ("GB", "England, UK", "Great Britain (UK)"), keeps it.
+  const home = own ? builtIn && builtIn.ok(`${builtIn.name}, ${own}`) : !!country && !!builtIn && country.split(/[,()]/).some(part => part.trim() && builtIn.ok(`${builtIn.name}, ${part.trim()}`))
+  if (builtIn?.shared && country?.trim() && !home && norm(where) === norm(builtIn.name)) return null // its own country's code is one of its locations ("London, GB")
   if (direct) return { text: where.trim(), name: direct.name }
   if (!isUs) return null
   const b = bareUsCity(where); if (!b) return null
