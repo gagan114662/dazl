@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
@@ -10,11 +11,12 @@ import { recordActionability, verifiedCompanyFirstDisplay } from '../lib/scan/ac
 import { recordNeedEvidence } from '../lib/scan/need-evidence.ts'
 import { recordTimingProof } from '../lib/scan/timing-proof.ts'
 import { companyFirstResults } from '../lib/scan/company-first-results.ts'
+import { contextLabel } from '../lib/outreach/contact-context.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
 import { publishedCandidateFor, recordEmailGuesses, usEvidence, verifyCandidates } from '../lib/people/email-pattern.ts'
 import { findWorkEmail, strictPublishedWorkEmailsForLeads, workEmailsFor } from '../lib/people/work-email.ts'
 import { targetKey } from '../lib/people/work-email-eligible.ts'
-import { approveBlockReason, createDraft, draftBlockReason, sendBlockReason, sendMessage } from '../lib/outreach/service.ts'
+import { approveBlockReason, createDraft, domainReviewStatus, draftBlockReason, sendBlockReason, sendMessage } from '../lib/outreach/service.ts'
 
 for (const [country, market, host] of [
   ['CA', 'Toronto, Ontario, Canada', 'riverledger.ca'],
@@ -103,8 +105,68 @@ for (const [country, market, host] of [
     assert.equal(currentLookup.status,'not_found')
     assert.equal(draftBlockReason(db,tenant,lead),'no_email_contact')
     assert.throws(()=>createDraft(db,tenant,lead,'Seller'),{code:'no_email_contact'})
+    const subject='Fixture subject', body='Fixture body for refusal only; never send.'
+    const digest=createHash('sha256').update(JSON.stringify([address,subject,body])).digest('hex')
+    db.prepare("UPDATE outreach_messages SET approved_hash=? WHERE id=?").run(digest,msg)
+    assert.equal(sendBlockReason(db,tenant,msg,{skipAccount:true}),'recipient_provenance_missing')
+    await assert.rejects(sendMessage(db,tenant,msg),{code:'recipient_provenance_missing'})
+    assert.deepEqual(db.prepare('SELECT status,attempts,claimed_at,sent_at FROM outreach_messages WHERE id=?').get(msg),
+      {status:'approved',attempts:0,claimed_at:null,sent_at:null})
+    db.prepare("UPDATE outreach_messages SET status='draft' WHERE id=?").run(msg)
+    assert.equal(approveBlockReason(db,tenant,msg,{skipAccount:true}),'recipient_provenance_missing')
+    // A historical approval for a site-published generic mailbox is not named mail.
+    const shared = 'office@' + host
+    add('sitecrawl','email',shared,contextLabel({excerpt:'Ada Lane | '+shared,source_url:team}),team)
+    assert.equal(recordActionability(db,job).actionable,1)
+    assert.deepEqual(recordTimingProof(db,job,now),{proven:1,held:0})
+    assert.equal(currentnessHeld(db,tenant,lead,now),false)
+    const sharedDigest = createHash('sha256').update(JSON.stringify([shared,subject,body])).digest('hex')
+    db.prepare("UPDATE outreach_messages SET to_email=?, approved_hash=?, status='approved' WHERE id=?").run(shared,sharedDigest,msg)
+    assert.equal(sendBlockReason(db,tenant,msg,{skipAccount:true}),'recipient_provenance_missing')
+    await assert.rejects(sendMessage(db,tenant,msg),{code:'recipient_provenance_missing'})
+    assert.deepEqual(db.prepare('SELECT status,attempts,claimed_at,sent_at FROM outreach_messages WHERE id=?').get(msg),
+      {status:'approved',attempts:0,claimed_at:null,sent_at:null})
+    assert.equal(domainReviewStatus(db,tenant,lead,' '+address.toUpperCase()+' '),'recipient_provenance_missing')
     assert.deepEqual(await verifiedCompanyFirstDisplay(db,'different-owner',id,[lead],now),{})
     db.prepare("UPDATE leads SET event_date_proof=NULL WHERE id=?").run(lead)
     assert.deepEqual(await verifiedCompanyFirstDisplay(db,tenant,id,[lead],now),{},'the published address cannot replace a verified event')
+  } finally { db.close() }
+})
+
+test('an independently published US Company First recipient keeps its existing candidate and draft path', async () => {
+  const db = new Database(':memory:')
+  try {
+    migrateAllSqlite(db)
+    const tenant='company-first-us-fixture', jobId='4'.repeat(24), lead='5'.repeat(24)
+    const host='riverledger.example', address='ada.lane@'+host, team='https://'+host+'/team', signal='https://'+host+'/open'
+    const role='Ada Lane, Owner', now=new Date(), at=Math.floor(now.getTime()/1000)
+    const day=new Date(now.getTime()-3*86400000).toISOString().slice(0,10)
+    const query='Companies hiring sales reps', icp=JSON.stringify({who:['Owner'],where:['Portland, Oregon, United States'],window_days:20})
+    db.prepare("INSERT INTO users (id,email,business_name,password_hash,salt) VALUES (?, 'us-owner@example.test','Seller','salted','salt')").run(tenant)
+    db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts,query,icp,run_budget) VALUES (?,?,'Seller','-','-','running',1,?,?,?)")
+      .run(jobId,tenant,query,icp,markCompanyFirstBudget(null))
+    db.prepare("UPDATE scan_jobs SET seller='Laboratory operations software' WHERE id=?").run(jobId)
+    db.prepare("INSERT INTO leads (id,scan_job_id,company,confidence,fit,score,signal,signal_kind,source_url,evidence_excerpt,event_date,event_date_proof,company_domain) VALUES (?,?,'River Ledger',80,5,75,'Open sales representative vacancy','hiring',?,?,?,'page_bound',?)")
+      .run(lead,jobId,signal,'River Ledger advertised a sales representative vacancy.',day,host)
+    const add=(connector:string,kind:string,value:string,label:string,url:string) =>
+      addEnrichment(db,tenant,lead,{connector,kind,value,label,confidence:null,source_url:url,source_date:day,retrieved_at:at})
+    add('sitecrawl','domain',host+'|evidence_own_domain','domain-basis-v1:evidence_own_domain',signal)
+    add('sitecrawl','person',role,COMPANY_FIRST_ROLE_LABEL+'Owner',team)
+    add('sitecrawl','email',address,contextLabel({excerpt:'Ada Lane | '+address,source_url:team}),team)
+    add('scan:gate','gate_passed','requested_role_v1','role verified',signal)
+    add('scan:gate','gate_passed','sales_hiring','role verified',signal)
+    const job={id:jobId,user_id:tenant,query,icp}
+    await recordNeedEvidence(sqliteDb(db),tenant,jobId,{asOf:now,windowDays:20})
+    assert.equal(recordActionability(db,job).actionable,1)
+    assert.deepEqual(recordTimingProof(db,job,now),{proven:1,held:0})
+    assert.equal(currentnessHeld(db,tenant,lead,now),false)
+    assert.equal(recordEmailGuesses(db,tenant,lead,host,['ada.lane'],[role],{
+      env:{},where:['Portland, Oregon, United States'],homeText:'Portland, OR 97201',seen:[{address,url:team}],
+    })?.published,1)
+    assert.deepEqual(publishedCandidateFor(db,tenant,lead,'Ada Lane'),{address,url:team})
+    assert.equal(domainReviewStatus(db,tenant,lead,' '+address.toUpperCase()+' '),'ok')
+    const draft=createDraft(db,tenant,lead,'Seller')
+    assert.equal(db.prepare('SELECT to_email FROM outreach_messages WHERE id=?').pluck().get(draft),address)
+    assert.equal(approveBlockReason(db,tenant,draft,{skipAccount:true}),null)
   } finally { db.close() }
 })
