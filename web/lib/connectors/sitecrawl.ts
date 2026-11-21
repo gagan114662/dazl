@@ -1265,7 +1265,7 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
@@ -1454,6 +1454,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // the bounded official-site lookup may still find this company elsewhere (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
+      // cf_runner stage 2: when the evidence page links no company site (an aggregator list), a homepage the scan's own search cited is a
+      // candidate only if its domain label IS the company's name (same test as a linked site's label). It is then read and checked like a
+      // linked site (name and, when asked, place), and that cited page is recorded as where the site came from.
+      if (!anchored && deps.citedUrls?.length) {
+        const want = norm(l.company), evOwn = (() => { try { return registrable(new URL(ev?.finalUrl ?? l.source_url).hostname) } catch { return '' } })()
+        if (want.length >= 4) for (const raw of deps.citedUrls) {
+          let u: URL; try { u = new URL(raw) } catch { continue }
+          const host = registrable(u.hostname)
+          if (host === evOwn || SOCIAL.test(host) || !siteHostOk(host) || !notBlockedHost(host) || !labelMatches(nameLabel(host), want) || sites.includes(host)) continue
+          sites.push(host); basisOf.set(host, 'evidence_link_domain_label'); sourceOf.set(host, u.href); anchored = true
+          break
+        }
+      }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
       // anchored link existed): after the linked sites, under the same checks; it never turns into a reason to skip what the page links
       if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
