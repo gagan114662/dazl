@@ -38,3 +38,11 @@ test('two best roles per board, so a rejected top match does not hide the next; 
   assert.deepEqual(await freshBoardPostings(['https://jobs.eu.lever.co/acme'], { terms: ['sales'], windowDays: 45, now, http: async () => { asked++; return null } }), [])
   assert.equal(asked, 0)
 })
+test('recruiter, intern and non-sales roles sharing a request word are not picked (Qodo)', async () => {
+  const http = gh([
+    { id: 1, title: 'SDR Recruiter', first_published: '2026-11-20T00:00:00Z' },
+    { id: 2, title: 'Vendor Sales Intern', first_published: '2026-11-19T00:00:00Z' },
+    { id: 3, title: 'SDR', first_published: '2026-10-20T00:00:00Z' },
+  ])
+  assert.deepEqual(await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sdr', 'sales'], windowDays: 45, now, http }), ['https://job-boards.greenhouse.io/acme/jobs/3'])
+})

@@ -8,8 +8,12 @@ import type { SafeGet } from '../sources/types.ts'
 import { looksLikeHtml } from '../sources/types.ts'
 import { boardApi, boardOf, boardRoles, type Board } from '../research/sources/ats-boards.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
+import { isGtmRole } from '../signals/ats-gtm.ts'
 
-export const MAX_BOARDS_PER_ANGLE = 8, MAX_POSTINGS_PER_ANGLE = 3, PER_BOARD = 2
+// A role that staffs someone else's sales hiring, or is not a real hire, never stands for the requested sales hire.
+const NOT_A_SALES_HIRE = /\b(?:recruit\w*|talent|sourcer|intern(?:ship)?s?|apprentice\w*|trainer|enablement)\b/i
+
+export const MAX_BOARDS_PER_ANGLE = 8, MAX_POSTINGS_PER_ANGLE = 2, PER_BOARD = 2
 
 const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean)
 
@@ -39,6 +43,7 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
     const ranked: { url: string; hits: number; posted: string }[] = []
     for (const r of roles) {
       if (r.posted > today || (since && r.posted < since) || !atsPostingRef(r.url)) continue
+      if (!isGtmRole(r.title) || NOT_A_SALES_HIRE.test(r.title)) continue
       const hits = words(r.title).filter(w => terms.has(w)).length
       if (hits) ranked.push({ url: r.url, hits, posted: r.posted })
     }

@@ -207,7 +207,7 @@ export const affirmativeSalesHiring = (text: string | null, company?: string | n
   // A job ad's "to join our Sales Development organization": "our" is the ad's own employer, so the words before it are the
   // candidate profile ("driven professionals with ... sales instincts"), not another company as the subject (Skopenow, run 0dfeb60a).
   const j = JOIN_OUR_SALES.exec(c)
-  if (j) { const v = /\b(?:look(?:s|ing)\s+for|seek(?:s|ing)|hir(?:es|ing)|recruit(?:s|ing))\b/i.exec(c.slice(0, j.index)); return !subjectIsOther(c.slice(0, v ? v.index : j.index), company) }
+  if (j) { const pre = c.slice(0, j.index), v = [...pre.matchAll(/\b(?:look(?:s|ing)\s+for|seek(?:s|ing)|hir(?:es|ing)|recruit(?:s|ing))\b/gi)].pop(); return !subjectIsOther(pre.slice(0, v ? v.index : pre.length), company) }
   const o = OPEN_ROLE.exec(c) ?? FIRST_HIRE.exec(c)
   return !!o && isGtmRole(c) && !subjectIsOther(c.slice(0, o.index), company)
 })

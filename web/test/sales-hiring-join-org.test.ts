@@ -11,3 +11,6 @@ test('another company inviting people to join its sales team is not the lead hir
   assert.ok(!affirmativeSalesHiring('Othercorp is looking for people to join our sales team.', 'Acmecorp'))
   assert.ok(affirmativeSalesHiring('Acmecorp is looking for people to join our sales team.', 'Acmecorp'))
 })
+test('the employer nearest the join-our clause is the subject (Qodo)', () => {
+  assert.ok(!affirmativeSalesHiring('Acmecorp is looking for engineers, and Othercorp is looking for people to join our sales team.', 'Acmecorp'))
+})
