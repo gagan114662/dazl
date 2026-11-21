@@ -59,7 +59,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
     if (est) {
       // #1319: a free-trial run never shows an estimate above its per-scan cap; the line says the trial stops there. The cap
       // kept with the estimate, else (a job saved before it was kept) the one its trial reservation held, else the trial cap
-      // configured now. When none can be found, no dollar range is shown at all (never the raw one).
+      // configured now. When none can be found, the cost line is left out.
       const trial = est.payer === 'trial'
       let trialCap: number | null = null
       if (trial) {
@@ -69,12 +69,12 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
       const capUnknown = trial && trialCap === null
       const ended = job.status === 'done' || job.status === 'failed'
       const compared = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }, trialCap) : null
-      // no cap found: the recorded cost is kept, but no line compares it with an estimate range that could read above the cap
-      const actual = compared && capUnknown ? { ...compared, summary: 'The cost line is not shown: this free scan\'s trial limit could not be read.' } : compared
+      const actual = compared
       // Cost per verification pass: the scan's own verified counter as denominator, model cost as
       // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead
       // claim. Unknowns (running, unrecorded cost or count, zero passes) stay named, never 0/Infinity.
-      cost = { estimate: { total: capUnknown ? null : clampToCap(est.total, trialCap), payer: est.payer, cap: est.cap, rows: est.rows, trial_cap_line: capUnknown ? 'Free trial scans stop at their per-scan limit.' : trialCapLine(trialCap) }, actual, per_verification_pass: costPerVerificationPass({ verified: job.verified, model_usd: actual?.model_usd ?? null, scanEnded: ended }), model_scope: COST_PER_PASS_SCOPE }
+      // A trial run whose cap cannot be found gets no cost line at all, never the raw range.
+      if (!capUnknown) cost = { estimate: { total: clampToCap(est.total, trialCap), payer: est.payer, cap: est.cap, rows: est.rows, trial_cap_line: trialCapLine(trialCap) }, actual, per_verification_pass: costPerVerificationPass({ verified: job.verified, model_usd: actual?.model_usd ?? null, scanEnded: ended }), model_scope: COST_PER_PASS_SCOPE }
     }
   } catch { cost = null }
   const provider_issues = await readProviderIssues(db, tenantId, job.id)

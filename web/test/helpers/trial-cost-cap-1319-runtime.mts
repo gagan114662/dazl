@@ -112,7 +112,7 @@ test('#1319 item 2: a trial job with no cap kept and no reservation row: still c
   for (const d of dollars(cost.actual?.summary ?? '')) assert.ok(d <= CAP, cost.actual!.summary)
 })
 
-test('#1319 item 2: a trial job whose cap cannot be found at all shows no dollar estimate, only that the trial stops at its limit', async () => {
+test('#1319 item 2: a trial job whose cap cannot be found at all shows no cost line, never the raw range', async () => {
   const { raw } = tenant(true)
   const { job_id } = await endedRun(raw)
   const saved = JSON.parse((raw.prepare('SELECT estimate FROM scan_jobs WHERE id = ?').get(job_id) as { estimate: string }).estimate) as Record<string, unknown>
@@ -122,10 +122,9 @@ test('#1319 item 2: a trial job whose cap cannot be found at all shows no dollar
   const reserve = process.env.DAZL_TRIAL_SCAN_RESERVE_USD
   delete process.env.DAZL_TRIAL_SCAN_RESERVE_USD
   try {
-    const { cost } = await (await status(job_id)).json() as { cost: { estimate: { total: unknown; trial_cap_line: string }; actual: { summary: string } | null } }
-    assert.equal(cost.estimate.total, null, 'no range to show')
-    assert.equal(cost.estimate.trial_cap_line, 'Free trial scans stop at their per-scan limit.')
-    assert.equal(cost.actual?.summary, 'The cost line is not shown: this free scan\'s trial limit could not be read.', 'never "not recorded" when it was')
+    const body = await (await status(job_id)).json() as { cost: unknown; status: string }
+    assert.equal(body.status, 'done')
+    assert.equal(body.cost, null, 'no cost line')
   } finally { process.env.DAZL_TRIAL_SCAN_RESERVE_USD = reserve }
 })
 
