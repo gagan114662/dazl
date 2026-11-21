@@ -92,7 +92,7 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
   const leadsBody = await leadsRes.json() as { leads: { id: string }[]; held: { id: string; hold_reason: string }[] }
   assert.deepEqual(leadsBody.leads, [], 'the run page lists no reviewable lead')
   assert.deepEqual(leadsBody.held.map(h => h.id).sort(), [...held].sort(), 'the held leads are shown read-only as held; the rejected one is not')
-  assert.equal(leadsBody.held.find(h => h.id === held[2])?.hold_reason, 'held_by_final_checks', 'no stored reason: no specific check is claimed')
+  assert.equal(leadsBody.held.find(h => h.id === held[2])?.hold_reason, 'not_machine_verified', 'no stored reason: the final check that holds it is named (it never passed machine verification)')
 
   for (const url of ['http://localhost/api/campaigns', 'http://localhost/api/campaigns?view=history']) {
     const res = await campaignsGET(new NextRequest(url))

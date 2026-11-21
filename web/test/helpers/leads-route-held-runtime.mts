@@ -54,3 +54,21 @@ test('GET /api/leads (company-first): held candidates are listed read-only with 
   assert.deepEqual(body.held, [{ id: lead, company: 'Held Co', source_url: 'https://held.example/a', signal: 'Hiring an SDR', event_date: null, hold_reason: 'no_sales_hiring_evidence' }])
   assert.ok(!JSON.stringify(body.held).includes('pat@held.test'), 'no contact is exposed')
 })
+
+test('GET /api/leads (company-first): a verified candidate the final checks hold is listed with the check that holds it, not a generic label', async () => {
+  const db = new Database(':memory:')
+  for (const m of [migrateScan, migrateSourceReview, migrateWatch, migrateKeys, migratePlans, migrateConnectors, migrateAdvanced, migrateBilling, migrateOutreach, migrateAutopilot, migrateLedger, migrateReplies, migrateThreadReplies, migrateSequences, migrateTrial, migrateCompetitors, migrateEvents, migrateWarm, migrateSeo, migrateMonitors, migrateCsv, migrateCommenterImport, migrateMemory, migrateReopen]) m(db)
+  setScanDb(db)
+  setUser({ id: 'A', business_name: 'Acme' })
+  const job = createJob(db, 'A', { business_name: 'Synthetic A', industry: 'test', location: 'test' })
+  db.prepare("UPDATE scan_jobs SET status='running', icp=? WHERE id=?").run(JSON.stringify({ window_days: 45 }), job)
+  const day = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10)
+  db.prepare("INSERT INTO leads(id,scan_job_id,company,name,signal,source_url,evidence_excerpt,confidence,score,review_reason,company_domain,event_date,event_date_proof,date_status) VALUES('a1b2c3d4e5f6a1b2c3d4e5f6',?,'Board Co','','Hiring an SDR','https://job-boards.greenhouse.io/boardco/jobs/1','Board Co is hiring an SDR.',80,70,NULL,'boardco.test',?,'ats_structured','verified')").run(job, day)
+  db.prepare("UPDATE scan_jobs SET status='done',enrich_finished_at=1,candidates=1,verified=1,needs_review=0,dropped=0,run_budget=? WHERE id=?").run(markCompanyFirstBudget(null), job)
+  const res = await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${job}`))
+  const body = await res.json() as { held: { hold_reason: string }[] }
+  assert.equal(body.held.length, 1)
+  assert.notEqual(body.held[0].hold_reason, 'held_by_final_checks')
+  // this synthetic candidate has an unconfirmed domain and no buyer: one of those named checks, never the generic label
+  assert.ok(['company_domain_unconfirmed', 'no_named_buyer_with_contact_route', 'timing_proof_not_recorded'].includes(body.held[0].hold_reason), body.held[0].hold_reason)
+})
