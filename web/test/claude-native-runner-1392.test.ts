@@ -697,3 +697,11 @@ test('a company-first sales-hiring request asks every angle to prefer the public
   for (const p of prompts(hiring)) assert.match(p, /Strongly prefer postings hosted on boards\.greenhouse\.io/)
   for (const p of prompts(other)) assert.doesNotMatch(p, /Strongly prefer postings hosted on boards\.greenhouse\.io/)
 })
+
+test('cf_runner stage 1: a company-first hiring request runs cf_runner\'s board angles and asks for the companies as JSON with their own website and posting', async () => {
+  const hiring = await simulate({ ordinary: true, windowDays: 45, companyFirstTenant: 'workspace', confirmedOffer: 'Independent commercial document services', query: 'Commercial roofing companies in London hiring sales representatives' })
+  const ps = hiring.messages.filter(x => Array.isArray(x.body.tools)).map(x => JSON.stringify(x.body.messages))
+  assert.ok(ps.length >= 1)
+  assert.match(ps[0], /Search approach for this pass: Search company career pages and public applicant-tracking job boards/)
+  for (const p of ps) { assert.match(p, /JSON inside <json><\/json>/); assert.match(p, /website \(the company's own official domain\), job_title, job_url/); assert.match(p, /never invent/) }
+})
