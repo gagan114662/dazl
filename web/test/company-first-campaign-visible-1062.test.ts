@@ -58,5 +58,21 @@ test('company-first: a lead the gate shows is counted, a held one is held by che
     const closed = listCampaigns(db, tenant, 10).find(c => c.id === id)!
     assert.deepEqual([closed.qualification.heldByChecks, closed.qualification.needsReview, closed.qualification.sourceChecked + closed.qualification.confirmedByYou], [2, 0, 0])
     assert.doesNotMatch(closed.next.label, /review/i)
+
+    // A failed company-first scan keeps nextAction's own "Search failed" step, even with no recorded outcome to replace it (sonnet, round 3);
+    // only a done scan whose enrichment is still running reads "Search still running".
+    const failed = '4'.repeat(24)
+    db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts,query,icp,run_budget) VALUES (?,?,'Seller','-','-','running',1,?,?,?)").run(failed, tenant, query, icp, markCompanyFirstBudget(null))
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, score, signal, source_url, event_date, review_reason) VALUES (?,?,'','Failed Co',60,'Open sales vacancy','https://failed.example/jobs',?,'quote_unconfirmed')").run('5'.repeat(24), failed, day)
+    db.prepare("UPDATE scan_jobs SET status='failed', error='provider error' WHERE id=?").run(failed)
+    const f1 = (await listCampaignsNow(db, tenant, 10, now)).find(c => c.id === failed)!
+    const f2 = (await historyCampaigns(db, sqliteDb(db), tenant, [failed], now)).find(c => c.id === failed)!
+    for (const c of [f1, f2]) assert.deepEqual([c.next.label, c.qualification.needsReview], ['Search failed. Open it to see why', 0])
+    const enriching = '6'.repeat(24)
+    db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts,query,icp,run_budget) VALUES (?,?,'Seller','-','-','running',1,?,?,?)").run(enriching, tenant, query, icp, markCompanyFirstBudget(null))
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, score, signal, source_url, event_date, review_reason) VALUES (?,?,'','Pending Co',60,'Open sales vacancy','https://pending.example/jobs',?,'quote_unconfirmed')").run('7'.repeat(24), enriching, day)
+    db.prepare("UPDATE scan_jobs SET status='done' WHERE id=?").run(enriching)
+    const e = (await listCampaignsNow(db, tenant, 10, now)).find(c => c.id === enriching)!
+    assert.deepEqual([e.next.label, e.qualification.needsReview], ['Search still running', 0], 'done, enrichment still running')
   } finally { db.close() }
 })

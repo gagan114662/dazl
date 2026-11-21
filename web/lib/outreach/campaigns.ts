@@ -56,15 +56,17 @@ const campaignJobs = (db: Database.Database, tenantId: string, limit: number) =>
 // #1062: the leads a company-first scan shows anywhere (run page, /api/leads, CSV, campaign page) are companyFirstResults().visibleIds.
 // Every count reads the same set, per company-first scan in `jobs`. A scan whose result cannot be read (still running, a rescan in
 // progress, a missing table) shows nothing, so it gets an empty set: fail closed, never "all stored leads".
-// 'checking': the scan's final checks have not run yet (not done, or done with enrichment still running - companyFirstResults computes
-// visibility only after both): its leads stay held, and the card says the search is still running, never "held by checks".
+// 'checking': the scan is done but its enrichment is still running, so its final checks have not run (companyFirstResults computes
+// visibility only after both): its leads stay held, and the card says the search is still running, never "held by checks". A pending,
+// running, failed or cancelled scan gets the fail-closed empty set and nextAction's own label for that status.
 export type CompanyFirstShown = ReadonlyMap<string, ReadonlySet<string> | 'checking'>
 export async function companyFirstShown(db: Database.Database, tenantId: string, jobs: readonly { id: string; run_budget: string | null }[], now: Date = new Date()): Promise<CompanyFirstShown> {
   const out = new Map<string, ReadonlySet<string> | 'checking'>()
   for (const j of jobs) {
     if (!hasCompanyFirstBudget(j.run_budget)) continue   // no read at all for other scans (#1136 HIST-BATCH query bound)
     const s = db.prepare('SELECT status, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?').get(j.id, tenantId) as { status: string; enrich_finished_at: number | null } | undefined
-    out.set(j.id, s?.status === 'done' && s.enrich_finished_at != null ? (await companyFirstResults(sqliteDb(db), tenantId, j.id, now))?.visibleIds ?? new Set() : 'checking')
+    out.set(j.id, s?.status === 'done' && s.enrich_finished_at == null ? 'checking'
+      : s?.status === 'done' ? (await companyFirstResults(sqliteDb(db), tenantId, j.id, now))?.visibleIds ?? new Set() : new Set())
   }
   return out
 }

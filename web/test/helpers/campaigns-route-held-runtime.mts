@@ -80,6 +80,12 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
   const pending = await (await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${enriching}`))).json() as { leads: unknown[]; held: unknown[] }
   assert.deepEqual([pending.leads, pending.held], [[], []], 'enriching: no lead shown and none listed as held yet')
 
+  // A company-first scan that failed keeps its own "Search failed" step (sonnet, round 3), and nothing in it is reviewable.
+  const failed = createJob(db, 'A', { business_name: 'Synthetic A', industry: 'software', location: 'London' })
+  db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(failed)
+  lead(failed, 'Failed Co', 'quote_unconfirmed')
+  db.prepare("UPDATE scan_jobs SET status='failed',error='provider error',run_budget=?,query=? WHERE id=?").run(markCompanyFirstBudget(null), 'Find London software companies that raised a Series A round.', failed)
+
   const leadsRes = await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${cf}`))
   assert.equal(leadsRes.status, 200)
   const leadsBody = await leadsRes.json() as { leads: { id: string }[]; held: { id: string; hold_reason: string }[] }
@@ -108,6 +114,10 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
     assert.ok(e, `${url}: the enriching scan is listed`)
     assert.equal(e.qualification.needsReview, 0, `${url}: enriching: nothing to review`)
     assert.equal(e.next.label, 'Search still running', `${url}: enriching: still running, not "held by checks"`)
+    const f = cards.find(x => x.id === failed)
+    assert.ok(f, `${url}: the failed scan is listed`)
+    assert.equal(f.qualification.needsReview, 0, `${url}: failed: nothing to review`)
+    assert.doesNotMatch(f.next.label, /still running|review/i, `${url}: failed: never "still running" (${f.next.label})`)
     const p = cards.find(x => x.id === plain)
     assert.ok(p, `${url}: the control scan is listed`)
     assert.equal(p.qualification.needsReview, 1, `${url}: an ordinary review-list lead still needs review`)
