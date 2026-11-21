@@ -682,7 +682,6 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   { const why = recheckSendAuthority(db, tenantId, { to: m.to_email, sender: acct!.email, now: nowS(d), expectRefreshCt: tokenGen }); if (why) release(why) } // the shared recheck (send-authority.ts); the first-touch set above stays
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
-  if (draftOfferChanged(db, tenantId, final)) release('offer_changed') // #686: the play's offer changed during the token refresh
   if (tableExists(db,'sequences')) {
     const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
     if (set && set.status !== 'approved') release('approve_sequence_set')
@@ -696,6 +695,8 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
     try { why = d.authorize() } catch (e) { captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId }); release('authority_unreadable') }
     if (why!) release(why!)
   }
+  // #686: the play's offer changed during the token refresh (after the caller's own authority, which names an autopilot change its way)
+  if (draftOfferChanged(db, tenantId, getMsg(db, tenantId, id)!)) release('offer_changed')
   } catch (e) {
     if (e instanceof OutreachError) throw e
     captureError(e, { source: 'worker', where: 'outreach:send:recheck', tenantId })
