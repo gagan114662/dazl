@@ -52,7 +52,7 @@ import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, focusTerms, withGeography } from '../search/tinyfish.ts'
 import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
-import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { effectiveCapUsd, noteAccountLimitRefusal, scanSpendContext, scanSpendRow, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
@@ -644,6 +644,42 @@ export function assertOwned(db: Database.Database, job: Job): void {
   if (d && d.now() > d.at) throw new ScanTimedOut()
 }
 
+// Company-first keeps searching new angles while fewer than this many distinct candidates survive dropKnown (or a spend,
+// read or deadline guard stops it). Case 1 (prod run df4f657f) stopped after angle 1 with 2 candidates.
+const COMPANY_FIRST_TARGET_CANDIDATES = 8
+// Thrown before any reservation when an optional company-first angle would not fit under every guard.
+// What an optional angle must leave free on top of its own search estimate: its page extractions plus verification and
+// grading of every candidate already found. A refused grading call would hold verified leads at fit 0 (Qodo #1457).
+// Observed case-1 runs spent $0.14 in total on everything after search, so this is a generous floor.
+const COMPANY_FIRST_DOWNSTREAM_RESERVE_USD = 0.25
+class OptionalAngleNoRoom extends Error { constructor() { super('optional_angle_no_room') } }
+// Read-only, never latching: does this scan's recorded cap still have room for usd? Unknown state answers no (the angle is optional).
+// Read-only, never latching: does every owner pool behind these guards still have room for usd? A pool that cannot say answers no.
+async function poolRoomFor(guards: SpendGuard[], usd: number): Promise<boolean> {
+  for (const g of guards) {
+    if (!(g instanceof PooledGuard)) continue
+    if (g.refused || !g.pool.headroom) return false
+    const room = await g.pool.headroom().catch(() => -Infinity)
+    if (!(room >= usd)) return false
+  }
+  return true
+}
+async function scanCapRoomFor(usd: number): Promise<boolean> {
+  const ctx = scanSpendContext()
+  if (!ctx) return false
+  const cap = effectiveCapUsd(ctx)
+  if (cap === null) return false
+  const row = await scanSpendRow(ctx.db, ctx.jobId, ctx.tenantId).catch(() => undefined)
+  if (!row || !Number.isFinite(row.spend_cap_reserved_usd)) return false
+  const bound = row.spend_cap_usd === null ? cap : Math.min(cap, row.spend_cap_usd)
+  if (!(row.spend_cap_reserved_usd + usd <= bound)) return false
+  // The owner's day/month account windows every priced step of the scan is also counted on (null: the runner's own PooledGuard does).
+  if (ctx.accountLimits) {
+    const room = await sharedPool(ctx.db, ctx.tenantId, ctx.accountLimits).headroom?.().catch(() => -Infinity)
+    if (!(typeof room === 'number' && room >= usd)) return false
+  }
+  return true
+}
 // #386 lookalike scans (lib/scan/lookalike-discovery.ts lookalikeOf): the run never brings back an account the tenant
 // supplied (customer, won opportunity, competitor, negative example). A block that is present but unreadable is UNKNOWN,
 // never "nothing supplied": every candidate is then dropped as lookalike_unreadable.
@@ -1648,7 +1684,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (cohort === 'unreadable' || totalPublisherReads >= COMPANY_FIRST_MAX_PUBLISHER_READS ||
           spendAttemptUncertain() || spendAttemptRejected() !== null || earlierLimitRefusal(db, job) ||
           (phaseDeadline && phaseDeadline.at - phaseDeadline.now() < 45_000)) break
-        if (leads?.length && (!cohort || dropKnown(cohort, leads).kept.length > 0)) break
+        // Keep searching while too few candidates survive the supplied-account drop; each one found still goes to the verifier.
+        const kept = leads?.length ? (cohort ? dropKnown(cohort, leads).kept : leads) : []
+        if (new Set(kept.map(dedupKey)).size >= COMPANY_FIRST_TARGET_CANDIDATES) break
       }
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days
@@ -1686,6 +1724,12 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       try {
         assertOwned(db, job)
         const found = await runClaudeWebSearch(key, searchPrompt, async est => {
+          // #1454: an optional later angle never asks a guard it cannot fit (a refused guard latches and would refuse the
+          // verification of candidates already found). Room for the angle's own estimate on every guard and on the scan cap.
+          if (companyFirst && angleIndex > 0 && totalNativeCandidates > 0 &&
+            (spendGuards.some(g => g.refused || !(g.reservedUsd + est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD <= g.limitUsd)) ||
+              !(await poolRoomFor(spendGuards, est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD)) ||
+              !(await scanCapRoomFor(est.estimatedUsd + COMPANY_FIRST_DOWNSTREAM_RESERVE_USD)))) throw new OptionalAngleNoRoom()
           const hold = await reserveNativeSearch(spendGuards, est.estimatedUsd, () => assertOwned(db, job))
           paidPrepared = est
           reportSearch(est, null)
@@ -1700,6 +1744,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const est = found.estimate, usage = found.usage
         const over = usage.usd > est.estimatedUsd + 1e-9
         if (spendAttemptUncertain() || !usage) { ledger.record(source, 'error:usage_unknown'); finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger); return 'failed' }
+        // An optional later angle that settled above its estimate ends discovery, never the run: its actual cost is known and
+        // settled, and candidates already found go on to the verifier.
+        if (over && companyFirst && angleIndex > 0 && totalNativeCandidates > 0 && !spendGuards.some(g => g.refused) && await poolRoomFor(spendGuards, COMPANY_FIRST_DOWNSTREAM_RESERVE_USD) && await scanCapRoomFor(COMPANY_FIRST_DOWNSTREAM_RESERVE_USD)) { ledger.record(source, 'partial_hold:estimate_exceeded'); finishedSearches.push({est,usage}); break }
         if (over) { ledger.record(source, 'partial_hold:estimate_exceeded'); finish(db, job, 'failed', 'native_search_estimate_exceeded', null, null, ledger); return 'failed' }
         // Prefer cited evidence, then stable publisher diversity; public ATS postings and board roots use the documented
         // board org as the publisher. Only admitted tool-result URLs go through the existing guarded fetch.
@@ -1792,6 +1839,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           Object.keys(d.result_errors).every(k=>k==='max_uses_exceeded')
         if(found.outcome!=='ok'&&!onlyUseLimit)break
       } catch (e) {
+        if (e instanceof OptionalAngleNoRoom) { ledger.record(source, 'partial'); break }
+        if (e instanceof SpendRefused && refusalCode(e) === 'budget_stopped' && companyFirst && angleIndex > 0 && totalNativeCandidates > 0) { ledger.record(source, 'partial'); break }
         // Closed diagnostic codes only: no response, provider message, URL or credentials in source stats.
         ledger.record(source, e instanceof SpendRefused ? 'skipped_hold'
           : e instanceof ClaudeSearchError ? `error:${e.diagnostic ?? e.code}` : 'error')
