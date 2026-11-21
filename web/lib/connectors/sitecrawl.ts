@@ -1308,10 +1308,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // Did the request name a place at all? The ICP's where, or (a legacy scan with no ICP) its stored location. Unknown counts as yes.
     let placeRequested = true
     try {
-      const j = db.prepare('SELECT icp, location FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null; location: string | null } | undefined
+      const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null } | undefined
       const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null
       if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string')
-      placeRequested = where.some(x => x.trim()) || (!j?.icp && !!j?.location?.trim())
+      if (where.some(x => x.trim())) placeRequested = true
+      else if (j?.icp) placeRequested = false
+      else {   // legacy scan without an ICP: its stored location is the request's place (a schema without the column: unknown = requested)
+        try { placeRequested = !!(db.prepare('SELECT location FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { location?: string | null } | undefined)?.location?.trim() } catch { placeRequested = true }
+      }
     } catch { /* no ICP: evidence places only */ }
     // The display-only importer is optional. A missing policy must not erase ordinary crawl geography.
     let publishedDisplayOnly = false
