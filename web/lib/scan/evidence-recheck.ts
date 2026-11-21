@@ -14,6 +14,7 @@ import {ownPostDate,type OwnPostInput} from './own-post-date.ts'
 const ownPostOr=(b:{bound:boolean;why:string},day:string,i:OwnPostInput)=>{if(b.bound)return b;const o=ownPostDate(i);return o.date===day?{bound:true,why:o.why}:b}
 import {counterpartySignal} from './counterparty.ts'
 import {isHiringTrigger} from './scoreboard.ts'
+import {signalNamesBoardPosting} from '../sources/ats-posting.ts'
 // the verifier's date rejections (lib/scan/runner.ts DATE_REJECTS): a claimed day the date rules reject never takes the board proof
 const DATE_REJECTS=new Set(['bad_date','stale','future_date'])
 interface Saved {id:string;scan_job_id:string;company:string;name:string;signal:string;signal_kind:string|null;source_url:string;evidence_excerpt:string|null;event_date:string|null;query:string|null;icp:string|null;review_reason:string|null;company_domain:string|null;contact:string|null;human_confirmed_at:number|null}
@@ -37,7 +38,7 @@ export async function evidenceRecheck(db:DbLike,tenant:string,id:string,fetcher:
  // date rules reject that day (stale, future, malformed: the verifier's DATE_REJECTS, which never take a proof); any other lead, or another
  // day, is bound by the page text or is undated
  const dateRejected=!literal.ok&&DATE_REJECTS.has(literal.reason)
- const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&isHiringTrigger(lead.signal,lead.signal_kind)
+ const boardDated=!!lead.event_date&&!!page.postedAt&&page.postedAt===lead.event_date&&!dateRejected&&(isHiringTrigger(lead.signal,lead.signal_kind)||(!lead.signal_kind&&signalNamesBoardPosting(lead.signal,lead.source_url,page.board?.record?page.board.title:null)))
  const date=boardDated?{bound:true,proof:'ats_structured' as const}:lead.event_date?{...ownPostOr(eventDateBound(lead.event_date,page.text,candidate.excerpt,lead.company),lead.event_date,{request:lead.query,company:lead.company,url:lead.source_url,excerpt:candidate.excerpt,page}),proof:'page_bound' as const}:null
  const window=windowStatus(date?.bound?lead.event_date:null,parseWindowDays(lead.query??'')??icp.window_days,now)
  const counterparty=counterpartySignal(candidate,page,literal.ok?literal.passage:'')
