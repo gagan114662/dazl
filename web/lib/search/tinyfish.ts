@@ -527,12 +527,17 @@ export function focusText(text: string, terms: string[], limit: number): string 
   const order: [number, number][] = []
   for (let k = 0; order.length < 400 && hits.some(h => h.length > k); k++) for (const h of hits) if (h[k]) order.push(h[k])
   const chosen: [number, number][] = [[0, head]]
-  let used = head
+  // Charge what the merged output would actually emit (overlaps counted once, ' … ' joins included).
+  const emitted = (spans: [number, number][]) => {
+    const s = [...spans].sort((a, b) => a[0] - b[0]); let len = 0, parts = 0, cur: [number, number] | null = null
+    for (const x of s) { if (cur && x[0] <= cur[1]) cur[1] = Math.max(cur[1], x[1]); else { if (cur) { len += cur[1] - cur[0]; parts++ } cur = [x[0], x[1]] } }
+    if (cur) { len += cur[1] - cur[0]; parts++ }
+    return len + 3 * Math.max(0, parts - 1)
+  }
   for (const s of order) {
     if (chosen.some(c => s[0] >= c[0] && s[1] <= c[1])) continue
-    const cost = s[1] - s[0] + 3
-    if (used + cost > limit) continue
-    chosen.push(s); used += cost
+    if (emitted([...chosen, s]) > limit) continue
+    chosen.push(s)
   }
   chosen.sort((a, b) => a[0] - b[0])
   const merged: [number, number][] = []

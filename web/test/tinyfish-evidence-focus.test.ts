@@ -35,3 +35,9 @@ test('review: a menu term repeated early cannot crowd out a later, rarer term', 
   assert.ok(out.length <= 4000)
   assert.match(out, /Acme closed new funding this month/)
 })
+test('review: overlapping windows are charged once, so a later term still fits', () => {
+  const words = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel']
+  const page = 'h'.repeat(1300) + words.map(w => ` ${w} ` + 'z'.repeat(190)).join('') + ' x'.repeat(4000)
+  const out = focusText(page, words, 4000)
+  for (const w of words) assert.match(out, new RegExp(w))
+})
