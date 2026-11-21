@@ -2,9 +2,8 @@
 import { useEffect, useState } from 'react'
 
 // Without a token: ask for the email to send a reset link to. With one (from the email's #fragment, never sent to a
-// server log): choose the new password. mailAvailable null: not known yet (the page's first HTML); the form is offered and
-// the request route answers in words if this deployment cannot send mail.
-export default function Reset({ mailAvailable }: { mailAvailable: boolean | null }) {
+// server log): choose the new password.
+export default function Reset({ mailAvailable }: { mailAvailable: boolean }) {
   const [token, setToken] = useState<string | null>(null)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
@@ -31,13 +30,13 @@ export default function Reset({ mailAvailable }: { mailAvailable: boolean | null
     <main id="main" className="app-ui min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
         <h1 className="text-2xl font-medium mb-1 text-center">{token ? 'Choose a new password' : 'Reset your password'}</h1>
-        <p className="text-[#555] text-sm mb-6 text-center">{token ? 'This signs your account out on every device.' : mailAvailable === true ? 'We will email you a link that works for 30 minutes.' : mailAvailable === null ? 'Enter the email you signed up with.' : 'Email delivery is not available right now. Try again later.'}</p>
+        <p className="text-[#555] text-sm mb-6 text-center">{token ? 'This signs your account out on every device.' : mailAvailable ? 'We will email you a link that works for 30 minutes.' : 'Email delivery is not available right now. Try again later.'}</p>
         {msg && <p role="status" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{msg}</p>}
         <form method="post" onSubmit={submit} className="flex flex-col gap-3">
           {token
             ? <input name="password" type="password" required minLength={10} autoComplete="new-password" placeholder="New password (10+ characters, letters and numbers)" className="field" />
             : <input name="email" type="email" required autoComplete="email" placeholder="you@company.com" className="field" />}
-          <button type="submit" disabled={busy || (!token && mailAvailable === false)} className="btn-primary mt-1 !py-3">{busy ? 'Working...' : token ? 'Set password' : mailAvailable !== false ? 'Send link' : 'Email unavailable'}</button>
+          <button type="submit" disabled={busy || (!token && !mailAvailable)} className="btn-primary mt-1 !py-3">{busy ? 'Working...' : token ? 'Set password' : mailAvailable ? 'Send link' : 'Email unavailable'}</button>
         </form>
         <p className="mt-4 text-sm text-[#666] text-center"><a href="/sign-in" className="text-[#111] underline underline-offset-2">Back to sign in</a></p>
       </div>

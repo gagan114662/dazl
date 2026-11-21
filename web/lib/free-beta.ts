@@ -7,7 +7,7 @@ export const FREE_BETA = {
   items: [
     'Paste your website: dazl works out who buys from you',
     'Businesses with a dated buying signal, found on their own site, a job board or the news',
-    'The quoted line and the source link behind every lead',
+    'The quoted line and the source link behind every ready lead',
     'An email drafted from that proof',
     'Sent from your own Gmail',
   ],

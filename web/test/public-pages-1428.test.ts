@@ -7,8 +7,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { EXAMPLES } from '../lib/landing-examples.ts'
-import { signUpPlanLine } from '../lib/trial-copy.ts'
 import { FREE_BETA } from '../lib/free-beta.ts'
+import { signUpPlanLine } from '../lib/trial-copy.ts'
 
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 const PUBLIC = ['app/page.tsx', 'app/banner.tsx', 'app/landing-demo.tsx', 'app/free-beta-card.tsx', 'app/sign-up/sign-up-form.tsx', 'app/sign-in/page.tsx', 'app/contact/page.tsx', 'app/about/page.tsx']
@@ -97,4 +97,20 @@ test('#1428 one visual style: the auth pages use the homepage\'s style scope (ap
     assert.ok(mains.length > 0, `${p} renders a main`)
     for (const m of mains) assert.match(m, /className="app-ui /, `${p}: ${m}`)
   }
+})
+
+// Council round 1 (#1428): the public copy claims only what the product does.
+test('#1428 the free card claims proof for every READY lead, never for every lead (held leads are kept out of the ready list)', () => {
+  for (const item of FREE_BETA.items) assert.doesNotMatch(item, /\bevery lead\b/i, item)
+  assert.ok(FREE_BETA.items.some(i => /every ready lead/.test(i)))
+})
+test('#1428 the Google button on sign-in creates accounts too: the Terms and Privacy acceptance line is there as on sign-up', () => {
+  const src = read('app/sign-in/page.tsx')
+  assert.match(src, /By continuing you agree to the <a href="\/terms"[^>]*>Terms<\/a> and <a href="\/privacy"[^>]*>Privacy Policy<\/a>/)
+  assert.doesNotMatch(src, /<div className="mb-4" \/>/, 'no empty spacer left where the old line was')
+})
+test('#1428 the demo calls leads that failed a check kept out with the reason, not still being checked', () => {
+  const demo = read('app/landing-demo.tsx')
+  assert.doesNotMatch(demo, /still being checked/)
+  assert.match(demo, /2 more kept out, with the reason/)
 })

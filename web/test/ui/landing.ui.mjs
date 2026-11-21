@@ -4,7 +4,7 @@
 // answered from a stub and off-host requests aborted. It proves, on the rendered page:
 //   1. the hero is one line, the owner's subhead (#1428), one "Start free" (to sign-up) and a secondary "See how it works";
 //   2. the demo plays the flow (five businesses in five countries, picked by chips or one per loop; the local dental one
-//      first): a URL typed, the four checks tick, "3 leads ready" (2 more still being checked) with 3 lead cards (name,
+//      first): a URL typed, the four checks tick, "3 leads ready" (2 more kept out, with the reason) with 3 lead cards (name,
 //      title, company, quoted signal with date), then the saved search "Live · runs every day"; labelled as an example;
 //   3. the 3 steps, the proof strip, the free-beta card (no Pro) and the footer with the support address are there;
 //   4. none of the old page is left: no FIND/VERIFY/REVIEW/SEND tabs, monospace, "Illustration only", BYOK or trial
@@ -53,7 +53,7 @@ try {
     assert.match(await demo.innerText(), /brightsmile-dental\.example/, 'the first (local dental) business\'s website is typed')
     await page.waitForFunction(() => document.querySelector('[data-testid=landing-demo]')?.getAttribute('data-step') === 'live', null, { timeout: 15000 })
     const dt = await demo.innerText()
-    for (const c of ['Reading your site', 'Building your profile', 'Searching hiring & funding news', 'Checking evidence', '3 leads ready', '2 more still being checked', 'Live · runs every day']) assert.ok(dt.includes(c), c)
+    for (const c of ['Reading your site', 'Building your profile', 'Searching hiring & funding news', 'Checking evidence', '3 leads ready', '2 more kept out, with the reason', 'Live · runs every day']) assert.ok(dt.includes(c), c)
     assert.equal(await demo.locator('[data-state=done]').count(), 4, 'all four checks ticked')
     assert.equal(await page.getByTestId('demo-label').innerText(), 'Illustrative example · made-up companies and people', 'the demo says it is an example, on screen')
     assert.match(await demo.getAttribute('aria-label'), /^Illustrative example/, 'and to screen readers')
@@ -114,7 +114,7 @@ try {
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `page${p.replace('/', '-')}-390.png`), fullPage: true })
     await page.close()
   }
-  console.log('landing UI check passed: one-line hero + owner subhead + Start free (sign-up) + See how it works; demo (dental first) types a URL, ticks 4 checks, 3 ready leads (2 still being checked) with 3 cards, labelled as an example, saved search live every day; 3 steps, proof, free-beta card, footer with support address; /pricing /plans /contact /about answer; old tabs/monospace/disclaimer/BYOK gone; no horizontal scroll at 390px')
+  console.log('landing UI check passed: one-line hero + owner subhead + Start free (sign-up) + See how it works; demo (dental first) types a URL, ticks 4 checks, 3 ready leads (2 kept out, with the reason) with 3 cards, labelled as an example, saved search live every day; 3 steps, proof, free-beta card, footer with support address; /pricing /plans /contact /about answer; old tabs/monospace/disclaimer/BYOK gone; no horizontal scroll at 390px')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

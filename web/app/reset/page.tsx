@@ -1,15 +1,14 @@
-import { Suspense } from 'react'
 import { connection } from 'next/server'
 import { systemMailAvailable } from '@/lib/system-mail'
 import ResetForm from './reset-form'
 
 // Runtime deployment availability only, never account-specific or baked into a build.
-async function RuntimeReset() {
+// #1428: the form used to sit behind a Suspense boundary, so dazl.ai showed a loading line for seconds until
+// the streamed part was swapped in. As on sign-up (app/sign-up/page.tsx, #668/#670): connection() with NO Suspense boundary,
+// plus `instant = false`, so the route answers once connection() resolves (near-instant) with the complete form in the
+// first HTML, and it hydrates normally.
+export const instant = false
+export default async function Reset() {
   await connection()
   return <ResetForm mailAvailable={systemMailAvailable()} />
-}
-// #1428: the fallback is the form itself (mail state not yet known), so the first HTML is already usable; the runtime
-// part only replaces it with the same form once it knows whether this deployment can send mail.
-export default function Reset() {
-  return <Suspense fallback={<ResetForm mailAvailable={null} />}><RuntimeReset /></Suspense>
 }

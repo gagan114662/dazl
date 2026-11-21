@@ -44,7 +44,8 @@ export default function SignIn() {
         <p className="text-[#555] text-sm mb-6 text-center">Enter your email to continue</p>
         <ClaimContextBanner business={claim.business} action="Sign in" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>
-        <div className="mb-4" />
+        {/* #1428: Continue with Google can create an account here too, so the same acceptance line as sign-up */}
+        <p className="text-xs text-[#555] text-center mt-2 mb-4" data-testid="terms-acceptance">By continuing you agree to the <a href="/terms" className="underline underline-offset-2">Terms</a> and <a href="/privacy" className="underline underline-offset-2">Privacy Policy</a>.</p>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         <form method="post" onSubmit={handleSubmit} className="flex flex-col gap-3">

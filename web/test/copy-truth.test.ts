@@ -80,9 +80,9 @@ test('homepage evidence and coverage claims match what a scan returns (Instinct 
   // Results are not promised for every market (#1428 dropped the coverage sentence; no promise replaces it).
   assert.doesNotMatch(page, /works out who buys from you\./)
   assert.doesNotMatch(page, /every market|any market|guarantee/i)
-  // The demo shows the leads still being checked beside ready ones, never only a headline count.
+  // The demo shows the leads kept out (with the reason) beside ready ones: held, never dropped, never only a headline count.
   assert.doesNotMatch(demo, /5 leads found/)
-  assert.match(demo, /2 more still being checked/)
+  assert.match(demo, /2 more kept out, with the reason/)
 })
 
 test('onboarding "brain ready" copy matches behaviour: no approve-every-send, no unconditional follow-up stop, no contact-today promise', () => {

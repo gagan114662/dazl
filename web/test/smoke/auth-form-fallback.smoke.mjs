@@ -17,15 +17,14 @@ const FIX = {
   business_name: 'Smoke Fixture Co',
   password: 'smoke-fixture-value-9f2c-not-a-secret',
 }
-// #1428: /reset renders its form in the initial HTML too (the Suspense fallback is the form itself, mail state unknown),
-// so it is a browser case: with JS disabled the email field is there to fill, and a native submit is a POST that puts
-// nothing in the URL. Sign-up and sign-in render their forms in the initial HTML as well.
+// #1428: /reset renders its complete form in the initial HTML too (as sign-up: connection() with no Suspense boundary).
+// This harness sends no mail, so its Send button is (rightly) disabled: the /reset check below is that the form itself is
+// in the first HTML with no script, never a loading line.
 const CASES = [
   // #1116: sign-up WORKS without its script: the form posts to /api/auth/signup, which creates the account and redirects
   // back with a code ("Check your email"), or into the app when this deployment sends no confirmation mail.
   { path: '/sign-up', works: true, fields: { name: FIX.name, email: FIX.email, business_name: FIX.business_name, password: FIX.password } },
   { path: '/sign-in', fields: { email: FIX.email, password: FIX.password } },
-  { path: '/reset', fields: { email: FIX.email } },
 ]
 
 const srv = await startServer()
@@ -72,6 +71,13 @@ try {
     console.log(`${errs.length ? 'FAIL' : 'ok  '} JS disabled ${c.path}`)
     for (const e of errs) console.log(`     ${e}`)
     for (const e of errs) failures.push(`${c.path}: ${e}`)
+  }
+  {
+    await page.goto(base + '/reset', { waitUntil: 'domcontentloaded' })
+    const text = await page.locator('body').innerText()
+    const ok = (await page.locator('input[name=email]').count()) === 1 && /Reset your password/.test(text) && !/Loading account recovery/.test(text)
+    console.log(`${ok ? 'ok  ' : 'FAIL'} JS disabled /reset: the form is in the first HTML, no loading line`)
+    if (!ok) failures.push(`/reset: first HTML has no form: "${text.replace(/\s+/g, ' ').slice(0, 80)}"`)
   }
   // #1116: the pages a native post is redirected to, rendered by the server with NO script: "Check your email", and an error
   // in the scripted form's words. (This harness sends no mail, so the posts above land in the app; these are what a

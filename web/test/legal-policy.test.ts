@@ -121,7 +121,7 @@ test('no audit record is purged until a period is chosen, as the policy says', (
   assert.match(privacy, /the audit trail\) are not deleted automatically today/)
 })
 
-test('account email is held on the host while no system provider is configured, and the policy ties its 24-hour deletion to the retention flag', async () => {
+test('account email: held on the host while no system provider is configured (code), and the policy names Amazon SES and no host-held deletion period', async () => {
   // current production state (#613 review, verified on the live process 2026-11-04): SMTP is not configured, so
   // account emails are kept in system_mail_outbox. ACCOUNT_RETENTION_ENABLED is also unset there, so the 24-hour
   // reap does NOT run today - the text must not say it does.
@@ -148,7 +148,7 @@ test('trace capture is off unless its flag is set', () => {
 test('what survives account deletion is exactly the always-retained set', () => {
   assert.deepEqual([...FACTS.retainedAfterDeletion].sort(), Object.keys(ALWAYS_RETAINED).sort())
   assert.match(privacy, /the audit trail, the record of evidence purges, and consent records/)
-  assert.match(privacy, /older records are cleared by a scheduled cleanup\./, 'the legacy tick backstop, without promising a time')
+  assert.match(privacy, /older records are cleared by a scheduled cleanup when it runs/, 'the legacy tick backstop, without promising a time')
   assert.doesNotMatch(privacy, /older records are cleared (within|by \d|after)/, 'and promises no guaranteed timing')
   // "removes credentials and sign-in state first" and "never included in a data export"
   for (const t of ['sessions', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']) assert.ok(CREDENTIAL_TABLES.includes(t), t)
@@ -174,7 +174,7 @@ test('AI, enrichment and CRM providers named in the policy are the ones the code
   // the free trial runs on dazl's own Anthropic key
   assert.match(read('lib/scan/trial.ts'), /DAZL_TRIAL_ANTHROPIC_KEY/)
   assert.match(read('lib/scan/trial.ts'), /Absent means the trial is off/)
-  assert.match(privacy, /trial scans run on dazl's own Anthropic key/)
+  assert.match(privacy, /its scans run on dazl's own Anthropic key/)
   assert.match(privacy, /the free trial when it is enabled/)
 })
 
@@ -472,7 +472,7 @@ test('error reports leaving the server carry no message, account id or personal 
 
 test('the free plan allowance matches the plan limits', () => {
   assert.equal(FACTS.freeScansPerMonth, PLAN_LIMITS.free.scansPerMonth)
-  assert.ok(terms.includes(`${FACTS.freeScansPerMonth} scans a month`))
+  assert.ok(terms.includes(`up to ${FACTS.freeScansPerMonth} a month`))
 })
 
 // The privacy page's qualified claim ("deleting your account deletes them ... unless the deletion request asks to
@@ -491,4 +491,23 @@ bothEngines('privacy claim: a completed deletion erases stored replies by defaul
   assert.notEqual((await f.snap(DC)).inbound_messages, '[]', 'a deletion request that names inbound_messages keeps it')
   for (const ct of CREDENTIAL_TABLES) assert.equal((await f.snap(DC))[ct] ?? '[]', '[]', `credentials are never retained: ${ct}`)
   assert.deepEqual(await f.snap(DB2), bBefore, 'the other tenant is untouched')
+})
+
+// Council round 1 (#1428): the plain text keeps the facts the shorter wording first dropped.
+test('#1428 plain text keeps the conversion facts: autopilot candidates and the opted-in onboarding path, across workspaces', () => {
+  assert.match(read('lib/outreach/lifecycle.ts'), /exact-email exclusion used by the autopilot candidate prefilter/)
+  assert.match(read('lib/outreach/lifecycle.ts'), /onboarding path in the same transaction, only under an active opted-in policy/)
+  assert.match(privacy, /drops that address from every workspace's autopilot candidates/)
+  assert.match(privacy, /starts the contacting customer's own onboarding steps for it, only where that customer turned them on/)
+})
+test('#1428 plain text keeps the trial condition and the deletion qualifiers', () => {
+  assert.match(privacy, /When the free trial is on, its scans run on dazl's own Anthropic key/)
+  assert.match(privacy, /If that last step fails, what was already erased is not restored, and the step has to be run again/)
+  assert.match(privacy, /older records are cleared by a scheduled cleanup when it runs; if a run is late or fails, they stay until a later run/)
+})
+test('#1428 the price section says only what the code does: free beta, the trial, the plan cap, paid plans optional', () => {
+  assert.match(terms, /dazl is free during the beta/)
+  assert.match(terms, new RegExp(`When the free trial is on, a new account gets free trial scans with no card; after that, scans run on an AI provider account you connect, up to ${FACTS.freeScansPerMonth} a month`))
+  assert.match(terms, /A paid plan, where offered, is optional and shows its price before you pay/)
+  assert.doesNotMatch(terms, /we will tell you before anything is charged/)
 })
