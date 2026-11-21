@@ -34,11 +34,21 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     walk(compileTargeting(query, icp).root)
     if (ors.length !== 1) return null
     const of = (ors[0] as { of: PlanNode[] }).of
-    if (of.length !== 2 || !of.every(n => n.op === 'cond')) return null
+    if (of.length < 2 || !of.every(n => n.op === 'cond')) return null
     const cs = of.map(n => (n as { cond: Condition }).cond)
     // #876: "made their first sales hire" compiles to hire_made (a completed hire), still the sales-hiring branch of the OR. The plan's own clause
     // proof (targeting-proof.ts) then needs a source showing the completed hire; an open posting does not prove it.
     // #878 (main): a clause whose stated clocks conflict never forms the OR.
+    // Case 1 (b9a34d2d): several hiring branches ("first SDR/BDR or sales rep" OR "a new Head of Sales/VP Sales") read as ONE hiring branch whose
+    // roles are all of theirs, on the narrowest of their clocks. Exactly one event branch; every other branch an open-role GTM hiring (a completed
+    // hire mixed in, or a non-GTM role, keeps the old two-branch rule only).
+    if (cs.length > 2) {
+      const ev = cs.filter(c => c.kind === 'funding' || c.kind === 'event'), hs = cs.filter(c => c.kind === 'hiring' && !!c.role && isGtmRole(c.role))
+      if (ev.length !== 1 || ev.length + hs.length !== cs.length) return null
+      const days = hs.map(h => h.within_days).filter((d): d is number => d !== null)
+      const merged: Condition = { ...hs[0], text: hs.map(h => h.text).join(' OR '), role: hs.map(h => h.role).join(' or '), within_days: days.length ? Math.min(...days) : null }
+      cs.splice(0, cs.length, ev[0], merged)
+    }
     const event = cs.find(c => c.kind === 'funding' || c.kind === 'event'), hiring = cs.find(c => (c.kind === 'hiring' || c.kind === 'hire_made') && (!c.role || isGtmRole(c.role)))
     return event && hiring && !event.relative_to && !hiring.relative_to && !event.clock_conflict && !hiring.clock_conflict ? { event, hiring } : null
   } catch { return null }

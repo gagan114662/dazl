@@ -163,6 +163,11 @@ function findAtoms(q: string): Atom[] {
   for (const m of q.matchAll(/\b(?:making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
+  // Case 1 (b9a34d2d): "a new Head of Sales/VP Sales" in a list of signals, with no hire verb, is a sales-leader hiring signal: proven like any
+  // open role (a dated posting titled that role). It never reads as a completed hire.
+  for (const m of q.matchAll(/\b(?:a\s+|an\s+)?new\s+((?:head|vp|vice\s+president|director|chief)\b[a-z\s/&-]{0,40}?\b(?:sales|revenue|growth|business\s+development|gtm))\b(?:\s*\/\s*(?:vp|head|director)\s+(?:of\s+)?(?:sales|revenue|growth))?/gi)) {
+    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: m[0].replace(/^(?:a\s+|an\s+)?new\s+/i, '') })
+  }
   // 4. Other events.
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
   return atoms.sort((a, b) => a.start - b.start)
@@ -181,6 +186,11 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   // #876: a modal completed hire ("may have made their first sales hire") compiles to no condition (findAtoms); the plan says why.
   for (const m of q.matchAll(/\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*(?:made\s+(?:(?:a|an|its|their|the|our)\s+)?(?:[a-z][a-z-]*\s+){0,2}hires?|hired|appointed|named|brought\s+on|onboarded|welcomed)\b/gi))
     ambiguities.push({ text: m[0], readings: ['a completed hire', 'a hire that may not have happened'], chosen: 'no completed-hire condition: the request does not say the hire happened, so nothing is proven by it' })
+  // Case 1: "a founder still doing sales" states no dated event this compiler can prove from a source; it compiles to no condition, and the
+  // plan says so (it never passes a lead and is never silently dropped).
+  for (const m of q.matchAll(/\b(?:a\s+|the\s+)?founders?(?:[- ]led)?\s+(?:(?:is|are|still|who|that)\s+)*(?:doing|running|leading|handling|owning|selling)\s*(?:the\s+)?(?:sales)?\b/gi))
+    if (!atoms.some(a => a.start < (m.index ?? 0) + m[0].length && (m.index ?? 0) < a.end))
+      ambiguities.push({ text: m[0].trim(), readings: ['a dated, sourced statement that the founder runs sales', 'a standing state with no date'], chosen: 'no condition: nothing dated and sourced proves it here, so it never passes a lead on its own' })
   // Windows, each bound to the condition it follows in the text (or to every condition when it comes first).
   const windows: { at: number; end: number; days: number; text: string; anchorWord?: string }[] = []
   for (const m of q.matchAll(WINDOW_RE)) {
@@ -252,6 +262,16 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     if (/\bnor\b/i.test(t)) return 'and'
     return /\bor\b|\beither\b/i.test(t) ? 'or' : 'and'
   })
+  // Case 1 (b9a34d2d): a comma-only gap in a list ("A, B, C, or D") takes the list's own final conjunction. When the last item compiled to no
+  // condition ("..., or a founder still doing sales"), that conjunction sits after the last condition, before the end of its sentence.
+  const listTail = atoms.length ? q.slice(atoms[atoms.length - 1].end).split(/[.;!?]/)[0] : ''
+  const commaOnly = (g: string) => /^\s*,(?:\s+(?:a|an|new|recent|fresh))*\s*$/i.test(g)
+  for (let i = 0; i < conn.length; i++) {
+    if (!commaOnly(gaps[i])) continue
+    const later = gaps.slice(i + 1).find(g => !commaOnly(g))
+    const word = later ?? listTail
+    if (/^\s*,?\s*or\b/i.test(later ?? '') || (!later && /^\s*,\s*or\b/i.test(word))) conn[i] = 'or'
+  }
   // "not funded or hiring": (not A) or B, or neither? The narrower reading is neither.
   for (let i = 0; i < conn.length; i++) if (negated[i] && !negated[i + 1] && conn[i] === 'or') {
     ambiguities.push({ text: q.slice(atoms[i].start, atoms[i + 1].end), readings: [`(not ${conds[i].text}) or ${conds[i + 1].text}`, `neither ${conds[i].text} nor ${conds[i + 1].text}`], chosen: `neither ${conds[i].text} nor ${conds[i + 1].text}` })

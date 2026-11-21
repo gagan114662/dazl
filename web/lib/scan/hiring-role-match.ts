@@ -27,6 +27,7 @@ export interface RequestedHiringRole { term: string; normalized: string }
 // A capture that STARTS with a qualifier names a place or time, never a title: "hiring in Ohio", "hiring within 90 days", "hiring now".
 const LEAD_QUALIFIER = /^(?:within|in|at|on|from|with|during|over|across|now|currently|recently|soon|asap|immediately)\b/i
 // Quantity / article prefixes on a title: "a receptionist", "their first sales representative", "2-3 receptionists".
+const OTHER_SIGNAL = /\b(?:funding|funded|raised?|raising|round|investment|founders?|acquisitions?|acquired|launch\w*|expan\w*|ipo|still\s+doing)\b/i
 const LEAD_WORDS = /^(?:(?:a|an|the|first|new|their|its|our|your|one|two|three|four|five|six|seven|eight|nine|ten|several|multiple|\d+(?:\s*[-\u2013]\s*\d+)?)\s+)+/i
 // A bare time phrase is a recency window, not a role: "the last 3 months", "90 days", "past 6 weeks".
 const TIME_PHRASE = /^(?:(?:last|past|next|this|coming|recent)\s+)?\d*\s*(?:days?|weeks?|months?|quarters?|years?)(?:\s+ago)?$/i
@@ -43,8 +44,12 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
     for (const m of text.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\s+([^.;!?\n]+)/gi)) {
       const phrase = m[1].split(/\s+(?:within|in|at|with|on|from|that|who|whose|during|over|across)\b|\(/i)[0].trim()
       if (LEAD_QUALIFIER.test(phrase)) continue
-      for (const raw of phrase.split(/\s+or\s+|\s+and\s+|,/i)) {
-        const term = raw.replace(LEAD_WORDS, '').trim()
+      // Case 1 (runs 9697d013 / b9a34d2d): "hiring their first SDR/BDR or sales rep, new funding, a new Head of Sales/VP Sales, or a founder
+      // still doing sales" is one list of SIGNALS: an item naming no role noun ("new funding", "founder still doing sales") is another signal,
+      // not a title, and "SDR/BDR" / "Head of Sales/VP Sales" are two titles each.
+      const items = phrase.split(/\s+or\s+|\s+and\s+|,/i)
+      for (const raw of items.length > 1 ? items.filter(i => !OTHER_SIGNAL.test(i)).flatMap(i => i.split(/\s*\/\s*(?=[A-Za-z])/)) : items) {
+        const term = raw.trim().replace(LEAD_WORDS, '').trim()
         const n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n)) continue
         // Broad hiring is not a named title. Keep the existing generic-GTM contract for it.
