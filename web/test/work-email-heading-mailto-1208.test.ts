@@ -88,7 +88,8 @@ const seenFrom = (h: string) => personalAddresses(h, 'x.com').map(a => ({ addres
 const maya = { first: 'maya', last: 'thornton' }
 test('#1208 the issue\'s literal shape publishes for the buyer the crawl titled; without her recorded title it stays refused', () => {
   const h = '<h3>Maya Thornton</h3><a href="mailto:maya@x.com">Email</a>'
-  assert.deepEqual(publishedFor(maya, seenFrom(h), [maya], 'Broker'), { address: 'maya@x.com', url: 'https://x.com/team' })
+  const pub = publishedFor(maya, seenFrom(h), [maya], 'Broker')
+  assert.deepEqual(pub && [pub.address, pub.url], ['maya@x.com', 'https://x.com/team'])
   assert.equal(publishedFor(maya, seenFrom(h), [maya]), null, 'no recorded title: no heading pairing (the display-only importer path)')
   // another named person reachable by the same local part still makes it nobody's
   assert.equal(publishedFor(maya, seenFrom(h), [maya, { first: 'maya', last: 'ortiz' }], 'Broker'), null)

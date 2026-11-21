@@ -1373,9 +1373,38 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
     const lastLt = win.lastIndexOf('<'); if (lastLt > win.lastIndexOf('>')) win = win.slice(0, lastLt) // ... and at its end
     const wide = win.replace(/<[^>]*>/g, tag => tag.length < 12 || !/alt=|title=|aria-label=|data-/i.test(tag) ? ' ' : ` ${[...tag.matchAll(/\b(?:alt|title|aria-label|data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' | ')} `)
       .replace(/\s+/g, ' ').slice(0, 900)
-    out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-'), ...(inAttr ? {} : { text: true }) })
+    // #1208: a plain mailto (no query) is read with the card around it: the heading before the link, the text between, the link's own text
+    const card = mailto && attrName === 'href' && /^\s*mailto:[^?&#\s]+\s*$/i.test(tight) ? mailtoCard(html, i - back.length + q) : undefined
+    out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-'), ...(inAttr ? {} : { text: true }), ...(card ? { card } : {}) })
   }
   return out
+}
+
+// #1208: the card a bare mailto link sits in, read from the markup only: <hN>name</hN> [one block of text] <a href="mailto:...">link</a>.
+// `quoteAt` is where the href value's opening quote is. Null unless the link is an <a> whose nearest preceding heading is reached with
+// no link, image, form control or other heading in between. Visible text only: tags become spaces, a <br> a record break (a tab, never
+// read as a space between a first and a last name), and `stacked` says another heading sits directly on this one.
+const textOf = (h: string) => h.replace(/<br\s*\/?>/gi, '\t').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/ +/g, ' ').trim()
+export function mailtoCard(html: string, quoteAt: number): { heading: string; between: string; link: string; stacked: boolean } | undefined {
+  const tagStart = html.lastIndexOf('<', quoteAt)
+  if (tagStart < 0 || !/^<a\s/i.test(html.slice(tagStart, tagStart + 3))) return undefined
+  const tagEnd = html.indexOf('>', quoteAt), close = tagEnd < 0 ? -1 : html.slice(tagEnd, tagEnd + 400).search(/<\/a\s*>/i)
+  if (close < 0) return undefined
+  const link = textOf(html.slice(tagEnd + 1, tagEnd + close))
+  const seg = html.slice(Math.max(0, tagStart - 1500), tagStart)
+  let last: RegExpExecArray | null = null
+  for (const m of seg.matchAll(/<\/h([1-6])\s*>/gi)) last = m as RegExpExecArray
+  if (!last) return undefined
+  const after = seg.slice(last.index + last[0].length)
+  if (/<(?:a|img|svg|picture|input|button|select|textarea|h[1-6])[\s>/]/i.test(after)) return undefined
+  const before = seg.slice(0, last.index)
+  let open = -1
+  for (const m of before.matchAll(new RegExp(`<h${last[1]}[\\s>]`, 'gi'))) open = m.index
+  if (open < 0) return undefined
+  const openEnd = before.indexOf('>', open)
+  if (openEnd < 0) return undefined
+  const stacked = /<\/h[1-6]\s*>/i.test(/(?:\s*<[^>]*>)*\s*$/.exec(before.slice(0, open))?.[0] ?? '')
+  return { heading: textOf(before.slice(openEnd + 1)), between: textOf(after), link, stacked }
 }
 
 // ---- #1122: why a lead has no company website, and following a guessed domain that only forwards to the real one ----
