@@ -7,3 +7,7 @@ test('a job ad asking people to join the sales development organization is sales
   assert.ok(!affirmativeSalesHiring('We are not looking for anyone to join our Sales Development organization.', 'Skopenow'))
   assert.ok(!affirmativeSalesHiring('Engineers previously had to join our sales organization.', 'Skopenow'))
 })
+test('another company inviting people to join its sales team is not the lead hiring (Qodo)', () => {
+  assert.ok(!affirmativeSalesHiring('Othercorp is looking for people to join our sales team.', 'Acmecorp'))
+  assert.ok(affirmativeSalesHiring('Acmecorp is looking for people to join our sales team.', 'Acmecorp'))
+})

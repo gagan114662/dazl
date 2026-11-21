@@ -192,7 +192,7 @@ test('company first reserves observed high-token shape, carries reviewed seller,
   assert.match(prompts[0],/could actually use the reviewed seller offer/)
   assert.match(prompts[1],/work backwards to the buyer category/)
   assert.match(prompts[2],/first-party pages only/)
-  assert.match(prompts[2],/public applicant tracking boards whose own records dazl reads and dates \(boards\.greenhouse\.io, job-boards\.greenhouse\.io, jobs\.lever\.co, jobs\.ashbyhq\.com\)/)
+  assert.match(prompts[2],/applicant tracking system job permalinks/)
   for(const prompt of prompts){
     assert.match(prompt,/Independent commercial document services/)
     assert.match(prompt,/Not a competitor/)
@@ -660,15 +660,24 @@ test('company first reads the newest matching role from an admitted ATS board fi
     asked.push(u)
     if (u !== 'https://api.ashbyhq.com/posting-api/job-board/regionaldocs') return null
     return { status: 200, body: JSON.stringify({ jobs: [
-      { title: 'Commercial Roofers Sales Lead', publishedAt: '2026-11-10T00:00:00Z', jobUrl: fresh, location: 'London' },
-      { title: 'Commercial Roofers Sales Lead', publishedAt: '2026-06-01T00:00:00Z', jobUrl: stale, location: 'London' },
+      { title: 'Sales Representative', publishedAt: '2026-11-10T00:00:00Z', jobUrl: fresh, location: 'London' },
+      { title: 'Sales Representative', publishedAt: '2026-06-01T00:00:00Z', jobUrl: stale, location: 'London' },
       { title: 'Office Manager', publishedAt: '2026-11-15T00:00:00Z', jobUrl: 'https://jobs.ashbyhq.com/regionaldocs/33333333-3333-4333-8333-333333333333', location: 'London' },
     ] }), finalUrl: u } as never
   }
   const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45, now: new Date('2026-11-21T12:00:00Z'),
-    confirmedOffer: 'Independent commercial document services', boardHttp,
+    confirmedOffer: 'Independent commercial document services', boardHttp, query: 'Commercial roofing companies in London hiring sales representatives',
     diverseFixture: { results: [stale, url], cited: [], blocked: [] } as never })
   assert.ok(asked.includes('https://api.ashbyhq.com/posting-api/job-board/regionaldocs'), JSON.stringify(asked))
   assert.equal(r.publisherRequests[0], fresh, JSON.stringify(r.publisherRequests))
   assert.ok(!r.publisherRequests.includes('https://jobs.ashbyhq.com/regionaldocs/33333333-3333-4333-8333-333333333333'), 'a role that does not match the request is not read')
+})
+
+test('a request for a non-hiring event does not read ATS boards (an ATS day proves only a vacancy)', async () => {
+  const asked: string[] = []
+  await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45, now: new Date('2026-11-21T12:00:00Z'),
+    confirmedOffer: 'Independent commercial document services', query: 'Commercial roofing companies in London that opened a new office',
+    boardHttp: async (u: string) => { asked.push(u); return null },
+    diverseFixture: { results: ['https://jobs.ashbyhq.com/regionaldocs/11111111-1111-4111-8111-111111111111', url], cited: [], blocked: [] } as never })
+  assert.deepEqual(asked, [])
 })

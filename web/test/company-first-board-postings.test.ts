@@ -27,3 +27,14 @@ test('the read deadline stops further board reads', async () => {
   const out = await freshBoardPostings(['https://boards.greenhouse.io/a', 'https://boards.greenhouse.io/b'], { terms: ['sales'], windowDays: 45, now, http, deadlineMs: 15_000, clock: () => t })
   assert.equal(out.length, 1)
 })
+test('two best roles per board, so a rejected top match does not hide the next; EU boards are not read (Qodo)', async () => {
+  const http = gh([
+    { id: 1, title: 'Sales Development Representative', first_published: '2026-11-01T00:00:00Z' },
+    { id: 2, title: 'Sales Representative', first_published: '2026-11-02T00:00:00Z' },
+  ])
+  assert.deepEqual(await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sales', 'development'], windowDays: 45, now, http }),
+    ['https://job-boards.greenhouse.io/acme/jobs/1', 'https://job-boards.greenhouse.io/acme/jobs/2'])
+  let asked = 0
+  assert.deepEqual(await freshBoardPostings(['https://jobs.eu.lever.co/acme'], { terms: ['sales'], windowDays: 45, now, http: async () => { asked++; return null } }), [])
+  assert.equal(asked, 0)
+})

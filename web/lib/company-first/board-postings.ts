@@ -9,7 +9,7 @@ import { looksLikeHtml } from '../sources/types.ts'
 import { boardApi, boardOf, boardRoles, type Board } from '../research/sources/ats-boards.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 
-export const MAX_BOARDS_PER_ANGLE = 8, MAX_POSTINGS_PER_ANGLE = 3
+export const MAX_BOARDS_PER_ANGLE = 8, MAX_POSTINGS_PER_ANGLE = 3, PER_BOARD = 2
 
 const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean)
 
@@ -20,7 +20,8 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
   const terms = new Set(o.terms.map(t => t.toLowerCase()))
   if (!terms.size) return []
   const boards = new Map<string, Board>()
-  for (const u of admittedUrls) { const b = boardOf(u); if (b && !boards.has(`${b.ats}:${b.token}`)) boards.set(`${b.ats}:${b.token}`, b) }
+  // EU-hosted boards are skipped: their posting URLs have no record reader (lib/sources/ats-posting.ts), so none could be dated.
+  for (const u of admittedUrls) { const b = boardOf(u); if (b && !b.host && !boards.has(`${b.ats}:${b.token}`)) boards.set(`${b.ats}:${b.token}`, b) }
   // With no window there is no freshness to prove: the posting still goes through the normal verifier, so take the newest.
   const since = o.windowDays && o.windowDays > 0 ? new Date(o.now.getTime() - o.windowDays * 86_400_000).toISOString().slice(0, 10) : null
   const today = o.now.toISOString().slice(0, 10)
@@ -33,14 +34,15 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
     try { body = JSON.parse(res.body) } catch { continue }
     const roles = boardRoles(b, body)
     if (!roles) continue
-    let best: { url: string; hits: number; posted: string } | null = null
+    // The best few matches per board, not one: a top match the verifier then rejects (place, closed, unlisted) must not hide
+    // the next in-window role for the requested job on the same board.
+    const ranked: { url: string; hits: number; posted: string }[] = []
     for (const r of roles) {
       if (r.posted > today || (since && r.posted < since) || !atsPostingRef(r.url)) continue
       const hits = words(r.title).filter(w => terms.has(w)).length
-      if (!hits) continue
-      if (!best || hits > best.hits || (hits === best.hits && r.posted > best.posted)) best = { url: r.url, hits, posted: r.posted }
+      if (hits) ranked.push({ url: r.url, hits, posted: r.posted })
     }
-    if (best) picks.push(best)
+    picks.push(...ranked.sort((a, b) => b.hits - a.hits || (a.posted < b.posted ? 1 : -1)).slice(0, PER_BOARD))
   }
   return picks.sort((a, b) => b.hits - a.hits || (a.posted < b.posted ? 1 : -1)).slice(0, MAX_POSTINGS_PER_ANGLE).map(p => p.url)
 }
