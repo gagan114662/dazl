@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import { fallbackTargets, mergeFallback, recordRecovery } from '../lib/scan/blocked-fallback.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { recoveryNote } from '../lib/lead-state.ts'
 
 const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days.'
 const ICP = { summary: 'London seed B2B SaaS', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['announced seed funding'], exclude: [], country: 'GB', language: 'en', window_days: 90 }
@@ -12,10 +13,15 @@ const filler = ' More about the company, its product and its people.'.repeat(10)
 const BLOG = 'https://orbitly.example/blog/seed', PRESS = 'https://sifted.example/orbitly-raises-seed'
 const FUND = 'Orbitly, a London B2B SaaS startup, raised a 3m GBP seed round this month'
 const gdelt = (urls: string[]) => JSON.stringify({ articles: urls.map(u => ({ url: u, title: 'Orbitly raises seed round', seendate: '20261016T100000Z' })) })
-interface Opt { press?: boolean; otherCompany?: boolean; pressDays?: number; paid?: boolean; blogText?: string; blogDate?: string | null }
+interface Opt { newsFail?: 'throw' | 503; press?: boolean; otherCompany?: boolean; pressDays?: number; paid?: boolean; blogText?: string; blogDate?: string | null }
 async function run(o: Opt) {
   const newsCalls: string[] = []
-  const newsHttp: SafeGet = async url => { newsCalls.push(url); return { status: 200, body: gdelt(o.press === false ? [] : [PRESS]) } }
+  const newsHttp: SafeGet = async url => {
+    newsCalls.push(url)
+    if (o.newsFail === 'throw') throw new Error('connect ECONNREFUSED')   // the news host cannot be reached at all
+    if (o.newsFail === 503) return { status: 503, body: '' }
+    return { status: 200, body: gdelt(o.press === false ? [] : [PRESS]) }
+  }
   const pressText = o.otherCompany ? 'Zenix, a London B2B SaaS startup, raised a 2m GBP seed round this month' : FUND
   const blogCand: Cand = { company: 'Orbitly', signal: 'raised a seed round', source_url: BLOG, excerpt: FUND, event_date: o.blogDate ?? null as never }
   const pressCand: Cand = o.otherCompany ? { company: 'Zenix', signal: 'raised a seed round', source_url: PRESS, excerpt: pressText, event_date: daysAgo(o.pressDays ?? 10) } : { company: 'Orbitly', signal: 'raised a seed round', source_url: PRESS, excerpt: FUND, event_date: daysAgo(o.pressDays ?? 10) }
@@ -65,4 +71,28 @@ test('REPLAY SET (stubbed): verifier-passed with the recovery pass OFF (paid fal
   for (const [, o] of set) { if (state((await run({ ...o, paid: false })).lead) === 'verifier-passed') before++; if (state((await run(o)).lead) === 'verifier-passed') after++ }
   console.log(`# recovery replay (stub, verifier-passed not qualified): before ${before} / ${set.length}, after ${after} / ${set.length}`)
   assert.deepEqual([before, after], [0, 2])
+})
+
+// #685 live check (staging 27916980, 2026-11-13): the recovery search itself errored (fallback:news error:network / error:mixed) and every held lead still
+// recorded "searched other press ... none verified", which the Leads page shows as "dazl already searched other press for ...". Only a search that completed may
+// say "none verified"; one that failed must say it did not complete, with its source status.
+for (const fail of ['throw', 503] as const) test(`#685: the recovery search fails (${fail === 'throw' ? 'news host unreachable' : 'HTTP 503'}) - the hold never claims other press was searched`, async () => {
+  const r = await run({ newsFail: fail, press: false })
+  assert.ok(r.newsCalls.length > 0, 'the recovery search was attempted')
+  const src = r.x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'fallback:news' ORDER BY rowid DESC").get() as { status: string } | undefined
+  assert.match(src?.status ?? '', /^error/, `the source row records the failure (${src?.status})`)
+  assert.equal(state(r.lead), 'held:outside_window_undated', 'still held: nothing rescued it')
+  assert.doesNotMatch(r.rec!.value, /searched other press|none verified/, `the record never claims a search that failed: ${r.rec!.value}`)
+  assert.equal(r.rec!.value, `Recovery pass did not run (the other-press search did not complete: ${src!.status}).`)
+  const note = recoveryNote({ enrichments: [{ connector: 'scan:recovery', label: r.rec!.label, value: r.rec!.value }] })!
+  assert.equal(note.ran, false)
+  assert.doesNotMatch(note.text, /already searched|none verified/, note.text)
+  assert.equal(note.text, 'The search of other press for it did not complete in this run.')
+})
+test('#685: a recovery search that completes and finds nothing still says "none verified"', async () => {
+  const r = await run({ press: false })
+  const src = r.x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'fallback:news' ORDER BY rowid DESC").get() as { status: string }
+  assert.doesNotMatch(src.status, /^error/)
+  assert.match(r.rec!.value, /^Recovery pass ran before this was held \(undated\): searched other press for a dated source for the same company; none verified\.$/)
+  assert.equal(recoveryNote({ enrichments: [{ connector: 'scan:recovery', label: r.rec!.label, value: r.rec!.value }] })!.text, 'dazl already searched other press for a dated source; none verified.')
 })
