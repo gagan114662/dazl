@@ -34,6 +34,7 @@ import { migrateCommenterImport } from '../../lib/scan/commenter-import.ts'
 import { migrateMemory } from '../../lib/memory.ts'
 import { migrateReopen } from '../../lib/outreach/reopen.ts'
 import { markCompanyFirstBudget } from '../../lib/company-first/product-discovery.ts'
+import { beginEnrichment } from '../../lib/scan/enrichment.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as campaignsGET } from '../../app/api/campaigns/route.ts'
 
@@ -123,4 +124,34 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
     assert.equal(p.qualification.needsReview, 1, `${url}: an ordinary review-list lead still needs review`)
     assert.equal(p.next.label, 'Check 1 lead that needs your review', url)
   }
+})
+
+// Qodo on #1466 ("Enriching leads can briefly appear held"): GET /api/leads must decide the held list from the SAME snapshot as the visible set.
+// Forced interleaving, no mock: better-sqlite3's verbose hook sees the route's own scan_jobs read; right after it, a new enrichment attempt
+// starts (the real beginEnrichment, which clears enrich_finished_at). The visibility read that follows sees an unfinished stage: nothing may be
+// listed as held from it, whatever the route read a moment earlier.
+test('GET /api/leads: an enrichment attempt that starts mid-request never lists every candidate as held', async () => {
+  let armed = false
+  const db: Database.Database = new Database(':memory:', { verbose: (sql: unknown) => {
+    if (armed && /^SELECT run_budget(, enrich_finished_at)? FROM scan_jobs WHERE id = '[^']+' AND user_id = '[^']+'$/.test(String(sql))) {
+      armed = false
+      queueMicrotask(() => { const a = (db.prepare('SELECT attempts FROM scan_jobs WHERE id = ?').get(job) as { attempts: number }).attempts; beginEnrichment(db, job, a) })
+    }
+  } })
+  for (const m of [migrateScan, migrateSourceReview, migrateWatch, migrateKeys, migratePlans, migrateConnectors, migrateAdvanced, migrateBilling, migrateOutreach, migrateAutopilot, migrateLedger, migrateReplies, migrateThreadReplies, migrateSequences, migrateTrial, migrateCompetitors, migrateEvents, migrateWarm, migrateSeo, migrateMonitors, migrateCsv, migrateCommenterImport, migrateMemory, migrateReopen]) m(db)
+  setScanDb(db)
+  setUser({ id: 'A', business_name: 'Acme' })
+  const job = createJob(db, 'A', { business_name: 'Synthetic A', industry: 'software', location: 'London' })
+  db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(job)
+  const id = randomBytes(12).toString('hex')
+  db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,score,review_reason) VALUES(?,?,'Held Co','Pat','pat@held.test','Raised a Series A','https://held.example/a',NULL,NULL,70,'quote_unconfirmed')").run(id, job)
+  db.prepare("UPDATE scan_jobs SET status='done',enrich_started_at=1,enrich_finished_at=2,candidates=1,dropped=0,run_budget=?,query='Find London software companies that raised a Series A round.' WHERE id=?").run(markCompanyFirstBudget(null), job)
+  // control: with the stage finished and nothing moving, the held candidate is listed
+  const settled = await (await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${job}`))).json() as { leads: unknown[]; held: { id: string }[] }
+  assert.deepEqual([settled.leads, settled.held.map(h => h.id)], [[], [id]], 'finished: the held candidate is listed read-only')
+  armed = true
+  const raced = await (await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${job}`))).json() as { leads: unknown[]; held: unknown[] }
+  assert.equal(armed, false, 'the interleaving happened')
+  assert.equal((db.prepare('SELECT enrich_finished_at FROM scan_jobs WHERE id = ?').get(job) as { enrich_finished_at: number | null }).enrich_finished_at, null, 'a new attempt started')
+  assert.deepEqual([raced.leads, raced.held], [[], []], 'a stage that restarted mid-request lists nothing as held')
 })

@@ -49,8 +49,10 @@ export function campaignsLimit(v: string | null): number {
   const n = Number(v ?? '')
   return v !== null && v.trim() !== '' && Number.isInteger(n) && n >= 1 ? Math.min(n, 20) : 10
 }
-type CampaignJob = { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null; run_budget: string | null }
-const campaignJobs = (db: Database.Database, tenantId: string, limit: number) => db.prepare(`SELECT id, query, status, error, created_at, candidates, run_budget FROM scan_jobs
+type CampaignJob = { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null; run_budget: string | null; enrich_started_at: number | null; enrich_finished_at: number | null }
+// One read of the listed scans: status, budget and enrichment marks come from the same row read, and every verdict on a scan is made from it
+// (#1062, Qodo on #1466: a second read could see a scan that finished in between and judge it against the first read's visibility).
+const campaignJobs = (db: Database.Database, tenantId: string, limit: number) => db.prepare(`SELECT id, query, status, error, created_at, candidates, run_budget, enrich_started_at, enrich_finished_at FROM scan_jobs
     WHERE user_id = ? AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
     ORDER BY created_at DESC, insert_seq DESC LIMIT ?`).all(tenantId, limit) as CampaignJob[]
 
@@ -62,15 +64,18 @@ const campaignJobs = (db: Database.Database, tenantId: string, limit: number) =>
 // never started, so the checks never ran: the card says so. Either way its leads stay held, never reviewable and never "held by checks".
 // A pending, running, failed or cancelled scan gets the fail-closed empty set and nextAction's own label for that status.
 export type CompanyFirstShown = ReadonlyMap<string, ReadonlySet<string> | 'checking' | 'unfinished'>
-export async function companyFirstShown(db: Database.Database, tenantId: string, jobs: readonly { id: string; run_budget: string | null }[], now: Date = new Date()): Promise<CompanyFirstShown> {
+// `jobs` is the caller's one read of these scans (status and enrichment marks included); every verdict here is made from it.
+export type ShownJob = { id: string; run_budget: string | null; status: string; enrich_started_at: number | null; enrich_finished_at: number | null }
+export async function companyFirstShown(db: Database.Database, tenantId: string, jobs: readonly ShownJob[], now: Date = new Date()): Promise<CompanyFirstShown> {
   const out = new Map<string, ReadonlySet<string> | 'checking' | 'unfinished'>()
   for (const j of jobs) {
     if (!hasCompanyFirstBudget(j.run_budget)) continue   // no read at all for other scans (#1136 HIST-BATCH query bound)
-    const s = db.prepare('SELECT status, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?').get(j.id, tenantId) as { status: string; enrich_started_at: number | null; enrich_finished_at: number | null } | undefined
-    if (s?.status !== 'done') { out.set(j.id, new Set()); continue }
-    // finished = the end mark companyFirstResults itself requires; otherwise the canonical stage says running or interrupted / never started
-    out.set(j.id, s.enrich_finished_at != null ? (await companyFirstResults(sqliteDb(db), tenantId, j.id, now))?.visibleIds ?? new Set()
-      : enrichState(s, Math.floor(now.getTime() / 1000)) === 'running' ? 'checking' : 'unfinished')
+    if (j.status !== 'done') { out.set(j.id, new Set()); continue }
+    if (j.enrich_finished_at == null) { out.set(j.id, enrichState(j, Math.floor(now.getTime() / 1000)) === 'running' ? 'checking' : 'unfinished'); continue }
+    // finished in this read: the visible set, but only from a visibility read that itself saw the stage finished (results.final). If a new
+    // attempt started or the scan changed since this read, that read is not this scan's final result: still checking, never "all held".
+    const r = await companyFirstResults(sqliteDb(db), tenantId, j.id, now)
+    out.set(j.id, r?.final ? r.visibleIds : 'checking')
   }
   return out
 }
@@ -88,11 +93,12 @@ const heldByChecksOf = (j: { id: string; run_budget: string | null }, shown: Com
 
 // The Campaigns list with the company-first gate read (GET /api/campaigns).
 export async function listCampaignsNow(db: Database.Database, tenantId: string, limit = 10, now: Date = new Date()): Promise<Campaign[]> {
-  return listCampaigns(db, tenantId, limit, await companyFirstShown(db, tenantId, campaignJobs(db, tenantId, limit), now))
+  const jobs = campaignJobs(db, tenantId, limit)
+  return listCampaigns(db, tenantId, limit, await companyFirstShown(db, tenantId, jobs, now), jobs)
 }
 // `shown`: companyFirstShown for these scans. Without it, every lead of a company-first scan counts as held by checks (fail closed).
-export function listCampaigns(db: Database.Database, tenantId: string, limit = 10, shown: CompanyFirstShown = new Map()): Campaign[] {
-  const jobs = campaignJobs(db, tenantId, limit)
+// `jobs`: the read `shown` was made from (listCampaignsNow passes it); read here only when called on its own.
+export function listCampaigns(db: Database.Database, tenantId: string, limit = 10, shown: CompanyFirstShown = new Map(), jobs: readonly CampaignJob[] = campaignJobs(db, tenantId, limit)): Campaign[] {
   return jobs.map(j => {
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
@@ -223,9 +229,9 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
   const ids = [...new Set(jobIds)].slice(0, 20)
   if (!ids.length) return []
   const qs = ids.map(() => '?').join(',')
-  const jobs = db.prepare(`SELECT id, query, status, error, created_at, run_budget FROM scan_jobs
+  const jobs = db.prepare(`SELECT id, query, status, error, created_at, run_budget, enrich_started_at, enrich_finished_at FROM scan_jobs
     WHERE user_id = ? AND id IN (${qs}) AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
-    ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number; run_budget: string | null }[]
+    ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number; run_budget: string | null; enrich_started_at: number | null; enrich_finished_at: number | null }[]
   if (!jobs.length) return []
   const shown = await companyFirstShown(db, tenantId, jobs, now)
   type Row = { id: string; scan_job_id: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null; run_budget: string | null }
