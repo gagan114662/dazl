@@ -33,10 +33,10 @@ PINNED = {
     # #1089: the release-env mail check. NOT YET INSTALLED: this pin is this PR's file; Hermes installs it (check-installed.sh says so until then).
     # #1116 (headless hydration check): deploy-prod.sh runs check-hydration.mjs after check-pages.py. NOT YET INSTALLED: these two pins are
     # this PR's files; Hermes installs them (check-installed.sh says so until then).
-    'deploy-prod.sh': 'a562aa3ad8613a01227c58927a4ab08fd1cafb37415710938ec0e95ca0a6a467',
+    'deploy-prod.sh': '47cecf4bc4863055795b3f98c310a0657dfa0e62f9fcf8c5d86722611b4dadf6',
     'check-hydration.mjs': '0b0dd3a6bbc16870c2bdec5619febb8f4399e28a5d0c1ba8743c081d9657aa2e',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
-    'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
+    'pull-release.sh': 'e49b4041fc46234b453d42cb235ab0f8a674103b130bea04843c72067ae3b38c',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
 }
 A = 'a' * 40
@@ -198,6 +198,10 @@ class V2Refusals(unittest.TestCase):
         for name in PINNED:
             (T / 'lib' / name).write_bytes((HERE / name).read_bytes()); (T / 'lib' / name).chmod(0o755)
         self.DEPLOY = str(T / 'lib' / 'deploy-prod.sh')
+        # Exercise real flock without opening a host-global lock in a fixture.
+        deploy = Path(self.DEPLOY)
+        deploy.write_text(deploy.read_text().replace(
+            'GLOBAL_LOCK=/run/lock/dazl-prod-deploy.lock', f'GLOBAL_LOCK="{T / "deploy.lock"}"'))
         for name, body in STUBS.items():
             (T / 'bin' / name).write_text(body); (T / 'bin' / name).chmod(0o755)
         (T / 'Caddyfile').write_text('dazl.ai, www.dazl.ai {\n\treverse_proxy localhost:3104\n}\n')
@@ -266,7 +270,7 @@ class V2Refusals(unittest.TestCase):
 
     def test_bad_settings_and_arguments_are_refused(self):
         for over, msg in (({'PROD_PORTS': '3104 3104'}, 'PROD_PORTS must be two different 31xx ports'), ({'PROD_PORTS': '8080 8081'}, 'PROD_PORTS must be two different 31xx ports'),
-                          ({'PROD_STABLE_S': 'x'}, 'PROD_STABLE_S must be 0-999'), ({'PROD_KEEP_BACKUPS': '0'}, 'PROD_KEEP_BACKUPS must be >= 1'),
+                          ({'PROD_STABLE_S': 'x'}, 'PROD_STABLE_S must be 0-999'), ({'PROD_KEEP_BACKUPS': '0'}, 'PROD_KEEP_BACKUPS must be >= 5'),
                           ({'PROD_HEALTH_MAX_TIME': '0'}, 'PROD_HEALTH_MAX_TIME must be 1-99 seconds')):
             r = self.run_deploy(A, **over)
             self.assertEqual(r.returncode, 1, over); self.assertIn(msg, r.stdout + r.stderr, over)
@@ -333,6 +337,89 @@ class V2Refusals(unittest.TestCase):
         r = self.run_deploy('b' * 40)
         self.assertNotIn('SYSTEM_MAIL', r.stdout + r.stderr)
         self.assertIn('prebuilt fetch/verify failed', r.stdout + r.stderr, 'it reached the next step (no artifact exists in the sandbox)')
+
+    def _cleanup_fixtures(self):
+        self._db([])
+        t = self.t
+        stale = t / 'rel/dazl-01234567-prod'
+        previous = t / 'rel/dazl-cccccccc-prod'
+        configured = t / 'rel/dazl-dddddddd-prod'
+        wanted = t / 'rel/dazl-bbbbbbbb-prod'
+        for d in (stale, previous, configured, wanted):
+            d.mkdir()
+        os.utime(stale, (1, 1))
+        (t / 'ops/prod-state').write_text(f'PREV_PORT=3105\nPREV_SHA={"c" * 40}\nNEW_SHA={A}\nNEW_PORT=3104\n')
+        (t / 'portconf/3105.conf').write_text(f'DAZL_RELEASE={configured}\n')
+        (t / 'dl').mkdir()
+        cache = t / f'dl/prod-next-{"7"*40}.tgz'
+        live_cache = t / f'dl/prod-next-{"b"*40}.tgz'
+        unknown = t / 'dl/unknown-data'
+        for f in (cache, live_cache, unknown):
+            f.write_bytes(b'fixture')
+        os.utime(cache, (1, 1))
+        # Never prune the live/previous artifacts or a fresh other build.
+        for digit in ('a', 'c', 'f'):
+            keep_cache = t / f'dl/prod-next-{digit*40}.tgz'
+            keep_cache.write_bytes(b'fixture')
+            if digit != 'f':
+                os.utime(keep_cache, (1, 1))
+        fresh_release = t / 'rel/dazl-eeeeeeee-prod'; fresh_release.mkdir()
+        (t / 'data/prod.db-wal').write_bytes(b'fixture WAL')
+        (t / 'data/prod.db-shm').write_bytes(b'fixture SHM')
+        (t / f'dl/prod-next-{"d"*40}.tgz').symlink_to(t / 'data/prod.db-wal')
+        os.link(t / 'data/prod.db-shm', t / f'dl/prod-next-{"e"*40}.tgz')
+        (t / 'backups').mkdir()
+        old = []
+        for i in range(1, 8):
+            backup = t / f'backups/predeploy-aaaaaaaa-202611{i:02d}T000000.db'
+            backup.write_bytes(b'fixture old verified backup')
+            os.utime(backup, (i, i))
+            old.append(backup)
+        unrelated = t / 'backups/ordinary-backup.db'; unrelated.write_text('unrelated')
+        return stale, previous, configured, wanted, cache, live_cache, unknown, old, unrelated
+
+    def test_cleanup_plan_changes_neither_releases_nor_files(self):
+        stale, previous, configured, wanted, cache, live_cache, unknown, old, unrelated = self._cleanup_fixtures()
+        r = self.run_deploy('--cleanup-plan', 'b' * 40, PROD_PRUNE='1')
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        for p in (stale, cache, *old[:2]):
+            self.assertIn('would remove', out); self.assertIn(str(p), out)
+        for p in (previous, configured, wanted, live_cache, unknown, *old[2:], unrelated):
+            self.assertNotIn(str(p) + '\n', out); self.assertTrue(p.exists())
+        for p in (stale, cache, *old):
+            self.assertTrue(p.exists(), out)
+        for p in [self.t / f'dl/prod-next-{digit*40}.tgz' for digit in ('a','c','f')]:
+            self.assertNotIn(str(p), out); self.assertTrue(p.exists())
+        self.assertNotIn('dazl-eeeeeeee-prod', out)
+        self.assertNotIn('1/10 db backup', out)
+
+    def test_cleanup_occurs_before_verified_backup_and_retains_five(self):
+        stale, previous, configured, wanted, cache, live_cache, unknown, old, unrelated = self._cleanup_fixtures()
+        # Dummy WAL/SHM are never cleanup candidates. Remove this synthetic DB
+        # connection's sidecars before invoking the real SQLite backup API.
+        (self.t / 'data/prod.db-wal').unlink(); (self.t / 'data/prod.db-shm').unlink()
+        r = self.run_deploy('b' * 40, PROD_PRUNE='1')
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1); self.assertIn('has no SYSTEM_MAIL_SMTP_URL', out)
+        self.assertLess(out.index('removing unused release'), out.index('1/10 db backup'))
+        self.assertLess(out.index('removing stale prebuilt cache'), out.index('1/10 db backup'))
+        self.assertFalse(stale.exists()); self.assertFalse(cache.exists())
+        for p in (previous, configured, wanted, live_cache, unknown, unrelated):
+            self.assertTrue(p.exists(), out)
+        self.assertEqual(len(list((self.t / 'backups').glob('predeploy-*.db'))), 5)
+        self.assertTrue((self.t / 'data/prod.db').exists())
+        self.assertIn('reverse_proxy localhost:3104', (self.t / 'Caddyfile').read_text())
+
+    def test_unreadable_listener_preserves_all_release_directories(self):
+        stale, *_ = self._cleanup_fixtures()
+        (self.t / 'listen/3999').write_text('4194000')
+        r = self.run_deploy('--cleanup-plan', 'b' * 40, PROD_PRUNE='1')
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn('a listener directory is unreadable', out)
+        self.assertTrue(stale.exists())
+        self.assertNotIn('would remove unused release', out)
 
     def test_a_database_with_a_second_hard_link_is_refused(self):
         import sqlite3
