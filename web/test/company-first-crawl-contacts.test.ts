@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
-import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
+import { crawl4aiGet, crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
 import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 import {companyFirstPublishedDisplayRows} from '../lib/people/company-first-published-display.ts'
 import {publishedEmail} from '../lib/outreach/published-email.ts'
@@ -15,7 +15,7 @@ const email='mira.quinn@'+host, shared='help@'+host, team=origin+'/team'
 const prose='<p>Brindle Ledger has served its local community for many years. We help businesses find the right products and manage the process from start to finish with clear service and transparent information.</p>'
 const wrap=(s:string)=>'<html><body>'+s+'</body></html>'
 const card=(role=title,address=email)=>'<article><h2>'+name+'</h2><p>'+role+'</p><a href="mailto:'+address+'">'+address+'</a></article>'
-async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; buyerSitePage?:boolean; citedBuyerPage?:boolean; wrongBuyerOrigin?:boolean; wrongBuyerCitation?:boolean; robotsBuyerDeny?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
+async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; buyerSitePage?:boolean; citedBuyerPage?:boolean; linkedGenericAbout?:boolean; sharedHost?: "authorized-first"|"unauthorized-first"; wrongBuyerOrigin?:boolean; wrongBuyerCitation?:boolean; robotsBuyerDeny?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
  const where=opt.country??(opt.international?'Toronto, ON':'Austin, TX')
  const db=new Database(':memory:'); migrateAllSqlite(db)
  try{
@@ -32,6 +32,13 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
    [origin+'/contact']:wrap(prose+'<a href="mailto:'+shared+'">'+shared+'</a>'),
    [source]:wrap(prose+(opt.own===false?'<a href="'+origin+'/">'+company+'</a>':'')),
   }
+  const otherLead='d'.repeat(24)
+  if(opt.sharedHost){
+   const otherSource='https://publicpublisher.example/shared-site'
+   pages[otherSource]=wrap(prose+'<a href="'+origin+'/">'+company+'</a>')
+   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(otherLead,job,company,null,company+' in '+where,otherSource,company+' in '+where,90,opt.sharedHost==='authorized-first'?70:90)
+  }
   const buyerPage=origin+'/company/our-story'
   if(opt.buyerSitePage || opt.citedBuyerPage){
    if(opt.buyerSitePage) pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/company/our-story">Our story</a></body>')
@@ -40,13 +47,14 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
    pages[origin+'/about']=wrap(prose)
    pages[buyerPage]=wrap(prose+markup)
   }
+  if(opt.linkedGenericAbout) pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/about">About us</a></body>')
   if(opt.robotsBuyerDeny) pages[origin+'/robots.txt']='User-agent: *\nDisallow: /company/our-story'
   const requests:{url:string; noRedirect:boolean}[]=[]
   const get:Get=async (url,opts)=>{
    requests.push({url,noRedirect:!!opts?.noRedirect})
    return {status:pages[url]?200:404,body:pages[url]??'',finalUrl:opt.wrongBuyerOrigin&&url===buyerPage?'https://another.example/company/our-story':url}
   }
-  const scan=()=>crawlJob(db,'T',job,{get,gapMs:0,now,...(opt.citedBuyerPage?{buyerCitedUrls:[opt.wrongBuyerCitation?'https://another.example/company/our-story':buyerPage]}:{}),env:{EMAIL_GUESS_ENABLED:'1'},...(opt.marker?{}:{companyFirstContacts:opt.strict!==false})})
+  const scan=()=>crawlJob(db,'T',job,{get,gapMs:0,now,...(opt.sharedHost?{concurrency:1}:{}),...(opt.citedBuyerPage?{buyerCitedUrls:[opt.wrongBuyerCitation?'https://another.example/company/our-story':buyerPage]}:{}),env:{EMAIL_GUESS_ENABLED:'1'},...(opt.marker?{}:{companyFirstContacts:opt.strict!==false})})
   await scan()
   if(opt.recrawl){pages[team]=wrap(prose+card(title,shared)); await scan()}
   if(opt.invalidate==='attempt')db.prepare('UPDATE scan_jobs SET attempts=attempts+1 WHERE id=?').run(job)
@@ -54,7 +62,7 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
   if(opt.invalidate==='suppression')db.prepare("INSERT INTO suppressions (tenant_id,email,reason,created_at) VALUES ('T',?,'manual',?)").run(email,now/1000)
   const observed=now/1000+(opt.invalidate==='age'?45*86400+1:0)
   const enrichments=enrichmentsForLeads(db,'T',[lead])[lead]??[]
-  return {requests,display:(await companyFirstPublishedDisplayRows(db,'T',[lead],observed))[lead],
+  return {requests,otherRows:(enrichmentsForLeads(db,'T',[otherLead])[otherLead]??[]).filter(r=>r.kind==='person'),display:(await companyFirstPublishedDisplayRows(db,'T',[lead],observed))[lead],
    foreign:(await companyFirstPublishedDisplayRows(db,'another',[lead],observed))[lead],
    routed:publishedEmail({contact:null,enrichments}),
    rows:(enrichmentsForLeads(db,'T',[lead])[lead]??[]).filter(r=>['person','email','phone'].includes(r.kind)),
@@ -154,4 +162,35 @@ test('already-admitted buyer source is only a fresh exact-origin crawl hint afte
  const bounced=await fixture(card(),{...opt,wrongBuyerOrigin:true})
  assert.deepEqual(bounced.rows,[])
  assert.equal(bounced.routed,null)
+})
+
+test('a generic linked about page cannot displace an authorized cited buyer fallback',async()=>{
+ const result=await fixture(card(),{marker:true,citedBuyerPage:true,linkedGenericAbout:true})
+ assert.ok(result.requests.some(r=>r.url===origin+'/about'))
+ assert.equal(result.rows.find(r=>r.kind==='person')?.source_url,origin+'/company/our-story')
+ assert.equal(result.routed,email)
+})
+
+test('rendering sidecar cannot serve a no-redirect buyer read or mislabel a downgrade',async()=>{
+ let sidecarCalls=0
+ const get=crawl4aiGet('http://127.0.0.1:11235',async()=>{
+  sidecarCalls++
+  return Response.json({results:[{status_code:200,url:team,redirected_url:'http://'+host+'/team',html:card()}]})
+ },async()=>true)
+ assert.equal(await get(team,{noRedirect:true}),null)
+ assert.equal(sidecarCalls,0)
+ assert.equal(await get(team),null)
+ assert.equal(sidecarCalls,1)
+})
+
+test('a shared host keeps its authorized cited buyer regardless of lead order without broadening the other lead',async()=>{
+ const buyerURL=origin+'/company/our-story'
+ for(const order of ['authorized-first','unauthorized-first'] as const){
+  const r=await fixture(card(),{marker:true,citedBuyerPage:true,sharedHost:order})
+  assert.equal(r.rows.find(c=>c.kind==='person')?.source_url,buyerURL,order)
+  assert.deepEqual(r.otherRows,[],order)
+  assert.equal(r.requests.filter(q=>q.url===buyerURL).length,1,order)
+  assert.equal(r.requests.filter(q=>q.url===origin+'/').length,1,order)
+  assert.equal(r.requests.filter(q=>q.url===origin+'/robots.txt').length,1,order)
+ }
 })

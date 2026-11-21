@@ -1772,9 +1772,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const buyerOnly = new Set(companyFirst ? found.buyerSourceUrls?.filter(u => buyerSourceCitation(u) !== null) : [])
         if (companyFirst) {
           buyerCitedByJob.set(job, [...new Set([...(buyerCitedByJob.get(job) ?? []), ...buyerOnly])].slice(0, 50))
-          citedByJob.set(job, [...new Set([...(citedByJob.get(job) ?? []), ...found.citedUrls])].filter(u => !buyerOnly.has(u)).slice(0, 200))
+          citedByJob.set(job, [...new Set([...(citedByJob.get(job) ?? []), ...found.citedUrls])].slice(0, 200))
         }
-        const ordered = [...new Set([...boardPosts, ...found.preferredPublisherUrls, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url) && !buyerOnly.has(url))
+        const ordered = [...new Set([...boardPosts, ...found.preferredPublisherUrls, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url))
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
           return board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(url.hostname, { allowPrivateDomains: true }) ?? url.hostname
@@ -2623,8 +2623,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
       const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
       const firstParty = new Map<string, { pages: number; stored: number }>()
       const buyerCitedUrls = buyerCitedByJob.get(job) ?? []
-      const buyersOnly = new Set(buyerCitedUrls)
-      const siteCitedUrls = (citedByJob.get(job) ?? []).filter(u => !buyersOnly.has(u))
+      const siteCitedUrls = citedByJob.get(job) ?? []
       await crawlJob(db, job.user_id, job.id, { ...(siteCitedUrls.length ? { citedUrls: siteCitedUrls } : {}), ...(buyerCitedUrls.length ? { buyerCitedUrls } : {}), ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}),
         onBuyerRead: ({ site, pages, stored }) => {
           const earlier = firstParty.get(site)
