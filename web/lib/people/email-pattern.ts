@@ -167,17 +167,18 @@ export function sameNamedPublication(n: Name, ctx: AddressContext[] | undefined)
 // #1208: the commonest team-card shape, "<h3>Maya Thornton</h3><p>Broker</p><a href="mailto:maya@...">Email</a>", pairs the address with
 // her only on all of: a plain mailto with no query (sitecrawl.ts mailtoCard); the heading is exactly her full name (the own-name rule
 // above: no hyphen, no firm word, no record break) and nothing else; the only text between heading and link is the title the crawl
-// recorded for her, or none; the link's own text names nobody (no capitalised word after the first, not her name token); and no other
+// recorded for her, or none; the link's own name is the address or words asking to write (nothing that could be a person); and no other
 // heading is stacked on hers. Only with that recorded title (`title`): without it a heading is never a pairing.
 const squash = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
+const LINK_WORDS = new Set(['email', 'e', 'mail', 'me', 'send', 'an', 'contact', 'write', 'to', 'us', 'message'])
 function cardPairs(card: NonNullable<AddressContext['card']>, local: string, n: Name, title: string): boolean {
   if (card.stacked) return false
   const head = withoutOwnName(card.heading, n)
   if (!head.found || head.rest.length) return false
   if (card.between && squash(card.between) !== squash(title)) return false
-  const words = card.link.replace(EMAIL_RE, ' ').match(/[\p{L}]+/gu) ?? []
-  if (words.slice(1).some(w => /^\p{Lu}/u.test(w)) || nameWords(card.link).includes(local)) return false
-  return true
+  // the link's own name (its text, and the alt / title / aria-label of anything in it) may only be the address or words that ask to
+  // write: any other word could be a person ("Ana", "Email Owen", an <img alt="Owen Pike">), so the card is then nobody's pairing
+  return (card.link.replace(EMAIL_RE, ' ').toLowerCase().match(/[\p{L}]+/gu) ?? []).every(w => LINK_WORDS.has(w))
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined, title?: string): boolean {
   if (!ctx?.length) return false

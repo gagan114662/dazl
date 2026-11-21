@@ -24,6 +24,7 @@ import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, 
 import { publishedDisplayCountry, recordPublishedDisplay, withdrawPublishedDisplay } from '../people/published-display.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 import { personalAddresses, publishedCandidateFor, recordEmailGuesses, usEvidence, type AddressContext } from '../people/email-pattern.ts'
+import { decodeEntities } from '../verifier/text.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
@@ -1374,7 +1375,7 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
     const wide = win.replace(/<[^>]*>/g, tag => tag.length < 12 || !/alt=|title=|aria-label=|data-/i.test(tag) ? ' ' : ` ${[...tag.matchAll(/\b(?:alt|title|aria-label|data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' | ')} `)
       .replace(/\s+/g, ' ').slice(0, 900)
     // #1208: a plain mailto (no query) is read with the card around it: the heading before the link, the text between, the link's own text
-    const card = mailto && attrName === 'href' && /^\s*mailto:[^?&#\s]+\s*$/i.test(tight) ? mailtoCard(html, i - back.length + q) : undefined
+    const card = mailto && attrName === 'href' && /^\s*mailto:[^?&#,;\s]+\s*$/i.test(tight) ? mailtoCard(html, i - back.length + q) : undefined
     out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-'), ...(inAttr ? {} : { text: true }), ...(card ? { card } : {}) })
   }
   return out
@@ -1384,13 +1385,15 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
 // `quoteAt` is where the href value's opening quote is. Null unless the link is an <a> whose nearest preceding heading is reached with
 // no link, image, form control or other heading in between. Visible text only: tags become spaces, a <br> a record break (a tab, never
 // read as a space between a first and a last name), and `stacked` says another heading sits directly on this one.
-const textOf = (h: string) => h.replace(/<br\s*\/?>/gi, '\t').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/ +/g, ' ').trim()
+const textOf = (h: string) => decodeEntities(h.replace(/<br\s*\/?>/gi, '\t').replace(/<[^>]*>/g, ' ')).replace(/\u00a0/g, ' ').replace(/ +/g, ' ').trim()
+// a link's accessible name: its text plus the alt / title / aria-label of anything inside it (an <img alt="Owen Pike"> names him)
+const linkNameOf = (h: string) => textOf(`${h} ${[...h.matchAll(/\b(?:alt|title|aria-label)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' ')}`)
 export function mailtoCard(html: string, quoteAt: number): { heading: string; between: string; link: string; stacked: boolean } | undefined {
   const tagStart = html.lastIndexOf('<', quoteAt)
   if (tagStart < 0 || !/^<a\s/i.test(html.slice(tagStart, tagStart + 3))) return undefined
   const tagEnd = html.indexOf('>', quoteAt), close = tagEnd < 0 ? -1 : html.slice(tagEnd, tagEnd + 400).search(/<\/a\s*>/i)
   if (close < 0) return undefined
-  const link = textOf(html.slice(tagEnd + 1, tagEnd + close))
+  const link = linkNameOf(`${html.slice(tagStart, tagEnd + 1).replace(/\bhref\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')}${html.slice(tagEnd + 1, tagEnd + close)}`)
   const seg = html.slice(Math.max(0, tagStart - 1500), tagStart)
   let last: RegExpExecArray | null = null
   for (const m of seg.matchAll(/<\/h([1-6])\s*>/gi)) last = m as RegExpExecArray

@@ -76,6 +76,13 @@ for (const [label, team] of [
   ['a firm named after her in the heading', MT({ head: '<h3>Maya Thornton Realty</h3>' })],
   ['a hyphenated name containing hers', MT({ head: '<h3>Maya Thornton-Ortiz</h3>' })],
   ['the heading is her first name only', MT({ head: '<h3>Maya</h3>' })],
+  // council (haiku): a link that names one person by first name, an image inside the link naming someone, and two recipients
+  ['the link text is another person\'s first name', MT({ link: 'Ana' })],
+  ['the link text names another person in lower case', MT({ link: 'email ana' })],
+  ['an image inside the link names another person', MT({ link: '<img src="/img/o.jpg" alt="Owen Pike">' })],
+  ['the link\'s title names another person', `<div class="agent-card"><h3>Maya Thornton</h3><p>${OWNER}</p><a href="mailto:maya@${SITE}" title="Email Owen Pike">Email</a></div>`],
+  ['the mailto has a second recipient', MT({}, `mailto:maya@${SITE},owen@${SITE}`)],
+  ['the mailto has a second recipient after a semicolon', MT({}, `mailto:maya@${SITE};owen@${SITE}`)],
 ] as const) {
   test(`#1208 wrong person stays refused: ${label}`, async () => {
     const { r } = await run(`${team}${OWEN}`)
@@ -93,6 +100,9 @@ test('#1208 the issue\'s literal shape publishes for the buyer the crawl titled;
   assert.equal(publishedFor(maya, seenFrom(h), [maya]), null, 'no recorded title: no heading pairing (the display-only importer path)')
   // another named person reachable by the same local part still makes it nobody's
   assert.equal(publishedFor(maya, seenFrom(h), [maya, { first: 'maya', last: 'ortiz' }], 'Broker'), null)
+  // her title as the page writes it, with an entity, still matches the title the crawl recorded
+  const t = publishedFor(maya, seenFrom('<h3>Maya Thornton</h3><p>Owner&#39;s Agent</p><a href="mailto:maya@x.com">Email</a>'), [maya], "Owner's Agent")
+  assert.equal(t?.address, 'maya@x.com')
 })
 
 // Differential (the issue's "Done when"): every combination of heading, line between, link text, href and neighbour, judged with
@@ -100,8 +110,8 @@ test('#1208 the issue\'s literal shape publishes for the buyer the crawl titled;
 test('#1208 differential: the new rule adds only the heading + own-title + plain-mailto shape, and nothing the old rule refused otherwise', () => {
   const heads = ['<h3>Maya Thornton</h3>', '<h3>Maya A. Thornton</h3>', '<h3>maya thornton</h3>', '<h2>Maya Thornton</h2>', '<h3>Maya</h3>', '<h3>Maya Ortiz</h3>', '<h3>Maya Thornton &amp; Ana Lee</h3>', '<h3>Maya Thornton Realty</h3>', '<h3>Maya Thornton-Ortiz</h3>', '<h3>Ana Lee</h3><h3>Maya Thornton</h3>', '<h3>Maya Thornton</h3><h3>Ana Lee</h3>', '<p>Maya Thornton</p>', '']
   const betweens = ['', '<p>Broker</p>', '<p>broker</p>', '<p>Agent</p>', '<p>Broker</p><p>Licensed since 2009</p>', '<p>Assistant: Ana Lee</p>', '<p>Maya Ortiz</p>', '<div><span>Broker</span></div>', '<img src="a.jpg" alt="Ana Lee">']
-  const links = ['Email', 'Email me', 'maya@x.com', 'Email Ana', 'Email Maya Ortiz', '']
-  const hrefs = ['mailto:maya@x.com', 'mailto:maya@x.com?subject=Hi', 'mailto:maya@x.com?subject=Maya%20Ortiz', 'https://share.example/?u=maya@x.com']
+  const links = ['Email', 'Email me', 'maya@x.com', 'Email Ana', 'Email Maya Ortiz', '', 'Ana', 'email ana', '<img src="a.jpg" alt="Owen Pike">', '<img src="a.jpg" alt="Email">']
+  const hrefs = ['mailto:maya@x.com', 'mailto:maya@x.com?subject=Hi', 'mailto:maya@x.com?subject=Maya%20Ortiz', 'https://share.example/?u=maya@x.com', 'mailto:maya@x.com,ana@x.com', 'mailto:maya@x.com;ana@x.com']
   const around = ['', '<div><h3>Maya Ortiz</h3><p>Agent</p></div>', '<div><h3>Owen Pike</h3><p>Agent</p><a href="mailto:owen@x.com">Email</a></div>']
   let cases = 0, added = 0
   const outside: string[] = []
@@ -115,7 +125,7 @@ test('#1208 differential: the new rule adds only the heading + own-title + plain
     if (after && !before) {
       added++
       const intended = ['<h3>Maya Thornton</h3>', '<h3>Maya A. Thornton</h3>', '<h3>maya thornton</h3>', '<h2>Maya Thornton</h2>'].includes(h)
-        && ['', '<p>Broker</p>', '<p>broker</p>', '<div><span>Broker</span></div>'].includes(b) && ['Email', 'Email me', 'maya@x.com', ''].includes(l)
+        && ['', '<p>Broker</p>', '<p>broker</p>', '<div><span>Broker</span></div>'].includes(b) && ['Email', 'Email me', 'maya@x.com', '', '<img src="a.jpg" alt="Email">'].includes(l)
         && href === 'mailto:maya@x.com' && a !== around[1]
       if (!intended) outside.push(page)
     }
