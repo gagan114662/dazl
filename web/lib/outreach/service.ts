@@ -1,4 +1,5 @@
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
+import { carriedExcluded } from '../scan/carry-gate.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
 import {currentnessHeld} from './currentness.ts'
 import {requiredGateHeld} from '../scan/held-state.ts'
@@ -72,6 +73,14 @@ export class OutreachError extends Error {
 // Tenant-scoped, checked again after every async preparation before a send.
 export function leadHeld(db: Database.Database, tenantId: string, leadId: string): boolean {
   return !!db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ? AND l.fit = 0 AND l.intent IS NULL').get(leadId, tenantId)
+    || leadCarryExcluded(db, tenantId, leadId)
+}
+
+// A reviewed exclusion carried into a different-offer play (lib/scan/carry-gate.ts): the lead is never drafted, approved
+// or sent. Part of leadHeld, so every approval, send, follow-up and sequence check that holds a lead holds this one too.
+export function leadCarryExcluded(db: Database.Database, tenantId: string, leadId: string): boolean {
+  const r = db.prepare('SELECT l.company, l.company_domain, l.contact, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { company: string; company_domain: string | null; contact: string | null; icp: string | null } | undefined
+  return !!r && carriedExcluded(r.icp, r)
 }
 
 // Evidence eligibility, re-checked at every approval and every send. A draft or sequence
@@ -274,6 +283,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   if (!lead) throw new OutreachError('not_found')
   // A test-only inbox fixture contact (#369) is never drafted to, whatever else holds the lead.
   if (isInboxFixtureAddress(lead.contact ?? '')) throw new OutreachError('fixture_recipient')
+  if (leadCarryExcluded(db, tenantId, leadId)) throw new OutreachError('lead_excluded')
   if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
   if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
