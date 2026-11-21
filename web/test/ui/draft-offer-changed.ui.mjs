@@ -66,5 +66,36 @@ try {
     if (SHOTS) { await staleCard.screenshot({ path: path.join(SHOTS, `draft-offer-changed-${width}.png`) }); await page.screenshot({ path: path.join(SHOTS, `draft-offer-changed-${width}-page.png`), fullPage: true }) }
     await page.close()
   }
+  // the offer changed in the card above the drafts: the list reloads and the draft written for the old offer is marked at once
+  for (const width of [1280, 390]) {
+    const page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 1000 } })
+    let offer = 'Dental chairs, sterilisers and practice equipment', posted = null
+    const before = { ...stale, offer_changed: false }
+    await page.route('**/*', async route => {
+      const u = new URL(route.request().url())
+      if (route.request().resourceType() === 'document') return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>${CSS}</style></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>` })
+      if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
+      if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })
+      if (u.pathname === '/api/leads') return json(route, { job_id: JOB, status: 'done', leads: [{ id: stale.lead_id }] })
+      if (u.pathname === `/api/campaigns/${JOB}`) {
+        if (route.request().method() === 'POST') { posted = JSON.parse(route.request().postData() ?? '{}').offer; offer = posted }
+        return json(route, { offer: { offer, source: 'play', conflict: null } })
+      }
+      if (u.pathname === '/api/outreach') return json(route, { messages: [posted ? stale : before] })
+      return json(route, {}, 404)
+    })
+    await page.goto(`http://dazl.test/app/outreach?job_id=${JOB}`)
+    const card = page.locator('div.card', { hasText: /Hi Pat/ })
+    await card.getByRole('button', { name: 'Approve', exact: true }).waitFor({ timeout: 15000 })
+    assert.equal(await page.getByTestId('offer-changed').count(), 0, `${width}: unmarked before the change`)
+    await page.getByTestId('play-offer-change').click()
+    await page.getByTestId('play-offer-input').fill(CHOSEN)
+    await page.getByTestId('play-offer-save').click()
+    await page.getByTestId('offer-changed').waitFor({ timeout: 15000 })
+    assert.equal(posted, CHOSEN)
+    assert.equal(await card.getByRole('button', { name: 'Approve', exact: true }).count(), 0, `${width}: Approve is gone once the card changes the offer`)
+    if (SHOTS) await card.screenshot({ path: path.join(SHOTS, `draft-offer-changed-in-card-${width}.png`) })
+    await page.close()
+  }
 } finally { await browser.close() }
-console.log('OK: a draft written for the play\'s earlier offer is marked, names the current offer and offers Edit, not Approve; the unchanged draft keeps Approve (1280 and 390 px)')
+console.log('OK: a draft written for the play\'s earlier offer is marked, names the current offer and offers Edit, not Approve; the unchanged draft keeps Approve; a change made in the card above marks it at once (1280 and 390 px)')

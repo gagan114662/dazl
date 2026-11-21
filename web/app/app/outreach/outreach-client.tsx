@@ -106,7 +106,7 @@ export default function OutreachClient() {
         ? <>Could not load that scan&apos;s emails. Reload to retry, or </>
         : <>Showing the {shown.length} email{shown.length === 1 ? '' : 's'} from one scan. </>}
         <a className="underline" href="/app/outreach">{scan.leadIds === null ? 'show all emails' : 'Show all emails'}</a>{scan.leadIds === null ? '.' : ''} <a className="underline" href={`/app/leads?job_id=${scan.id}`}>Back to its leads</a></p>}
-      {scan && playOffer !== undefined && <div className="mb-4" data-testid="outreach-play-offer"><PlayOfferCard jobId={scan.id} offer={playOffer} onChange={setPlayOffer} /></div>}
+      {scan && playOffer !== undefined && <div className="mb-4" data-testid="outreach-play-offer"><PlayOfferCard jobId={scan.id} offer={playOffer} onChange={o => { setPlayOffer(o); void load() }} /></div>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
       <div className="flex flex-col gap-3">
         {shown.map(m => {

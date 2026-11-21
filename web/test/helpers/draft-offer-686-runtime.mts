@@ -128,3 +128,13 @@ test('#686 an AI rewrite records the offer it wrote under: a stale draft rewritt
   await setOffer(p.job, RECORDED)
   assert.equal((await preview(id)).offer_changed, true, 'the rewrite is bound to the offer it was written for')
 })
+
+test('#686 saving the same words again is not a rewrite: the draft stays held', async () => {
+  const p = play()
+  const id = await draft(p.lead)
+  await setOffer(p.job, CHOSEN)
+  const m = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ?').get(id) as { subject: string; body: string }
+  assert.equal((await EDIT(req(`/api/outreach/${id}`, 'PATCH', { subject: m.subject, body: m.body }), ctx(id))).status, 200)
+  assert.equal((await preview(id)).offer_changed, true)
+  assert.deepEqual(await approve(id), { status: 409, error: 'offer_changed' })
+})

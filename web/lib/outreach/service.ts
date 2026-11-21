@@ -471,7 +471,7 @@ export function editDraft(db: Database.Database, tenantId: string, id: string, e
   if (body.length < 20 || body.length > 3000) throw new OutreachError('bad_body')
   // A person wrote these words with the play's offer in front of them: they are now the words for that offer (#686). An
   // offer that cannot be read or is contested keeps the old record, so the draft stays held.
-  const offerNow = currentOfferDigest(db, tenantId, m.lead_id)
+  const offerNow = subject !== m.subject || body !== m.body ? currentOfferDigest(db, tenantId, m.lead_id) : null // an unchanged save writes nothing new for the offer
   db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1, status = 'draft', approved_hash = NULL, error = NULL, offer_hash = COALESCE(?, offer_hash) WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(subject, body, offerNow, id, tenantId)
   if (tableExists(db, 'sequences')) {
     const seq = db.prepare('SELECT id FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as { id: string } | undefined
@@ -682,6 +682,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   { const why = recheckSendAuthority(db, tenantId, { to: m.to_email, sender: acct!.email, now: nowS(d), expectRefreshCt: tokenGen }); if (why) release(why) } // the shared recheck (send-authority.ts); the first-touch set above stays
   const final = getMsg(db,tenantId,id)!
   if (final.approved_hash !== hash(final.to_email,final.subject,final.body) || final.body !== m.body || final.subject !== m.subject || final.to_email !== m.to_email) release('changed_since_approval')
+  if (draftOfferChanged(db, tenantId, final)) release('offer_changed') // #686: the play's offer changed during the token refresh
   if (tableExists(db,'sequences')) {
     const set = db.prepare('SELECT status FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as {status:string} | undefined
     if (set && set.status !== 'approved') release('approve_sequence_set')
