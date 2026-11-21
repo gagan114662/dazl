@@ -4,16 +4,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
-import { migrateOutreach } from '../lib/outreach/store.ts'
-import { migrateMemory } from '../lib/memory.ts'
-import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { createQueryJob } from '../lib/scan/store.ts'
+import { saveKey } from '../lib/llm/key-store.ts'
 import { claimKeyedJob } from '../lib/scan/runner.ts'
-import { draftBlockReason, leadHeld } from '../lib/outreach/service.ts'
+import { approve, approveBlockReason, draftBlockReason, leadHeld, sendBlockReason } from '../lib/outreach/service.ts'
 
 test('a lead matching a carried exclusion cannot be drafted, approved or sent', () => {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateMemory(db); migrateKeys(db)
+  migrateAllSqlite(db)
+  db.exec("INSERT INTO users (id,email,password_hash,salt) VALUES ('W','owner@example.test','x','y')")
   saveKey(db, 'W', 'anthropic', 'fixture-only-unused-key', Buffer.alloc(32, 1))
   const icp = JSON.stringify({ summary: 'B2B SaaS founders', who: ['founder'], industries: [], sizes: [], where: [], signals: [], exclude: [], carry_exclude: ['Acme Dental (acme.example)'] })
   const job = createQueryJob(db, 'W', { query: 'SaaS founders hiring sales', icp, offer: 'Leadly (leadly.example), AI lead finding' })
@@ -31,4 +31,17 @@ test('a lead matching a carried exclusion cannot be drafted, approved or sent', 
   assert.equal(leadHeld(db, 'W', 'X'), true)
   assert.notEqual(draftBlockReason(db, 'W', 'Y'), 'lead_excluded')
   assert.equal(leadHeld(db, 'W', 'Y'), false)
+  // Existing drafts (created before the exclusion applied) must be refused by
+  // the real approval check even after a legitimate source review.
+  db.prepare("UPDATE leads SET human_confirmed_at=unixepoch() WHERE id IN ('X','Y')").run()
+  const seedDraft = db.prepare('INSERT INTO outreach_messages (id,tenant_id,lead_id,to_email,subject,body) VALUES (?,?,?,?,?,?)')
+  seedDraft.run('draftX','W','X','ceo@acme.example','Local fixture','Fixture message kept local only.')
+  seedDraft.run('draftY','W','Y','ceo@northwind.example','Local fixture','Fixture message kept local only.')
+  assert.equal(approveBlockReason(db, 'W', 'draftX', { skipAccount:true }), 'lead_excluded')
+  assert.throws(() => approve(db, 'W', 'draftX'), { code:'lead_excluded' })
+  assert.equal(db.prepare("SELECT status FROM outreach_messages WHERE id='draftX'").pluck().get(), 'draft')
+  assert.equal(approveBlockReason(db, 'W', 'draftY', { skipAccount:true }), null)
+  db.prepare("UPDATE outreach_messages SET status='approved' WHERE id='draftX'").run()
+  assert.equal(sendBlockReason(db, 'W', 'draftX', { skipAccount:true }), 'lead_ungraded')
+
 })

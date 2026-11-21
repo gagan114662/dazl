@@ -419,6 +419,7 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   const m = getMsg(db, tenantId, id)
   if (!m) throw new OutreachError('not_found')
   if (m.status !== 'draft') throw new OutreachError('not_a_draft')
+  if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
   if (!skipAccount && !getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
   if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
   if (isSuppressed(db, tenantId, m.to_email)) throw new OutreachError('suppressed')
@@ -442,6 +443,7 @@ export function approveBlockReason(db: Database.Database, tenantId: string, id: 
 export function approve(db: Database.Database, tenantId: string, id: string, sequenceSet = false): void {
   const m = approveChecks(db, tenantId, id, sequenceSet)
   db.transaction(() => {
+    if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
     // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
