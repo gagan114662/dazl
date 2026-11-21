@@ -12,7 +12,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
-import { isCountryOrRegion, isCountryGroup } from './countries.ts'
+import { isCountryOrRegion } from './countries.ts'
 import { releaseHeld } from './held-state.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 export { salesHiringRequired, salesGateOr }
@@ -35,7 +35,7 @@ import { WHY_MAX } from './score.ts'
 const STANDING_POOL = /\b(?:talent\s+(?:pool|community|network|pipeline)|register\s+your\s+interest|future\s+opportunit(?:y|ies)|general\s+(?:interest|application)|evergreen|intern(?:ship)?s?)\b/i
 // #1185 (1,147 live account-executive titles, 111 Greenhouse boards): the segment words real boards put on the role are wider than the first
 // list - Territory, Majors, Core, Hunter, Digital Native, Emerging, Startup, Federal / Public Sector, Large Enterprise - and a segment or a
-// country can follow the role without a separator ("Account Executive Mid Market Benelux", "Enterprise Account Executive Mexico"). Still a
+// country can follow the role without a separator ("Account Executive Large Enterprise", "Enterprise Account Executive Mexico"). Still a
 // closed list (an unlisted word before the role still holds the title): these are sales coverage words, none of them a title of its own.
 const SEGMENT_WORDS = 'enterprise|strategic|commercial|corporate|mid[-\\s]?market|midmarket|smb|sme|named|majors?|key|global|regional|field|inside|outside|growth|new|business|territory|core|hunters?|digital|natives?|emerging|startups?|federal|public|sector|large|geo'
 const SEGMENT = new RegExp(`^(?:${SEGMENT_WORDS})$`, 'i')
@@ -64,13 +64,13 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
   return m
 }
 const SEP = /[,\-–—(/|:]/
-// a place: the whole text is a country, region or multi-country region, three letters or more (a two-letter "Co" / "In" is a word, not a
-// state code) or the written UK / US, and capitalised as a name
-const isPlace = (t: string) => (t.length >= 3 || /^(?:UK|US)$/.test(t)) && /^[A-Z]/.test(t) && (isCountryOrRegion(t) || isCountryGroup(t))
+// a place, read by the generic country / region reader (countries.ts: the ISO 3166 table and US / Canadian / UK regions), never a list
+// written here: three letters or more (a two-letter "Co" / "In" is a word, not a state code) or the written UK / US, capitalised as a name
+const isPlace = (t: string) => (t.length >= 3 || /^(?:UK|US)$/.test(t)) && /^[A-Z]/.test(t) && isCountryOrRegion(t)
 // what follows the role: the end, a separator or a level as before; or, written straight after it with no separator, segment words and/or a
-// country or multi-country region ("Mid Market Benelux", "Mexico", "Large Enterprise Public Sector", "UK/I"). Any other word there ("Manager",
+// country or region ("Mid Market - Spain", "Mexico", "Large Enterprise Public Sector", "UK/I"). Any other word there ("Manager",
 // "Team", "Support Specialist", "Co-op") is another title and holds it. On that path, what follows the next separator may only be a level or a
-// place ("Mid Market - Spain", "UK/I"): anything else ("Mexico - Chief of Staff", "Benelux, Sales Manager") is held (council review at ce42877).
+// place ("Mid Market - Spain", "UK/I"): anything else ("Mexico - Chief of Staff", "Mexico, Sales Manager") is held (council review at ce42877).
 function afterRoleOk(after: string): boolean {
   if (AFTER_ROLE.test(after)) return !SEGMENT_ROLE.test(after)
   const a = after.replace(/\bmid[\s-]+market\b/gi, 'Midmarket')

@@ -341,6 +341,4 @@ export function regionOf(segment: string): string | null {
 }
 export const regionsIn = (text: string): string[] => [...new Set(text.split(',').map(regionOf).filter((x): x is string => !!x))]
 // A region implies its country: Ontario is Canada, New York is the United States, Scotland is the United Kingdom.
-// #1185: a multi-country sales region written as one name ("Benelux", "Nordics", "DACH", "EMEA"): a place, never a person's title.
-export const isCountryGroup = (segment: string): boolean => /^(?:the\s+)?(?:benelux|nordics?|baltics?|scandinavia|iberia|dach|emea|apac|apj|latam|anz|mena|cee|uki)$/i.test(segment.trim())
 export const countryOfRegion = (r: string): string => (r.startsWith('CA-') ? 'CA' : r.startsWith('GB-') ? 'GB' : 'US')
