@@ -125,7 +125,7 @@ test('#1319 item 2: a trial job whose cap cannot be found at all shows no dollar
     const { cost } = await (await status(job_id)).json() as { cost: { estimate: { total: unknown; trial_cap_line: string }; actual: { summary: string } | null } }
     assert.equal(cost.estimate.total, null, 'no range to show')
     assert.equal(cost.estimate.trial_cap_line, 'Free trial scans stop at their per-scan limit.')
-    assert.deepEqual(dollars(cost.actual?.summary ?? '').filter(d => d > CAP), [], cost.actual?.summary)
+    assert.equal(cost.actual?.summary, 'The cost line is not shown: this free scan\'s trial limit could not be read.', 'never "not recorded" when it was')
   } finally { process.env.DAZL_TRIAL_SCAN_RESERVE_USD = reserve }
 })
 
