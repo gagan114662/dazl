@@ -26,7 +26,7 @@ const BOARD = (opts: { name: string; site: string | null }) => (async (input: st
   return new Response('', { status: 404 })
 }) as typeof fetch
 
-async function runAts(fetchImpl: typeof fetch | undefined, homeName = 'LevelUp Leads', signal?: AbortSignal) {
+async function runAts(fetchImpl: typeof fetch | undefined, homeName = 'LevelUp Leads', signal?: AbortSignal, textSites?: { company: string; website: string }[]) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Toronto, ON'] }), job)
@@ -40,7 +40,7 @@ async function runAts(fetchImpl: typeof fetch | undefined, homeName = 'LevelUp L
     const b = ({ '/': HOME(homeName).replace('<a href="/contact">', 'Visit us: 100 King St W, Toronto, ON M5X 1A9 <a href="/contact">'), '/contact': CONTACT } as Record<string, string>)[u.pathname]
     return b !== undefined ? { status: 200, body: b, finalUrl: url } : { status: 404, body: '', finalUrl: url }
   }
-  await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, redirectOf: async () => null, now: Date.parse('2026-11-21T09:00:00Z'), ...(fetchImpl ? { atsLookup: true, atsFetch: fetchImpl } : {}), ...(signal ? { signal } : {}) })
+  await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, redirectOf: async () => null, now: Date.parse('2026-11-21T09:00:00Z'), ...(fetchImpl ? { atsLookup: true, atsFetch: fetchImpl } : {}), ...(signal ? { signal } : {}), ...(textSites ? { textSites } : {}) })
   return (db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain
 }
 
@@ -66,4 +66,23 @@ test('a board whose name is another company gives nothing', async () => {
 })
 test('the board website must still pass homepage name proof', async () => {
   assert.equal(await runAts(BOARD({ name: 'LevelUp Leads', site: 'levelupleads.org' }), 'Different Brand'), null)
+})
+
+// cf_runner stage 1: the website the search model named in its JSON answer
+test('a website the search model named for this company is tried and counts once it passes homepage name and location proof', async () => {
+  assert.equal(await runAts(undefined, 'LevelUp Leads', undefined, [{ company: 'LevelUp Leads', website: 'https://www.levelupleads.org/' }]), 'levelupleads.org')
+})
+test('a model-named website fails the homepage name proof and gives nothing', async () => {
+  assert.equal(await runAts(undefined, 'Different Brand', undefined, [{ company: 'LevelUp Leads', website: 'levelupleads.org' }]), null)
+})
+test('a model-named website for another company name, or one not carrying the name, gives nothing', async () => {
+  assert.equal(await runAts(undefined, 'LevelUp Leads', undefined, [{ company: 'LevelUp Leadership', website: 'levelupleads.org' }]), null)
+  assert.equal(await runAts(undefined, 'LevelUp Leads', undefined, [{ company: 'LevelUp Leads', website: 'acmeplatform.org' }]), null)
+})
+test('two different websites named for the same company give nothing', async () => {
+  assert.equal(await runAts(undefined, 'LevelUp Leads', undefined, [{ company: 'LevelUp Leads', website: 'levelupleads.org' }, { company: 'LevelUp Leads', website: 'levelupleadshq.org' }]), null)
+})
+
+test('review: a wrong model-named website does not stop the ATS board lookup', async () => {
+  assert.equal(await runAts(BOARD({ name: 'LevelUp Leads', site: 'levelupleads.org' }), 'LevelUp Leads', undefined, [{ company: 'LevelUp Leads', website: 'levelupleadsgroup.org' }]), 'levelupleads.org')
 })

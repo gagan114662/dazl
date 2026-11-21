@@ -139,11 +139,36 @@ export type ClaudeSearchEvidenceDiagnostic = {
   result_entries: number
   safe_urls: number
 }
+export interface TextCandidate { company: string; website: string | null; jobUrl: string | null }
+const str = (v: unknown, max: number) => typeof v === 'string' && v.trim() && v.length <= max ? v.trim() : null
+// cf_runner extract_json: the <json>...</json> block (else the first [...]); a truncated answer still yields its complete objects.
+export function parseTextCandidates(text: string): TextCandidate[] {
+  const m = /<json>([\s\S]*?)(?:<\/json>|$)/.exec(text), body = m ? m[1] : text
+  const objs: unknown[] = []
+  try { const j = JSON.parse(body.trim()); if (Array.isArray(j)) objs.push(...j) } catch {
+    for (const o of body.match(/\{[^{}]*\}/g) ?? []) { try { objs.push(JSON.parse(o)) } catch { /* incomplete object */ } }
+  }
+  const out: TextCandidate[] = []
+  for (const o of objs) {
+    if (!o || typeof o !== 'object' || out.length >= 30) continue
+    const r = o as Record<string, unknown>, company = str(r.company, 120)
+    if (!company) continue
+    const job = str(r.job_url, 480)
+    let jobUrl: string | null = null
+    try { if (job) { const u = new URL(job); if (u.protocol === 'https:' && !u.username && !u.password && !u.port) jobUrl = u.href } } catch { /* not a URL */ }
+    const site = str(r.website, 200)
+    out.push({ company, website: site, jobUrl })
+  }
+  return out
+}
 export interface ClaudeSearchResult {
   outcome: 'ok' | 'partial' | 'unavailable'
   citedUrls: string[]
   preferredPublisherUrls: string[]
   buyerSourceUrls?: string[]
+  // company_first: cf_runner stage 1 - the companies the model listed in its <json> answer (name, own website, posting URL). Untrusted
+  // hints only: a posting URL is read through the board's own API, a website must pass the crawler's homepage name proof.
+  textCandidates?: TextCandidate[]
   stop: ClaudeSearchEvidenceDiagnostic['stop']
   evidenceDiagnostic: ClaudeSearchEvidenceDiagnostic
   usage: ClaudeSearchUsage
@@ -279,7 +304,9 @@ export async function runClaudeWebSearch(
       try { const normalized = new URL(citation.url).href; if (urls.has(normalized)) preferred.add(normalized) } catch { /* not an admitted URL */ }
     }
   }
-  return { preferredPublisherUrls: [...preferred], ...(buyerSources.size ? { buyerSourceUrls: [...buyerSources] } : {}), outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
+  const textCandidates = policy === 'company_first' && citedUrls.length
+    ? parseTextCandidates(content.map(obj).filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text as string).join('').slice(0, 65_536)) : []
+  return { preferredPublisherUrls: [...preferred], ...(textCandidates.length ? { textCandidates } : {}), ...(buyerSources.size ? { buyerSourceUrls: [...buyerSources] } : {}), outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
     evidenceDiagnostic: { stop, result_blocks: resultBlocks, non_array_result_blocks: nonArrayBlocks, empty_result_blocks: emptyBlocks, malformed_result_blocks: malformedBlocks, result_errors: resultErrors, result_entries: resultEntries, safe_urls: citedUrls.length },
   }
 }

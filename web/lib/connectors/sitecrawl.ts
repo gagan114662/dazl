@@ -1436,7 +1436,7 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; buyerCitedUrls?: readonly string[]; atsLookup?: boolean; atsFetch?: typeof fetch; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; textSites?: { company: string; website: string }[]; buyerCitedUrls?: readonly string[]; atsLookup?: boolean; atsFetch?: typeof fetch; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
@@ -1730,6 +1730,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (host && siteHostOk(host) && !SOCIAL.test(host) && notBlockedHost(host) && nameLabel(host) === norm(l.company) && !sites.includes(host)) {
           // found from the company NAME, not a page link: recorded as a name probe, so the strict no-place/location refusals of a guess apply
           sites.push(host); citedSites.push(host); basisOf.set(host, 'name_probe'); sourceOf.set(host, gb!.hiring!.boardUrl)
+        }
+      }
+      // cf_runner stage 1/2: the website the search model named for THIS company (exact normalized name) in its answer. Untrusted: the
+      // host must carry the company's name (its full name or its first word of 4+ letters), and it is recorded as a name probe, so the
+      // homepage name proof and a guessed domain's location rules decide; a model-named site never counts as a linked one.
+      if (!anchored && deps.textSites?.length) {   // after the ATS lookup, so a wrong model hint never stops it
+        const want = norm(l.company), stem = norm(l.company.split(/\s+/)[0] ?? '')
+        const named = [...new Set(deps.textSites.filter(s => norm(s.company) === want).map(s => { try { return registrable(new URL(/^https?:\/\//i.test(s.website) ? s.website : 'https://' + s.website).hostname.replace(/^www\./, '').toLowerCase()) } catch { return '' } }))]
+        if (named.length === 1) {
+          const host = named[0], label = host ? nameLabel(host) : ''
+          if (host && siteHostOk(host) && !SOCIAL.test(host) && notBlockedHost(host) && (label === want || (stem.length >= 4 && label.includes(stem))) && !sites.includes(host)) {
+            sites.push(host); citedSites.push(host); basisOf.set(host, 'name_probe')
+          }
         }
       }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
