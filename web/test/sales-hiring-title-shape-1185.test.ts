@@ -68,6 +68,9 @@ const NOT_THE_OPENING = [
   'Account Executive New Business / Sales Manager', 'Account Executive Federal - Senior Recruiter', 'Account Executive Co-op',
   'Account Executive Mexico - Sales Team Lead', 'Account Executive Mexico - Account Executive Manager', 'Account Executive Mid Market - Chief of Staff',
   'Account Executive Mid Market Benelux, Sales Operations Manager', 'Account Executive Mexico - Customer Success Manager', 'Account Executive Mexico | Chief of Staff',
+  // a newly allowed word before the role never lets another title follow a separator (council review at 9b67ea4)
+  'Sales Account Executive - Sales Manager', 'Specialist Account Executive (Sales Manager)', 'Customer Account Executive - Chief of Staff',
+  'Territory Account Executive, Regional Director', 'Federal Account Executive: Senior Recruiter', 'Flex Account Executive - Sales Manager',
 ]
 
 test('#1185 PASS: real Territory / Mid Market / Core / Majors / Sales / Federal / place-suffixed account-executive postings are the requested role through the real gate and store', async () => {

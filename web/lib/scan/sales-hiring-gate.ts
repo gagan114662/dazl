@@ -71,8 +71,11 @@ const isPlace = (t: string) => (t.length >= 3 || /^(?:UK|US)$/.test(t)) && /^[A-
 // country or region ("Mid Market - Spain", "Mexico", "Large Enterprise Public Sector", "UK/I"). Any other word there ("Manager",
 // "Team", "Support Specialist", "Co-op") is another title and holds it. On that path, what follows the next separator may only be a level or a
 // place ("Mid Market - Spain", "UK/I"): anything else ("Mexico - Chief of Staff", "Mexico, Sales Manager") is held (council review at ce42877).
+// council review at 9b67ea4: with more words allowed before the role, a separator must not let another title follow it ("Sales Account
+// Executive - Sales Manager", "... (Chief of Staff)"): each separated part is read by the same other-title shape the job-ad heading uses
+const otherTitleAfter = (after: string) => after.split(/[,\-–—(/|:)]/).some(p => TITLE_SUFFIX.test(p) || /^\s*chief\s+of\s+staff\b/i.test(p))
 function afterRoleOk(after: string): boolean {
-  if (AFTER_ROLE.test(after)) return !SEGMENT_ROLE.test(after)
+  if (AFTER_ROLE.test(after)) return !SEGMENT_ROLE.test(after) && !otherTitleAfter(after)
   const a = after.replace(/\bmid[\s-]+market\b/gi, 'Midmarket')
   if (!/^\s/.test(a)) return false
   const cut = a.search(SEP), run = (cut < 0 ? a : a.slice(0, cut)).trim(), tail = cut < 0 ? '' : a.slice(cut).replace(/^[\s,\-–—(/|:]+/, '').replace(/\)\s*$/, '').trim()
