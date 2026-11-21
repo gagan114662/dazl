@@ -60,13 +60,21 @@ test('#384 GET /api/leads: a direct contact the crawl also recorded keeps the cr
   assert.match(weak.route.provenance.text, /printed on a page at company\.example, a website not confirmed as the company's own, last read 1 Jan 2021 \(\d+ days ago, may be out of date\)/)
   assert.doesNotMatch(weak.route.provenance.text, /cited page|read when the scan ran/)
 
+  // The status line agrees with the provenance line: the cited page is not called the place the address was printed.
+  const weakStatus = leadCardSummary(weak.lead).contactStatus!
+  assert.equal(weakStatus.confirmed, false)
+  assert.doesNotMatch(weakStatus.text, /cited page/)
+  assert.match(weakStatus.text, /^Unconfirmed - name match only: company\.example/)
+
   const strong = card('strong')
+  assert.match(leadCardSummary(strong.lead).contactStatus!.text, /^Confirmed: strongdental\.example: /)
   assert.equal(strong.route.provenance.state, 'company_site')
   assert.equal(strong.route.provenance.url, 'https://strongdental.example/contact')
   assert.equal(strong.route.provenance.lastReadAt, PROD_READ)
   assert.match(strong.route.provenance.text, /printed on the company website \(strongdental\.example\), last read 24 Oct 2026/)
 
   const control = card('control')
+  assert.match(leadCardSummary(control.lead).contactStatus!.text, /^Confirmed: address printed on the cited page\./)
   assert.equal(control.route.email, 'dana@news.example')
   assert.equal(control.route.provenance.state, 'cited_page')
   assert.equal(control.route.provenance.url, 'https://news.example/story')

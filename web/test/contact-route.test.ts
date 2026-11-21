@@ -79,9 +79,17 @@ test('a crawled page is never called the company website unless the site identit
   const confirmed = contactRoute(lead({ id: 'l-user', contact: null, enrichments: [...reviewRows, { connector: 'user', kind: 'domain_review', value: 'kyro.ai', label: REVIEW_PREFIX + decision.binding }] }), null, NOW_MS)
   assert.equal(confirmed.provenance.state, 'company_site')
 
-  // The lead's own contact stays the cited page, whatever the crawl recorded.
+  // The lead's own contact stays the cited page when the crawl recorded a different address.
   const cited = contactRoute(lead({ id: 'l-cited', contact: 'dana@news.example', enrichments: [emailRow] }), null, NOW_MS)
   assert.equal(cited.provenance.state, 'cited_page')
+  // #384 (11-06 audit): the SAME address the crawl recorded (any letter case) keeps the crawl's page, read time and site basis.
+  for (const contact of ['contact@kyro.ai', 'Contact@Kyro.AI']) {
+    const same = contactRoute(lead({ id: 'l-same', contact, enrichments: [{ ...emailRow, retrieved_at: SEC(2021, 1, 1) }, dom('name_probe')] }), null, NOW_MS)
+    assert.equal(same.provenance.url, 'https://kyro.ai/contact', contact)
+    assert.equal(same.provenance.lastReadAt, SEC(2021, 1, 1), contact)
+    assert.equal(same.provenance.state, 'unconfirmed_site', contact)
+    assert.equal(same.provenance.stale, true, contact)
+  }
 })
 
 test('an invalid domain fails; a recorded failed check fails; catch-all and mail-server-found stay uncertain', () => {
