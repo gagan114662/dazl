@@ -51,22 +51,32 @@ const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|m
 // #1205: "London, Ontario" / "London, ON" / "London, Indiana" / "London, WV" are NOT the UK's London (they were answered with UK postings). A London
 // qualified by ANY place outside the UK is left to the other resolvers (London, IN is a US city; London, Ontario a Canadian one): the qualifier
 // is read by the same resolvers the rest of the place code uses (a country, a US state, a Canadian province), never a list of names here.
-// A full name may follow with or without a comma ("London Ontario"); a code only after a comma and in capitals ("London, IN", never "London in 2025").
+// A full name may follow with or without a comma ("London Ontario"); a qualifier in parentheses counts as one after a comma ("London (Ontario)").
+// A two-letter code counts after a comma / parenthesis in capitals ("London, IN hiring"), in any case when it closes its clause ("london, ky"),
+// and with no comma only in capitals closing its clause ("London ON"): never the word "in" of "London in 2025". An abbreviation no resolver
+// reads and no UK marker ("London, Ky.", "London, W.Va.") is a qualifier too: the London is not taken for the UK's, and the job boards then
+// name why they could not place it.
 function nonUkLondon(q: string): boolean {
-  for (const m of q.matchAll(/\blondon\b(\s*,)?\s*([\p{L}.'-]+(?:\s+[\p{L}.'-]+){0,2})/giu)) {
-    const comma = !!m[1], words = m[2].split(/\s+/)
+  for (const m of q.matchAll(/\blondon\b\s*(,|\()?\s*([\p{L}.'-]+(?:\s+[\p{L}.'-]+){0,2})/giu)) {
+    const qualified = !!m[1], words = m[2].split(/\s+/)
+    const closes = (n: number) => n === words.length && /^\s*(?:$|[,.;:()!?/|\u2013-])/.test(q.slice((m.index ?? 0) + m[0].length))
     for (let n = words.length; n >= 1; n--) {
-      const seg = words.slice(0, n).join(' ').replace(/\.$/, '')
-      if (seg.length <= 2 ? !(comma && /^[A-Z]{2}$/.test(seg)) : !comma && seg.length === 3 && /^[A-Z]{3}$/.test(seg)) continue // a code ("IN", "ONT") only after a comma, in capitals
+      const raw = words.slice(0, n).join(' '), seg = raw.replace(/\.$/, '')
+      if (seg.length <= 2 && !(qualified ? /^[A-Z]{2}$/.test(seg) || closes(n) : /^[A-Z]{2}$/.test(seg) && closes(n))) continue
+      if (seg.length === 3 && !qualified && /^[A-Z]{3}$/.test(seg)) continue // a capitals code ("ONT") only after a comma
       const country = resolveSegment(seg, true), region = regionOf(seg)
       // a country CODE ("US", "UAE") qualifies London only when its clause ends there: in "London, US startups" it describes the startups
-      if (country && seg.length <= 3 && !(n === words.length && /^\s*(?:$|[,.;:)!?/|\u2013-])/.test(q.slice((m.index ?? 0) + m[0].length)))) continue
+      if (country && seg.length <= 3 && !closes(n)) continue
       if (country) { if (country !== 'GB') return true; continue }
       if (region) { if (countryOfRegion(region) !== 'GB') return true; continue }
+      if (n === 1 && qualified && /^[\p{L}.]{2,6}$/u.test(raw) && raw.endsWith('.') && !UKM.slice(3, -1).split('|').some(w => w.replace(/\\/g, '').startsWith(seg.replace(/\./g, '').toLowerCase()))) return true
     }
   }
   return false
 }
+// #1205: a city that shares its name with a built-in city place (London) is that other city only when a posting names its own state,
+// province or country, and never for a remote posting: "London EC2A 2BB", "City of London", "Remote - London" are the UK's London.
+const namesakeOfBuiltIn = (city: string): boolean => CITY_PLACES.some(c => norm(c.name) === norm(city))
 const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; ok: (l: string) => boolean }[] = [
   { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
@@ -85,14 +95,14 @@ const LEAD_IN = new Set(['in', 'at', 'near', 'from'])
 export function genericPlace(query: string): Place | null {
   const toks = query.match(/[\p{L}\p{M}'\u2019.-]+|,/gu) ?? []
   for (let i = 0; i < toks.length; i++) {
-    let country: string | null = null
+    let country: string | null = null, province: string | null = null
     for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) { if (toks.slice(i, i + n).includes(',')) continue; const c = resolveSegment(toks.slice(i, i + n).join(' '), true); if (c) country = c }
     // #1205: a Canadian province after a comma ("Toronto, Ontario", "London, ON") names the city's country (Canada). Only after a comma, and a code only in capitals,
     // so the word "on" in "startups on the hunt" is never a province.
     if (!country && toks[i - 1] === ',') for (let n = Math.min(4, toks.length - i); n >= 1 && !country; n--) {
       const seg = toks.slice(i, i + n); if (seg.includes(',')) continue
       const text = seg.join(' '), r = regionOf(text)
-      if (r?.startsWith('CA-') && (text.length > 2 ? /^\p{Lu}/u.test(text) : /^[A-Z]{2}$/.test(text))) country = 'CA'
+      if (r?.startsWith('CA-') && (text.length > 2 ? /^\p{Lu}/u.test(text) : /^[A-Z]{2}$/.test(text))) { country = 'CA'; province = r }
     }
     if (!country) continue
     let j = i - 1; const comma = toks[j] === ','; if (comma) j--
@@ -103,14 +113,18 @@ export function genericPlace(query: string): Place | null {
     const allCap = words.every(w => /^\p{Lu}/u.test(w))
     if (!(comma || LEAD_IN.has(lead) || allCap)) continue
     const city = words.join(' '), key = norm(city); if (key.length < 3) continue
-    const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`)
+    const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`), namesake = namesakeOfBuiltIn(city)
     const ok = (...locs: (string | undefined)[]) => locs.some(l => {
       if (!l) return false
       if (!re.test(norm(l))) return false
       const named = countriesIn(l); if (!(named.length === 0 || named.every(c => c === country))) return false
       if (country !== 'GB' && LONDON_OK.test(l)) return false // #1205: a UK London location ("Greater London", a bare "London") is not a London elsewhere
-      // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK)
-      return regionsIn(l).every(r => countryOfRegion(r) === country)
+      // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK); a city read from
+      // its province ("London, Alberta") is in that province, so a posting naming another one ("London, ON") is not it
+      const regions = regionsIn(l)
+      if (!regions.every(r => countryOfRegion(r) === country && (!province || r === province))) return false
+      if (namesake && (/\bremote\b/i.test(l) || (named.length === 0 && regions.length === 0))) return false
+      return true
     })
     return { name: city, ok }
   }
@@ -151,7 +165,9 @@ function cityPlaceOf(cityIn: string, region: string): Place | null {
   const foreign = (l: string) => countriesIn(l).some(c => c !== 'US') || LONDON_OK.test(l)
   // #1205: a Canadian province is another country too ("London, ON" is not London, KY)
   const otherRegion = (l: string) => regionsIn(l).some(r => countryOfRegion(r) !== 'US')
-  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l) && !otherRegion(l)) }
+  // #1205: a namesake of a built-in city place ("London, KY") must name its own state: "London EC2A 2BB" names none and is the UK's
+  const ownState = (l: string) => !namesakeOfBuiltIn(city) || regionsIn(l).includes(`US-${abbr.toLowerCase()}`)
+  return { name: `${city}, ${abbr}`, ok: (...locs) => locs.some(l => !!l && re.test(norm(l)) && !/\bremote\b/i.test(l) && !otherState(l) && !foreign(l) && !otherRegion(l) && ownState(l)) }
 }
 // #1095 (live staging check of the merged #1155, 2026-11-13): a brand-new trial account's dazl-inferred profile stores its place WITHOUT a state
 // (job 64a0f578: where ["Austin"], country "US"), and placeIn("in Austin") names no place, so the board source never ran for exactly the

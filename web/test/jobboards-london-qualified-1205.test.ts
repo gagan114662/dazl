@@ -50,21 +50,26 @@ for (const where of ['London, Indiana', 'London, IN']) {
 }
 
 test('#1205 a London qualified by any US state (name or code), Canadian province or non-UK country refuses UK postings; the UK London is unchanged', () => {
-  const UK = ['London, UK', 'London, England', 'London, England, United Kingdom', 'Greater London', 'London']
+  // UK posting forms, including ones that name no country: a UK postcode, the City of London, a remote London posting
+  const UK = ['London, UK', 'London, England', 'London, England, United Kingdom', 'Greater London', 'London', 'London EC2A 2BB', 'London, SE1', 'City of London', 'London Bridge', 'Remote - London']
   for (const q of ['in London, Indiana', 'in London, IN', 'in London, West Virginia', 'in London, WV', 'in London, GA', 'in London, Alberta', 'in London, AB',
-    'in London, Ontario', 'in London, ON', 'in London, ONT', 'in London, Kentucky', 'in London, Ontario, Canada', 'in London, Canada', 'in London Ontario', 'in London, Australia']) {
+    'in London, Ontario', 'in London, ON', 'in London, ONT', 'in London, Kentucky', 'in London, Ontario, Canada', 'in London, Canada', 'in London Ontario', 'in London, Australia',
+    'in London, Ky.', 'in London, W.Va.', 'in London, Ky', 'in london, ky', 'in london, in', 'London (Ontario)', 'London (KY)', 'London ON', 'in London, Ont.']) {
     const p = placeIn(q)
     // either the intended London (refusing every UK posting) or a named reason the job boards could not place it, never a silent UK London
-    if (!p) { assert.match(placeSkipReason(q), /^skipped_no_place:[a-z]+:/, `${q}: no place, so a named reason`); continue }
+    // (a place written in lower case is skipped too; its reason is the general one, since the reason reads a capitalised place name)
+    if (!p) { assert.match(placeSkipReason(q), /^[A-Z]/.test(q.replace(/^in /, '')) ? /^skipped_no_place:[a-z]+:/ : /^skipped_no_place/, `${q}: no place, so the job boards say why`); continue }
     for (const l of UK) assert.equal(p.ok(l), false, `${q} resolved to '${p.name}', which accepts the UK posting '${l}'`)
   }
   // the place a qualified London resolves to is that London, read by the resolver for its qualifier
   assert.equal(placeIn('in London, Indiana')?.name, 'London, IN')
   assert.equal(placeIn('in London, WV')?.name, 'London, WV')
   assert.equal(placeIn('in London, Alberta')?.ok('London, AB'), true)
+  assert.equal(placeIn('in London, Alberta')?.ok('London, ON'), false, 'a London read from its province refuses another province')
+  assert.equal(placeIn('in London, KY')?.ok('London, KY 40741'), true, 'a namesake London accepts a posting naming its own state')
   // the UK London is unchanged: bare, with a UK marker, or followed by words that are not a place
   for (const q of ['hiring sales staff in London', 'in London, UK', 'in London, England', 'London UK B2B SaaS startups hiring sales staff', 'in London, United Kingdom',
-    'London-based fintechs hiring SDRs', 'in London, hiring account executives', 'in London, the startups hiring', 'in London, EC1A', 'in London, AI startups hiring', 'SaaS in London, US startups hiring', 'in London, UAE founders hiring']) {
+    'London-based fintechs hiring SDRs', 'in London, hiring account executives', 'in London, the startups hiring', 'in London, EC1A', 'in London, AI startups hiring', 'SaaS in London, US startups hiring', 'in London, UAE founders hiring', 'in London, Eng.', 'in London, in 2025 hiring']) {
     const p = placeIn(q)
     assert.equal(p?.name, 'London', `${q} stays the UK London`)
     assert.equal(p!.ok('London, UK'), true, q)
