@@ -24,6 +24,7 @@ import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, 
 import { publishedDisplayCountry, recordPublishedDisplay, withdrawPublishedDisplay } from '../people/published-display.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 import { personalAddresses, publishedCandidateFor, recordEmailGuesses, usEvidence, type AddressContext } from '../people/email-pattern.ts'
+import { decodeEntities } from '../verifier/text.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
@@ -721,6 +722,15 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
     if (inFormer[i]) continue
     if (same) add(same[1], same[2])
+    // Run 9697d013 family (Medsien): one caption naming several people under one PLURAL title ("Hamed Ahmadi and Sina Torabi, Co-founders").
+    // Each name must pass every check add() runs on its own; the title must be plural and its singular a whole title. Any part that is not a
+    // person name drops the whole caption (fail closed), so "Partners and Investors, Founders" lists no one.
+    const shared = /^(.{7,90}?)\s*,\s*([A-Za-z -]{4,40}s)$/.exec(lines[i])
+    if (shared) {
+      const names = shared[1].split(/\s*,\s*(?:and\s+|&\s+)?|\s+(?:and|&)\s+/).map(s => s.trim()).filter(Boolean)
+      const single = shared[2].replace(/s$/, '')
+      if (names.length >= 2 && names.length <= 4 && TITLE_FULL.test(single) && names.every(nm => NAME_LINE.test(nm) && !looksLikeJobTitle(nm))) for (const nm of names) add(nm, single)
+    }
     // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
     // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.
     // #1183 (multilingual): "Diretor Comercial" beside a buyer role "Gerente de Vendas" shares no word with any collected title, so the check above
@@ -1373,9 +1383,50 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
     const lastLt = win.lastIndexOf('<'); if (lastLt > win.lastIndexOf('>')) win = win.slice(0, lastLt) // ... and at its end
     const wide = win.replace(/<[^>]*>/g, tag => tag.length < 12 || !/alt=|title=|aria-label=|data-/i.test(tag) ? ' ' : ` ${[...tag.matchAll(/\b(?:alt|title|aria-label|data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' | ')} `)
       .replace(/\s+/g, ' ').slice(0, 900)
-    out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-'), ...(inAttr ? {} : { text: true }) })
+    // #1208: a plain mailto (no query) is read with the card around it: the heading before the link, the text between, the link's own text
+    const card = mailto && attrName === 'href' && /^\s*mailto:[^?&#,;%\s]+\s*$/i.test(tight) ? mailtoCard(html, i - back.length + q) : undefined
+    out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-'), ...(inAttr ? {} : { text: true }), ...(card ? { card } : {}) })
   }
   return out
+}
+
+// #1208: the card a bare mailto link sits in, read from the markup only: <hN>name</hN> [one block of text] <a href="mailto:...">link</a>.
+// `quoteAt` is where the href value's opening quote is. Null unless the link is an <a> whose nearest preceding heading is reached with
+// no link, image, form control or other heading in between. Visible text only: tags become spaces, a <br> a record break (a tab, never
+// read as a space between a first and a last name), and `stacked` says another heading sits directly on this one.
+const textOf = (h: string) => decodeEntities(h.replace(/<br\s*\/?>/gi, '\t').replace(/<[^>]*>/g, ' ')).replace(/\u00a0/g, ' ').replace(/ +/g, ' ').trim()
+// a link's accessible name: its text plus the alt / title / aria-label of anything inside it (an <img alt="Owen Pike"> names him)
+const linkNameOf = (h: string) => textOf(`${h} ${[...h.matchAll(/\b(?:alt|title|aria-label)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' ')}`)
+export function mailtoCard(html: string, quoteAt: number): { heading: string; between: string; link: string; stacked: boolean; to: string } | undefined {
+  const tagStart = html.lastIndexOf('<', quoteAt)
+  if (tagStart < 0 || !/^<a\s/i.test(html.slice(tagStart, tagStart + 3))) return undefined
+  const tagEnd = html.indexOf('>', quoteAt), close = tagEnd < 0 ? -1 : html.slice(tagEnd, tagEnd + 400).search(/<\/a\s*>/i)
+  if (close < 0) return undefined
+  if (/aria-labelledby\s*=/i.test(html.slice(tagStart, tagEnd + close))) return undefined   // its name is another element's text: not read here
+  const link = linkNameOf(`${html.slice(tagStart, tagEnd + 1).replace(/\bhref\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')}${html.slice(tagEnd + 1, tagEnd + close)}`)
+  const seg = html.slice(Math.max(0, tagStart - 1500), tagStart)
+  let last: RegExpExecArray | null = null
+  for (const m of seg.matchAll(/<\/h([1-6])\s*>/gi)) last = m as RegExpExecArray
+  if (!last) return undefined
+  const after = seg.slice(last.index + last[0].length)
+  if (/<(?:a|img|svg|picture|input|button|select|textarea|h[1-6])[\s>/]/i.test(after)) return undefined
+  // one card only: the way from the heading to the link may open elements and close what it opened, but never close an element opened
+  // before the heading ends (that leaves the heading's container: the next card, a footer). Void elements open nothing.
+  const opened: string[] = []
+  for (const m of after.matchAll(/<(\/?)([a-z][\w-]*)[^>]*?(\/?)>/gi)) {
+    const name = m[2].toLowerCase()
+    if (/^(?:br|hr|wbr|meta|link|source|track|col|area|base|embed|param)$/.test(name) || m[3]) continue
+    if (!m[1]) { opened.push(name); continue }
+    if (opened.pop() !== name) return undefined
+  }
+  const before = seg.slice(0, last.index)
+  let open = -1
+  for (const m of before.matchAll(new RegExp(`<h${last[1]}[\\s>]`, 'gi'))) open = m.index
+  if (open < 0) return undefined
+  const openEnd = before.indexOf('>', open)
+  if (openEnd < 0) return undefined
+  const stacked = /<\/h[1-6]\s*>/i.test(/(?:\s*<[^>]*>)*\s*$/.exec(before.slice(0, open))?.[0] ?? '')
+  return { heading: textOf(before.slice(openEnd + 1)), between: textOf(after), link, stacked, to: /mailto:\s*([^"'\s]+)/i.exec(html.slice(tagStart, tagEnd))?.[1]?.toLowerCase() ?? '' }
 }
 
 // ---- #1122: why a lead has no company website, and following a guessed domain that only forwards to the real one ----

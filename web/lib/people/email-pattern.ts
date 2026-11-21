@@ -140,7 +140,7 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 //   - and the name token must not occur anywhere else, as any word in any case, in that same attribute or text node, in the text
 //     around a text-node place, or in the attribute / text node of ANY other place the address is printed ("Maya Ortiz", "maya",
 //     "Michael Jordan" for jordan@). Otherwise it is nobody's.
-export interface AddressContext { tight: string; wide: string; attr: boolean; text?: boolean }
+export interface AddressContext { tight: string; wide: string; attr: boolean; text?: boolean; card?: { heading: string; between: string; link: string; stacked: boolean; to: string } }
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').split(/[^a-z]+/).filter(Boolean)
 // This person's own name, matched on the RAW text: first and last separated by spaces only (a middle INITIAL allowed, nothing else:
@@ -169,7 +169,25 @@ function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean
 export function sameNamedPublication(n: Name, ctx: AddressContext[] | undefined): boolean {
   return plainName(n) && !!ctx?.some(c => c.text && withoutOwnName(c.tight, n).found)
 }
-export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined): boolean {
+// #1208: the commonest team-card shape, "<h3>Maya Thornton</h3><p>Broker</p><a href="mailto:maya@...">Email</a>", pairs the address with
+// her only on all of: a plain mailto with no query (sitecrawl.ts mailtoCard); the heading is exactly her full name (the own-name rule
+// above: no hyphen, no firm word, no record break) and nothing else; the only text between heading and link is the title the crawl
+// recorded for her, or none; the link's own name is the address or words asking to write (nothing that could be a person); and no other
+// heading is stacked on hers. Only with that recorded title (`title`): without it a heading is never a pairing.
+const squash = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
+const LINK_WORDS = new Set(['email', 'e', 'mail', 'me', 'send', 'an', 'contact', 'write', 'to', 'message'])
+function cardPairs(card: NonNullable<AddressContext['card']>, n: Name, title: string): boolean {
+  if (card.stacked) return false
+  const head = withoutOwnName(card.heading, n)
+  if (!head.found || head.rest.length) return false
+  if (card.between && squash(card.between) !== squash(title)) return false
+  // the link's own name (its text, and the alt / title / aria-label of anything in it) may only be the address or words that ask to
+  // write: any other word could be a person ("Ana", "Email Owen", an <img alt="Owen Pike">), so the card is then nobody's pairing
+  // ... and an address in it is the link's own (another address shown as the link, "maya.ortiz@...", names someone else)
+  if ((card.link.match(EMAIL_RE) ?? []).some(a => a.toLowerCase() !== card.to)) return false
+  return (card.link.replace(EMAIL_RE, ' ').toLowerCase().match(/[\p{L}]+/gu) ?? []).every(w => LINK_WORDS.has(w))
+}
+export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined, title?: string): boolean {
   if (!plainName(n) || !ctx?.length) return false
   let paired = false
   for (const c of ctx) {
@@ -179,10 +197,11 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
     // attribute) stands on its own; a bare mailto in someone else's card is judged by the text around it.
     if (!(c.attr && tight.found) && withoutOwnName(c.wide, n).rest.includes(local)) return false
     if (tight.found) paired = true
+    else if (title && c.card && cardPairs(c.card, n, title)) paired = true
   }
   return paired
 }
-export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name]): { address: string; url: string } | null {
+export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name], title?: string): { address: string; url: string } | null {
   if (!plainName(name)) return null
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
   const single = new Set([localFor('first', name), localFor('last', name)])
@@ -190,7 +209,7 @@ export function publishedFor(name: Name, seen: { address: string; url: string; c
   return seen.find(s => {
     const local = s.address.split('@')[0]
     if (!mine.has(local)) return false
-    if (single.has(local) && !singleNamePairing(local, name, s.ctx)) return false
+    if (single.has(local) && !singleNamePairing(local, name, s.ctx, title)) return false
     const owners = ownersOf(local, all)
     return owners.length === 1 && nameKey(owners[0]) === nameKey(name)
   }) ?? null
@@ -430,7 +449,9 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   const us = usEvidence(ctx.homeText, ctx.where)
   const seenAll = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const namesAll = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
-  const pubAll = namesAll.map(x => ({ ...x, pub: publishedFor(x.name, seenAll, namesAll.map(n => n.name)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
+  // #1208: the title the crawl recorded beside each person ("Name, Title"), the only text a team card may print between her heading and her mailto
+  const titleOf = (person: string) => person.split(',').slice(1).join(',').trim() || undefined
+  const pubAll = namesAll.map(x => ({ ...x, pub: publishedFor(x.name, seenAll, namesAll.map(n => n.name), titleOf(x.person)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
   // The published tier first, flag on or off (one insert for both paths). US-only like every recorded address (DECISIONS 2026-10-26):
   // a non-US site records nothing, so no non-US person's address is ever kept at rest.
   let pubWritten = 0
@@ -460,7 +481,7 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
   const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
   const allNames = names.map(x => x.name)
-  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
+  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames, titleOf(x.person)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
   const ambiguousLocals = new Set([...locals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
   const ambiguous = new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size
   const pattern = rankPattern(locals, allNames)

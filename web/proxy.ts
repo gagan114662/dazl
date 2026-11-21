@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { logRequest, newRequestId, requestLogLine } from '@/lib/ops/request-log'
 import { getDb } from '@/lib/db/client'
 import { checkSessionWithin } from '@/lib/auth-gate'
+import { warmStore } from '@/lib/store-warm'
 import { isServerActionProbe } from '@/lib/ops/server-action-probe'
 
 // Runs before /app pages and /api routes (Node runtime). Gives each request an id (lib/ops/request-log.ts), logs it
@@ -11,6 +12,9 @@ import { isServerActionProbe } from '@/lib/ops/server-action-probe'
 // redirect. If the lookup itself fails, the request goes on and the layout's check still decides.
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
+  // #1463: open this bundle's store (and run its migrations) on the first request, normally the deploy's health probe,
+  // so a user's first /app request after a deploy never pays the synchronous migration pass (lib/store-warm.ts).
+  await warmStore(getDb).catch(() => {})
   const id = newRequestId() // never the caller's x-request-id
   // #1088: a Next-Action request is a probe here (lib/ops/server-action-probe.ts): a plain 400 and one ordinary request-log
   // line, on every path (the third matcher below), instead of Next's stack trace per request.

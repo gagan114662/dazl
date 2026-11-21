@@ -22,7 +22,7 @@ import type { Job } from '@/lib/scan/runner'
 import { kickRunner, pickVendor } from '@/lib/scan/runner'
 import { recordTrialScan, trialStatus } from '@/lib/scan/trial'
 import { readSellerLine } from '@/lib/auth-db'
-import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_NATIVE_WEB_SEARCH_POLICY, isClaudeOnlyRequestMode, QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from '@/lib/scan/qa-provider-policy'
+import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_NATIVE_WEB_SEARCH_POLICY, QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from '@/lib/scan/qa-provider-policy'
 import { describeRunBudget, normalizeScanBudget } from '@/lib/scan/run-budget'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '@/lib/people/people-search'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '@/lib/people/first-play-cap'
@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
   const first5 = isFirst5RequestMode(body?.mode)
   const nativeSearch = isFirst5NativeSearchRequest(body?.mode, body?.budget)
   const companyFirst = companyFirstDiscoveryEnabled({ user_id: user.tenantId, funded_by: 'user', query }, process.env.DAZL_COMPANY_FIRST_TENANT_ID)
-  const claudeOnly = !companyFirst && (nativeSearch || isClaudeOnlyRequestMode(body?.mode))
+  const claudeOnly = !companyFirst && nativeSearch
   if (body?.mode !== undefined && !first5 && !websiteReview) return NextResponse.json({ error: 'unknown_mode' }, { status: 400 })
   if (first5 && budgetSupplied && !nativeSearch) return NextResponse.json({ error: 'invalid_budget', detail: 'mode first5 only accepts the explicit Claude Web Search option' }, { status: 400 })
   const nb = first5 ? normalizeScanBudget({ first5: true, paid_fallback: false, credit_enrichment: false }, true) : normalizeScanBudget(budgetSupplied ? body.budget : undefined, budgetSupplied)

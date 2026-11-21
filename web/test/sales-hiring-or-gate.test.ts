@@ -228,7 +228,7 @@ test('a plan the gate cannot read as one funding-OR-sales-hiring choice falls ba
 test('OR: the gate pass record no longer stands in for the branch it did not check (targeting proof)', () => {
   const plan = compileTargeting(OR_B, ICP_B)
   const hiring = planConditions(plan.root).find(x => x.cond.kind === 'hire_made')!.cond   // #876: Test B's hiring branch is a completed hire
-  const lead = { company: 'Synthco', company_domain: null, evidence_excerpt: SEED('Synthco'), signal: 'raised seed', source_url: 'https://news.example/1', event_date: day(20) }
+  const lead = { company: 'Synthco', company_domain: null, evidence_excerpt: SEED('Synthco'), signal: 'raised seed', source_url: 'https://news.example/1', event_date: day(20), event_date_proof: null }
   const p = conditionProof(hiring, lead, [], { query: OR_B, icp: ICP_B, salesGatePassed: true, competitors: null, graded: true, now: NOW })
   assert.equal(p.truth, 'unknown')
 })
