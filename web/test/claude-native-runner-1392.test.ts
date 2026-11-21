@@ -26,7 +26,7 @@ const suppliedLookalike = {
 }
 const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
-const v2 = 'stored_claude_only_job'   // #1398: a job already stored under the Claude-only policy without the native search option
+const storedNoSearch = 'stored_claude_only_job'   // #1398: a job already stored under the Claude-only policy without the native search option
 
 async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[]; buyerSource?: string }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
   const db = new Database(':memory:')
@@ -371,7 +371,7 @@ test('#1392 native discovery includes profile-only geography, services and signa
 })
 
 test('legacy V2, trial-funded V3, V3 without strict first5 and legacy no-query rows never request native web search', async () => {
-  for (const options of [{ mode: v2 }, { trial: true }, { first5: false }, { query: null }]) {
+  for (const options of [{ mode: storedNoSearch }, { trial: true }, { first5: false }, { query: null }]) {
     const x = await simulate(options)
     assert.equal(x.messages.some(m => Array.isArray(m.body.tools)), false, JSON.stringify(x))
     assert.deepEqual(x.denied, [])
