@@ -67,7 +67,7 @@ test('#1163 ordinary positive requests stay positive (real roles, double negativ
     'Cancellation management software companies hiring SDRs', 'Scrap metal recyclers hiring drivers', 'hiring SDRs to fix sales delays', 'Lost Dog Rescue hiring a receptionist',
     "agencies that aren't franchises hiring SDRs", "firms that don't outsource sales hiring SDRs", 'startups that lost their founder hiring SDRs',
     'avoid agencies hiring SDRs', 'firms rather than agencies hiring SDRs', 'clinics hiring crisis counselors', 'airlines hiring cancellation agents',
-    'hiring a capped commission SDR', 'startups hiring SDRs with fewer than 50 employees', 'hiring SDRs again after a freeze', 'venture backed down-market SaaS', 'hired a CRO and fired their agency', 'hired a CRO and ended their agency contract', 'Series A but quit Stripe']) {
+    'hiring a capped commission SDR', 'startups hiring SDRs with fewer than 50 employees', 'hiring SDRs again after a freeze', 'venture backed down-market SaaS', 'hired a CRO and fired their agency', 'hired a CRO and ended their agency contract', 'Series A but quit Stripe', 'companies hiring account executives and fired up their outbound', 'Series A startups that raised funding and fired up sales', 'companies hiring SDRs and fired its agency']) {
     const t = triggers(q)
     assert.ok(t.length > 0, `${q}: no condition`)
     for (const x of t) assert.equal(x.negated, false, `${q}: ${x.cond.kind} "${x.cond.text}" read NEGATED`)
