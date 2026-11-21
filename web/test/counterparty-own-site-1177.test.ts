@@ -14,5 +14,5 @@ test('#1177 counterparty_signal rows with a settled own site get Find work email
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 90000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /(?:#|ℹ) pass 3\b/); assert.match(r.stdout, /(?:#|ℹ) fail 0/)
+  assert.match(r.stdout, /(?:#|ℹ) pass 4\b/); assert.match(r.stdout, /(?:#|ℹ) fail 0/)
 })
