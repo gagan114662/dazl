@@ -10,7 +10,6 @@ import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
 // pairs that exact company and domain without a link. The homepage still has to pass identity/place checks.
 const html = (b: string) => `<html><body>${b}</body></html>`
 const PROSE = '<p>We help revenue teams find and book meetings with the right buyers, and we care about every customer we work with every single day.</p>'
-const exactQuote = (host: string) => `LevelUp Leads (${host}) is hiring its first Sales Development Representative.`
 const LIST = (q: string) => html(`<h1>Companies hiring their first SDR</h1><p>${q}</p><a href="/other">More lists</a>`)
 
 const HOME = (name: string) => html(`<title>${name}</title>${name} - outbound pipeline for B2B teams. ${PROSE}<a href="/contact">Contact</a>`)
