@@ -13,7 +13,7 @@ import { checkSessionWithin, SessionCheckTimeout } from '../lib/auth-gate.ts'
 
 async function realStore(): Promise<{ db: Db; token: string }> {
   const raw = new Database(':memory:'); migrateAllSqlite(raw)
-  raw.prepare("INSERT INTO users (id, email, email_confirmation_required) VALUES ('u1', 'a@b.co', 0)").run()
+  raw.prepare("INSERT INTO users (id, email, password_hash, salt, email_confirmation_required) VALUES ('u1', 'a@b.co', 'x', 'y', 0)").run()
   const db = sqliteDb(raw)
   return { db, token: await createSession('u1', db) }
 }
