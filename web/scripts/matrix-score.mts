@@ -33,7 +33,7 @@ type LeadRow = Record<string, unknown> & { id: string; name: string | null; comp
 // never counted toward the column.
 type EmailClass = 'person' | 'guess' | 'role' | 'none'
 // nameBound also accepts a bare surname ("lee@"); any colleague with that surname could own it, so the scorer needs the first name or
-// its initial in the address too (first, first.last, flast, firstl, lastfirst, lastf).
+// its initial in the address too (first, first.last, flast, firstl, lastfirst, lastf), so a name needs a first and a last part.
 // A role word ("office@", "clinic@") is never a person's own address, whatever name it happens to match; an honorific is not a
 // first name ("Dr. Jane Smith" owns jane.smith@, not dr@), stripped as splitName strips it on the published path.
 const roleLocal = (local: string) => { const l = local.split('+')[0].replace(/[._-]/g, ''); return GENERIC_LOCAL.test(l) || ROLE.test(l) }
@@ -41,7 +41,7 @@ function ownAddress(local: string, name: string): boolean {
   const bare = name.replace(/^(dr|mr|ms|mrs|prof)\.?\s+/i, '')
   const parts = bare.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').match(/[a-z]+/g) ?? []
   const l = local.split('+')[0].replace(/[._-]/g, '')
-  return !roleLocal(local) && nameBound(local, bare) && !(parts.length > 1 && l === parts[parts.length - 1])
+  return parts.length > 1 && !roleLocal(local) && nameBound(local, bare) && l !== parts[parts.length - 1]
 }
 const ADDRESS = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/g
 function guessedRowsForLeads(db: Database.Database, tenantId: string, leadIds: string[]): Record<string, string[]> {
@@ -119,7 +119,7 @@ export function verdict(m: CaseMetrics, t: MatrixThresholds): { pass: boolean; w
 
 export const DEFINITIONS = [
   'ready: companies (one per domain or normalised name) the product shows ready (lib/outreach/lead-hold.ts, the rule Home and Leads use); staging counts leads with no review reason',
-  'named/email/dated/match %: of the leads the scan listed (not of ready ones); named = a person on the lead or on the company\'s own site; email = a named person with their own address on the company\'s own domain (printed on its site, or carrying their name), never a role inbox or a guess; guess% = a named person with only a pattern guess; role% = a role inbox only, no guess (both shown, never counted); dated = a proven event day (event_date_proof) with a source URL; match = a place AND a category keyword in the lead\'s text (a proxy: staging opens the source pages)',
+  'named/email/dated/match %: of the leads the scan listed (not of ready ones); named = a person on the lead or on the company\'s own site; email = the lead\'s named buyer (its own named person, else the people on the company\'s site) with their own address on the company\'s own domain: printed on its site under their name, or carrying their name (first name, or first name or initial with surname; a bare surname, a role word or a guess never counts); guess% = a named person with only a pattern guess; role% = a role inbox only, no guess (both shown, never counted); dated = a proven event day (event_date_proof) with a source URL; match = a place AND a category keyword in the lead\'s text (a proxy: staging opens the source pages)',
   'usd: settled model and paid-vendor calls (refused calls excluded); TinyFish search/fetch inside its free allowance is priced at 0 and is not in it',
   'icp: inferred by the runner from the query (staging runs with the profile reviewed in the UI), so queries can differ from a staging run',
 ]

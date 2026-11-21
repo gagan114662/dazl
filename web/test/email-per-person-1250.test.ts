@@ -89,6 +89,7 @@ test("#1250 (council): the lead's own named buyer, a lookalike domain, an ambigu
   lead('press', { company: 'Maple Law', name: 'Ira Cole', contact: 'press@maple.example', domain: 'maple.example' })                 // a role inbox outside the old short list
   lead('dr', { company: 'Birch Dental', name: 'Dr. Jane Smith', contact: 'jane.smith@birch.example', domain: 'birch.example.' })        // counts: honorific stripped, trailing dot
   lead('drbox', { company: 'Ash Dental', name: 'Dr. Jane Smith', contact: 'dr@ash.example', domain: 'ash.example' })                  // "dr" is not her name
+  lead('drlast', { company: 'Elm Dental', name: 'Dr. Smith', contact: 'smith@elm.example', domain: 'elm.example' })                  // a surname alone: any Smith's mailbox
   lead('office', { company: 'Fir Dental', domain: 'fir.example' })                                                                   // a role word that matches a "name"
   enrich('office', 'person', 'Office Manager, Front desk', 'https://fir.example/team')
   enrich('office', 'email', 'office@fir.example', 'https://fir.example/team')
@@ -103,8 +104,8 @@ test("#1250 (council): the lead's own named buyer, a lookalike domain, an ambigu
   db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, source_url) VALUES ('B', 'tenant', 'Uma Ross, Partner', 'uross@yew.example', 'published', 'published', 'https://yew.example/team')").run()
   db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, confidence) VALUES ('B', 'tenant', 'Uma Ross, Partner', 'uma.ross@yew.example', 'first.last', 'guessed', 'high')").run()
   const m = only(db)
-  assert.equal(m.leads, 12)
-  assert.equal(m.email_pct, 17, 'only the subdomain lead and Dr. Jane Smith\'s own address: 2 of 12')
-  assert.equal(m.email_role_pct, 17, 'press@ and office@ are role inboxes, never a person\'s own: 2 of 12')
+  assert.equal(m.leads, 13)
+  assert.equal(m.email_pct, 15, 'only the subdomain lead and Dr. Jane Smith\'s own address: 2 of 13')
+  assert.equal(m.email_role_pct, 15, 'press@ and office@ are role inboxes, never a person\'s own: 2 of 13')
   assert.equal(m.email_guess_pct, 0, 'another tenant\'s guess for the same lead id is not read')
 })
