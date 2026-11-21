@@ -11,6 +11,7 @@ import { recordActionability, verifiedCompanyFirstDisplay } from '../lib/scan/ac
 import { recordNeedEvidence } from '../lib/scan/need-evidence.ts'
 import { recordTimingProof } from '../lib/scan/timing-proof.ts'
 import { companyFirstResults } from '../lib/scan/company-first-results.ts'
+import { contextLabel } from '../lib/outreach/contact-context.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
 import { publishedCandidateFor, recordEmailGuesses, usEvidence, verifyCandidates } from '../lib/people/email-pattern.ts'
 import { findWorkEmail, strictPublishedWorkEmailsForLeads, workEmailsFor } from '../lib/people/work-email.ts'
@@ -113,10 +114,18 @@ for (const [country, market, host] of [
       {status:'approved',attempts:0,claimed_at:null,sent_at:null})
     db.prepare("UPDATE outreach_messages SET status='draft' WHERE id=?").run(msg)
     assert.equal(approveBlockReason(db,tenant,msg,{skipAccount:true}),'recipient_provenance_missing')
-    // A separate independently published email passes this authority check: no country/domain-wide denial.
-    const independent='office@'+host
-    add('sitecrawl','email',independent,'General business inquiries',team)
-    assert.equal(domainReviewStatus(db,tenant,lead,' '+independent.toUpperCase()+' '),'ok')
+    // A historical approval for a site-published generic mailbox is not named mail.
+    const shared = 'office@' + host
+    add('sitecrawl','email',shared,contextLabel({excerpt:'Ada Lane | '+shared,source_url:team}),team)
+    assert.equal(recordActionability(db,job).actionable,1)
+    assert.deepEqual(recordTimingProof(db,job,now),{proven:1,held:0})
+    assert.equal(currentnessHeld(db,tenant,lead,now),false)
+    const sharedDigest = createHash('sha256').update(JSON.stringify([shared,subject,body])).digest('hex')
+    db.prepare("UPDATE outreach_messages SET to_email=?, approved_hash=?, status='approved' WHERE id=?").run(shared,sharedDigest,msg)
+    assert.equal(sendBlockReason(db,tenant,msg,{skipAccount:true}),'recipient_provenance_missing')
+    await assert.rejects(sendMessage(db,tenant,msg),{code:'recipient_provenance_missing'})
+    assert.deepEqual(db.prepare('SELECT status,attempts,claimed_at,sent_at FROM outreach_messages WHERE id=?').get(msg),
+      {status:'approved',attempts:0,claimed_at:null,sent_at:null})
     assert.equal(domainReviewStatus(db,tenant,lead,' '+address.toUpperCase()+' '),'recipient_provenance_missing')
     assert.deepEqual(await verifiedCompanyFirstDisplay(db,'different-owner',id,[lead],now),{})
     db.prepare("UPDATE leads SET event_date_proof=NULL WHERE id=?").run(lead)
@@ -143,7 +152,7 @@ test('an independently published US Company First recipient keeps its existing c
       addEnrichment(db,tenant,lead,{connector,kind,value,label,confidence:null,source_url:url,source_date:day,retrieved_at:at})
     add('sitecrawl','domain',host+'|evidence_own_domain','domain-basis-v1:evidence_own_domain',signal)
     add('sitecrawl','person',role,COMPANY_FIRST_ROLE_LABEL+'Owner',team)
-    add('sitecrawl','email',address,'Named published work email',team)
+    add('sitecrawl','email',address,contextLabel({excerpt:'Ada Lane | '+address,source_url:team}),team)
     add('scan:gate','gate_passed','requested_role_v1','role verified',signal)
     add('scan:gate','gate_passed','sales_hiring','role verified',signal)
     const job={id:jobId,user_id:tenant,query,icp}

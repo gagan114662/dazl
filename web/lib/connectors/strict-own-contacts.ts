@@ -27,6 +27,12 @@ const nameHasLocal=(name:string,local:string)=>{
  return words.length>=2&&!!first&&!!last&&first.length>=2&&last.length>=2&&first!==last&&
   [first+last,last+first,first[0]+last,first+last[0],last+first[0]].includes(local)
 }
+// Recheck a persisted sender-eligible contact against the same named mailbox rule.
+export function isNamedOwnMailbox(name: string, email: string, exactHost: string): boolean {
+ const address=email.trim()
+ const [local,domain]=address.toLowerCase().split('@'),key=local?.replace(/[._-]/g,'')??''
+ return mail.test(address)&&domain===exactHost&&!shared.test(key)&&nameHasLocal(name,key)
+}
 // Base / refresh are document-level controls, not visible contact content.
 // Inspect even under opaque ancestors: hidden markup does not make URL
 // resolution or a meta refresh harmless. HTML template contents stay inert.
@@ -83,9 +89,7 @@ export function strictOwnContactCards(html:string,exactHost:string):readonly Car
       const a=links.length===1?links[0]:null, email=a?literal(a):''
       const raw=a?.sourceCodeLocation?.attrs?.href
       const href=raw?/^href\s*=\s*(["'])([^"'&<>]+)\1$/i.exec(html.slice(raw.startOffset,raw.endOffset))?.[2]:null
-      const [local,domain]=email.toLowerCase().split('@'),key=local?.replace(/[._-]/g,'')??''
-      cards.push({name,quote,email:mail.test(email)&&href==='mailto:'+email&&domain===exactHost&&
-        !shared.test(key)&&nameHasLocal(name,key)?email:null})
+      cards.push({name,quote,email:href==='mailto:'+email&&isNamedOwnMailbox(name,email,exactHost)?email:null})
      }
     }
    }

@@ -23,6 +23,9 @@ import { recheckSendAuthority } from './send-authority.ts'
 
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { domainRelationship } from '../signals/domain-basis.ts'
+import { COMPANY_FIRST_ROLE_LABEL } from '../people/company-first-published-display.ts'
+import { isNamedOwnMailbox } from '../connectors/strict-own-contacts.ts'
+import { contextLabel } from './contact-context.ts'
 import { onCompanySite, isFounderRoute, siteIdentity } from '../scan/site-contact.ts'
 
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
@@ -230,7 +233,7 @@ export function draftClaimContextFor(db: Database.Database, tenantId: string, le
 // after the draft was made). A draft made before this check existed, or whose confirmation was later withdrawn, cannot be approved or sent.
 export type DomainReviewStatus = 'ok' | 'required' | 'unreadable' | 'quarantined' | 'recipient_provenance_missing'
 export function domainReviewStatus(db: Database.Database, tenantId: string, leadId: string, recipient: string): DomainReviewStatus {
-  const lead = db.prepare('SELECT l.id, l.contact, l.company_domain, l.source_url, j.run_budget FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { id: string; contact: string | null; company_domain: string | null; source_url: string | null; run_budget: string | null } | undefined
+  const lead = db.prepare('SELECT l.id, l.contact, l.company_domain, j.run_budget FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as { id: string; contact: string | null; company_domain: string | null; run_budget: string | null } | undefined
   if (!lead) return 'ok'
   // A quarantined lead (scan/quarantine.ts) is held at every send path that passes through this gate. An unreadable
   // quarantine state (older schema, read error) is held too: never sent on an unknown.
@@ -246,11 +249,19 @@ export function domainReviewStatus(db: Database.Database, tenantId: string, lead
     try {
       if (!site || !EMAIL_RE.test(to) || domainRelationship(db, tenantId, leadId, lead.company_domain) !== 'established')
         return 'recipient_provenance_missing'
-      const fromEvidence = { connector: 'sitecrawl', kind: 'email', value: lead.contact ?? '', source_url: lead.source_url }
-      const published = [fromEvidence, ...rows].some(row => {
-        if (row.kind !== 'email' || norm(row.value) !== to) return false
-        const evidence = { ...row, source_url: row.source_url ?? null }
-        return onCompanySite(evidence, site) && isFounderRoute(evidence)
+      const people = db.prepare("SELECT value, label, source_url, retrieved_at FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'sitecrawl' AND kind = 'person'").all(tenantId, leadId) as { value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[]
+      const published = rows.some(row => {
+        if (row.kind !== 'email' || norm(row.value) !== to || !row.source_url || !row.retrieved_at) return false
+        const evidence = { ...row, source_url: row.source_url }, page = new URL(row.source_url)
+        if (page.protocol !== 'https:' || page.username || page.password ||
+          !onCompanySite(evidence, site) || !isFounderRoute(evidence)) return false
+        return people.some(person => {
+          if (person.source_url !== row.source_url || person.retrieved_at !== row.retrieved_at ||
+            !person.label?.startsWith(COMPANY_FIRST_ROLE_LABEL)) return false
+          const name = person.value.split(',')[0].trim()
+          return isNamedOwnMailbox(name, row.value, page.hostname.replace(/^www\./, '')) &&
+            row.label === contextLabel({ excerpt: name + ' | ' + row.value, source_url: evidence.source_url })
+        })
       })
       if (!published) return 'recipient_provenance_missing'
     } catch { return 'unreadable' }
