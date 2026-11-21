@@ -1641,11 +1641,15 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
       const phaseDeadline=jobDeadlines.get(job)
       for (const [angleIndex, angle] of angles.slice(0,CLAUDE_COMPANY_FIRST_MAX_CALLS).entries()) {
-      // Only an empty discovery set can try another paid angle. Already-admitted candidates go through
-      // the ordinary verifier; a later unknown or over-estimate call would end the attempt before that.
-      if (angleIndex > 0 && ((leads?.length ?? 0) > 0 || totalPublisherReads >= COMPANY_FIRST_MAX_PUBLISHER_READS ||
-        spendAttemptUncertain() || spendAttemptRejected() !== null || earlierLimitRefusal(db, job) ||
-        (phaseDeadline && phaseDeadline.at - phaseDeadline.now() < 45_000))) break
+      if (angleIndex > 0) {
+        // Protect any candidate that can reach the verifier. A readable set containing only supplied
+        // accounts is empty for this decision, but the normal audited dropSupplied pass still owns the drops.
+        const cohort = lookalikeOf(job)
+        if (cohort === 'unreadable' || totalPublisherReads >= COMPANY_FIRST_MAX_PUBLISHER_READS ||
+          spendAttemptUncertain() || spendAttemptRejected() !== null || earlierLimitRefusal(db, job) ||
+          (phaseDeadline && phaseDeadline.at - phaseDeadline.now() < 45_000)) break
+        if (leads?.length && (!cohort || dropKnown(cohort, leads).kept.length > 0)) break
+      }
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days
         ? recencyAnchor(discoveryNow, icpForSources.window_days)
