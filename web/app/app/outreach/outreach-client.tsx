@@ -21,7 +21,7 @@ const ERR: Record<string, string> = {
   gmail_rate_limited: 'Gmail is rate limiting you. Try again later.',
   changed_since_approval: 'The message changed after approval. Approve it again.',
   lead_currentness_unconfirmed: 'Event timing is unconfirmed. This draft is preserved for inspection but cannot be approved or sent.',
-  recipient_provenance_missing: 'Nothing was sent. This address is not verified for outreach. On Leads, look for a verified named work email before starting a new draft.',
+  recipient_provenance_missing: 'Nothing was sent. This saved message cannot be retried. A mailbox check alone is not enough. For future outreach, choose a different eligible lead with a named work email published on the company’s own website.',
   review_unreadable: 'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
   domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
   lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
