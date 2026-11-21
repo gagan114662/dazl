@@ -76,7 +76,7 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(enriching)
   lead(enriching, 'Pending Co', 'quote_unconfirmed')
   finish(enriching, markCompanyFirstBudget(null), 1, 'Find London software companies that raised a Series A round.')
-  db.prepare('UPDATE scan_jobs SET enrich_finished_at = NULL WHERE id = ?').run(enriching)
+  db.prepare('UPDATE scan_jobs SET enrich_started_at = ?, enrich_finished_at = NULL WHERE id = ?').run(Math.floor(Date.now() / 1000) - 60, enriching)
   const pending = await (await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${enriching}`))).json() as { leads: unknown[]; held: unknown[] }
   assert.deepEqual([pending.leads, pending.held], [[], []], 'enriching: no lead shown and none listed as held yet')
 

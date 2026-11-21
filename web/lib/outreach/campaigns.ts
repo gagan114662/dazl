@@ -6,6 +6,7 @@ import { requiredGateHeld, requiredGateHeldForJob } from '../scan/held-state.ts'
 import { sqliteDb, type Db } from '../db/client.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
+import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
@@ -56,24 +57,34 @@ const campaignJobs = (db: Database.Database, tenantId: string, limit: number) =>
 // #1062: the leads a company-first scan shows anywhere (run page, /api/leads, CSV, campaign page) are companyFirstResults().visibleIds.
 // Every count reads the same set, per company-first scan in `jobs`. A scan whose result cannot be read (still running, a rescan in
 // progress, a missing table) shows nothing, so it gets an empty set: fail closed, never "all stored leads".
-// 'checking': the scan is done but its enrichment is still running, so its final checks have not run (companyFirstResults computes
-// visibility only after both): its leads stay held, and the card says the search is still running, never "held by checks". A pending,
-// running, failed or cancelled scan gets the fail-closed empty set and nextAction's own label for that status.
-export type CompanyFirstShown = ReadonlyMap<string, ReadonlySet<string> | 'checking'>
+// A done scan's final checks run in its enrichment stage (companyFirstResults computes visibility only once it finished - lib/scan/enrichment.ts
+// enrichState). 'checking': the stage is running, so the card says the search is still running. 'unfinished': the stage was interrupted or
+// never started, so the checks never ran: the card says so. Either way its leads stay held, never reviewable and never "held by checks".
+// A pending, running, failed or cancelled scan gets the fail-closed empty set and nextAction's own label for that status.
+export type CompanyFirstShown = ReadonlyMap<string, ReadonlySet<string> | 'checking' | 'unfinished'>
 export async function companyFirstShown(db: Database.Database, tenantId: string, jobs: readonly { id: string; run_budget: string | null }[], now: Date = new Date()): Promise<CompanyFirstShown> {
-  const out = new Map<string, ReadonlySet<string> | 'checking'>()
+  const out = new Map<string, ReadonlySet<string> | 'checking' | 'unfinished'>()
   for (const j of jobs) {
     if (!hasCompanyFirstBudget(j.run_budget)) continue   // no read at all for other scans (#1136 HIST-BATCH query bound)
-    const s = db.prepare('SELECT status, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?').get(j.id, tenantId) as { status: string; enrich_finished_at: number | null } | undefined
-    out.set(j.id, s?.status === 'done' && s.enrich_finished_at == null ? 'checking'
-      : s?.status === 'done' ? (await companyFirstResults(sqliteDb(db), tenantId, j.id, now))?.visibleIds ?? new Set() : new Set())
+    const s = db.prepare('SELECT status, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?').get(j.id, tenantId) as { status: string; enrich_started_at: number | null; enrich_finished_at: number | null } | undefined
+    if (s?.status !== 'done') { out.set(j.id, new Set()); continue }
+    // finished = the end mark companyFirstResults itself requires; otherwise the canonical stage says running or interrupted / never started
+    out.set(j.id, s.enrich_finished_at != null ? (await companyFirstResults(sqliteDb(db), tenantId, j.id, now))?.visibleIds ?? new Set()
+      : enrichState(s, Math.floor(now.getTime() / 1000)) === 'running' ? 'checking' : 'unfinished')
   }
   return out
 }
-const checking = (j: { id: string; run_budget: string | null }, shown: CompanyFirstShown) => hasCompanyFirstBudget(j.run_budget) && shown.get(j.id) === 'checking'
+// The next step for a done company-first scan whose final checks have not finished; null when they have (or it is not company-first).
+const checksPending = (j: { id: string; query: string; run_budget: string | null }, shown: CompanyFirstShown): Campaign['next'] | null => {
+  if (!hasCompanyFirstBudget(j.run_budget)) return null
+  const v = shown.get(j.id)
+  if (v === 'checking') return { label: 'Search still running', href: `/app/leads?job_id=${j.id}` }
+  if (v === 'unfinished') return { label: 'Final checks did not finish, so no lead can be shown. Run the search again', href: `/app/leads?q=${encodeURIComponent(j.query)}` }
+  return null
+}
 // Is this lead outside what its company-first scan shows? Not company-first: never. Company-first without a read in `shown`: always (fail closed).
 const heldByChecksOf = (j: { id: string; run_budget: string | null }, shown: CompanyFirstShown) =>
-  hasCompanyFirstBudget(j.run_budget) ? (id: string) => { const v = shown.get(j.id); return !(v !== undefined && v !== 'checking' && v.has(id)) } : () => false
+  hasCompanyFirstBudget(j.run_budget) ? (id: string) => { const v = shown.get(j.id); return !(v instanceof Set && v.has(id)) } : () => false
 
 // The Campaigns list with the company-first gate read (GET /api/campaigns).
 export async function listCampaignsNow(db: Database.Database, tenantId: string, limit = 10, now: Date = new Date()): Promise<Campaign[]> {
@@ -157,7 +168,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
       reply: { replied: an.replied, interested, bounced: an.bounced, optOuts: an.optOuts },
     }
-    return { ...c, next: checking(j, shown) ? { label: 'Search still running', href: `/app/leads?job_id=${j.id}` } : nextAction(c, undrafted) }
+    return { ...c, next: checksPending(j, shown) ?? nextAction(c, undrafted) }
   })
 }
 
@@ -252,8 +263,8 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
     // leads, so nextAction over zero outreach is the card's own step. Otherwise the campaign page holds the pipeline's next action.
     const q = listQual(qualification)
     const exact = needsReview > 0 || (q.sourceChecked + q.confirmedByYou === 0 && !mailed.has(j.id))
-    const next = checking(j, shown) ? { label: 'Search still running', href: `/app/leads?job_id=${j.id}` } : exact ? nextAction({ ...base, discovery: { candidates: null, leads: all.length }, contact: { withContact: 0, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }, 0)
-      : { label: 'Open its campaign', href: `/app/campaigns/${j.id}` }
+    const next = checksPending(j, shown) ?? (exact ? nextAction({ ...base, discovery: { candidates: null, leads: all.length }, contact: { withContact: 0, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }, 0)
+      : { label: 'Open its campaign', href: `/app/campaigns/${j.id}` })
     return { ...base, next }
   })
 }

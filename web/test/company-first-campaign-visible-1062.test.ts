@@ -71,8 +71,13 @@ test('company-first: a lead the gate shows is counted, a held one is held by che
     const enriching = '6'.repeat(24)
     db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts,query,icp,run_budget) VALUES (?,?,'Seller','-','-','running',1,?,?,?)").run(enriching, tenant, query, icp, markCompanyFirstBudget(null))
     db.prepare("INSERT INTO leads (id, scan_job_id, name, company, score, signal, source_url, event_date, review_reason) VALUES (?,?,'','Pending Co',60,'Open sales vacancy','https://pending.example/jobs',?,'quote_unconfirmed')").run('7'.repeat(24), enriching, day)
-    db.prepare("UPDATE scan_jobs SET status='done' WHERE id=?").run(enriching)
+    db.prepare("UPDATE scan_jobs SET status='done', enrich_started_at=? WHERE id=?").run(at - 60, enriching)
     const e = (await listCampaignsNow(db, tenant, 10, now)).find(c => c.id === enriching)!
     assert.deepEqual([e.next.label, e.qualification.needsReview], ['Search still running', 0], 'done, enrichment still running')
+    // Interrupted (no end mark 11 minutes after it started: lib/scan/enrichment.ts ENRICH_STALE_S): never "still running" forever (Qodo), never reviewable.
+    db.prepare('UPDATE scan_jobs SET enrich_started_at=? WHERE id=?').run(at - 11 * 60, enriching)
+    const i1 = (await listCampaignsNow(db, tenant, 10, now)).find(c => c.id === enriching)!
+    const i2 = (await historyCampaigns(db, sqliteDb(db), tenant, [enriching], now)).find(c => c.id === enriching)!
+    for (const c of [i1, i2]) assert.deepEqual([c.next.label, c.qualification.needsReview], ['Final checks did not finish, so no lead can be shown. Run the search again', 0])
   } finally { db.close() }
 })
