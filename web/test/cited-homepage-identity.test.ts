@@ -16,7 +16,7 @@ const LIST = (q: string) => html(`<h1>Companies hiring their first SDR</h1><p>${
 const HOME = (name: string) => html(`<title>${name}</title>${name} - outbound pipeline for B2B teams. ${PROSE}<a href="/contact">Contact</a>`)
 const CONTACT = html('<a href="mailto:hello@levelupleads.io">hello</a>')
 
-async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads', domain = 'levelupleads.org', sourceHtml?: string) {
+async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads', domain = 'levelupleads.org', sourceHtml?: string, partialText?: string) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: [] }), job)
@@ -24,7 +24,7 @@ async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads', 
     .run('L1', job, 'LevelUp Leads', null, 'Hiring its first SDR', 'https://lists.example/first-sdr', exactQuote(domain), 90, 85)
   const get: Get = async url => {
     const u = new URL(url)
-    if (u.hostname === 'lists.example') return { status: 200, body: sourceHtml ?? LIST(exactQuote(domain)), finalUrl: url }
+    if (u.hostname === 'lists.example') return { status: 200, body: sourceHtml ?? LIST(exactQuote(domain)), finalUrl: url, text: partialText }
     if (!['levelupleads.io', 'levelupleads.org', 'lul-growth.io'].includes(u.hostname.replace(/^www\./, ''))) return null
     if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
     const b = ({ '/': HOME(homeName), '/contact': CONTACT } as Record<string, string>)[u.pathname]
@@ -168,4 +168,37 @@ for (const conflict of [false,true]) test(conflict
     assert.deepEqual(db.prepare("SELECT lead_id,source_url FROM lead_enrichments WHERE kind='domain'").all(),
       conflict ? [] : [{ lead_id:'owner',source_url:ownerUrl }])
   } finally { db.close() }
+})
+
+test('classed blocks in a static publisher can contain ordinary inline formatting', async () => {
+  const q = exactQuote('levelupleads.org')
+  const body = html('<main class="article"><p class="copy">' + q.replace('LevelUp Leads','<strong>LevelUp <span>Leads</span></strong>') + '</p></main>')
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',body)).domain,'levelupleads.org')
+})
+
+test('simple proofs in publisher bodies within the existing crawl byte cap still qualify', async () => {
+  const q = exactQuote('levelupleads.org')
+  const body = html('<div>' + 'irrelevant content '.repeat(15_000) + '</div><p>' + q + '</p>')
+  assert.ok(Buffer.byteLength(body) > 128_000 && Buffer.byteLength(body) < 800_000)
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',body)).domain,'levelupleads.org')
+})
+
+for (const markup of [
+  '<style>.quiet{display:none}</style><p class="quiet">QUOTE</p>',
+  '<p>QUOTE</p><style>p{visibility:hidden}</style>',
+  '<link rel="stylesheet" href="/unknown.css"><p class="copy">QUOTE</p>',
+  '<p><strong>LevelUp Leads</strong><span style="display:none"> (levelupleads.org)</span> is hiring its first Sales Development Representative.</p>',
+  '<p>LevelUp Leads</p><p>(levelupleads.org) is hiring its first Sales Development Representative.</p>',
+  '<p class="sr-only">QUOTE</p>',
+  '<img src="other.png" onload="hideCopy()"><p class="copy">QUOTE</p>',
+]) test('unknown visibility or split publisher proof is held: ' + markup.slice(0,40), async () => {
+  const body = html(markup.replace('QUOTE',exactQuote('levelupleads.org')))
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',body)).domain,null)
+})
+
+
+test('a clipped body with visible quote but unobserved tail cannot prove visibility', async () => {
+  const q = exactQuote('levelupleads.org')
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',LIST(q),
+    q + ' Larger body marker: tail outside the captured HTML.')).domain,null)
 })
