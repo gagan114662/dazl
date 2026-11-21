@@ -28,8 +28,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: release-gate-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: true
+  # PRs: one group per PR. Pushes to main (#1504): one shared group; a newer main push cancels the older run.
+  group: ${{ github.event_name == 'push' && 'release-gate-main' || format('release-gate-{0}', github.event.pull_request.number || github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 jobs:
   browser:
     runs-on: ubuntu-latest
