@@ -42,7 +42,7 @@ test('a lead matching a carried exclusion cannot be drafted, approved or sent', 
   assert.equal(db.prepare("SELECT status FROM outreach_messages WHERE id='draftX'").pluck().get(), 'draft')
   assert.equal(approveBlockReason(db, 'W', 'draftY', { skipAccount:true }), null)
   db.prepare("UPDATE outreach_messages SET status='approved' WHERE id='draftX'").run()
-  assert.equal(sendBlockReason(db, 'W', 'draftX', { skipAccount:true }), 'lead_ungraded')
+  assert.equal(sendBlockReason(db, 'W', 'draftX', { skipAccount:true }), 'lead_excluded')   // reported as the exclusion it is (Qodo on 3d50097)
 
 })
 
@@ -50,10 +50,12 @@ test('a lead matching a carried exclusion cannot be drafted, approved or sent', 
 test('a held excluded lead is reported as lead_excluded', async () => {
   const { leadHoldCode } = await import('../lib/outreach/service.ts')
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateMemory(db)
+  migrateAllSqlite(db)
+  db.exec("INSERT INTO users (id,email,password_hash,salt) VALUES ('W','owner@example.test','x','y')")
   const icp = JSON.stringify({ summary: 'S', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], carry_exclude: ['Acme Dental (acme.example)'] })
   const job = createQueryJob(db, 'W', { query: 'SaaS founders hiring sales', icp, offer: 'Leadly (leadly.example), AI lead finding' })
-  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  saveKey(db, 'W', 'anthropic', 'fixture-only-unused-key', Buffer.alloc(32, 1))
+  assert.equal(claimKeyedJob(db, job)?.id, job)
   const ins = db.prepare('INSERT INTO leads (id,scan_job_id,company,company_domain,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
   ins.run('X', job, 'Acme Dental Group', 'acme.example', 'ceo@acme.example', 'hiring', 'https://news.example/a', 'hiring', 90, 80, 8, 7)
   ins.run('U', job, 'Northwind', 'northwind.example', 'ceo@northwind.example', 'hiring', 'https://news.example/b', 'hiring', 90, 80, 0, null)
