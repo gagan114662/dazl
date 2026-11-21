@@ -11,9 +11,15 @@ import { recordNeedEvidence } from '../lib/scan/need-evidence.ts'
 import { recordTimingProof } from '../lib/scan/timing-proof.ts'
 import { companyFirstResults } from '../lib/scan/company-first-results.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
-import { draftBlockReason } from '../lib/outreach/service.ts'
+import { publishedCandidateFor, recordEmailGuesses, usEvidence, verifyCandidates } from '../lib/people/email-pattern.ts'
+import { findWorkEmail, strictPublishedWorkEmailsForLeads, workEmailsFor } from '../lib/people/work-email.ts'
+import { targetKey } from '../lib/people/work-email-eligible.ts'
+import { approveBlockReason, createDraft, draftBlockReason, sendBlockReason, sendMessage } from '../lib/outreach/service.ts'
 
-test('a genuinely verified published contact can be shown without lifting the send hold', async () => {
+for (const [country, market, host] of [
+  ['CA', 'Toronto, Ontario, Canada', 'riverledger.ca'],
+  ['UK', 'London, England, United Kingdom', 'riverledger.co.uk'],
+] as const) test(`${country}: verified company-first published email stays display-only through lookup, draft, approval and send`, async () => {
   const db = new Database(':memory:')
   try {
     migrateAllSqlite(db)
@@ -21,8 +27,8 @@ test('a genuinely verified published contact can be shown without lifting the se
     const tenant = 'display-test-owner', id = '1'.repeat(24), lead = '2'.repeat(24)
     const now = new Date(), at = Math.floor(now.getTime() / 1000)
     const day = new Date(now.getTime() - 3 * 86_400_000).toISOString().slice(0, 10)
-    const query = 'Companies hiring sales reps', icp = JSON.stringify({ who: ['Owner'], window_days: 20 })
-    const host = 'riverledger.co.uk', team = `https://${host}/team`, signalPage = `https://${host}/vacancy`
+    const query = 'Companies hiring sales reps', icp = JSON.stringify({ who: ['Owner'], where: [market], window_days: 20 })
+    const team = `https://${host}/team`, signalPage = `https://${host}/vacancy`
     const role = 'Ada Lane, Owner', address = `ada.lane@${host}`
     db.prepare("INSERT INTO users (id,email,business_name,password_hash,salt) VALUES (?, 'owner@example.test','Seller','salted','salt')").run(tenant)
     db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts,query,icp,run_budget) VALUES (?,?,'Seller','-','-','running',1,?,?,?)").run(id,tenant,query,icp,markCompanyFirstBudget(null))
@@ -53,6 +59,50 @@ test('a genuinely verified published contact can be shown without lifting the se
 
     assert.equal(currentnessHeld(db,tenant,lead,now),true)
     assert.equal(draftBlockReason(db,tenant,lead),'lead_currentness_unconfirmed')
+    assert.equal(usEvidence('Portland, OR 97201',[market]).us,false,'explicit foreign scope cannot borrow a US homepage address')
+    assert.equal(recordEmailGuesses(db,tenant,lead,host,['ada.lane'],[role],{
+      env:{EMAIL_GUESS_ENABLED:'1'},where:[market],homeText:market,seen:[{address,url:team}],
+    }),null)
+    assert.equal(publishedCandidateFor(db,tenant,lead,'Ada Lane'),null)
+    assert.equal(db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tenant_id=? AND lead_id=?").pluck().get(tenant,lead),0)
+    assert.deepEqual(strictPublishedWorkEmailsForLeads(db,tenant,[lead],at)[lead]??[],[])
+    assert.deepEqual(workEmailsFor(db,tenant,lead,at),[])
+    const lookup=await findWorkEmail(db,tenant,lead,targetKey({name:'Ada Lane',title:'Owner'}),{now:at,env:{}})
+    assert.equal(lookup.status,'not_eligible')
+    let verifies=0
+    const verify=await verifyCandidates(db,tenant,lead,{name:'fixture-never-dispatch',verify:async()=>{
+      verifies++
+      throw new Error('display-only address reached a mailbox verifier')
+    }},{address,env:{EMAIL_GUESS_ENABLED:'1',EMAIL_VERIFY_DAILY_CAP:'5',EMAIL_VERIFY_MONTHLY_CAP:'5'}})
+    assert.equal(verify.checked,0)
+    assert.equal(verify.skipped,null,'real verifier selection was enabled, not short-circuited by flags')
+    assert.equal(verifies,0)
+
+    assert.throws(()=>createDraft(db,tenant,lead,'Seller'),{code:'lead_currentness_unconfirmed'})
+    assert.equal(db.prepare('SELECT count(*) FROM outreach_messages WHERE tenant_id=?').pluck().get(tenant),0)
+    // A synthetic legacy draft/approval cannot launder a display-only recipient into a send.
+    const msg='3'.repeat(24)
+    db.prepare("INSERT INTO outreach_messages(id,tenant_id,lead_id,to_email,subject,body) VALUES (?,?,?,?,?,?)")
+      .run(msg,tenant,lead,address,'Fixture subject','Fixture body for refusal only; never send.')
+    assert.equal(approveBlockReason(db,tenant,msg,{skipAccount:true}),'lead_currentness_unconfirmed')
+    db.prepare("UPDATE outreach_messages SET status='approved' WHERE id=?").run(msg)
+    assert.equal(sendBlockReason(db,tenant,msg,{skipAccount:true}),'lead_currentness_unconfirmed')
+    await assert.rejects(sendMessage(db,tenant,msg),{code:'lead_currentness_unconfirmed'})
+    assert.deepEqual(db.prepare('SELECT status,attempts,claimed_at,sent_at FROM outreach_messages WHERE id=?').get(msg),
+      {status:'approved',attempts:0,claimed_at:null,sent_at:null})
+
+    // An independently published telephone route is sufficient for genuine machine currentness,
+    // without making the separately displayed mailbox a recipient. Re-run the actual actionability
+    // and timing recorders rather than dropping or patching the earlier hold.
+    add('sitecrawl','phone','+1 416 555 0101','Company telephone',team)
+    assert.equal(recordActionability(db,job).actionable,1)
+    assert.deepEqual(recordTimingProof(db,job,now),{proven:1,held:0})
+    assert.equal(currentnessHeld(db,tenant,lead,now),false)
+    assert.equal((await verifiedCompanyFirstDisplay(db,tenant,id,[lead],now))[lead]?.address,address)
+    const currentLookup=await findWorkEmail(db,tenant,lead,targetKey({name:'Ada Lane',title:'Owner'}),{now:at,env:{}})
+    assert.equal(currentLookup.status,'not_found')
+    assert.equal(draftBlockReason(db,tenant,lead),'no_email_contact')
+    assert.throws(()=>createDraft(db,tenant,lead,'Seller'),{code:'no_email_contact'})
     assert.deepEqual(await verifiedCompanyFirstDisplay(db,'different-owner',id,[lead],now),{})
     db.prepare("UPDATE leads SET event_date_proof=NULL WHERE id=?").run(lead)
     assert.deepEqual(await verifiedCompanyFirstDisplay(db,tenant,id,[lead],now),{},'the published address cannot replace a verified event')
