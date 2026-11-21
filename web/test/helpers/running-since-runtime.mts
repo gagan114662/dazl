@@ -34,20 +34,20 @@ test('a running scan reports when it started running, not its last lease renewal
   const j = await res.json() as { status: string; claimed_at: number; running_since?: number | null; last_progress_at: number | null }
   assert.equal(j.status, 'running')
   assert.equal(j.last_progress_at, now - 4, 'last activity is the newest call')
-  assert.equal(j.running_since, now - 150, 'running since the first call of the scan: 2 min, not the 4 s since the lease was renewed')
+  assert.equal(j.running_since, now - 152, 'running since the user started the scan: 2 min, not the 4 s since the lease was renewed')
   assert.ok(Math.floor((now - j.running_since!) / 60) >= 2)
   db.close()
 })
 
-test('before any call, a running scan is running since its claim; a pending one has no running time', async () => {
+test('a free opening phase (no spend rows, lease renewed at each phase boundary) still counts from the start; pending has no running time', async () => {
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); setScanDb(db)
   const now = Math.floor(Date.now() / 1000)
   const id = createJob(db, 'A', { business_name: 'Acme', industry: 'Manufacturing', location: 'Bangalore, India' })
   let j = await (await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${id}&passive=1`))).json() as { running_since?: number | null }
   assert.equal(j.running_since, null, 'pending: never an invented start time')
-  db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = ? WHERE id = ?").run(now - 3, id)
+  db.prepare("UPDATE scan_jobs SET created_at = ?, status = 'running', attempts = 1, claimed_at = ? WHERE id = ?").run(now - 95, now - 3, id)
   j = await (await GET(new NextRequest(`http://localhost/api/scan/status?job_id=${id}&passive=1`))).json() as { running_since?: number | null }
-  assert.equal(j.running_since, now - 3)
+  assert.equal(j.running_since, now - 95, 'never the renewed lease (now - 3): that read "0 min" on a working scan')
   db.close()
 })

@@ -3,7 +3,7 @@ import { readProviderIssues } from './provider-issues.ts'
 import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verification-pass.ts'
 import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
-import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readRefusedModelCalls, readLastActivity, readRunningSince, readTrialScanCap } from './status-reads.ts'
+import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readRefusedModelCalls, readLastActivity, readTrialScanCap } from './status-reads.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { clampToCap, compareActual, trialCapLine, trialScanCap, type RunEstimate } from './price-estimate.ts'
 import { readRunReportRows } from './run-report.ts'
@@ -84,7 +84,10 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const claim = job.claimed_at == null ? null : Number(job.claimed_at)
   const lastVals = [lastCall, claim].filter((v): v is number => v != null && Number.isFinite(v))
   const last_progress_at = lastVals.length ? Math.max(...lastVals) : null
-  const running_since = job.status === 'running' ? await readRunningSince(db, tenantId, job.id, claim) : null
+  // #1157 line 2: what the page counts "Searching... N min" from while the scan runs: when the user started it (created_at),
+  // set once and never renewed. Never claimed_at: that is the lease, renewed at every paid reserve and settle and every phase
+  // boundary, so on a working scan it is always seconds old and the page read "0 min" for the whole run. null unless running.
+  const running_since = job.status === 'running' && job.created_at != null && Number.isFinite(Number(job.created_at)) ? Number(job.created_at) : null
   // The recorded stop provenance for the failure copy (typed report only); null = no reason kept (legacy row), so a
   // legacy budget_stopped must render neutrally - never a claim that a specific limit refused.
   const stop_refusal_reason = (run_report as { stop?: { spend_refusal_reason?: string | null } | null }[] | null)?.at(-1)?.stop?.spend_refusal_reason ?? null
