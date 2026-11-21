@@ -194,11 +194,11 @@ const STOPPED_AFTER = /\b(?:on\s+hold|on\s+ice|on\s+pause|fell\s+apart|fail(?:ed
 // What may sit between the role and an after-cue (is / has / been ...), and what may follow the cue to the end of the clause.
 const AUX = String.raw`(?:is|was|are|were|has|have|had|been|being|now|put|proves?|got|gets|getting)`
 const AFTER_AUX = new RegExp(String.raw`^(?:\s*${AUX})*\s*:?\s*$`, 'i')
-const AFTER_TAIL = /^(?:\s*(?:%|in\s+place|in\s+(?:q[1-4]|\d{4})\b.*|across\b.*|for\s+now|until\b.*|indefinitely|this\s+(?:year|quarter|month)|(?:within|in\s+the|over|during|last|recently|since)\b.*))?\s*$/i
+const AFTER_TAIL = /^(?:\s*(?:%|to\s+(?:close|happen|proceed|go\s+ahead)\b.*|in\s+place|in\s+(?:q[1-4]|\d{4})\b.*|across\b.*|for\s+now|until\b.*|indefinitely|this\s+(?:year|quarter|month)|(?:within|in\s+the|over|during|last|recently|since)\b.*))?\s*$/i
 // A completed hire undone, or a raise / hiring that stopped, in the same breath: "hired SDRs and fired them", "hired a VP Sales, then fired
 // him", "raised funding but stopped". Only the hire itself is undone: "hired a CRO and fired their agency" is still a hire.
 const HIRED_OBJ = String.raw`(?:them|him|her|(?:the|our|their|its)\s+(?:new\s+)?(?:team|staff|hires?|reps?|sdrs?|bdrs?|aes?))`
-const UNDONE = new RegExp(String.raw`,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:fired\s+${HIRED_OBJ}|let\s+${HIRED_OBJ}\s+go|laid\s+${HIRED_OBJ}\s+off)\b|,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:stopped|ceased|quit|paused|halted)\s*$`, 'i')
+const UNDONE = new RegExp(String.raw`,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:fired\s+${HIRED_OBJ}|let\s+${HIRED_OBJ}\s+go|let\s+go\s+of\s+${HIRED_OBJ}|laid\s+${HIRED_OBJ}\s+off)\b|,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:stopped|ceased|quit|paused|halted)\s*$`, 'i')
 const CLAUSE_END = /[.;!?,]|\b(?:and|or|but|while|who|that|which)\b/i
 // A role word right after the hiring verb is the role ("hiring cap table managers"); "fewer" right after it shrinks the hire ("hired fewer SDRs").
 const FEWER_AFTER = /^\s*fewer\b(?!\s+than)/i
@@ -209,6 +209,8 @@ function afterStop(roleWords: string, after: string): RegExpExecArray | null {
   if (!m) return null
   // The role is everything up to the first auxiliary; what sits between it and the cue may only be auxiliaries.
   const before = text.slice(0, m.index)
+  // "hiring isn't paused", "hiring is not on hold": a negated stop is no stop.
+  if (/\b(?:not|never|no\s+longer)\b|n['\u2019]t\b/i.test(before)) return null
   const role = before.replace(new RegExp(String.raw`(?:(?:^|\s+)${AUX})+\s*:?\s*$`, 'i'), '')
   const extra = before.slice(role.length)
   // Only role words may sit between the hiring word and the cue (a leading article, or "of" / "for": "hiring for SDRs is on hold"). Any other
@@ -308,7 +310,9 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     const mid = found && found.index < tail.trimEnd().length ? found : null
     // "never stopped hiring SDRs" is a double negative: still hiring. A negation right before the stop word cancels it.
     const pre2 = pre && /(?:\b(?:never|not|hasn'?t|haven'?t|didn'?t)|n't)\s*$/i.test(before.slice(0, pre.index)) ? null : pre
-    const hit = pre2 ?? found
+    // A cue before a stop noun ("ended their hiring freeze", "lifted the hiring ban") stops the stop, not the hiring: still positive.
+    const stopsTheStop = pre2 && a.kind === 'hiring' && /^\s*(?:freez(?:e|es)|bans?|pause|moratori(?:um|a)|slowdown|cap|restrictions?|hiatus|stoppage)\b/i.test(tail)
+    const hit = stopsTheStop ? null : pre2 ?? found
     if (!hit) return
     const c = conds[i]
     if (mid && c.role) {
