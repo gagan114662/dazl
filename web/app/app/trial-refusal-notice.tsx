@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { trialRefusalNotice, noticeAccount, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, type NoticeAccount } from '@/lib/trial-copy'
-import { googleAccountHint, googleLinkResultCopy } from '@/lib/google-link'
+import { googleAccountHint, GOOGLE_LINK_RESULT_COOKIE, readGoogleLinkResult } from '@/lib/google-link'
 
 // #1095: a refused free-trial scan, in words, with the way forward (never the raw code). Google-required on a password
 // account links Google to THIS account and comes back to this page with the same search ready to run.
@@ -23,15 +23,17 @@ export function takePendingSearch(): { query: string; step: string | null; at: n
     return v && typeof v.query === 'string' && typeof v.at === 'number' && Date.now() - v.at < 30 * 60_000 ? { query: v.query, step: typeof v.step === 'string' ? v.step : null, at: v.at } : null
   } catch { return null }
 }
-// The result of a Google link this page asked for (?google=...), removed from the address bar once read.
+// The result of a Google link this page asked for, read once (#1319: from the short-lived cookie the callback sets, never
+// the address; an old ?google= address is still read and removed from the address bar).
 export function takeGoogleLinkResult(): { ok: boolean; text: string } | null {
   if (typeof window === 'undefined') return null
-  const u = new URL(window.location.href)
-  const r = u.searchParams.get('google')
-  if (!r) return null
-  u.searchParams.delete('google')
-  window.history.replaceState(null, '', u.pathname + u.search + u.hash)
-  return googleLinkResultCopy(r)
+  const { result, search } = readGoogleLinkResult({ search: window.location.search, cookie: document.cookie })
+  if (!result) return null
+  // cleared so a reload shows nothing: the cookie lib/auth-google-response.ts setLinkResultCookie set is matched by
+  // (name, domain, path); with and without the Domain the server may have given it
+  for (const domain of ['', `; Domain=.${window.location.hostname}`]) document.cookie = `${GOOGLE_LINK_RESULT_COOKIE}=; Max-Age=0; Path=/app; SameSite=Lax${domain}`
+  if (search !== window.location.search) window.history.replaceState(null, '', window.location.pathname + search + window.location.hash)
+  return result
 }
 
 // The account, or ACCOUNT_LOAD_FAILED when it could not be read (the notice then still offers Link Google, never nothing).

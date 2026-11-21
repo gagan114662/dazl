@@ -36,7 +36,7 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
       {view.trial_cap_line && <p className="mt-2 text-xs font-medium" data-testid="estimate-trial-cap">{view.trial_cap_line}</p>}
       {est.payer === 'trial' && est.trial_allowance && <p className="mt-2 text-xs" data-testid="estimate-trial-allowance">{usd(est.trial_allowance.left_usd)} of your {usd(est.trial_allowance.total_usd)} free trial allowance left (all your free trial work counts, including website reads).</p>}
       {est.search_allowance?.low && <p className="mt-2 text-xs font-medium" role="status" data-testid="estimate-search-allowance">{searchAllowanceLine(est.search_allowance)}</p>}
-      {capLine(est.cap, est.cap.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, est.cap.capped_total)}</p>}
+      {capLine(est.cap, view.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, view.capped_total)}</p>}
       {/* #1095: a free-trial block says why in words and offers the way forward (Link Google for a password account) */}
       {!v.ok && v.reason === 'trial_unavailable' && v.trial_refusal
         ? <div className="mt-2" data-testid="estimate-verdict" data-trial-refusal={v.trial_refusal}><TrialRefusalNotice reason={v.trial_refusal} query={query} /></div>

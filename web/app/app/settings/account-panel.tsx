@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { googleLinkResultCopy } from '@/lib/google-link'
+import { takeGoogleLinkResult } from '../trial-refusal-notice'
 
 type Status = { email: string; verified: boolean; google: boolean }
 const fetchStatus = (): Promise<Status | null> => fetch('/api/auth/email').then(r => r.ok ? r.json() : null).catch(() => null)
@@ -13,8 +13,9 @@ export default function AccountPanel() {
   const [next, setNext] = useState('')
   useEffect(() => {
     void fetchStatus().then(setS)
-    const g = new URLSearchParams(window.location.search).get('google')
-    if (g) queueMicrotask(() => setMsg(googleLinkResultCopy(g).text))
+    // #1319: the link result arrives in a short-lived cookie (or an old ?google= address), read once
+    const g = takeGoogleLinkResult()
+    if (g) queueMicrotask(() => setMsg(g.text))
   }, [])
   async function post(path: string, body: unknown, done: (j: { sent?: boolean; message?: string }) => string) {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })

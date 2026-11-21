@@ -326,36 +326,45 @@ export function estimateRun(i: EstimateInput): RunEstimate {
 // view only rewrites the copy: no env var names, no model ids, no internal never-run rows, and a trial's total clamped to
 // the trial's per-scan cap (the run stops there), with the line saying so.
 export interface CustomerRow { id: string; label: string; provider: string; unit_usd: string; note: string; usd: Range | null; capped: boolean }
-export interface CustomerView { rows: CustomerRow[]; total: Range; trial_cap_line: string | null; assumptions: string[] }
+export interface CustomerView { rows: CustomerRow[]; total: Range; /** the cap line's model range (capLine), clamped like total */ capped_total: Range; trial_cap_line: string | null; assumptions: string[] }
 const ENV_NAME = /\bDAZL_[A-Z0-9_]+\b/
 export function customerCopy(text: string): string {
   // The model id the row names: "... per 1M tokens (claude-sonnet-4-5)" and "o3-mystery: no listed price"
   return text.replace(/(per 1M tokens) \(.*\)$/, '$1').replace(/^.*: no listed price$/, 'no listed price')
 }
-export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer'> & { trial_scan_cap_usd?: number | null }): CustomerView {
+export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer'> & { cap?: Pick<RunEstimate['cap'], 'capped_total'>; trial_scan_cap_usd?: number | null }): CustomerView {
+  const cap = trialScanCap(est)
   const rows: CustomerRow[] = est.rows.filter(r => r.id !== 'fallback_research').map(r => {
     const included = ENV_NAME.test(r.unit_usd) || /^free allowance/.test(r.unit_usd)
     return {
-      id: r.id, label: r.label, usd: r.usd, capped: r.capped,
+      id: r.id, label: r.label, usd: r.usd && clampToCap(r.usd, cap), capped: r.capped,
       provider: r.kind === 'model' ? 'AI research' : r.kind === 'search' || r.kind === 'fetch' ? 'Web search' : r.provider,
       unit_usd: included ? 'included' : r.kind === 'model' ? customerCopy(r.unit_usd) : r.unit_usd.replace(ENV_NAME, 'operator setting'),
       note: r.note.replace(ENV_NAME, 'operator setting'),
     }
   })
-  const cap = est.payer === 'trial' && typeof est.trial_scan_cap_usd === 'number' && Number.isFinite(est.trial_scan_cap_usd) && est.trial_scan_cap_usd > 0 ? est.trial_scan_cap_usd : null
-  const total = cap === null ? est.total : { min: Math.min(est.total.min, cap), max: Math.min(est.total.max, cap) }
+  const total = clampToCap(est.total, cap)
   const assumptions = est.assumptions
     .filter(a => !/research fallback/i.test(a))
     .map(a => a.startsWith('Model: ') && a.includes('. Tokens per call') ? `AI research: t${a.slice(a.indexOf('. Tokens per call') + 3)}` : a)
     .filter(a => !ENV_NAME.test(a))
-  return { rows, total, trial_cap_line: cap === null ? null : `Free trial scans stop at ${money(cap)}.`, assumptions }
+  return { rows, total, capped_total: clampToCap(est.cap?.capped_total ?? est.total, cap), trial_cap_line: trialCapLine(cap), assumptions }
 }
+// #1319: a free-trial scan's per-scan cap, when the estimate carries a usable one (own-key runs never have one). Shared by
+// the cost box before the run and the run page after it, so neither shows a dollar amount above the cap.
+export function trialScanCap(est: { payer?: string; trial_scan_cap_usd?: number | null }): number | null {
+  const c = est.trial_scan_cap_usd
+  return est.payer === 'trial' && typeof c === 'number' && Number.isFinite(c) && c > 0 ? c : null
+}
+export const clampToCap = (r: Range, cap: number | null): Range => cap === null ? r : { min: Math.min(r.min, cap), max: Math.min(r.max, cap) }
+export const trialCapLine = (cap: number | null): string | null => cap === null ? null : `Free trial scans stop at ${money(cap)}.`
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
 export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
 export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
-export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput): ActualVsEstimate {
+// trialCapUsd (#1319): a free-trial run's per-scan cap; the model estimate it is compared against never reads above it.
+export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput, trialCapUsd: number | null = null): ActualVsEstimate {
   // The canonical pricing truth is the settlement path's own (spend-guard.ts): priceOf normalizes dated served ids
   // (claude-sonnet-4-5-20250929 -> claude-sonnet-4-5) and completionCost prices cache tokens at the shared factors. A
   // bare PRICES_USD_PER_M lookup here called a dated, KNOWN model "unlisted" and reported real spend as unknown.
@@ -371,7 +380,7 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   // inside/against the estimate range. Explicit zeros are a real record; provided values price at the shared factors.
   const cacheRecorded = a.cacheWriteTokens != null && a.cacheReadTokens != null
   const complete = usd !== null && a.tokensComplete && cacheRecorded
-  const modelEst = est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 })
+  const modelEst = clampToCap(est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 }), trialCapUsd)
   const within = !complete ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
   const reqs = a.requests ?? null, reqsWithTokens = a.requestsWithTokens ?? null
   // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
@@ -391,7 +400,7 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
   const capRes = a.capReservedUsd ?? null
   if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
-  return { model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: est.total, within, summary }
+  return { model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: clampToCap(est.total, trialCapUsd), within, summary }
 }
 
 // The one line under the menu that states the limits and what is left. Unreadable budget is "remaining unknown" (never $0.00); the daily and monthly limits are labelled,

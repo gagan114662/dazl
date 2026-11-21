@@ -50,10 +50,12 @@ const BLOCKED_EST = JSON.parse(execFileSync(process.execPath, ['--experimental-s
   "import { estimateRun } from './lib/scan/price-estimate.ts'; process.stdout.write(JSON.stringify(estimateRun({ budget: null, payer: 'trial', limited: true, trialRefusal: 'google_required', trialUsed: 0 })))"],
   { cwd: dir, env: { PATH: process.env.PATH } }).toString())
 const b = await chromium.launch()
-async function open(width, url, pending, profile = PROFILE) {
+async function open(width, url, pending, profile = PROFILE, linkCookie = null) {
   const fresh = !/google=reauth_required/.test(url) // the server said the session is stale: so does /api/auth/reauth
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
+  // #1319: the callback now sends the result in this short-lived /app cookie, not in the address
+  if (linkCookie) await ctx.addCookies([{ name: 'dazl_google_link', value: linkCookie, domain: '127.0.0.1', path: '/app' }])
   await ctx.route('**/*', async route => {
     const req = route.request(); const u = new URL(req.url()); const p = u.pathname
     if (u.origin !== base) return route.abort()
@@ -233,6 +235,28 @@ try {
       } finally { await ctx.close() }
     })
     // the reviewer's repro: a failed result with NO saved search still says how it went (never silent Home)
+    // #1319 item 3: Google account taken. The callback returns to the exact page the person started on (onboarding step or
+    // Leads search) with the result in a cookie: the note shows, the search is back, 'taken' is never in the address, and
+    // the result is read once (a reload shows no note).
+    for (const [where, url, pending, input] of [['/app ready', '/app', 'ready', '[data-testid="first-ask"]'], ['/app/leads', '/app/leads', 'leads', '#play']]) {
+      await check(`${where} taken via cookie @${width}`, async () => {
+        const { ctx, page } = await open(width, url, pending, PROFILE, 'taken')
+        const label = `${where} taken via cookie @${width}`
+        try {
+          await page.getByTestId('google-link-note').waitFor({ timeout: 8000 })
+          assert.match(await page.getByTestId('google-link-note').innerText(), /already signs in to another dazl account/, `${label}: the plain message`)
+          await page.waitForTimeout(300)
+          assert.equal(await page.locator(input).inputValue(), QUERY, `${label}: the same search is back`)
+          await wayForward(page, false, 'taken', label)
+          assert.equal(new URL(page.url()).pathname, url, `${label}: still where it started`)
+          assert.doesNotMatch(page.url(), /taken|google=/, `${label}: nothing about the result in the address`)
+          assert.equal((await ctx.cookies(base + url)).some(c => c.name === 'dazl_google_link'), false, `${label}: read once`)
+          await page.reload({ waitUntil: 'networkidle' }); await page.waitForTimeout(300)
+          assert.equal(await page.getByTestId('google-link-note').count(), 0, `${label}: no note after a reload`)
+          if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `taken-cookie-${where.replace(/\W+/g, '-')}-${width}.png`), fullPage: true })
+        } finally { await ctx.close() }
+      })
+    }
     await check(`/app no saved search mismatch @${width}`, async () => {
       const { ctx, page } = await open(width, '/app?google=mismatch', null)
       try {

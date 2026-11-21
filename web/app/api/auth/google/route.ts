@@ -1,6 +1,6 @@
 import { connection, NextRequest } from 'next/server'
 import { signInConfig, startAuth } from '@/lib/auth-google'
-import { clearLinkNextCookie, redirectNoStore, setLinkNextCookie, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
+import { clearLinkNextCookie, redirectNoStore, setLinkNextCookie, setLinkResultCookie, setOauthCookie, setReturnCookie } from '@/lib/auth-google-response'
 import { safeNext } from '@/lib/google-link'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 
@@ -16,7 +16,9 @@ export async function GET(req: NextRequest) {
   // identity to that account. Browsers that send no Sec-Fetch-Site are allowed (the callback still needs the session).
   const site = req.headers.get('sec-fetch-site')
   if (req.nextUrl.searchParams.get('link') === '1' && site && site !== 'same-origin' && site !== 'none') {
-    return redirectNoStore(new URL('/app/settings?google=failed#account', cfg.base))
+    const res = redirectNoStore(new URL('/app/settings#account', cfg.base))
+    setLinkResultCookie(res, cfg.base, 'failed')
+    return res
   }
   const { url, cookie } = startAuth(cfg.clientId, cfg.redirectUri)
   const res = redirectNoStore(url)

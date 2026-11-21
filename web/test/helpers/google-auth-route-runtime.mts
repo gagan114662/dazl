@@ -37,6 +37,8 @@ const { getAuthDb } = await import('../../lib/db/sqlite-store.ts')
 let ip = 0
 const req = (url: string, cookie?: string) => new NextRequest(url, { headers: { 'x-forwarded-for': `10.0.0.${++ip}`, ...(cookie ? { cookie } : {}) } })
 const STAGING = { DAZL_ENV: 'staging', PUBLIC_BASE_URL: 'https://staging.dazl.ai', GOOGLE_SIGNIN_CLIENT_ID: SID, GOOGLE_SIGNIN_CLIENT_SECRET: SSEC }
+// #1319: the Google link result for the page (dazl_google_link, /app only, short-lived), '' when none was set
+const linkResult = (r: Response) => /^dazl_google_link=([a-z_]+);.*Path=\/app/i.exec(r.headers.getSetCookie().find(c => c.startsWith('dazl_google_link=')) ?? '')?.[1] ?? ''
 const noStore = (r: Response) => assert.match(r.headers.get('cache-control') ?? '', /no-store/, 'never cached')
 const unavailable = (r: Response) => { assert.equal(r.status, 307); assert.match(r.headers.get('location')!, /\/sign-in\?error=google_unavailable$/); noStore(r) }
 
@@ -149,16 +151,17 @@ test('linking Google from Settings: only the fresh, verified session of the acco
     const [state, n] = c.split('.'); nonce = n
     const r = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=l&state=${state}`, `dazl_oauth=${c}; dazl_return=link${session ? `; dazl_session=${session}` : ''}`))
     assert.ok(!r.headers.getSetCookie().some(x => /^dazl_session=[0-9a-f]/.test(x)), 'linking never makes a new session')
-    return r.headers.get('location')
+    // #1319: the result rides in a short-lived cookie for the page, never in the address
+    return `${r.headers.get('location')} ${linkResult(r)}`
   }
   const linked = () => getAuthDb().prepare("SELECT user_id FROM oauth_identities WHERE subject = 'g-link'").get()
-  assert.equal(await flow(), 'https://staging.dazl.ai/app/settings?google=signed_out#account')
+  assert.equal(await flow(), 'https://staging.dazl.ai/app/settings#account signed_out')
   const stale = await createSession('L')
   getAuthDb().prepare('UPDATE sessions SET authed_at = ? WHERE user_id = ?').run(Math.floor(Date.now() / 1000) - 7200, 'L')
-  assert.equal(await flow(stale), 'https://staging.dazl.ai/app/settings?google=reauth_required#account')
+  assert.equal(await flow(stale), 'https://staging.dazl.ai/app/settings#account reauth_required')
   assert.equal(linked(), undefined)
   const fresh = await createSession('L')
-  assert.equal(await flow(fresh), 'https://staging.dazl.ai/app/settings?google=linked#account')
+  assert.equal(await flow(fresh), 'https://staging.dazl.ai/app/settings#account linked')
   assert.deepEqual(linked(), { user_id: 'L' })
   idEmail = 'pat@example.test'; idSub = 'g-1'
   console.log('GOOGLE_LINK_OK')
@@ -183,14 +186,14 @@ test('#1095 a failed or cancelled Google LINK clears link mode and its return pa
   const set = (r: Response, name: string) => r.headers.getSetCookie().find(c => c.startsWith(`${name}=`)) ?? ''
   const failedLink = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=link; dazl_link_next=%2Fapp%2Fleads'))
   // back to the page that asked, never the sign-in page (whose Google button answers email_exists for this account)
-  assert.equal(failedLink.headers.get('location'), 'https://staging.dazl.ai/app/leads?google=failed')
+  assert.equal(failedLink.headers.get('location'), 'https://staging.dazl.ai/app/leads'); assert.equal(linkResult(failedLink), 'failed')
   assert.match(set(failedLink, 'dazl_return'), /^dazl_return=;.*Max-Age=0/i, 'link mode cleared: the next plain sign-in signs in')
   assert.match(set(failedLink, 'dazl_link_next'), /^dazl_link_next=;.*Max-Age=0/i)
   // no (or an unsafe) return page: Settings, with the reason
   const noNext = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=link; dazl_link_next=https%3A%2F%2Fevil.example'))
-  assert.equal(noNext.headers.get('location'), 'https://staging.dazl.ai/app/settings?google=failed#account')
+  assert.equal(noNext.headers.get('location'), 'https://staging.dazl.ai/app/settings#account'); assert.equal(linkResult(noNext), 'failed')
   const withQuery = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied', 'dazl_return=link; dazl_link_next=%2Fapp%2Fleads%3Fjob_id%3Dabc'))
-  assert.equal(withQuery.headers.get('location'), 'https://staging.dazl.ai/app/leads?job_id=abc&google=failed')
+  assert.equal(withQuery.headers.get('location'), 'https://staging.dazl.ai/app/leads?job_id=abc'); assert.equal(linkResult(withQuery), 'failed')
   // a plain (non-link) failed sign-in still goes to the sign-in page
   const plain = await callback.GET(req('https://staging.dazl.ai/api/auth/callback/google?error=access_denied'))
   assert.match(plain.headers.get('location')!, /\/sign-in\?error=google_failed$/)
@@ -203,7 +206,7 @@ test('#1095 verify-and-link is safe: a cross-site link start is refused; a link 
   // a cross-site page cannot start a link (it could drive a browser signed in to someone else's account)
   for (const site of ['cross-site', 'same-site']) {
     const r = await start.GET(new NextRequest('https://staging.dazl.ai/api/auth/google?link=1&next=%2Fapp%2Fleads', { headers: { 'x-forwarded-for': `10.1.0.${++ip}`, 'sec-fetch-site': site } }))
-    assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/settings?google=failed#account', site)
+    assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/settings#account', site); assert.equal(linkResult(r), 'failed', site)
     assert.ok(!r.headers.getSetCookie().some(c => /^dazl_(return|oauth|link_next)=[^;]/.test(c)), `${site}: no link state is set`)
   }
   for (const site of ['same-origin', 'none']) { // a dazl page, or typed into the address bar
@@ -222,7 +225,7 @@ test('#1095 verify-and-link is safe: a cross-site link start is refused; a link 
   const c = /dazl_oauth=([^;]+)/.exec(s.headers.getSetCookie().join('\n'))![1]
   const [state, n] = c.split('.'); nonce = n
   const r = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=v&state=${state}`, `dazl_oauth=${c}; dazl_return=link; dazl_link_next=%2Fapp%2Fleads; dazl_session=${here}`))
-  assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/leads?google=linked')
+  assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app/leads'); assert.equal(linkResult(r), 'linked')
   const db = getAuthDb()
   assert.ok(Number((db.prepare("SELECT email_verified_at AS v FROM users WHERE id = 'VL'").get() as { v: number | null }).v) > 0, 'confirmed by the link')
   const { createHash } = await import('node:crypto')
@@ -241,6 +244,6 @@ test('#1095 verify-and-link is safe: a cross-site link start is refused; a link 
   const c2 = /dazl_oauth=([^;]+)/.exec(s2.headers.getSetCookie().join('\n'))![1]
   const [state2, n2] = c2.split('.'); nonce = n2
   const r2 = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=c2&state=${state2}`, `dazl_oauth=${c2}; dazl_return=link; dazl_session=${mine}`))
-  assert.equal(r2.headers.get('location'), 'https://staging.dazl.ai/app/settings?google=linked#account')
+  assert.equal(r2.headers.get('location'), 'https://staging.dazl.ai/app/settings#account'); assert.equal(linkResult(r2), 'linked')
   assert.equal(revoked(other).revoked_at, null, 'a confirmed account keeps its other sessions')
 })
