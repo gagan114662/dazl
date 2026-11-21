@@ -14,7 +14,11 @@ import { POST as SCAN } from '../../app/api/scan/route.ts'
 import { GET as STATUS } from '../../app/api/scan/status/route.ts'
 import { migrateModelUsage, writeModelCalls } from '../../lib/scan/model-usage.ts'
 import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
-import { periodOf } from '../../lib/llm/spend-pool.ts'
+import { PooledGuard, SpendGuard } from '../../lib/llm/spend-guard.ts'
+import { reserveNativeSearch } from '../../lib/scan/native-search-reserve.ts'
+import { runWithScanSpend, scanCapConfig } from '../../lib/scan/spend-cap.ts'
+import { capLine } from '../../lib/scan/price-estimate.ts'
+import { periodOf, sharedPool } from '../../lib/llm/spend-pool.ts'
 import { claimKeyedJob } from '../../lib/scan/runner.ts'
 import { migrateTinyfish } from '../../lib/search/tinyfish.ts'
 
@@ -114,6 +118,63 @@ test('carried exclusions: same oversize refusal before quoting and admission; va
     assert.equal(db.prepare('SELECT icp FROM scan_jobs').pluck().get(), JSON.stringify({ carry_exclude: allowed.carry_exclude }))
     assert.equal(db.prepare('SELECT count(*) FROM scan_spend_calls').pluck().get(), 0)
   } finally { db.close() }
+})
+
+test('normal Company First quote keeps per-scan, daily and monthly headroom separate', async () => {
+  const db = new Database(':memory:'); migrateAllSqlite(db); setScanDb(db); as(db)
+  const tenant = `E${n}`, now = Math.floor(Date.now() / 1000)
+  const settings = {
+    DAZL_COMPANY_FIRST_TENANT_ID: tenant,
+    DAZL_RUN_MAX_USD_USERS: `${tenant}:4.25`,
+    DAZL_OWNER_MONTH_MAX_USD_USERS: `${tenant}:12`,
+    DAZL_SCAN_CAP_CAD: '4.8',
+    DAZL_SCAN_CAP_FX_CAD_PER_USD: '1.5',
+  }
+  const prior = Object.fromEntries(Object.keys(settings).map(k => [k, process.env[k]]))
+  Object.assign(process.env, settings)
+  const priorPaid = 1.25
+  const owner = sharedPool(db, tenant, { day: 4.25, month: 12 }, () => now, 0)
+  const closeTo = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`)
+  async function quote(budget?: { max_usd: number }) {
+    const r = await est({ query: Q, offer: 'Independent compliance consulting', ...(budget ? { budget } : {}) })
+    assert.equal(r.status, 200)
+    return (await r.json()).estimate
+  }
+  try {
+    await owner.reserve(priorPaid, now)
+    await owner.settle(0, priorPaid, now)
+    const initial = await quote()
+    assert.equal(initial.cap.binding, 'daily')
+    assert.equal(initial.cap.reserved_usd, priorPaid)
+    closeTo(initial.cap.remaining_usd, 3)
+    const scoped = await quote({ max_usd: 2.5 })
+    assert.equal(scoped.cap.binding, 'scan')
+    closeTo(scoped.cap.remaining_usd, 2.5)
+    assert.match(capLine(scoped.cap, scoped.cap.capped_total) ?? '', /Per-scan limit: \$2\.50; Daily limit: \$4\.25/)
+    process.env.DAZL_OWNER_MONTH_MAX_USD_USERS = `${tenant}:2.75`
+    const monthly = await quote({ max_usd: 2.5 })
+    assert.equal(monthly.cap.binding, 'monthly')
+    closeTo(monthly.cap.remaining_usd, 1.5)
+    assert.notEqual(monthly.ack, scoped.ack)
+    assert.equal(jobs(db).length, 0, 'no quote enqueues or reserves')
+
+    // Independent money boundary: real SQLite reserve/settle through both the scan and named account guards, no provider.
+    const job = 'fixture-native-spend'
+    db.prepare("INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts) VALUES (?,?,'Fixture','Test','Test','running',1)").run(job, tenant)
+    const reserve = (usd: number) => runWithScanSpend({ db, jobId: job, tenantId: tenant, attempt: 1, claudeOnly: true,
+      cap: scanCapConfig(), requestMaxUsd: 2.5, accountLimits: null, clock: () => now }, async () => {
+      const pool = sharedPool(db, tenant, { day: 4.25, month: 2.75 }, () => now, 0, job)
+      return reserveNativeSearch([new SpendGuard(2.5), new PooledGuard(pool)], usd, () => {})
+    })
+    await assert.rejects(reserve(1.51))
+    const hold = await reserve(1.5)
+    await hold.settle(0.2)
+    const month = db.prepare("SELECT reserved_usd FROM tenant_spend_pools WHERE tenant_id=? AND period=?").pluck().get(tenant, periodOf('month', now)) as number
+    closeTo(month, priorPaid + 0.2)
+  } finally {
+    for (const [k, v] of Object.entries(prior)) if (v === undefined) delete process.env[k]; else process.env[k] = v
+    db.close()
+  }
 })
 
 test('estimate: a menu of providers with unit prices and a projected range; it queues nothing and counts nothing', async () => {

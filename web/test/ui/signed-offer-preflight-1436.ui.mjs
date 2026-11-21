@@ -1,7 +1,8 @@
 // Real loopback Next + persisted throwaway SQLite; no API interception or
 // provider stubs. Default runs Playwright too. Use --http-only where Chromium
 // is unavailable; --same-brand uses the current brand with stale targeting.
-// Build the ordinary app first; no confirmed scan is sent.
+// Build the ordinary app first. Confirmation queues a real fixture job,
+// but zero worker slots and the network fence prevent provider execution.
 import { createRequire } from 'node:module'
 import { createHash,randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -98,7 +99,12 @@ try{
   assert.equal(typeof selected.data.estimate.ack,'string')
   assert.ok(selected.data.estimate.ack.length>0)
   console.log('signed HTTP: Settings persisted; Leads loaded; 409 Use: dazl; chosen estimate accepted')
-  if(!httpOnly){
+  let jobId
+  if(httpOnly){
+    const admitted=await request('/api/scan',{query,offer:chosenOffer,estimate_ack:selected.data.estimate.ack})
+    assert.equal(admitted.status,202,JSON.stringify(admitted.data))
+    jobId=admitted.data.job_id
+  }else{
     const {chromium}=require('playwright')
     browser=await chromium.launch()
     const context=await browser.newContext({serviceWorkers:'block'})
@@ -133,14 +139,44 @@ try{
     assert.equal(submitted.offer,chosenOffer)
     assert.equal('icp' in submitted,false)
     assert.equal('reviewed' in submitted,false)
-    await page.getByTestId('estimate-confirm-run').waitFor()
-    assert.deepEqual(admissions,[])
+    const confirm=page.getByTestId('estimate-confirm-run')
+    await confirm.waitFor()
+    assert.deepEqual(admissions,[],'an offer selection and a quote alone admit nothing')
+    const admitting=page.waitForResponse(r=>r.url()===base+'/api/scan'&&r.request().method()==='POST')
+    await confirm.click()
+    const admitted=await admitting
+    const approved=admitted.request().postDataJSON()
+    assert.equal(approved.query,query)
+    assert.equal(approved.offer,chosenOffer)
+    assert.equal(approved.estimate_ack,(await quote.json()).estimate.ack)
+    assert.equal('icp' in approved,false)
+    assert.equal('reviewed' in approved,false)
+    const result=await admitted.json()
+    assert.equal(admitted.status(),202,JSON.stringify(result))
+    jobId=result.job_id
+    assert.deepEqual(admissions,[base+'/api/scan'])
     await context.close()
   }
   assert.deepEqual(await request('/api/settings/profile'),stored)
-  assert.deepEqual(history(),h0,'only synthetic pre-existing history remains')
+  assert.match(jobId,/^[a-f0-9]{24}$/)
+  const statusPath='/api/scan/status?readonly=1&job_id='+jobId
+  const readback=await request(statusPath)
+  assert.equal(readback.status,200)
+  assert.equal(readback.data.job_id,jobId)
+  assert.equal(readback.data.query,query)
+  assert.equal(readback.data.icp,null,'the old dental ICP must not be attached to the new job')
+  assert.equal(readback.data.status,'pending')
+  assert.equal(readback.data.attempts,0)
+  assert.equal((await request(statusPath,undefined,other)).status,404)
+  const all=history()
+  const queued=all.find(row=>row.id===jobId)
+  assert.ok(queued)
+  assert.equal(queued.user_id,actor)
+  assert.equal(queued.offer,chosenOffer)
+  assert.deepEqual(all.filter(row=>row.id!==jobId),h0,'existing jobs must remain untouched')
   assert.deepEqual(spending(),m0,'no provider or spend rows')
-  console.log('No scan admission, provider execution, spend, or profile/history change.')
+  assert.equal(db.prepare('SELECT count(*) AS n FROM leads WHERE scan_job_id=?').get(jobId).n,0)
+  console.log('Signed confirmation stored the chosen offer and query, with no inherited targeting, provider execution, spend, or saved-profile changes.')
 }finally{
   await browser?.close()
   if(server&&server.exitCode===null){server.kill();await Promise.race([new Promise(resolve=>server.once('exit',resolve)),sleep(3000)])}
