@@ -25,7 +25,7 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { getDomain } from 'tldts'
-import { atsPublisherRef, atsPostingRef, heldCopyBoard } from '../sources/ats-posting.ts'
+import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
@@ -70,6 +70,7 @@ import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
+import { HIRING_KINDS } from '../play-alerts.ts'
 import { isHiringTrigger } from './scoreboard.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
@@ -394,7 +395,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; board?: Page['board']; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
-  for (const { c: cIn, page } of fetched) {
+  for (const { c: cRaw, page } of fetched) {
+    // #533 live: a "Posted a <title> job on <board>" candidate cited to that board's posting record, whose title names every word
+    // of the signal's title, is a hiring posting (lib/sources/ats-posting.ts signalNamesBoardPosting). Its kind is stored as
+    // hiring on the lead or held row, so the board's day dates it here and readers of the stored row judge that day as a hiring posting's.
+    // Only when no other kind is stored: a stored non-hiring kind still wins, as it does over the wording.
+    const rawKind = (cRaw as LeadDraft & { signal_kind?: string | null }).signal_kind
+    const cIn: LeadDraft = !rawKind && page && !isFail(page) && signalNamesBoardPosting(cRaw.signal, cRaw.source_url, page.board?.record ? page.board.title : null) ? { ...cRaw, signal_kind: 'hiring' } as LeadDraft : cRaw
     // #460: an event day counts only when the FETCHED page states it for THIS company and THIS event (the same sentence as the quote, or a sentence naming the company and
     // describing the same event), or when a public job board's own structured publish date for exactly this posting URL was collected (structuredDates: Greenhouse
     // first_published / Lever createdAt / Ashby publishedAt from the job-board source - an ATS hostname alone proves no date exists). The model's date, a search-hit day,
@@ -758,6 +765,11 @@ async function callResearch<T>(ledger: SourceRunLedger, source: string, f: () =>
   try { return await f() } catch (e) { ledger.record(source, e instanceof SpendRefused ? 'skipped_hold' : 'error'); throw e }
 }
 
+// #533: a board-bound posting (verifyLeads) is stored as hiring, unless the grader lists it only as another dated event
+// (raised_funding, a launch) or a standing signal (press_mention): that grade is kept, so the board's day never dates it as hiring (lib/monitor-events.ts dated).
+// A graded requested-role kind (hiring_relevant_role) is kept; another hiring-type grade (job_board_presence ...) reads as hiring.
+export const boundKind = (bound: string | null | undefined, graded: string | null): string | null =>
+  bound !== 'hiring' || graded === 'hiring_relevant_role' ? graded : !graded || HIRING_KINDS.has(graded) ? 'hiring' : graded
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }
   else if (uncertainSpend.has(job) || spendAttemptUncertain()) { status = 'failed'; error = 'accounting_uncertain'; out = null; candidates = null }
@@ -781,11 +793,11 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     const insertedKeys = new Set<string>()
-    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, boundKind((l as VerifiedLead & { signal_kind?: string | null }).signal_kind, primarySignalKind(l.signals)), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
-      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, event_date_proof, event_date_proof_note, signal_kind) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of review) { const result = insReview.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.event_date ? 'unverified' : 'undated', `review:${dedupKey(l)}`, l.review_reason, sourceKind(job), l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null, (l as ReviewLead & { signal_kind?: string | null }).signal_kind === 'hiring' ? 'hiring' : null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     ledger?.write(db, job.id, job.attempts, out ? leads : null, out ? review : null, insertedKeys)
     db.prepare(
       `UPDATE scan_jobs SET status = ?, error = ?, claimed_at = NULL, candidates = ?, verified = ?, needs_review = ?, dropped = ?, drop_reasons = ?,
@@ -1205,6 +1217,8 @@ const newsErrorName = (note: NewsNote): string => {
   const kinds = (['network', 'http', 'empty_body', 'parse'] as const).filter(k => c[k] > 0)
   return `error:${kinds.length === 1 ? kinds[0] : 'mixed'}`
 }
+// #685: the recovery search's statuses that mean it COMPLETED (every request answered): only then may a held lead say other press was searched and none verified.
+const RECOVERY_COMPLETE = new Set(['ok', 'empty', 'no_candidates'])
 export function newsStatus(leads: LeadDraft[] | null, note: NewsNote): string {
   // Any failed request or invalid entry beside answers that worked makes the source PARTIAL - never ok, never a plain empty. All requests failed is handled below ('error').
   // A provider rate-limit is its own state, never an outage or an empty result: the provider answered and told us to slow down.
@@ -2112,14 +2126,17 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const undated = icpForSources?.window_days ? outcome.leads.filter(l => !l.event_date) : []
     const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
-    recoveryRan = blocked.length > 0 ? { searched: true } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
+    // #685: "searched" only once the recovery search has COMPLETED (below); a search that errored, was stopped or came back partial says it did not complete.
+    recoveryRan = blocked.length > 0 ? { searched: false, why: 'the other-press search did not complete: not_started' } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
       const note: NewsNote = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
       try {
         assertOwned(db, job)
         const found = await newsLeads(job, icpForSources!, providers_[vendor], key, deps.newsHttp ?? safeGet, fetchP, deps.fetchImpl, note, blocked.map(b => b.query))
-        ledger.record('fallback:news', newsStatus(found, note), note.searched ? note.hits : null)
+        const recoveryStatus = newsStatus(found, note)
+        ledger.record('fallback:news', recoveryStatus, note.searched ? note.hits : null)
+        recoveryRan = RECOVERY_COMPLETE.has(recoveryStatus) ? { searched: true } : { searched: false, why: `the other-press search did not complete: ${recoveryStatus}` }
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
@@ -2127,6 +2144,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
+        recoveryRan = { searched: false, why: 'the other-press search did not complete: error' }   // the rethrown stops below never reach recordRecovery
         if (e instanceof SpendRefused) ledger.record('fallback:news', note.searched ? partialHold(e) : 'skipped_hold') // hold-stopped partial is neither "skipped" nor an outage
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
@@ -2370,7 +2388,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         trace.note('people_search', firstPartyNote.status, firstPartyNote.reason, { ...firstPartyNote.detail, lane: 'first_party', public_profiles: publicProfiles })
       } else trace.note('people_search', 'skipped', skippedReason)
     }
-    if (claudeOnly) noteFirstPartyPeople('not_called_claude_only', 'Claude-only QA: no confirmed company buyer page inspected; TinyFish was not called')
+    if (claudeOnly) noteFirstPartyPeople('not_called_claude_only', 'Claude-only play: no confirmed company buyer page inspected; TinyFish was not called')
     else if (process.env.PEOPLE_SEARCH_ENABLED === '0') trace.note('people_search', 'skipped', 'PEOPLE_SEARCH_ENABLED=0')
     else if (!peopleSearchEnabled()) noteFirstPartyPeople('not_configured', 'No first-party buyer-page read; TinyFish public profile search is not configured')
     else if (peopleCap === 0) trace.note('people_search', 'skipped', 'DAZL_FIRST_PLAY_PEOPLE_SEARCHES=0: no people search on the first play / trial scans')
@@ -2672,7 +2690,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, under its OWN short budget
     // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
     // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
-    if (nativeOnly) trace.note('email_verify', 'skipped', 'Claude-only QA: mailbox verifier was not called')
+    if (nativeOnly) trace.note('email_verify', 'skipped', 'Claude-only play: mailbox verifier was not called')
     else if (emailGuessEnabled()) {
       const verifier = verifierFromEnv(process.env, deps.fetchImpl)
       if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')

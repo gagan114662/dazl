@@ -74,6 +74,9 @@ test('#352 recovery record: research leads say what the automatic recovery pass 
   assert.deepEqual(recoveryNote(undated), { ran: true, text: 'dazl already searched other press for a dated source; none verified.' })
   assert.deepEqual(recoveryNote(notRun), { ran: false, text: 'dazl did not search other sources for it: this run allowed no extra search.' })
   assert.equal(recoveryNote(lead({ enrichments: [rec('recovery:undated', 'Recovery pass did not run (something new).')] }))?.text, 'dazl did not search other sources for it: the search was not available for this run.')
+  // #685: the pass started but its search of other press did not complete (partial answer, rate limit, error): never "already searched"
+  for (const status of ['partial:1_of_3', 'limited', 'error:network'])
+    assert.deepEqual(recoveryNote(lead({ enrichments: [rec('recovery:undated', `Recovery pass did not run (the other-press search did not complete: ${status}).`)] })), { ran: false, text: 'The search of other press for it did not complete in this run.' })
   assert.equal(recoveryNote(lead({ enrichments: [{ connector: 'scan:fallback', kind: 'fallback', value: 'x', label: 'other_sources', source_url: 'https://n.example' }] })), null)
   assert.equal(recoveryNote(lead()), null)
   // The record is display only: the NYC/London-shaped runs with it stay research_only, with zero actionable review.
