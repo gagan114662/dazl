@@ -27,8 +27,9 @@ export interface Campaign {
   // plays, readiness.ts) must subtract only this from sourceChecked, never all of heldResearch, or a clean source-checked lead can vanish
   // from the count whenever a DIFFERENT, confirmedByYou lead happens to be the held one.
   // heldByChecks (#1062): leads of a company-first scan that its final checks keep off the run page, /api/leads and the CSV
-  // (companyFirstResults().visibleIds, the same gate). They are counted once, here and inside research, never in any other bucket:
-  // no check a person can do releases them, so they are never "needs your review".
+  // (companyFirstResults().visibleIds, the same gate) that the other checks would still call reviewable, passed or unverified. They are
+  // counted once, here and inside research, never in any other bucket: no check a person can do releases them, so they are never "needs
+  // your review". A hidden lead the other checks already call research or heldResearch (its window, an uncheckable cause) keeps that verdict.
   qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
@@ -61,10 +62,9 @@ export async function companyFirstShown(db: Database.Database, tenantId: string,
   for (const j of jobs) if (hasCompanyFirstBudget(j.run_budget)) out.set(j.id, (await companyFirstResults(sqliteDb(db), tenantId, j.id, now))?.visibleIds ?? new Set())
   return out
 }
-const NONE: ReadonlySet<string> = new Set()
 // Is this lead outside what its company-first scan shows? Not company-first: never. Company-first without a read in `shown`: always (fail closed).
 const heldByChecksOf = (j: { id: string; run_budget: string | null }, shown: CompanyFirstShown) =>
-  hasCompanyFirstBudget(j.run_budget) ? (id: string) => !(shown.get(j.id) ?? NONE).has(id) : () => false
+  hasCompanyFirstBudget(j.run_budget) ? (id: string) => !(shown.get(j.id)?.has(id) ?? false) : () => false
 
 // The Campaigns list with the company-first gate read (GET /api/campaigns).
 export async function listCampaignsNow(db: Database.Database, tenantId: string, limit = 10, now: Date = new Date()): Promise<Campaign[]> {
@@ -82,10 +82,15 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const leads = rows.length
     const allLive = rows.filter(r => r.quarantined_at === null)
     const rejected = leads - allLive.length
-    // #1062: a lead the company-first gate keeps off every page is held by checks and nothing else; every other count reads only the rest.
+    // #1062: a lead the company-first gate keeps off every page that the checks below would still count as reviewable, passed or
+    // unverified is held by checks and nothing else (inside research); one they already count as research keeps that verdict.
     const byChecks = heldByChecksOf(j, shown)
-    const heldByChecks = allLive.filter(r => byChecks(r.id)).length
-    const liveRows = allLive.filter(r => !byChecks(r.id))
+    const gateHeld = (r: Row) => requiredGateHeld(db, tenantId, r.id) !== null
+    const alreadyResearch = (r: Row) => evidenceStateOf(r) === 'unverified'
+      ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: gateHeld(r) }) : gateHeld(r))
+      : currentnessHeld(db, tenantId, r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gateHeld(r))
+    const liveRows = allLive.filter(r => !byChecks(r.id) || alreadyResearch(r))
+    const heldByChecks = allLive.length - liveRows.length
     let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = heldByChecks, unverified = 0
     for (const r of liveRows) {
       const st = evidenceStateOf(r)
@@ -110,7 +115,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // stop calling sourceChecked, never a held-research lead that was confirmedByYou all along.
     const heldResearchSourceChecked = heldResearchRows.filter(r => evidenceStateOf(r) === 'machine').length
     const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
-    const withContact = liveRows.filter(r => (r.contact ?? '').trim() !== '').length
+    const withContact = allLive.filter(r => (r.contact ?? '').trim() !== '').length
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
     // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.
     const drafts = msg('draft'), approved = msg('approved'), sent = msg('sent')
@@ -133,7 +138,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const an = sequenceAnalytics(db, tenantId, leadIds)
     const interested = leadIds.length ? n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification = 'positive' AND lead_id IN (${leadIds.map(() => '?').join(',')})`, tenantId, ...leadIds) : 0
     const drafted = new Set((db.prepare('SELECT lead_id FROM outreach_messages WHERE tenant_id = ?').all(tenantId) as { lead_id: string }[]).map(r => r.lead_id))
-    const undrafted = liveRows.filter(r => !drafted.has(r.id) && draftBlockReason(db, tenantId, r.id) === null).length
+    const undrafted = liveRows.filter(r => !byChecks(r.id) && !drafted.has(r.id) && draftBlockReason(db, tenantId, r.id) === null).length
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
@@ -186,7 +191,7 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
 
 // The Leads history's current split (#1136, HIST-BATCH; Hermes-PC finding 2 / XHawk High): for the scans the history lists, only what the
 // card's pill, label and next step need - discovery.leads and the qualification split listQual / currentRun read - in a bounded number
-// of queries whatever the scan or lead count (the jobs, their leads, which scans have emails, and 3 gate reads per scan: at most 63 for the 20 scans the history lists), never the full per-lead /
+// of queries whatever the scan or lead count (the jobs, their leads, which scans have emails, and 3 gate reads per scan: at most 63 for the 20 scans the history lists; #1062: plus, per company-first scan only, its companyFirstResults read - the run page's own gate, bounded by its 200-lead list), never the full per-lead /
 // per-message campaign pipeline above. Same verdicts as listCampaigns (pinned by test/leads-history-1136.test.ts):
 //  - needsReview / research: reviewIsActionable over window_held (windowHeld, pure) and gate_held (requiredGateHeldForJob, the campaign page's batch reader);
 //  - heldResearch: a source-checked / confirmed lead held by its window, an uncheckable cause or a failed required check. Each of those
@@ -216,20 +221,20 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
   for (const r of rows) { const a = byJob.get(r.scan_job_id) ?? []; a.push(r); byJob.set(r.scan_job_id, a) }
   return jobs.map(j => {
     const all = byJob.get(j.id) ?? []
-    // #1062: the same company-first gate as listCampaigns and the run page; held-by-checks leads are counted there only.
+    // #1062: the same company-first gate and rule as listCampaigns: a hidden lead these checks would not already call research is held by checks.
     const byChecks = heldByChecksOf(j, shown)
     const allLive = all.filter(r => r.quarantined_at === null)
-    const heldByChecks = allLive.filter(r => byChecks(r.id)).length
-    const live = allLive.filter(r => !byChecks(r.id))
-    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = heldByChecks, unverified = 0, heldResearch = 0, heldResearchSourceChecked = 0
-    for (const r of live) {
+    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = 0, unverified = 0, heldResearch = 0, heldResearchSourceChecked = 0, heldByChecks = 0
+    for (const r of allLive) {
       const st = evidenceStateOf(r), win = windowHeld(r, now), gh = gate.has(r.id)
+      const heldRes = st !== 'unverified' && (win || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gh)
+      if (byChecks(r.id) && !(st === 'unverified' ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh }) : gh) : heldRes)) { heldByChecks++; research++; continue }
       if (st === 'machine') sourceChecked++
       else if (st === 'human') confirmedByYou++
       else if (r.review_reason) { if (reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh })) needsReview++; else research++ }
       else if (gh) research++
       else unverified++
-      if (st !== 'unverified' && (win || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gh)) { heldResearch++; if (st === 'machine') heldResearchSourceChecked++ }
+      if (heldRes) { heldResearch++; if (st === 'machine') heldResearchSourceChecked++ }
     }
     const qualification = { sourceChecked, confirmedByYou, needsReview, research, unverified, held: 0, heldResearch, heldResearchSourceChecked, rejected: all.length - allLive.length, heldByChecks }
     const base = { id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at, discovery: { leads: all.length }, qualification }
