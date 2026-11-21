@@ -80,12 +80,17 @@ test('#878 (review) on a board-dated lead: a raise with no clock stays proven wi
   const q1 = 'B2B software companies that raised a Series D and are hiring account executives'
   const p1 = planProofs(compileTargeting(q1), lead, [], { ...ctx, query: q1 })
   assert.deepEqual([p1.C1.truth, p1.C1.date], ['pass', undefined], p1.C1.reason)
-  // hiring counted from the raise: the raise has no day of its own, so the gap cannot be checked
-  const q2 = 'B2B software companies that raised a Series D in the last 90 days and hired account executives within 30 days of the raise'
+  // a posting counted from the raise: the raise has no day of its own, so the gap to it cannot be checked (relate refuses it)
+  const q2 = 'B2B software companies that raised a Series D and are hiring account executives within 30 days of the raise'
   const plan2 = compileTargeting(q2)
-  const p2 = planProofs(plan2, lead, [], { ...ctx, query: q2 })
+  const posting = [{ connector: 'signals:ashby-gtm', kind: 'hiring', value: 'Account Executive - posted', source_url: 'https://jobs.ashbyhq.com/claylabs/ae', source_date: day(5) }]
+  const p2 = planProofs(plan2, lead, posting, { ...ctx, query: q2 })
+  assert.deepEqual([p2.C1.truth, p2.C1.date], ['pass', undefined], p2.C1.reason)
+  assert.equal(p2.C2.truth, 'unknown'); assert.match(p2.C2.reason, /not dated on separate sources/)
   assert.equal(evaluatePlan(plan2, p2).truth, 'unknown')
-  for (const k of Object.keys(p2)) assert.notEqual(p2[k].truth === 'pass' && p2[k].date === day(11) && /raise/.test(p2[k].reason), true, `${k}: ${p2[k].reason}`)
+  // control: the raise dated on its own page, the posting 6 days later on another source: the gap is checked and passes
+  const own = planProofs(plan2, { ...lead, event_date_proof: 'page_bound' }, posting, { ...ctx, query: q2 })
+  assert.equal(own.C2.truth, 'pass'); assert.match(own.C2.reason, /6 days after C1/)
 })
 
 test('#878 (review) an opening or a completed hire mentioned on a board-dated posting is not dated by the posting either', () => {
