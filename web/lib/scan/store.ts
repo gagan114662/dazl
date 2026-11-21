@@ -1,3 +1,4 @@
+import { isCarryStub } from './carry-exclusions.ts'
 import { migrateScanSpendCap } from './spend-cap.ts'
 import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
 import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
@@ -275,7 +276,7 @@ export function createQueryJob(db: Database.Database, userId: string, input: Que
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp && !isCarryStub(input.icp) ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
 }

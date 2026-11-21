@@ -7,6 +7,7 @@ import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, budgetedIcp, icpLoss, normalizeIcp } from '@/lib/scan/icp'
+import { carryStub } from '@/lib/scan/carry-exclusions'
 import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { countActiveJobs, createJob, createQueryJob, pinAdmittedStrictJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
@@ -239,7 +240,7 @@ export async function POST(req: NextRequest) {
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : null, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : (!icp ? carryStub(body?.carry_exclude) : null), sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, runBudget)
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
       if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))

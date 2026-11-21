@@ -1,4 +1,6 @@
 import { completeOffer } from '../../../lib/scan/play-offer-text.ts'
+import { carriedExclusions } from '../../../lib/scan/carry-exclusions.ts'
+import type { Icp } from '../../../lib/scan/icp.ts'
 // Client projection of the authenticated same-endpoint choice response.
 export function scanOfferConflict(status:number,value:unknown) {
   if(status!==409||!value||typeof value!=='object')return null
@@ -15,6 +17,13 @@ export function scanOfferConflict(status:number,value:unknown) {
 // in a direct run. The reviewed editor's profile is a separate server input.
 export function directOfferProfile<T>(chosen:string,saved:string,carried:T|null,freshTarget=false):T|null {
   return !freshTarget&&chosen===saved?carried:null
+}
+
+// The run a direct offer choice starts: the carried profile only for the same offer, and in every case the carried
+// profile's reviewed exclusions (who must never be contacted does not change with the offer).
+export function directOfferRun(chosen: string, saved: string, carried: Icp | null, freshTarget = false): { icp: Icp | null; carryExclude: string[] } {
+  const icp = directOfferProfile(chosen, saved, carried, freshTarget)
+  return { icp, carryExclude: icp ? [] : carriedExclusions(carried) }
 }
 
 // The reviewed Run buttons use the same completeness rule the estimate and scan routes apply to a supplied offer, so a

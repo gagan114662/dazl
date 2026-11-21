@@ -1,3 +1,4 @@
+import { shownIcp } from '@/lib/scan/carry-exclusions'
 import { NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
@@ -9,5 +10,5 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const job = await latestQueryJob(await getDb(), user.tenantId)
   if (!job) return NextResponse.json({ query: null, icp: null, icp_source: null })
-  return NextResponse.json({ query: job.query, icp: job.icp ? JSON.parse(job.icp) : null, icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null })
+  return NextResponse.json({ query: job.query, icp: shownIcp(job.icp), icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null })
 }

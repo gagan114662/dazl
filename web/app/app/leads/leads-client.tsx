@@ -44,7 +44,7 @@ import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import EstimateConfirm from './estimate-confirm'
-import { directOfferProfile, scanOfferConflict, offerReady, estimateFailureCopy } from './offer-preflight'
+import { directOfferRun, scanOfferConflict, offerReady, estimateFailureCopy } from './offer-preflight'
 import { completeOffer, MAX_OFFER } from '@/lib/scan/play-offer-text'
 import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
@@ -546,7 +546,7 @@ export default function LeadsClient() {
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
   // The price estimate shown before a run starts; the run begins only from its Confirm button (or is blocked with what to change).
-  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; query: string; withIcp: Icp | null; offer?: string; reviewed?: boolean } | null>(null)
+  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; query: string; withIcp: Icp | null; offer?: string; reviewed?: boolean; carryExclude?: string[] } | null>(null)
   const latestOfferQuery = useRef(query)
   latestOfferQuery.current = query
   function receiveOfferConflict(status: number, payload: unknown, requested: string, reviewed?: boolean) {
@@ -558,7 +558,7 @@ export default function LeadsClient() {
     }
     return true
   }
-  async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean) {
+  async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean, carryExclude?: string[]) {
     if (budgetCheck.error) { setError(budgetCheck.error); return } // an enabled but invalid spend limit never starts a run
     setError(''); setStarting(true); setPendingEst(null); setOfferConflict(null)
     const requested = query
@@ -571,22 +571,22 @@ export default function LeadsClient() {
       // No estimate, no run: a paid scan is never started without showing what it will use.
       if (er.status === 400 && ej.error === 'profile_lossy') { setError(lossyProfileCopy(ej)); return }   // keep the draft open so it can be fixed
       if (!er.ok || !ej.estimate) { setError(estimateFailureCopy(er.status, ej)); return }
-      setPendingEst({ est: ej.estimate as RunEstimate, query: requested, withIcp, offer, reviewed })
+      setPendingEst({ est: ej.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, carryExclude })
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
       setStarting(false)
     }
   }
-  async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean) {
+  async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean, carryExclude?: string[]) {
     if (requested !== latestOfferQuery.current) { setPendingEst(null); return }
     setError(''); setTrialRefused(null); setLinkNote(null); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query: requested, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, research_decisions: asResearchBlock(withIcp?.research)?.decisions, query: requested, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(!withIcp && carryExclude?.length ? { carry_exclude: carryExclude } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
-      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed }); return }
+      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, carryExclude }); return }
       if (receiveOfferConflict(r.status, j, requested, reviewed)) return
       // A refusal that clicking Confirm again cannot change (free scans or the month used up, no key, the hourly start limit): take the cost panel and its Confirm button down, so the page never keeps offering a button that does nothing.
       if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
@@ -781,8 +781,9 @@ export default function LeadsClient() {
     setOfferConflict(null)
     // A different offer starts a different targeting profile for this play.
     // Neither earlier reviewed plays nor Settings are changed.
-    const carry = directOfferProfile(offer, saved, startIcp, freshTarget)
-    void run(carry, offer, carry ? startReviewed : undefined)
+    // Reviewed exclusions (do-not-contact, competitors, disqualifiers) still go with the run either way.
+    const { icp: carry, carryExclude } = directOfferRun(offer, saved, startIcp, freshTarget)
+    void run(carry, offer, carry ? startReviewed : undefined, carryExclude)
   }
   const businessIcp = startIcp
   const directChoice = offerConflict?.direct && offerConflict.requested === query ? offerConflict : null
@@ -813,7 +814,7 @@ export default function LeadsClient() {
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed)} onCancel={() => setPendingEst(null)} />}
+      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.carryExclude)} onCancel={() => setPendingEst(null)} />}
       <form onSubmit={e => { e.preventDefault(); void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
