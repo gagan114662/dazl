@@ -74,7 +74,7 @@ export function redact(summary: Record<string, unknown> | undefined): Record<str
 }
 
 const nowS = () => Math.floor(Date.now() / 1000)
-const row = (e: AuditEvent, now: number) => [randomBytes(12).toString('hex'), e.tenantId, e.actorId.slice(0, 80), e.actorKind ?? 'user', e.action.slice(0, 64),
+export const auditEventArgs = (e: AuditEvent, now: number) => [randomBytes(12).toString('hex'), e.tenantId, e.actorId.slice(0, 80), e.actorKind ?? 'user', e.action.slice(0, 64),
   e.resourceType.slice(0, 40), e.resourceId?.slice(0, 80) ?? null, e.decision ?? 'allowed', JSON.stringify(redact(e.summary)), e.correlationId?.slice(0, 80) ?? null, now]
 // seq orders events written in the same second (assigned in the INSERT itself: an insert-then-update stamp would be
 // refused by the no-update trigger). Two concurrent writers may share a seq; they then tie, never fail.
@@ -83,16 +83,11 @@ const INSERT = `INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, a
 
 // Inside the transaction that makes the change: the event commits with it, or neither does.
 export function* recordTx(t: Tx, e: AuditEvent, now = nowS()): TxBody<void> {
-  yield* t.run(INSERT, row(e, now))
-}
-// Legacy scan admission owns a synchronous transaction on this raw store.
-export function recordRawSqliteTx(db: import('better-sqlite3').Database, e: AuditEvent, now = nowS()): void {
-  if (!db.inTransaction) throw new Error('audit transaction required')
-  db.prepare(INSERT).run(...row(e, now))
+  yield* t.run(INSERT, auditEventArgs(e, now))
 }
 // On its own: for refusals (nothing else is written) and for changes made outside a Db transaction.
 export async function record(db: Db, e: AuditEvent, now = nowS()): Promise<void> {
-  await db.run(INSERT, row(e, now))
+  await db.run(INSERT, auditEventArgs(e, now))
 }
 
 // summary_unreadable is set (and summary is {}) when the stored summary did not parse: a field of its own, so it can

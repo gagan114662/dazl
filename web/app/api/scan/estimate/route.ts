@@ -74,7 +74,10 @@ export async function POST(req: NextRequest) {
     const final = offer && icp ? budgetedIcp(applyReviewedDraft(icp, offer, { reviewed: true })) : null
     if (query.length >= 3 && body.reviewed === true && offer && final?.ok) {
       try { websiteApproval = issueWebsiteApproval(getMasterKey(), user, body.website_draft_receipt, { query, offer, icpJson: final.json }) }
-      catch { return NextResponse.json({ error: 'website_review_unavailable' }, { status: 503 }) }
+      catch (error) {
+        captureError(error, { source: 'route', where: '/api/scan/estimate', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
+        return NextResponse.json({ error: 'website_review_unavailable' }, { status: 503 })
+      }
     }
     if (!websiteApproval) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
   }

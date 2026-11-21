@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { siteKey } from './intelligence.ts'
-import { recordRawSqliteTx } from '../audit.ts'
+import { consumeWebsiteReviewAudit, pendingWebsiteReviewSnapshot, storedWebsiteReviewSnapshot } from './store.ts'
 
 type Scope=Readonly<{tenantId:string;actorId:string}>
 type Snapshot=Readonly<{query:string;offer:string;icpJson:string}>
@@ -60,24 +60,16 @@ export function verifyWebsiteApproval(key:Buffer,scope:Scope,receipt:unknown,sna
 export function recordQueuedWebsiteApproval(db:Database.Database,proof:Approved,jobId:string,now=Date.now()):boolean{
   if(!db.inTransaction||!authenticated.has(proof)||!Number.isSafeInteger(now)||now>=proof.until)return false
   const {tenantId,actorId}=proof.scope
-  const row=db.prepare("SELECT query,offer,icp FROM scan_jobs WHERE id=? AND user_id=? AND status='pending'")
-    .get(jobId,tenantId) as {query:string;offer:string;icp:string}|undefined
+  const row=pendingWebsiteReviewSnapshot(db, tenantId, jobId)
   if(!row||!row.query||!row.offer||!row.icp||revision({query:row.query,offer:row.offer,icpJson:row.icp})!==proof.digest)return false
-  const prior=db.prepare("SELECT 1 FROM audit_events WHERE tenant_id=? AND action=? AND at>=? AND json_extract(summary,'$.receipt_id')=?")
-    .get(tenantId,WEBSITE_PROFILE_REVIEW_ACTION,Math.floor((now-20*60_000)/1000),proof.nonce)
-  if(prior)return false
-  recordRawSqliteTx(db,{tenantId,actorId,action:WEBSITE_PROFILE_REVIEW_ACTION,resourceType:'scan_job',resourceId:jobId,
-    summary:{receipt_id:proof.nonce,snapshot:'v1:'+proof.digest}},Math.floor(now/1000))
-  return true
+  return consumeWebsiteReviewAudit(db,{tenantId,actorId,action:WEBSITE_PROFILE_REVIEW_ACTION,resourceType:'scan_job',resourceId:jobId,
+    summary:{receipt_id:proof.nonce,snapshot:'v1:'+proof.digest}},Math.floor((now-20*60_000)/1000),proof.nonce,Math.floor(now/1000))
 }
 
 /** Canonical current read marker derived only from an actual bound atomic row. */
 export function readQueuedWebsiteApproval(db:Database.Database,tenantId:string,jobId:string):boolean{
   try{
-    const row=db.prepare(`SELECT j.query,j.offer,j.icp,a.summary FROM scan_jobs j JOIN audit_events a
-      ON a.tenant_id=j.user_id AND a.resource_id=j.id AND a.action=? AND a.resource_type='scan_job' AND a.decision='allowed'
-      WHERE j.user_id=? AND j.id=? ORDER BY a.seq DESC LIMIT 1`).get(WEBSITE_PROFILE_REVIEW_ACTION,tenantId,jobId) as
-      {query:string;offer:string;icp:string;summary:string}|undefined
+    const row=storedWebsiteReviewSnapshot(db,tenantId,jobId,WEBSITE_PROFILE_REVIEW_ACTION)
     return !!row&&!!row.query&&!!row.offer&&!!row.icp&&JSON.parse(row.summary).snapshot==='v1:'+revision({query:row.query,offer:row.offer,icpJson:row.icp})
   }catch{return false}
 }
