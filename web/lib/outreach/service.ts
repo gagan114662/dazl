@@ -247,8 +247,11 @@ export function domainReviewStatus(db: Database.Database, tenantId: string, lead
       if (!site || !EMAIL_RE.test(to) || domainRelationship(db, tenantId, leadId, lead.company_domain) !== 'established')
         return 'recipient_provenance_missing'
       const fromEvidence = { connector: 'sitecrawl', kind: 'email', value: lead.contact ?? '', source_url: lead.source_url }
-      const published = [fromEvidence, ...rows].some(row => row.kind === 'email' && norm(row.value) === to &&
-        onCompanySite(row, site) && isFounderRoute(row))
+      const published = [fromEvidence, ...rows].some(row => {
+        if (row.kind !== 'email' || norm(row.value) !== to) return false
+        const evidence = { ...row, source_url: row.source_url ?? null }
+        return onCompanySite(evidence, site) && isFounderRoute(evidence)
+      })
       if (!published) return 'recipient_provenance_missing'
     } catch { return 'unreadable' }
   }
