@@ -58,6 +58,7 @@ export default function FollowupsClient() {
         daily_cap: 'Daily sending limit reached. Nothing was sent; the draft is kept for later.',
         not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; sending is blocked.',
         lead_currentness_unconfirmed: 'Event timing is unconfirmed. This draft is preserved for inspection but cannot be sent.',
+        recipient_provenance_missing: 'Nothing was sent. This saved message cannot be retried. A mailbox check alone is not enough. For future outreach, choose a different eligible lead with a named work email published on the company’s own website.',
         review_unreadable: 'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
         domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
         lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',

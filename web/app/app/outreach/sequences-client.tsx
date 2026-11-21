@@ -22,6 +22,7 @@ const COPY: Record<string,string> = {
   test_tenant_only:'The sequence test fixture is only available on the operator-designated test account.',
   test_inbox_not_allowlisted:'Add the test inbox to the allowlist above first.',
   lead_currentness_unconfirmed:'Event timing is unconfirmed. This set is preserved, but approval and unsent steps are held.',
+  recipient_provenance_missing: 'Nothing was sent. This saved message cannot be retried. A mailbox check alone is not enough. For future outreach, choose a different eligible lead with a named work email published on the company’s own website.',
   review_unreadable:'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
   domain_unconfirmed:'The website behind this sequence is not confirmed as the right company. Confirm it on the Leads page. That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
   lead_evidence_withdrawn:'The lead confirmation behind this sequence was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
