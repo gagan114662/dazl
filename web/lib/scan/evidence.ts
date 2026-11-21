@@ -307,7 +307,7 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   // Mentions elsewhere on the page do not count: that is how a rival's story gets pinned on the wrong company.
   const key = companyKey(c.company)
   if (key.length < 2) return { ok: false, reason: 'no_company' }
-  const dotted = /[.@+]/.test(c.company)
+  const ownName = norm(c.company), dotted = splitJoiners(ownName) !== ownName   // the lead's own name has a joiner
   const quoteNamesCompany = hasPhrase(loose, key) || (dotted && hasPhrase(splitJoiners(loose), key))
   const entityOk = quoteNamesCompany || pageHeadingNames(page, key) || (dotted && !page.board && hasPhrase(splitJoiners(norm(page.title)), key))
   if (!entityOk) return { ok: false, reason: 'entity_mismatch' }
