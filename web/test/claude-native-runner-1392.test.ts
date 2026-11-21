@@ -28,7 +28,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -124,7 +124,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     }
     globalThis.fetch = io
     const status = await runJob(db, job, {
-      master, fetchImpl: io, score: false, ground: false, judge: null, now,
+      master, fetchImpl: io, score: false, ground: false, judge: null, now, ...(boardHttp ? { sourceHttp: boardHttp } : {}),
       fetchPage: async page => {
         sequence.push('publisher-page')
         publisherRequests.push(page)
@@ -648,4 +648,36 @@ test('#1457 review: the owner day window (not just the scan cap) must have room 
   assert.ok(!(r.ledger as { status: string }[]).some(x => x.status === 'refused'))
   assert.equal(r.report.observed.verification, true)
   assert.match(JSON.stringify(r.report), /Regional Document Services/)
+})
+
+test('company first reads the newest matching role from an admitted ATS board first, by the board\'s free public JSON (cf_runner stage 3)', async () => {
+  // Prod run c4d2fd9c: 14 candidates, every one from an aggregator, none dated or bound to its company. The live search cites
+  // stale ATS permalinks; the board's own JSON names a fresh role with the board's own first-published day.
+  const stale = 'https://jobs.ashbyhq.com/regionaldocs/11111111-1111-4111-8111-111111111111'
+  const fresh = 'https://jobs.ashbyhq.com/regionaldocs/22222222-2222-4222-8222-222222222222'
+  const asked: string[] = []
+  const boardHttp = async (u: string) => {
+    asked.push(u)
+    if (u !== 'https://api.ashbyhq.com/posting-api/job-board/regionaldocs') return null
+    return { status: 200, body: JSON.stringify({ jobs: [
+      { title: 'Sales Representative', publishedAt: '2026-11-10T00:00:00Z', jobUrl: fresh, location: 'London' },
+      { title: 'Sales Representative', publishedAt: '2026-06-01T00:00:00Z', jobUrl: stale, location: 'London' },
+      { title: 'Office Manager', publishedAt: '2026-11-15T00:00:00Z', jobUrl: 'https://jobs.ashbyhq.com/regionaldocs/33333333-3333-4333-8333-333333333333', location: 'London' },
+    ] }), finalUrl: u } as never
+  }
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45, now: new Date('2026-11-21T12:00:00Z'),
+    confirmedOffer: 'Independent commercial document services', boardHttp, query: 'Commercial roofing companies in London hiring sales representatives',
+    diverseFixture: { results: [stale, url], cited: [], blocked: [] } as never })
+  assert.ok(asked.includes('https://api.ashbyhq.com/posting-api/job-board/regionaldocs'), JSON.stringify(asked))
+  assert.equal(r.publisherRequests[0], fresh, JSON.stringify(r.publisherRequests))
+  assert.ok(!r.publisherRequests.includes('https://jobs.ashbyhq.com/regionaldocs/33333333-3333-4333-8333-333333333333'), 'a role that does not match the request is not read')
+})
+
+test('a request for a non-hiring event does not read ATS boards (an ATS day proves only a vacancy)', async () => {
+  const asked: string[] = []
+  await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45, now: new Date('2026-11-21T12:00:00Z'),
+    confirmedOffer: 'Independent commercial document services', query: 'Commercial roofing companies in London that opened a new office',
+    boardHttp: async (u: string) => { asked.push(u); return null },
+    diverseFixture: { results: ['https://jobs.ashbyhq.com/regionaldocs/11111111-1111-4111-8111-111111111111', url], cited: [], blocked: [] } as never })
+  assert.deepEqual(asked, [])
 })

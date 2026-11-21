@@ -161,7 +161,8 @@ const GTM_OBJECT = '(?:head\\s+of\\s+(?:sales|growth|revenue)|account\\s+(?:exec
 const OBJECT_END = '(?=\\s*(?:$|[,:()-]|\\s(?:and|or|to|for|in|across|at|this|next|now|as|with|from|who|that|ahead|so|because|following|based|located|remote|globally|worldwide|today|currently)\\b))'
 const HIRING_VERB_OBJECT = new RegExp(`\\b${HIRE_VERB}\\s+${FILLER}${GTM_OBJECT}${OBJECT_END}`, 'i')
 const OPEN_ROLE = /\b(?:open|new|several|two|three|\d+)\s+(?:[a-z-]+\s+){0,3}(?:roles?|positions?|openings?|vacanc(?:y|ies))\b/i
-const FIRST_HIRE = /\b(?:first|new|key)\s+(?:sales|ae|sdr|bdr|gtm|account\s+executive)\s+hire\b|\bjoin(?:ing)?\s+(?:our|the)\s+(?:sales|gtm)\s+team\b/i
+const FIRST_HIRE = /\b(?:first|new|key)\s+(?:sales|ae|sdr|bdr|gtm|account\s+executive)\s+hire\b|\bjoin(?:ing)?\s+(?:our|the)\s+(?:sales(?:\s+development)?|gtm)\s+(?:team|organi[sz]ation|org)\b/i
+const JOIN_OUR_SALES = /\b(?:to\s+)?join(?:ing)?\s+our\s+(?:sales(?:\s+development)?|gtm)\s+(?:team|organi[sz]ation|org)\b/i
 const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
 // The subject in front of a hiring / raising verb must be the lead (case-insensitive: "othercorp is hiring" is another company just like "Othercorp").
 // The prefix is cut into segments at commas / "and" / "which" / "who" / "while" / "as"; the nearest segment that says anything is the subject segment. It is the
@@ -203,6 +204,10 @@ export const affirmativeSalesHiring = (text: string | null, company?: string | n
   if (NEGATED.test(c) || HYPOTHETICAL.test(c) || PAST.test(c)) return false
   const m = HIRING_VERB_OBJECT.exec(c)
   if (m) return !/\bsalesforce\b|\bsales\s*tax\b/i.test(m[0]) && !subjectIsOther(c.slice(0, m.index), company)
+  // A job ad's "to join our Sales Development organization": "our" is the ad's own employer, so the words before it are the
+  // candidate profile ("driven professionals with ... sales instincts"), not another company as the subject (Skopenow, run 0dfeb60a).
+  const j = JOIN_OUR_SALES.exec(c)
+  if (j) { const pre = c.slice(0, j.index), v = [...pre.matchAll(/\b(?:look(?:s|ing)\s+for|seek(?:s|ing)|hir(?:es|ing)|recruit(?:s|ing))\b/gi)].pop(); return !subjectIsOther(pre.slice(0, v ? v.index : pre.length), company) }
   const o = OPEN_ROLE.exec(c) ?? FIRST_HIRE.exec(c)
   return !!o && isGtmRole(c) && !subjectIsOther(c.slice(0, o.index), company)
 })

@@ -39,7 +39,7 @@ import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '..
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
-import { salesGateOr } from './sales-hiring-required.ts'
+import { salesGateOr, salesHiringRequired } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
 import { eventDateBound, dayStatedForEvent } from './event-date-binding.ts'
 import { ownPlaceAgreement } from './own-block.ts'
@@ -102,6 +102,7 @@ import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRe
 import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
+import { freshBoardPostings } from '../company-first/board-postings.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
 export type LeadDraft = Candidate
@@ -1668,10 +1669,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       const blockedOrigins = new Set<string>(), blockedPublishers = new Set<string>()
       type Aggregate = {est:ClaudeSearchEstimate;usage:ClaudeSearchUsage}
       const finishedSearches:Aggregate[]=[]
+      // The ATS board stage proves a hiring event only; any other requested event keeps its own first-party angle.
+      const hiringAsked = salesHiringRequired(job.query, JSON.stringify(icpForSources ?? {}))
       const angles = companyFirst && reviewedOffer
         ? ['Start with independent buyer organizations that could actually use the reviewed seller offer. Avoid the seller, competing vendors and companies whose only connection is a product or technology mention.',
           'Search a distinct angle: start with direct first-party signals and work backwards to the buyer category. Look for other employers or operators with the same criteria, not alternate pages for the same companies.',
-          'Search a third distinct angle on first-party pages only: the company\'s own careers page or its official applicant tracking system job permalinks, and its own press, news or blog posts announcing the requested event. Skip aggregators, lists and directories, and companies already found.']
+          hiringAsked ? 'Search a third distinct angle on first-party pages only: the public applicant tracking boards whose own records dazl reads and dates (boards.greenhouse.io, job-boards.greenhouse.io, jobs.lever.co, jobs.ashbyhq.com) for postings that match the requested event, using varied wording of the role titles, and the company\'s own press, news or blog posts announcing it. Skip aggregators, lists and directories, and companies already found.'
+            : 'Search a third distinct angle on first-party pages only: the company\'s own careers page or its official applicant tracking system job permalinks, and its own press, news or blog posts announcing the requested event. Skip aggregators, lists and directories, and companies already found.']
         : ['']
       let totalItems=0,totalNativeCandidates=0,totalPublisherReads=0,totalPublisherReturned=0,totalPublisherUsable=0,totalLookahead=0
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
@@ -1751,7 +1755,15 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // Prefer cited evidence, then stable publisher diversity; public ATS postings and board roots use the documented
         // board org as the publisher. Only admitted tool-result URLs go through the existing guarded fetch.
         // A duplicate publisher can still fill an otherwise empty slot, but never reread a blocked origin or publisher.
-        const ordered = [...new Set([...found.preferredPublisherUrls, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url))
+        // Company-first: an admitted search result on a public ATS board names the employer's board. Its free public JSON lists
+        // every open role with the board's own first-published day; the newest role matching the request inside the window is
+        // read first (as its own posting page, dated by the board record), ahead of aggregator pages that only mention companies.
+        const boardPosts = companyFirst && hiringAsked ? await freshBoardPostings(found.citedUrls, {
+          terms: focusTerms([job.query ?? '', ...(Array.isArray(icpForSources.signals) ? icpForSources.signals : [])].join(' ')),
+          windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), http: deps.sourceHttp ?? safeGet,
+          deadlineMs: phaseDeadline ? Math.min(15_000, phaseDeadline.at - phaseDeadline.now() - 45_000) : 15_000,
+        }).catch(() => [] as string[]) : []
+        const ordered = [...new Set([...boardPosts, ...found.preferredPublisherUrls, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url))
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
           return board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(url.hostname, { allowPrivateDomains: true }) ?? url.hostname
