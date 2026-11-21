@@ -41,10 +41,12 @@ export async function GET(req: NextRequest) {
   const leads = companyFirst ? rows.filter(l => results?.visibleIds.has(l.id)) : rows
   // Company-first held candidates, read-only: who was found and why it is held. No contact, email or score is exposed, and
   // nothing here can make a held candidate actionable (the hold itself is unchanged).
-  // Only once the job's final visibility checks have run (results exist and the job is done): before that every row would look held.
-  const held = companyFirst && results && job.status === 'done' ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null }[])
-    .filter(l => !results?.visibleIds.has(l.id))
-    .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? 'failed_final_proof_checks' })) : []
+  // Only once the job's final visibility checks have run, as the SAME snapshot that computed visibleIds says (results.final): before that
+  // every row would look held. A separate read of the job could describe another enrichment attempt (Qodo on #1466).
+  const held = companyFirst && results?.final ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null; quarantined_at?: number | null }[])
+    // a lead the user rejected (quarantined) is counted as rejected everywhere, never as held
+    .filter(l => !results?.visibleIds.has(l.id) && l.quarantined_at == null)
+    .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? 'held_by_final_checks' })) : []
   const sequences = await db.sequenceStatusByLead(user.tenantId)
   const enr = await db.enrichmentsForLeads(user.tenantId, leads.map(l => l.id))
   const evts = await db.eventsForLeads(user.tenantId, leads)

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { campaignsLimit, historyCampaigns, listCampaigns } from '@/lib/outreach/campaigns'
+import { campaignsLimit, historyCampaigns, listCampaignsNow } from '@/lib/outreach/campaigns'
 import { getDb } from '@/lib/db/client'
 import { historyJobs } from '@/lib/scan/history-jobs'
 import { campaignStatus } from '@/lib/run-status'
@@ -20,5 +20,5 @@ export async function GET(req?: NextRequest) {
   // no LIMIT tie can drop one), in a bounded number of queries; never the full campaign pipeline on the Leads page's request path.
   if (req?.nextUrl?.searchParams.get('view') === 'history')
     return NextResponse.json({ campaigns: (await historyCampaigns(getScanDb(), adb, user.tenantId, [...jobs.keys()])).map(c => campaignStatus(c, (jobs.get(c.id) as never) ?? null)) })
-  return NextResponse.json({ campaigns: listCampaigns(getScanDb(), user.tenantId, limit).map(c => campaignStatus(c, (jobs.get(c.id) as never) ?? null)) })
+  return NextResponse.json({ campaigns: (await listCampaignsNow(getScanDb(), user.tenantId, limit)).map(c => campaignStatus(c, (jobs.get(c.id) as never) ?? null)) })
 }
