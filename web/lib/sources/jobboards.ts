@@ -229,7 +229,8 @@ export function profilePlace(where: string, country?: string | null): { text: st
   // A country the built-in places read as the city's own, as a code or a phrase ("GB", "England, UK", "Great Britain (UK)"), keeps it.
   // Every part must be the city's own country, code or region: "US, UK" or "Canada (UK)" also names another country and is not a UK home.
   const parts = (country ?? '').split(/[,()]/).map(x => x.trim()).filter(Boolean)
-  const home = parts.length > 0 && parts.every(part => ukMarker(part) || ukMarker(countryFromField(part) ?? '-'))
+  // (a work-mode word, "Office" / "Hybrid", is no country even though a UK London location may carry it)
+  const home = parts.length > 0 && parts.every(part => (ukMarker(part) && !new RegExp(`^${WORK}$`, 'i').test(part)) || ukMarker(countryFromField(part) ?? '-'))
   if (builtIn?.shared && country?.trim() && !home && norm(where) === norm(builtIn.name)) return null // its own country's code is one of its locations ("London, GB")
   if (direct) return { text: where.trim(), name: direct.name }
   if (!isUs) return null
