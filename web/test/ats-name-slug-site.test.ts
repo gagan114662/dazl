@@ -82,3 +82,7 @@ test('a model-named website for another company name, or one not carrying the na
 test('two different websites named for the same company give nothing', async () => {
   assert.equal(await runAts(undefined, 'LevelUp Leads', undefined, [{ company: 'LevelUp Leads', website: 'levelupleads.org' }, { company: 'LevelUp Leads', website: 'levelupleadshq.org' }]), null)
 })
+
+test('review: a wrong model-named website does not stop the ATS board lookup', async () => {
+  assert.equal(await runAts(BOARD({ name: 'LevelUp Leads', site: 'levelupleads.org' }), 'LevelUp Leads', undefined, [{ company: 'LevelUp Leads', website: 'levelupleadsgroup.org' }]), 'levelupleads.org')
+})
