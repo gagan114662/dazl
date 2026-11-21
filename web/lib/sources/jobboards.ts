@@ -232,7 +232,8 @@ export function profilePlace(where: string, country?: string | null): { text: st
   const parts = (country ?? '').split(/[,()]/).map(x => x.trim()).filter(x => x && !new RegExp(`^${WORK}$`, 'i').test(x))
   // Each part is read by the country resolver as a whole ("England", "U.K.", "GB"): "New South Wales", "New England" or a work-mode word
   // ("Office") only contain a UK word and are not a UK home.
-  const home = parts.length > 0 && parts.every(part => ukMarker(countryFromField(part) ?? '-'))
+  // (or the built-in place reads "<name>, <part>" as its own location: "Greater London, UK", "London, UK" as a profile's country)
+  const home = !!builtIn && parts.length > 0 && parts.every(part => builtIn.ok(`${builtIn.name}, ${part}`) || ukMarker(countryFromField(part) ?? '-'))
   if (builtIn?.shared && country?.trim() && !home && norm(where) === norm(builtIn.name)) return null // its own country's code is one of its locations ("London, GB")
   if (direct) return { text: where.trim(), name: direct.name }
   if (!isUs) return null
