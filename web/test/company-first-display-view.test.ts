@@ -91,6 +91,18 @@ for (const [country, market, host] of [
     assert.deepEqual(db.prepare('SELECT status,attempts,claimed_at,sent_at FROM outreach_messages WHERE id=?').get(msg),
       {status:'approved',attempts:0,claimed_at:null,sent_at:null})
 
+    // An independently published telephone route is sufficient for genuine machine currentness,
+    // without making the separately displayed mailbox a recipient. Re-run the actual actionability
+    // and timing recorders rather than dropping or patching the earlier hold.
+    add('sitecrawl','phone','+1 416 555 0101','Company telephone',team)
+    assert.equal(recordActionability(db,job).actionable,1)
+    assert.deepEqual(recordTimingProof(db,job,now),{proven:1,held:0})
+    assert.equal(currentnessHeld(db,tenant,lead,now),false)
+    assert.equal((await verifiedCompanyFirstDisplay(db,tenant,id,[lead],now))[lead]?.address,address)
+    const currentLookup=await findWorkEmail(db,tenant,lead,targetKey({name:'Ada Lane',title:'Owner'}),{now:at,env:{}})
+    assert.equal(currentLookup.status,'not_found')
+    assert.equal(draftBlockReason(db,tenant,lead),'no_email_contact')
+    assert.throws(()=>createDraft(db,tenant,lead,'Seller'),{code:'no_email_contact'})
     assert.deepEqual(await verifiedCompanyFirstDisplay(db,'different-owner',id,[lead],now),{})
     db.prepare("UPDATE leads SET event_date_proof=NULL WHERE id=?").run(lead)
     assert.deepEqual(await verifiedCompanyFirstDisplay(db,tenant,id,[lead],now),{},'the published address cannot replace a verified event')
