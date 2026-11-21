@@ -34,7 +34,7 @@ const Q = 'Independent dental practices hiring a receptionist in New York in the
 test('only the accepting request callback runs the pinned job, never an ordinary queued job', async () => {
   const db = setup()
   const tenant = as(db)
-  const r = await post({ query: Q, mode: 'first5_claude_only_pinned_v2' })
+  const r = await post({ query: Q, mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } })
   assert.equal(r.status, 202)
   const { job_id: pinned } = await r.json() as { job_id: string }
   const queued = createQueryJob(db, as(db), { query: Q })
@@ -170,12 +170,13 @@ test('explicit seller decision captured with real admission and rolled back on s
 test('versioned Claude-only first play restricts only its job and cannot be enabled by an arbitrary budget marker', async () => {
   const db = setup()
   as(db)
-  const qa = await post({ query: Q, mode: 'first5_claude_only_v1' })
+  // #1398: the isolated Claude-only job comes only from the production Claude Web Search opt-in
+  const qa = await post({ query: Q, mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } })
   assert.equal(qa.status, 202)
   assert.equal((await qa.json()).provider_policy, 'claude_only_v1')
   assert.equal(rows(db)[0].status, 'running', 'strict submit atomically claims before after() will run')
   assert.deepEqual(JSON.parse(rows(db)[0].run_budget!), {
-    first5: true, paid_fallback: false, credit_enrichment: false, provider_policy: 'claude_only_v1', max_usd: 5, execution: 'local_once_v1',
+    first5: true, paid_fallback: false, credit_enrichment: false, provider_policy: 'claude_only_v1', web_search_policy: 'anthropic_estimated_v1', max_usd: 5, execution: 'local_once_v1',
   })
   const qaEstimate = JSON.parse((db.prepare('SELECT estimate FROM scan_jobs').get() as { estimate: string }).estimate)
   assert.equal(qaEstimate.rows.some((r: { provider: string }) => r.provider === 'TinyFish'), false)
@@ -184,6 +185,7 @@ test('versioned Claude-only first play restricts only its job and cannot be enab
   for (const b of [{ query: Q, budget: { provider_policy: 'claude_only_v1' } },
     { query: Q, mode: 'first5_claude_only_v1', budget: { max_usd: 100 } },
     { query: Q, mode: 'first5_claude_only_v2' },
+    { query: Q, mode: 'first5_claude_only_v1' }, { query: Q, mode: 'first5_claude_only_pinned_v2' },   // #1398: the former QA modes are unknown
     { business_name: 'Acme', industry: 'roofing', location: 'Toronto', mode: 'first5_claude_only_v1' }]) {
     assert.equal((await post(b)).status, 400, JSON.stringify(b))
   }
@@ -193,14 +195,14 @@ test('versioned Claude-only first play restricts only its job and cannot be enab
   assert.equal(JSON.parse(rows(db)[1].run_budget!).provider_policy, undefined)
   const uid = as(db)
   setUser({ id: uid, business_name: 'Acme', role: 'viewer' })
-  assert.equal((await post({ query: Q, mode: 'first5_claude_only_v1' })).status, 403)
+  assert.equal((await post({ query: Q, mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } })).status, 403)
   assert.equal(rows(db).length, 2)
 })
 
 test('pinned API v2 never returns to pending; rollback-compatible cleanup preserves ordinary work', async () => {
   const db = setup()
   const strict = as(db)
-  const r = await post({ query: Q, mode: 'first5_claude_only_pinned_v2' })
+  const r = await post({ query: Q, mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } })
   assert.equal(r.status, 202)
   const { job_id: strictId, execution } = await r.json() as { job_id: string; execution: string }
   assert.equal(execution, 'local_once_v1')
@@ -223,7 +225,7 @@ test('unsupported local isolation refuses before creating a job', async () => {
   const saved = process.env.DAZL_SCAN_SHARED_QUEUE
   process.env.DAZL_SCAN_SHARED_QUEUE = '1'
   try {
-    const r = await post({ query: Q, mode: 'first5_claude_only_pinned_v2' })
+    const r = await post({ query: Q, mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } })
     assert.equal(r.status, 503)
     assert.equal((await r.json()).error, 'qa_isolation_unavailable')
     assert.equal(rows(db).length, 0)
