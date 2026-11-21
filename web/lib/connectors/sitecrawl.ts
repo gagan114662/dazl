@@ -193,7 +193,9 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
       const j = (await res.json()) as { results?: { url?: string; html?: string; status_code?: number; success?: boolean; redirected_url?: string }[] }
       const r = j.results?.[0]; if (!r) return null
       const status = r.status_code ?? (r.success ? 200 : 0)
-      const hasSource = Object.hasOwn(r, 'url'), hasRedirect = Object.hasOwn(r, 'redirected_url')
+      const hasSource = Object.hasOwn(r, 'url')
+      // Crawl4AI serializes an ordinary unredirected result with null here.
+      const hasRedirect = Object.hasOwn(r, 'redirected_url') && r.redirected_url !== null
       const validRendererUrl = (value: unknown): value is string => {
         if (typeof value !== 'string' || !value || value !== value.trim()) return false
         try {
@@ -1081,10 +1083,14 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     for (const f of [...extractContacts(home.body, home.finalUrl, site), ...extractPeople(home.body, home.finalUrl, buyerRoles)]) found.set(f.kind + f.value, f)
     const homePage = new URL(home.finalUrl)
     const paths: ({ path: string } & Partial<Pick<BuyerBio, 'name' | 'expectedValue'>>)[] = contactPaths(home.body, homePage, !!buyerRoles).map(path => ({ path }))
-    const linkedAbout = buyerDiscovery?.ownAbout && buyerRoles ? linkedBuyerAboutPath(home.body, homePage) : null
+    // The public robots response only authorizes this exact origin. A home
+    // redirect to a www alias (or redirected robots response) is not authority
+    // for direct exact buyer reads there. Ordinary crawl paths are unchanged.
+    const exactBuyerOrigin = homePage.origin === origin && rob.finalUrl === `${origin}/robots.txt`
+    const linkedAbout = exactBuyerOrigin && buyerDiscovery?.ownAbout && buyerRoles ? linkedBuyerAboutPath(home.body, homePage) : null
     // The caller supplies hints only after an independent exact owned-origin
     // observation. Recheck origin after the normal homepage name check above.
-    const citedAbout = expectName && buyerRoles
+    const citedAbout = exactBuyerOrigin && expectName && buyerRoles
       ? buyerDiscovery?.authorizedHints?.map(buyerSourceCitation).find(u => u?.origin === homePage.origin)?.pathname ?? null : null
     const buyerPaths = [...new Set([linkedAbout, citedAbout].filter((p): p is string => !!p))]
     if (buyerPaths.length) {
@@ -1108,14 +1114,14 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       const exactBuyerRead = buyerPaths.includes(p)
       let requested = exactBuyerRead ? new URL(p, homePage).href : origin + p
       let r = await polite(requested, robots.delayMs, exactBuyerRead)
-      // Independently homepage-linked pages may canonicalize just a single
-      // trailing slash. Verify target robots before dispatching the second hop.
+      // Independently homepage-linked pages may redirect once to a supported
+      // own About/team path. Check exact origin and robots before transport.
       // A designated citation never gets this exception.
-      if (p === linkedAbout && p !== citedAbout && !p.endsWith('/') && r?.redirect &&
+      if (p === linkedAbout && p !== citedAbout && r?.redirect &&
           [301, 302, 307, 308].includes(r.status) && r.finalUrl === requested) {
         let target: URL | null
         try { target = new URL(r.redirect, requested) } catch { target = null }
-        if (target?.href !== requested + '/' || !robots.allows(p + '/')) continue
+        if (!target || target.origin !== origin || target.href === requested || !buyerSourceCitation(target.href) || !robots.allows(target.pathname)) continue
         requested = target.href
         r = await polite(requested, robots.delayMs, true)
       }
@@ -1589,7 +1595,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             const { withoutHint, ...rest } = r
             const unhinted = withoutHint ? { ...rest, found: withoutHint.found, reason: withoutHint.reason,
               pages: Math.max(1, rest.pages - 1), buyerPages: Math.max(0, (rest.buyerPages ?? 0) - 1) } : rest
-            strictSeenForRead.set(unhinted, new Map([...strictSeen].filter(([url]) => url !== withoutHint?.url)))
+            // The hinted card cannot become eligible (excluded from found),
+            // but still vetoes a conflicting role or mailbox on another page.
+            strictSeenForRead.set(unhinted, strictSeen)
             siteRead.set(cand, unhinted)
           }
         } else siteRead.set(cand, r)

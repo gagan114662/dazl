@@ -35,9 +35,14 @@ test('normal renderer preserves true omission but rejects invalid explicit URL m
     { url: null },
     { url: 'http://8.8.8.8/team', redirected_url: target },
     { status_code: 302 },
+    { status_code: 302, url: target, redirected_url: null },
   ]) assert.equal(await get(target), null, JSON.stringify(result))
   result = { url: target, redirected_url: target + '/' }
   assert.equal((await get(target))?.finalUrl, target + '/')
+  result = { url: target, redirected_url: null }
+  assert.equal((await get(target))?.finalUrl, target)
+  result = { redirected_url: null }
+  assert.equal((await get(target))?.finalUrl, target)
   result = {}
   assert.equal((await get(target))?.finalUrl, target)
   const rendererBefore = renderer.mock.callCount()
