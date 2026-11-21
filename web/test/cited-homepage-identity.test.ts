@@ -16,7 +16,7 @@ const LIST = (q: string) => html(`<h1>Companies hiring their first SDR</h1><p>${
 const HOME = (name: string) => html(`<title>${name}</title>${name} - outbound pipeline for B2B teams. ${PROSE}<a href="/contact">Contact</a>`)
 const CONTACT = html('<a href="mailto:hello@levelupleads.io">hello</a>')
 
-async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads', domain = 'levelupleads.org', sourceHtml?: string) {
+async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads', domain = 'levelupleads.org', sourceHtml?: string, partialText?: string) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: [] }), job)
@@ -24,7 +24,7 @@ async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads', 
     .run('L1', job, 'LevelUp Leads', null, 'Hiring its first SDR', 'https://lists.example/first-sdr', exactQuote(domain), 90, 85)
   const get: Get = async url => {
     const u = new URL(url)
-    if (u.hostname === 'lists.example') return { status: 200, body: sourceHtml ?? LIST(exactQuote(domain)), finalUrl: url }
+    if (u.hostname === 'lists.example') return { status: 200, body: sourceHtml ?? LIST(exactQuote(domain)), finalUrl: url, text: partialText }
     if (!['levelupleads.io', 'levelupleads.org', 'lul-growth.io'].includes(u.hostname.replace(/^www\./, ''))) return null
     if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
     const b = ({ '/': HOME(homeName), '/contact': CONTACT } as Record<string, string>)[u.pathname]
@@ -136,4 +136,69 @@ test('a sole lead cannot claim a namesake domain cited for an absent organizatio
   const r = await run(['https://levelupleads.org/'], 'LevelUp Leads Holdings', 'levelupleads.org',
     LIST('LevelUp Leads is hiring its first Sales Development Representative.'))
   assert.equal(r.domain, null, JSON.stringify(r.audit))
+})
+
+for (const conflict of [false,true]) test(conflict
+  ? 'competing verified publisher claims for the same cited host remain unresolved'
+  : 'a prefix-sharing lead does not stop a separately attributed cited host', async () => {
+  const db = new Database(':memory:')
+  try {
+    migrateScan(db); migrateConnectors(db)
+    const job = createJob(db,'A',{ business_name:'S',industry:'x',location:'y' })
+    db.prepare("UPDATE scan_jobs SET status='running',icp=? WHERE id=?").run(JSON.stringify({ summary:'s',where:[] }),job)
+    const company = conflict ? 'LevelUp Leads Holdings' : 'LevelUp Leads Studio'
+    const ownerUrl = 'https://lists.example/owner', otherUrl = 'https://lists.example/other'
+    const ownerQuote = exactQuote('levelupleads.org')
+    const otherQuote = conflict ? company + ' (levelupleads.org) is hiring a project manager.' : company + ' is hiring a project manager.'
+    const insert = db.prepare('INSERT INTO leads (id,scan_job_id,company,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?)')
+    insert.run('owner',job,'LevelUp Leads','Hiring',ownerUrl,ownerQuote,90,90)
+    insert.run('other',job,company,'Hiring',otherUrl,otherQuote,90,80)
+    const get: Get = async url => {
+      if (url === ownerUrl || url === otherUrl) return { status:200,body:LIST(url === ownerUrl ? ownerQuote : otherQuote),finalUrl:url }
+      const u = new URL(url)
+      if (u.hostname.replace(/^www\./,'') !== 'levelupleads.org') return null
+      if (u.pathname === '/robots.txt') return { status:200,body:'User-agent: *\nAllow: /',finalUrl:url }
+      if (u.pathname === '/') return { status:200,body:HOME(conflict ? company : 'LevelUp Leads'),finalUrl:url }
+      return { status:404,body:'',finalUrl:url }
+    }
+    await crawlJob(db,'A',job,{ get,gapMs:0,env:{},citedUrls:['https://levelupleads.org/'],redirectOf:async()=>null })
+    assert.deepEqual(db.prepare('SELECT id,company_domain FROM leads WHERE scan_job_id=? ORDER BY id').all(job),[
+      { id:'other',company_domain:null },{ id:'owner',company_domain:conflict ? null : 'levelupleads.org' },
+    ])
+    assert.deepEqual(db.prepare("SELECT lead_id,source_url FROM lead_enrichments WHERE kind='domain'").all(),
+      conflict ? [] : [{ lead_id:'owner',source_url:ownerUrl }])
+  } finally { db.close() }
+})
+
+test('classed blocks in a static publisher can contain ordinary inline formatting', async () => {
+  const q = exactQuote('levelupleads.org')
+  const body = html('<main class="article"><p class="copy">' + q.replace('LevelUp Leads','<strong>LevelUp <span>Leads</span></strong>') + '</p></main>')
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',body)).domain,'levelupleads.org')
+})
+
+test('simple proofs in publisher bodies within the existing crawl byte cap still qualify', async () => {
+  const q = exactQuote('levelupleads.org')
+  const body = html('<div>' + 'irrelevant content '.repeat(15_000) + '</div><p>' + q + '</p>')
+  assert.ok(Buffer.byteLength(body) > 128_000 && Buffer.byteLength(body) < 800_000)
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',body)).domain,'levelupleads.org')
+})
+
+for (const markup of [
+  '<style>.quiet{display:none}</style><p class="quiet">QUOTE</p>',
+  '<p>QUOTE</p><style>p{visibility:hidden}</style>',
+  '<link rel="stylesheet" href="/unknown.css"><p class="copy">QUOTE</p>',
+  '<p><strong>LevelUp Leads</strong><span style="display:none"> (levelupleads.org)</span> is hiring its first Sales Development Representative.</p>',
+  '<p>LevelUp Leads</p><p>(levelupleads.org) is hiring its first Sales Development Representative.</p>',
+  '<p class="sr-only">QUOTE</p>',
+  '<img src="other.png" onload="hideCopy()"><p class="copy">QUOTE</p>',
+]) test('unknown visibility or split publisher proof is held: ' + markup.slice(0,40), async () => {
+  const body = html(markup.replace('QUOTE',exactQuote('levelupleads.org')))
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',body)).domain,null)
+})
+
+
+test('a clipped body with visible quote but unobserved tail cannot prove visibility', async () => {
+  const q = exactQuote('levelupleads.org')
+  assert.equal((await run(['https://levelupleads.org/'],'LevelUp Leads','levelupleads.org',LIST(q),
+    q + ' Larger body marker: tail outside the captured HTML.')).domain,null)
 })

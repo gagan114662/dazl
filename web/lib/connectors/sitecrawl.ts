@@ -217,24 +217,64 @@ const labelMatches = (label: string, want: string) => label.length >= 4 && (labe
 // One uninterrupted, directly visible publisher text block, not a company name
 // at the end of a larger name or markup spanning unrelated directory entries.
 const tidyCitationText = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim()
+type CitationClaim = { company: string; evidence_excerpt?: string | null }
+function citationClaim(row: CitationClaim): { host: string; quote: string } | null {
+  const quote = tidyCitationText(row.evidence_excerpt ?? '')
+  const name = tidyCitationText(row.company)
+  const prefix = name + ' ('
+  if (name.length < 4 || quote.length < 30 || quote.length > 1000 || !quote.startsWith(prefix)) return null
+  const close = quote.indexOf(')', prefix.length)
+  return close > prefix.length ? { host: quote.slice(prefix.length,close).replace(/^www\./,''), quote } : null
+}
 function publisherNamesCitedSite(html: string, quote: string): boolean {
-  if (Buffer.byteLength(html) > 128_000) return false
+  // Use only the full bounded body captured by the same existing site crawl.
+  // No JS rendering or unbudgeted retrieval of styling/other subresources.
+  if (Buffer.byteLength(html) >= MAX_BYTES) return false
   type Node = DefaultTreeAdapterMap['node']
-  const nodes: Node[] = [parse(html)]
-  let seen = 0
-  while (nodes.length && seen++ < 12_000) {
-    const node = nodes.pop()!
-    if ('tagName' in node) {
-      if (/^(?:head|script|style|noscript|template|svg|iframe|textarea|select|button|details)$/.test(node.tagName) ||
-          node.attrs.some(a => /^(?:hidden|inert|style|class)$/.test(a.name) || a.name === 'aria-hidden' && a.value !== 'false')) continue
-      if (/^(?:p|li|td|dd)$/.test(node.tagName) && node.childNodes.length === 1) {
-        const text = node.childNodes[0]
-        if ('value' in text && tidyCitationText(text.value) === quote) return true
-      }
+  type Element = DefaultTreeAdapterMap['element']
+  const attr = (n: Element, name: string) => n.attrs.find(a => a.name === name)?.value
+  const hidden = (n: Element) =>
+    ['hidden','inert','style'].some(a => attr(n,a) !== undefined) ||
+    attr(n,'aria-hidden')?.trim().toLowerCase() === 'true' ||
+    /(?:^|\s)(?:hidden|invisible|sr-only|visually-hidden|screen-reader-only|d-none|is-hidden)(?:\s|$)/i.test(attr(n,'class') ?? '')
+  const inline = /^(?:span|b|strong|i|em|small|abbr|mark|sub|sup|code|u|s|br)$/
+  const blockMatches = (block: Element) => {
+    if (block.childNodes.length > 128) return false
+    const pending: Node[] = [...block.childNodes].reverse()
+    let chunks = '', traversed = 0
+    while (pending.length) {
+      if (++traversed > 128 || pending.length > 128) return false
+      const n = pending.pop()!
+      if ('value' in n) {
+        if (n.value.length + chunks.length > 1500) return false
+        chunks += n.value
+      } else if ('tagName' in n && inline.test(n.tagName) && !hidden(n)) {
+        if (n.tagName === 'br') chunks += ' '
+        for (let i=n.childNodes.length-1;i>=0;i--) pending.push(n.childNodes[i])
+      } else return false // never join across a nested block, unknown or concealed content
     }
-    if ('childNodes' in node) for (const child of node.childNodes) nodes.push(child)
+    return tidyCitationText(chunks) === quote
   }
-  return false
+  const pending: { node: Node; blocked: boolean; body: boolean }[] = [{ node:parse(html), blocked:false, body:false }]
+  let seen = 0, matched = false
+  while (pending.length) {
+    if (++seen > 12_000 || pending.length > 12_000) return false
+    const { node, blocked, body } = pending.pop()!
+    let excluded = blocked, inBody = body
+    if ('tagName' in node) {
+      const tag = node.tagName
+      inBody ||= tag === 'body'
+      // Inline/global CSS can hide any chosen node; external/global dynamic
+      // rules are not inspectable from a bounded HTML-only capture. Refuse
+      // unknown visibility, including styles declared AFTER the quote.
+      if (node.attrs.some(a => /^on[a-z]/i.test(a.name)) || tag === 'style' || (tag === 'link' && /(?:^|\s)stylesheet(?:\s|$)/i.test(attr(node,'rel') ?? '')) ||
+        (tag === 'script' && !/^(?:application\/(?:json|ld\+json))$/i.test(attr(node,'type') ?? ''))) return false
+      excluded ||= hidden(node) || /^(?:head|script|style|noscript|template|svg|iframe|textarea|select|button|details|dialog)$/.test(tag)
+      if (!excluded && inBody && /^(?:p|li|td|dd)$/.test(tag) && blockMatches(node)) matched = true
+    }
+    if ('childNodes' in node) for (const child of node.childNodes) pending.push({ node:child, blocked:excluded, body:inBody })
+  }
+  return matched
 }
 
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
@@ -1492,6 +1532,25 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       return run
     }
     const evidenceGet = (url: string) => hostGet(url, deps.signal ? { signal: deps.signal } : undefined)
+    // Negative only: two persisted verified excerpts claiming the same host
+    // are unresolved; a company sharing only the label/prefix is not a claim.
+    // Read once, keeping the optional path closed if the lookup exceeds its bound.
+    const CLAIM_CAP = 100
+    let claimants: Map<string,string[]> | undefined
+    const unambiguousCitation = (host: string, leadId: string) => {
+      if (!claimants) {
+        const rows = db.prepare(`SELECT id, company, evidence_excerpt FROM leads
+          WHERE scan_job_id=? AND review_reason IS NULL AND confidence IS NOT NULL LIMIT ?`)
+          .all(jobId, CLAIM_CAP + 1) as (CitationClaim & { id: string })[]
+        claimants = new Map()
+        if (rows.length <= CLAIM_CAP) for (const row of rows) {
+          const claim = citationClaim(row)
+          if (claim) claimants.set(claim.host,[...(claimants.get(claim.host) ?? []),row.id])
+        }
+      }
+      const matching = claimants.get(host)
+      return matching?.length === 1 && matching[0] === leadId
+    }
     const readLead = async (l: (typeof leads)[number]): Promise<void> => {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       if (companyFirstContacts) {
@@ -1524,31 +1583,24 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // candidate. Use the full name here: the crawler's looser domain label and homepage checks cannot distinguish
       // namesakes or entities with overlapping names. Keep the publisher, not the search citation, as provenance.
       const citedSites: string[] = []
-      if (!anchored && deps.citedUrls?.length && ev && ev.status >= 200 && ev.status < 300 && ev.finalUrl === l.source_url) {
+      if (!anchored && deps.citedUrls?.length && ev && ev.status === 200 && ev.text === undefined && ev.finalUrl === l.source_url) {
         const verified = !supplied ? (l.review_reason === null ? l : undefined) : db.prepare(`SELECT company, source_url, evidence_excerpt FROM leads
           WHERE id = ? AND scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL`).get(l.id, jobId) as
           { company: string; source_url: string; evidence_excerpt: string | null } | undefined
         if (verified?.company === l.company && verified.source_url === l.source_url && verified.evidence_excerpt) {
-          const quote = tidyCitationText(verified.evidence_excerpt)
-          const name = tidyCitationText(verified.company)
-          const prefix = name + ' ('
-          const close = quote.indexOf(')', prefix.length)
-          const namedHost = quote.startsWith(prefix) && close > prefix.length
-            ? quote.slice(prefix.length, close).replace(/^www\./, '') : ''
+          const claim = citationClaim(verified)
+          const namedHost = claim?.host ?? ''
           const evOwn = (() => { try { return registrable(new URL(ev.finalUrl).hostname) } catch { return '' } })()
-          const want = norm(verified.company)
-          const otherWants = [...new Set(leads.map(o => norm(o.company)))].filter(o => o !== want)
-          if (name.length >= 4 && quote.length >= 30 && quote.length <= 1000 &&
-              siteHostOk(namedHost) && namedHost === registrable(namedHost) && namedHost !== evOwn &&
+          if (claim && siteHostOk(namedHost) && namedHost === registrable(namedHost) && namedHost !== evOwn &&
               ownSiteHost('https://' + namedHost) === namedHost && notBlockedHost(namedHost) &&
-              nameLabel(namedHost) === want && !otherWants.some(o => labelMatches(nameLabel(namedHost), o)) &&
+              nameLabel(namedHost) === norm(verified.company) &&
               deps.citedUrls.some(raw => {
                 try {
                   const u = new URL(raw)
                   return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
                     u.hostname.replace(/^www\./, '') === namedHost
                 } catch { return false }
-              }) && publisherNamesCitedSite(ev.body,quote)) {
+              }) && publisherNamesCitedSite(ev.body,claim.quote) && unambiguousCitation(namedHost,l.id)) {
             sites.push(namedHost); citedSites.push(namedHost); basisOf.set(namedHost, 'evidence_link_text')
           }
         }
