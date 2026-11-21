@@ -12,7 +12,7 @@ import { bothEngines } from './helpers/engines.ts'
 import { createJob } from '../lib/scan/store-db.ts'
 import { readScanStatus } from '../lib/scan/status-read-service.ts'
 
-test('through the real status route: running_since is the first call, not the renewed lease', () => {
+test('#1157 through the real status route: running_since is the first call, not the renewed lease', () => {
   const web = fileURLToPath(new URL('../', import.meta.url))
   const env = { ...process.env, SITECRAWL_ENABLED: '0' } as NodeJS.ProcessEnv
   delete env.NODE_TEST_CONTEXT
@@ -22,7 +22,7 @@ test('through the real status route: running_since is the first call, not the re
   assert.match(r.stdout, /# pass 2/)
 })
 
-bothEngines('running_since: owner-scoped first call of any attempt; a retry keeps the scan\'s start; claim before any call', async ({ db }) => {
+bothEngines('#1157 running_since: owner-scoped first call of any attempt; a retry keeps the scan\'s start; claim before any call', async ({ db }) => {
   const job = await createJob(db, 'A', { business_name: 'b', industry: 'manufacturing', location: 'Bangalore' }, '{}')
   assert.equal((await readScanStatus(db, 'A', job))?.running_since, null)
   await db.run("UPDATE scan_jobs SET status = 'running', claimed_at = 1000, attempts = 1 WHERE id = ?", [job])

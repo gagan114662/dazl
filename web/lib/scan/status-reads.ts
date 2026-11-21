@@ -59,9 +59,6 @@ export async function readTrialScanCap(db: Db, tenantId: string, jobId: string):
   } catch { return 'unreadable' }
 }
 
-// #1157 line 2: when this scan last did something the server recorded (a paid/free provider call sent or settled), so a
-// running page can say "last activity N s ago" instead of a silent "Still running". Owner-scoped, read only. null = no
-// call recorded yet (or the table does not exist): the page then falls back to the claim time, never an invented time.
 // #1157 line 2: when the scan started running, for the page's "Searching... N min". The first provider call recorded for this
 // job (any attempt, owner-scoped), else the current claim when no call is recorded yet. Never claimed_at alone once a call
 // exists: claimed_at is the lease, renewed at every reserve, settle and phase boundary, so it is always seconds old on a
@@ -76,6 +73,9 @@ export async function readRunningSince(db: Db, tenantId: string, jobId: string, 
   const vals = [first, claimedAt].filter((v): v is number => v != null && Number.isFinite(v))
   return vals.length ? Math.min(...vals) : null
 }
+// #1157 line 2: when this scan last did something the server recorded (a paid/free provider call sent or settled), so a
+// running page can say "last activity N s ago" instead of a silent "Still running". Owner-scoped, read only. null = no
+// call recorded yet (or the table does not exist): the page then falls back to the claim time, never an invented time.
 export async function readLastActivity(db: Db, tenantId: string, jobId: string): Promise<number | null> {
   try {
     const row = await db.get<{ c: number | string | null; s: number | string | null }>('SELECT MAX(c.created_at) AS c, MAX(c.settled_at) AS s FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ?', [tenantId, jobId])
