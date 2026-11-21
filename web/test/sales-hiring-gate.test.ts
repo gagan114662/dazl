@@ -1021,3 +1021,26 @@ test('Wellhub (2593ed95): an unreadable or non-sales board record still holds', 
     assert.deepEqual([r.passed, lead(db).review_reason], [0, 'no_sales_hiring_evidence'])
   }
 })
+
+// Run 9697d013 (LiveKit): an OR request ("raised funding or hiring SDRs") whose lead's own Ashby posting, board-dated in the clock, is titled the
+// requested role was held no_sales_hiring_evidence: the own-posting proof ran only for non-OR requests. Its title must still be the role.
+function seedOrOwn() {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const query = 'B2B SaaS startups that raised funding or are hiring SDRs', icp = JSON.stringify({ signals: [], where: [] })
+  const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', 'LiveKit', NULL, 'hiring an SDR', 'https://jobs.ashbyhq.com/livekit/7387a987-24f3-424c-8dd3-bb7ed16f95e0', 'LiveKit is building the realtime stack.', 80, 80, '', ?, 'ats_structured', 'verified')").run(jobId, d(8).slice(0, 10))
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1 WHERE id = ?").run(jobId)
+  return { db, job: { id: jobId, user_id: 'u1', query, icp } }
+}
+const ASHBY = (title: string) => ({ 'https://api.ashbyhq.com/posting-api/job-board/livekit': { jobs: [{ id: '7387a987-24f3-424c-8dd3-bb7ed16f95e0', title }] } })
+test('LiveKit (9697d013): an OR request passes on the lead\'s own board-dated Ashby posting titled the requested role', async () => {
+  const { db, job } = seedOrOwn()
+  const r = await applySalesHiringGate(db, job, serve(ASHBY('Sales Development Representative')), { now: NOW })
+  assert.deepEqual([r.passed, lead(db).review_reason], [1, null])
+})
+test('LiveKit (9697d013): the same OR request with the posting titled another role stays held', async () => {
+  const { db, job } = seedOrOwn()
+  const r = await applySalesHiringGate(db, job, serve(ASHBY('Customer Success Manager')), { now: NOW })
+  assert.deepEqual([r.passed, lead(db).review_reason], [0, 'no_sales_hiring_evidence'])
+})
