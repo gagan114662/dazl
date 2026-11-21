@@ -112,6 +112,19 @@ const REJECT_NOTE: Record<RejectReason, string> = {
 }
 function norm(s: string) { return s.replace(/\s+/g, ' ').trim() }
 
+// #1435: the customer-premise warning, in category-neutral terms. "customers are X, not Y" (or "X rather than Y"); X stops at a
+// clause about the target itself ("... and it ...", "... and the target ..."), so a rejection of the target is never read as a
+// customer premise. Group 1 is Y, the group the note says the customers are not.
+const CUSTOMER_PREMISE=/\bcustomers?\s+(?:are|is)\s+(?:(?!\b(?:but|while|whereas|so|it|its|itself|they|the\s+(?:target|company|firm|business))\b)[^.!?;]){1,100}?(?:,?\s*\bnot\b|\s+rather\s+than\b)\s+([^.!?,;]{1,80})/i
+// The customer groups the target criteria name after explicit customer wording ("sell to X", "serving X", "customers must be X").
+const CRITERIA_CUSTOMERS=/\b(?:sell(?:s|ing)?\s+(?:only\s+)?to|serv(?:e|es|ing)|suppl(?:y|ies|ying)|provid(?:e|es|ing)\s+[^.;]{1,60}?\s+to|work(?:s|ing)?\s+with|target(?:s|ing)|(?:whose\s+)?(?:customers?|clients?)\s+(?:must\s+be|are|include))\s+([^.;,]{1,80})/gi
+function criteriaCustomerGroups(criteria:string):string[]{return [...criteria.matchAll(CRITERIA_CUSTOMERS)].map(x=>x[1])}
+// Words that name no particular group, so they never make two customer groups the same.
+const GENERIC_GROUP_WORDS=new Set(['company','business','firm','vendor','organisation','organization','client','customer','only','any','all','other','their','them','the','and','for','with'])
+const stem=(w:string)=>w.toLowerCase().replace(/ies$/,'y').replace(/(ss|x|ch|sh)es$/,'$1').replace(/([^s])s$/,'$1')
+const groupWords=(s:string)=>new Set(s.split(/[^\p{L}\p{N}]+/u).filter(w=>w.length>=3).map(stem).filter(w=>!GENERIC_GROUP_WORDS.has(w)))
+function sharesWord(a:string,b:string):boolean{const wa=groupWords(a);for(const w of groupWords(b))if(wa.has(w))return true;return false}
+
 // Parse, then keep a verdict only if its quote is verbatim inside ONE page that was actually sent, and
 // quote_url names that page. Literal presence only: it does not prove the quote means what the verdict says.
 export function parseQualification(raw: string, included: { url: string; text: string; role?: PageRole }[], scope: EvidenceScope, targetCriteria?:string): Qualification {
@@ -144,13 +157,13 @@ export function parseQualification(raw: string, included: { url: string; text: s
     caveat: LITERAL_CAVEAT,
   }
   // A warning about an explicit reasoning premise, not a business-model classifier or a new verdict. Category-neutral (#1435):
-  // a "no" whose note rejects the target because of who ITS CUSTOMERS are ("their customers are X, not Y"), when the target
-  // criteria put no condition on the customers. Never infer a business model from customers, or a target's fit from this.
+  // a "no" whose note rejects the target because of who ITS CUSTOMERS are ("their customers are X, not Y"), unless the target
+  // criteria themselves put a condition on the customers that names the same group as Y (then the comparison is legitimate).
+  // Never infer a business model from customers, or a target's fit from this.
   const fit=result.company_fit
-  const criteriaConditionCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+(?:only\s+)?to|serv(?:e|es|ing)|suppl(?:y|ies|ying)|provid(?:e|es|ing)\s+[^.;]{1,60}?\s+to|work(?:s|ing)?\s+with|target(?:s|ing)|(?:whose\s+)?(?:customers?|clients?)\s+(?:must\s+be|are|include))\s+\S/i.test(targetCriteria)
-  if(fit.verdict==='no'&&targetCriteria&&targetCriteria.trim()&&!criteriaConditionCustomers){
-   const customerComparison=/\bcustomers?\s+(?:are|is)\s+[^.!?;]{1,100}?(?:,?\s*not|\s+rather\s+than)\s+[^.!?,;]{1,80}/i.exec(fit.note)
-   if(customerComparison)fit.assessment_conflict={kind:'customer_sector_not_target_business',premise:customerComparison[0],note:"Customer premise flagged: a business's customers can differ from the business itself (in sector, size or place). This warning concerns only the quoted customer comparison, not the entire no assessment. Other rejection reasons may still apply; they have not been assessed by this check. The raw verdict and note are unchanged. This does not establish the target business model or fit."}
+  if(fit.verdict==='no'&&targetCriteria&&targetCriteria.trim()){
+   const m=CUSTOMER_PREMISE.exec(fit.note)
+   if(m&&!criteriaCustomerGroups(targetCriteria).some(g=>sharesWord(g,m[1])))fit.assessment_conflict={kind:'customer_sector_not_target_business',premise:m[0],note:"Customer premise flagged: a business's customers can differ from the business itself (in sector, size or place). This warning concerns only the quoted customer comparison, not the entire no assessment. Other rejection reasons may still apply; they have not been assessed by this check. The raw verdict and note are unchanged. This does not establish the target business model or fit."}
   }
   return result
 }

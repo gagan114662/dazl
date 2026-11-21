@@ -38,6 +38,11 @@ test('#1435 an unseen category gets the same customer-sector warning: the target
     ['Startups that raised funding for expansion in the last 90 days', 'Its customers are hospitals, not startups.'],
     ['Independent veterinary practices', 'Their customers are pet owners not veterinary practices.'],   // no comma, as the base matched
     ['B2B SaaS startups in London', 'The customers are insurance companies not software companies.'],
+    // council round 2: a customer condition in the criteria that names a DIFFERENT group from the note's "not Y" still warns,
+    // as the base did; so does wording that only looks like one (an exclusion sentence)
+    ['B2B SaaS startups selling to enterprises', 'Its customers are hospitals, not software companies.'],
+    ['B2B SaaS startups targeting mid-market companies', 'Its customers are hospitals, not software companies.'],
+    ['Independent veterinary practices. Exclude agencies serving clients', 'Their customers are pet owners, not veterinary practices.'],
   ]) {
     const f = grade(criteria, note)
     assert.equal(f.assessment_conflict?.kind, 'customer_sector_not_target_business', criteria)
@@ -47,10 +52,13 @@ test('#1435 an unseen category gets the same customer-sector warning: the target
 
 test('#1435 controls: criteria that do condition the customers, other grounds, and non-negative verdicts are never flagged', () => {
   // wrong-customer control: the criteria put a condition on who the target sells to, so a customer-sector no is legitimate
-  for (const criteria of ['Agencies that sell to hospitals', 'Wholesalers serving restaurants', 'Firms whose customers must be insurers', 'Suppliers targeting municipalities', 'Commercial bakeries supplying cafes', 'Studios providing photography to hotels', 'Consultancies that work with hospitals', 'Agencies whose clients are law firms'])
-    assert.equal(grade(criteria, 'Their customers are retailers, not hospitals.').assessment_conflict, undefined, criteria)
+  // (the note compares against the same group the criteria name)
+  for (const [criteria, group] of [['Agencies that sell to hospitals', 'hospitals'], ['Wholesalers serving restaurants', 'restaurants'], ['Firms whose customers must be insurers', 'insurers'], ['Suppliers targeting municipalities', 'municipalities'], ['Commercial bakeries supplying cafes', 'cafes'], ['Studios providing photography to hotels', 'hotels'], ['Consultancies that work with hospitals', 'hospitals'], ['Agencies whose clients are law firms', 'law firms'], ['B2B SaaS; customers must be software companies', 'software companies'], ['B2B SaaS that sells to a hospital', 'hospitals']])
+    assert.equal(grade(criteria, `Their customers are retailers, not ${group}.`).assessment_conflict, undefined, criteria)
   // wrong-company / wrong-place grounds are not a customer premise
-  for (const note of ['The page is about another company.', 'Headquarters are outside the target region.', 'Customers include clinics; the target itself is a distributor, not a clinic.'])
+  // a sentence that goes on to reject the target ITSELF is not a customer premise (council round 2)
+  for (const note of ['The page is about another company.', 'Headquarters are outside the target region.', 'Customers include clinics; the target itself is a distributor, not a clinic.',
+    'Customers are clinics and the target itself is a distributor, not a clinic.', 'Its customers are SMBs and it does not sell software.', 'Customers are local and it is not in the target region.', 'Customers are retailers but the company is not a practice.', 'Customers are noted on the page; the business is not a veterinary practice.'])
     assert.equal(grade('Independent veterinary practices', note).assessment_conflict, undefined, note)
   for (const v of ['yes', 'unknown']) assert.equal(grade('Independent veterinary practices', 'Their customers are pet owners, not veterinary practices.', v).assessment_conflict, undefined, v)
   // no target criteria: nothing to compare against
