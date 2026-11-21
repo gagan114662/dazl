@@ -80,6 +80,11 @@ const NOT_THE_OPENING = [
   'Territory Account Executive - Sales Manager, NY', 'Territory Account Executive, Sales Manager, CA', 'Territory Account Executive - Sales Engineer, TX',
   'Territory Account Executive - Account Manager, NY', 'Territory Account Executive - Customer Success Manager, MN', 'Territory Account Executive - Health Care Analyst',
   'Territory Account Executive, Solutions Architect',
+  // a segment word after the other title does not hide it (council review at b2703b9)
+  'Territory Account Executive - Office Administrator Federal', 'Territory Account Executive, Receptionist Public', 'Territory Account Executive - Customer Success Manager Enterprise',
+  'Territory Account Executive / Receptionist Enterprise', 'Territory Account Executive - Data Analyst Hunter', 'Sales Account Executive - Sales Associate',
+  'Territory Account Executive - Office Administrator, CA', 'Customer Account Executive / Channel Partner, TX', 'Territory Account Executive - Recruiting Partner, NY',
+  'Territory Account Executive - Receptionist, NY', 'Territory Account Executive - Solutions Consultant, CA', 'Territory Account Executive - Data Analyst, NY',
 ]
 
 test('#1185 PASS: real Territory / Mid Market / Core / Majors / Sales / Federal / place-suffixed account-executive postings are the requested role through the real gate and store', async () => {
@@ -108,8 +113,8 @@ test('#1185: titleIsRole agrees with the gate on every title above', () => {
   for (const t of ['Account Executive New York', 'Account Executive New Mexico', 'Strategic Account Executive UK/I']) assert.ok(titleIsRole(t, roles), t)
   // a title using only words main already allowed keeps main's reading after a separator (council review at 950f702: not newly held)
   for (const t of ['Account Executive, Talent Solutions', 'Account Executive - Community Banking', 'Account Executive, Network Security', 'Account Executive - Enablement Platform']) assert.ok(titleIsRole(t, roles), t)
-  // a newly allowed word with a place written "City, ST" after it: the city is a place whatever its ending (live Toast titles)
-  for (const t of ['Territory Account Executive , Retail - Rochester, MN', 'Territory Account Executive, SMB - Culpeper, VA', 'Strategic Core Account Executive - Automotive', 'Sales Account Executive - Financial Sector']) assert.ok(titleIsRole(t, roles), t)
+  // a newly allowed word with a segment or a place after a separator (live Toast / Databricks titles; a segment word ends the part)
+  for (const t of ['Territory Account Executive, Retail - Columbus, OH', 'Strategic Core Account Executive - Automotive', 'Sales Account Executive - Financial Sector']) assert.ok(titleIsRole(t, roles), t)
 })
 
 test('#1185: a job-ad heading reads the same way - a segment opening passes, and a place or segment after the role never hides another title', () => {
@@ -118,7 +123,7 @@ test('#1185: a job-ad heading reads the same way - a segment opening passes, and
   for (const ex of [
     'Account Executive Benelux - Senior Manager at Acme', 'Account Executive EMEA / Sales Manager at Acme', 'Enterprise Account Executive Mexico - Regional Director at Acme',
     'Account Executive Federal - Senior Recruiter at Acme', 'Account Executive New Business - Sales Manager at Acme', 'Account Executive Mexico - Talent Acquisition Partner at Acme',
-    'Account Executive Benelux Talent Pool at Acme', 'Team Lead Account Executive at Acme',
+    'Account Executive Benelux Talent Pool at Acme', 'Team Lead Account Executive at Acme', 'Territory Account Executive - Receptionist Enterprise at Acme',
     'As an Account Executive Mexico - Chief of Staff at Acme, you will support the CEO', 'As an Account Executive Mexico - Customer Success Manager at Acme, you will',
   ]) assert.equal(jobAdQuoteRole(ex, 'Acme', roles), null, ex)
 })

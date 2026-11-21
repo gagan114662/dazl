@@ -79,21 +79,21 @@ const isPlace = (t: string) => (t.length >= 3 ? /^[A-Z]/.test(t) : /^[A-Z]{2}$/.
 // council review at 9b67ea4 / 950f702: when the title is the role only through a word #1185 added, no other title may follow a separator
 // ("Sales Account Executive - Sales Manager", "Customer Account Executive / Customer Success Manager", "... / Solutions Consultant"). A part
 // is another title when it has the job-ad heading's other-title shape, or when it ENDS in a person noun by its form (-er, -or, -ist, -ant,
-// -ative, -utive, -ian, -yst, -tect: Manager, Administrator, Receptionist, Consultant, Representative) or lead / head / VP / staff / intern - judged by shape,
+// -ative, -utive, -ian, -yst, -tect: Manager, Administrator, Receptionist, Consultant, Representative) or lead / head / VP / staff / intern / rep / associate - judged by shape,
 // not by a list of job titles. A part made only of level / segment words or a place (generic reader) is not a title ("Digital Native", "Spain").
 function otherTitleAfter(after: string): boolean {
-  const parts = after.split(/[,\-–—(/|:)&+]/).map(x => x.trim())
-  return parts.some((p, i) => {
+  return after.split(/[,\-–—(/|:)&+]/).map(x => x.trim()).some(p => {
     const w = p.split(/\s+/).filter(x => /\w/.test(x))
     if (!w.length) return false
-    const last = w[w.length - 1].toLowerCase().replace(/[^a-z]/g, '').replace(/s$/, '')
+    // the title noun, not a segment word trailing it ("Receptionist Enterprise", "Financial Sector": council review at b2703b9)
+    const core = w.filter(x => !SEGMENT.test(x)), last = (core.length ? core : w)[(core.length ? core : w).length - 1].toLowerCase().replace(/[^a-z]/g, '').replace(/s$/, '')
     // another title first, before any place reading (council review at 3f7062d: "Sales Manager, TX"): the job-ad other-title shape, a last word
     // that is a title head by that same shape ("Customer Success Manager"), chief of staff, or a sales role of its own ("/ SDR")
     if (TITLE_SUFFIX.test(p) || TITLE_SUFFIX.test(last) || /^\s*chief\s+of\s+staff\b/i.test(p) || matchedHiringRole(p, GENERIC_GTM_ROLES)) return true
-    if (w.every(x => SEGMENT.test(x) || LEVEL.test(x) || LEVEL.test(x.toLowerCase())) || isPlace(p) || SEGMENT.test(last)) return false
-    // a name written "City, ST" (the next part a region code by the generic reader) is a place, whatever its ending ("Rochester, MN")
-    if (parts[i + 1] && /^[A-Z]{2}$/.test(parts[i + 1]) && isPlace(parts[i + 1])) return false
-    return /(?:er|or|ist|ant|ative|utive|ian|yst|tect)$/.test(last) || /^(?:lead|head|vp|staff|intern|chief|rep)$/.test(last)
+    // segment words or a capitals code ("Digital Native", "FSI") or a place by the generic reader are not a title. A city name the reader does
+    // not know is judged like any other word: "Rochester, MN" is held, fail closed (council review at b2703b9: "Office Administrator, CA")
+    if (w.every(x => SEGMENT.test(x) || /^[A-Z]{2,6}$/.test(x)) || isPlace(p)) return false
+    return /(?:er|or|ist|ant|ative|utive|ian|yst|tect)$/.test(last) || /^(?:lead|head|vp|staff|intern|chief|rep|associate)$/.test(last)
   })
 }
 function afterRoleOk(after: string, widened: boolean): boolean {
