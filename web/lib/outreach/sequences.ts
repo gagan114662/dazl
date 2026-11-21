@@ -11,7 +11,7 @@ import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplac
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
-import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, domainReviewHeld, domainHoldCode, domainReviewStatus, leadEvidenceEligible, leadHeld, leadHoldCode, recipientAllowed, testFixtureSend, testRecipientApproved, unsubToken, type Deps } from './service.ts'
 import { getMasterKey } from '../secrets.ts'
 import { readKey } from '../llm/key-store.ts'
 import { providers } from '../llm/provider.ts'
@@ -184,7 +184,7 @@ export class SequenceError extends Error {
 export function createSequence(db: Database.Database, tenantId: string, messageId: string, d: Deps & { businessName?: string } = {}): string {
   const m = db.prepare("SELECT id, lead_id, to_email, subject, body, status FROM outreach_messages WHERE id = ? AND tenant_id = ?").get(messageId, tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string } | undefined
   if (!m) throw new SequenceError('not_found')
-  if (leadHeld(db,tenantId,m.lead_id)) throw new SequenceError('lead_ungraded')
+  if (leadHeld(db,tenantId,m.lead_id)) throw new SequenceError(leadHoldCode(db,tenantId,m.lead_id))
   if (m.status !== 'draft') throw new SequenceError('not_a_draft')
   const lead = db.prepare('SELECT l.company, l.name, l.signal, l.source_url FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(m.lead_id, tenantId) as { company: string; name: string; signal: string; source_url: string } | undefined
   if (!lead) throw new SequenceError('lead_missing')
@@ -429,7 +429,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
         out.skipped++; continue
       }
     }
-    if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue }
+    if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) { stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? leadHoldCode(db,tenantId,s.lead_id) : 'personal_email',now); out.skipped++; continue }
     // Evidence re-checked at execution: a withdrawn confirmation stops the sequence
     // honestly before any unsent step goes out. Already-sent mail is never recalled.
     if (contactPurposeRestricted(db,tenantId,s.lead_id,s.to_email)) { out.skipped++; continue }
@@ -493,7 +493,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       }
       if (leadHeld(db,tenantId,s.lead_id) || !recipientAllowed(db,tenantId,s.to_email)) {
         db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId,s.id,stepRow.step)
-        stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? 'lead_ungraded' : 'personal_email',now); out.skipped++; continue
+        stopSequenceForThread(db,tenantId,s.lead_id,'stopped',leadHeld(db,tenantId,s.lead_id) ? leadHoldCode(db,tenantId,s.lead_id) : 'personal_email',now); out.skipped++; continue
       }
       // Evidence re-checked again after the token await: a confirmation withdrawn during
       // the await must release the claim (back to approved, claimed_at NULL) and stop the

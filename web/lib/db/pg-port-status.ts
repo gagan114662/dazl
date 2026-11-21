@@ -42,6 +42,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/scan/csv/route.ts': 0,
   'app/api/scan/icp-from-url/route.ts': 0,
   'app/api/scan/icp/route.ts': 0,
+  'app/api/scan/estimate/route.ts': 0,
   'app/api/scan/route.ts': 0,
   'app/api/scan/status/route.ts': 0,
   'app/api/unsubscribe/route.ts': 0,

@@ -24,3 +24,15 @@ test('an ambiguous request without a saved offer stays a manual choice', () => {
   assert.deepEqual(scanOfferConflict(409, { error: 'offer_conflict', stated: null, saved: '', ambiguous: true }), { stated: null, saved: '', ambiguous: true })
   assert.equal(scanOfferConflict(409, { error: 'offer_conflict', stated: null, saved: '' }), null)
 })
+
+// Qodo on #1441 (folded #1440, finding 1): an offer the routes refuse (cut inside a parenthesis, too short) never enables
+// "Run scan with this profile", and the estimate's 400 shows its own words, never a dead-end "Try again".
+test('the reviewed Run button needs a complete offer, and a refused offer gets its own message', async () => {
+  const { offerReady, estimateFailureCopy } = await import('../app/app/leads/offer-preflight.ts')
+  assert.equal(offerReady('Leadly (the AI'), false)
+  assert.equal(offerReady('ab'), false)
+  assert.equal(offerReady('Leadly (leadly.example), AI lead finding'), true)
+  assert.equal(estimateFailureCopy(400, { error: 'Say in a few words what you sell for this play' }), 'Say in a few words what you sell for this play')
+  assert.match(estimateFailureCopy(400, { detail: 'bad budget' }), /spend limit was not accepted: bad budget/)
+  assert.match(estimateFailureCopy(500, {}), /Try again/)
+})

@@ -14,6 +14,9 @@ export interface Icp {
   where: string[]          // geographies, empty means anywhere
   signals: string[]        // public events that show buying intent right now
   exclude: string[]        // things to skip
+  // Reviewed exclusions carried from an earlier play into a different-offer play (lib/scan/carry-exclusions.ts). Kept
+  // whole across attempts and enforced by code in classifyLeads.
+  carry_exclude?: string[]
   window_days?: number     // the user's recency window ("past 90 days"), from the request text (lib/scan/window.ts)
   // Where the search runs. TinyFish defaults every search to US/English when neither is sent, so a Lisbon or Pune
   // request was searched as if it were American. ISO 3166-1 alpha-2 (PT) and ISO 639-1 (pt); absent means unknown.
@@ -241,11 +244,13 @@ export function normalizeIcp(raw: unknown): Icp | null {
   const language = typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()) ? r.language.trim().toLowerCase() : null
   const win = typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365 ? r.window_days : null
   const research = normalizeResearch(r.research)
+  // carried reviewed exclusions (lib/scan/carry-exclusions.ts): kept whole (40 x 200), never cut to the 6-item exclude cap
+  const carry = Array.isArray(r.carry_exclude) ? [...new Set(r.carry_exclude.filter((x): x is string => typeof x === 'string').map(x => x.replace(/\s+/g, ' ').trim().slice(0, 200)).filter(Boolean))].slice(0, 40) : []
   // A lookalike block that is present but malformed refuses the whole profile: a scan must never run without the
   // supplied-account exclusions its profile claims to carry.
   const lookalike = normalizeLookalike(r.lookalike === null ? undefined : r.lookalike)
   if (lookalike === null) return null
-  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}) }
+  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}), ...(carry.length ? { carry_exclude: carry } : {}) }
 }
 
 export function icpPrompt(query: string, seller?: string): string {

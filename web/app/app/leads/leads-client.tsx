@@ -46,7 +46,7 @@ import VerificationFixture from './verification-fixture'
 import { eventDateCopy } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import EstimateConfirm from './estimate-confirm'
-import { directOfferProfile, scanOfferConflict } from './offer-preflight'
+import { directOfferRun, scanOfferConflict, offerReady, estimateFailureCopy } from './offer-preflight'
 import { completeOffer, MAX_OFFER } from '@/lib/scan/play-offer-text'
 import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
@@ -572,7 +572,7 @@ export default function LeadsClient() {
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
   const [runExtras, setRunExtras] = useState<string[] | null>(null)
   // The price estimate shown before a run starts; the run begins only from its Confirm button (or is blocked with what to change).
-  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; query: string; withIcp: Icp | null; offer?: string; reviewed?: boolean; websiteApproval?:string } | null>(null)
+  const [pendingEst, setPendingEst] = useState<{ est: RunEstimate; query: string; withIcp: Icp | null; offer?: string; reviewed?: boolean; websiteApproval?:string; carryExclude?: string[] } | null>(null)
   const latestOfferQuery = useRef(query)
   latestOfferQuery.current = query
   function receiveOfferConflict(status: number, payload: unknown, requested: string, reviewed?: boolean) {
@@ -584,7 +584,7 @@ export default function LeadsClient() {
     }
     return true
   }
-  async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean) {
+  async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean, carryExclude?: string[]) {
     if (websiteReadInFlight.current || !canQuoteWebsiteDraft(websiteDraft.current, latestOfferQuery.current, reviewed === true)) {
       reviewPanel.current?.focus()
       return
@@ -595,34 +595,35 @@ export default function LeadsClient() {
     const websiteSource = websiteDraft.current?.receipt
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const body = JSON.stringify({ query: requested, ...(websiteSource ? { mode: 'website_profile_review_v1', website_draft_receipt: websiteSource } : {}), ...(offer ? { offer } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const body = JSON.stringify({ query: requested, ...(websiteSource ? { mode: 'website_profile_review_v1', website_draft_receipt: websiteSource } : {}), ...(offer ? { offer } : {}), ...(!withIcp && carryExclude?.length ? { carry_exclude: carryExclude } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
       if (latestOfferQuery.current !== requested || receiveOfferConflict(er.status, ej, requested, reviewed)) return
       // No estimate, no run: a paid scan is never started without showing what it will use.
       if (er.status === 400 && ej.error === 'profile_lossy') { setError(lossyProfileCopy(ej)); return }   // keep the draft open so it can be fixed
-      if (!er.ok || !ej.estimate) { setError(ej.detail ? `The spend limit was not accepted: ${String(ej.detail).slice(0, 200)}` : 'Could not get a price estimate, so nothing was started. Try again.'); return }
+      if (!er.ok || !ej.estimate) { setError(estimateFailureCopy(er.status, ej)); return }
       const websiteApproval = typeof ej.website_approval_receipt === 'string' ? ej.website_approval_receipt : undefined
       if (websiteSource && !websiteApproval) { setError('The website review could not be verified. No search started.'); return }
-      setPendingEst({ est: ej.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, websiteApproval })
+      setPendingEst({ est: ej.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, websiteApproval, carryExclude })
     } catch {
       setError('Could not reach the server. Check your connection and try again.')
     } finally {
       setStarting(false)
     }
   }
-  async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean, websiteApproval?:string) {
+  async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean, websiteApproval?:string, carryExclude?: string[]) {
     if (requested !== latestOfferQuery.current || websiteReadInFlight.current ||
       !canQuoteWebsiteDraft(websiteDraft.current, requested, reviewed === true) ||
       (websiteDraft.current && (!websiteApproval || draft !== withIcp || offerText !== offer))) { setPendingEst(null); return }
     setError(''); setTrialRefused(null); setLinkNote(null); setStarting(true)
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, ...(websiteApproval ? { mode: 'website_profile_review_v1', website_approval_receipt: websiteApproval } : {}), research_decisions: asResearchBlock(withIcp?.research)?.decisions, query: requested, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
+      const r = await fetch('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ estimate_ack: ack, ...(websiteApproval ? { mode: 'website_profile_review_v1', website_approval_receipt: websiteApproval } : {}), research_decisions: asResearchBlock(withIcp?.research)?.decisions, query: requested, ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(offer && offer.trim().length >= 3 ? { offer: offer.trim() } : {}), ...(!withIcp && carryExclude?.length ? { carry_exclude: carryExclude } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) }) })
       const j = await r.json().catch(() => ({}))
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
-      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, websiteApproval }); return }
+      if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, websiteApproval, carryExclude }); return }
       if (receiveOfferConflict(r.status, j, requested, reviewed)) return
+      if (r.status === 400 && typeof j.error === 'string' && j.error.includes(' ')) { setPendingEst(null); setError(j.error); return }   // a refusal Confirm cannot change
       if (j.error === 'website_review_stale' || j.error === 'website_review_unavailable') {
         setPendingEst(null); setError('The website review could not be verified. Read the site again before getting a new estimate. No search started.'); return
       }
@@ -824,8 +825,9 @@ export default function LeadsClient() {
     setOfferConflict(null)
     // A different offer starts a different targeting profile for this play.
     // Neither earlier reviewed plays nor Settings are changed.
-    const carry = directOfferProfile(offer, saved, startIcp, freshTarget)
-    void run(carry, offer, carry ? startReviewed : undefined)
+    // Reviewed exclusions (do-not-contact, competitors, disqualifiers) still go with the run either way.
+    const { icp: carry, carryExclude } = directOfferRun(offer, saved, startIcp, freshTarget)
+    void run(carry, offer, carry ? startReviewed : undefined, carryExclude)
   }
   const businessIcp = startIcp
   const directChoice = offerConflict?.direct && offerConflict.requested === query ? offerConflict : null
@@ -866,7 +868,7 @@ export default function LeadsClient() {
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval)} onCancel={() => setPendingEst(null)} />}
+      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval, pendingEst.carryExclude)} onCancel={() => setPendingEst(null)} />}
       <form onSubmit={e => { e.preventDefault(); if (openWebsiteDraft) reviewPanel.current?.focus(); else void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
@@ -1026,7 +1028,7 @@ export default function LeadsClient() {
               <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
               {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
             </div>
-            <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
@@ -1051,7 +1053,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={name => { const offer = completeOffer(name); if (!offer) return; setOfferText(offer); if (websiteDraft.current && reviewChoice) setOfferConflict(null) }} />}
-          <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || offerText.trim().length < 3} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
