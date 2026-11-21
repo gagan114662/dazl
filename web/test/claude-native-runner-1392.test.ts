@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from '../lib/llm/claude-web-search.ts'
+import { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_COMPANY_FIRST_MAX_CALLS, CLAUDE_COMPANY_FIRST_MAX_USES, claudeSearchEstimate } from '../lib/llm/claude-web-search.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
@@ -163,25 +163,39 @@ test('ordinary claimed query uses the company-first source for exactly the confi
   assert.equal(open.end && (open.end as { error: string }).error, 'no_candidates', 'a source page alone did not become a lead')
 })
 
-test('company first reserves observed high-token shape, carries reviewed seller, and runs at most two distinct accounted angles',async()=>{
+test('company first reserves observed high-token shape, carries reviewed seller, and runs up to three distinct accounted angles while candidates are short',async()=>{
+  // #case1 (prod run 8d422adf): two searches on one angle found one aggregator page. With no candidate yet and room under
+  // the scan cap, company-first keeps going through every distinct angle, each with the wider four-search tool.
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
-    inputTokens:101937,secondWave:'valid'})
+    inputTokens:101937,secondWave:'valid',cap:'10'})
   const paid=r.messages.filter(x=>Array.isArray(x.body.tools))
-  assert.equal(paid.length,2)
+  assert.equal(paid.length,CLAUDE_COMPANY_FIRST_MAX_CALLS)
+  assert.equal(paid.length,3)
+  for(const x of paid)assert.deepEqual(x.body.tools,[{type:'web_search_20250305',name:'web_search',max_uses:CLAUDE_COMPANY_FIRST_MAX_USES}])
+  assert.equal(CLAUDE_COMPANY_FIRST_MAX_USES,4)
   const prompts=paid.map(x=>JSON.stringify(x.body.messages))
   assert.match(prompts[0],/could actually use the reviewed seller offer/)
   assert.match(prompts[1],/work backwards to the buyer category/)
+  assert.match(prompts[2],/first-party pages only/)
+  assert.match(prompts[2],/applicant tracking system job permalinks/)
   for(const prompt of prompts){
     assert.match(prompt,/Independent commercial document services/)
     assert.match(prompt,/Not a competitor/)
     assert.match(prompt,/11-50/)
   }
-  assert.equal(r.nativeReport.searches,4)
-  assert.equal(r.nativeReport.reported_input_tokens,203874)
-  assert.equal(r.nativeReport.assumed_result_tokens,200000)
-  assert.equal(r.nativeReport.estimated_usd,2*claudeSearchEstimate(count,'company_first').estimatedUsd)
+  assert.equal(r.nativeReport.searches,6)
+  assert.equal(r.nativeReport.reported_input_tokens,3*101937)
+  assert.equal(r.nativeReport.assumed_result_tokens,3*4*50000)
+  assert.equal(r.nativeReport.estimated_usd,3*claudeSearchEstimate(count,'company_first').estimatedUsd)
   assert.equal(r.nativeReport.estimate_exceeded,false)
-  assert.deepEqual(r.publisherRequests,[url],'no duplicate source read across two angles')
+  assert.deepEqual(r.publisherRequests,[url],'no duplicate source read across angles')
+})
+test('company first at the default CAD 5 scan cap never settles more native search spend than the cap allows',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    inputTokens:101937,secondWave:'valid'})
+  const sends=r.sequence.filter(x=>x==='native-send').length
+  assert.ok(sends>=2&&sends<=CLAUDE_COMPANY_FIRST_MAX_CALLS,String(sends))
+  assert.ok(sends*claudeSearchEstimate(count,'company_first').estimatedUsd<=5/1.5+1e-9,'every dispatched call was reserved inside the cap')
 })
 test('company first does not retry an uncertain second batch and retains its reservation',async()=>{
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
@@ -268,7 +282,7 @@ test('pinned V3 uses one counted, budgeted native request with workspace key and
   assert.deepEqual(native.map(m => m.url), [api + '/count_tokens', api])
   assert.deepEqual(native.map(m => m.key), ['sk-ant-workspace-fixture', 'sk-ant-workspace-fixture'])
   assert.equal('tools' in native[0].body, false)
-  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
+  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: CLAUDE_SEARCH_MAX_USES }] })
   assert.deepEqual(x.sequence.slice(0, 3), ['native-count', 'native-send', 'publisher-page'])
   assert.deepEqual(x.denied, [])
 })

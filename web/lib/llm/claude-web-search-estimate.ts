@@ -4,7 +4,15 @@ export const CLAUDE_SEARCH_MAX_USES = 2
 export const CLAUDE_SEARCH_MAX_OUTPUT = 3_000
 export const CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH = 25_000
 export const CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH = 50_000
-export const CLAUDE_COMPANY_FIRST_MAX_CALLS = 2
+export const CLAUDE_COMPANY_FIRST_MAX_CALLS = 3
+// Company-first discovery needs more than two searches per call: with two, a no-place request spent its searches on one
+// aggregator page and the tool returned max_uses_exceeded for 23 of 25 result blocks (prod run 8d422adf). Four searches per
+// call, three calls: worst-case soft estimate ~$2.15, which with the other model rows stays under the CAD 5 scan cap.
+export const CLAUDE_COMPANY_FIRST_MAX_USES = 4
+export const COMPANY_FIRST_MAX_PUBLISHER_READS = 25
+export function claudeSearchMaxUses(policy?: 'company_first'): number {
+  return policy === 'company_first' ? CLAUDE_COMPANY_FIRST_MAX_USES : CLAUDE_SEARCH_MAX_USES
+}
 const INITIAL_TOKEN_FACTOR = 1.2 // Anthropic calls count_tokens an estimate; the extra margin is local, not a hard bound.
 const ASSUMED_TOOL_OVERHEAD = 1_000 // count_tokens rejects server tools; local allowance for the uncounted tool prompt.
 export const USD_PER_SEARCH = 0.01
@@ -68,7 +76,8 @@ export interface ClaudeSearchEstimate {
 
 export function claudeSearchEstimate(countedInputTokens: number, policy?: 'company_first'): ClaudeSearchEstimate {
   if (!count(countedInputTokens) || countedInputTokens === 0 || countedInputTokens > 200_000) throw new ClaudeSearchError('count_failed')
-  const assumedSearchInputTokens = CLAUDE_SEARCH_MAX_USES * (policy === 'company_first' ? CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH : CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH)
-  const estimatedUsd = roundedUp(((Math.ceil(countedInputTokens * INITIAL_TOKEN_FACTOR) + ASSUMED_TOOL_OVERHEAD + assumedSearchInputTokens) * 3 + CLAUDE_SEARCH_MAX_OUTPUT * 15) / MICROS + CLAUDE_SEARCH_MAX_USES * USD_PER_SEARCH)
-  return { model: CLAUDE_SEARCH_MODEL, countedInputTokens, assumedSearchInputTokens, assumedToolOverheadTokens: ASSUMED_TOOL_OVERHEAD, maxOutputTokens: CLAUDE_SEARCH_MAX_OUTPUT, maxSearches: CLAUDE_SEARCH_MAX_USES, estimatedUsd, hard: false }
+  const maxUses = claudeSearchMaxUses(policy)
+  const assumedSearchInputTokens = maxUses * (policy === 'company_first' ? CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH : CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH)
+  const estimatedUsd = roundedUp(((Math.ceil(countedInputTokens * INITIAL_TOKEN_FACTOR) + ASSUMED_TOOL_OVERHEAD + assumedSearchInputTokens) * 3 + CLAUDE_SEARCH_MAX_OUTPUT * 15) / MICROS + maxUses * USD_PER_SEARCH)
+  return { model: CLAUDE_SEARCH_MODEL, countedInputTokens, assumedSearchInputTokens, assumedToolOverheadTokens: ASSUMED_TOOL_OVERHEAD, maxOutputTokens: CLAUDE_SEARCH_MAX_OUTPUT, maxSearches: maxUses, estimatedUsd, hard: false }
 }

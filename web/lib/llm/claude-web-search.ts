@@ -1,6 +1,6 @@
 import { LLM_TIMEOUT_MS } from './provider.ts'
-import { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, USD_PER_SEARCH, MICROS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchUsageDiagnostic, type ClaudeUsageSnapshot, type ClaudeUsageCounter } from './claude-web-search-estimate.ts'
-export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_MAX_CALLS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
+import { CLAUDE_SEARCH_MODEL, claudeSearchMaxUses, CLAUDE_SEARCH_MAX_OUTPUT, USD_PER_SEARCH, MICROS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchUsageDiagnostic, type ClaudeUsageSnapshot, type ClaudeUsageCounter } from './claude-web-search-estimate.ts'
+export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_MAX_CALLS, CLAUDE_COMPANY_FIRST_MAX_USES, COMPANY_FIRST_MAX_PUBLISHER_READS, claudeSearchMaxUses, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
 
 const CLAUDE_SEARCH_TIMEOUT_MS = Math.min(150_000, LLM_TIMEOUT_MS)
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
@@ -159,7 +159,7 @@ export async function runClaudeWebSearch(
   if (!apiKey.trim() || !prompt.trim() || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new ClaudeSearchError('invalid_input')
   const headers = { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
   const countPayload = { model: CLAUDE_SEARCH_MODEL, messages: [{ role: 'user', content: prompt }] }
-  const tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: CLAUDE_SEARCH_MAX_USES }]
+  const tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: claudeSearchMaxUses(policy) }]
   let input: unknown
   try {
     const r = await fetchImpl(MESSAGE + '/count_tokens', { method: 'POST', headers, body: JSON.stringify(countPayload), signal: AbortSignal.timeout(20_000), redirect: 'error' })
@@ -223,7 +223,7 @@ export async function runClaudeWebSearch(
   const { usage } = checked
   // Known actual is always settled, even if it exceeded the soft estimate or violated the claimed output/tool limits.
   await hold.settle(usage.usd, usage)
-  if (usage.searches > CLAUDE_SEARCH_MAX_USES || usage.outputTokens > CLAUDE_SEARCH_MAX_OUTPUT)
+  if (usage.searches > claudeSearchMaxUses(policy) || usage.outputTokens > CLAUDE_SEARCH_MAX_OUTPUT)
     throw new ClaudeSearchError('provider_limit_violation')
   const root = obj(json), content = arr(root.content)
   const rawStop = root.stop_reason
