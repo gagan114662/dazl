@@ -4,6 +4,7 @@
 // marker row becomes 'r:<id>' (the record), and a linked call row is marked 'kept' with the operator's reason.
 // An unattributed marker (no call found) or one whose job is still active is refused: it needs a person to find out.
 import type Database from 'better-sqlite3'
+import { appendFileSync } from 'node:fs'
 
 export interface MarkerEvidence {
   period: string; reserved_usd: number; age_s: number; failed_settle: boolean
@@ -30,11 +31,12 @@ export function markerEvidence(db: Database.Database, tenant: string, now: numbe
   })
 }
 
-export function resolveMarker(db: Database.Database, tenant: string, period: string, reason: string, now: number): MarkerEvidence {
+// Every resolution is appended to an operator audit log (JSON lines, outside the tenant tables, so no new tenant data is
+// created). The line is written inside the transaction: if it cannot be written, nothing is resolved.
+export function resolveMarker(db: Database.Database, tenant: string, period: string, reason: string, now: number, logPath: string): MarkerEvidence {
   if (!/^p:[0-9a-z]{10}$/.test(period)) throw new Error('not a pending marker period')
   const clean = reason.replace(/\s+/g, ' ').trim()
   if (clean.length < 8) throw new Error('a recorded reason (8+ characters) is required')
-  if (!hasTable(db, 'spend_marker_resolutions')) throw new Error('run the app migrations first (spend_marker_resolutions is missing)')
   return db.transaction(() => {
     if (hasTable(db, 'tenant_tombstones') && db.prepare('SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = ?').get(tenant)) throw new Error('refused: this workspace is under deletion')
     const ev = markerEvidence(db, tenant, now).find(e => e.period === period)
@@ -42,8 +44,7 @@ export function resolveMarker(db: Database.Database, tenant: string, period: str
     if (!ev.resolvable) throw new Error(`refused: ${ev.why}`)
     const moved = db.prepare("UPDATE tenant_spend_pools SET period = 'r:' || substr(period, 3), updated_at = ? WHERE tenant_id = ? AND period = ?").run(now, tenant, period)
     if (moved.changes !== 1) throw new Error('marker changed during resolution')
-    db.prepare('INSERT INTO spend_marker_resolutions (tenant_id, period, reserved_usd, call_id, scan_job_id, reason, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(tenant, period, ev.reserved_usd, ev.call?.id ?? null, ev.call?.scan_job_id ?? null, clean.slice(0, 500), now)
+    appendFileSync(logPath, JSON.stringify({ tenant_id: tenant, period, reserved_usd: ev.reserved_usd, call_id: ev.call?.id ?? null, scan_job_id: ev.call?.scan_job_id ?? null, reason: clean.slice(0, 500), resolved_at: now }) + '\n', { mode: 0o600 })
     if (ev.call && ev.call.status === 'reserved') db.prepare("UPDATE scan_spend_calls SET status = 'kept', reason = ?, settled_at = ? WHERE id = ? AND user_id = ? AND status = 'reserved'").run(`operator: ${clean}`.slice(0, 80), now, ev.call.id, tenant)
     return ev
   })()

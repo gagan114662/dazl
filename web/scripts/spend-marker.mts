@@ -6,7 +6,7 @@
 // Read-first: without --resolve it only prints every pending marker with its age, the call it belongs to and that
 // call's scan job. --resolve refuses unless the call is found and its job is finished; it keeps the full worst-case
 // dollars counted (marker -> 'r:<id>', call -> 'kept' with your reason). Without --execute it prints what it would do.
-// Take a backup of the database first; then run the deploy health check.
+// Each resolution is appended to <db file>.marker-resolutions.log. Take a backup of the database first; then run the deploy health check.
 import Database from 'better-sqlite3'
 import { markerEvidence, resolveMarker } from '../lib/ops/spend-marker.ts'
 
@@ -21,5 +21,5 @@ try {
     if (period) console.log(`dry run: would resolve ${period} only if it is marked resolvable above; add --execute`)
     process.exit(0)
   }
-  console.log(JSON.stringify({ resolved: resolveMarker(db, tenant, period, reason, now) }, null, 2))
+  console.log(JSON.stringify({ resolved: resolveMarker(db, tenant, period, reason, now, `${file}.marker-resolutions.log`) }, null, 2))
 } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1) } finally { db.close() }
