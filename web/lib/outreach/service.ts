@@ -286,7 +286,8 @@ export function domainReviewStatus(db: Database.Database, tenantId: string, lead
     // lead's contact is not treated as proof of a cited-page origin: when the crawl also recorded the address, the review applies.
     const crawled = rows.some(r => r.connector === 'sitecrawl' && r.kind === 'email' && norm(r.value) === norm(recipient))
     if (!crawled) return 'ok'
-    return domainReviewFor({ id: lead.id, contact: null }, rows).state === 'required' ? 'required' : 'ok'
+    // Reviewed by the crawl record of THIS recipient (sameAddressCrawlRecord), the same record createDraft and the confirm action bind (#384).
+    return domainReviewFor({ id: lead.id, contact: recipient }, rows).state === 'required' ? 'required' : 'ok'
   }
   return domainReviewFor({ id: lead.id, contact: lead.contact }, rows).state === 'required' ? 'required' : 'ok'
 }
