@@ -4,11 +4,17 @@
 // still on the page after STALL_MS, it reloads the tab once; a second stall within RELOAD_WINDOW_MS in the same tab
 // shows a visible notice with a Reload button instead, so it can never loop. A reload is a GET of the current page.
 // Self-contained (serialized with toString()): no imports, no outer references.
-/* eslint-disable @typescript-eslint/no-explicit-any */
 export const STALL_MS = 12000
 export const RELOAD_WINDOW_MS = 120000
 export const OPENING_ID = 'workspace-opening'
-export function installStallWatch(w: any, id: string, stallMs: number, windowMs: number): void {
+type El = { type?: string; textContent: string | null; setAttribute(k: string, v: string): void; addEventListener(n: string, f: () => void): void; appendChild(c: unknown): unknown }
+export type StallWindow = {
+  setTimeout(f: () => void, ms: number): unknown
+  sessionStorage: { getItem(k: string): string | null; setItem(k: string, v: string): void }
+  location: { reload(): void }
+  document: { getElementById(id: string): El | null; createElement(tag: string): El }
+}
+export function installStallWatch(w: StallWindow, id: string, stallMs: number, windowMs: number): void {
   const key = 'dazl-stall-reload'
   w.setTimeout(() => {
     const d = w.document
