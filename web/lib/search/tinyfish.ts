@@ -500,14 +500,48 @@ export function pageUseSplit(items: { url: string }[], pages: { url: string; tex
 // hit at position 39 of 40, cap 30). Order: rank, then pages we actually fetched before snippet-only results, then first
 // pages of distinct hosts before second pages (breadth), then search order. Undated results are ranked by the caller; nothing
 // here turns a discovery timestamp into an event date.
-export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[], rank?: (url: string) => number, cap = 30): Evidence[] {
+// A long page's signal is rarely in its first lines: an ATS board or a company's own news page opens with navigation and
+// filters, and the requested role or announcement sits thousands of characters in. With request terms, a long page keeps
+// its head plus the windows that name those terms (request-derived, nothing hardcoded), in page order, up to limit.
+const FOCUS_STOP = new Set(['find','that','with','their','them','this','from','have','into','show','shows','last','days','your','what','which','doing','still','companies','employees','dated','signal','buying','buyer','other','about','where','when','more','than','only','also','just','like','over'])
+// Request words worth a window: longer words that are not request scaffolding, plus written acronyms (SDR, BDR, VP, CEO).
+export function focusTerms(request: string): string[] {
+  const out: string[] = []
+  for (const raw of request.match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? []) {
+    const w = raw.toLowerCase()
+    if (/^\p{N}/u.test(w) || FOCUS_STOP.has(w)) continue
+    if (w.length >= 4 || (raw.length >= 2 && raw === raw.toUpperCase() && /\p{Lu}/u.test(raw))) out.push(w)
+  }
+  return [...new Set(out)].slice(0, 40)
+}
+export function focusText(text: string, terms: string[], limit: number): string {
+  if (text.length <= limit || !terms.length) return text.slice(0, limit)
+  const head = Math.min(600, Math.floor(limit / 4)), radius = 220
+  const lower = text.toLowerCase(), spans: [number, number][] = [[0, head]]
+  for (const term of terms) {
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'gu')
+    for (const m of lower.matchAll(re)) spans.push([Math.max(0, m.index! - radius), Math.min(text.length, m.index! + term.length + radius)])
+  }
+  spans.sort((a, b) => a[0] - b[0])
+  const merged: [number, number][] = []
+  for (const s of spans) { const last = merged[merged.length - 1]; if (last && s[0] <= last[1]) last[1] = Math.max(last[1], s[1]); else merged.push([...s]) }
+  let out = ''
+  for (const [a, b] of merged) {
+    const piece = text.slice(a, b).trim()
+    if (out.length + piece.length + 3 > limit) { const room = limit - out.length - 3; if (room > 40) out += (out ? ' … ' : '') + piece.slice(0, room); break }
+    out += (out ? ' … ' : '') + piece
+  }
+  return out
+}
+export function toEvidence(hits: SearchHit[], pages: { url: string; text: string; title: string }[], rank?: (url: string) => number, cap = 30, focus?: { terms: string[]; limit: number }): Evidence[] {
   const byUrl = new Map(pages.map(p => [p.url.replace(/\/$/, ''), p]))
   const seen = new Set<string>()
   const items: { e: Evidence; page: boolean; idx: number; host: string }[] = []
   for (const h of hits) {
     const k = h.url.replace(/\/$/, ''); if (seen.has(k)) continue; seen.add(k)
     const page = byUrl.get(k)
-    const text = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim().slice(0, 1200)
+    const flat = (page ? markdownToText(page.text) : h.snippet).replace(/\s+/g, ' ').trim()
+    const text = page && focus ? focusText(flat, focus.terms, focus.limit) : flat.slice(0, 1200)
     let host = ''; try { host = new URL(h.url).hostname.toLowerCase() } catch { host = h.url }
     if (text.length >= 20) items.push({ e: { source: h.via === 'gdelt' ? 'news:gdelt' : 'tinyfish', url: h.url, title: page?.title || h.title, quote: text, date: h.date, ...(h.observed ? { updated: h.observed } : {}) }, page: !!page, idx: items.length, host })
   }

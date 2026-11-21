@@ -49,7 +49,7 @@ import { reconcileRunReport, type CandidateAudit, type JudgeReplyClass, type Jud
 import { evidenceCopyRoom, storeEvidenceCopy } from './evidence-copies.ts'
 import { isJobPage, needsEventBeyondHiring } from '../search/page-class.ts'
 import { extractionNote } from './extraction-note.ts'
-import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
+import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, focusTerms, withGeography } from '../search/tinyfish.ts'
 import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
 import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
@@ -1756,7 +1756,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           }
         }
         const hits = pages.map(p => ({ url: p.url, title: p.title, snippet: '', date: null }))
-        const items = toEvidence(hits, pages).map(e => ({ ...e, source: 'claude-web-search' }))
+        // Company-first reads first-party pages whose signal sits deep in the page; give extraction the request-term windows.
+        const items = toEvidence(hits, pages, undefined, 30, companyFirst ? { terms: focusTerms(job.query ?? ''), limit: 4000 } : undefined).map(e => ({ ...e, source: 'claude-web-search' }))
         totalItems+=items.length; totalPublisherReturned+=publisherReturned; totalPublisherUsable+=pages.length; totalLookahead+=lookaheadAttempted
         reportSearch(est, usage, undefined, { ...found.evidenceDiagnostic, publisher_attempted: totalPublisherReads,
           ...(totalLookahead ? { publisher_lookahead_attempted: totalLookahead } : {}), publisher_returned: totalPublisherReturned, publisher_failures: publisherFailures, publisher_usable: totalPublisherUsable, evidence_items: totalItems })

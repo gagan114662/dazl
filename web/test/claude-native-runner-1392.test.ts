@@ -28,7 +28,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable' } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -134,7 +134,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           { status: 'settled', actual_usd: 0.037 }, 'native billing is durable before publisher evidence is read')
         if (failedPublisher || diverseFixture?.blocked.includes(page)) return { fail: 'blocked' }
         if (diverseFixture?.missing?.includes(page)) return { fail: 'not_found' }
-        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: thinPublisher ? 'too short' : extractionFixture ? 'Regional Document Services opened its new London office to serve commercial roofers. '.repeat(5) : 'Published evidence about a commercial roofing company. '.repeat(8) }
+        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: deepSignal ? 'Products Pricing Customers Careers Login Start free. '.repeat(60) + 'Regional Document Services raised new funding to grow its commercial roofers team in London. ' + 'Footer links. '.repeat(20) : thinPublisher ? 'too short' : extractionFixture ? 'Regional Document Services opened its new London office to serve commercial roofers. '.repeat(5) : 'Published evidence about a commercial roofing company. '.repeat(8) }
       },
     })
     const end = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(job.id)
@@ -218,6 +218,14 @@ test('company first: an angle that only hit the search-use limit and ended norma
 test('legacy QA native search still stops after a use-limit-only result',async()=>{
   const r=await simulate({useLimitOnly:true})
   assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
+})
+test('company first gives extraction the request-term passage of a long first-party page, not only its navigation head',async()=>{
+  // Prod run 878b07b5: 10 usable first-party pages, every extraction returned []: only the first 1200 characters (navigation)
+  // reached the model. The signal sentence sits ~3,000 characters into this page.
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',deepSignal:true})
+  const extraction=r.messages.filter(x=>!Array.isArray(x.body.tools)&&JSON.stringify(x.body.messages??'').includes('This is company-first discovery'))
+  assert.ok(extraction.length>0,'the extraction call ran')
+  assert.ok(extraction.every(x=>JSON.stringify(x.body.messages).includes('Regional Document Services raised new funding to grow its commercial roofers team')))
 })
 test('company first does not retry an uncertain second batch and retains its reservation',async()=>{
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
