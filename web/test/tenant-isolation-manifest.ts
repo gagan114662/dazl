@@ -110,6 +110,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'monitors/[id]', method: 'PATCH', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'monitors/[id]', method: 'DELETE', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },
   { path: 'monitors', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
+  { path: 'plays', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/plays-one-source-1471-runtime.mts' }, role: 'read' },
   { path: 'plays/[kind]/[id]/runs', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'read' },
   { path: 'plays/[kind]/[id]/new', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'read' },
   { path: 'plays/[kind]/[id]/run', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-runtime.mts' }, role: 'operate' },

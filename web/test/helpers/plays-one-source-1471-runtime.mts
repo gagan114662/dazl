@@ -100,7 +100,7 @@ async function scenario(db: Db) {
   assert.deepEqual(own.map(id => v.body.plays.filter(p => p.runs.includes(id)).length), own.map(() => 1))
   assert.ok(v.card && v.body.plays.some(p => p.runs.includes(v.card!.id)), "Home's play card is one of the listed plays")
   const text = JSON.stringify(v.body)
-  assert.ok(!text.includes('SECRET-b') && !text.includes('b'.repeat(24)), "another workspace's plays never show")
+  assert.ok(!text.includes('SECRET-b') && !text.includes('b'.repeat(24)), 'GET /api/plays: another workspace\'s plays never show')
 
   // B sees only its own: its one-off search and its watch, the same on both pages
   const vb = await views(B)

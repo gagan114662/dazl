@@ -1,4 +1,5 @@
 import { scanOutcome } from './scan/scan-outcome.ts'
+import type { ListedPlay } from './saved-plays.ts'
 import { coreSources, socialSources, analysisPrerequisite, enrichmentLabels, type Advanced, type ServerSources } from './scan/source-availability.ts'
 
 // Home readiness checklist and recent plays. Pure and client-safe: it only reads the existing status endpoints'
@@ -183,6 +184,23 @@ export function recentPlays(jobs: JobRow[], limit = 5, campaigns?: ReadinessInpu
     .sort((a, b) => b.created_at - a.created_at)
     .slice(0, limit)
     .map(j => ({ id: j.id, query: j.query!, outcome: outcomeOf(j, byId.get(j.id)) }))
+}
+
+// #1471: Home's "Your plays" is the workspace's play list from GET /api/plays (lib/workspace-plays.ts), the same list the
+// Plays page shows, one row per play in the same order (a repeating play's runs are one play, not one row each). Each
+// row says what its newest search produced (the job rows Home already reads, GET /api/scan/jobs) and opens its campaign
+// page; a repeating play whose newest run is not in that read says so and opens Plays.
+export interface HomePlay extends Play { key: string; kind: ListedPlay['kind']; campaignHref: string; outcomeHref: string }
+export function homePlays(plays: ListedPlay[], jobs: JobRow[] | null, campaigns?: ReadinessInput['campaigns']): HomePlay[] {
+  const byJob = new Map((jobs ?? []).map(j => [j.id, j]))
+  const byCampaign = new Map((campaigns ?? []).map(c => [c.id, c]))
+  return plays.map(p => {
+    const id = p.runs[0] ?? p.last_job_id
+    const job = id ? byJob.get(id) : undefined
+    const base = { key: p.key, kind: p.kind, query: p.query }
+    if (job) return { ...base, id: job.id, outcome: outcomeOf(job, byCampaign.get(job.id)), campaignHref: `/app/campaigns/${job.id}`, outcomeHref: `/app/leads?job_id=${job.id}` }
+    return { ...base, id: p.id, outcome: p.kind === 'once' ? 'counts unavailable' : p.last_run_at ? 'repeating play: see its runs in Plays' : 'repeating play: not run yet', campaignHref: id ? `/app/campaigns/${id}` : '/app/plays', outcomeHref: '/app/plays' }
+  })
 }
 
 function outcomeOf(j: JobRow, c?: CampaignSummary): string {
