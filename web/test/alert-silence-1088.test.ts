@@ -75,3 +75,18 @@ test('#1088 control: a delivered alert and an unset destination stay quiet (no e
     assert.deepEqual(parsed(lines).filter(x => x.type === 'alert_destination'), [])
   })
 })
+
+test('#1088: a dead destination is said at most once per throttled send, so an error loop cannot flood the journal (council review at 717214c)', async () => {
+  const dead = (async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch
+  const distinct = await stderrLines(async () => { const h = makeAlertHook({ url: 'https://hooks.example.test/x', fetchImpl: dead, maxPerWindow: 5 }); for (let i = 0; i < 100; i++) h(rec(`/api/loop-${i}`)); await tick() })
+  assert.equal(parsed(distinct).filter(x => x.type === 'alert_delivery').length, 5)
+  const same = await stderrLines(async () => { const h = makeAlertHook({ url: 'https://hooks.example.test/x', fetchImpl: dead }); for (let i = 0; i < 100; i++) h(rec('/api/same')); await tick() })
+  assert.equal(parsed(same).filter(x => x.type === 'alert_delivery').length, 1)
+})
+
+test('#1088 control: a valid alert URL and DSN read from the environment are not reported as unusable', async () => {
+  await withEnv({ OPS_ALERT_WEBHOOK_URL: 'https://hooks.example.test/x', SENTRY_DSN: 'https://abc123@o1.ingest.sentry.example.test/42' }, async () => {
+    const lines = await stderrLines(async () => { captureError(new Error('z'), { source: 'route', where: '/api/h' }) })
+    assert.deepEqual(parsed(lines).filter(x => x.type === 'alert_destination'), [])
+  })
+})
