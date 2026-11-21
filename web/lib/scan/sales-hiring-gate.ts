@@ -12,6 +12,7 @@ import { addEnrichment, audit } from '../connectors/store.ts'
 import { atsGtmBoard, isGtmRole, postingEvidence, boardTitleAudit, boardCoverageRow, checkedAuditRows, checkedCoverageRow, fullListingAuditRows, fullListingCoverageRow, withRepostHistory, BOARD_LABEL } from '../signals/ats-gtm.ts'
 import { careersSalesVacancy } from '../signals/careers-page.ts'
 import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
+import { isCountryOrRegion, isCountryGroup } from './countries.ts'
 import { releaseHeld } from './held-state.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 export { salesHiringRequired, salesGateOr }
@@ -32,7 +33,15 @@ import { WHY_MAX } from './score.ts'
 // A standing pool cannot be told from a segment by shape ("Account Executive – Sales Talent Pool: Register Your Interest" on a live
 // board, review at b86f2172), so those are a short named list: a title naming one anywhere is held.
 const STANDING_POOL = /\b(?:talent\s+(?:pool|community|network|pipeline)|register\s+your\s+interest|future\s+opportunit(?:y|ies)|general\s+(?:interest|application)|evergreen|intern(?:ship)?s?)\b/i
-const LEVEL = /^(?:senior|sr\.?|junior|jr\.?|principal|staff|lead|founding|first|associate|enterprise|strategic|commercial|corporate|mid[-\s]?market|midmarket|smb|sme|named|major|key|global|regional|field|inside|outside|growth|new|business|[A-Z]{2,6})$/
+// #1185 (1,147 live account-executive titles, 111 Greenhouse boards): the segment words real boards put on the role are wider than the first
+// list - Territory, Majors, Core, Hunter, Digital Native, Emerging, Startup, Federal / Public Sector, Large Enterprise - and a segment or a
+// country can follow the role without a separator ("Account Executive Mid Market Benelux", "Enterprise Account Executive Mexico"). Still a
+// closed list (an unlisted word before the role still holds the title): these are sales coverage words, none of them a title of its own.
+const SEGMENT_WORDS = 'enterprise|strategic|commercial|corporate|mid[-\\s]?market|midmarket|smb|sme|named|majors?|key|global|regional|field|inside|outside|growth|new|business|territory|core|hunters?|digital|natives?|emerging|startups?|federal|public|sector|large|geo'
+const SEGMENT = new RegExp(`^(?:${SEGMENT_WORDS})$`, 'i')
+// before the role only: a level, a segment, or a word that qualifies the seller ("Sales Account Executive", "Specialist Account Executive",
+// "SMB Customer Account Executive", "Flex Territory", "Bilingual Territory") - after the role these would read as another title, so they are not in SEGMENT
+const LEVEL = new RegExp(`^(?:senior|sr\\.?|junior|jr\\.?|principal|staff|lead|founding|first|associate|flex|sales|specialist|customer|bilingual|${SEGMENT_WORDS}|[A-Z]{2,6})$`)
 const AFTER_ROLE = /^\s*(?:$|[,\-–—(/|:]|(?:I{1,3}|IV|V|[1-5])\s*(?:$|[,\-–—(/|:]))/
 const SEGMENT_ROLE = /^\s*[,\-–—(/|:]\s*(?:team\s+)?(?:manager|lead|director|head|vp|recruiter|engineer|trainer|coordinator|assistant)s?\b/i
 export function titleIsRole(title: string, roles: RequestedHiringRole[]): RequestedHiringRole | null {
@@ -51,8 +60,24 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
   const before = title.slice(0, hit.index).trim().replace(/\bmid\s+market\b/gi, 'Mid-Market'), after = title.slice(hit.index + hit[0].length).replace(/^\s*\([A-Z]{2,6}\)/, '')
   // level words are matched whatever their case; a segment code (SLED, MSP, EMEA) only as written in capitals
   if (before && !before.split(/\s+/).every(w => LEVEL.test(w) || LEVEL.test(w.toLowerCase()))) return null
-  if (!AFTER_ROLE.test(after) || SEGMENT_ROLE.test(after)) return null
+  if (!afterRoleOk(after)) return null
   return m
+}
+const SEP = /[,\-–—(/|:]/
+// what follows the role: the end, a separator or a level as before; or, written straight after it with no separator, segment words and/or a
+// country or multi-country region ("Mid Market Benelux", "Mexico", "Large Enterprise Public Sector", "UK/I"), then the end or a separator.
+// Any other word there ("Manager", "Team", "Support Specialist", "Lead", "Co-op") is another title and holds it.
+function afterRoleOk(after: string): boolean {
+  if (AFTER_ROLE.test(after)) return !SEGMENT_ROLE.test(after)
+  const a = after.replace(/\bmid[\s-]+market\b/gi, 'Midmarket')
+  const cut = a.search(SEP), run = (cut < 0 ? a : a.slice(0, cut)).trim(), tail = cut < 0 ? '' : a.slice(cut)
+  if (!run || !/^\s/.test(a)) return false
+  const w = run.split(/\s+/)
+  let k = 0; while (k < w.length && SEGMENT.test(w[k])) k++
+  const place = w.slice(k).join(' ')
+  // a place is the whole rest of the run, three letters or more (a two-letter "Co" / "In" is a word, not a state code), or the written UK / US
+  if (place && !((place.length >= 3 || /^(?:UK|US)$/.test(place)) && /^[A-Z]/.test(place) && (isCountryOrRegion(place) || isCountryGroup(place)))) return false
+  return AFTER_ROLE.test(tail) && !SEGMENT_ROLE.test(tail)
 }
 // #1121 (dogfood, prod 03f0e8eb): the lead's OWN verified quote is the company's job ad naming the requested vacancy - "As a Sales Development
 // Representative at Mercury, you'll be ...", "Founding Sales Development Representative (SDR) Chesky United States", "Sales Development
