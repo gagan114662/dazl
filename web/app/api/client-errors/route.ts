@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getSessionUser } from '@/lib/auth-db'
+import { logShellBrowser, parseBrowserShellTiming, shellTimingBrowserKind, shellTimingEnabled, verifyShellTimingReceipt } from '@/lib/ops/signed-shell-timing'
+import { getSessionUser, hasLiveSession } from '@/lib/auth-db'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { MAX_CLIENT_ERROR_BYTES, recordClientError } from '@/lib/ops/client-errors'
 
@@ -17,6 +18,17 @@ export async function POST(req: NextRequest) {
   if (text === null) return new NextResponse(null, { status: 413 })
   let body: unknown
   try { body = JSON.parse(text) } catch { return new NextResponse(null, { status: 400 }) }
+  if (shellTimingBrowserKind(body)) {
+    if (!shellTimingEnabled()) return new NextResponse(null, { status: 404 })
+    const report = parseBrowserShellTiming(body)
+    if (!report) return new NextResponse(null, { status: 400 })
+    const session = req.cookies.get('dazl_session')?.value
+    if (!session || !verifyShellTimingReceipt(report.route, report.request_id, report.receipt, session)) return new NextResponse(null, { status: 401 })
+    const signed = await hasLiveSession(session).catch(() => false)
+    if (!signed) return new NextResponse(null, { status: 401 })
+    logShellBrowser(report)
+    return new NextResponse(null, { status: 204 })
+  }
   let tenantId: string | null = null
   try { tenantId = (await getSessionUser(req.cookies.get('dazl_session')?.value))?.tenantId ?? null } catch { /* recorded without a tenant */ }
   const r = recordClientError(body, { tenantId, requestId: req.headers.get('x-request-id') })

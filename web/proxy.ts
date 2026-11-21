@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { logRequest, newRequestId, requestLogLine } from '@/lib/ops/request-log'
 import { hasLiveSession } from '@/lib/auth-db'
+import { issueShellTimingReceipt, logShellAuth, shellRoute, SHELL_TIMING_ROUTE_HEADER, shellTimingEnabled, type ShellRoute } from '@/lib/ops/signed-shell-timing'
 import { isServerActionProbe } from '@/lib/ops/server-action-probe'
 
 // Runs before /app pages and /api routes (Node runtime). Gives each request an id (lib/ops/request-log.ts), logs it
@@ -20,21 +21,36 @@ export async function proxy(req: NextRequest) {
   // health probes run every few seconds: no log line for them, but they still get an id
   if (!pathname.startsWith('/api/health') && pathname !== '/api/ready') logRequest(requestLogLine(id, req.method, pathname))
 
-  if (pathname.startsWith('/app') && !(await signedIn(req.cookies.get('dazl_session')?.value))) {
+  const timing = shellTimingEnabled() && req.method === 'GET' && req.headers.get('sec-fetch-dest') === 'document'
+    ? shellRoute(pathname) : null
+  const session = pathname.startsWith('/app') ? req.cookies.get('dazl_session')?.value : undefined
+  if (pathname.startsWith('/app') && !(await signedIn(session, timing, id))) {
     const r = NextResponse.redirect(new URL('/sign-in', req.url))
     r.headers.set('x-request-id', id)
     return r
   }
   const headers = new Headers(req.headers)
   headers.set('x-request-id', id)
+  headers.delete(SHELL_TIMING_ROUTE_HEADER)
+  if (timing) headers.set(SHELL_TIMING_ROUTE_HEADER, timing)
   const res = NextResponse.next({ request: { headers } })
   res.headers.set('x-request-id', id)
+  const receipt = timing && session ? issueShellTimingReceipt(timing, id, session) : null
+  if (receipt) res.headers.append('Server-Timing', `dazl_request;desc="${receipt}"`)
   return res
 }
 
-async function signedIn(token: string | undefined): Promise<boolean> {
+async function signedIn(token: string | undefined, route:ShellRoute|null, id:string): Promise<boolean> {
   if (!token) return false
-  try { return await hasLiveSession(token) } catch { return true }
+  const start = route ? performance.now() : 0
+  try {
+    const signed = await hasLiveSession(token)
+    if (route) logShellAuth(route, id, 'proxy_auth', start, signed ? 'allowed' : 'denied')
+    return signed
+  } catch (error) {
+    if (route) logShellAuth(route, id, 'proxy_auth', start, 'error', error)
+    return true
+  }
 }
 
 // The third entry is lib/ops/server-action-probe.ts SERVER_ACTION_PROBE_MATCHER, written out: Next reads this object statically.

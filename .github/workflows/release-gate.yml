@@ -112,6 +112,9 @@ jobs:
       - name: Signed website review, estimate, and confirmed submission
         if: success() || failure()
         run: SHOTS=preview/leads-research-review node --experimental-strip-types test/ui/signed-website-review.ui.mjs
+      - name: Signed shell timing under a real queued worker
+        if: success() || failure()
+        run: node --experimental-strip-types test/smoke/signed-shell-timing.smoke.mjs --browser --working-worker
       - name: Upload seller intelligence UI pixels
         if: always()
         uses: actions/upload-artifact@v4
