@@ -37,3 +37,14 @@ test('resolving keeps the worst-case dollars, records the reason, and refuses wi
   const call = db.prepare("SELECT status, reason FROM scan_spend_calls WHERE id='nabc123456'").get() as { status: string; reason: string }
   assert.equal(call.status, 'kept'); assert.match(call.reason, /^operator: job1 failed/)
 })
+
+// Qodo on #1441: the scan ledger can settle a call while the owner-pool settle fails, leaving the marker pending. A
+// resolution of such a marker must still record why the worst case was kept - in its own record, not only the call row.
+test('every resolution is recorded with its reason and evidence, even when the call row was already settled', () => {
+  const db = setup()
+  db.prepare("UPDATE scan_spend_calls SET status='settled', actual_usd=0.4, settled_at=? WHERE id='nabc123456'").run(T0 + 6)
+  resolveMarker(db, 'W', 'p:nabc123456', 'ledger settled at 0.40, owner-pool settle failed; kept worst case', T0 + 7200)
+  const rec = db.prepare("SELECT tenant_id, period, reserved_usd, call_id, scan_job_id, reason, resolved_at FROM spend_marker_resolutions").all()
+  assert.deepEqual(rec, [{ tenant_id: 'W', period: 'p:nabc123456', reserved_usd: 1.85, call_id: 'nabc123456', scan_job_id: 'job1', reason: 'ledger settled at 0.40, owner-pool settle failed; kept worst case', resolved_at: T0 + 7200 }])
+  assert.equal((db.prepare("SELECT status FROM scan_spend_calls WHERE id='nabc123456'").get() as { status: string }).status, 'settled', 'a settled call is not rewritten')
+})

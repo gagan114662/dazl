@@ -30,16 +30,26 @@ export function markerEvidence(db: Database.Database, tenant: string, now: numbe
   })
 }
 
+// The durable record of every operator resolution (one row per marker), whatever state the call row is in.
+function ensureLog(db: Database.Database) {
+  db.exec(`CREATE TABLE IF NOT EXISTS spend_marker_resolutions (
+    tenant_id TEXT NOT NULL, period TEXT NOT NULL, reserved_usd REAL NOT NULL, call_id TEXT, scan_job_id TEXT,
+    reason TEXT NOT NULL CHECK (length(reason) <= 500), resolved_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, period))`)
+}
+
 export function resolveMarker(db: Database.Database, tenant: string, period: string, reason: string, now: number): MarkerEvidence {
   if (!/^p:[0-9a-z]{10}$/.test(period)) throw new Error('not a pending marker period')
   const clean = reason.replace(/\s+/g, ' ').trim()
   if (clean.length < 8) throw new Error('a recorded reason (8+ characters) is required')
+  ensureLog(db)
   return db.transaction(() => {
     const ev = markerEvidence(db, tenant, now).find(e => e.period === period)
     if (!ev) throw new Error('no such pending marker for this workspace')
     if (!ev.resolvable) throw new Error(`refused: ${ev.why}`)
     const moved = db.prepare("UPDATE tenant_spend_pools SET period = 'r:' || substr(period, 3), updated_at = ? WHERE tenant_id = ? AND period = ?").run(now, tenant, period)
     if (moved.changes !== 1) throw new Error('marker changed during resolution')
+    db.prepare('INSERT INTO spend_marker_resolutions (tenant_id, period, reserved_usd, call_id, scan_job_id, reason, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(tenant, period, ev.reserved_usd, ev.call?.id ?? null, ev.call?.scan_job_id ?? null, clean.slice(0, 500), now)
     if (ev.call && ev.call.status === 'reserved') db.prepare("UPDATE scan_spend_calls SET status = 'kept', reason = ?, settled_at = ? WHERE id = ? AND user_id = ? AND status = 'reserved'").run(`operator: ${clean}`.slice(0, 80), now, ev.call.id, tenant)
     return ev
   })()
