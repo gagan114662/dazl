@@ -14,6 +14,10 @@ export type CompanyFirstResultCounts = Readonly<{
   dropped: number | null
 }>
 export type CompanyFirstResults = Readonly<{
+  // true only when visibility was computed: the job was done with its enrichment finished, and the re-read after the computation saw the
+  // same attempt, status, end mark, budget and row count. A caller that needs "the final checks ran" reads THIS, never a separate read of the
+  // job, so the two can never describe different enrichment attempts (#1062, Qodo on #1466).
+  final: boolean
   counts: CompanyFirstResultCounts
   visibleIds: ReadonlySet<string>
   readyIds: ReadonlySet<string>
@@ -37,7 +41,8 @@ export async function readBoundCompanyFirstResults(raw: Database.Database, db: D
   if (!job || !hasCompanyFirstBudget(job.run_budget)) return null
   const ids = new Set<string>(), ready = new Set<string>()
   let displayProof: Readonly<Record<string, CompanyFirstPublishedDisplayRow>> = {}
-  if (job.status === 'done' && job.enrich_finished_at != null) {
+  const final = job.status === 'done' && job.enrich_finished_at != null
+  if (final) {
     const rows = listLeads(raw, tenantId, jobId, 200, false) as { id: string }[]
     displayProof = await verifiedCompanyFirstDisplay(raw, tenantId, jobId, rows.map(l => l.id), now)
     // Do not combine proof from a different attempt or an in-progress rescan.
@@ -49,6 +54,6 @@ export async function readBoundCompanyFirstResults(raw: Database.Database, db: D
       if (ready.has(row.id) || Object.hasOwn(displayProof, row.id)) ids.add(row.id)
     }
   }
-  return { counts: { candidates: job.candidates, ready: ready.size, reviewable: ids.size, held: Math.max(0, job.stored - ids.size), dropped: job.dropped },
+  return { final, counts: { candidates: job.candidates, ready: ready.size, reviewable: ids.size, held: Math.max(0, job.stored - ids.size), dropped: job.dropped },
     visibleIds: ids, readyIds: ready, displayProof }
 }
