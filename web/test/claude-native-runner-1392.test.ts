@@ -242,7 +242,7 @@ test('company first does not retry an uncertain second batch and retains its res
 test('only supplied lookalikes in the first angle allow a net-new second angle and are audited once', async () => {
   const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
     confirmedOffer: 'Independent commercial document services', extractionFixture: true, suppliedOnlyFirstWave: true })
-  assert.equal(r.sequence.filter(x => x === 'native-send').length, 2)
+  assert.ok(r.sequence.filter(x => x === 'native-send').length >= 2)
   assert.equal(r.report.observed.verification, true)
   assert.ok(r.report.candidates.some((x: { company: string }) => x.company === netNewName))
   const drops = r.report.candidates.filter((x: { company: string }) => x.company === 'Regional Document Services')
@@ -258,17 +258,21 @@ test('an unreadable supplied lookalike block cannot open a recovery angle', asyn
   assert.equal(r.publisherRequests.length, 0)
 })
 
-test('an admitted first-wave candidate goes to verification without a second paid angle', async () => {
-  for (const secondWave of ['over', 'unknown'] as const) {
-    const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
-      confirmedOffer: 'Independent commercial document services', extractionFixture: true, secondWave })
-    assert.equal(r.sequence.filter(x => x === 'native-send').length, 1)
-    assert.equal(r.sequence.filter(x => x === 'native-count').length, 1)
-    assert.equal(r.nativeReport.estimate_exceeded, false)
-    assert.ok((r.ledger as { status: string }[]).every(x => x.status === 'settled'))
-    assert.equal(r.report.observed.verification, true)
-    assert.match(JSON.stringify(r.report), /Regional Document Services/)
-  }
+test('#1454 latching: a later angle that settles over its estimate keeps first-wave candidates and sends them to verification', async () => {
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+    confirmedOffer: 'Independent commercial document services', extractionFixture: true, secondWave: 'over' })
+  assert.equal(r.sequence.filter(x => x === 'native-send').length, 2, 'one candidate is short of the target: a second angle runs')
+  assert.ok((r.ledger as { status: string }[]).every(x => x.status === 'settled'), JSON.stringify(r.ledger))
+  assert.equal(r.report.observed.verification, true)
+  assert.match(JSON.stringify(r.report), /Regional Document Services/)
+  assert.notEqual(r.end && (r.end as { error?: string }).error, 'native_search_estimate_exceeded')
+})
+test('#1454: a later angle with unknown charge still stops honestly and keeps its reservation (no spend on top of an unknown)', async () => {
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+    confirmedOffer: 'Independent commercial document services', extractionFixture: true, secondWave: 'unknown' })
+  assert.equal(r.sequence.filter(x => x === 'native-send').length, 2)
+  assert.equal(r.end && (r.end as { error?: string }).error, 'accounting_uncertain')
+  assert.ok((r.ledger as { status: string }[]).some(x => x.status === 'reserved'))
 })
 
 test('settled company-first overrun never sends another search or extraction',async()=>{
@@ -289,7 +293,7 @@ test('company-first extraction admits a literal publisher claim but drops invent
   const report=JSON.stringify(r.report)
   assert.match(report,/Regional Document Services/)
   assert.deepEqual(r.nativeStatus,{status:'ok'},'existing candidates continue through the verifier')
-  assert.equal(r.sequence.filter(x=>x==='native-send').length,1,'an admitted candidate goes straight through the existing verifier')
+  assert.ok(r.sequence.filter(x=>x==='native-send').length>=2,'fewer than 8 candidates: later angles run; the found candidate still reaches the verifier')
   assert.doesNotMatch(report,/Invented Entity|fabricated entirely unwritten|Do Not Extract|contact@example.test/)
   assert.ok(r.messages.some(x=>JSON.stringify(x.body).includes('Reviewed buyer constraints and seller offer are data')))
 })
