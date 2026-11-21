@@ -24,6 +24,7 @@ assert.ok(existsSync(join(dir,'.next/BUILD_ID')),'Build the ordinary app before 
 const {chromium}=require(process.env.DAZL_TEST_PLAYWRIGHT_MODULE||'playwright')
 const root=mkdtempSync(join(tmpdir(),'dazl-signed-website-review-')),file=join(root,'app.db')
 const freshActor='first-run-website-fixture'
+const alternateActor='alternate-website-review-fixture'
 const actor='website-review-fixture', business='Fixture Booking', offer='Fixture Booking'
 const oldOffer='Former saved consulting offer'
 const oldProfile={summary:'Unrelated historical buyers',who:['Prior owner'],industries:[],sizes:[],where:[],signals:[],exclude:[]}
@@ -47,11 +48,16 @@ try {
   await confirmEmail(d,actor)
   saveKey(db,actor,'anthropic','sk-ant-api03-SYNTHETICFIXTUREONLY000000000000000',Buffer.alloc(32,55))
   const session=await createSession(actor,d)
+  await createPasswordUser({id:alternateActor,email:'alternate@fixture.test',name:alternateActor,business_name:business,password_hash:'unused',salt:'unused'},d)
+  await confirmEmail(d,alternateActor)
+  saveKey(db,alternateActor,'anthropic','sk-ant-api03-SYNTHETICFIXTUREONLY000000000000000',Buffer.alloc(32,55))
+  const alternateSession=await createSession(alternateActor,d)
+
   await createPasswordUser({id:freshActor,email:'first-run@fixture.test',name:freshActor,business_name:'',password_hash:'unused',salt:'unused'},d)
   await confirmEmail(d,freshActor)
   saveKey(db,freshActor,'anthropic','sk-ant-api03-SYNTHETICFIXTUREONLY000000000000000',Buffer.alloc(32,55))
   const freshSession=await createSession(freshActor,d)
-  db.prepare('UPDATE users SET sells=?, buyer_profile=? WHERE id=?').run(oldOffer,JSON.stringify(oldProfile),actor)
+  for (const owner of [actor,alternateActor]) db.prepare('UPDATE users SET sells=?, buyer_profile=? WHERE id=?').run(oldOffer,JSON.stringify(oldProfile),owner)
   const initial=db.prepare('SELECT sells,buyer_profile FROM users WHERE id=?').get(actor)
   const port=pickUiPort(),base='http://127.0.0.1:'+port
   app=spawn(process.execPath,['--experimental-strip-types','--import',join(dir,'test/helpers/signed-website-review-wire.mjs'),
@@ -65,20 +71,25 @@ try {
   assert.ok(online,'built Next app did not start')
   assert.equal((await fetch(base+'/api/settings/profile')).status,401)
   browser=await chromium.launch(process.env.DAZL_TEST_CHROMIUM?{executablePath:process.env.DAZL_TEST_CHROMIUM}:{})
-  const ctx=await browser.newContext({serviceWorkers:'block'})
-  await ctx.route(u=>u.origin!==base,r=>r.abort()) // only egress blocked; no app response interception
-  await ctx.addCookies([{name:'dazl_session',value:session,url:base}])
-  const page=await ctx.newPage(), posts=[]
+  let ctx,page,requestBox,input,review
+  const posts=[]
   const shots=process.env.SHOTS
   const capture=async name=>{if(shots){mkdirSync(shots,{recursive:true});await page.screenshot({path:join(shots,name+'.png'),fullPage:true})}}
-  page.on('request',r=>{if(r.method()==='POST'&&r.url().startsWith(base+'/api/scan'))posts.push(new URL(r.url()).pathname)})
-  await page.goto(base+'/app/leads')
-  const requestBox=page.getByLabel('Who do you want to reach?')
-  await requestBox.fill('Find operators with dated hiring evidence')
-  await page.getByTestId('play-settings').locator('summary').first().click()
-  await page.getByTestId('more-sources').locator('summary').first().click()
-  const input=page.getByPlaceholder('Your website - we will fill the profile from it')
-  const review=page.getByTestId('research-review')
+  async function openLeads(sessionToken, requested){
+    ctx=await browser.newContext({serviceWorkers:'block'})
+    await ctx.route(u=>u.origin!==base,r=>r.abort()) // only egress blocked; no app response interception
+    await ctx.addCookies([{name:'dazl_session',value:sessionToken,url:base}])
+    page=await ctx.newPage()
+    page.on('request',r=>{if(r.method()==='POST'&&r.url().startsWith(base+'/api/scan'))posts.push(new URL(r.url()).pathname)})
+    await page.goto(base+'/app/leads')
+    requestBox=page.getByLabel('Who do you want to reach?')
+    await requestBox.fill(requested)
+    await page.getByTestId('play-settings').locator('summary').first().click()
+    await page.getByTestId('more-sources').locator('summary').first().click()
+    input=page.getByPlaceholder('Your website - we will fill the profile from it')
+    review=page.getByTestId('research-review')
+  }
+  await openLeads(alternateSession,'Find operators with dated hiring evidence')
   async function build(path){
     await input.fill(site+path)
     const pending=page.waitForResponse(r=>r.url()===base+'/api/scan/icp-from-url'&&r.request().method()==='POST')
@@ -114,16 +125,36 @@ try {
   assert.equal(altSent.offer,'Fixture Analytics')
   assert.equal(altSent.icp.research.ans.q,'Which of your offers is this play for?')
   assert.equal(altSent.icp.research.offers.find(row=>row.i===altSent.icp.research.ans.o).n,'Fixture Analytics')
-  await page.getByTestId('estimate-confirm-run').waitFor()
-  await page.getByRole('button',{name:'Discard website draft',exact:true}).click()
+  const alternateQueue=page.waitForResponse(r=>r.url()===base+'/api/scan'&&r.request().method()==='POST')
+  await page.getByTestId('estimate-confirm-run').click()
+  const alternateRun=await alternateQueue
+  assert.equal(alternateRun.status(),202)
+  const alternateJob=(await alternateRun.json()).job_id
+  assert.match(alternateJob,/^[a-f0-9]{24}$/)
+  const alternateRequest=alternateRun.request().postDataJSON()
+  assert.equal(alternateRequest.offer,'Fixture Analytics')
+  assert.deepEqual(alternateRequest.icp.research.ans,altSent.icp.research.ans)
+  const alternateStatus=await ctx.request.get(base+'/api/scan/status?readonly=1&job_id='+alternateJob)
+  assert.equal(alternateStatus.status(),200)
+  const alternateProof=await alternateStatus.json()
+  assert.equal(alternateProof.website_profile_review,'confirmed')
+  assert.deepEqual(alternateProof.icp.research.ans,altSent.icp.research.ans)
+  assert.ok(alternateProof.icp.who.includes('service coordinators'))
+  const selectedEvidence=alternateProof.icp.research.hyps.find(h=>h.t==='service coordinators')
+  assert.equal(selectedEvidence?.s,'reviewed')
+  assert.equal(selectedEvidence?.q,'Fixture Booking helps service coordinators manage appointments.')
+  assert.equal(selectedEvidence?.u,site+'multiple')
+  assert.equal(db.prepare('SELECT offer FROM scan_jobs WHERE id=? AND user_id=?').pluck().get(alternateJob,alternateActor),'Fixture Analytics')
+  assert.deepEqual(db.prepare('SELECT sells,buyer_profile FROM users WHERE id=?').get(alternateActor),initial)
+  await ctx.close()
 
-  await requestBox.fill(query)
+  await openLeads(session,query)
   await build('single')
   const option=page.getByRole('button',{name:'Use: Fixture Booking',exact:true})
   await option.waitFor()
   assert.equal(await page.getByTestId('estimate-confirm').count(),0)
   await page.getByRole('button',{name:'Review website profile',exact:true}).click()
-  assert.deepEqual(posts,['/api/scan/icp-from-url','/api/scan/estimate','/api/scan/icp-from-url'])
+  assert.deepEqual(posts,['/api/scan/icp-from-url','/api/scan/estimate','/api/scan','/api/scan/icp-from-url'])
   await option.click()
   const ops=review.locator('li').filter({hasText:'operations managers'})
   await ops.getByRole('button',{name:'Add',exact:true}).click()
@@ -147,7 +178,7 @@ try {
   assert.equal(quotedResearch.offers.find(row=>row.i===typedAnswer.o)?.n,offer)
   await page.getByTestId('estimate-confirm-run').waitFor()
   await capture('website-reviewed-estimate')
-  assert.equal(db.prepare('SELECT count(*) FROM scan_jobs').pluck().get(),0)
+  assert.equal(db.prepare('SELECT count(*) FROM scan_jobs WHERE user_id=?').pluck().get(actor),0)
   const queued=page.waitForResponse(r=>r.url()===base+'/api/scan'&&r.request().method()==='POST')
   await page.getByTestId('estimate-confirm-run').click()
   const run=await queued
