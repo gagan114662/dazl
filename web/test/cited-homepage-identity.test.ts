@@ -49,3 +49,21 @@ test('a cited same-label homepage that does not name the company is refused (nam
   const r = await run(['https://levelupleads.io/'], 'Totally Different Co')
   assert.equal(r.domain, null, JSON.stringify(r.audit))
 })
+test('review: a cited same-name homepage in another city than the evidence names is refused, and guesses still run after it', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
+  const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
+  db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: [] }), job)
+  db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('L1', job, 'LevelUp Leads', null, 'Hiring its first SDR', 'https://lists.example/first-sdr', 'LevelUp Leads, based in Austin, TX, is hiring its first SDR.', 90, 85)
+  const seen: string[] = []
+  const get: Get = async url => {
+    const u = new URL(url); seen.push(u.hostname)
+    if (u.hostname === 'lists.example') return { status: 200, body: html('<p>LevelUp Leads, based in Austin, TX, is hiring its first SDR.</p>'), finalUrl: url }
+    if (u.hostname.replace(/^www\./, '') !== 'levelupleads.io') return null
+    if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
+    return u.pathname === '/' ? { status: 200, body: html(`<title>LevelUp Leads</title>LevelUp Leads, Leeds, United Kingdom. ${PROSE}`), finalUrl: url } : { status: 404, body: '', finalUrl: url }
+  }
+  await crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-11-21T09:00:00Z'), citedUrls: ['https://levelupleads.io/'] })
+  assert.equal((db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain, null)
+  assert.ok(seen.some(h => /^(?:www\.)?levelup(?:leads)?\.com$/.test(h) || h.endsWith('.com')), JSON.stringify([...new Set(seen)]))
+})

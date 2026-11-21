@@ -1463,7 +1463,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           let u: URL; try { u = new URL(raw) } catch { continue }
           const host = registrable(u.hostname)
           if (host === evOwn || SOCIAL.test(host) || !siteHostOk(host) || !notBlockedHost(host) || !labelMatches(nameLabel(host), want) || sites.includes(host)) continue
-          sites.push(host); basisOf.set(host, 'evidence_link_domain_label'); sourceOf.set(host, u.href); anchored = true
+          // not 'anchored': a cited site that fails its checks must not stop the name guesses; and its basis keeps the evidence-place
+          // comparison (a link-label basis would skip it when no place is requested), so a same-name company elsewhere is refused
+          sites.push(host); basisOf.set(host, 'evidence_link_text'); sourceOf.set(host, u.href)
           break
         }
       }
