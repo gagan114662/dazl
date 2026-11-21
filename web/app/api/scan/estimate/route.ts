@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { requireUser } from '@/lib/scan/service'
+import { getScanDb, requireUser } from '@/lib/scan/service'
+import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { sameOriginJson } from '@/lib/same-origin'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { readHasKey } from '@/lib/llm/key-store'
@@ -13,7 +14,7 @@ import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
 import { readSellerLine } from '@/lib/auth-db'
 import { MAX_QUERY } from '@/lib/scan/icp'
 import { cleanText } from '@/lib/validate'
-import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer, profileOffer } from '@/lib/scan/play-offer'
+import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -36,10 +37,12 @@ export async function POST(req: NextRequest) {
     // but before presenting a cost panel for the wrong saved buyer context.
     try {
       const seller = await readSellerLine(db, user.tenantId)
-      const confirmed = await confirmedPlayOffer(db, user.tenantId, query, seller)
+      // the same stores POST /api/scan reads (scan store for confirmations and the tenant offer), so the cost panel
+      // and scan admission can never disagree on a deploy where the two handles differ
+      const confirmed = await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller)
       if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
       if (!confirmed) {
-        const result = effectiveOffer({ seller, query }, await profileOffer(db, user.tenantId))
+        const result = effectiveOffer({ seller, query }, readTenantOffer(getScanDb(), user.tenantId))
         const conflict = result.conflict ?? (body?.icp && body.reviewed === false
           ? carriedWorkspaceOfferConflict(query, user.business_name, seller, result.offer) : null)
         if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated,
