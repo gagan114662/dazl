@@ -59,6 +59,8 @@ function nonUkLondon(q: string): boolean {
       const seg = words.slice(0, n).join(' ').replace(/\.$/, '')
       if (seg.length <= 2 ? !(comma && /^[A-Z]{2}$/.test(seg)) : !comma && seg.length === 3 && /^[A-Z]{3}$/.test(seg)) continue // a code ("IN", "ONT") only after a comma, in capitals
       const country = resolveSegment(seg, true), region = regionOf(seg)
+      // a country CODE ("US", "UAE") qualifies London only when its clause ends there: in "London, US startups" it describes the startups
+      if (country && seg.length <= 3 && !(n === words.length && /^\s*(?:$|[,.;:)!?/|\u2013-])/.test(q.slice((m.index ?? 0) + m[0].length)))) continue
       if (country) { if (country !== 'GB') return true; continue }
       if (region) { if (countryOfRegion(region) !== 'GB') return true; continue }
     }

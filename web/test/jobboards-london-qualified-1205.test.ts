@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
-import { placeIn } from '../lib/sources/jobboards.ts'
+import { placeIn, placeSkipReason } from '../lib/sources/jobboards.ts'
 
 const LOCS = ['London, UK', 'London, England, United Kingdom', 'London, IN', 'Greater London']
 const NAMES = ['Thames', 'Westminster', 'Hoosier', 'Camden']
@@ -54,7 +54,9 @@ test('#1205 a London qualified by any US state (name or code), Canadian province
   for (const q of ['in London, Indiana', 'in London, IN', 'in London, West Virginia', 'in London, WV', 'in London, GA', 'in London, Alberta', 'in London, AB',
     'in London, Ontario', 'in London, ON', 'in London, ONT', 'in London, Kentucky', 'in London, Ontario, Canada', 'in London, Canada', 'in London Ontario', 'in London, Australia']) {
     const p = placeIn(q)
-    if (p) for (const l of UK) assert.equal(p.ok(l), false, `${q} resolved to '${p.name}', which accepts the UK posting '${l}'`)
+    // either the intended London (refusing every UK posting) or a named reason the job boards could not place it, never a silent UK London
+    if (!p) { assert.match(placeSkipReason(q), /^skipped_no_place:[a-z]+:/, `${q}: no place, so a named reason`); continue }
+    for (const l of UK) assert.equal(p.ok(l), false, `${q} resolved to '${p.name}', which accepts the UK posting '${l}'`)
   }
   // the place a qualified London resolves to is that London, read by the resolver for its qualifier
   assert.equal(placeIn('in London, Indiana')?.name, 'London, IN')
@@ -62,7 +64,7 @@ test('#1205 a London qualified by any US state (name or code), Canadian province
   assert.equal(placeIn('in London, Alberta')?.ok('London, AB'), true)
   // the UK London is unchanged: bare, with a UK marker, or followed by words that are not a place
   for (const q of ['hiring sales staff in London', 'in London, UK', 'in London, England', 'London UK B2B SaaS startups hiring sales staff', 'in London, United Kingdom',
-    'London-based fintechs hiring SDRs', 'in London, hiring account executives', 'in London, the startups hiring', 'in London, EC1A', 'in London, AI startups hiring']) {
+    'London-based fintechs hiring SDRs', 'in London, hiring account executives', 'in London, the startups hiring', 'in London, EC1A', 'in London, AI startups hiring', 'SaaS in London, US startups hiring', 'in London, UAE founders hiring']) {
     const p = placeIn(q)
     assert.equal(p?.name, 'London', `${q} stays the UK London`)
     assert.equal(p!.ok('London, UK'), true, q)
