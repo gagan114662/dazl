@@ -1,6 +1,6 @@
 import { LLM_TIMEOUT_MS } from './provider.ts'
 import { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, USD_PER_SEARCH, MICROS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchUsageDiagnostic, type ClaudeUsageSnapshot, type ClaudeUsageCounter } from './claude-web-search-estimate.ts'
-export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
+export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_MAX_CALLS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
 
 const CLAUDE_SEARCH_TIMEOUT_MS = Math.min(150_000, LLM_TIMEOUT_MS)
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
@@ -154,7 +154,7 @@ export interface ClaudeSearchResult {
 export async function runClaudeWebSearch(
   apiKey: string, prompt: string,
   reserve: (estimate: ClaudeSearchEstimate) => Promise<ClaudeSearchHold | null> | ClaudeSearchHold | null,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = fetch, policy?: 'company_first',
 ): Promise<ClaudeSearchResult> {
   if (!apiKey.trim() || !prompt.trim() || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new ClaudeSearchError('invalid_input')
   const headers = { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
@@ -168,7 +168,7 @@ export async function runClaudeWebSearch(
     input = obj(await r.json()).input_tokens
   } catch (e) { if (e instanceof ClaudeSearchError) throw e; throw new ClaudeSearchError('count_failed') }
   if (!count(input)) throw new ClaudeSearchError('count_failed')
-  const estimate = claudeSearchEstimate(input)
+  const estimate = claudeSearchEstimate(input, policy)
   const hold = await reserve(estimate)
   if (!hold) throw new ClaudeSearchError('reservation_missing')
   let r: Response

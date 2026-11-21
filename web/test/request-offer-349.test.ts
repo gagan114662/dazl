@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 test('Test A / Test B through POST /api/scan and the runner: the request\'s offer only, reused by the next run', () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
-    '--loader', './test/helpers/scan-route-loader.mjs', '--test', './test/helpers/request-offer-349-runtime.mts'],
+    '--loader', './test/helpers/scan-route-loader.mjs', '--test', '--test-reporter=tap', './test/helpers/request-offer-349-runtime.mts'],
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 90000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)

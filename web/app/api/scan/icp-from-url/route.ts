@@ -1,3 +1,5 @@
+import { getMasterKey } from '@/lib/secrets'
+import { issueWebsiteDraftReceipt } from '@/lib/scan/website-profile-provenance'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { recallSellerDecisions, siteKey } from '@/lib/scan/intelligence'
@@ -91,5 +93,9 @@ export async function POST(req: NextRequest) {
       : out.error === 'js_only' || out.error === 'not_html' ? 422 : 502
     return NextResponse.json({ error: out.error, ...('trial' in out && out.trial ? { trial: out.trial } : {}) }, { status })
   }
-  return NextResponse.json({ ...out, ...(ineligible && 'free' in out && !('trial' in out) ? { trial: 'workspace_not_eligible' } : {}), intelligence: decisions.trace })
+  let draftReceipt: string | null = null
+  if ('icp' in out && out.icp.research && siteKey(out.source) === siteKey(out.icp.research.site)) {
+    try { draftReceipt = issueWebsiteDraftReceipt(getMasterKey(), user, out.source) } catch { /* no receipt without signing configuration */ }
+  }
+  return NextResponse.json({ ...out, ...(draftReceipt ? { website_draft_receipt: draftReceipt } : {}), ...(ineligible && 'free' in out && !('trial' in out) ? { trial: 'workspace_not_eligible' } : {}), intelligence: decisions.trace })
 }

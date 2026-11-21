@@ -5,7 +5,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
 import { historyCampaigns } from '../lib/outreach/campaigns.ts'
-import { windowHeld } from '../lib/outreach/currentness.ts'
+import { leadWindowHeld, windowHeld } from '../lib/outreach/currentness.ts'
 import { timingProofGap } from '../lib/scan/timing-proof.ts'
 import { jobWindowDays, windowCutoff } from '../lib/scan/window.ts'
 import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
@@ -38,7 +38,9 @@ test('campaign detail and history use the stored company-first marker without re
       await db.run("UPDATE scan_jobs SET status='done' WHERE id=?", [j])
     }
     const d = await campaignDetail(db,'A',id), ordinary = await campaignDetail(db,'A',other)
-    assert.equal(d?.leads[0].window_held,true)
+    assert.equal(leadWindowHeld(raw,'A','l'+id,now),true)
+    assert.deepEqual(d?.leads,[],'a marked row held by its real window never appears in campaign detail')
+    assert.equal(d?.company_first_counts?.held,1)
     assert.equal(ordinary?.leads[0].window_held,false)
     assert.ok(d && !('run_budget' in d.job))
     const history = await historyCampaigns(raw,db,'A',[id,other],now)

@@ -8,12 +8,13 @@ import {setScanDb,setUser} from './tenant-route-db.ts'
 import {migrateScan} from '../../lib/scan/store.ts'
 import {migrateKeys,saveKey} from '../../lib/llm/key-store.ts'
 import {migratePlans} from '../../lib/plans.ts'
+import {AUDIT_DDL} from '../../lib/audit.ts'
 import {migratePlatform} from '../../lib/db/platform-tables.ts'
 import {POST as readSite} from '../../app/api/scan/icp-from-url/route.ts'
 import {POST as estimate} from '../../app/api/scan/estimate/route.ts'
 import {POST as admit} from '../../app/api/scan/route.ts'
 process.env.DAZL_MASTER_KEY=randomBytes(32).toString('base64')
-const db=new Database(':memory:');migrateScan(db);migrateKeys(db);migratePlans(db);migratePlatform(db);setScanDb(db)
+const db=new Database(':memory:');migrateScan(db);migrateKeys(db);migratePlans(db);migratePlatform(db);db.exec(AUDIT_DDL);setScanDb(db)
 setUser({id:'chain-tenant',actorId:'chain-actor',business_name:'Fixture'})
 saveKey(db,'chain-tenant','anthropic','sk-fixture-never-network')
 let modelCalls=0

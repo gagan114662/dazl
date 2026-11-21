@@ -14,7 +14,7 @@ import type { RunBudget } from './runner.ts'
 import { createHash } from 'node:crypto'
 import { trialCopy } from '../trial-copy.ts'
 import { paidVendorOn } from '../paid-vendors.ts'
-import { claudeSearchEstimate } from '../llm/claude-web-search-estimate.ts'
+import { CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_MAX_CALLS, claudeSearchEstimate } from '../llm/claude-web-search-estimate.ts'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-5'
 // Shown (and confirmed) when a payer's own key exists but which model it runs could not be read: priced as unknown, never as
@@ -142,12 +142,15 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const native = (i.companyFirst === true || (i.qaClaudeOnly === true && i.qaNativeWebSearch === true)) && i.payer === 'you'
   if (native) {
     // Pre-play menu estimate only. The real reservation counts the exact submitted prompt before the paid call.
-    const search = claudeSearchEstimate(8_000)
+    const search = claudeSearchEstimate(8_000, i.companyFirst ? 'company_first' : undefined)
+    const calls = i.companyFirst ? CLAUDE_COMPANY_FIRST_MAX_CALLS : 1
     rows.push({
       id: 'anthropic_native_web_search', label: 'Claude Web Search', provider: 'Anthropic', kind: 'search',
-      unit: 'search', unit_usd: '$0.01 per search plus model tokens', units: { min: 0, max: search.maxSearches },
-      usd: { min: 0, max: search.estimatedUsd }, capped,
-      note: (i.companyFirst ? 'Company-first discovery. One' : 'Optional, one') + ' Anthropic Sonnet call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
+      unit: 'search', unit_usd: '$0.01 per search plus model tokens', units: { min: 0, max: search.maxSearches * calls },
+      usd: { min: 0, max: search.estimatedUsd * calls }, capped,
+      note: i.companyFirst
+        ? `Company-first discovery makes up to ${calls} guarded Anthropic Sonnet call(s), at most two searches per call. Includes ${CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH.toLocaleString('en-US')} assumed result input tokens per search plus an estimated prompt and capped output. Actual billed search-result input can exceed this soft estimate.`
+        : 'Optional, one Anthropic Sonnet call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
     })
   }
   // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,

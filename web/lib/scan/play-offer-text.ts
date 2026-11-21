@@ -63,7 +63,7 @@ const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S
 const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'di')
 // "Seller: <offer>" / "seller = <offer>" is the same labelled statement (#1436 live check: a request's own seller line).
-const LABEL = new RegExp(`${LEAD}(?:(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?|seller|sells)\\s*(?::|=)\\s*(.{3,150})$`, 'di')
+const LABEL = new RegExp(`${LEAD}(?:(?:(?:our|my)\\s+)?(?:offer|offering|product|service)s?\\s*:|(?:seller|sells)\\s*(?::|=))\\s*(.{3,150})$`, 'di')
 // a capture that is a target ("to dental practices") or itself an exclusion is not an offer. Whole words only (an offer
 // like "insurance", "inbound marketing", "attribution software" or "no-code tools" starts with the same letters); the
 // one stem kept is exclud(e|es|ed|ing), since every form of it is an exclusion.

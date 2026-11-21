@@ -5,6 +5,8 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
 import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
+import {companyFirstPublishedDisplayRows} from '../lib/people/company-first-published-display.ts'
+import {publishedEmail} from '../lib/outreach/published-email.ts'
 import { enrichmentsForLeads } from '../lib/connectors/store.ts'
 
 const now=Date.parse('2026-11-13T12:00:00Z')
@@ -13,8 +15,8 @@ const email='mira.quinn@'+host, shared='help@'+host, team=origin+'/team'
 const prose='<p>Brindle Ledger has served its local community for many years. We help businesses find the right products and manage the process from start to finish with clear service and transparent information.</p>'
 const wrap=(s:string)=>'<html><body>'+s+'</body></html>'
 const card=(role=title,address=email)=>'<article><h2>'+name+'</h2><p>'+role+'</p><a href="mailto:'+address+'">'+address+'</a></article>'
-async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; marker?:boolean; recrawl?:boolean}={}){
- const where=opt.international?'Toronto, ON':'Austin, TX'
+async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
+ const where=opt.country??(opt.international?'Toronto, ON':'Austin, TX')
  const db=new Database(':memory:'); migrateAllSqlite(db)
  try{
   const job=createJob(db,'T',{business_name:'Seller',industry:'supplies',location:where})
@@ -34,7 +36,15 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
   const scan=()=>crawlJob(db,'T',job,{get,gapMs:0,now,env:{EMAIL_GUESS_ENABLED:'1'},...(opt.marker?{}:{companyFirstContacts:opt.strict!==false})})
   await scan()
   if(opt.recrawl){pages[team]=wrap(prose+card(title,shared)); await scan()}
-  return {rows:(enrichmentsForLeads(db,'T',[lead])[lead]??[]).filter(r=>['person','email','phone'].includes(r.kind)),
+  if(opt.invalidate==='attempt')db.prepare('UPDATE scan_jobs SET attempts=attempts+1 WHERE id=?').run(job)
+  if(opt.invalidate==='person')db.prepare("DELETE FROM lead_enrichments WHERE tenant_id='T' AND lead_id=? AND kind='person'").run(lead)
+  if(opt.invalidate==='suppression')db.prepare("INSERT INTO suppressions (tenant_id,email,reason,created_at) VALUES ('T',?,'manual',?)").run(email,now/1000)
+  const observed=now/1000+(opt.invalidate==='age'?45*86400+1:0)
+  const enrichments=enrichmentsForLeads(db,'T',[lead])[lead]??[]
+  return {display:(await companyFirstPublishedDisplayRows(db,'T',[lead],observed))[lead],
+   foreign:(await companyFirstPublishedDisplayRows(db,'another',[lead],observed))[lead],
+   routed:publishedEmail({contact:null,enrichments}),
+   rows:(enrichmentsForLeads(db,'T',[lead])[lead]??[]).filter(r=>['person','email','phone'].includes(r.kind)),
    guesses:db.prepare('SELECT address FROM email_candidates WHERE lead_id=?').all(lead)}
  }finally{db.close()}
 }
@@ -72,4 +82,23 @@ test('persisted normal-scan marker forces strict recrawl without explicit caller
  const refreshed=await fixture(card(),{marker:true,recrawl:true})
  assert.deepEqual(refreshed.rows.filter(r=>r.kind==='email'),[])
  assert.ok(refreshed.rows.some(r=>r.kind==='person'))
+})
+
+test('ordinary marked crawl records display-only exact personal work email outside US, without a routing recipient',async()=>{
+ for(const country of ['Toronto, ON','London, England','Osaka, Japan']){
+  const {display,foreign,routed,rows,guesses}=await fixture(card(),{marker:true,international:true,country})
+  assert.deepEqual(display,{person:name+', '+title,address:email,source_url:team,role_quote:title,observed_at:now/1000,display_only:true},country)
+  assert.equal(foreign,undefined)
+  assert.equal(routed,null)
+  assert.ok(!rows.some(r=>r.kind==='email'))
+  assert.deepEqual(guesses,[])
+ }
+ assert.equal((await fixture(card(),{marker:true})).routed,email,'pre-existing US recipient path is unchanged')
+})
+test('worldwide display withdraws stale, superseded, suppressed, blocked or unattributable evidence',async()=>{
+ for(const invalidate of ['attempt','person','suppression','age'] as const)
+  assert.equal((await fixture(card(),{marker:true,international:true,invalidate})).display,undefined,invalidate)
+ for(const options of [{recrawl:true},{own:false},{marker:false}] as const)
+  assert.equal((await fixture(card(),{marker:true,international:true,...options})).display,undefined)
+ assert.equal((await fixture(card(title,shared),{marker:true,international:true})).display,undefined)
 })

@@ -1,4 +1,7 @@
 import type { Db } from '../db/client.ts'
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { companyFirstResults, type CompanyFirstResultCounts } from '../scan/company-first-results.ts'
+import { hasSentHistory } from './campaign-view.ts'
 import { windowHeld } from './currentness.ts'
 import { requiredGateHeldForJob } from '../scan/held-state.ts'
 
@@ -7,11 +10,13 @@ import { requiredGateHeldForJob } from '../scan/held-state.ts'
 // the Outreach list (newest 200 across the account), nothing here writes or truncates, so an old campaign's history is
 // complete. Returns null for a scan that does not exist or is not this tenant's (the route answers both as 404).
 export interface CampaignDetail {
+  company_first_counts?: CompanyFirstResultCounts | null
   job: { id: string; query: string | null; status: string; error: string | null; funded_by: 'trial' | null; spend_usd: number | string | null; created_at: number; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; enrich_started_at: number | null; enrich_finished_at: number | null }
   leads: { id: string; company: string | null; name: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; quarantine_reason: string | null
     // Held by the search's time window (no usable date, or older than it): the draft gate's own verdict (currentness.ts windowHeld), so the
     // page can tell a research-only lead from one a review can release (#683). Computed here; the job's saved profile is not returned.
     window_held: boolean
+    company_first_display_only?: true
     // The reason a lead was confirmed OUT of, when it was held for something a check cannot resolve (someone else's customer, a
     // different place, a closed opening): confirming it does not change that (#683, the same rule as campaigns.ts heldResearch).
     human_confirmed_from: string | null
@@ -33,11 +38,16 @@ export async function campaignDetail(db: Db, tenantId: string, jobId: string): P
   const now = new Date()
   // The draft guard's own verdict (lib/scan/held-state.ts), read for the whole scan on this Db (#1062).
   const gateHeld = await requiredGateHeldForJob(db, tenantId, job.id)
-  const leads = rows.map(({ event_date, ...l }) => ({ ...l, window_held: windowHeld({ event_date, icp: w?.icp ?? null, query: job.query, run_budget: w?.run_budget ?? null }, now), gate_held: gateHeld.has(l.id) }))
+  const marked = hasCompanyFirstBudget(w?.run_budget)
+  const proof = marked ? await companyFirstResults(db, tenantId, job.id, now) : null
+  const displayed = marked ? rows.filter(l => proof?.visibleIds.has(l.id)) : rows
+  const leads = displayed.map(({ event_date, ...l }) => ({ ...l, window_held: windowHeld({ event_date, icp: w?.icp ?? null, query: job.query, run_budget: w?.run_budget ?? null }, now), gate_held: gateHeld.has(l.id),
+    ...(proof && !proof.readyIds.has(l.id) ? { company_first_display_only: true as const } : {}) }))
   // Newest first, so the first message per lead is its latest.
   const messages = await db.all<CampaignDetail['messages'][number]>(`SELECT m.id, m.lead_id, m.to_email, m.subject, m.status, m.created_at, m.sent_at
     FROM outreach_messages m JOIN leads l ON l.id = m.lead_id
     WHERE m.tenant_id = ? AND l.scan_job_id = ? ORDER BY m.created_at DESC, m.insert_seq DESC`, [tenantId, job.id])
   // The row was read: an empty spend column means no paid call was recorded (0), the same as the status read and the history list.
-  return { job: { ...job, spend_usd: job.spend_usd ?? 0 }, leads, messages }
+  return { job: { ...job, spend_usd: job.spend_usd ?? 0 }, leads, messages: marked ? messages.filter(m => hasSentHistory(m) || proof?.readyIds.has(m.lead_id)) : messages,
+    ...(marked ? { company_first_counts: proof?.counts ?? null } : {}) }
 }

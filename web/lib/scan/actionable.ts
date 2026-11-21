@@ -8,6 +8,11 @@
 // the run report gets the same counts, so the report and the card agree.
 import { carriedExcluded } from './carry-gate.ts'
 import type Database from 'better-sqlite3'
+import { sqliteDb } from '../db/client.ts'
+import { companyFirstPublishedDisplayRows, type CompanyFirstPublishedDisplayRow } from '../people/company-first-published-display.ts'
+import { loadPlayDemandRubric } from './demand-rubric-play.ts'
+import { companyFirstEventCurrent } from './timing-proof.ts'
+import { companyFirstJobWindow } from './window.ts'
 import { addEnrichment } from '../connectors/store.ts'
 import { currentSiteContact, NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf } from './site-contact.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
@@ -134,4 +139,51 @@ export function recordActionability(db: Database.Database, job: { id: string; us
   }
   const total = (db.prepare("SELECT count(*) AS n FROM leads WHERE scan_job_id = ? AND company <> ''").get(job.id) as { n: number }).n
   return { source_checked: total, verified: rows.filter(r => !r.held).length, held_leads: rows.filter(r => r.held).map(r => ({ id: r.lead_id, company: r.company, url: r.url ?? '' })), actionable: rows.filter(r => r.actionable).length, missing, leads: rows.slice(0, 30).map(r => ({ company: r.company, actionable: r.actionable, missing: r.missing })) }
+}
+
+type ViewJob = {
+  id: string
+  user_id: string
+  query: string | null
+  icp: string | null
+  run_budget: string | null
+  status: string
+  enrich_finished_at: number | null
+}
+
+// Read-only proof for display, not a contact route or actionability verdict.
+// It cannot be used to draft, approve, send, export a contact, or override a
+// review hold. In particular, the published display fact never joins the
+// enrichment kinds that qualify as a route.
+export async function verifiedCompanyFirstDisplay(
+  db: Database.Database, tenantId: string, jobId: string, leadIds: readonly string[], now = new Date(),
+): Promise<Record<string, CompanyFirstPublishedDisplayRow>> {
+  try {
+    const job = db.prepare('SELECT id,user_id,query,icp,run_budget,status,enrich_finished_at FROM scan_jobs WHERE id=? AND user_id=?')
+      .get(jobId, tenantId) as ViewJob | undefined
+    if (!job || job.status !== 'done' || job.enrich_finished_at === null) return {}
+    const window = companyFirstJobWindow(job)
+    if (window?.days == null) return {}
+    const ids = [...new Set(leadIds)].slice(0, 200)
+    const facts = await companyFirstPublishedDisplayRows(sqliteDb(db), tenantId, ids, Math.floor(now.getTime() / 1000))
+    if (!Object.keys(facts).length) return {}
+    const { rubric } = await loadPlayDemandRubric(sqliteDb(db), tenantId, jobId, window.days)
+    const res: Record<string, CompanyFirstPublishedDisplayRow> = {}
+    const acts = db.prepare("SELECT value,label FROM lead_enrichments WHERE tenant_id=? AND lead_id=? AND connector=? AND kind='actionability'")
+    for (const current of classifyLeads(db, job, new Map(), { rubric })) {
+      const fact = facts[current.lead_id]
+      if (!fact || current.held || !current.person || fact.person !== current.person) continue
+      const onlyNoRoute = current.missing.length === 1 && current.missing[0] === 'no_published_contact'
+      if ((!current.actionable && !onlyNoRoute) || !companyFirstEventCurrent(db, tenantId, current.lead_id, now)) continue
+      const recorded = acts.all(tenantId, current.lead_id, ACTIONABLE_CONNECTOR) as { value: string; label: string | null }[]
+      if (recorded.length !== 1 || !recorded[0].label) continue
+      if (!recorded[0].value.startsWith('Actionable:') && recorded[0].value !== 'Not actionable yet: no published contact') continue
+      res[current.lead_id] = fact
+    }
+    return res
+  } catch {
+    // A missing display table, missing proof, unreadable or partial run does
+    // not create a new path for a candidate to become visible.
+    return {}
+  }
 }

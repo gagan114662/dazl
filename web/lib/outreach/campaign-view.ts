@@ -36,9 +36,14 @@ export function leadStatus(l: ViewLead, msgs: ViewMsg[]): LeadStatus {
 }
 
 // Messages newest first come from the API; keep that order, and only this scan's.
-export function scanMessages(msgs: ViewMsg[], leads: { id: string }[]): ViewMsg[] {
+// A sent receipt is history, not proof that the recipient is eligible today.
+export function hasSentHistory(msg: ViewMsg): boolean {
+  return msg.status === 'sent' || (typeof msg.sent_at === 'number' && msg.sent_at > 0)
+}
+
+export function scanMessages(msgs: ViewMsg[], leads: { id: string }[], includeSentHistory = false): ViewMsg[] {
   const ids = new Set(leads.map(l => l.id))
-  return msgs.filter(m => ids.has(m.lead_id))
+  return msgs.filter(m => ids.has(m.lead_id) || (includeSentHistory && hasSentHistory(m)))
 }
 
 // The Campaigns list's Qualification stage: [value, detail], counted the way the campaign page counts (lib/run-status.ts currentQual). A held lead

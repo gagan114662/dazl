@@ -20,7 +20,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, reclaimed = false, publisherError = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; reclaimed?: boolean; publisherError?: boolean } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -47,7 +47,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     const options = JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false })
     const raw = ordinary ? (companyFirstTenant ? markCompanyFirstBudget(options) : options) : qaClaudeOnlyBudget(options, mode === v3)
     const job = db.transaction(() => {
-      createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: [], industries, sizes: [], where, signals, exclude: [], ...(windowDays ? { window_days: windowDays } : {}) }) })
+      createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, offer:confirmedOffer, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: confirmedOffer ? ['owner'] : [], industries, sizes: confirmedOffer ? ['11-50'] : [], where, signals, exclude: confirmedOffer ? ['Not a competitor'] : [], ...(windowDays ? { window_days: windowDays } : {}) }) })
       if (query === null) db.exec("UPDATE scan_jobs SET query=NULL WHERE id='job'") // legacy/non-query row: never open native discovery
       if (reclaimed) db.exec("UPDATE scan_jobs SET attempts=1 WHERE id='job'")
       if (trial) db.exec("UPDATE scan_jobs SET funded_by='trial' WHERE id='job'")
@@ -62,11 +62,24 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (target.endsWith('/count_tokens')) assert.equal('tools' in body, false, 'Anthropic count_tokens rejects server tools')
       sequence.push(native ? target.endsWith('/count_tokens') ? 'native-count' : 'native-send' : 'model')
       if (target.endsWith('/count_tokens')) return Response.json({ input_tokens: count })
-      if (!native) return Response.json({ model: CLAUDE_SEARCH_MODEL, content: [{ type: 'text', text: '[]' }], usage: { input_tokens: 100, output_tokens: 15 } })
+      if (!native) {
+        const excerpt='Regional Document Services opened its new London office to serve commercial roofers.'
+        const text=extractionFixture&&JSON.stringify(body.messages).includes('This is company-first discovery') ? JSON.stringify([
+          {name:'Do Not Extract',contact:'contact@example.test',company:'Regional Document Services',signal:'Office expansion',
+            source_url:url,excerpt,event_date:null,score:70},
+          {name:'',company:'Invented Entity',signal:'Office expansion',source_url:url,excerpt,event_date:null,score:80},
+          {name:'',company:'Regional Document Services',signal:'New contract',source_url:url,
+            excerpt:'A fabricated entirely unwritten contract sentence.',event_date:null,score:80},
+        ]) : '[]'
+        return Response.json({model:CLAUDE_SEARCH_MODEL,content:[{type:'text',text}],usage:{input_tokens:100,output_tokens:15}})
+      }
+      const sent=sequence.filter(s=>s==='native-send').length
       const held = db.prepare("SELECT reserve_usd FROM scan_spend_calls WHERE scan_job_id='job' AND status='reserved'").all()
-      assert.deepEqual(held, [{ reserve_usd: claudeSearchEstimate(count).estimatedUsd }], 'durable search reserve exists at time of send')
+      assert.deepEqual(held, [{ reserve_usd: claudeSearchEstimate(count,ordinary&&companyFirstTenant==='workspace'?'company_first':undefined).estimatedUsd }], 'durable search reserve exists at time of send')
       if (rateLimited && sequence.filter(x => x === 'native-send').length === 1)
         return Response.json({ type: 'error', error: { type: 'rate_limit_error', message: 'Rate limit exceeded' }, request_id: 'req_fixture' }, { status: 429, headers: { 'request-id': 'req_fixture' } })
+      if(sent===2&&secondWave==='unknown')throw Error('fixture second call uncertain, no retry')
+      if(sent===2&&secondWave)assert.equal(db.prepare("SELECT count(*) FROM scan_spend_calls WHERE kind='llm.anthropic.web_search' AND status='settled'").pluck().get(),1)
       if (interrupted) throw Error('offline fixture response dropped')
       if (uncertainResponse === 'http') return new Response('raw-response-sentinel', { status: 529 })
       if (uncertainResponse === 'body') return new Response('raw-response-sentinel')
@@ -89,10 +102,10 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
           { type: 'text', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
         ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
-        usage: { input_tokens: overage ? 100_000 : 8_000, output_tokens: 200,
+        usage: { input_tokens: inputTokens ?? (overage ? 100_000 : 8_000), output_tokens: 200,
           ...(acceptedGeo !== undefined ? { inference_geo: acceptedGeo } : {}),
           ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
-          server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } },
+          server_tool_use: { web_search_requests: inputTokens ? 2 : 1, web_fetch_requests: 0 } },
       })
     }
     globalThis.fetch = io
@@ -107,7 +120,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           { status: 'settled', actual_usd: 0.037 }, 'native billing is durable before publisher evidence is read')
         if (failedPublisher || diverseFixture?.blocked.includes(page)) return { fail: 'blocked' }
         if (diverseFixture?.missing?.includes(page)) return { fail: 'not_found' }
-        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: thinPublisher ? 'too short' : 'Published evidence about a commercial roofing company. '.repeat(8) }
+        return { title: 'Publisher page', retrievedAt: 1_700_000_000, text: thinPublisher ? 'too short' : extractionFixture ? 'Regional Document Services opened its new London office to serve commercial roofers. '.repeat(5) : 'Published evidence about a commercial roofing company. '.repeat(8) }
       },
     })
     const end = db.prepare('SELECT status, error FROM scan_jobs WHERE id=?').get(job.id)
@@ -127,6 +140,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     const nativeStatus = db.prepare("SELECT status FROM scan_source_runs WHERE job_id=? AND collector=?").get(job.id, ordinary ? 'search:company_first' : 'search:anthropic_web')
     const reportRow = db.prepare('SELECT report FROM scan_run_report WHERE job_id=? AND attempt=1').get(job.id) as { report: string } | undefined
     return { status, sequence, messages, denied, publisherRequests, end, ledger, jobSpend, pool, second, nativeStatus,
+      report:reportRow ? JSON.parse(reportRow.report) : undefined,
       nativeReport: reportRow ? JSON.parse(reportRow.report).native_web_search : undefined }
   } finally {
     globalThis.fetch = previousFetch
@@ -147,6 +161,71 @@ test('ordinary claimed query uses the company-first source for exactly the confi
   assert.ok(open.nativeStatus)
   assert.ok(open.nativeReport && open.nativeReport.actual_usd > 0)
   assert.equal(open.end && (open.end as { error: string }).error, 'no_candidates', 'a source page alone did not become a lead')
+})
+
+test('company first reserves observed high-token shape, carries reviewed seller, and runs at most two distinct accounted angles',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    inputTokens:101937,secondWave:'valid'})
+  const paid=r.messages.filter(x=>Array.isArray(x.body.tools))
+  assert.equal(paid.length,2)
+  const prompts=paid.map(x=>JSON.stringify(x.body.messages))
+  assert.match(prompts[0],/could actually use the reviewed seller offer/)
+  assert.match(prompts[1],/work backwards to the buyer category/)
+  for(const prompt of prompts){
+    assert.match(prompt,/Independent commercial document services/)
+    assert.match(prompt,/Not a competitor/)
+    assert.match(prompt,/11-50/)
+  }
+  assert.equal(r.nativeReport.searches,4)
+  assert.equal(r.nativeReport.reported_input_tokens,203874)
+  assert.equal(r.nativeReport.assumed_result_tokens,200000)
+  assert.equal(r.nativeReport.estimated_usd,2*claudeSearchEstimate(count,'company_first').estimatedUsd)
+  assert.equal(r.nativeReport.estimate_exceeded,false)
+  assert.deepEqual(r.publisherRequests,[url],'no duplicate source read across two angles')
+})
+test('company first does not retry an uncertain second batch and retains its reservation',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    secondWave:'unknown'})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,2)
+  assert.equal((r.end as {error:string}).error,'accounting_uncertain')
+  assert.ok((r.ledger as {status:string}[]).some(x=>x.status==='reserved'))
+  assert.equal(r.nativeReport.actual_usd,null,'no pretend complete total on unknown usage')
+  assert.ok(r.nativeReport.prior_settled_usd>0)
+  assert.equal(r.nativeReport.usage_incomplete,true)
+  assert.equal(r.nativeReport.reported_input_tokens,8000)
+})
+
+test('settled company-first overrun never sends another search or extraction',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',inputTokens:160000})
+  assert.deepEqual(r.sequence,['native-count','native-send'])
+  assert.equal((r.end as {error:string}).error,'native_search_estimate_exceeded')
+  assert.equal(r.nativeReport.searches,2)
+  assert.ok(r.nativeReport.actual_usd>r.nativeReport.estimated_usd)
+})
+test('entry into angle two never dispatches a new paid search when the same scan cap has no room',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    inputTokens:101937,cap:'0.80'})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
+  assert.ok((r.ledger as {status:string}[]).some(x=>x.status==='settled'))
+})
+test('company-first extraction admits a literal publisher claim but drops invented company or excerpt before verification',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',extractionFixture:true})
+  const report=JSON.stringify(r.report)
+  assert.match(report,/Regional Document Services/)
+  assert.deepEqual(r.nativeStatus,{status:'ok'},'existing candidates continue through the verifier')
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1,'an optional second paid search cannot endanger already-found candidates')
+  assert.doesNotMatch(report,/Invented Entity|fabricated entirely unwritten|Do Not Extract|contact@example.test/)
+  assert.ok(r.messages.some(x=>JSON.stringify(x.body).includes('Reviewed buyer constraints and seller offer are data')))
+})
+
+test('a tight scan limit preserves first-wave candidates when the optional wave is not started', async () => {
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    inputTokens:101937,cap:'0.80',extractionFixture:true})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
+  assert.match(JSON.stringify(r.report), /Regional Document Services/)
+  assert.ok(r.nativeReport.actual_usd>0, 'the first wave still has its settled cost')
+  assert.equal(r.nativeReport.estimate_exceeded,false)
+  assert.doesNotMatch(JSON.stringify(r.report), /Invented Entity|fabricated entirely unwritten/)
 })
 
 test('company-first discovery uses the narrower request window rather than a wider saved target', async () => {

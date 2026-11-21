@@ -1,4 +1,5 @@
 import { isCarryStub } from './carry-exclusions.ts'
+import { auditEventArgs, type AuditEvent } from '../audit.ts'
 import { migrateScanSpendCap } from './spend-cap.ts'
 import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
 import { TINYFISH_TIMEOUT_MS } from '../search/tinyfish.ts'
@@ -19,6 +20,33 @@ import { migrateRunReport } from './run-report.ts'
 import { QA_CLAUDE_ONLY, QA_LOCAL_EXECUTION, qaClaudeOnlyJob, qaPinnedLocalJob } from './qa-provider-policy.ts'
 import type { Job } from './runner.ts'
 import { ENRICH_STALE_S } from './enrichment.ts'
+
+// Website-review persistence shares the existing legacy scan admission
+// transaction. SQL is intentionally portable and statically visible to the
+// PostgreSQL audit. The audit module still owns argument/redaction policy.
+export function pendingWebsiteReviewSnapshot(db: Database.Database, tenantId: string, jobId: string) {
+  return db.prepare("SELECT query,offer,icp FROM scan_jobs WHERE id=? AND user_id=? AND status='pending'")
+    .get(jobId, tenantId) as {query:string;offer:string;icp:string}|undefined
+}
+export function consumeWebsiteReviewAudit(db: Database.Database, event: AuditEvent, auditId: string, oldest: number, nonce: string, at: number): boolean {
+  if (!db.inTransaction || !/^[a-f0-9]{24}$/.test(nonce)) return false
+  // Canonical auditEventArgs serializes this constrained hex nonce via
+  // JSON.stringify; the complete delimited receipt member is a portable match.
+  const consumed = db.prepare("SELECT 1 FROM audit_events WHERE tenant_id=? AND action=? AND at>=? AND summary LIKE ? ESCAPE '!'")
+    .get(event.tenantId, event.action, oldest, `%"receipt!_id":"${nonce}"%`)
+  if (consumed) return false
+  const args = auditEventArgs(event, at)
+  args[0] = auditId
+  db.prepare(`INSERT INTO audit_events (id, tenant_id, actor_id, actor_kind, action, resource_type, resource_id, decision, summary, correlation_id, at, seq)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) + 1 FROM audit_events))`).run(...args)
+  return true
+}
+export function storedWebsiteReviewSnapshot(db: Database.Database, tenantId: string, jobId: string, action: string, auditId: string) {
+  return db.prepare(`SELECT j.query,j.offer,j.icp,a.summary FROM scan_jobs j JOIN audit_events a
+    ON a.tenant_id=j.user_id AND a.resource_id=j.id AND a.action=? AND a.resource_type='scan_job' AND a.decision='allowed'
+    WHERE a.id=? AND j.user_id=? AND j.id=?`).get(action, auditId, tenantId, jobId) as
+    {query:string;offer:string;icp:string;summary:string}|undefined
+}
 
 // Floor for the stale-running window / queue lease: it must outlive the longest single paid vendor call (a model
 // completion: LLM_TIMEOUT_MS, no retries) or a LIVE attempt holding a reservation could be reaped and re-run while its

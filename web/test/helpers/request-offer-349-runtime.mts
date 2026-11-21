@@ -198,8 +198,11 @@ test('#1436: a "seller = ..." request beside the saved dental profile asks befor
   setUser({ id: O, business_name: 'Dental Seller', email: `${O.slice(0, 4)}@example.test` } as never)
   await (await getDb()).run('DELETE FROM rate_limits')
   const est = async (body: unknown) => { const r = await ESTIMATE(new NextRequest('http://localhost/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `10.9.1.${++ip}` }, body: JSON.stringify(body) })); return { status: r.status, ...(await r.json()) as Record<string, unknown> } as Record<string, unknown> & { status: number } }
-  assert.deepEqual(await est({ query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED }, 'the cost panel is not shown before the offer is chosen')
-  assert.deepEqual(await scan(O, { query: REQ }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED })
+  for (const label of ['seller =', 'Seller:', 'sells =', 'sells:']) {
+    const query = REQ.replace('seller =', label)
+    assert.deepEqual(await est({ query }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED }, 'the cost panel is not shown before the offer is chosen')
+    assert.deepEqual(await scan(O, { query }), { status: 409, error: 'offer_conflict', stated: OFFER, saved: SAVED })
+  }
   assert.equal(jobs(), n0, 'nothing queued')
   // Qodo on #1441 (3): a supplied offer the scan route refuses (empty, blank, under 3 characters) is refused by the estimate too
   for (const bad of ['', '   ', 'ab']) {
@@ -207,7 +210,7 @@ test('#1436: a "seller = ..." request beside the saved dental profile asks befor
     assert.equal((await scan(O, { query: REQ, offer: bad })).status, 400)
   }
   const e2 = await est({ query: REQ, offer: OFFER })
-  assert.notEqual(e2.error, 'offer_conflict', JSON.stringify(e2))
+  assert.equal(e2.status, 200, JSON.stringify(e2))
   const run = await scan(O, { query: REQ, offer: OFFER })
   assert.equal(run.status, 202, JSON.stringify(run))
   assert.equal(row(run.job_id as string).offer, OFFER)

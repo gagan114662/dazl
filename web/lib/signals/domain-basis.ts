@@ -77,3 +77,11 @@ export async function domainConfirmedDb(db: Db, tenantId: string, leadId: string
   const ev = await readDb(db, tenantId, leadId)
   return ev ? verdictFrom(ev.lead, ev.rows, d).confirmed : false
 }
+
+// Identical ownership semantics for server-side display readers on either engine.
+export async function domainRelationshipDb(db: Db, tenantId: string, leadId: string, domain: string | null | undefined): Promise<DomainRelationship> {
+  const d = norm(domain)
+  if (!d) return 'none'
+  const ev = await readDb(db, tenantId, leadId)
+  return ev ? verdictFrom(ev.lead, ev.rows, d).rel : 'heuristic'
+}
