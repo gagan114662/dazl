@@ -25,6 +25,8 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { getDomain } from 'tldts'
+import { hiringPostingVerdict } from './hiring-posting-check.ts'
+import { requestedHiringRoles, type RequestedHiringRole } from './hiring-role-match.ts'
 import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
@@ -368,7 +370,7 @@ export function feedbackGate(db: Database.Database, tenantId: string) {
 }
 const auditDrop = (audit: CandidateAudit[]) => (rows: LeadDraft[], reason: string) => { for (const l of rows) audit.push({ key: `${dedupKey(l)}|${l.source_url}`, company: l.company, url: l.source_url, outcome: 'dropped', reason }) }
 
-export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>): Promise<VerifyOutcome> {
+export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetcher = fetchPageDetailed, now = new Date(), judge?: Judge, knownDomain: string | null = null, held?: { text: HeldText; attempt: string }, audit?: CandidateAudit[], geo: string[] = [], structuredDates?: ReadonlyMap<string, string>, hireRoles: RequestedHiringRole[] = []): Promise<VerifyOutcome> {
   const cache = new Map<string, Promise<Page | FetchFail | null>>()
   const get = (u: string) => { if (!cache.has(u)) cache.set(u, fetchPage(u).catch(() => null)); return cache.get(u)! }
   const dropped: Record<string, number> = {}
@@ -415,6 +417,8 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // #533: the board's own first-published day for exactly this posting URL, from the job-board source or from the board's API record the page was read from
     // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
     const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
+    // #533 / #1205 live: a hiring candidate cited to an aggregate page (market report, search listing) or to another role's posting is never a lead
+    if (hiringCand) { const hv = hiringPostingVerdict(cIn, hireRoles); if (!hv.ok) { toReview(cIn, hv.reason); continue } }
     const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
     if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
       // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
@@ -2116,7 +2120,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates)
+    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -2140,7 +2144,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
-          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [])
+          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [], undefined, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
@@ -2210,7 +2214,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
               // D3: a round-two lead may cite a page only round one fetched (or vice versa for a later re-check);
               // both were read within this one attempt, so the verifier gets the union, not round two's pages alone.
               const held = HeldText.merge(diag.held, diag2.held)
-              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates)
+              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
               const seenKeys = new Set(outcome.leads.map(dedupKey))
               for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
               const seenReview = new Set(outcome.review.map(dedupKey))
@@ -2250,7 +2254,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [])
+          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [], undefined, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))

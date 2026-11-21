@@ -28,17 +28,17 @@ export const REQUIRED_GATE_REASONS: ReadonlySet<string> = new Set(['sales_hiring
 const CAUSE: Record<string, ResearchCause> = {
   outside_window_undated: 'undated', event_timing_unconfirmed: 'undated', event_date_bad_date: 'undated', event_date_future_date: 'undated',
   outside_window: 'older', event_date_stale: 'older',
-  counterparty_signal: 'customer', location_mismatch: 'place', job_closed: 'closed', sales_hiring_check_failed: 'unsupported',
+  counterparty_signal: 'customer', location_mismatch: 'place', job_closed: 'closed', sales_hiring_check_failed: 'unsupported', posting_not_specific: 'unsupported', job_role_mismatch: 'unsupported',
 }
 // Every hold reason a review lead can carry, as one of: reviewable (above), a hold no check can change, or a time-window hold. A new reason must be
 // added to exactly one of them (test/lead-state.test.ts pins this against the Leads view's reason labels), or it fails closed to research on Home.
-export const RESEARCH_REASONS: ReadonlySet<string> = new Set(['outside_window', 'outside_window_undated', 'counterparty_signal', 'location_mismatch', 'job_closed', ...REQUIRED_GATE_REASONS])
+export const RESEARCH_REASONS: ReadonlySet<string> = new Set(['outside_window', 'outside_window_undated', 'counterparty_signal', 'location_mismatch', 'job_closed', 'posting_not_specific', 'job_role_mismatch', ...REQUIRED_GATE_REASONS])
 
 // Held for a fact about the evidence itself - someone else's customer, a different place, a closed opening, or a failed
 // REQUIRED check (sales_hiring_check_failed, #683 round 2). A person's check of the source cannot change any of these, so
 // a lead confirmed out of one stays research: never offered as draftable (lib/scan/review-action.ts) and never draftable
 // (currentnessHeld, lib/outreach/currentness.ts).
-const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed', ...REQUIRED_GATE_REASONS])
+const UNCHECKABLE = new Set(['counterparty_signal', 'location_mismatch', 'job_closed', 'posting_not_specific', 'job_role_mismatch', ...REQUIRED_GATE_REASONS])
 export function uncheckableCause(reason: string | null | undefined): ResearchCause | null {
   return reason && UNCHECKABLE.has(reason) ? CAUSE[reason] : null
 }

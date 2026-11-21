@@ -40,6 +40,13 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
   const texts = [query ?? '', ...signals]
   const roles = new Map<string, RequestedHiringRole>()
   for (const text of texts) {
+    // #533 live: "posted a front desk receptionist job in the past 90 days" names the posting title as plainly as "hiring a ..." does
+    for (const m of text.matchAll(/\bpost(?:ed|s|ing)?\s+(?:(?:a|an|the|new|their|its|one|any)\s+)*([^.;!?\n]{2,80}?)\s+(?:job|role|position|opening|vacanc(?:y|ies)|posting|ad|listing)s?\b/gi)) {
+      const term = m[1].replace(LEAD_WORDS, '').trim(), n = normal(term)
+      if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n) || LEAD_QUALIFIER.test(term)) continue
+      if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions|job|new)$/.test(n)) continue
+      roles.set(n, { term, normalized: n })
+    }
     for (const m of text.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\s+([^.;!?\n]+)/gi)) {
       const phrase = m[1].split(/\s+(?:within|in|at|with|on|from|that|who|whose|during|over|across)\b|\(/i)[0].trim()
       if (LEAD_QUALIFIER.test(phrase)) continue
