@@ -49,8 +49,14 @@ test('#1398 POST /api/scan/estimate: a QA-only mode is priced nowhere (unknown_m
     const r = await ESTIMATE(req('/api/scan/estimate', { query: Q, mode }))
     assert.equal(r.status, 400, mode)
     assert.equal((await r.json() as { error: string }).error, 'unknown_mode', mode)
-    assert.equal(jobs(db).length, 0)
   }
+  // the production opt-in is still priced, Claude-only: no TinyFish row
+  const db = setup(); as(db)
+  const ok = await ESTIMATE(req('/api/scan/estimate', { query: Q, mode: 'first5', budget: { web_search: 'anthropic_estimated_v1' } }))
+  assert.equal(ok.status, 200)
+  const { estimate } = await ok.json() as { estimate: { rows: { provider: string }[] } }
+  assert.ok(Array.isArray(estimate.rows) && estimate.rows.length > 0)
+  assert.equal(estimate.rows.some(r => r.provider === 'TinyFish'), false)
 })
 
 test('#1398 the real first-run requests keep working: the Claude Web Search opt-in still gets its isolated Claude-only job; a plain first play stays ordinary', async () => {
