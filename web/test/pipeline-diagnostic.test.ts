@@ -75,6 +75,13 @@ test('status diagnostics never borrow a previous attempt’s counts', () => {
   assert.equal(currentScanPipelineDiagnostic([older, null, current], 2, 'cancelled').stop_hint, 'stopped_by_request')
 })
 
+test('a terminal attempt that failed before writing its report keeps its own job error hint', () => {
+  const old = { attempt: 1, report: { stop: { code: 'accounting_uncertain' } } }
+  assert.equal(currentScanPipelineDiagnostic([old], 2, 'no_candidates', null, true).stop_hint, 'inspect_evidence_coverage')
+  assert.equal(currentScanPipelineDiagnostic([old], 2, 'no_candidates', null, false).stop_hint, null)
+  assert.equal(currentScanPipelineDiagnostic([old], 2, 'accounting_uncertain').stop_hint, null)
+})
+
 test('a re-claimed retry ignores job error until its own durable report exists', () => {
   const old = { attempt: 1, report: { attempt: 2, stop: { code: 'accounting_uncertain' } } }
   assert.equal(currentScanPipelineDiagnostic([old], 2, 'accounting_uncertain').stop_hint, null)
