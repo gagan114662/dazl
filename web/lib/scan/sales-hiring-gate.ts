@@ -64,20 +64,26 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
   return m
 }
 const SEP = /[,\-–—(/|:]/
+// a place: the whole text is a country, region or multi-country region, three letters or more (a two-letter "Co" / "In" is a word, not a
+// state code) or the written UK / US, and capitalised as a name
+const isPlace = (t: string) => (t.length >= 3 || /^(?:UK|US)$/.test(t)) && /^[A-Z]/.test(t) && (isCountryOrRegion(t) || isCountryGroup(t))
 // what follows the role: the end, a separator or a level as before; or, written straight after it with no separator, segment words and/or a
-// country or multi-country region ("Mid Market Benelux", "Mexico", "Large Enterprise Public Sector", "UK/I"), then the end or a separator.
-// Any other word there ("Manager", "Team", "Support Specialist", "Lead", "Co-op") is another title and holds it.
+// country or multi-country region ("Mid Market Benelux", "Mexico", "Large Enterprise Public Sector", "UK/I"). Any other word there ("Manager",
+// "Team", "Support Specialist", "Co-op") is another title and holds it. On that path, what follows the next separator may only be a level or a
+// place ("Mid Market - Spain", "UK/I"): anything else ("Mexico - Chief of Staff", "Benelux, Sales Manager") is held (council review at ce42877).
 function afterRoleOk(after: string): boolean {
   if (AFTER_ROLE.test(after)) return !SEGMENT_ROLE.test(after)
   const a = after.replace(/\bmid[\s-]+market\b/gi, 'Midmarket')
-  const cut = a.search(SEP), run = (cut < 0 ? a : a.slice(0, cut)).trim(), tail = cut < 0 ? '' : a.slice(cut)
-  if (!run || !/^\s/.test(a)) return false
+  if (!/^\s/.test(a)) return false
+  const cut = a.search(SEP), run = (cut < 0 ? a : a.slice(0, cut)).trim(), tail = cut < 0 ? '' : a.slice(cut).replace(/^[\s,\-–—(/|:]+/, '').replace(/\)\s*$/, '').trim()
+  if (!run) return false
   const w = run.split(/\s+/)
   let k = 0; while (k < w.length && SEGMENT.test(w[k])) k++
-  const place = w.slice(k).join(' ')
-  // a place is the whole rest of the run, three letters or more (a two-letter "Co" / "In" is a word, not a state code), or the written UK / US
-  if (place && !((place.length >= 3 || /^(?:UK|US)$/.test(place)) && /^[A-Z]/.test(place) && (isCountryOrRegion(place) || isCountryGroup(place)))) return false
-  return AFTER_ROLE.test(tail) && !SEGMENT_ROLE.test(tail)
+  // the place may start at any point inside the segment words ("New York": "New" is also a segment word)
+  let ok = k === w.length
+  for (let j = 0; j <= k && !ok; j++) ok = isPlace(w.slice(j).join(' '))
+  if (!ok) return false
+  return !tail || /^(?:I{1,3}|IV|V|[1-5])$/.test(tail) || isPlace(tail)
 }
 // #1121 (dogfood, prod 03f0e8eb): the lead's OWN verified quote is the company's job ad naming the requested vacancy - "As a Sales Development
 // Representative at Mercury, you'll be ...", "Founding Sales Development Representative (SDR) Chesky United States", "Sales Development

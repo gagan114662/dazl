@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { applySalesHiringGate, postingKey, titleIsRole } from '../lib/scan/sales-hiring-gate.ts'
+import { applySalesHiringGate, postingKey, titleIsRole, jobAdQuoteRole } from '../lib/scan/sales-hiring-gate.ts'
 import { requestedHiringRoles } from '../lib/scan/hiring-role-match.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.ts'
@@ -54,6 +54,7 @@ const REAL_OPENINGS: [string, string][] = [
   ['trustpilot', 'Account Executive Mid Market - Spain'],
   ['okta', 'Strategic Account Executive UK/I'],
   ['okta', 'Account Executive Large Enterprise Public Sector'],
+  ['datadog', 'Commercial Account Executive UKI/Nordics'],
 ]
 // another role, a pool or a mention of the role: held before #1185 and still held (#1155's held titles first)
 const NOT_THE_OPENING = [
@@ -64,6 +65,11 @@ const NOT_THE_OPENING = [
   // the newly allowed segment words never make another title the opening
   'Account Executive Territory Manager', 'Federal Account Executive Manager', 'Sales Engineer Account Executive', 'Territory Account Executive Team Lead',
   'Account Executive Lead', 'Account Executive Team', 'Account Executive Specialist', 'Account Executive Mexico Manager',
+  // a place or segment straight after the role never hides another title behind it (council review at ce42877)
+  'Account Executive Benelux, Sales Manager', 'Account Executive Mexico - Senior Manager', 'Account Executive Mid Market Support',
+  'Account Executive New Business / Sales Manager', 'Account Executive Federal - Senior Recruiter', 'Account Executive Co-op',
+  'Account Executive Mexico - Sales Team Lead', 'Account Executive Mexico - Account Executive Manager', 'Account Executive Mid Market - Chief of Staff',
+  'Account Executive Mid Market Benelux, Sales Operations Manager', 'Account Executive Mexico - Customer Success Manager', 'Account Executive Mexico | Chief of Staff',
 ]
 
 test('#1185 PASS: real Territory / Mid Market / Core / Majors / Sales / Federal / place-suffixed account-executive postings are the requested role through the real gate and store', async () => {
@@ -88,4 +94,17 @@ test('#1185: titleIsRole agrees with the gate on every title above', () => {
   const roles = requestedHiringRoles(QUERY, JSON.stringify({ signals: ['hiring an account executive'] }))
   for (const [, t] of REAL_OPENINGS) assert.ok(titleIsRole(t, roles), t)
   for (const t of NOT_THE_OPENING) assert.equal(titleIsRole(t, roles), null, t)
+  // a US state straight after the role whose first word is also a segment word ("New"); written-out shapes, not board copies
+  for (const t of ['Account Executive New York', 'Account Executive New Mexico', 'Strategic Account Executive UK/I']) assert.ok(titleIsRole(t, roles), t)
+})
+
+test('#1185: a job-ad heading reads the same way - a segment opening passes, and a place or segment after the role never hides another title', () => {
+  const roles = requestedHiringRoles(QUERY, JSON.stringify({ signals: ['hiring an account executive'] }))
+  for (const ex of ['Territory Account Executive at Acme', 'Senior Majors Account Executive - Dallas at Acme', 'Account Executive Mid Market Benelux at Acme']) assert.ok(jobAdQuoteRole(ex, 'Acme', roles), ex)
+  for (const ex of [
+    'Account Executive Benelux - Senior Manager at Acme', 'Account Executive EMEA / Sales Manager at Acme', 'Enterprise Account Executive Mexico - Regional Director at Acme',
+    'Account Executive Federal - Senior Recruiter at Acme', 'Account Executive New Business - Sales Manager at Acme', 'Account Executive Mexico - Talent Acquisition Partner at Acme',
+    'Account Executive Benelux Talent Pool at Acme', 'Team Lead Account Executive at Acme',
+    'As an Account Executive Mexico - Chief of Staff at Acme, you will support the CEO', 'As an Account Executive Mexico - Customer Success Manager at Acme, you will',
+  ]) assert.equal(jobAdQuoteRole(ex, 'Acme', roles), null, ex)
 })
