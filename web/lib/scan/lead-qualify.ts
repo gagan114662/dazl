@@ -149,7 +149,7 @@ export function parseQualification(raw: string, included: { url: string; text: s
   const fit=result.company_fit
   const criteriaConditionCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+(?:only\s+)?to|serv(?:e|es|ing)|suppl(?:y|ies|ying)|provid(?:e|es|ing)\s+[^.;]{1,60}?\s+to|work(?:s|ing)?\s+with|target(?:s|ing)|(?:whose\s+)?(?:customers?|clients?)\s+(?:must\s+be|are|include))\s+\S/i.test(targetCriteria)
   if(fit.verdict==='no'&&targetCriteria&&targetCriteria.trim()&&!criteriaConditionCustomers){
-   const customerComparison=/\bcustomers?\s+(?:are|is)\s+[^.!?;]{1,100}?(?:,\s*not|\s+rather\s+than)\s+[^.!?,;]{1,80}/i.exec(fit.note)
+   const customerComparison=/\bcustomers?\s+(?:are|is)\s+[^.!?;]{1,100}?(?:,?\s*not|\s+rather\s+than)\s+[^.!?,;]{1,80}/i.exec(fit.note)
    if(customerComparison)fit.assessment_conflict={kind:'customer_sector_not_target_business',premise:customerComparison[0],note:"Customer premise flagged: a business's customers can differ from the business itself (in sector, size or place). This warning concerns only the quoted customer comparison, not the entire no assessment. Other rejection reasons may still apply; they have not been assessed by this check. The raw verdict and note are unchanged. This does not establish the target business model or fit."}
   }
   return result

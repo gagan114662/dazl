@@ -36,6 +36,8 @@ test('#1435 an unseen category gets the same customer-sector warning: the target
     ['Dental clinics looking for a new booking system', 'Their customers are patients, not dental clinics.'],
     ['Target market: independent veterinary practices', 'Their customers are pet owners, not veterinary practices.'],
     ['Startups that raised funding for expansion in the last 90 days', 'Its customers are hospitals, not startups.'],
+    ['Independent veterinary practices', 'Their customers are pet owners not veterinary practices.'],   // no comma, as the base matched
+    ['B2B SaaS startups in London', 'The customers are insurance companies not software companies.'],
   ]) {
     const f = grade(criteria, note)
     assert.equal(f.assessment_conflict?.kind, 'customer_sector_not_target_business', criteria)
