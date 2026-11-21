@@ -68,6 +68,19 @@ export function logShellAuth(route:ShellRoute|null,requestId:unknown,phase:Phase
   emit({level:'info',type:'signed_shell_timing',ts:new Date().toISOString(),route,request_id:requestId,phase,
     duration_ms:Math.round(Math.min(120000,Math.max(0,performance.now()-start))),result,sqlite:sqliteContention(err)})
 }
+export async function measureShellAuth(route:ShellRoute|null,requestId:unknown,phase:Phase['phase'],
+  check:()=>Promise<boolean>):Promise<boolean>{
+  if(!route||!isRequestId(requestId))return check()
+  const start=performance.now()
+  let signed:boolean
+  try{signed=await check()}
+  catch(error){
+    logShellAuth(route,requestId,phase,start,'error',error)
+    throw error
+  }
+  logShellAuth(route,requestId,phase,start,signed?'allowed':'denied')
+  return signed
+}
 export function logShellBrowser(report:BrowserShellTiming):void{
   const clean=parseBrowserShellTiming(report)
   if(!clean)return

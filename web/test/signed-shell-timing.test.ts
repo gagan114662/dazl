@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm"
 import { SIGNED_SHELL_TIMING_BROWSER } from "../lib/ops/signed-shell-timing-browser.ts"
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { issueShellTimingReceipt,parseBrowserShellTiming,shellRoute,shellTimingEnabled,sqliteContention,verifyShellTimingReceipt } from '../lib/ops/signed-shell-timing.ts'
+import { measureShellAuth,issueShellTimingReceipt,parseBrowserShellTiming,shellRoute,shellTimingEnabled,sqliteContention,verifyShellTimingReceipt } from '../lib/ops/signed-shell-timing.ts'
 const id='12345678-0000-4000-8000-123456789abc',now=1000,key=Buffer.alloc(32,100),route='/app' as const
 test('signed shell timing is default off and allows only three exact normalized routes',()=>{
   assert.equal(shellTimingEnabled({}),false)
@@ -78,4 +78,19 @@ test('real SQLite cross-connection exclusive contention maps to the safe busy en
   } finally {
     first.close();second.close();rmSync(dir,{recursive:true,force:true})
   }
+})
+test('async layout-auth measurement preserves decisions, exception identity, and one auth check per request',async(t)=>{
+  const out=t.mock.method(process.stdout,'write',()=>true)
+  let calls=0
+  const original=Object.assign(new Error('private detail'),{code:'SQLITE_BUSY_TIMEOUT'})
+  assert.equal(await measureShellAuth(route,id,'layout_auth',async()=>{calls++;return true}),true)
+  assert.equal(await measureShellAuth(route,id,'layout_auth',async()=>{calls++;return false}),false)
+  await assert.rejects(measureShellAuth(route,id,'layout_auth',async()=>{calls++;throw original}),error=>error===original)
+  assert.equal(await measureShellAuth(null,id,'layout_auth',async()=>{calls++;return true}),true)
+  assert.equal(calls,4)
+  const records=out.mock.calls.map(c=>JSON.parse(String(c.arguments[0])))
+  assert.deepEqual(records.map(r=>[r.phase,r.result,r.sqlite]),[
+    ['layout_auth','allowed',null],['layout_auth','denied',null],['layout_auth','error','busy'],
+  ])
+  assert.ok(records.every(r=>r.route===route&&r.request_id===id&&r.duration_ms>=0&&!JSON.stringify(r).includes('private detail')))
 })

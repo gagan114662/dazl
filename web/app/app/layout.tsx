@@ -3,7 +3,7 @@ import { Suspense } from 'react'
 import { cookies, headers } from 'next/headers'
 import { connection } from 'next/server'
 import { redirect } from 'next/navigation'
-import { logShellAuth, shellRoute, SHELL_TIMING_ROUTE_HEADER, shellTimingEnabled } from '@/lib/ops/signed-shell-timing'
+import { measureShellAuth, shellRoute, SHELL_TIMING_ROUTE_HEADER, shellTimingEnabled } from '@/lib/ops/signed-shell-timing'
 import { hasLiveSession } from '@/lib/auth-db'
 import Nav from './nav'
 import { NAV_TOGGLE_ID } from './nav-toggle'
@@ -18,14 +18,7 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
   const timing = shellTimingEnabled() ? await headers() : null
   const route = timing ? shellRoute(timing.get(SHELL_TIMING_ROUTE_HEADER)) : null
   const id = timing?.get('x-request-id')
-  const start = route ? performance.now() : 0
-  let signed: boolean
-  try { signed = await hasLiveSession(token) }
-  catch (error) {
-    if (route) logShellAuth(route, id, 'layout_auth', start, 'error', error)
-    throw error
-  }
-  if (route) logShellAuth(route, id, 'layout_auth', start, signed ? 'allowed' : 'denied')
+  const signed = await measureShellAuth(route, id, 'layout_auth', () => hasLiveSession(token))
   if (!signed) redirect('/sign-in')
 
   return <>{route && <span data-signed-shell-auth-marker="" aria-hidden="true" className="hidden" />}{children}</>
