@@ -26,7 +26,7 @@
 // ('pending' row) BEFORE any paid call, so a double click, a second tab or a retry while it runs pays once.
 // Nothing here creates a contact, a draft or a send: drafting stays on published addresses only (#899 boundary).
 import type Database from 'better-sqlite3'
-import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
+import { nonCompanyHold } from '../scan/find-contact-eligible.ts'
 import { audit, enrichFallbackEnabled, enrichmentsForLeads, getEnabledCredential, type Enrichment } from '../connectors/store.ts'
 import { apolloPersonMatch, EnrichError, type ApolloMatch } from '../enrich/apollo.ts'
 import { pdlPersonEnrich, type PdlMatch } from '../enrich/pdl.ts'
@@ -174,7 +174,7 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
     const candidates = { ...publishedCandidateRowsForLeads(db, tenantId, idsFor(null)),
       ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
     for (const { l, ctx } of projected) {
-      if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
+      if (!eligibleWorkEmailLead(l, enriched[l.id] ?? []) || isWorkEmailFixtureLead(l)) continue
       if (!ctx) continue
       out[l.id] = ctx.people.map(person => strictPublishedRow(targetKey(person), person.name, ctx, candidates[l.id] ?? [], now)).filter(r => r.status === 'published')
     }
@@ -209,10 +209,11 @@ export type FindWorkEmailResult =
   | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string; guess?: GuessView | null }
   | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean; guess?: GuessView | null }
 
-interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null; run_budget: string | null }
+interface LeadRow { id: string; scan_job_id: string; company: string; contact: string | null; source_url: string | null; quarantined_at: number | null; source_kind: string | null; human_confirmed_from: string | null; review_reason: string | null; icp: string | null; run_budget: string | null }
 
-const LEAD_COLS = 'l.id, l.scan_job_id, l.company, l.contact, l.quarantined_at, l.source_kind, l.human_confirmed_from, l.review_reason, j.icp, j.run_budget'
-const eligibleWorkEmailLead = (lead: LeadRow) => !lead.quarantined_at && !NON_COMPANY_REVIEW.includes(lead.review_reason ?? '') && workEmailLeadEligible(lead)
+const LEAD_COLS = 'l.id, l.scan_job_id, l.company, l.contact, l.source_url, l.quarantined_at, l.source_kind, l.human_confirmed_from, l.review_reason, j.icp, j.run_budget'
+// #1177: the hold rule reads the lead's own stored website rows (a customer mention with its own settled website is a company row).
+const eligibleWorkEmailLead = (lead: LeadRow, rows: Enrichment[]) => { const l = { ...lead, enrichments: rows }; return !lead.quarantined_at && !nonCompanyHold(lead.review_reason, l) && workEmailLeadEligible(l) }
 
 function workEmailTargetContext(lead: LeadRow, rows: Enrichment[], now: number) {
   const identity = identityOf({ id: lead.id, contact: lead.contact }, rows)
@@ -336,17 +337,20 @@ async function lookupWorkEmail(
   if (markedWorkEmailHeld(db,tenantId,lead,now)) return { status: 'not_eligible', detail: 'This lead remains held; no contact lookup ran.' }
   // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
   // person's handle or the other side of a post (the cited page is about someone else, so the row is not established as this
-  // company's lead; the same rule as the Leads page and Find contact). It fails closed even when a website was recorded.
-  if (NON_COMPANY_REVIEW.includes(lead.review_reason ?? '')) return { status: 'not_eligible', detail: 'this row is not a company' }
+  // company's lead; the same rule as the Leads page and Find contact). It fails closed even when a website was recorded, except
+  // (#1177) a customer mention whose OWN website is settled (find-contact-eligible.ts counterpartyOwnSite): the company is then
+  // established by its own site, not by the cited page.
+  const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
+  const withRows = { ...lead, enrichments: rows }
+  if (nonCompanyHold(lead.review_reason, withRows)) return { status: 'not_eligible', detail: 'this row is not a company' }
   if (lead.quarantined_at) return { status: 'not_eligible', detail: 'this lead was rejected' }
-  if (!workEmailLeadEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }
+  if (!workEmailLeadEligible(withRows)) return { status: 'not_eligible', detail: 'this row is not a company' }
   // #1036: the test-only work-email fixture lead is looked up ONLY on the test tenant with the staging fake PDL on (never a real
   // provider: Apollo is skipped for it below), so no real key is ever charged for a synthetic person.
   const fixture = isWorkEmailFixtureLead(lead)
   if (fixture && !(fixtureAvailable(db, tenantId) && workEmailFixtureFakesOn(deps.env ?? process.env))) return { status: 'not_eligible', detail: 'this test-only fixture lead is looked up only on staging with the fake People Data Labs and the fake ZeroBounce' }
   derived.publishedOnly = qaClaudeOnlyJob(lead.run_budget) || hasCompanyFirstBudget(lead.run_budget)
   if (derived.publishedOnly && fixture) return { status: 'not_eligible', detail: 'a strict-origin result must come from the company website' }
-  const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
   const ctx = workEmailTargetContext(lead, rows, now)
   if (!ctx) return { status: 'site_unsettled', detail: "the company's website is not settled yet, so an address on it cannot be checked" }
   const person = ctx.people.find(p => targetKey(p) === target)

@@ -8,16 +8,17 @@
 // targets), plus: not a row held because the "company" is a person's handle or the other side of a post (NON_COMPANY_REVIEW as the
 // row's CURRENT review reason). That is the existing Find-contact rule (find-contact-eligible.ts), applied here to an unconfirmed row:
 // such a hold says the cited page is about someone else (a person's own post, or a customer the page merely mentions), so the row
-// is not established as this company's lead; it fails closed even when a website was recorded. Nothing here drafts or sends, and finding an
+// is not established as this company's lead; it fails closed even when a website was recorded, except (#1177) a customer mention whose
+// OWN website is settled (find-contact-eligible.ts counterpartyOwnSite). Nothing here drafts or sends, and finding an
 // address never confirms the lead: it stays in review until the user decides.
 import { identityOf } from '../scan/opportunity.ts'
-import { companySearchEligible, NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
+import { companySearchEligible, nonCompanyHold } from '../scan/find-contact-eligible.ts'
 import { siteSettled, targetKey, workEmailTargets } from './work-email-eligible.ts'
 import type { ContactEnrichment } from './rank.ts'
 
-export interface ReviewLaneLead { id: string; contact: string | null; company?: string | null; quarantined_at?: number | null; source_kind?: string | null; human_confirmed_from?: string | null; review_reason?: string | null; enrichments?: (ContactEnrichment & { connector: string })[] }
+export interface ReviewLaneLead { id: string; contact: string | null; source_url?: string | null; company?: string | null; quarantined_at?: number | null; source_kind?: string | null; human_confirmed_from?: string | null; review_reason?: string | null; enrichments?: (ContactEnrichment & { connector: string })[] }
 export function reviewLaneWorkEmailTargets(l: ReviewLaneLead, buyerRoles: string, nowMs: number = Date.now()): { key: string; name: string; title: string | null }[] {
-  if (l.quarantined_at || !companySearchEligible(l) || NON_COMPANY_REVIEW.includes(l.review_reason ?? '')) return []
+  if (l.quarantined_at || !companySearchEligible(l) || nonCompanyHold(l.review_reason, l)) return []
   const rows = l.enrichments ?? []
   const site = identityOf({ id: l.id, contact: l.contact }, rows)
   if (!siteSettled(site)) return []

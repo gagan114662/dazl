@@ -12,7 +12,7 @@
 // 'user_confirmed'): the address a provider returns must be on that domain, so an unsettled site means no lookup.
 import { contactsFromEnrichments, roleContradicted, type ContactEnrichment, type RankedPerson } from './rank.ts'
 import type { SiteIdentity } from './currency.ts'
-import { companySearchEligible } from '../scan/find-contact-eligible.ts'
+import { companySearchEligible, type EligibleRow } from '../scan/find-contact-eligible.ts'
 
 // #1036 live check: the ONE test-only lead that may show Find work email although it is a fixture row (source_kind 'test',
 // which companySearchEligible refuses). Only the work-email fixture (lib/scan/work-email-fixture.ts) creates a 'test' lead with
@@ -21,7 +21,7 @@ export const WORK_EMAIL_FIXTURE_COMPANY = 'dazl work-email fixture company (test
 export const isWorkEmailFixtureLead = (l: { source_kind?: string | null; company?: string | null }): boolean =>
   l.source_kind === 'test' && l.company === WORK_EMAIL_FIXTURE_COMPANY
 // Which lead rows may offer Find work email at all: a company row (the Find-contact rule), or the work-email fixture lead.
-export const workEmailLeadEligible = (l: { human_confirmed_from?: string | null; source_kind?: string | null; company?: string | null }): boolean =>
+export const workEmailLeadEligible = (l: EligibleRow & { human_confirmed_from?: string | null; source_kind?: string | null; company?: string | null }): boolean =>
   companySearchEligible(l) || isWorkEmailFixtureLead(l)
 
 export const DECISION_MAKER = /\b(?:founder|co-?founder|owner|ceo|cto|cfo|coo|cmo|cro|chief|president|vp|vice president|head|director|partner|principal|general manager|managing director|gm)\b/i
