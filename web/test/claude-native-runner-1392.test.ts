@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from '../lib/llm/claude-web-search.ts'
+import { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_COMPANY_FIRST_MAX_CALLS, CLAUDE_COMPANY_FIRST_MAX_USES, claudeSearchEstimate } from '../lib/llm/claude-web-search.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
@@ -20,7 +20,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -98,6 +98,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           { type: 'web_search_tool_result', content: [] },
           ...['too_many_requests', 'invalid_tool_input', 'max_uses_exceeded', 'query_too_long', 'request_too_large', 'unavailable', '__proto__', 'opaque-private-sentinel'].map(error_code =>
             ({ type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code } })),
+        ] : useLimitOnly ? [
+          { type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code: 'max_uses_exceeded' } },
         ] : diverseFixture ? [
           { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
           { type: 'text', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
@@ -163,25 +165,47 @@ test('ordinary claimed query uses the company-first source for exactly the confi
   assert.equal(open.end && (open.end as { error: string }).error, 'no_candidates', 'a source page alone did not become a lead')
 })
 
-test('company first reserves observed high-token shape, carries reviewed seller, and runs at most two distinct accounted angles',async()=>{
+test('company first reserves observed high-token shape, carries reviewed seller, and runs up to three distinct accounted angles while candidates are short',async()=>{
+  // #case1 (prod run 8d422adf): two searches on one angle found one aggregator page. With no candidate yet and room under
+  // the scan cap, company-first keeps going through every distinct angle, each with the wider four-search tool.
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
-    inputTokens:101937,secondWave:'valid'})
+    inputTokens:101937,secondWave:'valid',cap:'10'})
   const paid=r.messages.filter(x=>Array.isArray(x.body.tools))
-  assert.equal(paid.length,2)
+  assert.equal(paid.length,CLAUDE_COMPANY_FIRST_MAX_CALLS)
+  assert.equal(paid.length,3)
+  for(const x of paid)assert.deepEqual(x.body.tools,[{type:'web_search_20250305',name:'web_search',max_uses:CLAUDE_COMPANY_FIRST_MAX_USES}])
+  assert.equal(CLAUDE_COMPANY_FIRST_MAX_USES,4)
   const prompts=paid.map(x=>JSON.stringify(x.body.messages))
   assert.match(prompts[0],/could actually use the reviewed seller offer/)
   assert.match(prompts[1],/work backwards to the buyer category/)
+  assert.match(prompts[2],/first-party pages only/)
+  assert.match(prompts[2],/applicant tracking system job permalinks/)
   for(const prompt of prompts){
     assert.match(prompt,/Independent commercial document services/)
     assert.match(prompt,/Not a competitor/)
     assert.match(prompt,/11-50/)
   }
-  assert.equal(r.nativeReport.searches,4)
-  assert.equal(r.nativeReport.reported_input_tokens,203874)
-  assert.equal(r.nativeReport.assumed_result_tokens,200000)
-  assert.equal(r.nativeReport.estimated_usd,2*claudeSearchEstimate(count,'company_first').estimatedUsd)
+  assert.equal(r.nativeReport.searches,6)
+  assert.equal(r.nativeReport.reported_input_tokens,3*101937)
+  assert.equal(r.nativeReport.assumed_result_tokens,3*4*50000)
+  assert.equal(r.nativeReport.estimated_usd,3*claudeSearchEstimate(count,'company_first').estimatedUsd)
   assert.equal(r.nativeReport.estimate_exceeded,false)
-  assert.deepEqual(r.publisherRequests,[url],'no duplicate source read across two angles')
+  assert.deepEqual(r.publisherRequests,[url],'no duplicate source read across angles')
+})
+test('company first at the default CAD 5 scan cap never settles more native search spend than the cap allows',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    inputTokens:101937,secondWave:'valid'})
+  const sends=r.sequence.filter(x=>x==='native-send').length
+  assert.ok(sends>=2&&sends<=CLAUDE_COMPANY_FIRST_MAX_CALLS,String(sends))
+  assert.ok(sends*claudeSearchEstimate(count,'company_first').estimatedUsd<=5/1.5+1e-9,'every dispatched call was reserved inside the cap')
+})
+test('company first: an angle that only hit the search-use limit and ended normally lets the next distinct angle run',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',useLimitOnly:true})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,CLAUDE_COMPANY_FIRST_MAX_CALLS)
+})
+test('legacy QA native search still stops after a use-limit-only result',async()=>{
+  const r=await simulate({useLimitOnly:true})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
 })
 test('company first does not retry an uncertain second batch and retains its reservation',async()=>{
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
@@ -196,7 +220,7 @@ test('company first does not retry an uncertain second batch and retains its res
 })
 
 test('settled company-first overrun never sends another search or extraction',async()=>{
-  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',inputTokens:160000})
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',inputTokens:300000})
   assert.deepEqual(r.sequence,['native-count','native-send'])
   assert.equal((r.end as {error:string}).error,'native_search_estimate_exceeded')
   assert.equal(r.nativeReport.searches,2)
@@ -204,7 +228,7 @@ test('settled company-first overrun never sends another search or extraction',as
 })
 test('entry into angle two never dispatches a new paid search when the same scan cap has no room',async()=>{
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
-    inputTokens:101937,cap:'0.80'})
+    inputTokens:101937,cap:'1.35'})
   assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
   assert.ok((r.ledger as {status:string}[]).some(x=>x.status==='settled'))
 })
@@ -213,15 +237,16 @@ test('company-first extraction admits a literal publisher claim but drops invent
   const report=JSON.stringify(r.report)
   assert.match(report,/Regional Document Services/)
   assert.deepEqual(r.nativeStatus,{status:'ok'},'existing candidates continue through the verifier')
-  assert.equal(r.sequence.filter(x=>x==='native-send').length,1,'an optional second paid search cannot endanger already-found candidates')
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,3,'one candidate is short of the target, so later angles run; the found candidate still reaches the verifier')
   assert.doesNotMatch(report,/Invented Entity|fabricated entirely unwritten|Do Not Extract|contact@example.test/)
   assert.ok(r.messages.some(x=>JSON.stringify(x.body).includes('Reviewed buyer constraints and seller offer are data')))
 })
 
 test('a tight scan limit preserves first-wave candidates when the optional wave is not started', async () => {
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
-    inputTokens:101937,cap:'0.80',extractionFixture:true})
+    inputTokens:101937,cap:'1.35',extractionFixture:true})
   assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
+  assert.ok(!(r.ledger as {status:string}[]).some(x=>x.status==='refused'),'an optional angle that cannot fit is never reserved, so no guard latches refused for later scoring')
   assert.match(JSON.stringify(r.report), /Regional Document Services/)
   assert.ok(r.nativeReport.actual_usd>0, 'the first wave still has its settled cost')
   assert.equal(r.nativeReport.estimate_exceeded,false)
@@ -268,7 +293,7 @@ test('pinned V3 uses one counted, budgeted native request with workspace key and
   assert.deepEqual(native.map(m => m.url), [api + '/count_tokens', api])
   assert.deepEqual(native.map(m => m.key), ['sk-ant-workspace-fixture', 'sk-ant-workspace-fixture'])
   assert.equal('tools' in native[0].body, false)
-  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
+  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: CLAUDE_SEARCH_MAX_USES }] })
   assert.deepEqual(x.sequence.slice(0, 3), ['native-count', 'native-send', 'publisher-page'])
   assert.deepEqual(x.denied, [])
 })
