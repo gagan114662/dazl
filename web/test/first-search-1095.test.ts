@@ -88,6 +88,6 @@ test('#1095 both first-search start paths fall back to scanStartErrorCopy, never
   for (const f of ['../app/app/first-run.tsx', '../app/app/leads/leads-client.tsx']) {
     const src = readFileSync(new URL(f, import.meta.url), 'utf8')
     assert.match(src, /scanStartErrorCopy\(j\)/, `${f} uses the shared copy`)
-    assert.doesNotMatch(src, /: j\.error \|\| '/, `${f}: no fallback prints j.error`)
+    assert.doesNotMatch(src, /j\.error \|\| 'Could not start the (scan|search)/, `${f}: the start fallback no longer prints j.error`)
   }
 })

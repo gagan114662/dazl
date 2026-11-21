@@ -4,7 +4,7 @@ import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
 import { windowNotice } from '@/lib/scan/window-notice'
-import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
+import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote, scanStartErrorCopy } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -633,7 +633,7 @@ export default function LeadsClient() {
       // A refusal that clicking Confirm again cannot change (free scans or the month used up, no key, the hourly start limit): take the cost panel and its Confirm button down, so the page never keeps offering a button that does nothing.
       if (!r.ok && (r.status === 429 || ['trial_exhausted', 'quota_exceeded', 'no_api_key', 'trial_unavailable'].includes(String(j.error)))) setPendingEst(null)
       if (!r.ok && j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query }); return }
-      if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_unavailable' ? trialRefusedCopy(j.reason) : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : j.error || 'Could not start the scan')); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
+      if (!r.ok) { setError(knownErrorCopy(j.error) ?? (j.error === 'no_api_key' ? 'Add your AI key in Settings first. A scan needs it.' : j.error === 'trial_unavailable' ? trialRefusedCopy(j.reason) : j.error === 'trial_exhausted' ? 'Your 3 free scans are used up. Add your own AI key in Settings to keep scanning.' : j.error === 'quota_exceeded' ? 'You have used this month\'s scans. Upgrade in Settings.' : scanStartErrorCopy(j))); if (j.error === 'invalid_budget' && j.detail) setError(`The spend limit was not accepted: ${String(j.detail).slice(0, 200)}`); return }
       websiteDraft.current = null
       setOfferConflict(null); setPendingEst(null)
       setRunExtras(extraLabels(srcBody)); passiveJob.current = false; setJobId(j.job_id); setStatus('pending'); setEnrichInterrupted(false); setLeads([]); setQuality(null); setIcp(null); setDraft(null); setLeadsSoFar(0); setStatusError(null); statusFails.current = 0

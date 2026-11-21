@@ -46,6 +46,38 @@ export function knownErrorCopy(code: unknown): string | null {
   }
 }
 
+// #1095: what a refused first search says when its refusal has no panel of its own (POST /api/scan, on onboarding and on
+// Leads). The route's own sentence when it sends one, else words for the code, else a plain sentence: never the code
+// itself (a new account once saw `trial_unavailable` on its first search). A "message" that is a bare code is not shown.
+const CODE = /\b[a-z]+_[a-z_]+\b/
+const START_COPY: Record<string, string> = {
+  no_api_key: 'Add your AI key in Settings first. A search needs it.',
+  trial_unavailable: "The free trial can't run this search. Link Google in Settings for free scans, or add your own AI key.",
+  trial_exhausted: 'Your free scans are used up. Add your own AI key in Settings to keep scanning.',
+  quota_exceeded: "You have used this month's scans on your plan. Upgrade in Settings.",
+  over_budget: 'This search would go over your spending limit, so nothing was started. Lower the search or raise the limit in Settings.',
+  budget_unknown: 'Your spend limit could not be read right now, so nothing was started. Try again in a moment.',
+  accounting_unsettled: 'The cost of an earlier paid request is still being recorded, so nothing was started. Try again once it is settled.',
+  estimate_changed: 'The cost of this search changed since it was shown, so nothing was started. Run it again to see the new estimate.',
+  offer_conflict: 'This search names a different offer than your business profile, so nothing was started. Check the offer and run it again.',
+  offer_unreadable: 'Your saved offer could not be read just now, so nothing was started. Try again shortly.',
+  website_review_stale: 'The website review could not be verified. Read the site again, then run the search. Nothing was started.',
+  website_review_unavailable: 'The website review could not be verified. Read the site again, then run the search. Nothing was started.',
+}
+export function scanStartErrorCopy(j: { error?: unknown; message?: unknown; used?: unknown; limit?: unknown } | null | undefined): string {
+  const code = j?.error
+  const known = knownErrorCopy(code)
+  if (known) return known
+  if (code === 'profile_lossy') return lossyProfileCopy(j as { message?: unknown; loss?: unknown })
+  const message = typeof j?.message === 'string' ? j.message.trim() : ''
+  if (message.length > 15 && !CODE.test(message)) return message
+  if (code === 'quota_exceeded' && typeof j?.used === 'number' && typeof j?.limit === 'number') return `You have used ${j.used} of ${j.limit} scans on your plan. Upgrade in Settings.`
+  if (typeof code === 'string' && START_COPY[code]) return START_COPY[code]
+  // A sentence the route sent in place of a code (carry-exclusion refusals do this) is already words.
+  if (typeof code === 'string' && code.includes(' ') && !CODE.test(code)) return code
+  return 'The search could not start, and nothing was started. Try again, or change the search.'
+}
+
 // #917: a scan or estimate refused a profile because part of it would be cut or ignored (`profile_lossy`). Names each field
 // and what to do, so the person can fix the open draft and retry; never shows the raw code. Structural type: this file stays
 // client-safe (no server imports), and the server's IcpLoss shape satisfies it.

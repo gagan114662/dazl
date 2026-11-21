@@ -5,7 +5,8 @@ import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendin
 import { useRouter } from 'next/navigation'
 import KeyInline from './key-inline'
 import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
-import { knownErrorCopy } from '@/lib/error-copy'
+import { knownErrorCopy, scanStartErrorCopy } from '@/lib/error-copy'
+import { firstSearchOffer } from '@/lib/trial-copy'
 import InfoTip from './ui/info-tip'
 import { Icon } from './ui/icons'
 import { Avatar, Pill, Stepper } from './ui/bits'
@@ -30,7 +31,7 @@ const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
 
 
 type Step = 'site' | 'building' | 'ready' | 'review' | 'brain' | 'ask'
-interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
+interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number; blocked?: string | null } | null }
 
 // Lists are separated by semicolons, as in Home's profile editor (lib/journey.ts), so an item that contains a comma
 // ("London, UK", "Head of Sales, EMEA") stays one item from the read to the scan.
@@ -181,6 +182,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   const hasKey = !!usage?.has_key
   const trialLeft = !hasKey && usage?.trial?.funded ? usage.trial.remaining : 0
+  // #1095: what this account can start its first search from, in words: a refused trial says why and the way forward
+  // (Link Google for a password account) on the ready step itself, before any search is tried.
+  const offer = firstSearchOffer(usage)
   // Keyless with no trial searches: no path on the ready step may promise or start a search this account cannot run.
   const noPool = !hasKey && usage !== null && trialLeft === 0
   // Until usage answers (loading) or if it failed, the pool is unknown: no start path may fire either.
@@ -336,7 +340,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       // #1095: never the raw code; the reason in words and the way forward (Link Google for a password account)
       if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query: sentence.trim() }); return }
       if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
-      setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
+      setError(scanStartErrorCopy(j))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
   }
 
@@ -433,11 +437,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready to contact.` : f5Found && ready ? `dazl found ${f5Found} lead${f5Found === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (ready?.length ? `dazl found ${ready.length} lead${ready.length === 1 ? '' : 's'} ready to contact.` : readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}
-              {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
+              {linkNote && <p className={`text-sm mt-4 text-center ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() && offer.kind !== 'refused' ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
               {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
+              {!trialRefused && !first && offer.kind === 'refused' && <div className="mt-4 max-w-xl mx-auto" data-testid="ready-trial-refusal"><TrialRefusalNotice reason={offer.reason} query={sentence.trim()} step="ready" /></div>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
                 <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
-                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 ? `${trialLeft} free search${trialLeft === 1 ? '' : 'es'} to start` : hasKey ? 'Runs on your own AI key' : 'Add your AI key to start'}</h2>
+                  <h2 className="text-xl font-bold tracking-tight">{offer.kind === 'loading' ? 'Add your AI key to start' : offer.heading}</h2>
                   <ul className="mt-5 space-y-3 text-[15px]">
                     {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
                   </ul>
@@ -577,7 +582,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
     <div className="max-w-2xl">
       <ol className="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-6" aria-label="Setup steps">{dot('site', 1, 'Your website')}{dot('brain', 2, 'What you sell')}{dot('ask', 3, 'Who to find')}</ol>
       {error && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="alert">{error}</p>}
-      {linkNote && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
+      {linkNote && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status" data-testid="google-link-note">{linkNote.text}{linkNote.ok && ask.trim() && offer.kind !== 'refused' ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
       {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ask" /></div>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">

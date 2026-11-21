@@ -189,31 +189,51 @@ try {
         await gone(page, `${label}: picking a suggested play clears the note`)
       } finally { await ctx.close() }
     })
-    // #1095: a brand-new password account reaches the ready step with the trial refused for google_required. Before any
-    // search it is told why in words and offered Link Google back to this page (the search it will run is saved for the
-    // return); never only the paste-your-key box, never a raw code, and nothing on the page can start a run.
-    await check(`/app ready, new password account (trial needs Google) @${width}`, async () => {
-      const { ctx, page } = await open(width, '/app', null, PROFILE, null, USAGE_PASSWORD)
-      const label = `/app ready new password account @${width}`
+    // #1095: a password account on the ready step whose free trial is refused (the real /api/usage answer: trial blocked
+    // google_required). Back from a Google link that did not go through, it edits its search: the refusal notice it came
+    // back with clears, and on main the ready step then hid every run path and offered only the paste-your-key box (no
+    // reason, no Link Google). Now the ready step itself says why, in words, with Link Google back to this page, and the
+    // edited search is what gets saved for the return. Nothing on the page can start a run.
+    await check(`/app ready, password account, trial needs Google, search edited @${width}`, async () => {
+      const { ctx, page } = await open(width, '/app?google=failed', 'ready', PROFILE, null, USAGE_PASSWORD)
+      const label = `/app ready password account @${width}`
       try {
         await page.getByTestId('ready-step').waitFor({ timeout: 8000 })
+        const EDITED = 'Dental clinics in Austin hiring a front desk manager'
+        await page.getByTestId('first-ask').fill(EDITED)
         const notice = page.getByTestId('ready-trial-refusal'); await notice.waitFor({ timeout: 8000 })
         assert.match(await notice.innerText(), /Free scans need a Google account\. Link Google to run this search free \(no card\)\./, `${label}: why, in words`)
         const link = notice.getByRole('link', { name: 'Link Google' }); await link.waitFor({ timeout: 8000 })
         assert.equal(await link.getAttribute('href'), '/api/auth/google?link=1&next=%2Fapp', `${label}: Link Google back to this page`)
         assert.match(await page.getByTestId('ready-plan').innerText(), /Link Google to start free/, `${label}: the plan card says how to start free`)
-        const text = await page.locator('body').innerText()
-        assert.doesNotMatch(text, /\b(trial_unavailable|google_required|no_api_key)\b/, `${label}: no raw code on screen`)
+        assert.doesNotMatch(await page.locator('body').innerText(), /\b(trial_unavailable|google_required|no_api_key)\b/, `${label}: no raw code on screen`)
         assert.equal(await page.locator('[data-testid="ready-cta"]:enabled').count(), 0, `${label}: no run can start while the trial is refused`)
         assert.equal(await page.locator('[data-testid="first-play"]:enabled').count(), 0, `${label}: no suggestion can start a run either`)
         await noOverflow(page, label)
-        if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `app-ready-new-password-${width}.png`), fullPage: true })
-        const sentence = await page.getByTestId('first-ask').inputValue()
-        assert.ok(sentence.length >= 3, `${label}: the search to run is in the box`)
+        if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `app-ready-password-edited-${width}.png`), fullPage: true })
         await link.click()
         await page.waitForLoadState('networkidle')
-        assert.equal(JSON.parse(await saved(page) ?? 'null')?.query, sentence, `${label}: the same search is saved for the return`)
-        assert.equal(JSON.parse(await saved(page) ?? 'null')?.step, 'ready', `${label}: the return reopens the ready step`)
+        const kept = JSON.parse(await saved(page) ?? 'null')
+        assert.equal(kept?.query, EDITED, `${label}: the edited search is saved for the return`)
+        assert.equal(kept?.step, 'ready', `${label}: the return reopens the ready step`)
+      } finally { await ctx.close() }
+    })
+    // #1095: Google is linked, but the free trial is still refused for another reason (the company's domain already had
+    // its trial): the ready step says so in words with the next step, and never "Your search is ready: run it" over no Run.
+    await check(`/app ready, linked but trial refused (domain_used) @${width}`, async () => {
+      const usage = { ...USAGE_PASSWORD, trial: { funded: false, remaining: 3, cap: 3, blocked: 'domain_used' } }
+      const { ctx, page } = await open(width, '/app?google=linked', 'ready', PROFILE, null, usage)
+      const label = `/app ready linked domain_used @${width}`
+      try {
+        await page.getByTestId('ready-step').waitFor({ timeout: 8000 })
+        const notice = page.getByTestId('ready-trial-refusal'); await notice.waitFor({ timeout: 8000 })
+        assert.match(await notice.innerText(), /Your company's email domain has already had its free trial\. Add your own AI key to keep scanning\./, `${label}: why, in words`)
+        assert.equal(await notice.getByRole('link', { name: 'Add your AI key' }).count(), 1, `${label}: the next step`)
+        assert.doesNotMatch(await page.getByTestId('google-link-note').innerText(), /run it/, `${label}: no "run it" while nothing can run`)
+        assert.doesNotMatch(await page.locator('body').innerText(), /\b(trial_unavailable|domain_used|no_api_key)\b/, `${label}: no raw code on screen`)
+        assert.equal(await page.locator('[data-testid="ready-cta"]:enabled').count(), 0, `${label}: no run can start`)
+        await noOverflow(page, label)
+        if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `app-ready-linked-domain-used-${width}.png`), fullPage: true })
       } finally { await ctx.close() }
     })
     // #1095 (Hermes review): the cost panel for a run the free trial refused claims no payer (never "Paid by the shared

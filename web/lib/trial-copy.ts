@@ -59,6 +59,27 @@ export const TRIAL_REFUSAL_COPY: Record<TrialRefusal, { text: string; next: Next
   global_daily_cap: { text: "Today's free scans are fully booked. Try again tomorrow (it resets at midnight UTC), or add your own AI key to scan now.", next: 'tomorrow' },
   not_configured: { text: "Free scans aren't available right now. Add your own AI key to scan.", next: 'add_key' },
 }
+// #1095: what the first-run ready step offers a search from, decided on GET /api/usage's answer ({ has_key, trial }).
+// A keyless account whose trial would be refused is told why in words, with the way forward (Link Google for
+// google_required, the account's own key otherwise: trialRefusalNotice), before any search is tried. Read as "no free
+// searches" instead, a new password account met only the paste-your-key box: no reason and no Link Google. A refusal never
+// claims a free search; a funded trial with nothing left is refused too. reason: the trial's own reason, or null when the
+// account has no trial of its own (trialRefusalNotice words an unknown or missing reason and offers the key).
+export type FirstSearchOffer =
+  | { kind: 'loading' }
+  | { kind: 'own_key'; heading: string }
+  | { kind: 'trial'; left: number; heading: string }
+  | { kind: 'refused'; reason: string | null; heading: string }
+export function firstSearchOffer(usage: { has_key?: unknown; trial?: { funded?: unknown; remaining?: unknown; cap?: unknown; blocked?: unknown } | null } | null): FirstSearchOffer {
+  if (!usage) return { kind: 'loading' }
+  if (usage.has_key === true) return { kind: 'own_key', heading: 'Runs on your own AI key' }
+  const t = usage.trial ?? null
+  const left = t && typeof t.remaining === 'number' && Number.isFinite(t.remaining) ? Math.max(0, Math.trunc(t.remaining)) : 0
+  if (t && t.funded === true && left > 0) return { kind: 'trial', left, heading: `${left} free search${left === 1 ? '' : 'es'} to start` }
+  const reason = t && typeof t.blocked === 'string' ? t.blocked : null
+  return { kind: 'refused', reason, heading: reason === 'google_required' ? 'Link Google to start free' : 'Add your AI key to start' }
+}
+
 export type NoticeAction = { kind: 'link_google' | 'reauth' | 'add_key'; label: string; href?: string }
 export interface TrialNotice { text: string; actions: NoticeAction[] }
 const ADD_KEY: NoticeAction = { kind: 'add_key', label: 'Add your AI key', href: '/app/settings#model-key' }
