@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { pickUiPort } from '../helpers/ui-port.mjs'
+import { oncePlaysAnswer } from '../helpers/plays-stub.mjs'
 const dir = process.env.WEB_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -47,6 +48,7 @@ async function open(st) {
     if (p === '/api/settings/profile') return json(st.profile)
     if (p === '/api/usage') return json(st.usage)
     if (p === '/api/scan/jobs') return json({ jobs: st.jobs })
+    if (p === '/api/plays') return json(oncePlaysAnswer(st.jobs))   // #1471: Home's plays list
     if (p === '/api/outreach/settings') return json(st.outreach)
     if (p === '/api/scan/sources') return json(st.sources)
     if (p === '/api/outreach') return json({ messages: st.messages })

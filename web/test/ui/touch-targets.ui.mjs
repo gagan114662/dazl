@@ -161,7 +161,8 @@ async function stubApis(page, route) {
   const STUBS = {
     // A returning account: the business is known, so Home shows the journey, not the first-run overlay.
     '/app': { '/api/settings/profile': { website: 'https://harborledger.example', sells: 'Payment tooling for clinics', business_name: 'Harbor Ledger', buyer: null }, '/api/scan/jobs': { jobs: [] } },
-    '/app/plays': { '/api/watch': { watches: WATCHES }, '/api/monitors': { monitors: MONITORS } },
+    // #1471: Plays reads GET /api/plays (its repeating plays' rows ride along)
+    '/app/plays': { '/api/plays': { plays: [...WATCHES.map(w => ({ key: `watch-${w.id}`, kind: 'watch', id: w.id, query: w.query, runs: [], last_job_id: w.last_job_id, last_run_at: w.last_run_at, last_status: null })), ...MONITORS.map(m => ({ key: `monitor-${m.id}`, kind: 'monitor', id: m.id, query: m.query, runs: [], last_job_id: m.last_job_id, last_run_at: m.last_run_at, last_status: null }))], watches: WATCHES, monitors: MONITORS, emails: false } },
     '/app/leads': { '/api/scan/status': { status: 'done', lead_count: LEADS.length, icp: ICP, icp_source: 'user', attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio opening a new location' }, '/api/leads': { job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS }, '/api/scan/jobs': { jobs: [] }, '/api/enrich/held': { held: [] } },
     '/app/inbox': { '/api/outreach/inbox': { available: true, consent_accepted: true, read_granted: true, account: 'me@x.example', booking_url: null, threads: THREADS, next_cursor: null, counts: { threads: 1, needs_owner: 1, unread: 1, unread_needs_owner: 1 } } },
   }

@@ -7,24 +7,32 @@ import { normalizeWebsite } from '@/lib/onboarding'
 import { Icon } from './ui/icons'
 import { Pill } from './ui/bits'
 import { loadReadinessInput } from './readiness-input'
-import { readinessRows, recentPlays, type ReadinessInput, type Play } from '@/lib/readiness'
+import { homePlays, readinessRows, type ReadinessInput, type HomePlay } from '@/lib/readiness'
 
 // Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
 // the page that fixes it). Gmail stays in Settings: connecting is an explicit Google grant whose read-access terms are
 // explained there. The checklist is hidden once every step is done; the plays stay.
+const HOME_PLAYS = 5
+// The play opens its campaign page (play, leads, drafts and sends together); the outcome opens its leads.
+const playCard = (p: HomePlay) => <li key={p.key} className="card p-4 text-sm flex flex-col gap-3" data-testid="home-play" data-kind={p.kind}>
+  <Link className="font-semibold leading-snug line-clamp-2 hover:underline" title={`${p.query} - campaign page`} href={p.campaignHref} data-testid="play-campaign-link">{p.query}</Link>
+  <Link className="pill pill-plain self-start mt-auto" href={p.outcomeHref}>{p.outcome}</Link>
+</li>
+
 export default function Readiness() {
   const [input, setInput] = useState<ReadinessInput | null>(null)
-  const [plays, setPlays] = useState<Play[] | null>(null)
+  const [plays, setPlays] = useState<HomePlay[] | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [reopened, setReopened] = useState(false) // the finished checklist, shown again on request
   const [site, setSite] = useState({ website: '', sells: '', business_name: '' })
   const [siteMsg, setSiteMsg] = useState('')
 
   async function load() {
-    const { input: next, jobs } = await loadReadinessInput()
+    // #1471: the plays are GET /api/plays, the same list the Plays page shows; each row's outcome comes from the jobs read
+    const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput(), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
     const profile = next.profile
     setInput(next)
-    setPlays(jobs ? recentPlays(jobs, 5, next.campaigns) : null)
+    setPlays(listed && Array.isArray(listed.plays) ? homePlays(listed.plays, jobs ?? null, next.campaigns) : null)
     if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
   useEffect(() => {
@@ -93,13 +101,14 @@ export default function Readiness() {
       {(plays === null || plays.length > 0) && <div className={`flex items-center justify-between mb-3 ${done < rows.length || reopened ? 'mt-8' : ''}`}><h2 className="text-lg font-bold tracking-tight">Your plays</h2><Link className="btn-primary btn-sm" href="/app/leads"><Icon name="spark" className="w-3.5 h-3.5" />New play</Link></div>}
       {plays === null ? <p className="text-sm text-[var(--ink-2)]">Could not load your searches. Reload to retry.</p>
         : plays.length === 0 ? null
-        : <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Your plays">
-          {plays.map(p => <li key={p.id} className="card p-4 text-sm flex flex-col gap-3">
-            {/* The play opens its campaign page (play, leads, drafts and sends together); the outcome opens its leads. */}
-            <Link className="font-semibold leading-snug line-clamp-2 hover:underline" title={`${p.query} - campaign page`} href={`/app/campaigns/${p.id}`} data-testid="play-campaign-link">{p.query}</Link>
-            <Link className="pill pill-plain self-start mt-auto" href={`/app/leads?job_id=${p.id}`}>{p.outcome}</Link>
-          </li>)}
-        </ul>}
+        : <>
+          {/* #1471: every play the Plays page lists is here too, newest first: the first HOME_PLAYS shown, the rest one click away */}
+          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Your plays">{plays.slice(0, HOME_PLAYS).map(playCard)}</ul>
+          {plays.length > HOME_PLAYS && <details className="mt-3" data-testid="home-plays-more">
+            <summary className="text-sm cursor-pointer">Show all {plays.length} plays</summary>
+            <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mt-3" aria-label="More plays">{plays.slice(HOME_PLAYS).map(playCard)}</ul>
+          </details>}
+        </>}
     </section>
   )
 }

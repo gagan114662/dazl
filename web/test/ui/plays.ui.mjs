@@ -67,7 +67,7 @@ const STARTED = '7'.repeat(24)
 const statusReads = []
 
 const b = await chromium.launch()
-async function open({ width, height, watches = WATCHES, monitors = MONITORS, fail = null }) {
+async function open({ width, height, watches = WATCHES, monitors = MONITORS, once = [], fail = null }) {
   const ctx = await b.newContext({ viewport: { width, height }, timezoneId: 'UTC' })
   // the page's clock sits just after the fixtures' latest run, so "next run" times read as upcoming (#1042: an overdue
   // live play says "Due now" instead of a past time)
@@ -91,8 +91,14 @@ async function open({ width, height, watches = WATCHES, monitors = MONITORS, fai
       if (nw[2] === M) return json({ error: 'x' }, 500)
       return json({ since, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] })
     }
-    if (p === '/api/watch') { watchReads.n++; return fail === 'watch' ? json({ error: 'x' }, 500) : json({ watches, emails: true }) }
-    if (p === '/api/monitors') return fail === 'monitors' ? json({ error: 'x' }, 500) : json({ monitors })
+    // #1471: the page reads its plays from GET /api/plays (lib/workspace-plays.ts), as that route answers: the repeating
+    // plays (their watch and monitor rows) and the searches that ran once
+    if (p === '/api/plays') {
+      watchReads.n++
+      if (fail === 'plays') return json({ error: 'x' }, 503)
+      const row = (kind, x) => ({ key: `${kind}-${x.id}`, kind, id: x.id, query: x.query, runs: [], last_job_id: x.last_job_id ?? null, last_run_at: x.last_run_at ?? null, last_status: null })
+      return json({ plays: [...watches.map(w => row('watch', w)), ...monitors.map(m => row('monitor', m)), ...once], watches, monitors, emails: true })
+    }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     if (p === '/api/scan/status' && u.searchParams.get('job_id') === STARTED) { statusReads.push(u.searchParams.get('readonly')); if (statusReads.length === 2) watchReads.atDone = watchReads.n; return json({ status: statusReads.length < 2 ? 'running' : 'done' }) }
     // The held lead run the audit started from (#351): a finished run whose one lead is held for source review.
@@ -236,18 +242,33 @@ try {
     const { ctx, page, writes } = await open({ width, height, watches: [], monitors: [] })
     await page.goto(`${base}/app/plays`, { waitUntil: 'networkidle' })
     await page.getByTestId('plays-empty').waitFor({ timeout: 10000 })
-    assert.match(await page.getByTestId('plays-empty').innerText(), /No saved plays yet[\s\S]*Watch this weekly/)
+    assert.match(await page.getByTestId('plays-empty').innerText(), /No plays yet[\s\S]*Watch this weekly/)
     await noScroll(page, width); await shot(page, `plays-empty-${tag}`)
     assert.deepEqual(writes, [])
     await ctx.close()
   }
-  const { ctx, page } = await open({ width: 1440, height: 900, fail: 'watch' })
+  const { ctx, page } = await open({ width: 1440, height: 900, fail: 'plays' })
   await page.goto(`${base}/app/plays`, { waitUntil: 'networkidle' })
   await page.getByTestId('plays-unavailable').waitFor({ timeout: 10000 })
-  assert.equal(await page.getByTestId('plays-unavailable').textContent(), 'Could not load your weekly plays. Refresh to retry.')
+  assert.equal(await page.getByTestId('plays-unavailable').textContent(), 'Could not load your plays. Refresh to retry.')
   assert.equal(await page.getByTestId('plays-empty').count(), 0, 'an unread list is never "no plays"')
-  assert.equal(await page.getByTestId('saved-play').count(), 1, 'what did load is still shown')
   await ctx.close()
+  // #1471: a search that ran once (no watch, no monitor) is a play here, as on Home: never "No plays yet"
+  for (const [width, height, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
+    const J = '8'.repeat(24)
+    const { ctx: c1, page: p1, writes: w1 } = await open({ width, height, watches: [], monitors: [], once: [{ key: `once-${J}`, kind: 'once', id: J, query: 'Companies hiring sales development reps in the last 30 days', runs: [J], last_job_id: J, last_run_at: T, last_status: 'done' }] })
+    await p1.goto(`${base}/app/plays`, { waitUntil: 'networkidle' })
+    await p1.getByTestId('saved-play').first().waitFor({ timeout: 10000 })
+    assert.equal(await p1.getByTestId('plays-empty').count(), 0)
+    const card = p1.getByTestId('saved-play')
+    assert.equal(await card.count(), 1); assert.equal(await card.getAttribute('data-kind'), 'once')
+    assert.equal(await card.getByTestId('play-status').textContent(), 'Ran once')
+    assert.equal(await card.getByTestId('play-results').getAttribute('href'), `/app/leads?job_id=${J}`)
+    assert.equal(await card.getByTestId('play-campaign').getAttribute('href'), `/app/campaigns/${J}`)
+    await noScroll(p1, width); await shot(p1, `plays-once-${tag}`)
+    assert.deepEqual(w1, [])
+    await c1.close()
+  }
   console.log('plays UI check passed: sidebar Plays -> saved plays (audience, signal, schedule, last/next run, status, results link), Leads -> results, pause/resume/delete via existing routes with a confirm, empty + unreadable states, every run of a play opening its own leads (#351), no overflow at 390px')
 } finally {
   await b.close(); srv.kill(); await new Promise(r => setTimeout(r, 500)); try { rmSync(tmp, { recursive: true, force: true }) } catch { /* Windows: the server may still hold the db file */ }
