@@ -384,6 +384,23 @@ export function playOfferRow(db: Database.Database, tenantId: string, leadId: st
   } catch (e) { if (isMissingSchema(e)) return null; throw e }
 }
 
+// #686: the offer a draft's words were written under, as a digest. A draft records it when its words are written (created,
+// edited by a person, or rewritten for the play's offer); approve and send compare it with what the lead's play sells now.
+export const offerDigest = (offer: string): string => createHash('sha256').update(offer).digest('hex')
+// What the lead's play sells now, as the same digest; null when it cannot be read or is contested (nothing matches it).
+export function currentOfferDigest(db: Database.Database, tenantId: string, leadId: string): string | null {
+  try {
+    const r = draftOffer(playOfferRow(db, tenantId, leadId), readTenantOffer(db, tenantId))
+    return r.refuse ? null : offerDigest(r.offer ?? '')
+  } catch { return null }
+}
+// True when a draft's words were written for an offer the play no longer sells (or the play's offer cannot be read now).
+// A draft from before drafts recorded their offer (offer_hash NULL) has no record to compare and is left as it was.
+export function draftOfferChanged(db: Database.Database, tenantId: string, m: { lead_id: string; offer_hash?: string | null }): boolean {
+  if (typeof m.offer_hash !== 'string') return false
+  return currentOfferDigest(db, tenantId, m.lead_id) !== m.offer_hash
+}
+
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
@@ -399,7 +416,7 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const t = draftTemplate(lead, businessName, positioning, addressUrl)
   const id = id24()
   try {
-    db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
+    db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test, offer_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test, offerDigest(positioning))
   } catch (e) {
     // Only the (tenant_id, lead_id) uniqueness means "already drafted". Any other failure (SQLITE_BUSY under a second
     // writer, a CHECK or other constraint) is not a duplicate and must not be reported as one.
@@ -410,17 +427,18 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   return id
 }
 
-interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number; test: number }
+interface Msg { id: string; tenant_id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; approved_hash: string | null; offer_hash: string | null; attempts: number; claimed_at: number | null; sent_at: number | null; error: string | null; created_at: number; test: number }
 const getMsg = (db: Database.Database, tenantId: string, id: string) =>
   db.prepare('SELECT * FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as Msg | undefined
 
 export function listMessages(db: Database.Database, tenantId: string, d: Deps = {}) {
   reapSending(db, d)
-  const rows = db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; error: string | null; created_at: number; sent_at: number | null; test: number }[]
+  const rows = db.prepare('SELECT id, lead_id, to_email, subject, body, status, error, created_at, sent_at, test, offer_hash FROM outreach_messages WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200').all(tenantId) as { id: string; lead_id: string; to_email: string; subject: string; body: string; status: string; error: string | null; created_at: number; sent_at: number | null; test: number; offer_hash: string | null }[]
   // The draft list carries the evidence basis so the approval UI can label a human
   // confirmation (never presented as dazl's verification) or a withdrawn one.
   const sender = getSettings(db, tenantId)
-  return rows.map(r => ({ ...r, error: displayStopReason(r.error), send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
+  // offer_changed (#686): an unsent draft whose words were written for an offer the play no longer sells.
+  return rows.map(({ offer_hash, ...r }) => ({ ...r, offer_changed: (r.status === 'draft' || r.status === 'approved') && draftOfferChanged(db, tenantId, { lead_id: r.lead_id, offer_hash }), error: displayStopReason(r.error), send_footer: sendFooter(r.body, sender), evidence_state: leadEvidenceState(db, tenantId, r.lead_id), currentness_held: !testFixtureSend(db,tenantId,r) && currentnessHeld(db,tenantId,r.lead_id), provenance: messageProvenance(db,tenantId,r.lead_id,r.to_email) }))
 }
 
 const cleanLine = (s: string) => s.replace(/[\r\n\u0000]+/g, ' ').trim()
@@ -434,7 +452,10 @@ export function editDraft(db: Database.Database, tenantId: string, id: string, e
   const body = edit.body.replace(/\u0000/g, '').trim()
   if (subject.length < 1 || subject.length > 150) throw new OutreachError('bad_subject')
   if (body.length < 20 || body.length > 3000) throw new OutreachError('bad_body')
-  db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1, status = 'draft', approved_hash = NULL, error = NULL WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(subject, body, id, tenantId)
+  // A person wrote these words with the play's offer in front of them: they are now the words for that offer (#686). An
+  // offer that cannot be read or is contested keeps the old record, so the draft stays held.
+  const offerNow = currentOfferDigest(db, tenantId, m.lead_id)
+  db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1, status = 'draft', approved_hash = NULL, error = NULL, offer_hash = COALESCE(?, offer_hash) WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved')").run(subject, body, offerNow, id, tenantId)
   if (tableExists(db, 'sequences')) {
     const seq = db.prepare('SELECT id FROM sequences WHERE tenant_id = ? AND message_id = ?').get(tenantId,id) as { id: string } | undefined
     if (seq) {
@@ -456,6 +477,7 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
   const m = getMsg(db, tenantId, id)
   if (!m) throw new OutreachError('not_found')
   if (m.status !== 'draft') throw new OutreachError('not_a_draft')
+  if (draftOfferChanged(db, tenantId, m)) throw new OutreachError('offer_changed') // #686: written for an offer the play no longer sells
   if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
   if (!skipAccount && !getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
   if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
@@ -532,6 +554,7 @@ export async function sendMessage(db: Database.Database, tenantId: string, id: s
 type StoredMsg = NonNullable<ReturnType<typeof getMsg>>
 // Every check sendMessage makes before it claims the message, in the same order. Throws OutreachError on the first refusal.
 function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg): void {
+  if (draftOfferChanged(db, tenantId, pre)) throw new OutreachError('offer_changed') // #686: approved words, but the play now sells something else
   if (isInboxFixtureAddress(pre.to_email)) throw new OutreachError('fixture_recipient')
   if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')

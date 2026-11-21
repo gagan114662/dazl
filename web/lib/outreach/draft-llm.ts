@@ -9,7 +9,7 @@ import type { Vendor } from '../llm/vendors.ts'
 import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
 import { getMasterKey } from '../secrets.ts'
 import { draftOffer } from '../scan/play-offer-text.ts'
-import { playOfferRow } from './service.ts'
+import { offerDigest, playOfferRow } from './service.ts'
 import { getMemory, memoryPromptBlock, type Memory } from '../memory.ts'
 import { memoryForLead, readTenantOffer } from './play-memory.ts'
 import { launchPolicyView, type LaunchPolicy } from './launch-policy.ts'
@@ -136,6 +136,7 @@ export async function polishDraftWithWords(db: Database.Database, tenantId: stri
   try { memory = getMemory(db, tenantId); r = draftOffer(playOfferRow(db, tenantId, msg.lead_id), readTenantOffer(db, tenantId)) } catch { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_unreadable'); return { rewritten: false, reason: 'offer_unreadable' } } // no paid call
   if (r.refuse) { recordRefusal(db, tenantId, messageId, p.vendor, r.refuse); return { rewritten: false, reason: r.refuse } }
   if (!r.offer) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
+  const writtenFor = r.offer
   memory = { ...(memory ?? { icp: '', positioning: '', tone: '', exclusions: [], objections: [], updated_at: 0 }), positioning: r.offer }
   const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null)
   if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
@@ -163,7 +164,8 @@ export async function polishDraftWithWords(db: Database.Database, tenantId: stri
     // Compare-and-set on the draft's words revision it started from (#929): every writer of the words bumps words_rev, so an
     // owner edit (even one that restores the original text, A to B to A) or any other writer during the model await makes this
     // output void - it never overwrites words the owner has since written.
-    const r = db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1 WHERE id = ? AND tenant_id = ? AND status = 'draft' AND words_rev = ?").run(parsed.subject, parsed.body, messageId, tenantId, msg.words_rev)
+    // The rewrite states the offer read above, so the draft now records that offer (#686).
+    const r = db.prepare("UPDATE outreach_messages SET subject = ?, body = ?, words_rev = words_rev + 1, offer_hash = ? WHERE id = ? AND tenant_id = ? AND status = 'draft' AND words_rev = ?").run(parsed.subject, parsed.body, offerDigest(writtenFor), messageId, tenantId, msg.words_rev)
     // changes 0 means the draft left 'draft' state or its words changed between our read and write: the
     // tenant's own action won the race - that is superseded, not a provider error.
     if (r.changes === 1) { finish('rewritten', d); return result({ rewritten: true, vendor: p.vendor, usage, words: { subject: parsed.subject, body: parsed.body } }) }

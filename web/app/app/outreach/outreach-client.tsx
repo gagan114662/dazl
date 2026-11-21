@@ -9,7 +9,7 @@ import SendReadiness from './send-readiness'
 import { forScan, isJobId } from '@/lib/outreach/scan-drafts'
 import Caveat from '@/app/app/caveat'
 
-interface Msg { lead_id: string; send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
+interface Msg { lead_id: string; send_footer?: string | null; currentness_held?: boolean; offer_changed?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
 const ERR: Record<string, string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
@@ -21,6 +21,7 @@ const ERR: Record<string, string> = {
   gmail_rate_limited: 'Gmail is rate limiting you. Try again later.',
   changed_since_approval: 'The message changed after approval. Approve it again.',
   lead_currentness_unconfirmed: 'Event timing is unconfirmed. This draft is preserved for inspection but cannot be approved or sent.',
+  offer_changed: 'This play now sells something else. Edit the words for what it sells now, then approve.',
   recipient_provenance_missing: 'Nothing was sent. This saved message cannot be retried. A mailbox check alone is not enough. For future outreach, choose a different eligible lead with a named work email published on the company’s own website.',
   review_unreadable: 'The website check could not be read just now. Nothing was sent and nothing was changed. Try again in a minute.',
   domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
@@ -113,6 +114,7 @@ export default function OutreachClient() {
           return (
             <div key={m.id} className="card p-4 text-sm">
               <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}{m.test ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${m.error})` : ''}</span></div>
+              {m.offer_changed && ['draft','approved'].includes(m.status) && <p className="text-xs border-l-2 border-black pl-3 mb-2" data-testid="offer-changed">Written for what this play sold before. Edit the words for what it sells now{playOffer?.offer ? ` (${playOffer.offer})` : ''}, then approve.</p>}
               {m.currentness_held && ['draft','approved'].includes(m.status) && <p className="text-xs border-l-2 border-black pl-3 mb-2">Held: event timing and current need are unconfirmed. Original draft preserved, approval and sending blocked.</p>}
               {m.evidence_state === 'human' && ['draft','approved'].includes(m.status) && <p className="text-xs text-[#333] border-l-2 border-[#111] pl-3 mb-2">Lead confirmed by you - dazl did not verify the quote. Withdrawing your confirmation on the Leads page blocks approval and sending.</p>}
               {m.evidence_state === 'unverified' && ['draft','approved'].includes(m.status) && <p className="text-xs text-[#111] font-medium border-l-2 border-[#111] pl-3 mb-2">Lead confirmation withdrawn - this can no longer be approved or sent unless you re-confirm the lead or dazl verifies it.</p>}
@@ -130,10 +132,10 @@ export default function OutreachClient() {
                   {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <div className="mb-3"><pre className="whitespace-pre-wrap text-[#666] font-sans text-xs" aria-label="Added automatically when sent">{m.send_footer}</pre><p className="text-[11px] text-[#999] mt-1">Added when sent, from your current Settings. Edit your name or address there before sending if it is wrong.</p></div> : <p className="text-xs text-[#666] mb-3">Sending needs your name and mailing address - add them in the form at the top of this page. They are appended automatically.</p>)}
                   <div className="flex gap-2 flex-wrap">
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
-                    {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
+                    {!m.currentness_held && !m.offer_changed && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
                     {m.status === 'draft' && <button className={btn} title="Rewrites this draft with your own AI key - your provider bills you for the call" onClick={() => void polish(m.id)}>Rewrite with AI (uses your key)</button>}
-                    {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)} title="Creates editable templates without an AI call or provider charge">Create 3-step sequence (templates)</button>}
-                    {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
+                    {!m.currentness_held && !m.offer_changed && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)} title="Creates editable templates without an AI call or provider charge">Create 3-step sequence (templates)</button>}
+                    {!m.currentness_held && !m.offer_changed && m.evidence_state !== 'unverified' && m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => act(m.id, 'skip')}>Skip</button>}
                     {m.status === 'uncertain' && <><button className={btn} onClick={() => act(m.id, 'mark_sent')}>It was sent</button><button className={btn} onClick={() => act(m.id, 'retry')}>It was not sent, allow retry</button></>}
                   </div>
