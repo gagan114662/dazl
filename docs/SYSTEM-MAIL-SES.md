@@ -50,8 +50,9 @@ Port 465 (implicit TLS) or 587 (STARTTLS) both work; port 25 is refused by the l
 
 ## 5. Check it
 
-- `GET https://dazl.ai/api/ready`: `checks.mail.ok` is `true` (a real SMTP login to SES within the last 5 minutes;
-  the first probe after a restart reads `verify_pending`).
+- `GET https://dazl.ai/api/ready`: `checks.mail_relay.relay` is `"ses"` (worked out from the relay host only; it never
+  changes `ok`), and `checks.mail.ok` is `true` (a real SMTP login within the last 5 minutes; the first probe after a
+  restart reads `verify_pending`).
 - Live check for #1428: on https://dazl.ai/reset ask for a link for a real account; the email arrives from
   `no-reply@dazl.ai`, its headers show `dkim=pass` and `spf=pass` for `dazl.ai` / `bounce.dazl.ai`, and the link sets a
   new password.

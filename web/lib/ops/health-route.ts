@@ -1,5 +1,5 @@
 // Wiring for the health routes: the real store, the real SQLite file, the PG migrations this build ships.
-import { deletionCheck, launchRequired, mailCheck } from './launch-checks.ts'
+import { deletionCheck, launchRequired, mailCheck, mailRelay } from './launch-checks.ts'
 import { readdirSync } from 'node:fs'
 import path from 'node:path'
 import { NextResponse } from 'next/server'
@@ -32,6 +32,6 @@ export async function healthResponse(): Promise<NextResponse> {
 }
 
 export async function readyResponse(): Promise<NextResponse> {
-  const r = await readiness({ db: getDb, sqlite: getAuthDb, migrations, rawSqliteModules: () => Object.keys(RAW_SQLITE_MODULES).length, env: () => process.env, mail: () => mailCheck(process.env), deletion: () => deletionCheck(process.env), launchRequired: () => launchRequired(process.env) })
+  const r = await readiness({ db: getDb, sqlite: getAuthDb, migrations, rawSqliteModules: () => Object.keys(RAW_SQLITE_MODULES).length, env: () => process.env, mail: () => mailCheck(process.env), deletion: () => deletionCheck(process.env), mailRelay: () => mailRelay(process.env), launchRequired: () => launchRequired(process.env) })
   return NextResponse.json({ ...r, commit: resolveServedCommit(), instance: instanceId(), db: dbBackend() }, { status: r.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

@@ -12,7 +12,7 @@ import { loadMigrations } from '../lib/db/migrate-pg.ts'
 import { readiness, resetLaunchReport } from '../lib/ops/health.ts'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 import type { MailCheck, DeletionCheck } from '../lib/ops/launch-checks.ts'
-import { mailSettings, mailCheck, mailCheckSettled, deletionCheck, launchRequired, resetMailCheck, smtpVerify, MAIL_VERIFY_TTL_S, MAIL_VERIFY_FAIL_TTL_S } from '../lib/ops/launch-checks.ts'
+import { mailRelay, mailSettings, mailCheck, mailCheckSettled, deletionCheck, launchRequired, resetMailCheck, smtpVerify, MAIL_VERIFY_TTL_S, MAIL_VERIFY_FAIL_TTL_S } from '../lib/ops/launch-checks.ts'
 
 const FROM = { SYSTEM_MAIL_FROM: 'dazl <leads@notify.example.test>' }
 
@@ -151,4 +151,21 @@ test('launch reporting: a healthy start raises nothing; a settled failure raises
     mail = { ok: true, port: 465, verified_s_ago: 0 }; await probe(); deletion = { ok: false, reason: 'not_configured' }; await probe(); await probe()
     assert.equal(launch().length, 3); assert.equal(launch()[2], 'not ready for customers: deletion:not_configured')
   } finally { restore(); resetLaunchReport() }
+})
+
+// #1428: the privacy policy names Amazon SES for account email. Readiness REPORTS which relay is configured (from the URL
+// host only; never the URL, user or secret) so the deploy and the live check can see it; it never changes `ok` or `launch`.
+test('#1428 mail relay is reported: ses only for an email-smtp.<region>.amazonaws.com host, informational, nothing secret', async () => {
+  assert.equal(mailRelay({}), 'not_configured')
+  assert.equal(mailRelay({ ...FROM, SYSTEM_MAIL_SMTP_URL: 'smtps://AKIAEXAMPLE:pa%2Fss@email-smtp.us-east-2.amazonaws.com:465' }), 'ses')
+  assert.equal(mailRelay({ ...FROM, SYSTEM_MAIL_SMTP_URL: 'smtp://u:p@email-smtp.eu-west-1.amazonaws.com:587' }), 'ses')
+  for (const url of ['smtps://u:p@smtp.resend.example.test:465', 'smtps://u:p@email-smtp.us-east-2.amazonaws.com.evil.example.test:465', 'smtps://u:p@amazonaws.com:465', 'not a url'])
+    assert.equal(mailRelay({ ...FROM, SYSTEM_MAIL_SMTP_URL: url }), 'other', url)
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const env = { ...FROM, SYSTEM_MAIL_SMTP_URL: 'smtps://AKIAEXAMPLE:s3cret@smtp.resend.example.test:465' }
+  const r = await readiness({ db: async () => sqliteDb(raw), sqlite: () => raw, migrations: () => loadMigrations().map(m => m.version), env: () => env, mailRelay: () => mailRelay(env) })
+  assert.deepEqual(r.checks.mail_relay, { ok: true, relay: 'other' }, 'reported, never a failure')
+  assert.doesNotMatch(JSON.stringify(r), /AKIAEXAMPLE|s3cret|resend/, 'no part of the URL is in the answer')
+  const unwired = await readiness({ db: async () => sqliteDb(raw), sqlite: () => raw, migrations: () => loadMigrations().map(m => m.version) })
+  assert.deepEqual(unwired.checks.mail_relay, { ok: true, skipped: 'not_wired' })
 })

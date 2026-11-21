@@ -114,3 +114,8 @@ test('#1428 the demo calls leads that failed a check kept out with the reason, n
   assert.doesNotMatch(demo, /still being checked/)
   assert.match(demo, /2 more kept out, with the reason/)
 })
+test('#1428 Claim with Google on a proof preview creates an account too: the same Terms and Privacy acceptance line', () => {
+  const src = read('app/preview/[token]/cta.tsx')
+  assert.match(src, /Claim with Google/)
+  assert.match(src, /By continuing you agree to the <a href="\/terms"[^>]*>Terms<\/a> and <a href="\/privacy"[^>]*>Privacy Policy<\/a>/)
+})

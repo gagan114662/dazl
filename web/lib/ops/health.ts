@@ -22,7 +22,7 @@ import { captureError } from './errors.ts'
 import { DbQueue } from '../queue/db.ts'
 import { queueAlerts, type QueueAlert } from '../queue/alerts.ts'
 import { getMasterKey } from '../secrets.ts'
-import type { DeletionCheck, MailCheck } from './launch-checks.ts'
+import type { DeletionCheck, MailCheck, MailRelay } from './launch-checks.ts'
 
 export type CheckResult = { ok: true; ms: number } | { ok: false; ms: number; reason: 'error' | 'timeout' | 'behind' }
 export interface Readiness {
@@ -44,6 +44,8 @@ export interface Readiness {
     // #1089: can account mail leave the host, and can an account be deleted (lib/ops/launch-checks.ts)
     mail: MailCheck | { ok: true; skipped: 'not_wired' }
     deletion: DeletionCheck | { ok: true; skipped: 'not_wired' }
+    // #1428: which relay account email uses (the privacy policy names Amazon SES); reported only, never a failure
+    mail_relay: { ok: true; relay: MailRelay } | { ok: true; skipped: 'not_wired' }
   }
 }
 
@@ -59,6 +61,7 @@ export interface ReadinessDeps {
   // #1089: the route wires both; unit callers may leave them out (reported as skipped: 'not_wired')
   mail?: () => MailCheck
   deletion?: () => DeletionCheck
+  mailRelay?: () => MailRelay
   // true: mail and deletion are part of `ok` (DAZL_READY_REQUIRES_LAUNCH=1); otherwise they are reported only
   launchRequired?: () => boolean
   timeoutMs?: number
@@ -159,6 +162,7 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   const env = d.env ? envCheck(d.env()) : { ok: true as const, skipped: 'not_wired' as const }
   const mail = d.mail ? d.mail() : { ok: true as const, skipped: 'not_wired' as const }
   const deletion = d.deletion ? d.deletion() : { ok: true as const, skipped: 'not_wired' as const }
+  const mail_relay = d.mailRelay ? { ok: true as const, relay: d.mailRelay() } : { ok: true as const, skipped: 'not_wired' as const }
   reportLaunchChecks(mail, deletion)
   return {
     ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok && (d.launchRequired?.() ? mail.ok && deletion.ok : true),
@@ -167,7 +171,7 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
     launch: { ok: mail.ok && deletion.ok, required: d.launchRequired?.() === true },
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
     queue: queueBody,
-    checks: { store: { ...store, engine }, schema, queue, sqlite, split, env, mail, deletion },
+    checks: { store: { ...store, engine }, schema, queue, sqlite, split, env, mail, deletion, mail_relay },
   }
 }
 

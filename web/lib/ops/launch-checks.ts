@@ -34,6 +34,17 @@ export function mailSettings(env: Env): { ok: true; url: string; port: number } 
   return { ok: true, url, port }
 }
 
+// #1428: which relay account email goes through, for the privacy policy's "Amazon SES" (docs/SYSTEM-MAIL-SES.md). From the
+// URL host only; the answer is one word, never the URL, user or secret. Reported by readiness, never part of `ok`.
+export type MailRelay = 'ses' | 'other' | 'not_configured'
+export function mailRelay(env: Env): MailRelay {
+  const url = env.SYSTEM_MAIL_SMTP_URL?.trim()
+  if (!url) return 'not_configured'
+  let host = ''
+  try { host = new URL(url).hostname.toLowerCase() } catch { return 'other' }
+  return /^email-smtp\.[a-z0-9-]+\.amazonaws\.com$/.test(host) ? 'ses' : 'other'
+}
+
 export type Verify = (url: string, timeoutMs: number) => Promise<void>
 // Connects and authenticates; sends nothing.
 export const smtpVerify: Verify = async (url, timeoutMs) => {

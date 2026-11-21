@@ -6,10 +6,14 @@ import { keepClaim } from '@/lib/invite-return'
 export default function PreviewCta({ token, business }: { token: string; business: string }) {
   const go = (href: string) => () => { keepClaim(token, business); window.location.href = href }
   return (
+    <>
     <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
       <a href={`/api/preview/${token}/google`} style={{ padding: '10px 16px', background: '#111', color: '#fff', borderRadius: 8, textDecoration: 'none' }}>Claim with Google</a>
       <button onClick={go('/sign-up')} style={{ padding: '10px 16px', borderRadius: 8, border: '1px solid #999', background: '#fff', cursor: 'pointer' }}>Create account</button>
       <button onClick={go('/sign-in')} style={{ padding: '10px 16px', borderRadius: 8, border: '1px solid #999', background: '#fff', cursor: 'pointer' }}>Sign in</button>
     </div>
+    {/* #1428: Claim with Google can create an account, so the same acceptance line as sign-up and sign-in */}
+    <p style={{ fontSize: 12, color: '#555', marginTop: 8 }} data-testid="terms-acceptance">By continuing you agree to the <a href="/terms" style={{ textDecoration: 'underline' }}>Terms</a> and <a href="/privacy" style={{ textDecoration: 'underline' }}>Privacy Policy</a>.</p>
+    </>
   )
 }

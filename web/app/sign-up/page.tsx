@@ -12,8 +12,8 @@ import { signUpFormError } from '@/lib/signup-form-fallback'
 // ancestor Next cannot stream a fallback-then-swap for this piece, so the route blocks until connection() resolves
 // (near-instant) and sends the complete real HTML in one shot - the form is in the initial markup, not hidden
 // behind an inline swap script. A Suspense-wrapped version of this exact pattern (await connection() inside the
-// boundary) is what broke JS-disabled signup (test/smoke/auth-form-fallback.smoke.mjs) and is why /reset, which
-// keeps that Suspense wrapper, is excluded from that smoke's cases. Without any dynamic API call at all,
+// boundary) is what broke JS-disabled signup (test/smoke/auth-form-fallback.smoke.mjs); /reset now uses this same
+// pattern too (#1428). Without any dynamic API call at all,
 // cacheComponents prerenders this route fully static at build time, baking in whatever env the build machine
 // happened to have - connection() is what keeps this a live, per-request read; `instant = false` is what lets
 // cacheComponents allow a blocking (non-prerendered) route without a Suspense boundary.
