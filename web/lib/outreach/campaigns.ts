@@ -3,7 +3,9 @@ import { sequenceAnalytics } from './sequences.ts'
 import { evidenceStateOf } from './evidence-state.ts'
 import { currentnessHeld, leadWindowHeld, windowHeld } from './currentness.ts'
 import { requiredGateHeld, requiredGateHeldForJob } from '../scan/held-state.ts'
-import type { Db } from '../db/client.ts'
+import { sqliteDb, type Db } from '../db/client.ts'
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { companyFirstResults } from '../scan/company-first-results.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
@@ -24,7 +26,10 @@ export interface Campaign {
   // heldResearchSourceChecked is the sourceChecked-only slice of heldResearch (#683 round 3): a reader squeezing this into one line (Home's
   // plays, readiness.ts) must subtract only this from sourceChecked, never all of heldResearch, or a clean source-checked lead can vanish
   // from the count whenever a DIFFERENT, confirmedByYou lead happens to be the held one.
-  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number }
+  // heldByChecks (#1062): leads of a company-first scan that its final checks keep off the run page, /api/leads and the CSV
+  // (companyFirstResults().visibleIds, the same gate). They are counted once, here and inside research, never in any other bucket:
+  // no check a person can do releases them, so they are never "needs your review".
+  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
   contact: { withContact: number; readyWithContact: number; draftable: number }
@@ -42,21 +47,46 @@ export function campaignsLimit(v: string | null): number {
   const n = Number(v ?? '')
   return v !== null && v.trim() !== '' && Number.isInteger(n) && n >= 1 ? Math.min(n, 20) : 10
 }
-export function listCampaigns(db: Database.Database, tenantId: string, limit = 10): Campaign[] {
-  const jobs = db.prepare(`SELECT id, query, status, error, created_at, candidates FROM scan_jobs
+type CampaignJob = { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null; run_budget: string | null }
+const campaignJobs = (db: Database.Database, tenantId: string, limit: number) => db.prepare(`SELECT id, query, status, error, created_at, candidates, run_budget FROM scan_jobs
     WHERE user_id = ? AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
-    ORDER BY created_at DESC, insert_seq DESC LIMIT ?`).all(tenantId, limit) as { id: string; query: string; status: string; error: string | null; created_at: number; candidates: number | null }[]
+    ORDER BY created_at DESC, insert_seq DESC LIMIT ?`).all(tenantId, limit) as CampaignJob[]
+
+// #1062: the leads a company-first scan shows anywhere (run page, /api/leads, CSV, campaign page) are companyFirstResults().visibleIds.
+// Every count reads the same set, per company-first scan in `jobs`. A scan whose result cannot be read (still running, a rescan in
+// progress, a missing table) shows nothing, so it gets an empty set: fail closed, never "all stored leads".
+export type CompanyFirstShown = ReadonlyMap<string, ReadonlySet<string>>
+export async function companyFirstShown(db: Database.Database, tenantId: string, jobs: readonly { id: string; run_budget: string | null }[], now: Date = new Date()): Promise<CompanyFirstShown> {
+  const out = new Map<string, ReadonlySet<string>>()
+  for (const j of jobs) if (hasCompanyFirstBudget(j.run_budget)) out.set(j.id, (await companyFirstResults(sqliteDb(db), tenantId, j.id, now))?.visibleIds ?? new Set())
+  return out
+}
+const NONE: ReadonlySet<string> = new Set()
+// Is this lead outside what its company-first scan shows? Not company-first: never. Company-first without a read in `shown`: always (fail closed).
+const heldByChecksOf = (j: { id: string; run_budget: string | null }, shown: CompanyFirstShown) =>
+  hasCompanyFirstBudget(j.run_budget) ? (id: string) => !(shown.get(j.id) ?? NONE).has(id) : () => false
+
+// The Campaigns list with the company-first gate read (GET /api/campaigns).
+export async function listCampaignsNow(db: Database.Database, tenantId: string, limit = 10, now: Date = new Date()): Promise<Campaign[]> {
+  return listCampaigns(db, tenantId, limit, await companyFirstShown(db, tenantId, campaignJobs(db, tenantId, limit), now))
+}
+// `shown`: companyFirstShown for these scans. Without it, every lead of a company-first scan counts as held by checks (fail closed).
+export function listCampaigns(db: Database.Database, tenantId: string, limit = 10, shown: CompanyFirstShown = new Map()): Campaign[] {
+  const jobs = campaignJobs(db, tenantId, limit)
   return jobs.map(j => {
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
     const L = `FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id = ?`
-    const live = 'AND l.quarantined_at IS NULL'
     type Row = { id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null }
     const rows = db.prepare(`SELECT l.id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
     const leads = rows.length
-    const liveRows = rows.filter(r => r.quarantined_at === null)
-    const rejected = leads - liveRows.length
-    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = 0, unverified = 0
+    const allLive = rows.filter(r => r.quarantined_at === null)
+    const rejected = leads - allLive.length
+    // #1062: a lead the company-first gate keeps off every page is held by checks and nothing else; every other count reads only the rest.
+    const byChecks = heldByChecksOf(j, shown)
+    const heldByChecks = allLive.filter(r => byChecks(r.id)).length
+    const liveRows = allLive.filter(r => !byChecks(r.id))
+    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = heldByChecks, unverified = 0
     for (const r of liveRows) {
       const st = evidenceStateOf(r)
       if (st === 'machine') sourceChecked++
@@ -80,7 +110,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // stop calling sourceChecked, never a held-research lead that was confirmedByYou all along.
     const heldResearchSourceChecked = heldResearchRows.filter(r => evidenceStateOf(r) === 'machine').length
     const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
-    const withContact = n(`SELECT count(*) AS n ${L} ${live} AND coalesce(trim(l.contact), '') <> ''`, tenantId, j.id)
+    const withContact = liveRows.filter(r => (r.contact ?? '').trim() !== '').length
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
     // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.
     const drafts = msg('draft'), approved = msg('approved'), sent = msg('sent')
@@ -107,7 +137,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
-      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected },
+      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected, heldByChecks },
       contact: { withContact, readyWithContact, draftable: undrafted },
       outreach: { drafts, approved, sent, draftsReady: d.ready, draftsSetup: d.setup, draftsHeld: d.held, approvedReady: a.ready, approvedSetup: a.setup, approvedHeld: a.held },
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
@@ -145,8 +175,11 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   if (heldEmails > 0) return { label: `${plural(heldEmails, 'email is', 'emails are')} held: open Outreach to see why`, href: '/app/outreach' }
   if (c.qualification.unverified > 0) return { label: `Check ${plural(c.qualification.unverified, 'unverified lead', 'unverified leads')} against their sources`, href: leadsHref }
   // Research only: checking cannot make these ready, so the step offered is one that can change the result - a new search (#352/#683).
-  const research = (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0)
+  // #1062: leads held by a company-first scan's checks are inside research; they get their own read-only step (the run page lists them with why).
+  const byChecks = c.qualification.heldByChecks ?? 0
+  const research = (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0) - byChecks
   if (research > 0) return { label: `${plural(research, 'research-only lead', 'research-only leads')}: checking ${research === 1 ? 'it' : 'them'} cannot make ${research === 1 ? 'it' : 'them'} ready. Change the search`, href: `/app/leads?q=${encodeURIComponent(c.query)}` }
+  if (byChecks > 0) return { label: `${plural(byChecks, 'lead is', 'leads are')} held by checks (read-only): open the run to see why`, href: leadsHref }
   if (c.discovery.leads === 0) return { label: 'No leads from this search. Try a broader one', href: '/app/leads' }
   return { label: 'Nothing waiting on you', href: null }
 }
@@ -165,10 +198,11 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
   const ids = [...new Set(jobIds)].slice(0, 20)
   if (!ids.length) return []
   const qs = ids.map(() => '?').join(',')
-  const jobs = db.prepare(`SELECT id, query, status, error, created_at FROM scan_jobs
+  const jobs = db.prepare(`SELECT id, query, status, error, created_at, run_budget FROM scan_jobs
     WHERE user_id = ? AND id IN (${qs}) AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
-    ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number }[]
+    ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number; run_budget: string | null }[]
   if (!jobs.length) return []
+  const shown = await companyFirstShown(db, tenantId, jobs, now)
   type Row = { id: string; scan_job_id: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null; run_budget: string | null }
   const jq = jobs.map(() => '?').join(',')
   const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, l.event_date, j.query, j.icp, j.run_budget
@@ -182,8 +216,12 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
   for (const r of rows) { const a = byJob.get(r.scan_job_id) ?? []; a.push(r); byJob.set(r.scan_job_id, a) }
   return jobs.map(j => {
     const all = byJob.get(j.id) ?? []
-    const live = all.filter(r => r.quarantined_at === null)
-    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = 0, unverified = 0, heldResearch = 0, heldResearchSourceChecked = 0
+    // #1062: the same company-first gate as listCampaigns and the run page; held-by-checks leads are counted there only.
+    const byChecks = heldByChecksOf(j, shown)
+    const allLive = all.filter(r => r.quarantined_at === null)
+    const heldByChecks = allLive.filter(r => byChecks(r.id)).length
+    const live = allLive.filter(r => !byChecks(r.id))
+    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = heldByChecks, unverified = 0, heldResearch = 0, heldResearchSourceChecked = 0
     for (const r of live) {
       const st = evidenceStateOf(r), win = windowHeld(r, now), gh = gate.has(r.id)
       if (st === 'machine') sourceChecked++
@@ -193,7 +231,7 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
       else unverified++
       if (st !== 'unverified' && (win || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gh)) { heldResearch++; if (st === 'machine') heldResearchSourceChecked++ }
     }
-    const qualification = { sourceChecked, confirmedByYou, needsReview, research, unverified, held: 0, heldResearch, heldResearchSourceChecked, rejected: all.length - live.length }
+    const qualification = { sourceChecked, confirmedByYou, needsReview, research, unverified, held: 0, heldResearch, heldResearchSourceChecked, rejected: all.length - allLive.length, heldByChecks }
     const base = { id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at, discovery: { leads: all.length }, qualification }
     // The full card's next action exactly, wherever it needs no outreach read: a review a check can resolve comes first in nextAction; and a run
     // where nothing passed (after listQual) and no email was ever written has no drafts, approvals, replies, draftable or timing-reviewable

@@ -1259,9 +1259,9 @@ export default function LeadsClient() {
         </div>
       )}
       {heldCandidates.length > 0 && (
-        <section className="card p-4 mb-4 text-sm" aria-label="Held candidates" data-testid="held-candidates">
-          <h2 className="font-medium mb-2">Held candidates ({heldCandidates.length})</h2>
-          <p className="text-[var(--ink-2)] mb-2">Found but not shown as leads. Each is held for the reason given. Read-only.</p>
+        <section className="card p-4 mb-4 text-sm" aria-label="Held by checks" data-testid="held-candidates">
+          <h2 className="font-medium mb-2">Held by checks ({heldCandidates.length})</h2>
+          <p className="text-[var(--ink-2)] mb-2">Found but not shown as leads, and not counted as needing your review. Each is held for the reason given. Read-only.</p>
           <ul className="space-y-1">
             {heldCandidates.map(h => (
               <li key={h.id} data-testid="held-candidate">

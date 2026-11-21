@@ -82,6 +82,8 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
     assert.equal(c.qualification.needsReview, 0, `${url}: a held lead is never counted as needing review`)
     assert.equal(c.qualification.sourceChecked + c.qualification.confirmedByYou + c.qualification.unverified, 0, `${url}: nor as passed or checkable`)
     assert.doesNotMatch(c.next.label, /review/i, `${url}: the next step never asks for a review the run page cannot show (${c.next.label})`)
+    assert.deepEqual(c.next, { label: '2 leads are held by checks (read-only): open the run to see why', href: `/app/leads?job_id=${cf}` }, `${url}: it points at the run page's read-only held list`)
+    assert.equal((c.qualification as { heldByChecks?: number }).heldByChecks, 2, `${url}: both are counted as held by checks`)
     assert.doesNotMatch(c.run?.tag ?? '', /review/i, `${url}: nor does the run pill`)
     assert.doesNotMatch(c.run?.label ?? '', /[1-9]\d* needs? your review/, `${url}: nor the run label (${c.run?.label})`)
     const p = cards.find(x => x.id === plain)
