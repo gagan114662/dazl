@@ -10,7 +10,7 @@
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
 import { companyTied } from '../people/company-tie.ts'
 import { onlyNameOnly, recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
-import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
+import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, sameAddressCrawlRecord, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
 
@@ -84,7 +84,9 @@ export function contactIdentity(l: CardLead): ContactIdentity {
   const ident = identityOf(l, rows)
   const pc = publishedContact({ contact: l.contact, source_url: l.source_url, evidence_excerpt: l.evidence_excerpt, enrichments: rows })
   const review = domainReviewFor({ id: l.id ?? '', contact: l.contact }, rows)
-  if (PUBLISHED_EMAIL_RE.test((l.contact ?? '').trim().toLowerCase()) && pc?.source === 'lead' && review.state !== 'required') return { state: 'cited', text: 'address printed on the cited page' }
+  // A direct address the crawl also recorded is cited from the crawl's page (sameAddressCrawlRecord, as the provenance
+  // line and the draft do), so it is judged by that website's identity, never called "printed on the cited page" (#384).
+  if (PUBLISHED_EMAIL_RE.test((l.contact ?? '').trim().toLowerCase()) && pc?.source === 'lead' && review.state !== 'required' && !sameAddressCrawlRecord(l.contact, rows)) return { state: 'cited', text: 'address printed on the cited page' }
   if (ident?.state === 'conflict') return { state: 'conflict', text: ident.text }
   if (!ident) return { state: 'none', text: "the company's own website was not identified" }
   if (ident.state === 'user_confirmed') return { state: 'user_confirmed', text: ident.text }
