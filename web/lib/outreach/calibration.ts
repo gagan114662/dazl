@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getAccessTokenBound, gmailSend, gmailStatus, confirmedSendResult } from '../gmail/oauth.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { approveBlockReason, createDraft, getSettings, OutreachError, testRecipientApproved, type Deps } from './service.ts'
+import { approveBlockReason, createDraft, draftOfferChanged, getSettings, OutreachError, templateUnderCurrentOffer, testRecipientApproved, type Deps } from './service.ts'
 import { getState, liftLaunchPause, MIN_CONFIDENCE } from './autopilot.ts'
 import { recheckSendAuthority } from './send-authority.ts'
 import { claimIssuesFor, outsidePolicy, readLaunchPolicy, recordPreflight, MIN_SAMPLE_DRAFTS, REQUIRED_STOPS, type PreflightResult, type SampleDraft } from './launch-policy.ts'
@@ -57,12 +57,14 @@ export function observedStops(db: Database.Database, tenantId: string): Record<(
 }
 
 // a pre-approval refusal, sorted into the preflight's three sample checks
-function sampleOf(db: Database.Database, tenantId: string, leadId: string, id: string, claimIssues: string[]): SampleDraft {
+// A sample whose words were written for an earlier play offer (#686) is judged as the launch would send it now: its lead with
+// the offer record set aside, and the words the play's current offer gives (`current`).
+function sampleOf(db: Database.Database, tenantId: string, leadId: string, id: string, claimIssues: string[], current?: { body: string }): SampleDraft {
   const m = db.prepare('SELECT to_email, body FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(id, tenantId) as { to_email: string; body: string }
-  const code = approveBlockReason(db, tenantId, id, { skipAccount: true }) ?? ''
+  const code = approveBlockReason(db, tenantId, id, { skipAccount: true, skipOffer: !!current }) ?? ''
   const dateBad = /date|currentness|window|stale/.test(code)
   const contactBad = !dateBad && /contact|email|domain|identity|role|recipient|suppress/.test(code)
-  return { leadId, to: m.to_email, body: m.body, evidenceOk: !code || dateBad || contactBad, dateOk: !dateBad, contactOk: !contactBad, claimIssues }
+  return { leadId, to: m.to_email, body: current?.body ?? m.body, evidenceOk: !code || dateBad || contactBad, dateOk: !dateBad, contactOk: !contactBad, claimIssues }
 }
 
 // The calibration sample's candidates (parameters: tenant, minimum confidence, tenant). Never a staging real-company check lead
@@ -102,8 +104,14 @@ export async function runCalibration(db: Database.Database, tenantId: string, bu
     let id = existing?.id
     // a lead createDraft refuses (its own gate) is not a sample; a store fault is not "too few samples" and surfaces
     if (!id) { try { id = createDraft(db, tenantId, c.id, businessName) } catch (e) { if (e instanceof OutreachError) continue; throw e } }
-    const body = (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(id) as { body: string }).body
-    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }), [c.signal, c.evidence_excerpt].filter(Boolean).join('\n'))))
+    const stored = db.prepare('SELECT body, offer_hash FROM outreach_messages WHERE id = ?').get(id) as { body: string; offer_hash: string | null }
+    // an existing draft written for an earlier play offer: the preflight checks the words the current offer gives instead;
+    // a lead that cannot be drafted under it now is not a sample
+    const stale = draftOfferChanged(db, tenantId, { lead_id: c.id, offer_hash: stored.offer_hash })
+    const current = stale ? templateUnderCurrentOffer(db, tenantId, c.id, businessName) : null
+    if (stale && !current) continue
+    const body = current?.body ?? stored.body
+    samples.push(sampleOf(db, tenantId, c.id, id, claimIssuesFor(policy, body, draftEvidenceUrls({ contact: c.contact, source_url: c.source_url ?? undefined, enrichments: crawlRows.all(c.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null; retrieved_at: number | null }[] }), [c.signal, c.evidence_excerpt].filter(Boolean).join('\n')), current ?? undefined))
   }
 
   // integration check: only when the connected mailbox is the policy's sender, and only to the owned test inbox.

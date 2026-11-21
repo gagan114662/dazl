@@ -401,6 +401,17 @@ export function draftOfferChanged(db: Database.Database, tenantId: string, m: { 
   return currentOfferDigest(db, tenantId, m.lead_id) !== m.offer_hash
 }
 
+// Read-only: the words createDraft would write for this lead now, under the play's current offer (nothing is stored).
+// null when the lead could not be drafted now or the play's offer is contested.
+export function templateUnderCurrentOffer(db: Database.Database, tenantId: string, leadId: string, businessName: string): { subject: string; body: string } | null {
+  try {
+    const { lead, addressUrl } = draftChecks(db, tenantId, leadId)
+    const r = draftOffer(playOfferRow(db, tenantId, lead.id), readTenantOffer(db, tenantId))
+    if (r.refuse) return null
+    return draftTemplate(lead, businessName, r.offer ?? '', addressUrl)
+  } catch (e) { if (e instanceof OutreachError) return null; throw e }
+}
+
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
   const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
@@ -472,12 +483,12 @@ export function skip(db: Database.Database, tenantId: string, id: string): void 
 }
 
 // Every check approve makes before its write transaction, in the same order. Throws OutreachError on the first refusal.
-function approveChecks(db: Database.Database, tenantId: string, id: string, sequenceSet: boolean, skipAccount = false) {
+function approveChecks(db: Database.Database, tenantId: string, id: string, sequenceSet: boolean, skipAccount = false, skipOffer = false) {
   if (!sequenceSet && tableExists(db, 'sequences') && db.prepare("SELECT 1 FROM sequences WHERE tenant_id = ? AND message_id = ? AND status NOT IN ('stopped','done')").get(tenantId, id)) throw new OutreachError('approve_sequence_set')
   const m = getMsg(db, tenantId, id)
   if (!m) throw new OutreachError('not_found')
   if (m.status !== 'draft') throw new OutreachError('not_a_draft')
-  if (draftOfferChanged(db, tenantId, m)) throw new OutreachError('offer_changed') // #686: written for an offer the play no longer sells
+  if (!skipOffer && draftOfferChanged(db, tenantId, m)) throw new OutreachError('offer_changed') // #686: written for an offer the play no longer sells
   if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
   if (!skipAccount && !getSettings(db, tenantId)) throw new OutreachError('sender_identity_missing')
   if (!skipAccount && gmailStatus(db, tenantId)?.status !== 'active') throw new OutreachError('gmail_not_connected')
@@ -491,9 +502,11 @@ function approveChecks(db: Database.Database, tenantId: string, id: string, sequ
 // Read-only: why approve would refuse this message right now (its error code), or null. The same approveChecks plus the
 // identity hold approve re-reads under its write lock. skipAccount leaves out only the account-wide checks (sender details,
 // Gmail) so a view can tell "fix your setup" apart from a hold on the lead itself; approve never skips them.
-export function approveBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean } = {}): string | null {
+// skipOffer leaves out only the draft's offer record (#686), for a caller that judges the lead with words written for the
+// play's current offer instead (the launch preflight); approve never skips it.
+export function approveBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean; skipOffer?: boolean } = {}): string | null {
   try {
-    const m = approveChecks(db, tenantId, id, false, !!o.skipAccount)
+    const m = approveChecks(db, tenantId, id, false, !!o.skipAccount, !!o.skipOffer)
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) return domainHoldCode(db, tenantId, m.lead_id, m.to_email)
     return null
   } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
