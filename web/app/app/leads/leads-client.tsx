@@ -243,7 +243,9 @@ export default function LeadsClient() {
   // keyed to the job it was read for: a previous run's note never shows under another job
   const [capacityNote, setCapacityNote] = useState<{ job: string; text: string } | null>(null)
   const [quality, setQuality] = useState<Quality | null>(null)
-  const [heldCandidates, setHeldCandidates] = useState<{ id: string; company: string; source_url: string; signal: string | null; event_date: string | null; hold_reason: string }[]>([])
+  const [heldView, setHeldView] = useState<{ jobId: string; items: { id: string; company: string; source_url: string; signal: string | null; event_date: string | null; hold_reason: string }[] } | null>(null)
+  // a new scan never shows the previous scan's held candidates: the list is tied to the job it was read for
+  const heldCandidates = heldView?.jobId === jobId ? heldView.items : []
   const [resultView, setResultView] = useState<{ jobId: string; counts: CompanyFirstResultCounts | null; marked: boolean } | null>(null)
   const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
   // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
@@ -676,11 +678,10 @@ export default function LeadsClient() {
     const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
     if (l.ok) {
       const j = await l.json()
-      setLeads(j.leads); setHeldCandidates(j.job_id === jobId && Array.isArray(j.held) ? j.held : []); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null)
+      setLeads(j.leads); setHeldView({ jobId: j.job_id, items: Array.isArray(j.held) ? j.held : [] }); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null)
       setResultView({ jobId, counts: j.company_first_counts ?? null, marked: j.company_first === true || j.company_first_counts != null })
     }
   }
-  useEffect(() => { setHeldCandidates([]) }, [jobId])   // a new scan never shows the previous scan's held candidates
   useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
   // Interrupted enrichment lookups (a rate limit or crash left the outcome unknown): nothing retried itself, so a
   // lookup that may have been charged is never re-billed on its own. The owner retries each one explicitly, with
