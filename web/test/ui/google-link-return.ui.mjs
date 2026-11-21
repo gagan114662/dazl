@@ -50,7 +50,12 @@ const BLOCKED_EST = JSON.parse(execFileSync(process.execPath, ['--experimental-s
   "import { estimateRun } from './lib/scan/price-estimate.ts'; process.stdout.write(JSON.stringify(estimateRun({ budget: null, payer: 'trial', limited: true, trialRefusal: 'google_required', trialUsed: 0 })))"],
   { cwd: dir, env: { PATH: process.env.PATH } }).toString())
 const b = await chromium.launch()
-async function open(width, url, pending, profile = PROFILE, linkCookie = null) {
+// What GET /api/usage answers: by default a funded trial; a new password account's real answer is USAGE_PASSWORD.
+const USAGE_FUNDED = { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } }
+// #1095: what the real GET /api/usage answers a brand-new password account (test/helpers/first-search-1095-runtime.mts
+// asserts this exact trial block through the real sign-up and usage routes; Hermes-PC saw the same on dazl.ai 194e9ada).
+const USAGE_PASSWORD = { plan: 'free', scans_used: 0, scan_limit: 50, has_key: false, billing_status: null, trial: { funded: false, remaining: 3, cap: 3, blocked: 'google_required' } }
+async function open(width, url, pending, profile = PROFILE, linkCookie = null, usage = USAGE_FUNDED) {
   const fresh = !/google=reauth_required/.test(url) // the server said the session is stale: so does /api/auth/reauth
   const ctx = await b.newContext({ viewport: { width, height: 900 } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -61,7 +66,7 @@ async function open(width, url, pending, profile = PROFILE, linkCookie = null) {
     if (u.origin !== base) return route.abort()
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-    if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } })
+    if (p === '/api/usage') return json(usage)
     if (p === '/api/settings/profile') return json(profile)
     if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
     if (p === '/api/scan/jobs') return json({ jobs: [] })
@@ -182,6 +187,33 @@ try {
         const play = page.getByTestId('first-play').first(); await play.waitFor({ timeout: 8000 })
         await play.click()
         await gone(page, `${label}: picking a suggested play clears the note`)
+      } finally { await ctx.close() }
+    })
+    // #1095: a brand-new password account reaches the ready step with the trial refused for google_required. Before any
+    // search it is told why in words and offered Link Google back to this page (the search it will run is saved for the
+    // return); never only the paste-your-key box, never a raw code, and nothing on the page can start a run.
+    await check(`/app ready, new password account (trial needs Google) @${width}`, async () => {
+      const { ctx, page } = await open(width, '/app', null, PROFILE, null, USAGE_PASSWORD)
+      const label = `/app ready new password account @${width}`
+      try {
+        await page.getByTestId('ready-step').waitFor({ timeout: 8000 })
+        const notice = page.getByTestId('ready-trial-refusal'); await notice.waitFor({ timeout: 8000 })
+        assert.match(await notice.innerText(), /Free scans need a Google account\. Link Google to run this search free \(no card\)\./, `${label}: why, in words`)
+        const link = notice.getByRole('link', { name: 'Link Google' }); await link.waitFor({ timeout: 8000 })
+        assert.equal(await link.getAttribute('href'), '/api/auth/google?link=1&next=%2Fapp', `${label}: Link Google back to this page`)
+        assert.match(await page.getByTestId('ready-plan').innerText(), /Link Google to start free/, `${label}: the plan card says how to start free`)
+        const text = await page.locator('body').innerText()
+        assert.doesNotMatch(text, /\b(trial_unavailable|google_required|no_api_key)\b/, `${label}: no raw code on screen`)
+        assert.equal(await page.locator('[data-testid="ready-cta"]:enabled').count(), 0, `${label}: no run can start while the trial is refused`)
+        assert.equal(await page.locator('[data-testid="first-play"]:enabled').count(), 0, `${label}: no suggestion can start a run either`)
+        await noOverflow(page, label)
+        if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `app-ready-new-password-${width}.png`), fullPage: true })
+        const sentence = await page.getByTestId('first-ask').inputValue()
+        assert.ok(sentence.length >= 3, `${label}: the search to run is in the box`)
+        await link.click()
+        await page.waitForLoadState('networkidle')
+        assert.equal(JSON.parse(await saved(page) ?? 'null')?.query, sentence, `${label}: the same search is saved for the return`)
+        assert.equal(JSON.parse(await saved(page) ?? 'null')?.step, 'ready', `${label}: the return reopens the ready step`)
       } finally { await ctx.close() }
     })
     // #1095 (Hermes review): the cost panel for a run the free trial refused claims no payer (never "Paid by the shared
