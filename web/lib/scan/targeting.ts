@@ -182,6 +182,19 @@ const STOPPED_AFTER = /\b(?:on\s+hold|on\s+ice|postpon\w*|delay\w*|shelv\w*|scra
 // A completed hire undone in the same breath: "hired SDRs and fired them", "hired SDRs then let them go".
 const UNDONE = /\b(?:and|then|but)\s+(?:fired|let\s+\w+\s+go|laid\s+\w+\s+off)\b/i
 const CLAUSE_END = /[.;!?,]|\b(?:and|or|but|while|who|that|which)\b/i
+// A stop word after the condition is about it only when it comes straight after the hiring / funding word ("hiring ban", "hired fewer SDRs"),
+// or when it closes the clause ("hiring SDRs postponed", "hiring ban in place", "hiring down 30%") with no preposition between the role and
+// it. Elsewhere in the clause it describes something else and is not read ("hiring SDRs at Cap Gemini", "hiring a restrictions analyst",
+// "hiring SDRs on hold music software"): a false NOT would hold every company that matches the request.
+const AFTER_TAIL = /^(?:\s*(?:%|in\s+place|across\b.*|for\s+now|until\b.*|indefinitely|again|this\s+(?:year|quarter|month)|(?:within|in\s+the|over|during|last|recently|since)\b.*))?\s*$/i
+const BETWEEN_PREP = /\b(?:at|in|for|after|of|from|with|to|by|on|into|across|about|over|under)\b/i
+function afterStop(text: string): RegExpExecArray | null {
+  const m = STOPPED_AFTER.exec(text)
+  if (!m) return null
+  const between = text.slice(0, m.index)
+  if (!between.trim()) return m
+  return !BETWEEN_PREP.test(between) && AFTER_TAIL.test(text.slice(m.index + m[0].length)) ? m : null
+}
 export function compileTargeting(query: string | null | undefined, icp?: string | null): QueryPlan {
   const q = (query ?? '').replace(/\s+/g, ' ').trim()
   const ambiguities: Ambiguity[] = []
@@ -264,7 +277,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     const undo = a.kind === 'hire_made' && /^\s*(?:and|then|but)\b/i.test(rest) || /\b(?:and|then|but)\b/i.test(tail) ? UNDONE.exec(tail + rest.split(/[.;!?]/)[0]) : null
     const after = rest.split(CLAUSE_END)[0]
     const pre = STOPPED_BEFORE.exec(before)
-    const found = undo ?? STOPPED_AFTER.exec(tail + after)
+    const found = undo ?? afterStop(tail + after)
     const mid = found && found.index < tail.length ? found : null
     // "never stopped hiring SDRs" is a double negative: still hiring. A negation right before the stop word cancels it.
     const pre2 = pre && /(?:\b(?:never|not|hasn'?t|haven'?t|didn'?t)|n't)\s*$/i.test(before.slice(0, pre.index)) ? null : pre

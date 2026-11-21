@@ -51,7 +51,11 @@ test('#1163 ordinary positive requests stay positive (real roles, double negativ
     'hiring 3 SDRs', 'hiring a Sr. Account Executive', 'hiring a Head of Business Development and Partnerships', 'never stopped hiring SDRs',
     'raised seed funding and are hiring account executives', 'VC-backed startups', 'Companies that hired their first VP of Sales within 30 days',
     'lost a CEO and raised a seed round', 'B2B SaaS startups that raised seed funding in the last 90 days or are hiring account executives',
-    'dental clinics hiring a front desk manager', 'hiring SDRs to cut onboarding time']) {
+    'dental clinics hiring a front desk manager', 'hiring SDRs to cut onboarding time',
+    // a stop word elsewhere in the clause is not about the condition (council review: these were read NOT and would hide real leads)
+    'companies hiring SDRs at capped salaries', 'hiring SDRs at Cap Gemini', 'hiring SDRs in a crunch market', 'hiring SDRs for a crisis management firm',
+    'hiring SDRs after a rumor of acquisition', 'hiring SDRs gone remote', 'hiring SDRs in Gone Fishing Inc', 'companies hiring a restrictions analyst',
+    'hiring SDRs on hold music software', 'companies that lost a deal and raised Series A', 'hiring SDRs to stop churn', 'raised funding to avoid layoffs']) {
     const t = triggers(q)
     assert.ok(t.length > 0, `${q}: no condition`)
     for (const x of t) assert.equal(x.negated, false, `${q}: ${x.cond.kind} "${x.cond.text}" read NEGATED`)
