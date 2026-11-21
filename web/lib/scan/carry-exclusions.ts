@@ -25,7 +25,7 @@ export function carriedExclusions(icp: Icp | null | undefined): string[] {
 
 // Room the carried list may take in the stored profile (ICP_JSON_BUDGET is 3900): a list that cannot fit is refused at
 // admission with a clear message, never silently trimmed.
-export const CARRY_JSON_BUDGET = 800
+export const CARRY_JSON_BUDGET = 1400
 export function carryStub(exclude: unknown): string | null {
   const xs = Array.isArray(exclude) ? clean(exclude) : []
   return xs.length ? JSON.stringify({ carry_exclude: xs }) : null

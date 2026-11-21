@@ -38,6 +38,7 @@ const OFFER_REFUSED = 'Say in a few words what you sell for this play'
 export function estimateFailureCopy(status: number, body: unknown): string {
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
   if (status === 400 && b.error === OFFER_REFUSED) return OFFER_REFUSED
+  if (status === 400 && typeof b.error === 'string' && b.error.includes(' ')) return b.error.slice(0, 300)   // a route's own sentence
   if (b.detail) return `The spend limit was not accepted: ${String(b.detail).slice(0, 200)}`
   return 'Could not get a price estimate, so nothing was started. Try again.'
 }

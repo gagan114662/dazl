@@ -76,6 +76,11 @@ export function leadHeld(db: Database.Database, tenantId: string, leadId: string
     || leadCarryExcluded(db, tenantId, leadId)
 }
 
+// Why leadHeld holds this lead: an exclusion is reported as one, never as a grading failure.
+export function leadHoldCode(db: Database.Database, tenantId: string, leadId: string): 'lead_excluded' | 'lead_ungraded' {
+  return leadCarryExcluded(db, tenantId, leadId) ? 'lead_excluded' : 'lead_ungraded'
+}
+
 // A reviewed exclusion carried into a different-offer play (lib/scan/carry-gate.ts): the lead is never drafted, approved
 // or sent. Part of leadHeld, so every approval, send, follow-up and sequence check that holds a lead holds this one too.
 export function leadCarryExcluded(db: Database.Database, tenantId: string, leadId: string): boolean {
@@ -498,7 +503,7 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
   if (isInboxFixtureAddress(pre.to_email)) throw new OutreachError('fixture_recipient')
   if (contactPurposeRestricted(db,tenantId,pre.lead_id,pre.to_email)) throw new OutreachError('not_sales_contact')
   if (!recipientAllowed(db,tenantId,pre.to_email)) throw new OutreachError('personal_email')
-  if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError('lead_ungraded')
+  if (leadHeld(db, tenantId, pre.lead_id)) throw new OutreachError(leadHoldCode(db, tenantId, pre.lead_id))
   if (!testFixtureSend(db,tenantId,pre) && currentnessHeld(db,tenantId,pre.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
   if (!testFixtureSend(db, tenantId, pre) && !leadEvidenceEligible(db, tenantId, pre.lead_id)) throw new OutreachError('lead_evidence_withdrawn')
   if (!testFixtureSend(db, tenantId, pre) && domainReviewHeld(db, tenantId, pre.lead_id, pre.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, pre.lead_id, pre.to_email))
@@ -595,7 +600,7 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   }
   if (contactPurposeRestricted(db,tenantId,m.lead_id,m.to_email)) release('not_sales_contact')
   if (!recipientAllowed(db,tenantId,m.to_email)) release('personal_email')
-  if (leadHeld(db,tenantId,m.lead_id)) release('lead_ungraded')
+  if (leadHeld(db,tenantId,m.lead_id)) release(leadHoldCode(db,tenantId,m.lead_id))
   if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) release('lead_currentness_unconfirmed')
   if (!testFixtureSend(db,tenantId,m) && !leadEvidenceEligible(db,tenantId,m.lead_id)) release('lead_evidence_withdrawn')
   if (!testFixtureSend(db,tenantId,m) && domainReviewHeld(db,tenantId,m.lead_id,m.to_email)) release(domainHoldCode(db,tenantId,m.lead_id,m.to_email))

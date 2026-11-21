@@ -595,7 +595,7 @@ export default function LeadsClient() {
     const websiteSource = websiteDraft.current?.receipt
     const srcBody = buildSources({ github: useGithub, youtube: useYoutube, v2ex: useV2ex, jobboards: useJobboards, brreg: useBrreg, feedText, pageText, advPick })
     try {
-      const body = JSON.stringify({ query: requested, ...(websiteSource ? { mode: 'website_profile_review_v1', website_draft_receipt: websiteSource } : {}), ...(offer ? { offer } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
+      const body = JSON.stringify({ query: requested, ...(websiteSource ? { mode: 'website_profile_review_v1', website_draft_receipt: websiteSource } : {}), ...(offer ? { offer } : {}), ...(!withIcp && carryExclude?.length ? { carry_exclude: carryExclude } : {}), ...(withIcp ? { icp: withIcp } : {}), ...(reviewed !== undefined ? { reviewed } : {}), ...(srcBody ? { sources: srcBody } : {}), ...(budgetCheck.budget ? { budget: budgetCheck.budget } : {}) })
       const er = await fetch('/api/scan/estimate', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
       const ej = await er.json().catch(() => ({}))
       if (latestOfferQuery.current !== requested || receiveOfferConflict(er.status, ej, requested, reviewed)) return
@@ -623,6 +623,7 @@ export default function LeadsClient() {
       // The request names a different offer than the business profile: nothing was queued; ask which one this play is for.
       if ((r.status === 409 && j.error === 'estimate_changed') || (r.status === 402 && j.error === 'over_budget')) { if (latestOfferQuery.current === requested) setPendingEst({ est: j.estimate as RunEstimate, query: requested, withIcp, offer, reviewed, websiteApproval, carryExclude }); return }
       if (receiveOfferConflict(r.status, j, requested, reviewed)) return
+      if (r.status === 400 && typeof j.error === 'string' && j.error.includes(' ')) { setPendingEst(null); setError(j.error); return }   // a refusal Confirm cannot change
       if (j.error === 'website_review_stale' || j.error === 'website_review_unavailable') {
         setPendingEst(null); setError('The website review could not be verified. Read the site again before getting a new estimate. No search started.'); return
       }

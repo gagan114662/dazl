@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { sameOriginJson } from '@/lib/same-origin'
+import { carryAdmission } from '@/lib/scan/carry-exclusions'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { readHasKey } from '@/lib/llm/key-store'
 import { getDb } from '@/lib/db/client'
@@ -36,6 +37,9 @@ export async function POST(req: NextRequest) {
   const websiteReview = body?.mode === WEBSITE_PROFILE_REVIEW_MODE
   if (websiteReview !== (body?.website_draft_receipt !== undefined)) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
 
+  // the same carried-exclusion admission POST /api/scan applies, so no cost panel is shown for a list it would refuse
+  const carry = body?.icp ? { ok: true as const } : carryAdmission(body?.carry_exclude)
+  if (!carry.ok) return NextResponse.json({ error: carry.error }, { status: 400 })
   const supplied = body?.offer !== undefined && body?.offer !== null
   if (supplied && !completeOffer(body.offer)) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
   if (query.length >= 3 && !supplied) {

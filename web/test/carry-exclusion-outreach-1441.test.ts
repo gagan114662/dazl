@@ -45,3 +45,18 @@ test('a lead matching a carried exclusion cannot be drafted, approved or sent', 
   assert.equal(sendBlockReason(db, 'W', 'draftX', { skipAccount:true }), 'lead_ungraded')
 
 })
+
+// Qodo on 3d50097 (3): a lead held by an exclusion is reported as excluded, never as an ICP grading failure.
+test('a held excluded lead is reported as lead_excluded', async () => {
+  const { leadHoldCode } = await import('../lib/outreach/service.ts')
+  const db = new Database(':memory:')
+  migrateScan(db); migrateOutreach(db); migrateMemory(db)
+  const icp = JSON.stringify({ summary: 'S', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], carry_exclude: ['Acme Dental (acme.example)'] })
+  const job = createQueryJob(db, 'W', { query: 'SaaS founders hiring sales', icp, offer: 'Leadly (leadly.example), AI lead finding' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const ins = db.prepare('INSERT INTO leads (id,scan_job_id,company,company_domain,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+  ins.run('X', job, 'Acme Dental Group', 'acme.example', 'ceo@acme.example', 'hiring', 'https://news.example/a', 'hiring', 90, 80, 8, 7)
+  ins.run('U', job, 'Northwind', 'northwind.example', 'ceo@northwind.example', 'hiring', 'https://news.example/b', 'hiring', 90, 80, 0, null)
+  assert.equal(leadHoldCode(db, 'W', 'X'), 'lead_excluded')
+  assert.equal(leadHoldCode(db, 'W', 'U'), 'lead_ungraded')
+})

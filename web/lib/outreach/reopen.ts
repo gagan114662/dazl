@@ -11,7 +11,7 @@ import { contactPurposeRestricted } from './contact-purpose-db.ts'
 import { currentnessHeld } from './currentness.ts'
 import { accountSendCount, anyUncertainSend, tableExists } from './send-budget.ts'
 import { recheckSendAuthority } from './send-authority.ts'
-import { composeBody, getSettings, isSuppressed, leadHeld, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, testFixtureSend, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
+import { composeBody, getSettings, isSuppressed, leadHeld, leadHoldCode, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, testFixtureSend, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
 import { replySafetyStale } from './store.ts'
 
 export const WARM_MIN_DAYS = 30
@@ -86,7 +86,7 @@ function qualify(db: Database.Database, tenantId: string, threadId: string): War
 
 export function createReopenDraft(db: Database.Database, tenantId: string, threadId: string, businessName: string): void {
   const t = qualify(db, tenantId, threadId)
-  if (leadHeld(db,tenantId,t.lead_id)) throw new OutreachError('lead_ungraded')
+  if (leadHeld(db,tenantId,t.lead_id)) throw new OutreachError(leadHoldCode(db,tenantId,t.lead_id))
   if (isSuppressed(db, tenantId, t.to_email)) throw new OutreachError('suppressed')
   const lead = db.prepare('SELECT company, name, signal, source_url FROM leads WHERE id = ?').get(t.lead_id) as { company: string; name: string; signal: string; source_url: string } | undefined
   if (!lead) throw new OutreachError('lead_missing')
@@ -138,7 +138,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   const r = getReopen(db, tenantId, threadId)
   if (!r) throw new OutreachError('not_found')
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
-  if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
+  if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError(leadHoldCode(db,tenantId,r.lead_id))
   if (r.status === 'sent') throw new OutreachError('already_sent')
   if (r.status === 'skipped') throw new OutreachError('final')
   // 'approved' is the in-flight claim: a send started and its outcome was never recorded.
@@ -162,7 +162,7 @@ export async function sendReopen(db: Database.Database, tenantId: string, thread
   let tokenGen: string
   try { { const b = await getAccessTokenBound(db, tenantId, d as OAuthDeps); token = b.token; tokenGen = b.refreshCt } } catch (e) { throw new OutreachError(connectionGone(e) ? 'gmail_not_connected' : isConnectionReplaced(e, db, tenantId) ? 'connection_replaced' : 'gmail_reconnect_needed') }
   if (!recipientAllowed(db,tenantId,r.to_email)) throw new OutreachError('personal_email')
-  if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError('lead_ungraded')
+  if (leadHeld(db,tenantId,r.lead_id)) throw new OutreachError(leadHoldCode(db,tenantId,r.lead_id))
   if (isSuppressed(db, tenantId, r.to_email)) throw new OutreachError('suppressed')
   leadGates(db, tenantId, r)
   if (accountPaused(db, tenantId)) throw new OutreachError('paused') // a pause during the token await still holds this send

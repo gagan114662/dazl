@@ -54,7 +54,7 @@ test('budget: a carry list that cannot fit is refused at admission with a clear 
   const r = carryAdmission(huge)
   assert.equal(r.ok, false); assert.match((r as { error: string }).error, /exclusions/i)
   const ok = carryAdmission(seven); assert.equal(ok.ok, true)
-  const near: Icp = { summary: 'x'.repeat(300), who: Array(4).fill('y'.repeat(160)), industries: Array(4).fill('z'.repeat(160)), sizes: [], where: Array(3).fill('w'.repeat(160)), signals: Array(2).fill('s'.repeat(160)), exclude: Array(3).fill('e'.repeat(160)) }
+  const near: Icp = { summary: 'x'.repeat(300), who: Array(3).fill('y'.repeat(160)), industries: Array(3).fill('z'.repeat(160)), sizes: [], where: Array(2).fill('w'.repeat(160)), signals: Array(2).fill('s'.repeat(160)), exclude: Array(2).fill('e'.repeat(160)) }
   assert.ok(JSON.stringify(near).length <= ICP_JSON_BUDGET - CARRY_JSON_BUDGET, 'test profile sits under the room left for carried exclusions')
   const merged = applyCarriedExclusions(near, (ok as { stub: string }).stub)
   assert.equal(budgetedIcp(merged).ok, true)
@@ -66,4 +66,18 @@ test('hard gate: a lead matching a carried exclusion is excluded by code, by dom
   assert.equal(carriedExcluded(icpJson, { company: 'Northwind', company_domain: 'northwind.example', contact: 'a@seventh.example' }), true)
   assert.equal(carriedExcluded(icpJson, { company: 'Northwind', company_domain: 'northwind.example' }), false)
   assert.equal(carriedExcluded(null, { company: 'Acme Dental' }), false)
+})
+
+// Qodo on 3d50097 (1): a one- or two-letter company name never matches inside unrelated exclusion text; domains still match exactly.
+test('short company names are not blocked by unrelated carried exclusions', () => {
+  const icpJson = JSON.stringify({ summary: 's', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [], carry_exclude: ['Competitors like Pipedrive', 'Acme Dental (acme.example)'] })
+  assert.equal(carriedExcluded(icpJson, { company: 'Co', company_domain: 'co.example' }), false)
+  assert.equal(carriedExcluded(icpJson, { company: 'Pi', company_domain: 'pi.example' }), false)
+  assert.equal(carriedExcluded(icpJson, { company: 'Like', company_domain: 'like.example' }), false, 'a common word inside the text is not a company match')
+  assert.equal(carriedExcluded(icpJson, { company: 'Pipedrive', company_domain: 'pipedrive.example' }), true)
+  assert.equal(carriedExcluded(icpJson, { company: 'AD', company_domain: 'acme.example' }), true, 'domain match is exact, whatever the name')
+})
+// Qodo on 3d50097 (2): any valid profile's exclusions fit the carry budget (6 x 160 plus reviewed disqualifiers).
+test('a full valid exclude list fits the carry budget', () => {
+  assert.equal(carryAdmission(Array.from({ length: 6 }, (_, i) => `${i}`.repeat(160))).ok, true)
 })
