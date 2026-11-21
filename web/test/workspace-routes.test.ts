@@ -55,7 +55,7 @@ test('forgot password reveals nothing; reset works once and signs out everywhere
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
-    '--loader', './test/helpers/workspace-session-loader.mjs', '--test', './test/helpers/email-routes-runtime.mts'], { cwd: web, env, encoding: 'utf8', timeout: 120000 })
+    '--loader', './test/helpers/auth-after-loader.mjs', '--test', './test/helpers/email-routes-runtime.mts'], { cwd: web, env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /EMAIL ROUTES ok/)

@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import { randomBytes, scryptSync } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
+import { settleAfter } from './next-server-after-shim.mjs'
 import { setScanDb } from './tenant-route-db.ts'
 import { withJar } from './pg-session-headers.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
@@ -85,6 +86,7 @@ test('a reset link proves ownership too: queued signup AND payment conversions b
   assert.equal(msgStatus(m), 'draft')
   const rr = await resetRequest.POST(req('/api/auth/reset/request', { email: 'resetprospect@example.test' }))
   assert.equal(rr.status, 200)
+  await settleAfter() // the reset mail goes out after the answer (#841)
   const token = link('resetprospect@example.test', 'reset')!
   const ok = await reset.POST(req('/api/auth/reset', { token, password: 'another strong password 3' }))
   assert.equal(ok.status, 200)
