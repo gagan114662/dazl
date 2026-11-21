@@ -150,7 +150,8 @@ const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|as
 // #1207: the guard reads only a name in splitName's own form (letters only). Any other name (a caller handing it "thornton[" or
 // "ma+ya") is one it cannot process: it fails closed (no pairing, no address attributed) instead of throwing or matching a pattern.
 const plainName = (n: Name) => /^[a-z]+$/i.test(n.first) && /^[a-z]+$/i.test(n.last)
-const reEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// Defense in depth: the gate above already keeps metacharacters out, and any future direct caller of withoutOwnName still gets a literal match.
+export const reEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean } {
   const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
   // #1173: only spaces between the first and the last name (a tab or newline kept from an attribute or a <pre> separates two

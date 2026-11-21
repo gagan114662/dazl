@@ -8,7 +8,7 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { addressContexts, crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
-import { personalAddresses, publishedFor, sameNamedPublication, singleNamePairing, type AddressContext, type Name } from '../lib/people/email-pattern.ts'
+import { personalAddresses, publishedFor, reEscape, sameNamedPublication, singleNamePairing, type AddressContext, type Name } from '../lib/people/email-pattern.ts'
 import { findWorkEmail } from '../lib/people/work-email.ts'
 
 const SITE = 'bluebonnetrealty.com'
@@ -64,7 +64,17 @@ test('#1207 "ma+ya" is not a pattern: it matches neither maya, maaya nor ma ya',
   }
 })
 
-test('#1207 real route: a team page whose agents print names with ( ) [ ] | * + beside the buyer still publishes her address on one Find work email click', async () => {
+test('#1207 the name is escaped before it reaches new RegExp: every metacharacter matches only itself', () => {
+  for (const m of META) {
+    const re = new RegExp(`^${reEscape(`thor${m}nton`)}$`)
+    assert.equal(re.test(`thor${m}nton`), true, m)
+    for (const other of ['thornton', 'thorxnton', 'thor nton', `thor${m}${m}nton`]) assert.equal(re.test(other), false, `${m} vs ${other}`)
+  }
+  const ma = new RegExp(`^${reEscape('ma+ya')}$`, 'i')
+  for (const w of ['maya', 'maaya', 'ma ya']) assert.equal(ma.test(w), false, w)
+})
+
+test('#1207 real route: a team page whose agent cards print ( ) [ ] | * + in their names crawls without a crash and one Find work email click still publishes the buyer\'s address', async () => {
   const team = [
     card('Maya Thornton', `maya@${SITE}`, 'Real Estate Broker | Owner', 'maya-thornton'),
     card('Owen Pike (He/Him)', `owen@${SITE}`, 'Real Estate Agent', 'owen-pike-1'),
