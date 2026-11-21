@@ -21,3 +21,9 @@ test('#1428 /reset is usable in its first HTML: the fallback is the form itself,
  assert.match(form,/mailAvailable: boolean \| null/)
  assert.match(form,/disabled=\{busy \|\| \(!token && mailAvailable === false\)\}/)
 })
+test('#1428 while the mail state is unknown the reset form promises nothing: no 30-minute link line, a neutral prompt',()=>{
+ const form=readFileSync('app/reset/reset-form.tsx','utf8')
+ // the 30-minute promise only when this deployment is known to send mail
+ assert.match(form,/mailAvailable === true \? 'We will email you a link that works for 30 minutes\.'/)
+ assert.match(form,/mailAvailable === null \? 'Enter the email you signed up with\.'/)
+})
