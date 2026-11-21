@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { getMasterKey } from '../secrets.ts'
-import { isStaging } from '../staging.ts'
+import { isStaging, type Env } from '../staging.ts'
 import { isRequestId } from './request-log.ts'
 
 export type ShellRoute = '/app' | '/app/business' | '/app/plays'
@@ -8,7 +8,7 @@ export const SHELL_TIMING_ROUTE_HEADER = 'x-dazl-shell-timing-route'
 export function shellRoute(v:unknown):ShellRoute|null {
   return v==='/app'||v==='/app/business'||v==='/app/plays'?v:null
 }
-export function shellTimingEnabled(env=process.env):boolean {
+export function shellTimingEnabled(env: Env = process.env):boolean {
   return env.DAZL_SIGNED_SHELL_TIMING === '1' || (env.DAZL_SIGNED_SHELL_TIMING === undefined && isStaging(env))
 }
 export function sqliteContention(err:unknown):'busy'|'locked'|null{
