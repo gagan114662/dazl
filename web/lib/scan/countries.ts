@@ -327,7 +327,7 @@ export function countryFromField(v: unknown): string | null {
   if (/^[A-Za-z]{3}$/.test(t) && ALPHA3.has(t.toUpperCase())) return ALPHA3.get(t.toUpperCase())!
   return resolveSegment(t, true)
 }
-const CA_PROV: Record<string, string> = { on: 'on', ontario: 'on', qc: 'qc', quebec: 'qc', bc: 'bc', 'british columbia': 'bc', ab: 'ab', alberta: 'ab', mb: 'mb', manitoba: 'mb', sk: 'sk', saskatchewan: 'sk', ns: 'ns', 'nova scotia': 'ns', nb: 'nb', 'new brunswick': 'nb', nl: 'nl', 'newfoundland and labrador': 'nl', pe: 'pe', 'prince edward island': 'pe', yt: 'yt', nt: 'nt', nu: 'nu' }
+const CA_PROV: Record<string, string> = { on: 'on', ont: 'on', ontario: 'on', qc: 'qc', quebec: 'qc', bc: 'bc', 'british columbia': 'bc', ab: 'ab', alberta: 'ab', mb: 'mb', manitoba: 'mb', sk: 'sk', saskatchewan: 'sk', ns: 'ns', 'nova scotia': 'ns', nb: 'nb', 'new brunswick': 'nb', nl: 'nl', 'newfoundland and labrador': 'nl', pe: 'pe', 'prince edward island': 'pe', yt: 'yt', nt: 'nt', nu: 'nu' }
 const UK_REGION: Record<string, string> = { england: 'eng', scotland: 'sct', wales: 'wls', 'northern ireland': 'nir' }
 // A region a comma segment names: a US state (name or code), a Canadian province (name or code), or a UK constituent country -> a canonical id ("US-ny", "CA-on", "GB-eng"), else null.
 export function regionOf(segment: string): string | null {
