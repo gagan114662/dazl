@@ -765,7 +765,7 @@ async function callResearch<T>(ledger: SourceRunLedger, source: string, f: () =>
 }
 
 // #533: a board-bound posting (verifyLeads) is stored as hiring; a graded hiring kind from scoring (hiring_relevant_role) is kept
-const boundKind = (bound: string | null | undefined, graded: string | null): string | null =>
+export const boundKind = (bound: string | null | undefined, graded: string | null): string | null =>
   bound !== 'hiring' ? graded : graded === 'hiring' || graded === 'hiring_relevant_role' ? graded : 'hiring'
 function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pending', error: string | null, out: VerifyOutcome | null = null, candidates: number | null = null, ledger?: SourceRunLedger): boolean {
   if (accountingFailed.has(job)) { status = 'failed'; error = 'accounting_failed'; out = null; candidates = null }

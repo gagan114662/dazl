@@ -236,3 +236,17 @@ test('#533 review: the board binding needs a board title, the named board and a 
     assert.equal(r.ok, true, JSON.stringify(r))
   } finally { restore() }
 })
+
+test('#533 review: a board-bound posting the grader lists only as another event keeps that kind, so its board day is not a hiring day', async () => {
+  const { boundKind } = await import('../lib/scan/runner.ts')
+  const { dated } = await import('../lib/monitor-events.ts')
+  // no grade, a hiring grade, or a hiring-type / graded hiring kind: a hiring posting (the graded requested-role kind is kept)
+  assert.deepEqual([boundKind('hiring', null), boundKind('hiring', 'hiring'), boundKind('hiring', 'hiring_relevant_role'), boundKind('hiring', 'job_board_presence')], ['hiring', 'hiring', 'hiring_relevant_role', 'hiring'])
+  // graded only as another dated event: the grade is kept, so the board's day never dates it as hiring (card, scoreboard, monitor)
+  assert.equal(boundKind('hiring', 'raised_funding'), 'raised_funding')
+  const row = { event_date: VOIZE_DAY, event_date_proof: 'ats_structured', signal: VOIZE_SIGNAL, signal_kind: boundKind('hiring', 'raised_funding'), signals: '["raised_funding"]' }
+  assert.equal(eventDayVerified(row), false)
+  assert.equal(dated(row, Math.floor(Date.now() / 1000)), false)
+  // not bound: the grade alone, as before
+  assert.equal(boundKind(null, 'raised_funding'), 'raised_funding'); assert.equal(boundKind(undefined, null), null)
+})
