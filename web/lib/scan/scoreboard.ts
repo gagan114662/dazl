@@ -112,11 +112,17 @@ const HIRING_EN = /(?<!\b(?:paused|halted|stopped|froze|frozen|no longer|not)\s+
 // words that make it a sentence about something else (and / that / its / the / of / about / affecting ...). So "Posted a
 // layoff notice affecting the sales ops role" or "Posted a record quarter, strengthening its market position" never match.
 // A title word never ends a sentence (review at ec98b436: "Posted a VP Sales. Announced bankruptcy. Sales role on Lever"):
-// a "." only inside a word ("Sr.Mgr"), in a dotted acronym ("U.S."), or ending a fixed abbreviation ("Sr.", "Mgr.").
+// a "." only after a listed abbreviation ("Sr.", "Mgr.", "Sr.Mgr") or in a dotted acronym ("U.S."), see #1139 below.
 // A state word that makes the posted role a non-hire (a freeze, a filled / closed / expired role) is not a title word.
 const TITLE_STOP = 'and|or|that|which|who|its|their|his|her|our|the|of|about|on|in|for|with|from|to|by|after|before|affecting|explaining|describing|naming|named|announcing|strengthening|cementing|weakening|notice|quarter|loss|revenue|jump|record|blog|paper|webinar|recording|press|release|photo|update|note|post|article|video|story|farewell|layoff|layoffs|freeze|frozen|filled|closed|expired|cancelled|canceled|paused|withdrawn|suspended|former|ex|on-hold|hold'
-const TITLE_WORD = String.raw`(?:(?:sr|jr|mgr|assoc|asst|dir|exec|eng|mktg|intl|govt|dept|snr|vp|svp|evp|avp|rep|dev|st|mgmt|admin|acct|coord|spec|rep)\.|(?:[a-z]\.){2,}|\(?[a-z0-9][\w&/+'()]*(?:\.[a-z0-9][\w&/+'()]*)*)`
-const POSTED_ROLE = new RegExp(String.raw`^\s*posted an? (?:(?!(?:${TITLE_STOP})\b)${TITLE_WORD}(?:\s*[-–]\s*|\s+)){1,10}(?:role|job|position|opening|vacancy) on (?:ashby|lever|greenhouse|workable|smartrecruiters|bamboohr|recruitee|breezy|jobvite|workday)\s*\.?\s*$`, 'i')
+// #1139: a state word in parentheses ("(filled)", "(closed)") is still a state word, so the stop check looks past an opening
+// "(", and "(" / ")" only open or close a word, never sit inside one ("Ops(filled)" is not a word). A "." inside a word only
+// follows a listed abbreviation ("Sr.Mgr"); a dotted acronym ends the word ("U.S.Layoffs" and "Sales.Cut" are two sentences).
+const TITLE_ABBR = 'sr|jr|mgr|assoc|asst|dir|exec|eng|mktg|intl|govt|dept|snr|vp|svp|evp|avp|rep|dev|st|mgmt|admin|acct|coord|spec'
+const TITLE_NOT_STOP = String.raw`(?!\(?(?:${TITLE_STOP})\b)`
+const TITLE_CORE = String.raw`[a-z0-9][\w&/+']*`
+const TITLE_WORD = String.raw`${TITLE_NOT_STOP}\(?(?:(?:(?:${TITLE_ABBR})\.)+(?:${TITLE_NOT_STOP}${TITLE_CORE})?|(?:[a-z]\.){2,}|${TITLE_CORE})\)?`
+const POSTED_ROLE = new RegExp(String.raw`^\s*posted an? (?:${TITLE_WORD}(?:\s*[-–]\s*|\s+)){1,10}(?:role|job|position|opening|vacancy) on (?:ashby|lever|greenhouse|workable|smartrecruiters|bamboohr|recruitee|breezy|jobvite|workday)\s*\.?\s*$`, 'i')
 // ats_structured proves the POSTING event's date. It supports timing only when the lead's claimed
 // trigger is hiring; it is never a funding or other trigger's date.
 export const isHiringTrigger = (signal: string | null | undefined, signalKind?: string | null): boolean =>
