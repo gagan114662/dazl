@@ -176,7 +176,7 @@ export function sameNamedPublication(n: Name, ctx: AddressContext[] | undefined)
 // heading is stacked on hers. Only with that recorded title (`title`): without it a heading is never a pairing.
 const squash = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
 const LINK_WORDS = new Set(['email', 'e', 'mail', 'me', 'send', 'an', 'contact', 'write', 'to', 'message'])
-function cardPairs(card: NonNullable<AddressContext['card']>, local: string, n: Name, title: string): boolean {
+function cardPairs(card: NonNullable<AddressContext['card']>, n: Name, title: string): boolean {
   if (card.stacked) return false
   const head = withoutOwnName(card.heading, n)
   if (!head.found || head.rest.length) return false
@@ -197,7 +197,7 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
     // attribute) stands on its own; a bare mailto in someone else's card is judged by the text around it.
     if (!(c.attr && tight.found) && withoutOwnName(c.wide, n).rest.includes(local)) return false
     if (tight.found) paired = true
-    else if (title && c.card && cardPairs(c.card, local, n, title)) paired = true
+    else if (title && c.card && cardPairs(c.card, n, title)) paired = true
   }
   return paired
 }
