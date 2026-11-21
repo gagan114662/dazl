@@ -1305,10 +1305,17 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const leads = (supplied ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
+    // Did the request name a place at all? The ICP's where, or (a legacy scan with no ICP) its stored location. Unknown counts as yes.
+    let placeRequested = true
     try {
       const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null } | undefined
       const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null
       if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string')
+      if (where.some(x => x.trim())) placeRequested = true
+      else if (j?.icp) placeRequested = false
+      else {   // legacy scan without an ICP: its stored location is the request's place (a schema without the column: unknown = requested)
+        try { placeRequested = !!(db.prepare('SELECT location FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { location?: string | null } | undefined)?.location?.trim() } catch { placeRequested = true }
+      }
     } catch { /* no ICP: evidence places only */ }
     // The display-only importer is optional. A missing policy must not erase ordinary crawl geography.
     let publishedDisplayOnly = false
@@ -1570,7 +1577,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         locationProof = !unread(r) && basis !== 'evidence_own_domain' && (!homeLocationOk || vHome === 'mismatch' || homeElsewhere)
           ? siteLocationProof(r.locationPages ?? [], where, l.company, vHome === 'mismatch' || (vHome !== 'scope_unconfirmed' && (vHome !== 'unconfirmed' || !!firstPlaceLabel(r.homeText ?? ''))), guessed)
           : undefined
-        if (!unread(r) && !homeLocationOk && !locationProof && ((guessed && !recordNoGeo) || (!guessed && basis !== 'evidence_own_domain' && places.length > 0))) {
+        // A site the lead's evidence LINKS to, whose domain label is the company's name, is bound to the company by that link. With no
+        // requested place there is nothing to compare it against: a place the evidence page happens to name is not the request's (prod
+        // run df4f657f refused linked sites "vs the requested place"). Text-only links and guessed (name_probe) sites keep every check.
+        if (!unread(r) && !homeLocationOk && !locationProof && ((guessed && !recordNoGeo) || (!guessed && basis !== 'evidence_own_domain' && places.length > 0 && (placeRequested || basis !== 'evidence_link_domain_label')))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)
