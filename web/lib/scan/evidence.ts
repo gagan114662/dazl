@@ -38,7 +38,11 @@ export function companyKey(company: string): string {
 
 // Scripts written without spaces between words (Han, kana, Thai ...): a phrase there cannot be word-bounded by spaces, so it is a plain substring match.
 const UNSPACED = /[\u0e00-\u0eff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/
-export const hasPhrase = (hay: string, phrase: string) => !!phrase && (UNSPACED.test(phrase) ? hay.includes(phrase) : new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay))
+// companyKey splits a name at '.', '@' and '+' ("Nextech3D.ai" -> "nextech3d ai"), so the text is also read with those joiners between
+// letters/digits split the same way: "Nextech3D.ai appoints ..." names Nextech3D.ai (prod run 65b84dfb dropped it as entity_mismatch).
+const splitJoiners = (s: string) => s.replace(/(?<=[\p{L}\p{N}])[.@+](?=[\p{L}\p{N}])/gu, ' ')
+const phraseIn = (hay: string, phrase: string) => UNSPACED.test(phrase) ? hay.includes(phrase) : new RegExp(`(^| )${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`).test(hay)
+export const hasPhrase = (hay: string, phrase: string) => !!phrase && (phraseIn(hay, phrase) || (!/[.@+]/.test(phrase) && phraseIn(splitJoiners(hay), phrase)))
 
 // The extraction contract demands a verbatim quote; models paraphrase anyway, and the strict
 // verifier then rejects real signals (excerpt_not_on_page). Where the pipeline already holds the
