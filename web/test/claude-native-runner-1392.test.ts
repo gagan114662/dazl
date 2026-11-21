@@ -28,7 +28,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[]; buyerSource?: string }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -114,7 +114,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           { type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code: 'max_uses_exceeded' } },
         ] : diverseFixture ? [
           { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
-          { type: 'text', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
+          { type: 'text', text: diverseFixture.buyerSource ? 'BUYER_SOURCE: '+diverseFixture.buyerSource : '', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
         ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: suppliedOnlyFirstWave && sent===2 ? netNewUrl : url }] }],
         usage: { input_tokens: sent===2 && secondWave==='over' ? overTokens : inputTokens ?? (overage ? 100_000 : 8_000), output_tokens: 200,
           ...(acceptedGeo !== undefined ? { inference_geo: acceptedGeo } : {}),
@@ -680,6 +680,13 @@ test('a request for a non-hiring event does not read ATS boards (an ATS day prov
     boardHttp: async (u: string) => { asked.push(u); return null },
     diverseFixture: { results: ['https://jobs.ashbyhq.com/regionaldocs/11111111-1111-4111-8111-111111111111', url], cited: [], blocked: [] } as never })
   assert.deepEqual(asked, [])
+})
+
+test('an optional buyer label does not remove a company page from normal guarded event evidence',async()=>{
+ const companyAbout = 'https://first-party.example/about'
+ const ordinary=true, companyFirstTenant='workspace'
+ const r=await simulate({ordinary,companyFirstTenant,diverseFixture:{results:[companyAbout],cited:[companyAbout],blocked:[],buyerSource:companyAbout}})
+ assert.ok(r.publisherRequests.includes(companyAbout),'the exact event publisher remains eligible when the model labels it')
 })
 
 test('a company-first sales-hiring request asks every angle to prefer the public ATS boards (cf_runner discover wording); other requests do not', async () => {

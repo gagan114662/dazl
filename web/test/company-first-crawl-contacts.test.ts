@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
-import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
+import { crawl4aiGet, crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
 import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 import {companyFirstPublishedDisplayRows} from '../lib/people/company-first-published-display.ts'
 import {publishedEmail} from '../lib/outreach/published-email.ts'
@@ -15,9 +15,10 @@ const email='mira.quinn@'+host, shared='help@'+host, team=origin+'/team'
 const prose='<p>Brindle Ledger has served its local community for many years. We help businesses find the right products and manage the process from start to finish with clear service and transparent information.</p>'
 const wrap=(s:string)=>'<html><body>'+s+'</body></html>'
 const card=(role=title,address=email)=>'<article><h2>'+name+'</h2><p>'+role+'</p><a href="mailto:'+address+'">'+address+'</a></article>'
-async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
+async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; buyerSitePage?:boolean; citedBuyerPage?:boolean; linkedGenericAbout?:boolean; aboutRedirect?: "slash"|"robots"|"foreign"|"locale"; hintRedirect?:boolean; wwwHome?:boolean; redundantLinkedTarget?:boolean; fullOrdinary?:boolean; lateSecond?:boolean; sharedHost?: "authorized-first"|"unauthorized-first"; wrongBuyerOrigin?:boolean; wrongBuyerCitation?:boolean; robotsBuyerDeny?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
  const where=opt.country??(opt.international?'Toronto, ON':'Austin, TX')
  const db=new Database(':memory:'); migrateAllSqlite(db)
+ const realClock=Date.now
  try{
   const job=createJob(db,'T',{business_name:'Seller',industry:'supplies',location:where})
   db.prepare("UPDATE scan_jobs SET status='running',icp=? WHERE id=?").run(JSON.stringify({who:[title],where:[where]}),job)
@@ -32,8 +33,49 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
    [origin+'/contact']:wrap(prose+'<a href="mailto:'+shared+'">'+shared+'</a>'),
    [source]:wrap(prose+(opt.own===false?'<a href="'+origin+'/">'+company+'</a>':'')),
   }
-  const get:Get=async url=>({status:pages[url]?200:404,body:pages[url]??'',finalUrl:url})
-  const scan=()=>crawlJob(db,'T',job,{get,gapMs:0,now,env:{EMAIL_GUESS_ENABLED:'1'},...(opt.marker?{}:{companyFirstContacts:opt.strict!==false})})
+  const otherLead='d'.repeat(24)
+  if(opt.sharedHost){
+   const otherSource='https://publicpublisher.example/shared-site'
+   pages[otherSource]=wrap(prose+'<a href="'+origin+'/">'+company+'</a>')
+   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(otherLead,job,company,null,company+' in '+where,otherSource,company+' in '+where,90,opt.sharedHost==='authorized-first'?70:90)
+  }
+  const buyerPage=origin+'/company/our-story'
+  if(opt.buyerSitePage || opt.citedBuyerPage){
+   if(opt.buyerSitePage) pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/company/our-story">Our story</a></body>')
+   pages[team]=wrap(prose)
+   pages[origin+'/contact-us']=wrap(prose)
+   pages[origin+'/about']=wrap(prose)
+   pages[buyerPage]=wrap(prose+markup)
+  }
+  if(opt.linkedGenericAbout) pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/about">About us</a></body>')
+  if(opt.sharedHost&&!opt.fullOrdinary) delete pages[origin+'/about']
+  if(opt.fullOrdinary) pages[origin+'/leadership']=wrap(prose+markup)
+  if(opt.fullOrdinary) delete pages[origin+'/about']
+  if(opt.aboutRedirect){
+   pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/about">About us</a></body>')
+   pages[team]=wrap(prose)
+   pages[origin+'/about/']=wrap(prose+markup)
+   if(opt.aboutRedirect==='locale') pages[origin+'/en/about']=wrap(prose+markup)
+   if(opt.aboutRedirect==='robots') pages[origin+'/robots.txt']='User-agent: *\nDisallow: /about/'
+  }
+  if(opt.redundantLinkedTarget){
+   pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/en/about">About</a><a href="/company/leadership">Buyers</a></body>')
+   pages[origin+'/en/about']=wrap(prose)
+   pages[origin+'/company/leadership']=wrap(prose+markup)
+  }
+  if(opt.robotsBuyerDeny) pages[origin+'/robots.txt']='User-agent: *\nDisallow: /company/our-story'
+  const requests:{url:string; noRedirect:boolean}[]=[]
+  const get:Get=async (url,opts)=>{
+   requests.push({url,noRedirect:!!opts?.noRedirect})
+   if(opt.wwwHome&&url===origin+'/') return {status:200,body:pages[url],finalUrl:'https://www.'+host+'/'}
+   if(opt.wwwHome&&url==='https://www.'+host+'/company/our-story') return {status:200,body:pages[buyerPage],finalUrl:url}
+   if(opt.lateSecond&&url.endsWith('/shared-site')) Date.now=()=>realClock()+60_000
+   if(opt.aboutRedirect&&url===origin+'/about') return {status:301,body:'',finalUrl:url,redirect:opt.aboutRedirect==='foreign'?'https://another.example/about/':opt.aboutRedirect==='locale'?'/en/about':'/about/'}
+   if(opt.hintRedirect&&url===buyerPage) return {status:301,body:'',finalUrl:url,redirect:buyerPage+'/'}
+   return {status:pages[url]?200:404,body:pages[url]??'',finalUrl:opt.wrongBuyerOrigin&&url===buyerPage?'https://another.example/company/our-story':url}
+  }
+  const scan=()=>crawlJob(db,'T',job,{get,gapMs:0,now,...(opt.sharedHost?{concurrency:1}:{}),...(opt.citedBuyerPage?{buyerCitedUrls:[opt.wrongBuyerCitation?'https://another.example/company/our-story':buyerPage]}:{}),env:{EMAIL_GUESS_ENABLED:'1'},...(opt.marker?{}:{companyFirstContacts:opt.strict!==false})})
   await scan()
   if(opt.recrawl){pages[team]=wrap(prose+card(title,shared)); await scan()}
   if(opt.invalidate==='attempt')db.prepare('UPDATE scan_jobs SET attempts=attempts+1 WHERE id=?').run(job)
@@ -41,12 +83,12 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
   if(opt.invalidate==='suppression')db.prepare("INSERT INTO suppressions (tenant_id,email,reason,created_at) VALUES ('T',?,'manual',?)").run(email,now/1000)
   const observed=now/1000+(opt.invalidate==='age'?45*86400+1:0)
   const enrichments=enrichmentsForLeads(db,'T',[lead])[lead]??[]
-  return {display:(await companyFirstPublishedDisplayRows(db,'T',[lead],observed))[lead],
+  return {requests,otherDomain:db.prepare('SELECT company_domain FROM leads WHERE id=?').pluck().get(otherLead),otherRows:(enrichmentsForLeads(db,'T',[otherLead])[otherLead]??[]).filter(r=>r.kind==='person'),display:(await companyFirstPublishedDisplayRows(db,'T',[lead],observed))[lead],
    foreign:(await companyFirstPublishedDisplayRows(db,'another',[lead],observed))[lead],
    routed:publishedEmail({contact:null,enrichments}),
    rows:(enrichmentsForLeads(db,'T',[lead])[lead]??[]).filter(r=>['person','email','phone'].includes(r.kind)),
    guesses:db.prepare('SELECT address FROM email_candidates WHERE lead_id=?').all(lead)}
- }finally{db.close()}
+ }finally{Date.now=realClock;db.close()}
 }
 test('normal strict site crawl keeps exact visibly co-published buyer and mailbox with exact cite and fetch stamp',async()=>{
  const {rows,guesses}=await fixture(card())
@@ -101,4 +143,129 @@ test('worldwide display withdraws stale, superseded, suppressed, blocked or unat
  for(const options of [{recrawl:true},{own:false},{marker:false}] as const)
   assert.equal((await fixture(card(),{marker:true,international:true,...options})).display,undefined)
  assert.equal((await fixture(card(title,shared),{marker:true,international:true})).display,undefined)
+})
+
+test('company-first buyer stage prioritizes a linked company story under the same page cap and preserves sender guards',async()=>{
+ const source_url=origin+'/company/our-story'
+ const live=await fixture(card(),{marker:true,buyerSitePage:true})
+ assert.equal(live.rows.find(r=>r.kind==='person')?.source_url,source_url)
+ assert.equal(live.rows.find(r=>r.kind==='person')?.label,'Title on the company page: '+title)
+ assert.equal(live.routed,email)
+ assert.deepEqual(live.guesses,[])
+ assert.deepEqual((await fixture(card(),{marker:true,buyerSitePage:true,wrongBuyerOrigin:true})).rows,[])
+ assert.deepEqual((await fixture(card(title+' at Another Company'),{marker:true,buyerSitePage:true})).rows,[])
+ assert.deepEqual((await fixture('<section aria-label="Former team">'+card()+'</section>',{marker:true,buyerSitePage:true})).rows,[])
+ assert.equal((await fixture(card(title,shared),{marker:true,buyerSitePage:true})).routed,null)
+ const foreign=await fixture(card(),{marker:true,buyerSitePage:true,international:true})
+ assert.equal(foreign.display?.source_url,source_url)
+ assert.equal(foreign.display?.address,email)
+ assert.equal(foreign.routed,null)
+})
+
+test('already-admitted buyer source is only a fresh exact-origin crawl hint after separate website identity',async()=>{
+ const source=origin+'/company/our-story'
+ const opt={marker:true,citedBuyerPage:true}
+ const good=await fixture(card(),opt)
+ assert.equal(good.rows.find(r=>r.kind==='person')?.source_url,source)
+ assert.equal(good.rows.find(r=>r.kind==='person')?.retrieved_at,now/1000)
+ assert.equal(good.routed,email)
+ assert.deepEqual(good.requests.filter(r=>r.url===source),[{url:source,noRedirect:true}])
+ for(const extra of [{wrongBuyerCitation:true},{own:false},{robotsBuyerDeny:true}] as const){
+  const state=await fixture(card(),{...opt,...extra})
+  assert.ok(!state.rows.some(r=>r.kind==='person'))
+  assert.ok(!state.requests.some(r=>r.url.endsWith('/company/our-story')))
+ }
+ for(const markup of [card(title+' at Another Company'),card('Warehouse Operator')]){
+  const state=await fixture(markup,opt)
+  assert.deepEqual(state.rows,[])
+  assert.equal(state.routed,null)
+ }
+ const bounced=await fixture(card(),{...opt,wrongBuyerOrigin:true})
+ assert.deepEqual(bounced.rows,[])
+ assert.equal(bounced.routed,null)
+})
+
+test('a generic linked about page cannot displace an authorized cited buyer fallback',async()=>{
+ const result=await fixture(card(),{marker:true,citedBuyerPage:true,linkedGenericAbout:true})
+ assert.ok(result.requests.some(r=>r.url===origin+'/about'))
+ assert.equal(result.rows.find(r=>r.kind==='person')?.source_url,origin+'/company/our-story')
+ assert.equal(result.routed,email)
+})
+
+test('rendering sidecar cannot serve a no-redirect buyer read or mislabel a downgrade',async()=>{
+ let sidecarCalls=0
+ const get=crawl4aiGet('http://127.0.0.1:11235',async()=>{
+  sidecarCalls++
+  return Response.json({results:[{status_code:200,url:team,redirected_url:'http://'+host+'/team',html:card()}]})
+ },async()=>true)
+ assert.equal(await get(team,{noRedirect:true}),null)
+ assert.equal(sidecarCalls,0)
+ assert.equal(await get(team),null)
+ assert.equal(sidecarCalls,1)
+})
+
+test('a shared host keeps its authorized cited buyer regardless of lead order without broadening the other lead',async()=>{
+ const buyerURL=origin+'/company/our-story'
+ for(const order of ['authorized-first','unauthorized-first'] as const){
+  const r=await fixture(card(),{marker:true,citedBuyerPage:true,sharedHost:order})
+  assert.equal(r.rows.find(c=>c.kind==='person')?.source_url,buyerURL,order)
+  assert.deepEqual(r.otherRows,[],order)
+  assert.equal(r.requests.filter(q=>q.url===buyerURL).length,1,order)
+  assert.equal(r.requests.filter(q=>q.url===origin+'/').length,1,order)
+  assert.equal(r.requests.filter(q=>q.url===origin+'/robots.txt').length,1,order)
+ }
+})
+
+test('only independently linked About can take one exact robots-allowed slash hop',async()=>{
+ const exact=await fixture(card(),{marker:true,aboutRedirect:'slash'})
+ assert.equal(exact.rows.find(r=>r.kind==='person')?.source_url,origin+'/about/')
+ assert.deepEqual(exact.requests.filter(r=>r.url===origin+'/about/'),[{url:origin+'/about/',noRedirect:true}])
+ for(const aboutRedirect of ['robots','foreign'] as const){
+  const state=await fixture(card(),{marker:true,aboutRedirect})
+  assert.ok(!state.requests.some(r=>r.url===origin+'/about/'||r.url==='https://another.example/about/'))
+  assert.deepEqual(state.rows,[])
+ }
+ const tagged=await fixture(card(),{marker:true,citedBuyerPage:true,hintRedirect:true})
+ assert.ok(!tagged.requests.some(r=>r.url===origin+'/company/our-story/'))
+ assert.deepEqual(tagged.rows,[])
+})
+
+test('an unauthorized hint does not reserve away the last ordinary company page',async()=>{
+ const state=await fixture(card(),{marker:true,own:false,citedBuyerPage:true,fullOrdinary:true})
+ assert.ok(state.requests.some(r=>r.url===origin+'/leadership'))
+ assert.ok(!state.requests.some(r=>r.url===origin+'/company/our-story'))
+ assert.deepEqual(state.rows,[])
+})
+
+test('hint-free cached results survive the read deadline without leaking cited buyer evidence',async()=>{
+ const state=await fixture(card(),{marker:true,citedBuyerPage:true,sharedHost:'authorized-first',lateSecond:true})
+ assert.equal(state.rows.find(r=>r.kind==='person')?.source_url,origin+'/company/our-story')
+ assert.equal(state.otherDomain,host)
+ assert.deepEqual(state.otherRows,[])
+ assert.equal(state.requests.filter(r=>r.url===origin+'/').length,1)
+})
+
+test('a late authorized hint cannot exceed the five successful pages already read on the shared host',async()=>{
+ const state=await fixture(card(),{marker:true,citedBuyerPage:true,sharedHost:'unauthorized-first',fullOrdinary:true})
+ assert.ok(state.requests.some(r=>r.url===origin+'/leadership'))
+ assert.ok(!state.requests.some(r=>r.url===origin+'/company/our-story'))
+ assert.equal(state.rows.find(r=>r.kind==='person')?.source_url,origin+'/leadership')
+})
+
+test('exact buyer pages never use a different homepage hostname without that host robots',async()=>{
+ const state=await fixture(card(),{marker:true,buyerSitePage:true,wwwHome:true})
+ assert.ok(state.requests.some(r=>r.url===origin+'/robots.txt'))
+ assert.ok(!state.requests.some(r=>r.url==='https://www.'+host+'/company/our-story'))
+})
+
+test('independently linked About can follow one robots-checked localized same-origin page',async()=>{
+ const state=await fixture(card(),{marker:true,aboutRedirect:'locale'})
+ assert.equal(state.rows.find(r=>r.kind==='person')?.source_url,origin+'/en/about')
+ assert.deepEqual(state.requests.filter(r=>r.url===origin+'/en/about'),[{url:origin+'/en/about',noRedirect:true}])
+})
+
+test('successful linked About redirect target is not read twice before the real buyer page',async()=>{
+ const state=await fixture(card(),{marker:true,aboutRedirect:'locale',redundantLinkedTarget:true})
+ assert.equal(state.rows.find(r=>r.kind==='person')?.source_url,origin+'/company/leadership')
+ assert.equal(state.requests.filter(r=>r.url===origin+'/en/about').length,1)
 })

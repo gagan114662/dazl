@@ -324,3 +324,24 @@ test('pinned pre-4.6 request settles Toronto-shaped counters despite an unrecogn
   assert.deepEqual(marks, ['settle:0.097607'])
   assert.deepEqual(result.citedUrls, [])
 })
+
+test('optional company-first buyer designation reuses one reserved search and must be an admitted exact tool result', async () => {
+  const actual = 'https://business.example/company/our-story'
+  const neverReturned = 'https://business.example/team'
+  const marks: string[] = []
+  let sends = 0
+  const r = await runClaudeWebSearch(key, prompt, () => hold(marks), async (url, init) => {
+    if (String(url).endsWith('/count_tokens')) return Response.json({ input_tokens: counted })
+    sends++
+    assert.equal(JSON.parse(String(init?.body)).tools.length, 1)
+    return Response.json({ ...fullStandardResponse, content: [
+      ...fullStandardResponse.content,
+      {type:'web_search_tool_result',content:[{type:'web_search_result',url:actual}]},
+      {type:'text',text:`BUYER_SOURCE: ${actual}\nBUYER_SOURCE: ${neverReturned}\nBUYER_SOURCE: ${actual}/`},
+    ] })
+  }, 'company_first')
+  assert.equal(sends,1)
+  assert.equal(marks.length,1,'the original native reservation settles once')
+  assert.deepEqual(r.buyerSourceUrls,[actual])
+  assert.ok(r.citedUrls.includes('https://roof.example/news'),'event discovery is preserved')
+})
