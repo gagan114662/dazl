@@ -147,7 +147,7 @@ export function parseQualification(raw: string, included: { url: string; text: s
   // a "no" whose note rejects the target because of who ITS CUSTOMERS are ("their customers are X, not Y"), when the target
   // criteria put no condition on the customers. Never infer a business model from customers, or a target's fit from this.
   const fit=result.company_fit
-  const criteriaConditionCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+to|serv(?:e|es|ing)|(?:whose\s+)?customers?\s+(?:must\s+be|are|include)|target(?:s|ing)?)\s+\S/i.test(targetCriteria)
+  const criteriaConditionCustomers=!!targetCriteria&&/\b(?:sell(?:s|ing)?\s+to|serv(?:e|es|ing)|suppl(?:y|ies|ying)|provid(?:e|es|ing)|for|work(?:s|ing)?\s+with|(?:whose\s+)?customers?\s+(?:must\s+be|are|include)|target(?:s|ing)?)\s+\S/i.test(targetCriteria)
   if(fit.verdict==='no'&&targetCriteria&&targetCriteria.trim()&&!criteriaConditionCustomers){
    const customerComparison=/\bcustomers?\s+(?:are|is)\s+[^.!?,;]{1,100}?(?:,\s*not|\s+rather\s+than)\s+[^.!?,;]{1,80}/i.exec(fit.note)
    if(customerComparison)fit.assessment_conflict={kind:'customer_sector_not_target_business',premise:customerComparison[0],note:"Customer-sector premise flagged: a business's customers can be in a different sector from the business itself. This warning concerns only the quoted customer comparison, not the entire no assessment. Other rejection reasons may still apply; they have not been assessed by this check. The raw verdict and note are unchanged. This does not establish the target business model or fit."}

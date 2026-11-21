@@ -29,7 +29,7 @@ function grade(criteria: string, note: string, verdict = 'no') {
 test('#1435 an unseen category gets the same customer-sector warning: the target is judged on what it is, not on who its customers are', () => {
   for (const [criteria, note] of [
     ['Independent veterinary practices', 'Their customers are pet owners, not veterinary practices.'],
-    ['Commercial bakeries supplying cafes', 'Their customers are cafes, not bakeries.'],
+    ['Commercial bakeries with their own retail shops', 'Their customers are walk-in shoppers, not commercial bakeries.'],
     ['Freight forwarders', 'The customers are importers rather than freight forwarders.'],
   ]) {
     const f = grade(criteria, note)
@@ -40,7 +40,7 @@ test('#1435 an unseen category gets the same customer-sector warning: the target
 
 test('#1435 controls: criteria that do condition the customers, other grounds, and non-negative verdicts are never flagged', () => {
   // wrong-customer control: the criteria put a condition on who the target sells to, so a customer-sector no is legitimate
-  for (const criteria of ['Agencies that sell to hospitals', 'Wholesalers serving restaurants', 'Firms whose customers must be insurers', 'Suppliers targeting municipalities'])
+  for (const criteria of ['Agencies that sell to hospitals', 'Wholesalers serving restaurants', 'Firms whose customers must be insurers', 'Suppliers targeting municipalities', 'Commercial bakeries supplying cafes', 'Studios providing photography to hotels', 'Payroll bureaus for dental practices', 'Consultancies that work with hospitals'])
     assert.equal(grade(criteria, 'Their customers are retailers, not hospitals.').assessment_conflict, undefined, criteria)
   // wrong-company / wrong-place grounds are not a customer premise
   for (const note of ['The page is about another company.', 'Headquarters are outside the target region.', 'Customers include clinics; the target itself is a distributor, not a clinic.'])
