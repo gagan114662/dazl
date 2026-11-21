@@ -2617,7 +2617,7 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
       // #1036 4b: leads whose evidence page links no company site get one web search for "<company> <place>" (siteFinderFor).
       const findSites = siteFinderFor(db, job, deps, postCtrl.signal)
       const firstParty = new Map<string, { pages: number; stored: number }>()
-      await crawlJob(db, job.user_id, job.id, { ...(citedByJob.get(job)?.length ? { citedUrls: citedByJob.get(job) } : {}), ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}),
+      await crawlJob(db, job.user_id, job.id, { ...(citedByJob.get(job)?.length ? { citedUrls: citedByJob.get(job) } : {}), ...(citedByJob.has(job) ? { atsLookup: true } : {}), ...(deps.crawlGet ? { get: deps.crawlGet } : {}), signal: postCtrl.signal, ...(qaClaudeOnlyJob(job.run_budget) ? { nativeOnly: true } : {}), ...(findSites ? { findSites } : {}),
         onBuyerRead: ({ site, pages, stored }) => {
           const earlier = firstParty.get(site)
           firstParty.set(site, { pages: Math.max(earlier?.pages ?? 0, pages), stored: Math.max(earlier?.stored ?? 0, stored) })
