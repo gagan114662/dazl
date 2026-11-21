@@ -8,7 +8,7 @@ import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, isClaudeOnlyRequestMode, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
-import { ownerLimits, blocksNewReservation, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
+import { ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
@@ -25,8 +25,7 @@ async function pools(db: Db, tenantId: string, now = Math.floor(Date.now() / 100
   try {
     const rows = await scanPoolRows(db, tenantId, now), at = (w: 'day' | 'month') => Number(rows.find(r => r.period === periodOf(w, now))?.reserved_usd ?? 0)
     const day = at('day'), month = at('month')
-    // #1436: a marker the next reservation releases (kept at its worst case, still in day/month) no longer refuses here
-    const unsettled = rows.some(r => blocksNewReservation(r, now))
+    const unsettled = rows.some(r => r.period.startsWith('p:') && Number(r.updated_at) <= now - PENDING_STALE_S)
     if (!Number.isFinite(day) || !Number.isFinite(month)) return { day: 0, month: 0, unknown: true, unsettled }
     return { day, month, unknown: false, unsettled }
   } catch { return { day: 0, month: 0, unknown: true, unsettled: false } }

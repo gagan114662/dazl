@@ -14,7 +14,6 @@
 //   calls        - reservations admitted
 // On the Db layer (both engines). Tenant scope: every statement is keyed by the owner id it was given.
 import { asDb, type DbLike, type Tx, type TxBody } from '../db/client.ts'
-import { configuredTimeoutMs } from './timeout-env.ts'
 import { SpendRefused } from './spend-guard.ts'
 import { qaClaudeOnlyNativeSearchJob } from '../scan/qa-provider-policy.ts'
 import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate } from './claude-web-search-estimate.ts'
@@ -34,27 +33,6 @@ const EPS = 1e-9
 // 150 s (SCAN_LLM_TIMEOUT_MS) plus a token count, so a live call's marker is never this old. A marker whose settle is
 // KNOWN to have failed is marked at once (markFailed: updated_at 0), so it refuses without waiting.
 export const PENDING_STALE_S = 5 * 60
-// #1436: a pending marker this old (and not KNOWN failed: updated_at > 0) is released by the next reservation of its
-// owner, so one lost settle cannot wedge a workspace forever. Released means: the call stays counted at its full
-// worst-case reservation in the day/month windows (never refunded or settled lower), and the marker row is kept,
-// renamed 'r:<id>', as the record of the release (reason: stuck_unresolved_kept_worst_case). Markers younger than this
-// keep refusing exactly as before ('busy', then 'accounting_unsettled'); failed markers (updated_at 0) need an operator.
-// It always outlives the longest configured live paid call (SCAN_LLM_TIMEOUT_MS, the same value lib/llm/provider.ts
-// uses) plus a 10-minute settlement margin, so a live call's own marker is never released before its settle lands.
-export const stuckReleaseS = (llmTimeoutMs: number): number => Math.max(30 * 60, Math.ceil(llmTimeoutMs / 1000) + 600)
-export const STUCK_RELEASE_S = stuckReleaseS(configuredTimeoutMs(process.env.SCAN_LLM_TIMEOUT_MS, 150_000, 'SCAN_LLM_TIMEOUT_MS'))
-// For read-only preflight (estimate, POST /api/scan): does this row refuse the next reservation as unsettled? A stale
-// pending marker does, except one old enough for that reservation to release (kept at worst case) - otherwise the
-// release could never be reached. Known-failed markers (updated_at 0) always do.
-export function blocksNewReservation(r: { period: string; updated_at: number | string }, nowS: number): boolean {
-  if (!r.period.startsWith('p:')) return false
-  const at = Number(r.updated_at)
-  if (at === 0) return true
-  return at <= nowS - PENDING_STALE_S && at > nowS - STUCK_RELEASE_S
-}
-function* releaseStuckMarkers(t: Tx, owner: string, nowS: number): TxBody<void> {
-  yield* t.run("UPDATE tenant_spend_pools SET period = 'r:' || substr(period, 3), updated_at = ? WHERE tenant_id = ? AND period LIKE 'p:%' AND updated_at > 0 AND updated_at <= ?", [nowS, owner, nowS - STUCK_RELEASE_S])
-}
 // Failure marks this process could not write yet (the store was down), per store and owner. Every reservation of that
 // owner in this process first writes them and refuses until it can; a background retry writes them as soon as the store
 // answers, so other instances are stopped too. Lost on a restart: the marker itself stays and refuses once stale.
@@ -146,7 +124,7 @@ function provenLegacyHold(rows: PoolRow[], legacy: LegacyProof[]): (NativeHoldPr
   return { id: p.id, period: marker.period, scan_job_id: p.scan_job_id, created_at: p.created_at, reserve_usd: p.reserve_usd, run_budget: p.run_budget }
 }
 
-function fullyRetainedExpiredMarkers(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string | undefined, legacy: LegacyProof[]): Set<string> {
+function fullyRetainedExpiredMarkers(rows: PoolRow[], proofs: NativeHoldProof[], nextJob: string, legacy: LegacyProof[]): Set<string> {
   const windowAmounts = new Map(rows.map(r => [r.period, r.reserved_usd]))
   const due = new Map<string, number>(), proven = new Map<string, { job: string; windows: [string, string] }>()
   const old = provenLegacyHold(rows, legacy)
@@ -242,7 +220,7 @@ function windows(limits: PoolLimits): [PoolWindow, number][] {
   return out
 }
 
-export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000), busyWaitMs = BUSY_WAIT_MS, scanJobId?: string, purpose?: 'icp_preview'): SharedPool {
+export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: () => number = () => Math.floor(Date.now() / 1000), busyWaitMs = BUSY_WAIT_MS, scanJobId?: string): SharedPool {
   const db = asDb(d)
   const ws = windows(limits)
   for (const [, v] of ws) if (!(Number.isFinite(v) && v > 0)) throw new Error('spend pool limit must be a positive number')
@@ -277,11 +255,9 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
       let ok: boolean
       try {
         ok = await db.tx(function* (t: Tx): TxBody<boolean> {
-          yield* releaseStuckMarkers(t, owner, nowS)
           // SQLite already holds its write lock: check the existing reservation before raising any new window
           // amount (a new reservation must not supply apparent proof of an old charge remaining held).
-          // Only the named-owner ICP preview and a distinct scan may reuse proven terminal-hold accounting.
-          const checkTerminalNative = t.kind === 'sqlite' && (!!scanJobId || purpose === 'icp_preview')
+          const checkTerminalNative = t.kind === 'sqlite' && !!scanJobId
           let legacySeal: ReturnType<typeof provenLegacyHold> = null
           if (checkTerminalNative) {
             const rows = yield* t.all<PoolRow>(allPoolRows, [owner])
@@ -294,7 +270,7 @@ export function sharedPool(d: DbLike, owner: string, limits: PoolLimits, clock: 
             if (anyStaleNative(rows, cutoff)) {
               try { linked = yield* t.all<NativeHoldProof>(expiredNativeScanHolds, expiryArgs(owner, cutoff)) } catch { /* no provenance: do not ignore the marker */ }
             }
-            const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, scanJobId, legacy)
+            const retainedNonBlocking = fullyRetainedExpiredMarkers(rows, linked, scanJobId!, legacy)
             const proved = provenLegacyHold(rows, legacy)
             if (proved && retainedNonBlocking.has(proved.period)) legacySeal = proved
             let oldest = Infinity
