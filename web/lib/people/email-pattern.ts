@@ -147,6 +147,11 @@ const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normal
 // "Maya Ortiz Thornton Realty" must not read as Maya [Ortiz] Thornton), no punctuation between them ("Maya, Thornton Realty" is a
 // first-name-only staffer at a firm named after the owner), and not followed by a company word ("Maya Thornton Realty").
 const COMPANY_WORD = 'realty|realtors?|group|team|law|legal|dental|properties|associates|partners|company|co|inc|llc|llp|pllc|ltd|agency|homes|insurance|consulting|capital|firm|office|offices|studio|clinic|construction|services|solutions|advisors|roofing|plumbing|builders|electric|landscaping|mortgage|financial|&|and'
+// #1207: the guard reads only a name in splitName's own form (letters only). Any other name (a caller handing it "thornton[" or
+// "ma+ya") is one it cannot process: it fails closed (no pairing, no address attributed) instead of throwing or matching a pattern.
+const plainName = (n: Name) => /^[a-z]+$/i.test(n.first) && /^[a-z]+$/i.test(n.last)
+// Defense in depth: the gate above already keeps metacharacters out, and any future direct caller of withoutOwnName still gets a literal match.
+export const reEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean } {
   const raw = text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
   // #1173: only spaces between the first and the last name (a tab or newline kept from an attribute or a <pre> separates two
@@ -155,14 +160,14 @@ function withoutOwnName(text: string, n: Name): { rest: string[]; found: boolean
   // Known limits, stated rather than guessed at: a preceding name word cannot be told from a label ("Tom Maya Thornton" reads like
   // "Contact Maya Thornton"), and a firm word not on the list below ("Maya Thornton Staffing") is not recognised. Up to 12 places per
   // page are read (72 per site); a page that prints the address more often than that before another person's card is not fully seen.
-  const own = new RegExp(`(?<![A-Za-z\u2010-\u2015-])${n.first}(?: +[A-Za-z]\\.?)? +${n.last}(?:['\u2019]s)?(?![A-Za-z\u2010-\u2015-])(?!\\s+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
+  const own = new RegExp(`(?<![A-Za-z\u2010-\u2015-])${reEscape(n.first)}(?: +[A-Za-z]\\.?)? +${reEscape(n.last)}(?:['\u2019]s)?(?![A-Za-z\u2010-\u2015-])(?!\\s+(?:${COMPANY_WORD})(?![A-Za-z]))`, 'gi')
   let found = false
   const rest = raw.replace(own, () => { found = true; return ' | ' })
   return { rest: nameWords(rest), found }
 }
 // Attribution for the display-only importer requires the actual name beside the literal printed address.
 export function sameNamedPublication(n: Name, ctx: AddressContext[] | undefined): boolean {
-  return !!ctx?.some(c => c.text && withoutOwnName(c.tight, n).found)
+  return plainName(n) && !!ctx?.some(c => c.text && withoutOwnName(c.tight, n).found)
 }
 // #1208: the commonest team-card shape, "<h3>Maya Thornton</h3><p>Broker</p><a href="mailto:maya@...">Email</a>", pairs the address with
 // her only on all of: a plain mailto with no query (sitecrawl.ts mailtoCard); the heading is exactly her full name (the own-name rule
@@ -183,7 +188,7 @@ function cardPairs(card: NonNullable<AddressContext['card']>, local: string, n: 
   return (card.link.replace(EMAIL_RE, ' ').toLowerCase().match(/[\p{L}]+/gu) ?? []).every(w => LINK_WORDS.has(w))
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined, title?: string): boolean {
-  if (!ctx?.length) return false
+  if (!plainName(n) || !ctx?.length) return false
   let paired = false
   for (const c of ctx) {
     const tight = withoutOwnName(c.tight, n)
@@ -197,6 +202,7 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
   return paired
 }
 export function publishedFor(name: Name, seen: { address: string; url: string; ctx?: AddressContext[] }[], people: Name[] = [name], title?: string): { address: string; url: string } | null {
+  if (!plainName(name)) return null
   const mine = new Set(FORMATS.map(f => localFor(f, name)))
   const single = new Set([localFor('first', name), localFor('last', name)])
   const all = people.some(p => nameKey(p) === nameKey(name)) ? people : [...people, name]

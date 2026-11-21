@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { pickUiPort } from '../helpers/ui-port.mjs'
+import { oncePlaysAnswer } from '../helpers/plays-stub.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -83,6 +84,7 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${u.pathname}`)
   if (u.pathname === '/api/scan/jobs') return json({ jobs: JOBS })
+  if (u.pathname === '/api/plays') return json(oncePlaysAnswer(JOBS))   // #1471: Home's plays list
   // Single-scan status read (deep link): the failed source-error scan also carries the QA-shaped cost state - one
   // model call recorded with reported tokens but no settleable USD, plus a spend-cap reservation. The summary string
   // is exactly what compareActual (lib/scan/price-estimate.ts) produces for that input: unknown cost is named

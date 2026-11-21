@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { pickUiPort } from '../helpers/ui-port.mjs'
+import { oncePlaysAnswer } from '../helpers/plays-stub.mjs'
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -54,6 +55,7 @@ await ctx.route('**/*', async route => {
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
   if (m !== 'GET') writes.push(`${m} ${u.pathname}`)
   if (u.pathname === '/api/scan/jobs') return json({ jobs: [{ id: JOB, status: 'done', error: null, query: 'Dental practice owners in Ohio - opened a new location', business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, candidates: 9, verified: 4, needs_review: 1, dropped: 2, lead_count: 7, test_only: false }] })
+  if (u.pathname === '/api/plays') return json(oncePlaysAnswer([{ id: JOB, status: 'done', error: null, query: 'Dental practice owners in Ohio - opened a new location', business_name: '', csv_domain: null, created_at: 1761500000, finished_at: 1761500100, candidates: 9, verified: 4, needs_review: 1, dropped: 2, lead_count: 7, test_only: false }]))   // #1471: Home's plays list
   if (u.pathname === '/api/scan/status') return json({ job_id: JOB, status: 'done', lead_count: LEADS.length, attempts: 1, max_attempts: 3, query: 'Dental practice owners in Ohio - opened a new location' })
   if (u.pathname === '/api/leads') return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: [] })
   if (u.pathname === '/api/campaigns') return json({ campaigns: [{ id: JOB, query: 'Dental practice owners in Ohio - opened a new location', status: 'done', error: null, created_at: 1761500000, discovery: { candidates: 9, leads: 7 }, qualification: { sourceChecked: 4, confirmedByYou: 0, needsReview: 1, unverified: 1, held: 0, rejected: 1 }, contact: { withContact: 3 }, outreach: { drafts: 1, approved: 1, sent: 1, draftsReady: 1, draftsSetup: 0, draftsHeld: 0, approvedReady: 1, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 }, next: { label: 'Review 1 draft', href: '/app/outreach' } }] })

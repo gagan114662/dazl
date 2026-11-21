@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
-import { dayOf, savedPlays, type MonitorRow, type SavedPlay, type WatchRow } from '@/lib/saved-plays'
+import { dayOf, playsPageItems, type OncePlay, type PlaysAnswer, type SavedPlay } from '@/lib/saved-plays'
 import type { PlayRun, PlayRuns } from '@/lib/play-runs'
 import type { PlayNew } from '@/lib/play-now'
 import { newLabel, readSeen, runEnded, runNowMessage, RUN_POLL_MAX, RUN_POLL_MS, writeSeen, type RunNowAnswer } from '@/lib/play-new-view'
@@ -11,19 +11,18 @@ import { Pill, type Tone } from '../ui/bits'
 
 // Plays: the searches you saved to repeat, with who each looks for, the signal, schedule, last and next run (to the
 // minute), status and pause/resume/delete. Results stay in Leads: each play links to its last run there and lists all its
-// runs (#351). Reads GET /api/watch and GET /api/monitors; Pause, Resume and Delete are those routes' existing actions.
+// runs (#351). #1471: reads GET /api/plays, the one list of the workspace's plays that Home shows too (repeating plays and
+// searches that ran once); Pause, Resume and Delete are the watch and monitor routes' existing actions.
 // #1042: each live play has "Find leads now" (POST /api/plays/[kind]/[id]/run: pulls its next scheduled run forward, on
 // the account's own key and monthly scans) and says how many new leads it found since you last checked
 // (GET /api/plays/[kind]/[id]/new), with a list of them and "Mark as seen". Nothing here sends anything to anyone.
 const TONE: Record<SavedPlay['status']['tone'], Tone> = { live: 'mint', running: 'peach', paused: 'grey', failed: 'pink' }
-type Read<T> = T[] | null | 'failed'
 const store = () => { try { return typeof window === 'undefined' ? null : window.localStorage } catch { return null } }
 const keyOf = (p: { kind: string; id: string }) => `${p.kind}-${p.id}`
 type Fresh = PlayNew & { checked: boolean }
 
 export default function PlaysClient() {
-  const [watches, setWatches] = useState<Read<WatchRow>>(null)
-  const [monitors, setMonitors] = useState<Read<MonitorRow>>(null)
+  const [answer, setAnswer] = useState<PlaysAnswer | null | 'failed'>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [err, setErr] = useState('')
   // #351: a play's runs, read when its "Show runs" is opened (null while loading, 'failed' when the read did not answer).
@@ -47,12 +46,15 @@ export default function PlaysClient() {
     const ok = !!j && typeof j.total === 'number' && Array.isArray(j.items)
     setFresh(f => ({ ...f, [keyOf(p)]: ok ? { ...(j as PlayNew), checked: since > 0 } : 'failed' }))
   }
-  const get = <T,>(url: string, key: string) => fetch(url).then(r => r.ok ? r.json() : null).catch(() => null).then(j => ({ rows: Array.isArray(j?.[key]) ? j[key] as T[] : 'failed' as const, emails: j?.emails === true }))
-  // whether this host sends the new-leads email after a run (GET /api/watch), so a play never promises one it cannot send
-  const [emails, setEmails] = useState(false)
+  // emails (in the answer): whether this host sends the new-leads email after a run, so a play never promises one it cannot send
   const load = () => {
-    void get<WatchRow>('/api/watch', 'watches').then(({ rows: w, emails: e }) => { setWatches(w); setEmails(e); if (Array.isArray(w)) for (const x of w) void loadNew({ kind: 'watch', id: x.id }) })
-    void get<MonitorRow>('/api/monitors', 'monitors').then(({ rows: m }) => { setMonitors(m); if (Array.isArray(m)) for (const x of m) void loadNew({ kind: 'monitor', id: x.id }) })
+    void fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null).then(j => {
+      const ok = !!j && Array.isArray(j.plays) && Array.isArray(j.watches) && Array.isArray(j.monitors)
+      setAnswer(ok ? j as PlaysAnswer : 'failed')
+      if (!ok) return
+      for (const x of (j as PlaysAnswer).watches) void loadNew({ kind: 'watch', id: x.id })
+      for (const x of (j as PlaysAnswer).monitors) void loadNew({ kind: 'monitor', id: x.id })
+    })
   }
   // #1042: the started runs this page is following (one timer each), stopped when the page goes away
   const polls = useRef(new Map<string, ReturnType<typeof setTimeout>>())
@@ -117,31 +119,31 @@ export default function PlaysClient() {
     void loadNew(p)
   }
 
-  const loading = watches === null || monitors === null
-  const plays = loading ? null : savedPlays(watches === 'failed' ? null : watches, monitors === 'failed' ? null : monitors, undefined, undefined, emails)
-  const partFailed = watches === 'failed' || monitors === 'failed'
+  const items = answer === null || answer === 'failed' ? null : playsPageItems(answer)
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div className="min-w-0">
           <h1 className="text-3xl font-bold tracking-tight">Plays</h1>
-          <p className="text-[var(--ink-2)] text-sm mt-1" data-testid="plays-intro">Searches that run again on their schedule and keep finding new leads. Nothing is sent to anyone without your OK. Every run&apos;s leads are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>.</p>
+          <p className="text-[var(--ink-2)] text-sm mt-1" data-testid="plays-intro">Your searches: the ones that run again on their schedule and keep finding new leads, and the ones you ran once. Nothing is sent to anyone without your OK. Every run&apos;s leads are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>.</p>
         </div>
         <Link href="/app/leads" className="btn-primary btn-sm shrink-0" data-testid="new-play"><Icon name="plays" className="w-4 h-4" />New play</Link>
       </div>
       {err && <p className="text-sm mb-4 text-[#a3173f]" role="alert" data-testid="plays-error">{err}</p>}
-      {/* A list that did not load is never shown as "no plays": the rest is shown with what could not be read. */}
-      {partFailed && <p className="text-sm mb-4" role="alert" data-testid="plays-unavailable">Could not load {watches === 'failed' && monitors === 'failed' ? 'your saved plays' : watches === 'failed' ? 'your weekly plays' : 'your scheduled monitors'}. Refresh to retry.</p>}
-      {plays === null ? <p className="text-sm text-[var(--ink-2)]">Loading your plays...</p>
-        : plays.length === 0 && !partFailed ? (
+      {/* A list that did not load is never shown as "no plays". */}
+      {answer === 'failed' ? <p className="text-sm mb-4" role="alert" data-testid="plays-unavailable">Could not load your plays. Refresh to retry.</p>
+        : items === null ? <p className="text-sm text-[var(--ink-2)]">Loading your plays...</p>
+        : items.length === 0 ? (
           <div className="card p-6 text-sm" data-testid="plays-empty">
-            <p className="font-semibold">No saved plays yet</p>
+            <p className="font-semibold">No plays yet</p>
             <p className="text-[var(--ink-2)] mt-1">Run your first search in Leads. When it finishes, dazl sets it to search again every day by itself and shows only companies you have not seen. You can also choose <b>Watch this weekly</b> on any search.</p>
             <Link href="/app/leads" className="btn-ghost btn-sm mt-3 inline-flex">Start a play</Link>
           </div>
         ) : (
           <div className="grid gap-3">
-            {plays.map(p => {
+            {items.map(item => {
+              if (item.once) return <OnceCard key={item.key} p={item.once} />
+              const p = item.saved
               const k = keyOf(p), f = fresh[k], nf = f && f !== 'failed' ? f : null, answer = ran[k], hasNew = !!nf && nf.total > 0
               return (
                 <article key={k} className="card p-4 sm:p-5 min-w-0" data-testid="saved-play" data-kind={p.kind} data-active={p.active ? 'true' : 'false'}>
@@ -181,8 +183,32 @@ export default function PlaysClient() {
             })}
           </div>
         )}
-      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan. On your own AI key it counts toward your monthly scans; your first play&apos;s daily repeat can use your free searches while you have some left. On the free plan that repeat runs at most 1 search a day (skipped on a day another search already ran), and its runs on your free searches are held to $0.30. Find leads now moves the next scheduled run earlier; it does not add one. One-off searches are in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
+      <p className="text-xs text-[var(--ink-3)] mt-6">Each run, scheduled or started with Find leads now, is a real scan. On your own AI key it counts toward your monthly scans; your first play&apos;s daily repeat can use your free searches while you have some left. On the free plan that repeat runs at most 1 search a day (skipped on a day another search already ran), and its runs on your free searches are held to $0.30. Find leads now moves the next scheduled run earlier; it does not add one. A search you ran once is listed here too, with its leads in <Link className="underline" href="/app/leads?latest=1">Leads</Link>; each search&apos;s funnel is in <Link className="underline" href="/app/campaigns">Campaigns</Link>.</p>
     </div>
+  )
+}
+
+// #1471: a play that ran once (no weekly repeat, no monitor): its search, when it ran and how it ended, its leads and its
+// campaign page. It has no schedule, so no Pause, Resume or Find leads now.
+function OnceCard({ p }: { p: OncePlay }) {
+  return (
+    <article className="card p-4 sm:p-5 min-w-0" data-testid="saved-play" data-kind="once" data-active="false">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 basis-60">
+          <h2 className="font-bold text-lg leading-tight break-words" data-testid="play-name">{p.name}</h2>
+          <p className="text-sm text-[var(--ink-2)] mt-0.5 break-words" data-testid="play-sentence">{p.sentence}</p>
+        </div>
+        <Pill tone={TONE[p.status.tone]} testid="play-status">{p.status.label}</Pill>
+      </div>
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 mt-4 text-sm">
+        <div className="min-w-0" data-testid="play-schedule"><dt className="text-[10px] uppercase tracking-wide text-[var(--ink-3)]">Schedule</dt><dd>{p.schedule}</dd></div>
+        <div className="min-w-0" data-testid="play-last-run"><dt className="text-[10px] uppercase tracking-wide text-[var(--ink-3)]">Last run</dt><dd className="break-words">{p.lastRun}</dd></div>
+      </dl>
+      <div className="flex flex-wrap gap-2 mt-4">
+        <Link href={p.lastHref} className="btn-ghost btn-sm" data-testid="play-results">See its leads</Link>
+        <Link href={p.campaignHref} className="btn-ghost btn-sm" data-testid="play-campaign">Open campaign</Link>
+      </div>
+    </article>
   )
 }
 

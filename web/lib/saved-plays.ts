@@ -106,3 +106,37 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
   for (const p of colliding) p.name = full(p)
   return out
 }
+
+// #1471: the Plays page's list, in the order and with exactly the plays of GET /api/plays (lib/workspace-plays.ts), the
+// same list Home shows. A repeating play shows its watch or monitor row (savedPlays above); a play that ran once shows
+// its search, when it ran and its leads. A repeating play whose row is missing from the answer is still listed, by its
+// sentence, so the two pages never disagree on what exists.
+export interface ListedPlay { key: string; kind: 'watch' | 'monitor' | 'once'; id: string; query: string; runs: string[]; last_job_id: string | null; last_run_at: number | null; last_status: string | null }
+export interface PlaysAnswer { plays: ListedPlay[]; watches: WatchRow[]; monitors: MonitorRow[]; emails?: boolean }
+export interface OncePlay { id: string; name: string; sentence: string; schedule: string; lastRun: string; lastHref: string; campaignHref: string; status: { tone: PlayTone; label: string } }
+export type PlaysPageItem = { key: string; saved: SavedPlay; once?: undefined } | { key: string; once: OncePlay; saved?: undefined }
+const ONCE_STATUS: Record<string, { tone: PlayTone; label: string }> = {
+  pending: { tone: 'running', label: 'Running now' }, running: { tone: 'running', label: 'Running now' }, enriching: { tone: 'running', label: 'Running now' },
+  failed: { tone: 'failed', label: 'Ran once, did not finish' },
+}
+export function playsPageItems(a: PlaysAnswer, timeZone?: string, now = Math.floor(Date.now() / 1000)): PlaysPageItem[] {
+  const saved = new Map(savedPlays(a.watches, a.monitors, timeZone, now, a.emails === true).map(p => [`${p.kind}-${p.id}`, p]))
+  const items: PlaysPageItem[] = a.plays.map(p => {
+    const s = p.kind === 'once' ? undefined : saved.get(p.key)
+    if (s) return { key: p.key, saved: s }
+    const job = p.last_job_id
+    return { key: p.key, once: {
+      id: p.id, name: savedPlayTitle(p.query), sentence: p.query,
+      schedule: p.kind === 'once' ? 'Ran once, does not repeat' : 'Repeats: details could not be read',
+      lastRun: p.last_run_at ? whenOf(p.last_run_at, timeZone) : 'Not run yet',
+      lastHref: job ? `/app/leads?job_id=${job}` : '/app/leads', campaignHref: job ? `/app/campaigns/${job}` : '/app/campaigns',
+      status: p.kind === 'once' ? ONCE_STATUS[p.last_status ?? ''] ?? { tone: 'live', label: 'Ran once' } : { tone: 'paused', label: 'Details unavailable' },
+    } }
+  })
+  // two different requests with the same short title show their full requests (as savedPlays does among its own)
+  const nameOf = (i: PlaysPageItem) => i.saved ? i.saved.name : i.once!.name
+  const fullOf = (i: PlaysPageItem) => savedPlayTitle(i.saved ? i.saved.sentence : i.once!.sentence, true)
+  const clash = items.filter(i => items.some(o => nameOf(o) === nameOf(i) && fullOf(o) !== fullOf(i)))
+  for (const i of clash) { if (i.saved) i.saved.name = fullOf(i); else i.once!.name = fullOf(i) }
+  return items
+}
