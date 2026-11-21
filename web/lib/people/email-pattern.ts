@@ -140,7 +140,7 @@ export function ownersOf(local: string, people: Name[]): Name[] {
 //   - and the name token must not occur anywhere else, as any word in any case, in that same attribute or text node, in the text
 //     around a text-node place, or in the attribute / text node of ANY other place the address is printed ("Maya Ortiz", "maya",
 //     "Michael Jordan" for jordan@). Otherwise it is nobody's.
-export interface AddressContext { tight: string; wide: string; attr: boolean; text?: boolean; card?: { heading: string; between: string; link: string; stacked: boolean } }
+export interface AddressContext { tight: string; wide: string; attr: boolean; text?: boolean; card?: { heading: string; between: string; link: string; stacked: boolean; to: string } }
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const nameWords = (text: string): string[] => text.replace(EMAIL_RE, ' ').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’]s\b/g, '').split(/[^a-z]+/).filter(Boolean)
 // This person's own name, matched on the RAW text: first and last separated by spaces only (a middle INITIAL allowed, nothing else:
@@ -178,6 +178,8 @@ function cardPairs(card: NonNullable<AddressContext['card']>, local: string, n: 
   if (card.between && squash(card.between) !== squash(title)) return false
   // the link's own name (its text, and the alt / title / aria-label of anything in it) may only be the address or words that ask to
   // write: any other word could be a person ("Ana", "Email Owen", an <img alt="Owen Pike">), so the card is then nobody's pairing
+  // ... and an address in it is the link's own (another address shown as the link, "maya.ortiz@...", names someone else)
+  if ((card.link.match(EMAIL_RE) ?? []).some(a => a.toLowerCase() !== card.to)) return false
   return (card.link.replace(EMAIL_RE, ' ').toLowerCase().match(/[\p{L}]+/gu) ?? []).every(w => LINK_WORDS.has(w))
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined, title?: string): boolean {

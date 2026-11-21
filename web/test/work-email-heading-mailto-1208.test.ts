@@ -85,6 +85,14 @@ for (const [label, team] of [
   ['the mailto is in the footer, the heading in the section above', `<section><h3>Maya Thornton</h3><p>${OWNER}</p></section><footer><a href="mailto:maya@${SITE}">Email</a></footer>`],
   ['the mailto is in the next list item', `<ul><li><h3>Maya Thornton</h3><p>${OWNER}</p></li><li><a href="mailto:maya@${SITE}">Email</a></li></ul>`],
   ['an "Email us" link', MT({ link: 'Email us' })],
+  // council (opus): the mailto opens the NEXT card (whose name is far after it, or only in microdata); encoded second recipients;
+  // another address as the link text; a link named by another element
+  ['the mailto opens the next card, its own name far below', `<div class="card"><h3>Maya Thornton</h3><p>${OWNER}</p></div><div class="card"><div class="contact"><a href="mailto:maya@${SITE}">Email</a><a href="tel:5125550100"><svg viewBox="0 0 24 24"><path d="${'M1 1L2 2'.repeat(45)}"/></svg></a></div><img src="/a.jpg" alt=""><h3>Maya Ortiz</h3><p>${AGENT}</p></div>`],
+  ['the next card names its Maya only in microdata', `<div class="card"><h3>Maya Thornton</h3><p>${OWNER}</p></div><div class="card" itemscope><meta itemprop="name" content="Maya Ortiz"><a href="mailto:maya@${SITE}">Email</a></div>`],
+  ['an encoded second recipient (%2C)', MT({}, `mailto:maya@${SITE}%2Cmaya.ortiz@${SITE}`)],
+  ['an encoded second recipient (%3B)', MT({}, `mailto:maya@${SITE}%3Bowen@${SITE}`)],
+  ['the link shows another person\'s address', MT({ link: `maya.ortiz@${SITE}` })],
+  ['the link is named by another element', `<div class="agent-card"><span id="n1">Maya Ortiz</span><h3>Maya Thornton</h3><p>${OWNER}</p><a href="mailto:maya@${SITE}" aria-labelledby="n1">Email</a></div>`],
   ['the mailto has a second recipient', MT({}, `mailto:maya@${SITE},owen@${SITE}`)],
   ['the mailto has a second recipient after a semicolon', MT({}, `mailto:maya@${SITE};owen@${SITE}`)],
 ] as const) {

@@ -1375,7 +1375,7 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
     const wide = win.replace(/<[^>]*>/g, tag => tag.length < 12 || !/alt=|title=|aria-label=|data-/i.test(tag) ? ' ' : ` ${[...tag.matchAll(/\b(?:alt|title|aria-label|data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' | ')} `)
       .replace(/\s+/g, ' ').slice(0, 900)
     // #1208: a plain mailto (no query) is read with the card around it: the heading before the link, the text between, the link's own text
-    const card = mailto && attrName === 'href' && /^\s*mailto:[^?&#,;\s]+\s*$/i.test(tight) ? mailtoCard(html, i - back.length + q) : undefined
+    const card = mailto && attrName === 'href' && /^\s*mailto:[^?&#,;%\s]+\s*$/i.test(tight) ? mailtoCard(html, i - back.length + q) : undefined
     out.push({ tight: mailto ? '' : tight, wide, attr: inAttr && !mailto && attrName.startsWith('data-'), ...(inAttr ? {} : { text: true }), ...(card ? { card } : {}) })
   }
   return out
@@ -1388,11 +1388,12 @@ export function addressContexts(html: string, at: { i: number; len: number }[]):
 const textOf = (h: string) => decodeEntities(h.replace(/<br\s*\/?>/gi, '\t').replace(/<[^>]*>/g, ' ')).replace(/\u00a0/g, ' ').replace(/ +/g, ' ').trim()
 // a link's accessible name: its text plus the alt / title / aria-label of anything inside it (an <img alt="Owen Pike"> names him)
 const linkNameOf = (h: string) => textOf(`${h} ${[...h.matchAll(/\b(?:alt|title|aria-label)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)].map(m => m[1] ?? m[2] ?? '').join(' ')}`)
-export function mailtoCard(html: string, quoteAt: number): { heading: string; between: string; link: string; stacked: boolean } | undefined {
+export function mailtoCard(html: string, quoteAt: number): { heading: string; between: string; link: string; stacked: boolean; to: string } | undefined {
   const tagStart = html.lastIndexOf('<', quoteAt)
   if (tagStart < 0 || !/^<a\s/i.test(html.slice(tagStart, tagStart + 3))) return undefined
   const tagEnd = html.indexOf('>', quoteAt), close = tagEnd < 0 ? -1 : html.slice(tagEnd, tagEnd + 400).search(/<\/a\s*>/i)
   if (close < 0) return undefined
+  if (/aria-labelledby\s*=/i.test(html.slice(tagStart, tagEnd + close))) return undefined   // its name is another element's text: not read here
   const link = linkNameOf(`${html.slice(tagStart, tagEnd + 1).replace(/\bhref\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')}${html.slice(tagEnd + 1, tagEnd + close)}`)
   const seg = html.slice(Math.max(0, tagStart - 1500), tagStart)
   let last: RegExpExecArray | null = null
@@ -1400,8 +1401,15 @@ export function mailtoCard(html: string, quoteAt: number): { heading: string; be
   if (!last) return undefined
   const after = seg.slice(last.index + last[0].length)
   if (/<(?:a|img|svg|picture|input|button|select|textarea|h[1-6])[\s>/]/i.test(after)) return undefined
-  // one card only: leaving a section, list item, table cell or more than one <div> on the way is another part of the page (a footer's "Email")
-  if (/<\/(?:section|article|li|ul|ol|dl|footer|header|aside|main|nav|table|tr|td|form)\s*>/i.test(after) || (after.match(/<\/div\s*>/gi)?.length ?? 0) > 1) return undefined
+  // one card only: the way from the heading to the link may open elements and close what it opened, but never close an element opened
+  // before the heading ends (that leaves the heading's container: the next card, a footer). Void elements open nothing.
+  const opened: string[] = []
+  for (const m of after.matchAll(/<(\/?)([a-z][\w-]*)[^>]*?(\/?)>/gi)) {
+    const name = m[2].toLowerCase()
+    if (/^(?:br|hr|wbr|meta|link|source|track|col|area|base|embed|param)$/.test(name) || m[3]) continue
+    if (!m[1]) { opened.push(name); continue }
+    if (opened.pop() !== name) return undefined
+  }
   const before = seg.slice(0, last.index)
   let open = -1
   for (const m of before.matchAll(new RegExp(`<h${last[1]}[\\s>]`, 'gi'))) open = m.index
@@ -1409,7 +1417,7 @@ export function mailtoCard(html: string, quoteAt: number): { heading: string; be
   const openEnd = before.indexOf('>', open)
   if (openEnd < 0) return undefined
   const stacked = /<\/h[1-6]\s*>/i.test(/(?:\s*<[^>]*>)*\s*$/.exec(before.slice(0, open))?.[0] ?? '')
-  return { heading: textOf(before.slice(openEnd + 1)), between: textOf(after), link, stacked }
+  return { heading: textOf(before.slice(openEnd + 1)), between: textOf(after), link, stacked, to: /mailto:\s*([^"'\s]+)/i.exec(html.slice(tagStart, tagEnd))?.[1]?.toLowerCase() ?? '' }
 }
 
 // ---- #1122: why a lead has no company website, and following a guessed domain that only forwards to the real one ----
