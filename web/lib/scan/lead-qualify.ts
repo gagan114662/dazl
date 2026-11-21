@@ -114,8 +114,9 @@ function norm(s: string) { return s.replace(/\s+/g, ' ').trim() }
 
 // #1435: the customer-premise warning, in category-neutral terms. "customers are X, not Y" (or "X rather than Y"); X stops at a
 // clause about the target itself ("... and it ...", "... and the target ..."), so a rejection of the target is never read as a
-// customer premise. Group 1 is Y, the group the note says the customers are not.
-const CUSTOMER_PREMISE=/\bcustomers?\s+(?:are|is)\s+(?:(?!\b(?:but|while|whereas|so|it|its|itself|they|the\s+(?:target|company|firm|business))\b)[^.!?;]){1,100}?(?:,?\s*\bnot\b|\s+rather\s+than\b)\s+([^.!?,;]{1,80})/i
+// customer premise ("they", "but", "so" stay inside it: they continue the customer premise). Known miss: "it" meaning the
+// target's product ("banks that rely on it, not ...") also stops it. Group 1 is Y, the group the note says the customers are not.
+const CUSTOMER_PREMISE=/\bcustomers?\s+(?:are|is)\s+(?:(?!\b(?:it|its|itself|the\s+(?:target|company|firm|business))\b)[^.!?]){1,100}?(?:,?\s*\bnot\b|\s+rather\s+than\b)\s+([^.!?,;]{1,80})/i
 // The customer groups the target criteria name after explicit customer wording ("sell to X", "serving X", "customers must be X").
 const CRITERIA_CUSTOMERS=/\b(?:sell(?:s|ing)?\s+(?:only\s+)?to|serv(?:e|es|ing)|suppl(?:y|ies|ying)|provid(?:e|es|ing)\s+[^.;]{1,60}?\s+to|work(?:s|ing)?\s+with|target(?:s|ing)|(?:whose\s+)?(?:customers?|clients?)\s+(?:must\s+be|are|include))\s+([^.;,]{1,80})/gi
 function criteriaCustomerGroups(criteria:string):string[]{return [...criteria.matchAll(CRITERIA_CUSTOMERS)].map(x=>x[1])}

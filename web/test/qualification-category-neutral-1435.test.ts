@@ -43,6 +43,12 @@ test('#1435 an unseen category gets the same customer-sector warning: the target
     ['B2B SaaS startups selling to enterprises', 'Its customers are hospitals, not software companies.'],
     ['B2B SaaS startups targeting mid-market companies', 'Its customers are hospitals, not software companies.'],
     ['Independent veterinary practices. Exclude agencies serving clients', 'Their customers are pet owners, not veterinary practices.'],
+    // council round 3: "but", "so", "they" and ";" continue a customer premise (base parity)
+    ['B2B SaaS startups', 'Its customers are retailers but not software companies.'],
+    ['B2B SaaS startups', 'Its customers are retailers, but not software companies.'],
+    ['B2B SaaS startups', 'Its customers are retailers and they are not software companies.'],
+    ['B2B SaaS startups', 'Their customers are hospitals so they are not software companies.'],
+    ['B2B SaaS startups', 'Its customers are banks; they are not software companies.'],
   ]) {
     const f = grade(criteria, note)
     assert.equal(f.assessment_conflict?.kind, 'customer_sector_not_target_business', criteria)
