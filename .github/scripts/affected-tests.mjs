@@ -4,7 +4,7 @@
 // usage: node .github/scripts/affected-tests.mjs <base-sha> [head-sha]
 // Rules: a changed runnable top-level test runs itself; other test-tree changes select ALL; a changed source file under web/ runs every test whose text imports or names
 // its module (basename without extension); a change to shared plumbing (package files, test helpers, db schema/migrations,
-// lib/db/*) prints ALL so the PR falls back to the full suite. Nothing affected prints NONE.
+// lib/db/*) prints ALL so the PR falls back to the full suite. The repo-wide guards (ALWAYS) are selected on every PR; NONE prints only if none of them exist and nothing else is affected.
 import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
