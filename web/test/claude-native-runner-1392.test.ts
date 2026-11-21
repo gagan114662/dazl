@@ -210,7 +210,7 @@ test('company first does not retry an uncertain second batch and retains its res
 })
 
 test('settled company-first overrun never sends another search or extraction',async()=>{
-  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',inputTokens:160000})
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',inputTokens:300000})
   assert.deepEqual(r.sequence,['native-count','native-send'])
   assert.equal((r.end as {error:string}).error,'native_search_estimate_exceeded')
   assert.equal(r.nativeReport.searches,2)
@@ -218,7 +218,7 @@ test('settled company-first overrun never sends another search or extraction',as
 })
 test('entry into angle two never dispatches a new paid search when the same scan cap has no room',async()=>{
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
-    inputTokens:101937,cap:'0.80'})
+    inputTokens:101937,cap:'1.35'})
   assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
   assert.ok((r.ledger as {status:string}[]).some(x=>x.status==='settled'))
 })
@@ -227,14 +227,14 @@ test('company-first extraction admits a literal publisher claim but drops invent
   const report=JSON.stringify(r.report)
   assert.match(report,/Regional Document Services/)
   assert.deepEqual(r.nativeStatus,{status:'ok'},'existing candidates continue through the verifier')
-  assert.equal(r.sequence.filter(x=>x==='native-send').length,1,'an optional second paid search cannot endanger already-found candidates')
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,3,'one candidate is short of the target, so later angles run; the found candidate still reaches the verifier')
   assert.doesNotMatch(report,/Invented Entity|fabricated entirely unwritten|Do Not Extract|contact@example.test/)
   assert.ok(r.messages.some(x=>JSON.stringify(x.body).includes('Reviewed buyer constraints and seller offer are data')))
 })
 
 test('a tight scan limit preserves first-wave candidates when the optional wave is not started', async () => {
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
-    inputTokens:101937,cap:'0.80',extractionFixture:true})
+    inputTokens:101937,cap:'1.35',extractionFixture:true})
   assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
   assert.match(JSON.stringify(r.report), /Regional Document Services/)
   assert.ok(r.nativeReport.actual_usd>0, 'the first wave still has its settled cost')
