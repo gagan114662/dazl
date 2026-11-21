@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
+import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { PooledGuard, SpendGuard, reserveAllUsd, settleAll } from '../lib/llm/spend-guard.ts'
@@ -19,14 +20,16 @@ const initial = 'old'
 const ready = 'new'
 const nativeBudget = JSON.stringify({ ...JSON.parse(qaClaudeOnlyBudget('{"first5":true}', true)), execution: 'local_once_v1' })
 
-function fixture(booked = NOW) {
+const companyFirstBudget = markCompanyFirstBudget('{"first5":true,"paid_fallback":false,"credit_enrichment":false}')
+
+function fixture(booked = NOW, initialBudget = nativeBudget) {
   const db = new Database(':memory:')
   migrateAllSqlite(db)
   let now = booked
   const insert = (id: string, tenant: string, runBudget = nativeBudget) => db.prepare(
-    "INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts,run_budget) VALUES (?,?,'Fixture','Test','Test','running',1,?)"
+    "INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,attempts,run_budget,query) VALUES (?,?,'Fixture','Test','Test','running',1,?,'Find example companies')"
   ).run(id, tenant, runBudget)
-  insert(initial, owner); insert(ready, owner); insert('other', 'fixture-b')
+  insert(initial, owner, initialBudget); insert(ready, owner); insert('other', 'fixture-b')
   const pool = (id: string | undefined, tenant = owner) => sharedPool(db, tenant, { day: LIMIT, month: LIMIT }, () => now, 0, id)
   const inJob = <T>(id: string, tenant: string, fn: () => Promise<T>) => runWithScanSpend({
     db, jobId: id, tenantId: tenant, attempt: 1, claudeOnly: true,
@@ -51,8 +54,9 @@ function fixture(booked = NOW) {
   return { db, pool, reserve, fail, pending, call, holdRows, estimate, inJob, expireAt, time: (n: number) => { now = n } }
 }
 
-test('identified expired terminal native hold permits a distinct scan, not replay or releasing any dollars', async () => {
-  const x = fixture()
+for (const [lane, budget] of [['pinned QA', nativeBudget], ['ordinary Company First', companyFirstBudget]] as const) {
+test(`identified expired terminal native hold permits a distinct scan, not replay or releasing any dollars (${lane})`, async () => {
+  const x = fixture(NOW, budget)
   try {
     const h = await x.reserve(initial, FLOOR)
     assert.match(x.call().id, /^n[0-9a-z]{9}$/)
@@ -91,8 +95,8 @@ test('identified expired terminal native hold permits a distinct scan, not repla
   } finally { x.db.close() }
 })
 
-test('unknown, cross-tenant, underfunded, fresh and legacy markers are never inferred from matching amounts', async () => {
-  const x = fixture()
+test(`unknown, cross-tenant, underfunded, fresh and legacy markers are never inferred from matching amounts (${lane})`, async () => {
+  const x = fixture(NOW, budget)
   try {
     await (await x.reserve(initial, FLOOR)).uncertain()
     x.fail(); x.time(x.expireAt)
@@ -110,6 +114,16 @@ test('unknown, cross-tenant, underfunded, fresh and legacy markers are never inf
     assert.ok(estimate.ok)
     assert.equal(estimate.estimate.verdict.reason, 'accounting_unsettled')
     lose.run(period, owner, 'p:deadbeef01')
+    if (lane === 'ordinary Company First') {
+      // Even a reason string resembling a legacy seal cannot link a different typed marker.
+      const mismatched = period === 'p:n123456789' ? 'p:n123456788' : 'p:n123456789'
+      const setReason = x.db.prepare('UPDATE scan_spend_calls SET reason=? WHERE id=?')
+      lose.run(mismatched, owner, period)
+      setReason.run('native_legacy_link:' + mismatched, x.call().id)
+      await assertBlocked()
+      setReason.run(null, x.call().id)
+      lose.run(period, owner, mismatched)
+    }
     hold.run(0.39, owner, 'd:%')
     await assertBlocked()
     hold.run(FLOOR, owner, 'd:%')
@@ -124,6 +138,8 @@ test('unknown, cross-tenant, underfunded, fresh and legacy markers are never inf
   } finally { x.db.close() }
 })
 
+
+}
 
 test('a paused old process cannot settle late after another scan is admitted past its terminal hold', async () => {
   for (const actual of [0.01, 0.49]) {
@@ -174,10 +190,10 @@ test('two retained obligations cannot cite the same insufficient shared window b
   } finally { x.db.close() }
 })
 
-test('the production SQLite reaper stops the old linked search; only afterward can the grace period elapse', async () => {
-  const x = fixture()
+test('the production SQLite reaper stops the ordinary Company First linked search before its grace period', async () => {
+  const x = fixture(NOW, companyFirstBudget)
   try {
-    await x.reserve(initial, FLOOR)
+    const paused = await x.reserve(initial, FLOOR)
     x.db.prepare('UPDATE scan_jobs SET claimed_at = 0 WHERE id = ?').run(initial)
     reapStaleRunningJobs(x.db)
     const old = x.db.prepare('SELECT status,error,finished_at FROM scan_jobs WHERE id=?').get(initial) as { status: string; error: string; finished_at: number }
@@ -187,7 +203,11 @@ test('the production SQLite reaper stops the old linked search; only afterward c
     x.time(old.finished_at + PENDING_STALE_S)
     assert.deepEqual(await x.pending(), [])
     await assert.rejects(x.inJob(initial, owner, () => reserveScanSpend('llm.anthropic.web_search', () => 0.01)), { reason: 'native_search_accounting_pending' })
-    await (await x.reserve(ready, 0.05)).settle(0.02)
+    const next = await x.reserve(ready, 0.05)
+    const oldWindows = (await x.holdRows()).map(r => [r.period, r.reserved_usd, r.reported_usd])
+    await assert.rejects(paused.settle(0.01), /accounting_failed/)
+    assert.deepEqual((await x.holdRows()).map(r => [r.period, r.reserved_usd, r.reported_usd]), oldWindows)
+    await next.settle(0.02)
     assert.deepEqual([x.call().status, x.call().reserve_usd, x.call().actual_usd], ['reserved', FLOOR, null])
   } finally { x.db.close() }
 })

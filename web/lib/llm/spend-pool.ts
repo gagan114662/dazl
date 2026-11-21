@@ -1,3 +1,4 @@
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 // Workspace spend pools in the shared store (#363): one row per owner per UTC day and per UTC month, reserved before a
 // paid call and moved to the vendor-reported cost after it. Replaces the per-process ownerPool Map, so a restart, a
 // retry, a second job or a second instance draws on the same limit and can never reset it.
@@ -53,7 +54,7 @@ const pendingPeriod = (id: string) => {
 
 const nativeMarker = /^p:n[0-9a-z]{9}$/
 const expiredNativeScanHolds = `
-  SELECT p.period, s.scan_job_id, s.created_at, s.reserve_usd, j.run_budget
+  SELECT p.period, s.id AS call_id, s.scan_job_id, s.created_at, s.reserve_usd, j.run_budget
   FROM scan_spend_calls s
   JOIN scan_jobs j ON j.id = s.scan_job_id AND j.user_id = s.user_id
   JOIN tenant_spend_pools p ON p.tenant_id = s.user_id
@@ -70,7 +71,7 @@ const expiredNativeScanHolds = `
 const expiryArgs = (owner: string, cutoff: number) => [owner, cutoff, cutoff, cutoff]
 const allPoolRows = `SELECT tenant_id, period, reserved_usd, reported_usd, calls, updated_at FROM tenant_spend_pools WHERE tenant_id = ? ORDER BY period`
 
-interface NativeHoldProof { period: string; scan_job_id: string; created_at: number; reserve_usd: number; run_budget: string | null }
+interface NativeHoldProof { period: string; call_id?: string; scan_job_id: string; created_at: number; reserve_usd: number; run_budget: string | null }
 const legacyMarker = /^p:[0-9a-f]{10}$/
 const legacyFailedNativeCalls = `
   SELECT s.id, s.scan_job_id, s.created_at, s.reserve_usd, j.created_at AS job_created_at, j.run_budget, j.estimate, r.report
@@ -133,8 +134,12 @@ function fullyRetainedExpiredMarkers(rows: PoolRow[], proofs: NativeHoldProof[],
   for (const p of candidates) multiplicity.set(p.period, (multiplicity.get(p.period) ?? 0) + 1)
   for (const p of candidates) {
     if (multiplicity.get(p.period) !== 1) continue
-    if ((!nativeMarker.test(p.period) && !legacyMarker.test(p.period)) || !validEpoch(p.created_at) ||
-        !Number.isFinite(p.reserve_usd) || p.reserve_usd <= 0 || !qaClaudeOnlyNativeSearchJob(p.run_budget)) continue
+    const typedMarker = nativeMarker.test(p.period)
+    // Company First uses the same native ledger but not the old QA budget. Require the real
+    // typed transport identity; the legacy proof and its heuristics remain pinned to QA only.
+    const ordinaryNative = typedMarker && p.period === 'p:' + p.call_id && hasCompanyFirstBudget(p.run_budget)
+    if ((!typedMarker && !legacyMarker.test(p.period)) || !validEpoch(p.created_at) ||
+        !Number.isFinite(p.reserve_usd) || p.reserve_usd <= 0 || !(ordinaryNative || qaClaudeOnlyNativeSearchJob(p.run_budget))) continue
     // This is the exact reservation epoch of the outer owner pool, not the later transport clock.
     const windows: [string, string] = [periodOf('day', p.created_at), periodOf('month', p.created_at)]
     for (const w of windows) due.set(w, (due.get(w) ?? 0) + p.reserve_usd)
