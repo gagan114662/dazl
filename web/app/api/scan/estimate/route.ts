@@ -38,6 +38,9 @@ export async function POST(req: NextRequest) {
   if (websiteReview !== (body?.website_draft_receipt !== undefined)) return NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
 
   // the same carried-exclusion admission POST /api/scan applies, so no cost panel is shown for a list it would refuse
+  if (body?.carry_exclude !== undefined && body?.icp != null && !normalizeIcp(body.icp)) {
+    return NextResponse.json({ error: 'The profile needs a summary' }, { status: 400 })
+  }
   const carry = body?.icp ? { ok: true as const } : carryAdmission(body?.carry_exclude)
   if (!carry.ok) return NextResponse.json({ error: carry.error }, { status: 400 })
   const supplied = body?.offer !== undefined && body?.offer !== null

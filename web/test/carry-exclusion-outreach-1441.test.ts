@@ -8,9 +8,9 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { claimKeyedJob } from '../lib/scan/runner.ts'
-import { approve, approveBlockReason, draftBlockReason, leadHeld, sendBlockReason } from '../lib/outreach/service.ts'
+import { approve, approveBlockReason, draftBlockReason, leadHeld, sendBlockReason, sendMessage } from '../lib/outreach/service.ts'
 
-test('a lead matching a carried exclusion cannot be drafted, approved or sent', () => {
+test('a lead matching a carried exclusion cannot be drafted, approved or sent', async () => {
   const db = new Database(':memory:')
   migrateAllSqlite(db)
   db.exec("INSERT INTO users (id,email,password_hash,salt) VALUES ('W','owner@example.test','x','y')")
@@ -43,6 +43,9 @@ test('a lead matching a carried exclusion cannot be drafted, approved or sent', 
   assert.equal(approveBlockReason(db, 'W', 'draftY', { skipAccount:true }), null)
   db.prepare("UPDATE outreach_messages SET status='approved' WHERE id='draftX'").run()
   assert.equal(sendBlockReason(db, 'W', 'draftX', { skipAccount:true }), 'lead_excluded')   // reported as the exclusion it is (Qodo on 3d50097)
+  await assert.rejects(sendMessage(db, 'W', 'draftX'), { code:'lead_excluded' })
+  assert.deepEqual(db.prepare("SELECT status, attempts, claimed_at FROM outreach_messages WHERE id='draftX'").get(),
+    { status:'approved', attempts:0, claimed_at:null })
 
 })
 
@@ -57,7 +60,7 @@ test('a held excluded lead is reported as lead_excluded', async () => {
   saveKey(db, 'W', 'anthropic', 'fixture-only-unused-key', Buffer.alloc(32, 1))
   assert.equal(claimKeyedJob(db, job)?.id, job)
   const ins = db.prepare('INSERT INTO leads (id,scan_job_id,company,company_domain,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-  ins.run('X', job, 'Acme Dental Group', 'acme.example', 'ceo@acme.example', 'hiring', 'https://news.example/a', 'hiring', 90, 80, 8, 7)
+  ins.run('X', job, 'Acme Dental Group', 'acme.example', 'ceo@acme.example', 'hiring', 'https://news.example/a', 'hiring', 90, 80, 5, 4)
   ins.run('U', job, 'Northwind', 'northwind.example', 'ceo@northwind.example', 'hiring', 'https://news.example/b', 'hiring', 90, 80, 0, null)
   assert.equal(leadHoldCode(db, 'W', 'X'), 'lead_excluded')
   assert.equal(leadHoldCode(db, 'W', 'U'), 'lead_ungraded')
