@@ -33,10 +33,10 @@ PINNED = {
     # #1089: the release-env mail check. NOT YET INSTALLED: this pin is this PR's file; Hermes installs it (check-installed.sh says so until then).
     # #1116 (headless hydration check): deploy-prod.sh runs check-hydration.mjs after check-pages.py. NOT YET INSTALLED: these two pins are
     # this PR's files; Hermes installs them (check-installed.sh says so until then).
-    'deploy-prod.sh': '47cecf4bc4863055795b3f98c310a0657dfa0e62f9fcf8c5d86722611b4dadf6',
+    'deploy-prod.sh': '3e0c4281c2f5b2ada6ff265269dea1307bc4e5ec08b4c49a9348df0707c26ab0',
     'check-hydration.mjs': '0b0dd3a6bbc16870c2bdec5619febb8f4399e28a5d0c1ba8743c081d9657aa2e',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
-    'pull-release.sh': 'e49b4041fc46234b453d42cb235ab0f8a674103b130bea04843c72067ae3b38c',
+    'pull-release.sh': 'bd6fae619ef2cd06bbe03e1c1b9125421d26a32aee8c4c221f2ec61bfa01bc59',
     'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
 }
 A = 'a' * 40
@@ -411,6 +411,33 @@ class V2Refusals(unittest.TestCase):
         self.assertTrue((self.t / 'data/prod.db').exists())
         self.assertIn('reverse_proxy localhost:3104', (self.t / 'Caddyfile').read_text())
 
+    def test_mounted_cleanup_roots_and_recent_nested_release_are_retained(self):
+        stale, _, _, _, cache, _, _, old, _ = self._cleanup_fixtures()
+        recent = stale / 'web'
+        recent.mkdir()
+        recent_file = recent / 'active.log'
+        recent_file.write_text('fixture')
+        for directory in (stale, recent):
+            os.utime(directory, (1, 1))
+        mountpoint = self.t / 'bin' / 'mountpoint'
+        mountpoint.write_text('#!/bin/sh\ncase "$3" in */backups|*/dl) exit 0;; *) exit 32;; esac\n')
+        mountpoint.chmod(0o755)
+        plan = self.run_deploy('--cleanup-plan','b'*40,PROD_PRUNE='1')
+        out = plan.stdout + plan.stderr
+        self.assertEqual(plan.returncode, 0, out)
+        self.assertEqual(out.count('keeping all artifacts in mounted or unverified cleanup root'), 2, out)
+        self.assertIn('cleanup before backup:', out)
+        self.assertIn('cleanup after backup:', out)
+        self.assertNotIn('would remove', out)
+        (self.t / 'data/prod.db-wal').unlink(); (self.t / 'data/prod.db-shm').unlink()
+        apply = self.run_deploy('b'*40,PROD_PRUNE='1')
+        out = apply.stdout + apply.stderr
+        self.assertIn('has no SYSTEM_MAIL_SMTP_URL', out)
+        self.assertNotIn('removing', out)
+        self.assertTrue(recent_file.exists())
+        self.assertTrue(cache.exists())
+        self.assertTrue(all(p.exists() for p in old))
+
     def test_unreadable_listener_preserves_all_release_directories(self):
         stale, *_ = self._cleanup_fixtures()
         (self.t / 'listen/3999').write_text('4194000')
@@ -478,18 +505,13 @@ class V2Refusals(unittest.TestCase):
 
     def test_a_second_deploy_at_the_same_time_is_refused(self):
         import fcntl
-        lock = Path('/run/lock/dazl-prod-deploy.lock')
-        try:
-            fh = open(lock, 'a')
-        except OSError as e:
-            self.skipTest(f'cannot open {lock}: {e}')
-        try:
+        # setUp rewrites the tested deploy copy to this exact private lock. The
+        # host lock is neither the child's lock nor safe for a fixture to take.
+        with (self.t / 'deploy.lock').open('a') as fh:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
             r = self.run_deploy('b' * 40)
             self.assertEqual(r.returncode, 1); self.assertIn('another prod deploy/rollback is running', r.stdout + r.stderr)
             self.assert_nothing_changed()
-        finally:
-            fh.close()
 
 
 if __name__ == '__main__':

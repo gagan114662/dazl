@@ -246,7 +246,6 @@ prune_releases() {
     [ -e "$p" ] || [ -L "$p" ] || continue
     [ -f "$p" ] && [ ! -L "$p" ] && [ -r "$p" ] || { log "not pruning releases: unsafe port config"; return 0; }
   done
-  local now; now=$(date +%s)
   for d in "$root"/dazl-*-prod; do
     [ -d "$d" ] && [ ! -L "$d" ] && [[ ${d##*/} =~ ^dazl-[0-9a-f]{8}-prod$ ]] || continue
     [ "$d" != "${live_web%/web}" ] && [ "$d" != "$prev" ] && [ "$d" != "$wanted" ] || continue
@@ -257,7 +256,7 @@ prune_releases() {
     done
     if grep -qxF "DAZL_RELEASE=$d" "$PORTCONF"/*.conf 2>/dev/null; then continue; fi
     if ! python3 -I - "$d" <<'PY'
-import os, re, sys
+import os, re, sys, time
 def unescape(p):
     return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), p)
 path = sys.argv[1]
@@ -266,16 +265,24 @@ if os.path.realpath(path) != path:
 with open('/proc/self/mountinfo', encoding='utf-8') as f:
     for line in f:
         point = unescape(line.split()[4])
-        if point == path or point.startswith(path + '/'):
+        if point == os.path.dirname(path) or point == path or point.startswith(path + '/'):
             sys.exit(1)
+cutoff = time.time_ns() - 3600 * 1_000_000_000
+def failed(err):
+    raise err
+try:
+    if os.lstat(path).st_mtime_ns > cutoff:
+        sys.exit(1)
+    for directory, dirs, files in os.walk(path, followlinks=False, onerror=failed):
+        for name in dirs + files:
+            if os.lstat(os.path.join(directory, name)).st_mtime_ns > cutoff:
+                sys.exit(1)
+except OSError:
+    sys.exit(1)
 PY
-    then log "not pruning mounted or unverified release $d"; continue; fi
+    then continue; fi
     owner=$(stat -c %U -- "$d") || continue
     [ "$owner" = "$APP_USER" ] && [ "$owner" != root ] || continue
-    # A newly created/recently modified directory can belong to another
-    # in-progress operator process that has not bound a listener yet.
-    local modified; modified=$(stat -c %Y -- "$d") || continue
-    (( now - modified >= 3600 )) || continue
     if [ "$mode" = plan ]; then log "would remove unused release $d"
     else log "removing unused release $d"; as_app rm -rf --one-file-system -- "$d" || log "could not remove all of $d"; fi
   done
@@ -283,7 +290,7 @@ PY
 
 prune_disk_files() { # mode, target sha; postbackup only prunes old verified backups
   python3 -I - "$1" "$2" "$DB" "$BACKUPS" "$CACHE" "$KEEP_BACKUPS" "${protected_cache:-}" <<'PY'
-import os, re, stat, sys, time
+import os, re, stat, subprocess, sys, time
 mode, wanted, db, backups, cache, keep, protected_cache = sys.argv[1:]
 keep = int(keep)
 protected = set()
@@ -303,6 +310,11 @@ def safe_entries(root, allowed):
     if (not os.path.isabs(root) or root == '/' or os.path.realpath(root) != root
         or not stat.S_ISDIR(s.st_mode) or s.st_uid != os.geteuid() or s.st_mode & 0o022):
         raise SystemExit('refusing unsafe cleanup root: ' + root)
+    # Only exit 32 means a known non-mount. Keep on error as well as a mount.
+    rc = subprocess.run(['mountpoint', '-q', '--', root], check=False).returncode
+    if root in mounts or rc != 32:
+        print('keeping all artifacts in mounted or unverified cleanup root: ' + root, flush=True)
+        return []
     out = []
     with os.scandir(root) as files:
         for f in files:
@@ -333,7 +345,10 @@ if mode != 'postbackup':
     cutoff = time.time_ns() - 3600 * 1_000_000_000
     remove('stale prebuilt cache', [entry for entry in safe_entries(cache, old_cache) if entry[0] <= cutoff])
 backups = safe_entries(backups, lambda n: bool(re.fullmatch(r'predeploy-[0-9a-f]{8}-[0-9]{8}T[0-9]{6}\.db', n)))
-remove('old predeploy backup', sorted(backups, reverse=True)[keep:])
+newest = sorted(backups, reverse=True)
+if newest:
+    print(f'retained verified-pattern predeploy backups: {min(keep,len(newest))}; cleanup eligible: {max(0,len(newest)-keep)}', flush=True)
+remove('old predeploy backup', newest[keep:])
 PY
 }
 
@@ -405,6 +420,17 @@ log "memory before: $(free -m | awk '/^Mem/{print "used "$3" MB, available "$7" 
 as_app test -w "$DB" || die "$DB is not writable by $APP_USER; nothing done"
 as_app test -w "$(dirname -- "$DB")" || die "$(dirname -- "$DB") is not writable by $APP_USER; nothing done"
 
+# Diagnostic only; a missing reading cannot relax the existing prebuilt disk floor.
+cleanup_space() { # phase
+  local label fs dev avail
+  for label in release cache backup; do
+    case "$label" in release) fs=$RELEASE_ROOT;; cache) fs=$CACHE;; backup) fs=$BACKUPS;; esac
+    while [ ! -d "$fs" ] && [ "$fs" != / ]; do fs=$(dirname -- "$fs"); done
+    dev=$(stat -c %d -- "$fs") && avail=$(df -B1 --output=avail -- "$fs" | tail -n 1 | tr -d ' ') &&
+      [[ $dev =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]] || { log "cleanup $1 $label: available bytes unknown"; continue; }
+    log "cleanup $1 $label: device=$dev available_bytes=$avail"
+  done
+}
 # Reclaim only safe stale deploy artifacts before any backup or disk floor.
 # Keep the live release's archive too (fall back to its known directory
 # prefix if health does not identify a full SHA), and the recorded previous.
@@ -417,8 +443,11 @@ if [ -f "$STATE" ] && [ ! -L "$STATE" ]; then
   prev_cache=$(sed -n 's/^PREV_SHA=//p' "$STATE")
   [[ $prev_cache =~ ^[0-9a-f]{40}$ ]] && protected_cache="$protected_cache $prev_cache"
 fi
+log "cleanup retained release/archive refs (live, previous when known): ${protected_cache:-unavailable}"
+cleanup_space before
 if [ "$PRUNE" = 1 ]; then prune_releases "$cleanup_mode" "$LIVE_WEB" "$DIR"; fi
 prune_disk_files "$cleanup_mode" "$SHA" || die "guarded disk cleanup refused"
+cleanup_space after
 if [ "$cleanup_mode" = plan ]; then log "cleanup plan only: no release, cache, backup or live database changed"; exit 0; fi
 
 # --- 1. verified backup before any release or DB migrations

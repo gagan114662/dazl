@@ -122,9 +122,12 @@ fetch() {
   [ -d "$rel_fs" ] || rel_fs=/
   if [ -n "$bk_fs" ]; then while [ ! -d "$bk_fs" ]; do bk_fs=$(dirname -- "$bk_fs"); done; fi
   # superseded downloads (an earlier commit's archives) are removed before this commit's are fetched: counted as free
-  local stale=0
+  local stale=0 reclaim=0 mount_rc=0
+  mountpoint -q -- "$DL" || mount_rc=$?
+  if [ "$mount_rc" = 32 ]; then reclaim=1
+  else log "keeping all old artifacts in mounted or unverified cache root"; fi
   for f in "$DL"/*; do
-    is_old_cache "$f" "$sha" || continue
+    [ "$reclaim" = 1 ] && is_old_cache "$f" "$sha" || continue
     stale=$(( stale + $(stat -c %s -- "$f") ))
   done
   declare -A on=()
@@ -141,7 +144,7 @@ fetch() {
   done
   # superseded downloads go first (only this commit's verified files are kept)
   for f in "$DL"/*; do
-    is_old_cache "$f" "$sha" || continue
+    [ "$reclaim" = 1 ] && is_old_cache "$f" "$sha" || continue
     rm -f -- "$f"
   done
   get() { # name sha256 bytes
