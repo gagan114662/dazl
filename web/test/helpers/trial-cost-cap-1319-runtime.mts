@@ -97,3 +97,42 @@ test('#1319 item 2: a trial job saved before the estimate kept its cap still sho
   assert.ok(cost.estimate.total.max <= CAP, JSON.stringify(cost.estimate.total))
   assert.equal(cost.estimate.trial_cap_line, 'Free trial scans stop at $0.30.')
 })
+
+// Council R1: an older trial job with no cap kept and no reservation row (or a read that fails) never fails open.
+test('#1319 item 2: a trial job with no cap kept and no reservation row: still clamped to the trial cap configured now, with the note', async () => {
+  const { raw } = tenant(true)
+  const { job_id } = await endedRun(raw)
+  const saved = JSON.parse((raw.prepare('SELECT estimate FROM scan_jobs WHERE id = ?').get(job_id) as { estimate: string }).estimate) as Record<string, unknown>
+  delete saved.trial_scan_cap_usd
+  raw.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify(saved), job_id)
+  raw.prepare('DELETE FROM trial_reservations WHERE job_id = ?').run(job_id)
+  const { cost } = await (await status(job_id)).json() as { cost: Cost }
+  assert.ok(cost.estimate.total.max <= CAP, JSON.stringify(cost.estimate.total))
+  assert.equal(cost.estimate.trial_cap_line, 'Free trial scans stop at $0.30.')
+  for (const d of dollars(cost.actual?.summary ?? '')) assert.ok(d <= CAP, cost.actual!.summary)
+})
+
+test('#1319 item 2: a trial job whose cap cannot be found at all shows no dollar estimate, only that the trial stops at its limit', async () => {
+  const { raw } = tenant(true)
+  const { job_id } = await endedRun(raw)
+  const saved = JSON.parse((raw.prepare('SELECT estimate FROM scan_jobs WHERE id = ?').get(job_id) as { estimate: string }).estimate) as Record<string, unknown>
+  delete saved.trial_scan_cap_usd
+  raw.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify(saved), job_id)
+  raw.exec('DROP TABLE trial_reservations') // the read fails: "could not read" is never "no cap"
+  const reserve = process.env.DAZL_TRIAL_SCAN_RESERVE_USD
+  delete process.env.DAZL_TRIAL_SCAN_RESERVE_USD
+  try {
+    const { cost } = await (await status(job_id)).json() as { cost: { estimate: { total: unknown; trial_cap_line: string }; actual: { summary: string } | null } }
+    assert.equal(cost.estimate.total, null, 'no range to show')
+    assert.equal(cost.estimate.trial_cap_line, 'Free trial scans stop at their per-scan limit.')
+    assert.deepEqual(dollars(cost.actual?.summary ?? '').filter(d => d > CAP), [], cost.actual?.summary)
+  } finally { process.env.DAZL_TRIAL_SCAN_RESERVE_USD = reserve }
+})
+
+test('#1319 item 2: the pre-run box rows and its "Model requests expected" line never read above the trial cap either', async () => {
+  tenant(true)
+  const { estimate } = await (await ESTIMATE(post('/api/scan/estimate', { query: Q }))).json() as { estimate: RunEstimate }
+  const v = customerView(estimate)
+  for (const r of v.rows) if (r.usd) assert.ok(r.usd.max <= CAP, `${r.id}: ${JSON.stringify(r.usd)}`)
+  assert.ok(v.capped_total.max <= CAP && v.capped_total.min <= CAP, JSON.stringify(v.capped_total))
+})

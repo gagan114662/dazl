@@ -70,5 +70,5 @@ const COPY: Record<GoogleLinkResult, { ok: boolean; text: string }> = {
   google_unverified: { ok: false, text: 'Google has not verified that email address yet, so it could not be linked. Verify it with Google, then try again.' },
 }
 export function googleLinkResultCopy(r: unknown): { ok: boolean; text: string } {
-  return typeof r === 'string' && r in COPY ? COPY[r as GoogleLinkResult] : { ok: false, text: 'Google sign-in could not be added. Try again.' }
+  return typeof r === 'string' && Object.hasOwn(COPY, r) ? COPY[r as GoogleLinkResult] : { ok: false, text: 'Google sign-in could not be added. Try again.' }
 }

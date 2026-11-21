@@ -326,29 +326,29 @@ export function estimateRun(i: EstimateInput): RunEstimate {
 // view only rewrites the copy: no env var names, no model ids, no internal never-run rows, and a trial's total clamped to
 // the trial's per-scan cap (the run stops there), with the line saying so.
 export interface CustomerRow { id: string; label: string; provider: string; unit_usd: string; note: string; usd: Range | null; capped: boolean }
-export interface CustomerView { rows: CustomerRow[]; total: Range; trial_cap_line: string | null; assumptions: string[] }
+export interface CustomerView { rows: CustomerRow[]; total: Range; /** the cap line's model range (capLine), clamped like total */ capped_total: Range; trial_cap_line: string | null; assumptions: string[] }
 const ENV_NAME = /\bDAZL_[A-Z0-9_]+\b/
 export function customerCopy(text: string): string {
   // The model id the row names: "... per 1M tokens (claude-sonnet-4-5)" and "o3-mystery: no listed price"
   return text.replace(/(per 1M tokens) \(.*\)$/, '$1').replace(/^.*: no listed price$/, 'no listed price')
 }
-export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer'> & { trial_scan_cap_usd?: number | null }): CustomerView {
+export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer'> & { cap?: Pick<RunEstimate['cap'], 'capped_total'>; trial_scan_cap_usd?: number | null }): CustomerView {
+  const cap = trialScanCap(est)
   const rows: CustomerRow[] = est.rows.filter(r => r.id !== 'fallback_research').map(r => {
     const included = ENV_NAME.test(r.unit_usd) || /^free allowance/.test(r.unit_usd)
     return {
-      id: r.id, label: r.label, usd: r.usd, capped: r.capped,
+      id: r.id, label: r.label, usd: r.usd && clampToCap(r.usd, cap), capped: r.capped,
       provider: r.kind === 'model' ? 'AI research' : r.kind === 'search' || r.kind === 'fetch' ? 'Web search' : r.provider,
       unit_usd: included ? 'included' : r.kind === 'model' ? customerCopy(r.unit_usd) : r.unit_usd.replace(ENV_NAME, 'operator setting'),
       note: r.note.replace(ENV_NAME, 'operator setting'),
     }
   })
-  const cap = trialScanCap(est)
   const total = clampToCap(est.total, cap)
   const assumptions = est.assumptions
     .filter(a => !/research fallback/i.test(a))
     .map(a => a.startsWith('Model: ') && a.includes('. Tokens per call') ? `AI research: t${a.slice(a.indexOf('. Tokens per call') + 3)}` : a)
     .filter(a => !ENV_NAME.test(a))
-  return { rows, total, trial_cap_line: trialCapLine(cap), assumptions }
+  return { rows, total, capped_total: clampToCap(est.cap?.capped_total ?? est.total, cap), trial_cap_line: trialCapLine(cap), assumptions }
 }
 // #1319: a free-trial scan's per-scan cap, when the estimate carries a usable one (own-key runs never have one). Shared by
 // the cost box before the run and the run page after it, so neither shows a dollar amount above the cap.

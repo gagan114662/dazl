@@ -247,7 +247,7 @@ export default function LeadsClient() {
   // a new scan never shows the previous scan's held candidates: the list is tied to the job it was read for
   const heldCandidates = heldView?.jobId === jobId ? heldView.items : []
   const [resultView, setResultView] = useState<{ jobId: string; counts: CompanyFirstResultCounts | null; marked: boolean } | null>(null)
-  const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number }; trial_cap_line?: string | null }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
+  const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } | null; trial_cap_line?: string | null }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
   // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
   const [providerIssues, setProviderIssues] = useState<ProviderIssue[] | null>(null)
   const [providerIssuesUnknown, setProviderIssuesUnknown] = useState(false) // API said null: record unreadable - not an all-clear
@@ -1183,7 +1183,7 @@ export default function LeadsClient() {
       )}
       {cost && (status === 'done' || status === 'failed') && (
         <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost" data-within={cost.actual?.within ?? 'unknown'}>
-          Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start.{cost.estimate.trial_cap_line ? <> <span data-testid="scan-cost-trial-cap">{cost.estimate.trial_cap_line}</span></> : null} {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
+          {cost.estimate.total ? `Estimated $${cost.estimate.total.min.toFixed(2)} - $${cost.estimate.total.max.toFixed(2)} at start.` : ''}{cost.estimate.trial_cap_line ? <> <span data-testid="scan-cost-trial-cap">{cost.estimate.trial_cap_line}</span></> : null} {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
         </p>
       )}
       {cost?.per_verification_pass && (status === 'done' || status === 'failed') && (

@@ -88,4 +88,10 @@ test('#1319 item 3: a search whose query cannot travel as the return page (too l
 test('#1319 item 3: an old ?google= address still reads once and is removed; no result, nothing shown', () => {
   assert.deepEqual(readGoogleLinkResult({ search: '?job_id=abc&google=taken', cookie: '' }), { result: { ok: false, text: 'That Google account already signs in to another dazl account. Pick a different Google account, the one for this account\'s email.' }, search: '?job_id=abc' })
   assert.deepEqual(readGoogleLinkResult({ search: '?job_id=abc', cookie: 'a=b' }), { result: null, search: '?job_id=abc' })
+  // only the fixed result words are read (an inherited name is not one)
+  assert.deepEqual(readGoogleLinkResult({ search: '', cookie: `${GOOGLE_LINK_RESULT_COOKIE}=constructor` }).result, { ok: false, text: 'Google sign-in could not be added. Try again.' })
+  // a page whose query cannot travel returns to the same page without it; a page as it is otherwise
+  assert.equal(linkGoogleHref("/app/leads?q=coffee shops (O'Hare)"), '/api/auth/google?link=1&next=%2Fapp%2Fleads')
+  assert.equal(linkGoogleHref('/app?setup=brain'), '/api/auth/google?link=1&next=%2Fapp%3Fsetup%3Dbrain')
+  assert.equal(linkGoogleHref('https://evil.example/app'), '/api/auth/google?link=1')
 })
