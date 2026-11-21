@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 const wf = name => readFileSync(fileURLToPath(new URL(`../workflows/${name}.yml`, import.meta.url)), 'utf8')
 const concurrency = text => {
-  const m = text.match(/^concurrency:\n {2}group: *(.+)\n {2}cancel-in-progress: *(.+)$/m)
+  const m = text.match(/^concurrency:\n(?: {2}#.*\n)* {2}group: *(.+)\n {2}cancel-in-progress: *(.+)$/m)
   assert.ok(m, 'top-level concurrency block with group and cancel-in-progress')
   return { group: m[1].trim(), cancel: m[2].trim() }
 }
