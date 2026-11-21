@@ -17,7 +17,14 @@ const ALL = [/^package(-lock)?\.json$/, /^test\/helpers\//, /^lib\/db\//, /^migr
 if (web.some(f => ALL.some(r => r.test(f)))) { console.log('ALL'); process.exit(0) }
 const testDir = 'web/test'
 const tests = readdirSync(testDir).filter(f => /\.test\.(ts|mjs)$/.test(f))
-const out = new Set()
+// #1463 follow-up: repo-wide guard tests read the whole source tree (error-class allowlist, paid-path and spend guards,
+// tenant/job isolation manifests, route error capture, test discovery). A change anywhere can break them without naming
+// them, so they run on EVERY PR whatever changed (main broke after #1451 this way). Missing names are skipped.
+const ALWAYS = ['ops-sentry.test.ts', 'ops-errors.test.ts', 'paid-paths-guarded.test.ts', 'tenant-isolation-manifest.test.ts',
+  'job-isolation-manifest.test.ts', 'pg-table-isolation.test.ts', 'route-error-capture.test.ts', 'test-discovery.test.ts',
+  'scan-spend-cap-paths.test.ts', 'owner-spend-inventory-850.test.ts', 'enrich-reserve-inventory-849.test.ts',
+  'server-action-probes-1088.test.ts', 'preview-pipeline-fail-closed.test.ts', 'pg-fixture-honesty.test.ts']
+const out = new Set(ALWAYS.filter(t => tests.includes(t)).map(t => `test/${t}`))
 for (const f of web) {
   if (f.startsWith('test/')) {
     // Only existing top-level tests are runnable shard entries. The text scan
