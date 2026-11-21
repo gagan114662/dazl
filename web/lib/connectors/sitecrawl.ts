@@ -11,6 +11,7 @@ import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
 import { getDomain } from 'tldts'
+import { parse, type DefaultTreeAdapterMap } from 'parse5'
 import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
@@ -211,6 +212,69 @@ const nameLabel = (host: string) => registrable(host).split('.').slice(0, -1).jo
 // addresses only runs for names: https.request skips `lookup` for an IP), never a single label ("localhost").
 export const siteHostOk = (host: string) => { const h = host.replace(/^\[|\]$/g, ''); return !!h && isIP(h) === 0 && h.includes('.') && !/^\d+(\.\d+)*$/.test(h) && !h.endsWith('.') && !/[^a-z0-9.-]/i.test(h) && !/(^|\.)0x[0-9a-f]*(\.|$)/i.test(h) && !h.split('.').every(p => /^(0x[0-9a-f]+|0[0-7]*|\d+)$/i.test(p)) }   // also no hex / octal / numeric label forms of an address, whatever the caller normalised
 const labelMatches = (label: string, want: string) => label.length >= 4 && (label === want || (want.startsWith(label) && label.length >= 6) || (label.startsWith(want) && want.length >= 6))
+
+// One uninterrupted, directly visible publisher text block, not a company name
+// at the end of a larger name or markup spanning unrelated directory entries.
+const tidyCitationText = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim()
+type CitationClaim = { company: string; evidence_excerpt?: string | null }
+function citationClaim(row: CitationClaim): { host: string; quote: string } | null {
+  const quote = tidyCitationText(row.evidence_excerpt ?? '')
+  const name = tidyCitationText(row.company)
+  const prefix = name + ' ('
+  if (name.length < 4 || quote.length < 30 || quote.length > 1000 || !quote.startsWith(prefix)) return null
+  const close = quote.indexOf(')', prefix.length)
+  return close > prefix.length ? { host: quote.slice(prefix.length,close).replace(/^www\./,''), quote } : null
+}
+function publisherNamesCitedSite(html: string, quote: string): boolean {
+  // Use only the full bounded body captured by the same existing site crawl.
+  // No JS rendering or unbudgeted retrieval of styling/other subresources.
+  if (Buffer.byteLength(html) >= MAX_BYTES) return false
+  type Node = DefaultTreeAdapterMap['node']
+  type Element = DefaultTreeAdapterMap['element']
+  const attr = (n: Element, name: string) => n.attrs.find(a => a.name === name)?.value
+  const hidden = (n: Element) =>
+    ['hidden','inert','style'].some(a => attr(n,a) !== undefined) ||
+    attr(n,'aria-hidden')?.trim().toLowerCase() === 'true' ||
+    /(?:^|\s)(?:hidden|invisible|sr-only|visually-hidden|screen-reader-only|d-none|is-hidden)(?:\s|$)/i.test(attr(n,'class') ?? '')
+  const inline = /^(?:span|b|strong|i|em|small|abbr|mark|sub|sup|code|u|s|br)$/
+  const blockMatches = (block: Element) => {
+    if (block.childNodes.length > 128) return false
+    const pending: Node[] = [...block.childNodes].reverse()
+    let chunks = '', traversed = 0
+    while (pending.length) {
+      if (++traversed > 128 || pending.length > 128) return false
+      const n = pending.pop()!
+      if ('value' in n) {
+        if (n.value.length + chunks.length > 1500) return false
+        chunks += n.value
+      } else if ('tagName' in n && inline.test(n.tagName) && !hidden(n)) {
+        if (n.tagName === 'br') chunks += ' '
+        for (let i=n.childNodes.length-1;i>=0;i--) pending.push(n.childNodes[i])
+      } else return false // never join across a nested block, unknown or concealed content
+    }
+    return tidyCitationText(chunks) === quote
+  }
+  const pending: { node: Node; blocked: boolean; body: boolean }[] = [{ node:parse(html), blocked:false, body:false }]
+  let seen = 0, matched = false
+  while (pending.length) {
+    if (++seen > 12_000 || pending.length > 12_000) return false
+    const { node, blocked, body } = pending.pop()!
+    let excluded = blocked, inBody = body
+    if ('tagName' in node) {
+      const tag = node.tagName
+      inBody ||= tag === 'body'
+      // Inline/global CSS can hide any chosen node; external/global dynamic
+      // rules are not inspectable from a bounded HTML-only capture. Refuse
+      // unknown visibility, including styles declared AFTER the quote.
+      if (node.attrs.some(a => /^on[a-z]/i.test(a.name)) || tag === 'style' || (tag === 'link' && /(?:^|\s)stylesheet(?:\s|$)/i.test(attr(node,'rel') ?? '')) ||
+        (tag === 'script' && !/^(?:application\/(?:json|ld\+json))$/i.test(attr(node,'type') ?? ''))) return false
+      excluded ||= hidden(node) || /^(?:head|script|style|noscript|template|svg|iframe|textarea|select|button|details|dialog)$/.test(tag)
+      if (!excluded && inBody && /^(?:p|li|td|dd)$/.test(tag) && blockMatches(node)) matched = true
+    }
+    if ('childNodes' in node) for (const child of node.childNodes) pending.push({ node:child, blocked:excluded, body:inBody })
+  }
+  return matched
+}
 
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
@@ -1265,7 +1329,7 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
@@ -1428,6 +1492,25 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       return run
     }
     const evidenceGet = (url: string) => hostGet(url, deps.signal ? { signal: deps.signal } : undefined)
+    // Negative only: two persisted verified excerpts claiming the same host
+    // are unresolved; a company sharing only the label/prefix is not a claim.
+    // Read once, keeping the optional path closed if the lookup exceeds its bound.
+    const CLAIM_CAP = 100
+    let claimants: Map<string,string[]> | undefined
+    const unambiguousCitation = (host: string, leadId: string) => {
+      if (!claimants) {
+        const rows = db.prepare(`SELECT id, company, evidence_excerpt FROM leads
+          WHERE scan_job_id=? AND review_reason IS NULL AND confidence IS NOT NULL LIMIT ?`)
+          .all(jobId, CLAIM_CAP + 1) as (CitationClaim & { id: string })[]
+        claimants = new Map()
+        if (rows.length <= CLAIM_CAP) for (const row of rows) {
+          const claim = citationClaim(row)
+          if (claim) claimants.set(claim.host,[...(claimants.get(claim.host) ?? []),row.id])
+        }
+      }
+      const matching = claimants.get(host)
+      return matching?.length === 1 && matching[0] === leadId
+    }
     const readLead = async (l: (typeof leads)[number]): Promise<void> => {
       if (deps.signal?.aborted) return // post-processing deadline: stop starting new sites
       if (companyFirstContacts) {
@@ -1454,6 +1537,34 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // the bounded official-site lookup may still find this company elsewhere (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
+      // Search citations are scan-wide hints, not lead attribution. A publisher may name a website in plain text
+      // ("Full Company Name (company.example)") without linking it. Require that exact pairing in THIS lead's
+      // stored verified excerpt and re-read the exact publisher source before treating a matching citation as a
+      // candidate. Use the full name here: the crawler's looser domain label and homepage checks cannot distinguish
+      // namesakes or entities with overlapping names. Keep the publisher, not the search citation, as provenance.
+      const citedSites: string[] = []
+      if (!anchored && deps.citedUrls?.length && ev && ev.status === 200 && ev.text === undefined && ev.finalUrl === l.source_url) {
+        const verified = !supplied ? (l.review_reason === null ? l : undefined) : db.prepare(`SELECT company, source_url, evidence_excerpt FROM leads
+          WHERE id = ? AND scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL`).get(l.id, jobId) as
+          { company: string; source_url: string; evidence_excerpt: string | null } | undefined
+        if (verified?.company === l.company && verified.source_url === l.source_url && verified.evidence_excerpt) {
+          const claim = citationClaim(verified)
+          const namedHost = claim?.host ?? ''
+          const evOwn = (() => { try { return registrable(new URL(ev.finalUrl).hostname) } catch { return '' } })()
+          if (claim && siteHostOk(namedHost) && namedHost === registrable(namedHost) && namedHost !== evOwn &&
+              ownSiteHost('https://' + namedHost) === namedHost && notBlockedHost(namedHost) &&
+              nameLabel(namedHost) === norm(verified.company) &&
+              deps.citedUrls.some(raw => {
+                try {
+                  const u = new URL(raw)
+                  return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
+                    u.hostname.replace(/^www\./, '') === namedHost
+                } catch { return false }
+              }) && publisherNamesCitedSite(ev.body,claim.quote) && unambiguousCitation(namedHost,l.id)) {
+            sites.push(namedHost); citedSites.push(namedHost); basisOf.set(namedHost, 'evidence_link_text')
+          }
+        }
+      }
       // a site named in the page's structured data is tried too when the page also links one (review at 576f9c8c: it was dropped whenever an
       // anchored link existed): after the linked sites, under the same checks; it never turns into a reason to skip what the page links
       if (anchored) for (const h of structured) if (!sites.includes(h)) sites.push(h)
@@ -1489,8 +1600,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // are rejected by the homepage name check inside crawlSite.
         if (probed >= MAX_PROBES_PER_SCAN) {
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 })
-          if (structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); return }
-          sites = [...structured]; unresolved = 'probe_limit_reached'   // no name guess and no search ran for this lead
+          if (citedSites.length === 0 && structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); return }
+          sites = [...new Set([...citedSites, ...structured])]; unresolved = 'probe_limit_reached'   // no name guess and no search ran for this lead
         } else {
           probed++
           const guesses = probeDomains(l.company, where)   // #1122: the request country's TLD too (a Toronto lead at <name>.ca)
@@ -1502,7 +1613,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           lookupPending = !!deps.findSites && !ownBlocked
           probeGuesses = guesses.filter(notBlockedHost)
           if (blockedHost && probeGuesses.length !== guesses.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 })
-          sites = [...new Set([...fromSlug, ...structured])].filter(notBlockedHost)
+          sites = [...new Set([...citedSites, ...fromSlug, ...structured])].filter(notBlockedHost)
           if (!lookupPending) sites = [...new Set([...sites, ...probeGuesses])]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
