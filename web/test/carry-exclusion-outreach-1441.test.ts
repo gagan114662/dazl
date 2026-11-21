@@ -14,9 +14,11 @@ test('a lead matching a carried exclusion cannot be drafted, approved or sent', 
   migrateScan(db); migrateOutreach(db); migrateMemory(db)
   const icp = JSON.stringify({ summary: 'B2B SaaS founders', who: ['founder'], industries: [], sizes: [], where: [], signals: [], exclude: [], carry_exclude: ['Acme Dental (acme.example)'] })
   const job = createQueryJob(db, 'W', { query: 'SaaS founders hiring sales', icp, offer: 'Leadly (leadly.example), AI lead finding' })
+  db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
   const ins = db.prepare('INSERT INTO leads (id,scan_job_id,company,company_domain,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
   ins.run('X', job, 'Acme Dental Group', 'acme.example', 'ceo@acme.example', 'hiring', 'https://news.example/a', 'hiring', 90, 80, 8, 7)
   ins.run('Y', job, 'Northwind', 'northwind.example', 'ceo@northwind.example', 'hiring', 'https://news.example/b', 'hiring', 90, 80, 8, 7)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)   // a finished changed-offer job
   assert.equal(draftBlockReason(db, 'W', 'X'), 'lead_excluded')
   assert.equal(leadHeld(db, 'W', 'X'), true)
   assert.notEqual(draftBlockReason(db, 'W', 'Y'), 'lead_excluded')
