@@ -37,7 +37,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const run_report = reportRows?.map(row => row.report) ?? null
   // A report from an older claim cannot describe the current attempt.
   const currentStatus = effectiveStatus(job)
-  const pipeline_diagnostic = currentScanPipelineDiagnostic(reportRows, job.attempts, job.error, currentStatus === 'done' || currentStatus === 'failed' ? job.lead_count : null)
+  const pipeline_diagnostic = currentScanPipelineDiagnostic(reportRows, job.attempts, job.error, currentStatus === 'done' || currentStatus === 'failed' ? job.lead_count : null, currentStatus === 'done' || currentStatus === 'failed' || currentStatus === 'cancelled')
   // Why a scan that searched and read pages still extracted nothing (counts only). null when extraction produced candidates or was not recorded.
   const empty_reason = emptyExtractionReason((run_report as { extraction?: never }[] | null)?.at(-1)?.extraction)
   const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && run_report))
