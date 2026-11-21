@@ -1103,6 +1103,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       paths.splice(paths[0] && BUYER_DIRECTORY_PATH.test(paths[0].path) ? 1 : 0, 0, ...buyerPaths.map(path => ({ path })))
     }
     let linkedBuyerProved = false
+    let parsedLinkedTarget: string | undefined
     let citedOnlyUrl: string | undefined
     let queuedBio = false
     for (const { path: p, name, expectedValue } of paths) {
@@ -1113,6 +1114,10 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (!robots.allows(p)) continue
       const exactBuyerRead = buyerPaths.includes(p)
       let requested = exactBuyerRead ? new URL(p, homePage).href : origin + p
+      // Do not spend another ordinary page slot on an exact target we already
+      // parsed. A directory-bound bio retains its separate identity checks.
+      if (!exactBuyerRead && !name && !expectedValue && requested === parsedLinkedTarget) continue
+      let followedLinkedRedirect = false
       let r = await polite(requested, robots.delayMs, exactBuyerRead)
       // Independently homepage-linked pages may redirect once to a supported
       // own About/team path. Check exact origin and robots before transport.
@@ -1123,6 +1128,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
         try { target = new URL(r.redirect, requested) } catch { target = null }
         if (!target || target.origin !== origin || target.href === requested || !buyerSourceCitation(target.href) || !robots.allows(target.pathname)) continue
         requested = target.href
+        followedLinkedRedirect = true
         r = await polite(requested, robots.delayMs, true)
       }
       if (!r || r.status >= 400) continue
@@ -1140,6 +1146,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (buyerPage) buyerPages++
       // Require the exact directory name, and preserve extractPeople's role/anti-quote rules.
       const people = extractPeople(r.body, r.finalUrl, buyerRoles)
+      if (followedLinkedRedirect && buyerPage && r.body.trim()) parsedLinkedTarget = requested
       const boundPeople = people.filter(f => !name || f.value.split(', ')[0] === name)
       if (p === linkedAbout && buyerRoles) {
         const cards = strictOwnContactCards(r.body, page.hostname.replace(/^www\./, ''))

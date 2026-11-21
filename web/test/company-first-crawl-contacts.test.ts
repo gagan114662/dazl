@@ -15,7 +15,7 @@ const email='mira.quinn@'+host, shared='help@'+host, team=origin+'/team'
 const prose='<p>Brindle Ledger has served its local community for many years. We help businesses find the right products and manage the process from start to finish with clear service and transparent information.</p>'
 const wrap=(s:string)=>'<html><body>'+s+'</body></html>'
 const card=(role=title,address=email)=>'<article><h2>'+name+'</h2><p>'+role+'</p><a href="mailto:'+address+'">'+address+'</a></article>'
-async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; buyerSitePage?:boolean; citedBuyerPage?:boolean; linkedGenericAbout?:boolean; aboutRedirect?: "slash"|"robots"|"foreign"|"locale"; hintRedirect?:boolean; wwwHome?:boolean; fullOrdinary?:boolean; lateSecond?:boolean; sharedHost?: "authorized-first"|"unauthorized-first"; wrongBuyerOrigin?:boolean; wrongBuyerCitation?:boolean; robotsBuyerDeny?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
+async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; buyerSitePage?:boolean; citedBuyerPage?:boolean; linkedGenericAbout?:boolean; aboutRedirect?: "slash"|"robots"|"foreign"|"locale"; hintRedirect?:boolean; wwwHome?:boolean; redundantLinkedTarget?:boolean; fullOrdinary?:boolean; lateSecond?:boolean; sharedHost?: "authorized-first"|"unauthorized-first"; wrongBuyerOrigin?:boolean; wrongBuyerCitation?:boolean; robotsBuyerDeny?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
  const where=opt.country??(opt.international?'Toronto, ON':'Austin, TX')
  const db=new Database(':memory:'); migrateAllSqlite(db)
  const realClock=Date.now
@@ -58,6 +58,11 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
    pages[origin+'/about/']=wrap(prose+markup)
    if(opt.aboutRedirect==='locale') pages[origin+'/en/about']=wrap(prose+markup)
    if(opt.aboutRedirect==='robots') pages[origin+'/robots.txt']='User-agent: *\nDisallow: /about/'
+  }
+  if(opt.redundantLinkedTarget){
+   pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/en/about">About</a><a href="/company/leadership">Buyers</a></body>')
+   pages[origin+'/en/about']=wrap(prose)
+   pages[origin+'/company/leadership']=wrap(prose+markup)
   }
   if(opt.robotsBuyerDeny) pages[origin+'/robots.txt']='User-agent: *\nDisallow: /company/our-story'
   const requests:{url:string; noRedirect:boolean}[]=[]
@@ -257,4 +262,10 @@ test('independently linked About can follow one robots-checked localized same-or
  const state=await fixture(card(),{marker:true,aboutRedirect:'locale'})
  assert.equal(state.rows.find(r=>r.kind==='person')?.source_url,origin+'/en/about')
  assert.deepEqual(state.requests.filter(r=>r.url===origin+'/en/about'),[{url:origin+'/en/about',noRedirect:true}])
+})
+
+test('successful linked About redirect target is not read twice before the real buyer page',async()=>{
+ const state=await fixture(card(),{marker:true,aboutRedirect:'locale',redundantLinkedTarget:true})
+ assert.equal(state.rows.find(r=>r.kind==='person')?.source_url,origin+'/company/leadership')
+ assert.equal(state.requests.filter(r=>r.url===origin+'/en/about').length,1)
 })
