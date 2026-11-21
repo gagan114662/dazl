@@ -27,10 +27,11 @@ export interface Campaign {
   // heldResearchSourceChecked is the sourceChecked-only slice of heldResearch (#683 round 3): a reader squeezing this into one line (Home's
   // plays, readiness.ts) must subtract only this from sourceChecked, never all of heldResearch, or a clean source-checked lead can vanish
   // from the count whenever a DIFFERENT, confirmedByYou lead happens to be the held one.
-  // heldByChecks (#1062): leads of a company-first scan that its final checks keep off the run page, /api/leads and the CSV
-  // (companyFirstResults().visibleIds, the same gate) that the other checks would still call reviewable, passed or unverified. They are
-  // counted once, here and inside research, never in any other bucket: no check a person can do releases them, so they are never "needs
-  // your review". A hidden lead the other checks already call research or heldResearch (its window, an uncheckable cause) keeps that verdict.
+  // heldByChecks (#1062): EVERY live lead of a company-first scan that its final checks keep off the run page, /api/leads and the CSV
+  // (companyFirstResults().visibleIds, the same gate) - the run page's own held count. Each is also inside research or heldResearch, never
+  // any other bucket: one the other checks would still call reviewable, passed or unverified is counted as research; one they already call
+  // research or heldResearch (its window, an uncheckable cause) keeps that verdict. No check a person can do releases them, so they are
+  // never "needs your review", and the next step names them all (live check on prod 23c6533: "2 research-only leads" beside 3 held).
   qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
@@ -66,7 +67,11 @@ const campaignJobs = (db: Database.Database, tenantId: string, limit: number) =>
 export type CompanyFirstShown = ReadonlyMap<string, ReadonlySet<string> | 'checking' | 'unfinished'>
 // `jobs` is the caller's one read of these scans (status and enrichment marks included); every verdict here is made from it.
 export type ShownJob = { id: string; run_budget: string | null; status: string; enrich_started_at: number | null; enrich_finished_at: number | null }
-export async function companyFirstShown(db: Database.Database, tenantId: string, jobs: readonly ShownJob[], now: Date = new Date()): Promise<CompanyFirstShown> {
+export const companyFirstShown = (db: Database.Database, tenantId: string, jobs: readonly ShownJob[], now: Date = new Date()): Promise<CompanyFirstShown> =>
+  companyFirstShownDb(sqliteDb(db), tenantId, jobs, now)
+// The same, on the async Db layer (Home's results read; SQLite and Postgres). A store without the company-first reader returns null: not final,
+// so 'checking' - fail closed, its leads are shown nowhere.
+export async function companyFirstShownDb(db: Db, tenantId: string, jobs: readonly ShownJob[], now: Date = new Date()): Promise<CompanyFirstShown> {
   const out = new Map<string, ReadonlySet<string> | 'checking' | 'unfinished'>()
   for (const j of jobs) {
     if (!hasCompanyFirstBudget(j.run_budget)) continue   // no read at all for other scans (#1136 HIST-BATCH query bound)
@@ -74,7 +79,7 @@ export async function companyFirstShown(db: Database.Database, tenantId: string,
     if (j.enrich_finished_at == null) { out.set(j.id, enrichState(j, Math.floor(now.getTime() / 1000)) === 'running' ? 'checking' : 'unfinished'); continue }
     // finished in this read: the visible set, but only from a visibility read that itself saw the stage finished (results.final). If a new
     // attempt started or the scan changed since this read, that read is not this scan's final result: still checking, never "all held".
-    const r = await companyFirstResults(sqliteDb(db), tenantId, j.id, now)
+    const r = await companyFirstResults(db, tenantId, j.id, now)
     out.set(j.id, r?.final ? r.visibleIds : 'checking')
   }
   return out
@@ -88,8 +93,12 @@ const checksPending = (j: { id: string; query: string; run_budget: string | null
   return null
 }
 // Is this lead outside what its company-first scan shows? Not company-first: never. Company-first without a read in `shown`: always (fail closed).
-const heldByChecksOf = (j: { id: string; run_budget: string | null }, shown: CompanyFirstShown) =>
+export const heldByChecksOf = (j: { id: string; run_budget: string | null }, shown: CompanyFirstShown) =>
   hasCompanyFirstBudget(j.run_budget) ? (id: string) => { const v = shown.get(j.id); return !(v instanceof Set && v.has(id)) } : () => false
+// Home's hold reason (lib/journey.ts heldReason's words) for a lead heldByChecksOf hides: its scan's final checks held it, or they have not
+// finished yet. Never "needs your review": no check a person can do releases it.
+export const gateHoldReason = (j: { id: string }, shown: CompanyFirstShown): string =>
+  shown.get(j.id) instanceof Set ? 'held by the final checks' : 'final checks not finished'
 
 // The Campaigns list with the company-first gate read (GET /api/campaigns).
 export async function listCampaignsNow(db: Database.Database, tenantId: string, limit = 10, now: Date = new Date()): Promise<Campaign[]> {
@@ -116,8 +125,8 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: gateHeld(r) }) : gateHeld(r))
       : currentnessHeld(db, tenantId, r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gateHeld(r))
     const liveRows = allLive.filter(r => !byChecks(r.id) || alreadyResearch(r))
-    const heldByChecks = allLive.length - liveRows.length
-    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = heldByChecks, unverified = 0
+    const heldByChecks = allLive.filter(r => byChecks(r.id)).length
+    let sourceChecked = 0, confirmedByYou = 0, needsReview = 0, research = allLive.length - liveRows.length, unverified = 0
     for (const r of liveRows) {
       const st = evidenceStateOf(r)
       if (st === 'machine') sourceChecked++
@@ -206,7 +215,8 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   if (heldEmails > 0) return { label: `${plural(heldEmails, 'email is', 'emails are')} held: open Outreach to see why`, href: '/app/outreach' }
   if (c.qualification.unverified > 0) return { label: `Check ${plural(c.qualification.unverified, 'unverified lead', 'unverified leads')} against their sources`, href: leadsHref }
   // Research only: checking cannot make these ready, so the step offered is one that can change the result - a new search (#352/#683).
-  // #1062: leads held by a company-first scan's checks are inside research; they get their own read-only step (the run page lists them with why).
+  // #1062: leads held by a company-first scan's checks are all inside research / heldResearch; they get their own read-only step, which counts
+  // every one of them (the run page lists them with why), and only the other research-only leads get the research step.
   const byChecks = c.qualification.heldByChecks ?? 0
   const research = (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0) - byChecks
   if (research > 0) return { label: `${plural(research, 'research-only lead', 'research-only leads')}: checking ${research === 1 ? 'it' : 'them'} cannot make ${research === 1 ? 'it' : 'them'} ready. Change the search`, href: `/app/leads?q=${encodeURIComponent(c.query)}` }
@@ -254,7 +264,8 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
     for (const r of allLive) {
       const st = evidenceStateOf(r), win = windowHeld(r, now), gh = gate.has(r.id)
       const heldRes = st !== 'unverified' && (win || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gh)
-      if (byChecks(r.id) && !(st === 'unverified' ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh }) : gh) : heldRes)) { heldByChecks++; research++; continue }
+      if (byChecks(r.id)) heldByChecks++
+      if (byChecks(r.id) && !(st === 'unverified' ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh }) : gh) : heldRes)) { research++; continue }
       if (st === 'machine') sourceChecked++
       else if (st === 'human') confirmedByYou++
       else if (r.review_reason) { if (reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh })) needsReview++; else research++ }

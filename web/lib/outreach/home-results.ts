@@ -24,6 +24,8 @@
 // the time window, timing), so Home says "new leads" and links to Leads, never a "ready" number it cannot back.
 import type { Db } from '../db/client.ts'
 import { NOT_A_PERSON, PERSON_REPLY as PERSON_REPLY_CLASSES, sqlList } from './needs-owner.ts'
+import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { companyFirstShownDb, heldByChecksOf, type ShownJob } from './campaigns.ts'
 
 export const RESULTS_WINDOW_DAYS = 30
 const PERSON_REPLY: readonly string[] = PERSON_REPLY_CLASSES
@@ -79,6 +81,21 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const by = new Map<string, { signal: string; leads: number; contacted: number; replied: number }>()
   const row = (k: string) => { let r = by.get(k); if (!r) { r = { signal: k, leads: 0, contacted: 0, replied: 0 }; by.set(k, r) } return r }
   for (const r of leadRows) row(kind(r.kind, r.src)).leads += Number(r.n)
+  // #1062: a company-first scan's leads are leads only where its final checks let them through (companyFirstResults, the run page's own gate,
+  // judged from one read of those scans); the rest are held candidates, never "new leads" or "latest leads". Fails closed. Other scans: no read.
+  const cfJobs = (await db.all<ShownJob>(`SELECT DISTINCT j.id, j.run_budget, j.status, j.enrich_started_at, j.enrich_finished_at FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id
+     WHERE j.user_id = ? AND l.created_at >= ? AND j.run_budget IS NOT NULL`, [tenantId, since])).filter(j => hasCompanyFirstBudget(j.run_budget))
+  const hidden = new Set<string>()
+  if (cfJobs.length) {
+    const shown = await companyFirstShownDb(db, tenantId, cfJobs, new Date(now * 1000))
+    const byJob = new Map(cfJobs.map(j => [j.id, heldByChecksOf(j, shown)]))
+    const cfLeads = await db.all<{ id: string; job_id: string; kind: string | null; src: string | null }>(
+      `SELECT l.id, l.scan_job_id AS job_id, l.signal_kind AS kind, l.source_kind AS src FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+       WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test')
+         AND l.scan_job_id IN (${cfJobs.map(() => '?').join(', ')})`, [tenantId, since, ...cfJobs.map(j => j.id)])
+    for (const l of cfLeads) if (byJob.get(l.job_id)?.(l.id)) { hidden.add(l.id); row(kind(l.kind, l.src)).leads -= 1 }
+    for (const [k, r] of by) if (r.leads <= 0 && r.contacted === 0 && r.replied === 0) by.delete(k)
+  }
   let interested = 0
   for (const r of sentRows) row(kind(r.kind, r.src)).contacted += Number(r.sent)
   for (const r of replyRows) { row(kind(r.kind, r.src)).replied += Number(r.replied); interested += Number(r.interested ?? 0) }
@@ -86,7 +103,8 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const sum = (k: 'leads' | 'contacted' | 'replied') => by_signal.reduce((n, r) => n + r[k], 0)
   const latest_leads = (await db.all<{ id: string; company: string | null; signal: string | null; job_id: string; created_at: number | string }>(
     `SELECT l.id, l.company, l.signal, l.scan_job_id AS job_id, l.created_at FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-     WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') ORDER BY l.created_at DESC, l.id DESC LIMIT 5`, [tenantId, since]))
+     WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test') ORDER BY l.created_at DESC, l.id DESC LIMIT ?`, [tenantId, since, 5 + hidden.size]))
+    .filter(r => !hidden.has(r.id)).slice(0, 5)
     .map(r => ({ id: r.id, company: r.company || 'Unnamed company', signal: r.signal || '', job_id: r.job_id, created_at: Number(r.created_at) }))
   const latest_replies = (await db.all<{ thread_id: string; company: string | null; classification: string; received_at: number | string }>(
     `SELECT r.thread_id, l.company, r.classification, r.received_at FROM inbound_messages r
@@ -104,15 +122,5 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: replyReading, tiles, by_signal, latest_leads, latest_replies }
 }
 
-// The signal ids (lib/scan/score.ts SIGNALS, plus commenter imports' competitor_complaint) in plain words.
-// A source row holds only that channel's leads with no graded type (a graded lead counts under its type), so each label says so.
-const SOURCE_LABEL: Record<string, string> = {
-  query: 'Search', hiring_feed: 'Hiring feed', csv: 'CSV import', manual_source: 'Added by you',
-  watch: 'Watched search', monitor: 'Monitor', commenter: 'Commenters on a post', first_party: 'Your site visitors',
-}
-export function signalLabel(id: string): string {
-  if (id === 'unknown') return 'No signal type'
-  if (id.startsWith('source:')) { const s = id.slice(7); return `${SOURCE_LABEL[s] ?? `${s.charAt(0).toUpperCase()}${s.slice(1).replace(/_/g, ' ')}`} (signal type not graded)` }
-  const s = id.replace(/_/g, ' ')
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
+// signalLabel lives in ./signal-label.ts (browser-safe: Home's client imports it; this module reads the scan store's gate).
+export { signalLabel } from './signal-label.ts'
