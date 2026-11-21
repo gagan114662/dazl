@@ -180,3 +180,18 @@ export function atsPageText(rec: AtsRecord, descriptionText: string): { text: st
     board: { title: rec.title, company: rec.company || null, slug: rec.org },
   }
 }
+
+// #533 live (staging 4a6c4d7d): the model words a board posting candidate "Posted a <title> role|job|position|opening|vacancy
+// on <board>", and real titles carry words a free-wording stop list must refuse ("Senior Revenue Operations Manager",
+// "Post-Sales Operations Manager"). So the posting is bound by the board, not by the wording: the source URL is a posting
+// record of the named board, the board returned a title for it, and every word of the title the signal names is a word of
+// that board title. A sentence about something else ("a press release about the ... role"), another board, a title the board
+// does not give this posting or a state word ("(filled)") has a word the board title lacks, so it binds nothing.
+const POSTED_ON_BOARD = /^\s*posted an? (.{1,200}?)\s+(?:role|job|position|opening|vacancy) on (ashby|lever|greenhouse)\s*\.?\s*$/i
+const titleWords = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+export function signalNamesBoardPosting(signal: string | null | undefined, sourceUrl: string, boardTitle: string | null | undefined): boolean {
+  const m = POSTED_ON_BOARD.exec(signal ?? ''), ref = atsPostingRef(sourceUrl)
+  if (!m || !ref || m[2].toLowerCase() !== ref.kind || !boardTitle) return false
+  const named = titleWords(m[1]), board = new Set(titleWords(boardTitle))
+  return named.length > 0 && named.every(w => board.has(w))
+}

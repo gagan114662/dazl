@@ -25,7 +25,7 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { getDomain } from 'tldts'
-import { atsPublisherRef, atsPostingRef, heldCopyBoard } from '../sources/ats-posting.ts'
+import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
@@ -394,7 +394,13 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
   const fetched = await Promise.all(candidates.map(async c => ({ c, page: await get(c.source_url) })))
 
   const passed: { c: LeadDraft; v: Extract<ReturnType<typeof verifyEvidence>, { ok: true }>; board?: Page['board']; copy?: { failure: string; sha256: string; page: HeldPage } }[] = []
-  for (const { c: cIn, page } of fetched) {
+  for (const { c: cRaw, page } of fetched) {
+    // #533 live: a "Posted a <title> job on <board>" candidate cited to that board's posting record, whose title names every word
+    // of the signal's title, is a hiring posting (lib/sources/ats-posting.ts signalNamesBoardPosting). Its kind is stored as
+    // hiring, so the board's day dates it here and every reader of the stored row judges that day as a hiring posting's.
+    // Only when no other kind is stored: a stored non-hiring kind still wins, as it does over the wording.
+    const rawKind = (cRaw as LeadDraft & { signal_kind?: string | null }).signal_kind
+    const cIn: LeadDraft = !rawKind && page && !isFail(page) && signalNamesBoardPosting(cRaw.signal, cRaw.source_url, page.board?.title) ? { ...cRaw, signal_kind: 'hiring' } as LeadDraft : cRaw
     // #460: an event day counts only when the FETCHED page states it for THIS company and THIS event (the same sentence as the quote, or a sentence naming the company and
     // describing the same event), or when a public job board's own structured publish date for exactly this posting URL was collected (structuredDates: Greenhouse
     // first_published / Lever createdAt / Ashby publishedAt from the job-board source - an ATS hostname alone proves no date exists). The model's date, a search-hit day,
@@ -781,7 +787,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     const insertedKeys = new Set<string>()
-    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
+    for (const l of leads) { const result = ins.run(randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, dedupKey(l), l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, (l as VerifiedLead & { signal_kind?: string | null }).signal_kind === 'hiring' ? 'hiring' : primarySignalKind(l.signals), sourceKind(job), l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_page ? storeEvidenceCopy(db, job.user_id, job.id, job.attempts, l.evidence_copy_page) : null, l.timing_note ?? null, l.published_at ?? null, l.event_date_proof ?? null, l.event_date_proof_note ?? null); if (result.changes) insertedKeys.add(`${dedupKey(l)}|${l.source_url}`) }
     const insReview = db.prepare(
       'INSERT OR IGNORE INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, review_reason, source_kind, timing_note, published_at, event_date_proof, event_date_proof_note) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)',
     )

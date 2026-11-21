@@ -293,6 +293,27 @@ function parseDay(s: string | null): Date | null {
 // themselves must still appear contiguously on the page; nothing else is relaxed, and the saved quote is never rewritten.
 export const visibleQuote = (s: string) => s.replace(/!?\[([^\]\n]{0,300})\]\([^)\s]{0,600}\)/g, '$1').replace(/(\*\*|__)(?=\S)([^*_\n]{1,300}?\S)\1/g, '$2')
 const tightPunct = (s: string) => s.replace(/ +\.(?= |$)/g, '.')   // only a full stop that ends a word: never joins "1 .5" or "acme .com"
+// #533 live (staging 4a6c4d7d, Rogo): on a posting read through its board's API record (page.board), the model quotes the
+// posting PAGE the way search snippets write it: a ". " between header fields ("Post-Sales Operations Manager. Location. New
+// York City. Employment Type. Full time") and "..." where words were skipped. The record text carries the same fields in page
+// order without that punctuation. So, on a board record only, a full stop that ends a word is ignored on both sides, and an
+// inner "..." is a gap: every piece must be on the record, in order, and each piece long enough to count on its own (the
+// same 20 characters as a whole quote). Any other page keeps the strict rule above (an inner gap still fails).
+const BOARD_PIECE_MIN = 20, BOARD_PIECES_MAX = 4
+const dropStops = (s: string) => s.replace(/\.(?= |$)/g, '').replace(/ +/g, ' ').trim()
+function boardQuoteAt(text: string, looseQuote: string): { text: string; at: number; end: number } | null {
+  const pieces = looseQuote.split(/\s*\.{3,}\s*/).map(p => dropStops(tightPunct(p))).filter(Boolean)
+  if (pieces.length === 0 || pieces.length > BOARD_PIECES_MAX || pieces.some(p => p.length < BOARD_PIECE_MIN)) return null
+  const hay = dropStops(text)
+  let from = 0, at = -1
+  for (const p of pieces) {
+    const i = hay.indexOf(p, from)
+    if (i < 0) return null
+    if (at < 0) at = i
+    from = i + p.length
+  }
+  return { text: hay, at, end: from }
+}
 export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verdict {
   const text = tightPunct(norm(page.text))
   // A leading or trailing ellipsis only marks that the quote was cut short. The words that remain must still
@@ -300,7 +321,11 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   const loose = norm(visibleQuote(c.excerpt).replace(/^\s*(?:\.{3,}|\u2026)+\s*/, '').replace(/\s*(?:\.{3,}|\u2026)+\s*$/, ''))
   const excerpt = tightPunct(loose)
   if (excerpt.length < 20 || c.excerpt.length > 400) return { ok: false, reason: 'no_excerpt' }
-  const at = text.indexOf(excerpt)
+  let at = text.indexOf(excerpt), hay = text, matchLen = excerpt.length
+  if (at < 0 && page.board) {
+    const m = boardQuoteAt(text, loose)
+    if (m) { hay = m.text; at = m.at; matchLen = m.end - m.at }
+  }
   if (at < 0) return { ok: false, reason: 'excerpt_not_on_page' }
 
   // The company must be named in the quoted passage itself or in the page title (for a board record: the board's identity, #1126).
@@ -339,12 +364,12 @@ export function verifyEvidence(c: Candidate, page: Page, now = new Date()): Verd
   }
   confidence = Math.max(0, Math.min(100, confidence))
   if (confidence < MIN_CONFIDENCE) return { ok: false, reason: 'low_confidence' }
-  const passage = text.slice(Math.max(0, at - 800), at + excerpt.length + 800)
+  const passage = hay.slice(Math.max(0, at - 800), at + matchLen + 800)
   // Only propagate the same fetched page field that actually bound the entity. A board slug
   // remains a legacy verifier fallback, not an employer label for the semantic judge.
   const label = !quoteNamesCompany ? (page.board ? page.board.company : page.title) : null
   const judgeAttribution: JudgeAttribution | undefined = label && label.length <= 240
-    ? { kind: page.board ? 'ats_employer' : 'heading', label, matchedQuote: text.slice(at, at + excerpt.length) }
+    ? { kind: page.board ? 'ats_employer' : 'heading', label, matchedQuote: hay.slice(at, at + matchLen) }
     : undefined
   return { ok: true, confidence, contact, dateStatus, retrievedAt: page.retrievedAt, passage, ...(judgeAttribution ? { judgeAttribution } : {}) }
 }

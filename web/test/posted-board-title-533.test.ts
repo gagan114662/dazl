@@ -93,8 +93,9 @@ test('#533 live: the posting is bound by the board title, not by the free wordin
       [VOIZE_SIGNAL, true],
       ['Posted a Senior Revenue Operations Manager job on Ashby', true],
       ['Posted a Revenue Operations Manager role on Ashby', true],
-      // a title the board does not give this posting, a sentence about something else, another board, a non-hire state
-      ['Posted a Senior Account Executive job on Ashby', false],
+      // a title the board does not give this posting ("revenue" stays refused by the wording rule), a sentence about
+      // something else, another board, a non-hire state
+      ['Posted a Senior Revenue Account Director job on Ashby', false],
       ['Posted a press release about the revenue operations role on Ashby', false],
       ['Posted a Senior Revenue Operations Manager job on Lever', false],
       ['Posted a Senior Revenue Operations Manager (filled) job on Ashby', false],
