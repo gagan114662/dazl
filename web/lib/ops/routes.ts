@@ -78,6 +78,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/outreach/sequences/fixture',
   '/api/outreach/settings',
   '/api/outreach/usage',
+  '/api/plays',
   '/api/plays/[kind]/[id]/new',
   '/api/plays/[kind]/[id]/run',
   '/api/plays/[kind]/[id]/runs',
