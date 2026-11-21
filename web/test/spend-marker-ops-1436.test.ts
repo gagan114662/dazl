@@ -48,3 +48,13 @@ test('every resolution is recorded with its reason and evidence, even when the c
   assert.deepEqual(rec, [{ tenant_id: 'W', period: 'p:nabc123456', reserved_usd: 1.85, call_id: 'nabc123456', scan_job_id: 'job1', reason: 'ledger settled at 0.40, owner-pool settle failed; kept worst case', resolved_at: T0 + 7200 }])
   assert.equal((db.prepare("SELECT status FROM scan_spend_calls WHERE id='nabc123456'").get() as { status: string }).status, 'settled', 'a settled call is not rewritten')
 })
+
+// Qodo on b25aa24 (4): the resolution table is part of the normal migration (so deletion guards and erasure cover it),
+// and a workspace under deletion can never get a new resolution row.
+test('resolution table exists from migration; a tombstoned workspace is refused', () => {
+  const db = setup()
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='spend_marker_resolutions'").get(), 'created by migrateSpendPools')
+  db.exec("CREATE TABLE tenant_tombstones (deleted_tenant TEXT PRIMARY KEY, state TEXT)"); db.prepare("INSERT INTO tenant_tombstones VALUES ('W','requested')").run()
+  assert.throws(() => resolveMarker(db, 'W', 'p:nabc123456', 'job1 failed accounting_uncertain', T0 + 7200), /deletion/)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM spend_marker_resolutions').get()!.n, 0)
+})

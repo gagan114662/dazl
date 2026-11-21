@@ -23,19 +23,31 @@ export function carriedExclusions(icp: Icp | null | undefined): string[] {
   return clean([...(icp.exclude ?? []), ...dq])
 }
 
+// Room the carried list may take in the stored profile (ICP_JSON_BUDGET is 3900): a list that cannot fit is refused at
+// admission with a clear message, never silently trimmed.
+export const CARRY_JSON_BUDGET = 800
 export function carryStub(exclude: unknown): string | null {
   const xs = Array.isArray(exclude) ? clean(exclude) : []
   return xs.length ? JSON.stringify({ carry_exclude: xs }) : null
 }
-
-export function applyCarriedExclusions(icp: Icp, raw: string | null | undefined): Icp {
-  if (!raw) return icp
-  let v: unknown
-  try { v = JSON.parse(raw) } catch { return icp }
-  const xs = v && typeof v === 'object' && Array.isArray((v as { carry_exclude?: unknown }).carry_exclude) ? clean((v as { carry_exclude: unknown[] }).carry_exclude) : []
-  if (!xs.length) return icp
-  return { ...icp, exclude: clean([...(icp.exclude ?? []), ...xs]) }
+export function carryAdmission(exclude: unknown): { ok: true; stub: string | null } | { ok: false; error: string } {
+  const stub = carryStub(exclude)
+  if (stub && stub.length > CARRY_JSON_BUDGET) return { ok: false, error: 'Too many reviewed exclusions to carry into a play with a new offer. Shorten or remove some exclusions in the profile, then run again.' }
+  return { ok: true, stub }
 }
+
+// The carried list lives on the profile as its own field (carry_exclude, kept whole by normalizeIcp), so every
+// attempt of the job reads it back unchanged; it is not merged into the 6-item exclude list.
+export const listOf = (raw: string | null | undefined): string[] => {
+  if (!raw) return []
+  try { const v = JSON.parse(raw) as { carry_exclude?: unknown }; return Array.isArray(v?.carry_exclude) ? clean(v.carry_exclude) : [] } catch { return [] }
+}
+export function applyCarriedExclusions(icp: Icp, raw: string | null | undefined): Icp {
+  const xs = listOf(raw)
+  if (!xs.length) return icp
+  return { ...icp, carry_exclude: clean([...(icp.carry_exclude ?? []), ...xs]) }
+}
+
 
 // A stored carry stub is not a profile: readers that show the job's profile treat it as none yet.
 export const isCarryStub = (raw: string | null | undefined): boolean => !!raw && raw.startsWith('{"carry_exclude"')

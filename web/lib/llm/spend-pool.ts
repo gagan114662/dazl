@@ -504,6 +504,11 @@ export function* settlePoolWindows(t: Tx, owner: string, limits: PoolLimits, del
 }
 
 export function migrateSpendPools(db: { exec(sql: string): unknown }): void {
+  // Operator resolutions of stuck pending markers (lib/ops/spend-marker.ts): created here, with the other tenant tables,
+  // so the deleted-tenant guards and erasure cover it.
+  db.exec(`CREATE TABLE IF NOT EXISTS spend_marker_resolutions (
+    tenant_id TEXT NOT NULL, period TEXT NOT NULL, reserved_usd REAL NOT NULL, call_id TEXT, scan_job_id TEXT,
+    reason TEXT NOT NULL CHECK (length(reason) <= 500), resolved_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, period))`)
   db.exec(`CREATE TABLE IF NOT EXISTS tenant_spend_pools (
     tenant_id TEXT NOT NULL, period TEXT NOT NULL CHECK (length(period) <= 12),
     reserved_usd REAL NOT NULL DEFAULT 0 CHECK (reserved_usd >= 0), reported_usd REAL NOT NULL DEFAULT 0 CHECK (reported_usd >= 0),

@@ -30,19 +30,13 @@ export function markerEvidence(db: Database.Database, tenant: string, now: numbe
   })
 }
 
-// The durable record of every operator resolution (one row per marker), whatever state the call row is in.
-function ensureLog(db: Database.Database) {
-  db.exec(`CREATE TABLE IF NOT EXISTS spend_marker_resolutions (
-    tenant_id TEXT NOT NULL, period TEXT NOT NULL, reserved_usd REAL NOT NULL, call_id TEXT, scan_job_id TEXT,
-    reason TEXT NOT NULL CHECK (length(reason) <= 500), resolved_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, period))`)
-}
-
 export function resolveMarker(db: Database.Database, tenant: string, period: string, reason: string, now: number): MarkerEvidence {
   if (!/^p:[0-9a-z]{10}$/.test(period)) throw new Error('not a pending marker period')
   const clean = reason.replace(/\s+/g, ' ').trim()
   if (clean.length < 8) throw new Error('a recorded reason (8+ characters) is required')
-  ensureLog(db)
+  if (!hasTable(db, 'spend_marker_resolutions')) throw new Error('run the app migrations first (spend_marker_resolutions is missing)')
   return db.transaction(() => {
+    if (hasTable(db, 'tenant_tombstones') && db.prepare('SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = ?').get(tenant)) throw new Error('refused: this workspace is under deletion')
     const ev = markerEvidence(db, tenant, now).find(e => e.period === period)
     if (!ev) throw new Error('no such pending marker for this workspace')
     if (!ev.resolvable) throw new Error(`refused: ${ev.why}`)

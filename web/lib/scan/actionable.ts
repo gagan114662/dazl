@@ -6,6 +6,7 @@
 // Person identity and contact evidence are separate facts: a listed founder with no published route, or a mailbox with no named person, is not actionable and
 // the lead says which part is missing. Nothing is guessed (no email patterns). Each lead gets one `scan:actionable` enrichment row (shown beside the lead) and
 // the run report gets the same counts, so the report and the card agree.
+import { carriedExcluded } from './carry-gate.ts'
 import type Database from 'better-sqlite3'
 import { addEnrichment } from '../connectors/store.ts'
 import { currentSiteContact, NOT_A_FOUNDER_ROUTE, personMatchesRole, whoOf } from './site-contact.ts'
@@ -81,7 +82,7 @@ export function classifyLeads(db: Database.Database, job: { id: string; user_id:
     let targeting: ClauseProof[] | undefined
     // Buyer gates first: a quarantined, excluded or low-fit lead is not actionable whatever domain or contact fields it has.
     const gateHeld = held.has(l.id) || requiredGateHeld(db, job.user_id, l.id) !== null   // the SAME check the draft guard uses: a lead whose pass record could not be saved is held here too
-    const gate: Missing | null = gateHeld ? 'sales_hiring_check_failed' : l.quarantined_at != null ? 'quarantined' : isExcluded(memory, l) ? 'excluded' : l.fit == null ? 'not_graded' : l.fit < FIT_MIN ? 'fit_below_threshold' : null
+    const gate: Missing | null = gateHeld ? 'sales_hiring_check_failed' : l.quarantined_at != null ? 'quarantined' : (isExcluded(memory, l) || carriedExcluded(job.icp, l)) ? 'excluded' : l.fit == null ? 'not_graded' : l.fit < FIT_MIN ? 'fit_below_threshold' : null
     if (gate) return { lead_id: l.id, company: l.company, actionable: false, missing: [gate], person: null, route: null, held: gate === 'sales_hiring_check_failed', url: l.source_url }
     if (planGated) {
       const ev = evaluatePlan(plan, planProofs(plan, l, rows.filter(r => r.connector !== TARGETING_CONNECTOR && r.connector !== ACTIONABLE_CONNECTOR), { query: job.query, icp: job.icp, salesGatePassed: salesHiringRequired(job.query, job.icp), competitors, graded: true }))
