@@ -1459,11 +1459,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // linked site (name and, when asked, place), and that cited page is recorded as where the site came from.
       const citedSites: string[] = []
       if (!anchored && deps.citedUrls?.length) {
-        const want = norm(l.company), evOwn = (() => { try { return registrable(new URL(ev?.finalUrl ?? l.source_url).hostname) } catch { return '' } })()
+        // the cited list is scan-wide, so a cited homepage is taken only on an exact name label, and never when its label also fits another
+        // lead's name in this scan ("Acme" must not take "Acme Holdings"' acme.org): an ambiguous cite stays with the name guesses
+        const want = norm(l.company), otherWants = [...new Set(leads.map(o => norm(o.company)))].filter(o => o !== want), evOwn = (() => { try { return registrable(new URL(ev?.finalUrl ?? l.source_url).hostname) } catch { return '' } })()
         if (want.length >= 4) for (const raw of deps.citedUrls) {
           let u: URL; try { u = new URL(raw) } catch { continue }
           const host = registrable(u.hostname)
-          if (host === evOwn || SOCIAL.test(host) || !siteHostOk(host) || !notBlockedHost(host) || !labelMatches(nameLabel(host), want) || sites.includes(host)) continue
+          if (host === evOwn || SOCIAL.test(host) || !siteHostOk(host) || !notBlockedHost(host) || nameLabel(host) !== want || otherWants.some(o => labelMatches(nameLabel(host), o)) || sites.includes(host)) continue
           // not 'anchored': a cited site that fails its checks must not stop the name guesses; and its basis keeps the evidence-place
           // comparison (a link-label basis would skip it when no place is requested), so a same-name company elsewhere is refused
           sites.push(host); citedSites.push(host); basisOf.set(host, 'evidence_link_text'); sourceOf.set(host, u.href)
