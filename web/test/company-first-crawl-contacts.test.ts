@@ -15,7 +15,7 @@ const email='mira.quinn@'+host, shared='help@'+host, team=origin+'/team'
 const prose='<p>Brindle Ledger has served its local community for many years. We help businesses find the right products and manage the process from start to finish with clear service and transparent information.</p>'
 const wrap=(s:string)=>'<html><body>'+s+'</body></html>'
 const card=(role=title,address=email)=>'<article><h2>'+name+'</h2><p>'+role+'</p><a href="mailto:'+address+'">'+address+'</a></article>'
-async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
+async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;international?:boolean; country?:string; marker?:boolean; recrawl?:boolean; buyerSitePage?:boolean; citedBuyerPage?:boolean; wrongBuyerOrigin?:boolean; wrongBuyerCitation?:boolean; robotsBuyerDeny?:boolean; invalidate?:"attempt"|"person"|"suppression"|"age"}={}){
  const where=opt.country??(opt.international?'Toronto, ON':'Austin, TX')
  const db=new Database(':memory:'); migrateAllSqlite(db)
  try{
@@ -32,8 +32,21 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
    [origin+'/contact']:wrap(prose+'<a href="mailto:'+shared+'">'+shared+'</a>'),
    [source]:wrap(prose+(opt.own===false?'<a href="'+origin+'/">'+company+'</a>':'')),
   }
-  const get:Get=async url=>({status:pages[url]?200:404,body:pages[url]??'',finalUrl:url})
-  const scan=()=>crawlJob(db,'T',job,{get,gapMs:0,now,env:{EMAIL_GUESS_ENABLED:'1'},...(opt.marker?{}:{companyFirstContacts:opt.strict!==false})})
+  const buyerPage=origin+'/company/our-story'
+  if(opt.buyerSitePage || opt.citedBuyerPage){
+   if(opt.buyerSitePage) pages[origin+'/']=pages[origin+'/'].replace('</body>','<a href="/company/our-story">Our story</a></body>')
+   pages[team]=wrap(prose)
+   pages[origin+'/contact-us']=wrap(prose)
+   pages[origin+'/about']=wrap(prose)
+   pages[buyerPage]=wrap(prose+markup)
+  }
+  if(opt.robotsBuyerDeny) pages[origin+'/robots.txt']='User-agent: *\nDisallow: /company/our-story'
+  const requests:{url:string; noRedirect:boolean}[]=[]
+  const get:Get=async (url,opts)=>{
+   requests.push({url,noRedirect:!!opts?.noRedirect})
+   return {status:pages[url]?200:404,body:pages[url]??'',finalUrl:opt.wrongBuyerOrigin&&url===buyerPage?'https://another.example/company/our-story':url}
+  }
+  const scan=()=>crawlJob(db,'T',job,{get,gapMs:0,now,...(opt.citedBuyerPage?{buyerCitedUrls:[opt.wrongBuyerCitation?'https://another.example/company/our-story':buyerPage]}:{}),env:{EMAIL_GUESS_ENABLED:'1'},...(opt.marker?{}:{companyFirstContacts:opt.strict!==false})})
   await scan()
   if(opt.recrawl){pages[team]=wrap(prose+card(title,shared)); await scan()}
   if(opt.invalidate==='attempt')db.prepare('UPDATE scan_jobs SET attempts=attempts+1 WHERE id=?').run(job)
@@ -41,7 +54,7 @@ async function fixture(markup:string,opt:{strict?:boolean;own?:boolean;internati
   if(opt.invalidate==='suppression')db.prepare("INSERT INTO suppressions (tenant_id,email,reason,created_at) VALUES ('T',?,'manual',?)").run(email,now/1000)
   const observed=now/1000+(opt.invalidate==='age'?45*86400+1:0)
   const enrichments=enrichmentsForLeads(db,'T',[lead])[lead]??[]
-  return {display:(await companyFirstPublishedDisplayRows(db,'T',[lead],observed))[lead],
+  return {requests,display:(await companyFirstPublishedDisplayRows(db,'T',[lead],observed))[lead],
    foreign:(await companyFirstPublishedDisplayRows(db,'another',[lead],observed))[lead],
    routed:publishedEmail({contact:null,enrichments}),
    rows:(enrichmentsForLeads(db,'T',[lead])[lead]??[]).filter(r=>['person','email','phone'].includes(r.kind)),
@@ -101,4 +114,44 @@ test('worldwide display withdraws stale, superseded, suppressed, blocked or unat
  for(const options of [{recrawl:true},{own:false},{marker:false}] as const)
   assert.equal((await fixture(card(),{marker:true,international:true,...options})).display,undefined)
  assert.equal((await fixture(card(title,shared),{marker:true,international:true})).display,undefined)
+})
+
+test('company-first buyer stage prioritizes a linked company story under the same page cap and preserves sender guards',async()=>{
+ const source_url=origin+'/company/our-story'
+ const live=await fixture(card(),{marker:true,buyerSitePage:true})
+ assert.equal(live.rows.find(r=>r.kind==='person')?.source_url,source_url)
+ assert.equal(live.rows.find(r=>r.kind==='person')?.label,'Title on the company page: '+title)
+ assert.equal(live.routed,email)
+ assert.deepEqual(live.guesses,[])
+ assert.deepEqual((await fixture(card(),{marker:true,buyerSitePage:true,wrongBuyerOrigin:true})).rows,[])
+ assert.deepEqual((await fixture(card(title+' at Another Company'),{marker:true,buyerSitePage:true})).rows,[])
+ assert.deepEqual((await fixture('<section aria-label="Former team">'+card()+'</section>',{marker:true,buyerSitePage:true})).rows,[])
+ assert.equal((await fixture(card(title,shared),{marker:true,buyerSitePage:true})).routed,null)
+ const foreign=await fixture(card(),{marker:true,buyerSitePage:true,international:true})
+ assert.equal(foreign.display?.source_url,source_url)
+ assert.equal(foreign.display?.address,email)
+ assert.equal(foreign.routed,null)
+})
+
+test('already-admitted buyer source is only a fresh exact-origin crawl hint after separate website identity',async()=>{
+ const source=origin+'/company/our-story'
+ const opt={marker:true,citedBuyerPage:true}
+ const good=await fixture(card(),opt)
+ assert.equal(good.rows.find(r=>r.kind==='person')?.source_url,source)
+ assert.equal(good.rows.find(r=>r.kind==='person')?.retrieved_at,now/1000)
+ assert.equal(good.routed,email)
+ assert.deepEqual(good.requests.filter(r=>r.url===source),[{url:source,noRedirect:true}])
+ for(const extra of [{wrongBuyerCitation:true},{own:false},{robotsBuyerDeny:true}] as const){
+  const state=await fixture(card(),{...opt,...extra})
+  assert.ok(!state.rows.some(r=>r.kind==='person'))
+  assert.ok(!state.requests.some(r=>r.url.endsWith('/company/our-story')))
+ }
+ for(const markup of [card(title+' at Another Company'),card('Warehouse Operator')]){
+  const state=await fixture(markup,opt)
+  assert.deepEqual(state.rows,[])
+  assert.equal(state.routed,null)
+ }
+ const bounced=await fixture(card(),{...opt,wrongBuyerOrigin:true})
+ assert.deepEqual(bounced.rows,[])
+ assert.equal(bounced.routed,null)
 })

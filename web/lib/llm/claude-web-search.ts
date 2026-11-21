@@ -143,6 +143,7 @@ export interface ClaudeSearchResult {
   outcome: 'ok' | 'partial' | 'unavailable'
   citedUrls: string[]
   preferredPublisherUrls: string[]
+  buyerSourceUrls?: string[]
   stop: ClaudeSearchEvidenceDiagnostic['stop']
   evidenceDiagnostic: ClaudeSearchEvidenceDiagnostic
   usage: ClaudeSearchUsage
@@ -262,14 +263,23 @@ export async function runClaudeWebSearch(
   const citedUrls = usage.searches > 0 ? [...urls] : []
   // Text citations can rank only exact URLs already accepted from the charged tool results.
   const preferred = new Set<string>()
+  const buyerSources = new Set<string>()
   if (citedUrls.length) for (const block of content.map(obj)) {
     if (block.type !== 'text') continue
+    // Untrusted text can only label exact URLs from this charged tool result.
+    // The regular result ranking stays intact; this is a separate company-first hint.
+    if (policy === 'company_first' && typeof block.text === 'string' && block.text.length <= 16_384) {
+      for (const line of block.text.split(/\r?\n/)) {
+        const m = /^BUYER_SOURCE: (https:\/\/[^\s]{1,480})$/.exec(line.trim())
+        if (m && urls.has(m[1]) && buyerSources.size < 10) buyerSources.add(m[1])
+      }
+    }
     for (const citation of arr(block.citations).map(obj)) {
       if (citation.type !== 'web_search_result_location' || typeof citation.url !== 'string' || citation.url.length > 480 || /\s/.test(citation.url)) continue
       try { const normalized = new URL(citation.url).href; if (urls.has(normalized)) preferred.add(normalized) } catch { /* not an admitted URL */ }
     }
   }
-  return { preferredPublisherUrls: [...preferred], outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
+  return { preferredPublisherUrls: [...preferred], ...(buyerSources.size ? { buyerSourceUrls: [...buyerSources] } : {}), outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
     evidenceDiagnostic: { stop, result_blocks: resultBlocks, non_array_result_blocks: nonArrayBlocks, empty_result_blocks: emptyBlocks, malformed_result_blocks: malformedBlocks, result_errors: resultErrors, result_entries: resultEntries, safe_urls: citedUrls.length },
   }
 }
