@@ -85,8 +85,8 @@ function otherTitleAfter(after: string): boolean {
   return after.split(/[,\-–—(/|:)&+]/).map(x => x.trim()).some(p => {
     const w = p.split(/\s+/).filter(x => /\w/.test(x))
     if (!w.length) return false
-    // the title noun, not a segment word trailing it ("Receptionist Enterprise", "Financial Sector": council review at b2703b9)
-    const core = w.filter(x => !SEGMENT.test(x)), last = (core.length ? core : w)[(core.length ? core : w).length - 1].toLowerCase().replace(/[^a-z]/g, '').replace(/s$/, '')
+    // the title noun, not a segment word or capitals code trailing it ("Receptionist Enterprise", "Receptionist MSP", "Financial Sector": council review at b2703b9 / b7cb313)
+    const core = w.filter(x => !SEGMENT.test(x) && !/^[A-Z]{2,6}$/.test(x)), last = (core.length ? core : w)[(core.length ? core : w).length - 1].toLowerCase().replace(/[^a-z]/g, '').replace(/s$/, '')
     // another title first, before any place reading (council review at 3f7062d: "Sales Manager, TX"): the job-ad other-title shape, a last word
     // that is a title head by that same shape ("Customer Success Manager"), chief of staff, or a sales role of its own ("/ SDR")
     if (TITLE_SUFFIX.test(p) || TITLE_SUFFIX.test(last) || /^\s*chief\s+of\s+staff\b/i.test(p) || matchedHiringRole(p, GENERIC_GTM_ROLES)) return true

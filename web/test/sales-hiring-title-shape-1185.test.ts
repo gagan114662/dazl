@@ -85,6 +85,7 @@ const NOT_THE_OPENING = [
   'Territory Account Executive / Receptionist Enterprise', 'Territory Account Executive - Data Analyst Hunter', 'Sales Account Executive - Sales Associate',
   'Territory Account Executive - Office Administrator, CA', 'Customer Account Executive / Channel Partner, TX', 'Territory Account Executive - Recruiting Partner, NY',
   'Territory Account Executive - Receptionist, NY', 'Territory Account Executive - Solutions Consultant, CA', 'Territory Account Executive - Data Analyst, NY',
+  'Sales Account Executive - Receptionist MSP', 'Sales Account Executive - Receptionist FSI', 'Sales Account Executive - Office Administrator CA',
 ]
 
 test('#1185 PASS: real Territory / Mid Market / Core / Majors / Sales / Federal / place-suffixed account-executive postings are the requested role through the real gate and store', async () => {
