@@ -335,6 +335,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const windowDays = parseWindowDays(job.query ?? '') ?? 90
   // #380 / #204: "seed funding OR first sales hire" compiled as one OR. Either branch, proven on its own clock, keeps the lead; with no such OR, both halves stay required.
   const or = salesGateOr(job.query, job.icp)
+  // #1122 (case 1): a "new <role>" branch is met by a dated posting for that role too, so its titles are requested roles (read by the same reader).
+  for (const c of or?.newRoles ?? []) for (const r of requestedHiringRoles(`hiring ${c.role ?? ''}`, null).filter(roleNeedsSourceProof)) if (!roles.some(x => x.normalized === r.normalized)) roles.push(r)
   const eventDays = or ? or.event.within_days ?? windowDays : windowDays, hireDays = or ? or.hiring.within_days ?? windowDays : windowDays
   const fundingAsked = requestAsksFunding(job.query, job.icp)
   const where = whereOf(job.icp)
@@ -388,6 +390,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         demoteFor(NO_SALES_HIRING, `${neither}No completed-hire evidence: no dated source quote says this company made the hire (an open vacancy does not count). `)
         continue
       }
+      // #1122: a "new <role>" branch is also met by a dated quote saying the person joined (the same completed-hire reader as above).
+      { const nr = (or?.newRoles ?? []).find(c => (c.role ?? '').split('/').some(alt => hireQuotes.some(q => quoteShowsCompletedHire(q.excerpt, l.company, alt.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w)), false))))
+        if (nr) { setWhy.run((`New ${nr.role} joined: a dated source says the hire was made. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id); passed++; passedIds.push(l.id); continue } }
       if (!roles.length && !or && jobAdQuoteRole(l.evidence_excerpt, l.company, [])) { passed++; passedIds.push(l.id); continue } // #1121: its own job ad names a sales vacancy
       if (!roles.length && hireQuotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {
         const o = others.find(q => hireQuotes.includes(q) && quoteNamesSalesHiring(q.excerpt, l.signal, l.company))

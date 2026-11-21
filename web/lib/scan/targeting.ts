@@ -35,6 +35,7 @@ export interface Condition {
   relative_to?: string               // the window counts from this condition's event date (event relationship), not from now
   since_days?: number                // relative_to only: the clock counted back from NOW (default within_days); a stated "in the last N days" can only narrow it
   clock_conflict?: string            // the request states clocks for this condition that one condition cannot hold (two different anchor events): never provable
+  new_role?: true                    // hire_made read from a bare "a new <role>" (#1122): met by a dated source saying the person joined OR a dated posting for that role
 }
 export type PlanNode = { op: 'cond'; cond: Condition } | { op: 'and' | 'or'; of: PlanNode[] } | { op: 'not'; of: PlanNode }
 export interface Ambiguity { text: string; readings: string[]; chosen: string }
@@ -45,7 +46,11 @@ export interface QueryPlan {
   filters: PlanFilter[]
   ambiguities: Ambiguity[]
   explicit: boolean                  // the plan says more than one flat signal: two or more conditions, a NOT, an exclusion, a completed hire or separate clocks
+  // #1122 follow-up (case 1, job d46c65cb): a signal the request asked for that is NOT a condition in this plan. It is held in view with its
+  // reason and is never counted as met: no gate proves it, so a lead can only qualify through the plan's own dated, sourced conditions.
+  unproven: UnprovenSignal[]
 }
+export interface UnprovenSignal { text: string; reason: string }
 
 const UNIT: Record<string, number> = { day: 1, days: 1, week: 7, weeks: 7, month: 30, months: 30 }
 const WINDOW_RE = /\b(?:(?:within|in|over|during)\s+)?(?:the\s+)?(?:past|last|previous)\s+(\d{1,3})\s+(days?|weeks?|months?)\b|\bwithin\s+(?:the\s+)?(\d{1,3})\s+(days?|weeks?|months?)(?:\s+(?:of|after|since|following)\s+(?:the|its|their|a|an)?\s*([a-z-]+))?|\b(\d{1,3})\s+(days?|weeks?|months?)\s+ago\b/gi
@@ -53,7 +58,7 @@ const FUNDING_CUE = /\b(?:fund(?:ing|ed|s)?|rais(?:e|ed|es|ing)|round|invest(?:e
 const STAGE = '(?:pre-?seed|seed|series\\s+[a-e])'
 const RAISE = '(?:raised|closed|secured|announced|landed|completed|received)'
 
-interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean }
+interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean; bare?: boolean }
 
 // #389: technology conditions, only for technologies the site crawl can detect (techstack.ts). A technology word becomes a condition only
 // after a technology cue ("using", "built on", "migrated from", "switched to" ...) or before a platform noun ("Shopify stores"); words
@@ -163,6 +168,13 @@ function findAtoms(q: string): Atom[] {
   for (const m of q.matchAll(/\b(?:making|makes|make)\s+(?:(?:a|an|its|their|the|our)\s+)?(?:(?:first|founding|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi)) {
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: HIRE_QUALIFIER.test(m[1]) ? '' : m[1] })
   }
+  // 3b. "a new Head of Sales": a role named as new, with no verb. Read as a completed hire (a source must say the person joined), after
+  // the open-role readings so "hiring new account executives" stays an open role. compileTargeting records the reading chosen.
+  for (const m of q.matchAll(/\b(?:a|an|its|their|the)\s+new\s+([a-z][a-z&\/\s-]{1,60})/gi)) {
+    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role) || MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
+    const end = (m.index ?? 0) + m[0].indexOf(m[1]) + m[1].indexOf(role) + role.length
+    add({ kind: 'hire_made', start: m.index ?? 0, end, role, first: false, bare: true })
+  }
   // 4. Other events.
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
   return atoms.sort((a, b) => a.start - b.start)
@@ -181,6 +193,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   // #876: a modal completed hire ("may have made their first sales hire") compiles to no condition (findAtoms); the plan says why.
   for (const m of q.matchAll(/\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*(?:made\s+(?:(?:a|an|its|their|the|our)\s+)?(?:[a-z][a-z-]*\s+){0,2}hires?|hired|appointed|named|brought\s+on|onboarded|welcomed)\b/gi))
     ambiguities.push({ text: m[0], readings: ['a completed hire', 'a hire that may not have happened'], chosen: 'no completed-hire condition: the request does not say the hire happened, so nothing is proven by it' })
+  for (const a of atoms) if (a.bare) ambiguities.push({ text: q.slice(a.start, a.end), readings: ['a person who recently joined in this role', 'an open role still being filled'], chosen: 'either one, each on its own dated source: a source saying the person joined, or a dated job posting for the role. The lead says which.' })
   // Windows, each bound to the condition it follows in the text (or to every condition when it comes first).
   const windows: { at: number; end: number; days: number; text: string; anchorWord?: string }[] = []
   for (const m of q.matchAll(WINDOW_RE)) {
@@ -189,7 +202,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   }
   const owner = (w: { at: number }) => { let k = -1; for (let i = 0; i < atoms.length; i++) if (atoms[i].start < w.at) k = i; return k }
   const conds: Condition[] = atoms.map((a, i) => ({ id: `C${i + 1}`, kind: a.kind, text: q.slice(a.start, a.end), within_days: null, window_source: null,
-    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
+    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first, ...(a.bare ? { new_role: true as const } : {}) } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
   const requestLevel: number[] = []
   // #878: EVERY window bound to a condition counts, not only the first. A clock counted from now and one counted from another condition's
   // event are different clocks and both hold; two different windows of the same kind take the NARROWEST and the ambiguity is recorded.
@@ -250,7 +263,10 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     const t = g.replace(WINDOW_RE, ' ')
     if (/\band\s*\/\s*or\b/i.test(t)) { ambiguities.push({ text: `${conds[i].text} and/or ${conds[i + 1].text}`, readings: ['either condition', 'both conditions'], chosen: 'both conditions (and)' }); return 'and' }
     if (/\bnor\b/i.test(t)) return 'and'
-    return /\bor\b|\beither\b/i.test(t) ? 'or' : 'and'
+    if (/\bor\b|\beither\b/i.test(t)) return 'or'
+    // #1122 follow-up: a bare comma inside a list ("A or B, C, or D") takes the list's own connective: the next and/or in the same clause.
+    if (/^\s*,\s*$/.test(t)) { const w = /\b(and|or)\b/i.exec(q.slice(atoms[i + 1].end).split(/[.;:!?]/)[0]); if (w) return w[1].toLowerCase() as 'and' | 'or' }
+    return 'and'
   })
   // "not funded or hiring": (not A) or B, or neither? The narrower reading is neither.
   for (let i = 0; i < conn.length; i++) if (negated[i] && !negated[i + 1] && conn[i] === 'or') {
@@ -304,7 +320,31 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   // #878: a condition whose clock the request states more than once ("within 90 days, specifically within 30 days") is a separate clock the
   // plan must hold: other gates read only the first window of the request.
   const explicit = conds.length >= 2 || exclusions.length > 0 || negated.some(Boolean) || conds.some(c => c.kind === 'hire_made' || c.kind === 'tech' || !!c.relative_to || c.window_source === 'narrowest' || c.since_days !== undefined || !!c.clock_conflict)
-  return { v: 1, root, filters: filtersOf(icp), ambiguities, explicit }
+  return { v: 1, root, filters: filtersOf(icp), ambiguities, explicit, unproven: unprovenSignals(icp, conds) }
+}
+
+// #1122 follow-up: every signal the profile lists must either match a condition kind in the plan or be listed as unproven with a reason.
+// Generic: each signal is read by the same condition reader as the request; no signal word is special-cased.
+function unprovenSignals(icp: string | null | undefined, conds: Condition[]): UnprovenSignal[] {
+  let list: unknown = []
+  try { list = icp ? (JSON.parse(icp) as { signals?: unknown }).signals ?? [] : [] } catch { list = [] }
+  if (!Array.isArray(list)) return []
+  const have = new Set(conds.map(c => c.kind))
+  const out: UnprovenSignal[] = []
+  for (const raw of list) {
+    if (typeof raw !== 'string' || !raw.trim()) continue
+    const text = raw.replace(/\s+/g, ' ').trim()
+    const atoms = findAtoms(text)
+    const kinds = [...new Set(atoms.map(a => a.kind))]
+    const words = (r: string | undefined) => (r ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 1 && !/^(?:a|an|the|its|their|our|first|new|founding|inaugural|for|of|and|or)$/.test(w))
+    // A role-bearing signal is kept only if a condition of its kind names an overlapping role (or names none, so any role counts).
+    const roleLost = atoms.find(a => (a.kind === 'hiring' || a.kind === 'hire_made') && words(a.role).length
+      && conds.some(c => c.kind === a.kind) && !conds.some(c => c.kind === a.kind && (!words(c.role).length || words(c.role).some(w => words(a.role).includes(w)))))
+    if (!kinds.length) out.push({ text, reason: 'not a dated event this plan can check (no hire, opening, funding or other dated event in it); shown as unproven and never counted as met' })
+    else if (roleLost) out.push({ text, reason: `the plan's ${roleLost.kind === 'hiring' ? 'open-role' : 'completed-hire'} condition does not name this role (${roleLost.role}); shown as unproven and never counted as met` })
+    else if (!kinds.some(k => have.has(k))) out.push({ text, reason: 'asked for in the profile but not stated as a condition in the request; shown as unproven and never counted as met' })
+  }
+  return out
 }
 
 function filtersOf(icp: string | null | undefined): PlanFilter[] {
@@ -398,12 +438,12 @@ export type PlanViewNode =
   | { op: 'cond'; id: string; text: string; means: string; window: string | null; kind: CondKind }
   | { op: 'and' | 'or'; of: PlanViewNode[] }
   | { op: 'not'; of: PlanViewNode }
-export interface PlanView { explicit: boolean; empty: boolean; summary: string; root: PlanViewNode | null; filters: { kind: PlanFilter['kind']; values: string[]; semantics: string }[]; ambiguities: Ambiguity[] }
+export interface PlanView { explicit: boolean; empty: boolean; summary: string; root: PlanViewNode | null; filters: { kind: PlanFilter['kind']; values: string[]; semantics: string }[]; ambiguities: Ambiguity[]; unproven: UnprovenSignal[] }
 function meansOf(c: Condition): string {
   switch (c.kind) {
     case 'funding': return `a completed ${c.stage ? `${c.stage} ` : ''}funding round`
     case 'hiring': return `an open role${c.role ? ` (${c.role})` : ''}: a job posting or a statement that it is hiring`
-    case 'hire_made': return `a completed ${c.first ? 'first ' : ''}hire${c.role ? ` (${c.role})` : ''}: a source saying the hire was made, not a vacancy`
+    case 'hire_made': return c.new_role ? `a new ${c.role || 'role'}: a dated source saying the person joined, or a dated job posting for the role` : `a completed ${c.first ? 'first ' : ''}hire${c.role ? ` (${c.role})` : ''}: a source saying the hire was made, not a vacancy`
     case 'event': return `${c.event ?? 'an'} event${c.object ? ` (${c.object})` : ''}`
     case 'competitor': return 'a company on your saved competitor list'
     case 'company_named': return `the named ${(c.names ?? []).length === 1 ? 'company' : 'companies'}: ${(c.names ?? []).join(', ')}`
@@ -422,6 +462,6 @@ export function planView(plan: QueryPlan): PlanView {
     explicit: plan.explicit, empty: plan.root === null && plan.filters.length === 0,
     summary: describePlan(plan.root), root: plan.root ? viewNode(plan.root) : null,
     filters: plan.filters.map(f => ({ kind: f.kind, values: f.values, semantics: f.semantics })),
-    ambiguities: plan.ambiguities,
+    ambiguities: plan.ambiguities, unproven: plan.unproven ?? [],
   }
 }
