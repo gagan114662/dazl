@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
   const db = sqliteLeadsRead(scanDb)
   const job = /^[a-f0-9]{24}$/.test(jobId) ? await db.getJob(user.tenantId, jobId) : undefined
   if (!job) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  const saved = scanDb.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, user.tenantId) as { run_budget: string | null } | undefined
+  const saved = scanDb.prepare('SELECT run_budget, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, user.tenantId) as { run_budget: string | null; enrich_finished_at: number | null } | undefined
   const companyFirst = hasCompanyFirstBudget(saved?.run_budget)
   const includeHidden = !companyFirst && req.nextUrl.searchParams.get('all') === '1'
   const rows = await db.listLeads(user.tenantId, job.id, 200, includeHidden) as { id: string; source_url: string; company: string; company_domain: string | null; event_date: string | null; event_date_proof?: string | null; signal_kind?: string | null; score: number; fit: number | null; intent: number | null; action: number | null; signal: string }[]
@@ -41,8 +41,9 @@ export async function GET(req: NextRequest) {
   const leads = companyFirst ? rows.filter(l => results?.visibleIds.has(l.id)) : rows
   // Company-first held candidates, read-only: who was found and why it is held. No contact, email or score is exposed, and
   // nothing here can make a held candidate actionable (the hold itself is unchanged).
-  // Only once the job's final visibility checks have run (results exist and the job is done): before that every row would look held.
-  const held = companyFirst && results && job.status === 'done' ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null; quarantined_at?: number | null }[])
+  // Only once the job's final visibility checks have run (results exist, the job is done and its enrichment finished - the same condition
+  // companyFirstResults computes visibility under): before that every row would look held.
+  const held = companyFirst && results && job.status === 'done' && saved?.enrich_finished_at != null ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null; quarantined_at?: number | null }[])
     // a lead the user rejected (quarantined) is counted as rejected everywhere, never as held
     .filter(l => !results?.visibleIds.has(l.id) && l.quarantined_at == null)
     .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? 'held_by_final_checks' })) : []

@@ -70,6 +70,16 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
   lead(plain, 'Review Co', 'quote_unconfirmed')
   finish(plain, null, 1, 'Find London software companies that raised a seed round.')
 
+  // A company-first scan marked done whose enrichment is still running: its final checks have not run, so nothing is "held by checks" yet
+  // (Qodo review on #1466) - and nothing is reviewable either.
+  const enriching = createJob(db, 'A', { business_name: 'Synthetic A', industry: 'software', location: 'London' })
+  db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(enriching)
+  lead(enriching, 'Pending Co', 'quote_unconfirmed')
+  finish(enriching, markCompanyFirstBudget(null), 1, 'Find London software companies that raised a Series A round.')
+  db.prepare('UPDATE scan_jobs SET enrich_finished_at = NULL WHERE id = ?').run(enriching)
+  const pending = await (await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${enriching}`))).json() as { leads: unknown[]; held: unknown[] }
+  assert.deepEqual([pending.leads, pending.held], [[], []], 'enriching: no lead shown and none listed as held yet')
+
   const leadsRes = await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${cf}`))
   assert.equal(leadsRes.status, 200)
   const leadsBody = await leadsRes.json() as { leads: { id: string }[]; held: { id: string; hold_reason: string }[] }
@@ -94,6 +104,10 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
     assert.deepEqual(c.next, { label: '3 leads are held by checks (read-only): open the run to see why', href: `/app/leads?job_id=${cf}` }, `${url}: it points at the run page's read-only held list`)
     assert.doesNotMatch(c.run?.tag ?? '', /review/i, `${url}: nor does the run pill`)
     assert.doesNotMatch(c.run?.label ?? '', /[1-9]\d* needs? your review/, `${url}: nor the run label (${c.run?.label})`)
+    const e = cards.find(x => x.id === enriching)
+    assert.ok(e, `${url}: the enriching scan is listed`)
+    assert.equal(e.qualification.needsReview, 0, `${url}: enriching: nothing to review`)
+    assert.equal(e.next.label, 'Search still running', `${url}: enriching: still running, not "held by checks"`)
     const p = cards.find(x => x.id === plain)
     assert.ok(p, `${url}: the control scan is listed`)
     assert.equal(p.qualification.needsReview, 1, `${url}: an ordinary review-list lead still needs review`)
