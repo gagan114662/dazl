@@ -33,6 +33,17 @@ test('every repo-wide guard is named in the selector and exists in web/test', ()
   for (const n of names) assert.ok(existsSync(join(repoRoot, 'web/test', n)), `${n} exists`)
 })
 
+test('no always-run guard declares a test that needs longer than the 5-minute PR shard budget', () => {
+  // pg-table-isolation's two-instance [pg] test (timeout 30 min) takes ~260 s on main's postgres lane: run on every PR it
+  // made the postgres shard time out. Guards that run on every PR must be quick; heavy suites stay in the full run on main.
+  const PR_TEST_TIMEOUT_MAX_MS = 120_000
+  for (const n of always()) {
+    const text = readFileSync(join(repoRoot, 'web/test', n), 'utf8')
+    for (const m of text.matchAll(/\btimeout:\s*([\d_]+)/g))
+      assert.ok(Number(m[1].replaceAll('_', '')) <= PR_TEST_TIMEOUT_MAX_MS, `${n} declares a ${m[1]} ms test timeout`)
+  }
+})
+
 test('guards are selected for an unrelated source change and for a change with no affected tests', t => {
   const cwd = mkdtempSync(join(tmpdir(), 'dazl-guards-'))
   t.after(() => rmSync(cwd, { recursive: true, force: true }))
