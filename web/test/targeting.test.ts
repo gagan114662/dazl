@@ -37,7 +37,7 @@ test('seed within 90 days AND first VP hired within 30 days: two separate clocks
   const [seed, vp] = planConditions(p.root).map(x => x.cond)
   assert.deepEqual([seed.kind, seed.stage, seed.within_days, seed.window_source], ['funding', 'seed', 90, 'clause'])
   assert.deepEqual([vp.kind, vp.role, vp.first, vp.within_days, vp.window_source], ['hire_made', 'VP of Sales', true, 30, 'clause'])
-  const lead = (date: string): ProofLead => ({ company: 'Brightloop', company_domain: 'brightloop.io', evidence_excerpt: 'Brightloop raised a 3m seed round and hired its first VP of Sales, Jane Doe.', signal: 'raised a seed round', source_url: 'https://news.example/b', event_date: date })
+  const lead = (date: string): ProofLead => ({ company: 'Brightloop', company_domain: 'brightloop.io', evidence_excerpt: 'Brightloop raised a 3m seed round and hired its first VP of Sales, Jane Doe.', signal: 'raised a seed round', source_url: 'https://news.example/b', event_date: date, event_date_proof: null })
   const ctx = { query: 'x', icp: null, salesGatePassed: false, competitors: null, now: NOW }
   const at45 = planProofs(p, lead(ago(45)), [], ctx)
   assert.deepEqual([at45.C1.truth, at45.C2.truth], ['pass', 'unknown'], '45 days old: inside the seed clock, outside the VP clock')
@@ -54,7 +54,7 @@ test('seed within 90 days AND first VP hired within 30 days: two separate clocks
 test('excludes competitors stays hard: on the saved list -> fails; no list -> unknown, so the lead is never qualified; off the list -> passes', () => {
   const p = compileTargeting('dental clinics that opened a new location in the last 60 days, excluding competitors')
   assert.deepEqual(ids(p), ['C1:event', '!X1:competitor'])
-  const lead: ProofLead = { company: 'Harbor Dental', company_domain: 'harbordental.example', evidence_excerpt: 'Harbor Dental opened a new location on Elm Street.', signal: 'opened a new location', source_url: 'https://news.example/h', event_date: ago(20) }
+  const lead: ProofLead = { company: 'Harbor Dental', company_domain: 'harbordental.example', evidence_excerpt: 'Harbor Dental opened a new location on Elm Street.', signal: 'opened a new location', source_url: 'https://news.example/h', event_date: ago(20), event_date_proof: null }
   const run = (competitors: string[] | null) => evaluatePlan(p, planProofs(p, lead, [], { query: 'x', icp: null, salesGatePassed: false, competitors, now: NOW }))
   assert.equal(run(['Harbor Dental Group']).truth, 'fail')
   const noList = run(null)
@@ -67,7 +67,7 @@ test('named and category exclusions: a named company or a stated category in the
   const p = compileTargeting('fintech companies hiring SDRs, except Stripe and franchises')
   assert.deepEqual(ids(p), ['C1:hiring', '!X1:company_named', '!X2:category'])
   const [, named, cat] = planConditions(p.root).map(x => x.cond)
-  const lead = (company: string, quote = `${company} is hiring SDRs`): ProofLead => ({ company, company_domain: null, evidence_excerpt: quote, signal: null, source_url: 'https://news.example/x', event_date: ago(5) })
+  const lead = (company: string, quote = `${company} is hiring SDRs`): ProofLead => ({ company, company_domain: null, evidence_excerpt: quote, signal: null, source_url: 'https://news.example/x', event_date: ago(5), event_date_proof: null })
   const ctx = (exclude: string[]) => ({ query: 'x', icp: JSON.stringify({ exclude }), salesGatePassed: false, competitors: null, graded: true, now: NOW })
   assert.equal(conditionProof(named, lead('Stripe Inc'), [], ctx([])).truth, 'pass')
   assert.equal(conditionProof(named, lead('Ledgerly'), [], ctx([])).truth, 'fail')
@@ -80,7 +80,7 @@ test('named and category exclusions: a named company or a stated category in the
 test('non-hiring requests: event families with their objects, OR between events, and a single flat signal is not a plan gate', () => {
   const p = compileTargeting('restaurants that opened a new location or won a catering contract in the last 60 days')
   assert.equal(p.root?.op, 'or'); assert.deepEqual(planConditions(p.root).map(x => [x.cond.event, x.cond.object]), [['open', 'location'], ['contract', 'contract']])
-  const lead = (quote: string): ProofLead => ({ company: 'Canal Diner', company_domain: null, evidence_excerpt: quote, signal: null, source_url: 'https://news.example/c', event_date: ago(12) })
+  const lead = (quote: string): ProofLead => ({ company: 'Canal Diner', company_domain: null, evidence_excerpt: quote, signal: null, source_url: 'https://news.example/c', event_date: ago(12), event_date_proof: null })
   const ctx = { query: 'x', icp: null, salesGatePassed: false, competitors: null, now: NOW }
   assert.equal(evaluatePlan(p, planProofs(p, lead('Canal Diner opened a new location on Main Street.'), [], ctx)).truth, 'pass')
   assert.equal(evaluatePlan(p, planProofs(p, lead('Canal Diner opened a new kitchen.'), [], ctx)).truth, 'unknown', 'a kitchen is not a location')
@@ -138,7 +138,7 @@ test('actionable yield: an explicit plan is a required gate - an unproven clause
 
 test('non-hiring events beyond open/launch/expand: contract, permit, partner and rebrand are proven only by a plain statement about this company', () => {
   const ctx = { query: 'x', icp: null, salesGatePassed: false, competitors: null, now: NOW }
-  const lead = (quote: string, date: string | null = ago(12)): ProofLead => ({ company: 'Canal Diner', company_domain: null, evidence_excerpt: quote, signal: null, source_url: 'https://news.example/c', event_date: date })
+  const lead = (quote: string, date: string | null = ago(12)): ProofLead => ({ company: 'Canal Diner', company_domain: null, evidence_excerpt: quote, signal: null, source_url: 'https://news.example/c', event_date: date, event_date_proof: null })
   const contract = compileTargeting('restaurants that won a catering contract and rebranded in the last 60 days')
   assert.deepEqual(planConditions(contract.root).map(x => x.cond.event), ['contract', 'rebrand'])
   const truth = (p: QueryPlan, quote: string, date?: string | null) => evaluatePlan(p, planProofs(p, lead(quote, date), [], ctx)).truth

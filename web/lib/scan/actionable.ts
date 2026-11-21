@@ -69,7 +69,7 @@ export function needProven(db: Database.Database, job: { id: string; user_id: st
 }
 
 export function classifyLeads(db: Database.Database, job: { id: string; user_id: string; query?: string | null; icp?: string | null }, held: HeldIds = new Map(), need: NeedGate = { rubric: null }): LeadYield[] {
-  const leads = db.prepare("SELECT id, company, company_domain, contact, fit, quarantined_at, source_url, evidence_excerpt, published_at, signal, event_date FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC").all(job.id) as { id: string; company: string; company_domain: string | null; contact: string | null; fit: number | null; quarantined_at: number | null; source_url: string; evidence_excerpt: string | null; published_at: string | null; signal: string | null; event_date: string | null }[]
+  const leads = db.prepare("SELECT id, company, company_domain, contact, fit, quarantined_at, source_url, evidence_excerpt, published_at, signal, event_date, event_date_proof FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND confidence IS NOT NULL AND company <> '' ORDER BY score DESC").all(job.id) as { id: string; company: string; company_domain: string | null; contact: string | null; fit: number | null; quarantined_at: number | null; source_url: string; evidence_excerpt: string | null; published_at: string | null; signal: string | null; event_date: string | null; event_date_proof: string | null }[]
   let memory: ReturnType<typeof getMemory> | null = null
   try { memory = getMemory(db, job.user_id) } catch { memory = null } // the table may predate this deploy
   const needVacancy = salesHiringRequired(job.query, job.icp), who = whoOf(job.icp) || 'founder'
