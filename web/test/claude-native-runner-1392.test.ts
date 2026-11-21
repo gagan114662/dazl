@@ -20,7 +20,7 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -98,6 +98,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           { type: 'web_search_tool_result', content: [] },
           ...['too_many_requests', 'invalid_tool_input', 'max_uses_exceeded', 'query_too_long', 'request_too_large', 'unavailable', '__proto__', 'opaque-private-sentinel'].map(error_code =>
             ({ type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code } })),
+        ] : useLimitOnly ? [
+          { type: 'web_search_tool_result', content: { type: 'web_search_tool_result_error', error_code: 'max_uses_exceeded' } },
         ] : diverseFixture ? [
           { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
           { type: 'text', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
@@ -197,6 +199,14 @@ test('company first at the default CAD 5 scan cap never settles more native sear
   assert.ok(sends>=2&&sends<=CLAUDE_COMPANY_FIRST_MAX_CALLS,String(sends))
   assert.ok(sends*claudeSearchEstimate(count,'company_first').estimatedUsd<=5/1.5+1e-9,'every dispatched call was reserved inside the cap')
 })
+test('company first: an angle that only hit the search-use limit and ended normally lets the next distinct angle run',async()=>{
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',useLimitOnly:true})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,CLAUDE_COMPANY_FIRST_MAX_CALLS)
+})
+test('legacy QA native search still stops after a use-limit-only result',async()=>{
+  const r=await simulate({useLimitOnly:true})
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
+})
 test('company first does not retry an uncertain second batch and retains its reservation',async()=>{
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
     secondWave:'unknown'})
@@ -236,6 +246,7 @@ test('a tight scan limit preserves first-wave candidates when the optional wave 
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
     inputTokens:101937,cap:'1.35',extractionFixture:true})
   assert.equal(r.sequence.filter(x=>x==='native-send').length,1)
+  assert.ok(!(r.ledger as {status:string}[]).some(x=>x.status==='refused'),'an optional angle that cannot fit is never reserved, so no guard latches refused for later scoring')
   assert.match(JSON.stringify(r.report), /Regional Document Services/)
   assert.ok(r.nativeReport.actual_usd>0, 'the first wave still has its settled cost')
   assert.equal(r.nativeReport.estimate_exceeded,false)

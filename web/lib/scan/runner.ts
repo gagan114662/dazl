@@ -52,7 +52,7 @@ import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, withGeography } from '../search/tinyfish.ts'
 import { companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
-import { noteAccountLimitRefusal, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { effectiveCapUsd, noteAccountLimitRefusal, scanSpendContext, scanSpendRow, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
@@ -317,6 +317,19 @@ const GROUND_PAGE_CHARS = 3000
 // Company-first keeps searching new angles until this many candidates reach the verifier (or a spend, read or deadline
 // guard stops it). One candidate is not enough: case 1 (prod run 8d422adf) stopped after one aggregator page.
 const COMPANY_FIRST_TARGET_CANDIDATES = 8
+// Thrown before any reservation when an optional company-first angle would not leave room under every guard.
+class OptionalAngleNoRoom extends Error { constructor() { super('optional_angle_no_room') } }
+// Read-only: does this scan's recorded cap still have room for usd? Unknown state answers no (the angle is optional).
+async function scanCapRoomFor(usd: number): Promise<boolean> {
+  const ctx = scanSpendContext()
+  if (!ctx) return false   // no scan spend context: the reservation itself would refuse
+  const cap = effectiveCapUsd(ctx)
+  if (cap === null) return false
+  const row = await scanSpendRow(ctx.db, ctx.jobId, ctx.tenantId).catch(() => undefined)
+  if (!row || !Number.isFinite(row.spend_cap_reserved_usd)) return false
+  const bound = row.spend_cap_usd === null ? cap : Math.min(cap, row.spend_cap_usd)
+  return row.spend_cap_reserved_usd + usd <= bound
+}
 export async function groundLeads(provider: Provider, apiKey: string, query: string, candidates: LeadDraft[], fetchPage: PageFetcher, fetchImpl?: typeof fetch): Promise<LeadDraft[] | null> {
   if (!provider.complete) return null
   const urls = [...new Set(candidates.map(c => c.source_url))].slice(0, GROUND_MAX_PAGES)
@@ -1647,7 +1660,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // Further paid angles run only while fewer than COMPANY_FIRST_TARGET_CANDIDATES candidates exist and every spend,
       // read and deadline guard still allows another call. Candidates already found are kept and verified either way;
       // a later unknown or over-estimate call must not discard usable observations.
-      if (angleIndex > 0 && ((leads?.length ?? 0) >= COMPANY_FIRST_TARGET_CANDIDATES || totalPublisherReads >= COMPANY_FIRST_MAX_PUBLISHER_READS || spendAttemptUncertain() || spendAttemptRejected()!==null ||
+      if (angleIndex > 0 && (new Set((leads ?? []).map(dedupKey)).size >= COMPANY_FIRST_TARGET_CANDIDATES || totalPublisherReads >= COMPANY_FIRST_MAX_PUBLISHER_READS || spendAttemptUncertain() || spendAttemptRejected()!==null ||
         earlierLimitRefusal(db,job) || (phaseDeadline && phaseDeadline.at-phaseDeadline.now()<45_000))) break
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days
@@ -1685,6 +1698,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       try {
         assertOwned(db, job)
         const found = await runClaudeWebSearch(key, searchPrompt, async est => {
+          // An optional later angle never asks a guard it cannot fit: a refused guard latches and would refuse the
+          // scoring of candidates already found. Room for the search plus the same amount again for those later steps.
+          if (companyFirst && angleIndex > 0 && totalNativeCandidates > 0 &&
+            (spendGuards.some(g => g.refused || !(g.reservedUsd + 2 * est.estimatedUsd <= g.limitUsd)) ||
+              !(await scanCapRoomFor(2 * est.estimatedUsd)))) throw new OptionalAngleNoRoom()
           const hold = await reserveNativeSearch(spendGuards, est.estimatedUsd, () => assertOwned(db, job))
           paidPrepared = est
           reportSearch(est, null)
@@ -1785,11 +1803,16 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         finishedSearches.push({est,usage})
         // A company-first call whose only shortfall is tool result-error blocks (e.g. max_uses_exceeded) ended its turn
         // normally; the next distinct angle may still find other companies. Any other partial or unavailable result stops.
-        if(found.outcome!=='ok'&&!(companyFirst&&found.outcome==='partial'&&found.stop==='end_turn'))break
+        const d=found.evidenceDiagnostic
+        const onlyUseLimit=companyFirst&&found.stop==='end_turn'&&d.malformed_result_blocks===0&&(d.result_errors.max_uses_exceeded??0)>0&&
+          Object.keys(d.result_errors).every(k=>k==='max_uses_exceeded')
+        if(found.outcome!=='ok'&&!onlyUseLimit)break
       } catch (e) {
         // An optional later angle the scan cap cannot fit ends discovery, never the run: candidates already found go on
         // to the normal verifier exactly as if the angle had not been tried. The refusal row stays recorded.
-        if (e instanceof SpendRefused && companyFirst && angleIndex > 0 && totalNativeCandidates > 0) {
+        // Only a real numeric cap refusal qualifies; ownership, accounting, save or count refusals keep their own stop.
+        if (e instanceof OptionalAngleNoRoom) { ledger.record(source, 'partial'); break }
+        if (e instanceof SpendRefused && refusalCode(e) === 'budget_stopped' && companyFirst && angleIndex > 0 && totalNativeCandidates > 0) {
           ledger.record(source, 'partial')
           break
         }
