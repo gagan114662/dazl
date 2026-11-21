@@ -2,7 +2,7 @@ name: web-ci
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
+    paths: ["web/**", "ops/**", "session-worker/**", ".github/scripts/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
     # no path filter on main: every merged commit gets the full suite and, if green, main-green (gate 3)
