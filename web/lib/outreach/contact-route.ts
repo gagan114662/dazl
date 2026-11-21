@@ -9,7 +9,7 @@
 //                   restricted inbox never becomes the founder's / buyer's address because a founder is named.
 // Plus the channel: email readiness is separate from phone-only reachability.
 // Pure: reads the lead's stored fields and enrichment rows only. Nothing here fetches, resolves DNS or guesses.
-import { pickCrawledEmail, publishedContact, PUBLISHED_EMAIL_RE } from './published-email.ts'
+import { pickCrawledEmail, publishedContact, PUBLISHED_EMAIL_RE, sameAddressCrawlRecord } from './published-email.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import type { ContactContext } from './contact-context.ts'
 
@@ -111,8 +111,11 @@ export function contactRoute(l: RouteLead, person: RoutePerson | null, now: numb
   const channel = email ? 'email' : phone ? 'phone_only' : 'none'
 
   // Provenance: the page that printed the route and when dazl last read it. First-published dates are never recorded.
-  const fromLead = email ? email === direct : !!phone && PHONE.test(l.contact ?? '')
-  const row = fromLead ? null : email ? crawled : phoneRow ?? null
+  // A direct address the crawl also recorded is cited from the crawl's page and read time (the same record createDraft
+  // cites, addressCitationUrl): equality with lead.contact does not prove the cited page printed it (#384).
+  const sameCrawl = email && email === direct ? sameAddressCrawlRecord(l.contact, rows) : null
+  const fromLead = sameCrawl ? false : email ? email === direct : !!phone && PHONE.test(l.contact ?? '')
+  const row = fromLead ? null : sameCrawl ?? (email ? crawled : phoneRow ?? null)
   const url = fromLead ? l.source_url : row?.source_url ?? null
   const lastReadAt = row?.retrieved_at ?? null
   const ageDays = lastReadAt ? daysSince(lastReadAt, now) : null

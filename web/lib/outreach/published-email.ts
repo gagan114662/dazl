@@ -91,15 +91,20 @@ export function classifyPurpose(email: string, context?: ContactContext | null):
   return {purpose:positive?'sales':'unknown',hint:positive?'business inquiry context':'purpose not established'}
 }
 
+// The crawl's record of the lead's own direct address (the same address stored by sitecrawl with the page it came from),
+// or null. One selection for the draft's citation (below) and the card's provenance line (contact-route.ts), so equality
+// with lead.contact never replaces the page and read time the crawl recorded (#384).
+export function sameAddressCrawlRecord<T extends { connector: string; kind: string; value: string; source_url?: string | null }>(contact: string | null, enrichments: T[] | undefined): T | null {
+  const primary = address(contact)
+  if (!PUBLISHED_EMAIL_RE.test(primary)) return null
+  return (enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && address(x.value) === primary && x.source_url) ?? null
+}
 // The page a draft cites as the place the recipient address is published (createDraft's addressUrl): the cited
 // page for a direct contact, the company's own contact page for a crawled one - and the crawl's record of even a
 // direct contact when it has one (equality with the contact does not prove the cited page printed it).
 export function addressCitationUrl(lead: PublishedEmailLead): string | null {
   const primary = address(lead.contact)
-  if (PUBLISHED_EMAIL_RE.test(primary)) {
-    const same = (lead.enrichments ?? []).find(x => x.connector === 'sitecrawl' && x.kind === 'email' && address(x.value) === primary && x.source_url)
-    return same?.source_url ?? lead.source_url ?? null
-  }
+  if (PUBLISHED_EMAIL_RE.test(primary)) return sameAddressCrawlRecord(lead.contact, lead.enrichments)?.source_url ?? lead.source_url ?? null
   const e = pickCrawledEmail(lead.enrichments)
   if (e) return e.source_url ?? lead.source_url ?? null
   return lead.source_url ?? null
