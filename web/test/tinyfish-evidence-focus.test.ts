@@ -41,3 +41,12 @@ test('review: overlapping windows are charged once, so a later term still fits',
   const out = focusText(page, words, 4000)
   for (const w of words) assert.match(out, new RegExp(w))
 })
+test('review: measuring a rejected overlapping window never widens an accepted one', () => {
+  const terms = ['termaaaa', 'termbbbb', 'termcccc', 'termdddd', 'termeeee', 'termffff']
+  let page = 'q'.repeat(6000)
+  const put = (at: number, w: string) => { page = page.slice(0, at) + ` ${w} ` + page.slice(at + w.length + 2) }
+  terms.forEach((w, i) => { put(1500 + 650 * i, w); put(1500 + 650 * i + 120, w) })
+  const out = focusText(page, terms, 4000)
+  assert.ok(out.length <= 4000)
+  for (const w of terms) assert.match(out, new RegExp(w))
+})
