@@ -23,7 +23,7 @@ async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads') 
   const get: Get = async url => {
     const u = new URL(url)
     if (u.hostname === 'lists.example') return { status: 200, body: LIST, finalUrl: url }
-    if (!['levelupleads.io', 'lul-growth.io'].includes(u.hostname.replace(/^www\./, ''))) return null
+    if (!['levelupleads.io', 'levelupleads.org', 'lul-growth.io'].includes(u.hostname.replace(/^www\./, ''))) return null
     if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
     const b = ({ '/': HOME(homeName), '/contact': CONTACT } as Record<string, string>)[u.pathname]
     return b !== undefined ? { status: 200, body: b, finalUrl: url } : { status: 404, body: '', finalUrl: url }
@@ -36,8 +36,8 @@ async function run(citedUrls: string[] | undefined, homeName = 'LevelUp Leads') 
 }
 
 test('an aggregator lead takes the homepage the search cited, when its domain is the company name and the homepage names it', async () => {
-  const r = await run(['https://lists.example/first-sdr', 'https://www.levelupleads.io/about'])
-  assert.equal(r.domain, 'levelupleads.io', JSON.stringify(r.audit))
+  const r = await run(['https://lists.example/first-sdr', 'https://www.levelupleads.org/about'])
+  assert.equal(r.domain, 'levelupleads.org', JSON.stringify(r.audit))
 })
 test('without the cited homepage the same lead stays unresolved (main behaviour)', async () => {
   assert.equal((await run(undefined)).domain, null)

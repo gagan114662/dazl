@@ -1457,6 +1457,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // cf_runner stage 2: when the evidence page links no company site (an aggregator list), a homepage the scan's own search cited is a
       // candidate only if its domain label IS the company's name (same test as a linked site's label). It is then read and checked like a
       // linked site (name and, when asked, place), and that cited page is recorded as where the site came from.
+      const citedSites: string[] = []
       if (!anchored && deps.citedUrls?.length) {
         const want = norm(l.company), evOwn = (() => { try { return registrable(new URL(ev?.finalUrl ?? l.source_url).hostname) } catch { return '' } })()
         if (want.length >= 4) for (const raw of deps.citedUrls) {
@@ -1465,7 +1466,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (host === evOwn || SOCIAL.test(host) || !siteHostOk(host) || !notBlockedHost(host) || !labelMatches(nameLabel(host), want) || sites.includes(host)) continue
           // not 'anchored': a cited site that fails its checks must not stop the name guesses; and its basis keeps the evidence-place
           // comparison (a link-label basis would skip it when no place is requested), so a same-name company elsewhere is refused
-          sites.push(host); basisOf.set(host, 'evidence_link_text'); sourceOf.set(host, u.href)
+          sites.push(host); citedSites.push(host); basisOf.set(host, 'evidence_link_text'); sourceOf.set(host, u.href)
           break
         }
       }
@@ -1505,7 +1506,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (probed >= MAX_PROBES_PER_SCAN) {
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: l.company, status: 'no_site_linked', results: 0 })
           if (structured.length === 0) { recordDomainUnresolved(db, tenantId, l, 'probe_limit_reached', today, nowSec); return }
-          sites = [...structured]; unresolved = 'probe_limit_reached'   // no name guess and no search ran for this lead
+          sites = [...new Set([...citedSites, ...structured])]; unresolved = 'probe_limit_reached'   // no name guess and no search ran for this lead
         } else {
           probed++
           const guesses = probeDomains(l.company, where)   // #1122: the request country's TLD too (a Toronto lead at <name>.ca)
@@ -1517,7 +1518,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           lookupPending = !!deps.findSites && !ownBlocked
           probeGuesses = guesses.filter(notBlockedHost)
           if (blockedHost && probeGuesses.length !== guesses.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 })
-          sites = [...new Set([...fromSlug, ...structured])].filter(notBlockedHost)
+          sites = [...new Set([...citedSites, ...fromSlug, ...structured])].filter(notBlockedHost)
           if (!lookupPending) sites = [...new Set([...sites, ...probeGuesses])]
           for (const d of sites) if (!basisOf.has(d)) basisOf.set(d, 'name_probe')
           if (blockedHost) { const kept = sites.filter(notBlockedHost); if (kept.length !== sites.length) audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: blockedHost, status: 'skipped_site_refused_us', results: 0 }); sites = kept }
