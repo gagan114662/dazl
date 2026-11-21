@@ -25,7 +25,7 @@ import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { getDomain } from 'tldts'
-import { atsPublisherRef, heldCopyBoard } from '../sources/ats-posting.ts'
+import { atsPublisherRef, atsPostingRef, heldCopyBoard } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
@@ -1797,7 +1797,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           citedByJob.set(job, [...new Set([...(citedByJob.get(job) ?? []), ...found.citedUrls])].slice(0, 200))
         }
         // a public-ATS posting the model listed is read itself too (guarded fetch; dated by its board), not only used to find its board
-        const listedPosts = textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) && atsPublisherRef(c.jobUrl) ? [c.jobUrl] : [])
+        const listedPosts = textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) && atsPostingRef(c.jobUrl) ? [c.jobUrl] : [])
         const ordered = [...new Set([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url))
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
