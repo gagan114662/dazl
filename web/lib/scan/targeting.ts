@@ -182,12 +182,19 @@ const CATEGORY_WORDS = /\b(?:franchis\w*|agenc(?:y|ies)|consultanc(?:y|ies)|cons
 //   - AFTER it: right after the role (an is / has / been allowed), closing the clause ("hiring SDRs postponed", "hiring ban in place",
 //     "hiring down 30%"). "hiring SDRs at Cap Gemini", "hiring crisis counselors", "hiring SDRs again after a freeze" are not.
 const STOP_CUE = String.raw`(?:reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)|declin(?:e|es|ed|ing)|stopp?(?:ed|ing|s)?|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|quit(?:s|ting)?|froze|freez(?:e|es|ing)|frozen|cancel(?:s|led|ed|ling|ing)?|scrapp(?:ed|ing)|abandon(?:s|ed|ing)?|avoid(?:s|ed|ing)?|against|lost|losing|lose|ran\s+out\s+of|running\s+out\s+of|run\s+out\s+of|yet\s+to|instead\s+of|rather\s+than|backed\s+out\s+of|pulled\s+out\s+of|pull(?:ed|ing)?\s+back\s+on|cut(?:ting|s)?\s+back\s+on|scal(?:ed|ing)\s+back(?:\s+on)?|wound\s+down|wind(?:s|ing)?\s+down|trimm?(?:ed|ing|s)?|reduc(?:e|es|ed|ing)|ended|no\s+plans?\s+to|no\s+longer|fail(?:s|ed|ing)?\s+to|unable\s+to|struggl(?:e|es|ed|ing)\s+to|turn(?:s|ed|ing)?\s+down|barely|hardly|isn'?t|aren'?t|wasn'?t|weren'?t|won'?t|don'?t|doesn'?t|can'?t|cannot)`
-const GAP_WORD = String.raw`(?:all|any|its|their|our|the|a|an|to|raise|raising|seek|seeking|take|taking|accept|accepting|more|new|further|additional|outside|external|venture|capital|vc|private|equity|investors?|institutional|angel|seed|series|[a-e]|sales|gtm|sdrs?|bdrs?|aes?)`
-const STOPPED_BEFORE = new RegExp(String.raw`\b${STOP_CUE}\b(?:\s+${GAP_WORD}\b){0,3}\s*$|\bpre-$`, 'i')
-const STOPPED_AFTER = /\b(?:on\s+hold|on\s+ice|postpon\w*|delay(?:s|ed)?|shelv(?:e|es|ed)|scrapp?(?:ed)?|abandon(?:ed)?|discontinu(?:e|es|ed)|terminat(?:e|es|ed)|cancel(?:led|ed)?|unlikely|off\s+the\s+table|(?:is|was|are)\s+over|slow(?:down|ing|ed)|moratori(?:um|a)|bans?|banned|caps?|capped|cutbacks?|restrictions?|restricted|freez(?:e|es)|frozen|down\s+\d+|slump(?:s|ed)?|hiatus|stoppage|shutdown|crunch|crisis|stall(?:s|ed)?|rumou?r(?:s|ed)?|denial|denied|withdrawn|in\s+doubt|doubtful|uncertain|under\s+review|in\s+limbo|at\s+risk|(?:a\s+)?mistake|unaffordable|(?:proves?\s+)?futile|backfir(?:e|es|ed)|fizzl(?:e|es|ed)|going\s+badly|gone|maybe|fell\s+through|fall(?:s|ing)?\s+through|dried\s+up|dry(?:ing)?\s+up|collaps(?:e|es|ed)|pulled|stopped|stops|paused|halted|suspended|ended|ceased|quit|rejected|declined|failed)\b/i
+// The words that may sit between a cue and the condition depend on the condition: funding words only before a funding word ("rejecting venture
+// capital funding", "failed to raise funding"), role words only before a hiring word with no role of its own ("trimmed SDR hiring"). Anything
+// else is the cue's own object ("declining sales hiring SDRs", "founders who reject VC hiring SDRs", "refused VC raised a seed round").
+const GAP_ANY = String.raw`(?:all|any|its|their|our|the|a|an|more|new|further|additional)`
+const GAP_FUNDING = String.raw`(?:${GAP_ANY}|to|raise|raising|seek|seeking|take|taking|accept|accepting|outside|external|venture|capital|vc|private|equity|investors?|institutional|angel|seed|series|[a-e])`
+const GAP_ROLE = String.raw`(?:${GAP_ANY}|sales|gtm|sdrs?|bdrs?|aes?)`
+const stoppedBefore = (gap: string) => new RegExp(String.raw`\b${STOP_CUE}\b(?:\s+${gap}\b){0,3}\s*$|\bpre-$`, 'i')
+const STOPPED_BEFORE = { funding: stoppedBefore(GAP_FUNDING), role: stoppedBefore(GAP_ROLE), plain: stoppedBefore(GAP_ANY) }
+const STOPPED_AFTER = /\b(?:on\s+hold|on\s+ice|on\s+pause|fell\s+apart|fail(?:ed|s)\s+to\s+close|postpon\w*|delay(?:s|ed)?|shelv(?:e|es|ed)|scrapp?(?:ed)?|abandon(?:ed)?|discontinu(?:e|es|ed)|terminat(?:e|es|ed)|cancel(?:led|ed)?|unlikely|off\s+the\s+table|(?:is|was|are)\s+over|slow(?:down|ing|ed)|moratori(?:um|a)|bans?|banned|caps?|capped|cutbacks?|restrictions?|restricted|freez(?:e|es)|frozen|down\s+\d+|slump(?:s|ed)?|hiatus|stoppage|shutdown|crunch|crisis|stall(?:s|ed)?|rumou?r(?:s|ed)?|denial|denied|withdrawn|in\s+doubt|doubtful|uncertain|under\s+review|in\s+limbo|at\s+risk|(?:a\s+)?mistake|unaffordable|(?:proves?\s+)?futile|backfir(?:e|es|ed)|fizzl(?:e|es|ed)|going\s+badly|gone|maybe|fell\s+through|fall(?:s|ing)?\s+through|dried\s+up|dry(?:ing)?\s+up|collaps(?:e|es|ed)|pulled|stopped|stops|paused|halted|suspended|ended|ceased|quit|rejected|declined|failed)\b/i
 // What may sit between the role and an after-cue (is / has / been ...), and what may follow the cue to the end of the clause.
-const AFTER_AUX = /^(?:\s*(?:is|was|are|were|has|have|had|been|being|now|put|proves?))*\s*:?\s*$/i
-const AFTER_TAIL = /^(?:\s*(?:%|in\s+place|across\b.*|for\s+now|until\b.*|indefinitely|this\s+(?:year|quarter|month)|(?:within|in\s+the|over|during|last|recently|since)\b.*))?\s*$/i
+const AUX = String.raw`(?:is|was|are|were|has|have|had|been|being|now|put|proves?|got|gets|getting)`
+const AFTER_AUX = new RegExp(String.raw`^(?:\s*${AUX})*\s*:?\s*$`, 'i')
+const AFTER_TAIL = /^(?:\s*(?:%|in\s+place|in\s+(?:q[1-4]|\d{4})\b.*|across\b.*|for\s+now|until\b.*|indefinitely|this\s+(?:year|quarter|month)|(?:within|in\s+the|over|during|last|recently|since)\b.*))?\s*$/i
 // A completed hire undone, or a raise / hiring that stopped, in the same breath: "hired SDRs and fired them", "hired a VP Sales, then fired
 // him", "raised funding but stopped". Only the hire itself is undone: "hired a CRO and fired their agency" is still a hire.
 const HIRED_OBJ = String.raw`(?:them|him|her|(?:the|our|their|its)\s+(?:new\s+)?(?:team|staff|hires?|reps?|sdrs?|bdrs?|aes?))`
@@ -195,15 +202,19 @@ const UNDONE = new RegExp(String.raw`,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:fi
 const CLAUSE_END = /[.;!?,]|\b(?:and|or|but|while|who|that|which)\b/i
 // A role word right after the hiring verb is the role ("hiring cap table managers"); "fewer" right after it shrinks the hire ("hired fewer SDRs").
 const FEWER_AFTER = /^\s*fewer\b(?!\s+than)/i
+const NOT_ROLE_WORD = /\b(?:at|in|for|after|of|from|with|to|by|on|into|across|about|over|under|again|despite|amid|amidst|through|throughout|during|since|before|following|post|the|a|an|its|their|our|this|that|these|those|than|as|like|per|via|without|beyond|until|till|toward|towards|against|around|among|between|while|when|because|so)\b/i
 function afterStop(roleWords: string, after: string): RegExpExecArray | null {
   const text = roleWords + after
   const m = STOPPED_AFTER.exec(text)
   if (!m) return null
   // The role is everything up to the first auxiliary; what sits between it and the cue may only be auxiliaries.
   const before = text.slice(0, m.index)
-  const role = before.replace(/(?:\s+(?:is|was|are|were|has|have|had|been|being|now|put|proves?))+\s*:?\s*$/i, '')
+  const role = before.replace(new RegExp(String.raw`(?:(?:^|\s+)${AUX})+\s*:?\s*$`, 'i'), '')
   const extra = before.slice(role.length)
-  if (!AFTER_AUX.test(extra) || /\b(?:at|in|for|after|of|from|with|to|by|on|into|across|about|over|under|again)\b/i.test(role)) return null
+  // Only role words may sit between the hiring word and the cue (a leading article, or "of" / "for": "hiring for SDRs is on hold"). Any other
+  // function word means the cue is about something else: "hiring SDRs despite the hiring freeze", "amid cutbacks", "during the crisis".
+  const roleOnly = role.replace(/^\s*(?:(?:of|for)\s+)?(?:(?:a|an|the)\s+)?/i, '')
+  if (!AFTER_AUX.test(extra) || NOT_ROLE_WORD.test(roleOnly)) return null
   return AFTER_TAIL.test(text.slice(m.index + m[0].length)) ? m : null
 }
 export function compileTargeting(query: string | null | undefined, icp?: string | null): QueryPlan {
@@ -288,9 +299,12 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     const sentence = rest.split(/[.;!?]/)[0]
     const undo = UNDONE.exec(tail + sentence)
     const after = rest.split(CLAUSE_END)[0]
-    const pre = STOPPED_BEFORE.exec(before)
+    // A completed raise ("raised a seed round") is its own verb: a cue before it is about something else unless only articles sit between.
+    const raiseVerb = a.kind === 'funding' && new RegExp(String.raw`^${RAISE}\b`, 'i').test(inside)
+    const pre = (a.kind === 'funding' ? (raiseVerb ? STOPPED_BEFORE.plain : STOPPED_BEFORE.funding) : conds[i].role ? STOPPED_BEFORE.plain : STOPPED_BEFORE.role).exec(before)
     const fewer = a.kind !== 'funding' ? FEWER_AFTER.exec(tail) : null
-    const found = undo ?? fewer ?? afterStop(tail, after)
+    // A funding condition's own words ("Series A") are not a role: only what follows them is read for an after-cue.
+    const found = undo ?? fewer ?? (a.kind === 'funding' ? afterStop('', after) : afterStop(tail, after))
     const mid = found && found.index < tail.trimEnd().length ? found : null
     // "never stopped hiring SDRs" is a double negative: still hiring. A negation right before the stop word cancels it.
     const pre2 = pre && /(?:\b(?:never|not|hasn'?t|haven'?t|didn'?t)|n't)\s*$/i.test(before.slice(0, pre.index)) ? null : pre
@@ -301,7 +315,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
       // The stop words are not part of the role ("hiring SDRs postponed" is NOT hiring SDRs, "hired fewer SDRs" is NOT a hire of SDRs).
       const r = c.role, cue = mid[0].replace(/^,?\s*/, '').toLowerCase(), at = r.toLowerCase().indexOf(cue)
       if (at === 0) c.role = r.slice(cue.length).trim().replace(/^[^a-z]*$/i, '')
-      else if (at > 0) c.role = r.slice(0, at).replace(/(?:\s+(?:and|then|but|is|was|are|were|has|have|had|been|being|now|put|proves?|role|roles|position))+\s*:?\s*$/i, '').trim().replace(/^(?:a|an|the)$/i, '')
+      else if (at > 0) c.role = r.slice(0, at).replace(new RegExp(String.raw`(?:(?:^|\s+)(?:and|then|but|role|roles|position|${AUX}))+\s*:?\s*$`, 'i'), '').trim().replace(/^(?:a|an|the)$/i, '')
     }
     ambiguities.push({ text: hit[0].trim(), readings: [`${c.text} (a positive condition)`, `NOT ${c.text} (the request says it stopped, was rejected or shrank)`], chosen: `NOT ${c.text}: the request says it stopped, was rejected or shrank` })
     negated[i] = true

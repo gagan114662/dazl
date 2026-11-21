@@ -32,7 +32,8 @@ const C2 = ['hiring ban in place', 'hiring slowdown across the practice',
   'hiring SDRs ended', 'ended hiring SDRs', 'Series A funding ended', 'hiring SDRs has stopped', 'raising funding has stopped', 'raised funding but stopped',
   'we no longer raise funding', 'hiring SDRs: paused', 'hired SDRs and let our team go',
   'hiring SDRs stopped', 'hiring SDRs paused', 'hiring SDRs is paused', 'hiring SDRs halted', 'funding rejected', 'funding declined', 'turned down VC funding',
-  'failed to raise funding', 'unable to raise funding', 'funding round failed', 'hired a VP Sales, then fired him', 'funding round rumored', 'funding ban', 'funding slowdown', 'funding talks collapsed', 'funding round pulled', 'funding dried up']
+  'failed to raise funding', 'unable to raise funding', 'funding round failed', 'hired a VP Sales, then fired him',
+  'hiring of SDRs paused', 'hiring for SDRs is on hold', 'hiring SDRs on pause', 'hiring SDRs paused in Q3', 'funding round fell apart', 'Series A funding failed to close', 'funding round rumored', 'funding ban', 'funding slowdown', 'funding talks collapsed', 'funding round pulled', 'funding dried up']
 
 for (const q of [...BODY, ...C1, ...C2]) {
   test(`#1163 "${q}" compiles to no positive funding / hiring / hire condition`, () => {
@@ -45,7 +46,7 @@ for (const q of [...BODY, ...C1, ...C2]) {
 }
 
 test('#1163 a stopped hiring condition keeps a clean role, and the plan view says NOT', () => {
-  for (const [q, role] of [['hiring SDRs postponed', 'SDRs'], ['hiring SDRs is off the table', 'SDRs'], ['hiring SDRs on hold', 'SDRs'], ['hiring office manager role withdrawn', 'office manager'], ['stopped hiring SDRs', 'SDRs'], ['hiring SDRs has slowed', 'SDRs'], ['hiring SDRs has stopped', 'SDRs'], ['hiring down 30%', ''], ['hired a VP Sales, then fired him', 'VP Sales'], ['hired fewer SDRs', 'SDRs']] as const) {
+  for (const [q, role] of [['hiring SDRs postponed', 'SDRs'], ['hiring SDRs is off the table', 'SDRs'], ['hiring SDRs on hold', 'SDRs'], ['hiring office manager role withdrawn', 'office manager'], ['stopped hiring SDRs', 'SDRs'], ['hiring SDRs has slowed', 'SDRs'], ['hiring SDRs has stopped', 'SDRs'], ['hiring down 30%', ''], ['hired a VP Sales, then fired him', 'VP Sales'], ['hired fewer SDRs', 'SDRs'], ['hiring is paused for now', ''], ['hiring has been put on hold', ''], ['hiring SDRs got cancelled', 'SDRs']] as const) {
     const [x] = triggers(q)
     assert.deepEqual([x.cond.kind === 'hire_made' ? 'hiring' : x.cond.kind, x.negated, x.cond.role], ['hiring', true, role], q)
     assert.match(planView(compileTargeting(q)).summary, /^NOT C1 /, q)
@@ -67,7 +68,12 @@ test('#1163 ordinary positive requests stay positive (real roles, double negativ
     'Cancellation management software companies hiring SDRs', 'Scrap metal recyclers hiring drivers', 'hiring SDRs to fix sales delays', 'Lost Dog Rescue hiring a receptionist',
     "agencies that aren't franchises hiring SDRs", "firms that don't outsource sales hiring SDRs", 'startups that lost their founder hiring SDRs',
     'avoid agencies hiring SDRs', 'firms rather than agencies hiring SDRs', 'clinics hiring crisis counselors', 'airlines hiring cancellation agents',
-    'hiring a capped commission SDR', 'startups hiring SDRs with fewer than 50 employees', 'hiring SDRs again after a freeze', 'venture backed down-market SaaS', 'hired a CRO and fired their agency', 'hired a CRO and ended their agency contract', 'Series A but quit Stripe', 'companies hiring account executives and fired up their outbound', 'Series A startups that raised funding and fired up sales', 'companies hiring SDRs and fired its agency']) {
+    'hiring a capped commission SDR', 'startups hiring SDRs with fewer than 50 employees', 'hiring SDRs again after a freeze', 'venture backed down-market SaaS', 'hired a CRO and fired their agency', 'hired a CRO and ended their agency contract', 'Series A but quit Stripe', 'companies hiring account executives and fired up their outbound', 'Series A startups that raised funding and fired up sales', 'companies hiring SDRs and fired its agency',
+    'companies hiring SDRs despite the hiring freeze', 'hiring SDRs amid the slowdown', 'hiring SDRs through the crunch', 'hiring SDRs despite cutbacks',
+    'hiring SDRs amid cutbacks', 'hiring SDRs post freeze', 'hiring SDRs post-shutdown', 'hiring SDRs since the freeze', 'hiring SDRs before the freeze',
+    'hiring SDRs following a hiring freeze', 'companies hiring SDRs throughout the downturn crisis', 'hiring SDRs during the crisis',
+    'companies with declining sales hiring SDRs', 'companies that lost sales hiring SDRs', 'retailers with reduced sales hiring SDRs',
+    'bootstrapped companies that avoid VC hiring SDRs', 'founders who reject VC hiring SDRs', 'founders who refused VC raised a seed round']) {
     const t = triggers(q)
     assert.ok(t.length > 0, `${q}: no condition`)
     for (const x of t) assert.equal(x.negated, false, `${q}: ${x.cond.kind} "${x.cond.text}" read NEGATED`)
