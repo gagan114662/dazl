@@ -72,3 +72,39 @@ test('#1250: per person, on the company\'s own domain, never a role inbox, anoth
   assert.equal(m.email_role_pct, 13, 'role: 1 of 8')
   assert.equal(m.email_guess_pct, 13, 'guess: 1 of 8, shown, never counted')
 })
+
+test("#1250 (council): the lead's own named buyer, a lookalike domain, an ambiguous or someone else's printed address, a contact with extra text", () => {
+  const { db, lead, enrich } = seed()
+  const home = '233 S Wacker Dr, Chicago, IL 60606'
+  lead('look', { company: 'Acme Law', name: 'Rae Moss', contact: 'rae.moss@notacme.example', domain: 'acme.example' })            // lookalike domain
+  lead('sub', { company: 'Acme Two', name: 'Rae Moss', contact: 'Rae Moss <rae.moss@mail.acme2.example>, +1 312 555 0100', domain: 'acme2.example' }) // counts: subdomain, contact with extra text
+  lead('two', { company: 'Cedar Law', domain: 'cedar.example' })                                                                    // two printed addresses: neither is settled
+  enrich('two', 'person', 'Lou Grant, Partner', 'https://cedar.example/team')
+  recordEmailGuesses(db, 'A', 'two', 'cedar.example', [], ['Lou Grant, Partner'], { env: {}, homeText: home, seen: [{ address: 'lgrant@cedar.example', url: 'https://cedar.example/team' }] })
+  recordEmailGuesses(db, 'A', 'two', 'cedar.example', [], ['Lou Grant, Partner'], { env: {}, homeText: home, seen: [{ address: 'lou.grant@cedar.example', url: 'https://cedar.example/contact' }] })
+  lead('else', { company: 'Spruce Law', name: 'Ann Bell', domain: 'spruce.example' })                                                // the printed address is another person's
+  enrich('else', 'person', 'Max Ford, Partner', 'https://spruce.example/team')
+  recordEmailGuesses(db, 'A', 'else', 'spruce.example', [], ['Max Ford, Partner'], { env: {}, homeText: home, seen: [{ address: 'mford@spruce.example', url: 'https://spruce.example/team' }] })
+  lead('surname', { company: 'Smile Dental', name: 'Dana Lee', contact: 'lee@smile.example', domain: 'smile.example' })          // a bare surname: any Lee's mailbox
+  lead('press', { company: 'Maple Law', name: 'Ira Cole', contact: 'press@maple.example', domain: 'maple.example' })                 // a role inbox outside the old short list
+  lead('dr', { company: 'Birch Dental', name: 'Dr. Jane Smith', contact: 'jane.smith@birch.example', domain: 'birch.example.' })        // counts: honorific stripped, trailing dot
+  lead('drbox', { company: 'Ash Dental', name: 'Dr. Jane Smith', contact: 'dr@ash.example', domain: 'ash.example' })                  // "dr" is not her name
+  lead('office', { company: 'Fir Dental', domain: 'fir.example' })                                                                   // a role word that matches a "name"
+  enrich('office', 'person', 'Office Manager, Front desk', 'https://fir.example/team')
+  enrich('office', 'email', 'office@fir.example', 'https://fir.example/team')
+  lead('offpub', { company: 'Pine Law', domain: 'pine.example' })                                                                    // published on another domain
+  enrich('offpub', 'person', 'Kay Dunn, Partner', 'https://pine.example/team')
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, source_url) VALUES ('A', 'offpub', 'Kay Dunn, Partner', 'kdunn@other.example', 'published', 'published', 'https://pine.example/team')").run()
+  lead('nourl', { company: 'Oak Law', domain: 'oak.example' })                                                                       // published row without the page it was printed on
+  enrich('nourl', 'person', 'Ned Shaw, Partner', 'https://oak.example/team')
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier) VALUES ('A', 'nourl', 'Ned Shaw, Partner', 'nshaw@oak.example', 'published', 'published')").run()
+  lead('tenant', { company: 'Yew Law', domain: 'yew.example' })                                                                      // another tenant's rows for this lead id
+  enrich('tenant', 'person', 'Uma Ross, Partner', 'https://yew.example/team')
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, source_url) VALUES ('B', 'tenant', 'Uma Ross, Partner', 'uross@yew.example', 'published', 'published', 'https://yew.example/team')").run()
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, confidence) VALUES ('B', 'tenant', 'Uma Ross, Partner', 'uma.ross@yew.example', 'first.last', 'guessed', 'high')").run()
+  const m = only(db)
+  assert.equal(m.leads, 12)
+  assert.equal(m.email_pct, 17, 'only the subdomain lead and Dr. Jane Smith\'s own address: 2 of 12')
+  assert.equal(m.email_role_pct, 17, 'press@ and office@ are role inboxes, never a person\'s own: 2 of 12')
+  assert.equal(m.email_guess_pct, 0, 'another tenant\'s guess for the same lead id is not read')
+})

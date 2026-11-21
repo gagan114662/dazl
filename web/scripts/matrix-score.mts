@@ -11,7 +11,7 @@ import { eventDayVerified } from '../lib/scan/scoreboard.ts'
 import { leadHoldReason, timingOptsFor } from '../lib/outreach/lead-hold.ts'
 import { nameBound, GENERIC_LOCAL } from '../lib/outreach/contact-route.ts'
 import { publishedCandidateRowsForLeads, selectPublishedCandidate, publishedNameKey } from '../lib/people/email-pattern.ts'
-import { sameSite } from '../lib/connectors/sitecrawl.ts'
+import { sameSite, ROLE } from '../lib/connectors/sitecrawl.ts'
 
 export interface MatrixThresholds { ready_leads_min: number; named_contact_min_pct: number; dated_source_min_pct: number; location_category_match_min_pct: number; per_case_confirm_cap_usd: number }
 export interface MatrixCase { id: string; label: string; seller?: string; offer?: string; query: string; expect: { location_keywords: string[]; category_keywords: string[] } }
@@ -32,6 +32,18 @@ type LeadRow = Record<string, unknown> & { id: string; name: string | null; comp
 // never stands in for a person. 'guess' (a named person with only a pattern guess) and 'role' (a role inbox only) are shown apart and
 // never counted toward the column.
 type EmailClass = 'person' | 'guess' | 'role' | 'none'
+// nameBound also accepts a bare surname ("lee@"); any colleague with that surname could own it, so the scorer needs the first name or
+// its initial in the address too (first, first.last, flast, firstl, lastfirst, lastf).
+// A role word ("office@", "clinic@") is never a person's own address, whatever name it happens to match; an honorific is not a
+// first name ("Dr. Jane Smith" owns jane.smith@, not dr@), stripped as splitName strips it on the published path.
+const roleLocal = (local: string) => { const l = local.split('+')[0].replace(/[._-]/g, ''); return GENERIC_LOCAL.test(l) || ROLE.test(l) }
+function ownAddress(local: string, name: string): boolean {
+  const bare = name.replace(/^(dr|mr|ms|mrs|prof)\.?\s+/i, '')
+  const parts = bare.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').match(/[a-z]+/g) ?? []
+  const l = local.split('+')[0].replace(/[._-]/g, '')
+  return !roleLocal(local) && nameBound(local, bare) && !(parts.length > 1 && l === parts[parts.length - 1])
+}
+const ADDRESS = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/g
 function guessedRowsForLeads(db: Database.Database, tenantId: string, leadIds: string[]): Record<string, string[]> {
   const out: Record<string, string[]> = {}
   if (!leadIds.length) return out
@@ -44,15 +56,16 @@ function guessedRowsForLeads(db: Database.Database, tenantId: string, leadIds: s
 function emailClass(l: LeadRow, e: Enrichment[], published: ReturnType<typeof publishedCandidateRowsForLeads>[string], guessed: string[]): EmailClass {
   const company = (l.company ?? '').trim()
   const own = (l.name ?? '').split(',')[0].trim()
-  const names = [...(own && own !== company ? [own] : []), ...e.filter(x => x.kind === 'person').map(x => x.value.split(',')[0].trim())].filter(Boolean)
-  const addrs = [l.contact ?? '', ...e.filter(x => x.kind === 'email').map(x => x.value)].map(a => a.trim().toLowerCase()).filter(a => a.includes('@'))
-  const site = (l.company_domain ?? '').trim().toLowerCase().replace(/^www\./, '')
-  const onSite = (a: string) => !!site && sameSite((a.split('@')[1] ?? '').replace(/\.$/, ''), site)
+  // the named buyer: the lead's own named person, else the people the crawl found on the company's site (the order named% uses)
+  const names = own && own !== company ? [own] : e.filter(x => x.kind === 'person').map(x => x.value.split(',')[0].trim()).filter(Boolean)
+  const addrs = [l.contact ?? '', ...e.filter(x => x.kind === 'email').map(x => x.value)].flatMap(a => a.toLowerCase().match(ADDRESS) ?? [])
+  const site = (l.company_domain ?? '').trim().toLowerCase().replace(/^www\./, '').replace(/\.$/, '')
+  const onSite = (a: string) => !!site && sameSite(a.split('@')[1] ?? '', site)
   if (names.some(n => { const p = selectPublishedCandidate(published ?? [], n); return !!p && onSite(p.address.toLowerCase()) })) return 'person'
-  if (addrs.some(a => onSite(a) && names.some(n => nameBound(a.split('@')[0], n)))) return 'person'
+  if (addrs.some(a => onSite(a) && names.some(n => ownAddress(a.split('@')[0], n)))) return 'person'
   const keys = new Set(names.map(publishedNameKey).filter(Boolean))
   if (guessed.some(p => keys.has(publishedNameKey(p.split(',')[0] ?? '')))) return 'guess'
-  if (addrs.some(a => GENERIC_LOCAL.test(a.split('@')[0].split('+')[0].replace(/[._-]/g, '')))) return 'role'
+  if (addrs.some(a => roleLocal(a.split('@')[0]))) return 'role'
   return 'none'
 }
 
@@ -106,7 +119,7 @@ export function verdict(m: CaseMetrics, t: MatrixThresholds): { pass: boolean; w
 
 export const DEFINITIONS = [
   'ready: companies (one per domain or normalised name) the product shows ready (lib/outreach/lead-hold.ts, the rule Home and Leads use); staging counts leads with no review reason',
-  'named/email/dated/match %: of the leads the scan listed (not of ready ones); named = a person on the lead or on the company\'s own site; email = a named person with their own address on the company\'s own domain (printed on its site, or carrying their name), never a role inbox or a guess; guess% = a named person with only a pattern guess; role% = a role inbox only (both shown, never counted); dated = a proven event day (event_date_proof) with a source URL; match = a place AND a category keyword in the lead\'s text (a proxy: staging opens the source pages)',
+  'named/email/dated/match %: of the leads the scan listed (not of ready ones); named = a person on the lead or on the company\'s own site; email = a named person with their own address on the company\'s own domain (printed on its site, or carrying their name), never a role inbox or a guess; guess% = a named person with only a pattern guess; role% = a role inbox only, no guess (both shown, never counted); dated = a proven event day (event_date_proof) with a source URL; match = a place AND a category keyword in the lead\'s text (a proxy: staging opens the source pages)',
   'usd: settled model and paid-vendor calls (refused calls excluded); TinyFish search/fetch inside its free allowance is priced at 0 and is not in it',
   'icp: inferred by the runner from the query (staging runs with the profile reviewed in the UI), so queries can differ from a staging run',
 ]
