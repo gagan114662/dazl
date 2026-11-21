@@ -97,7 +97,7 @@ for (const where of ['London (Ontario)', 'London, Ky.']) {
 }
 
 test('#1205 a profile in another country never takes the UK London for a bare "London"; a UK or unset profile keeps it', () => {
-  for (const c of ['CA', 'Canada', 'US', 'United States']) assert.equal(profilePlace('London', c), null, `a ${c} profile's bare London is not the UK's`)
+  for (const c of ['CA', 'Canada', 'US', 'United States', 'IE', 'DE', 'AU', 'IN', 'SG', 'Ireland']) assert.equal(profilePlace('London', c), null, `a ${c} profile's bare London is not the UK's`)
   assert.equal(profilePlace('London, Ontario', 'CA')?.name, 'London', 'a Canadian profile naming its province keeps its London')
   assert.equal(placeIn('in London, Ontario')!.ok('London, UK'), false)
   for (const c of ['UK', 'United Kingdom', 'GB', null]) assert.equal(profilePlace('London', c)?.name, 'London', `${c} profile keeps the UK London`)

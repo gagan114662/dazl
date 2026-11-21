@@ -3,7 +3,7 @@ import { STATES } from './us-states.ts'
 import type { Evidence, SourceAdapter, SafeGet } from './types.ts'
 import { decodeText } from './rss.ts'
 import { norm } from '../scan/evidence.ts'
-import { countriesIn, resolveSegment, regionOf, regionsIn, countryOfRegion } from '../scan/countries.ts'
+import { countriesIn, resolveSegment, regionOf, regionsIn, countryOfRegion, countryFromField } from '../scan/countries.ts'
 import { parseWindowDays } from '../scan/window.ts'
 import { rolePhrases } from '../search/direct-queries.ts'
 import { domainSlug } from '../signals/entity-match.ts'
@@ -53,7 +53,8 @@ const NYC_OK = new RegExp(`^\\s*(?:${WORK}${SEP})?(?:new york(?:\\s+city)?|nyc|m
 // is read by the same resolvers the rest of the place code uses (a country, a US state, a Canadian province), never a list of names here.
 // A full name may follow with or without a comma ("London Ontario"); a qualifier in parentheses or after a slash or bar counts as one after a comma
 // or dash ("London (Ontario)", "London/Ontario", "London | ON", "London \u2013 Ontario").
-// A two-letter code counts after a comma / parenthesis in capitals ("London, IN hiring"), in any case when it closes its clause ("london, ky"),
+// A two-letter code counts after a comma / parenthesis in capitals ("London, IN hiring"), in any case when it closes its clause ("london, ky";
+// an abbreviation with a period counts only capitalised, so "london, ky." resolves no place and fails closed),
 // and with no comma only in capitals closing its clause ("London ON"): never the word "in" of "London in 2025". An abbreviation no resolver
 // reads and no UK marker ("London, Ky.", "London, W.Va.") is a qualifier too: the London is not taken for the UK's, and the job boards then
 // name why they could not place it.
@@ -207,7 +208,8 @@ export function bareUsCity(name: string): { city: string; abbr: string } | null 
 // the place "Toronto", which placeIn does not resolve alone: review at ca63ac3a, 8 non-US shapes lost the board source); `name` is the place's identity, the de-dupe key.
 // #1205 review (F1): a bare listed world city ('Vancouver') is read in the PROFILE's country when one is set: a US profile's 'Vancouver' is Vancouver, WA
 // (the US-city fallback below), never Vancouver, Canada; a profile in a third country gets no place (the run names the city as unplaceable).
-const countryCode = (c: string): string | null => /^ca$/i.test(c.trim()) ? 'CA' : resolveSegment(c, true)
+// #1205: a profile's country is a FIELD: an ISO code ("IE", "DE", "CA" = Canada) is read as one, as are names ("Ireland")
+const countryCode = (c: string): string | null => countryFromField(c)
 export function profilePlace(where: string, country?: string | null): { text: string; name: string } | null {
   const isUs = /^(?:u\.?s\.?(?:a\.?)?|united states(?: of america)?)$/i.test((country ?? '').trim())
   const listed = Object.prototype.hasOwnProperty.call(WORLD_CITIES, where.trim()) ? WORLD_CITIES[where.trim()] : null
