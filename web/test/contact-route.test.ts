@@ -90,6 +90,12 @@ test('a crawled page is never called the company website unless the site identit
     assert.equal(same.provenance.state, 'unconfirmed_site', contact)
     assert.equal(same.provenance.stale, true, contact)
   }
+  // The same address crawled with no recorded website (the Kyro shape): the card says the own website was not identified on
+  // both lines, never "printed on the cited page", and the draft side asks for the website to be confirmed first.
+  const noSite: CardLead = { ...cardLead, id: 'l-nosite', contact: 'contact@kyro.ai', enrichments: [emailRow] }
+  assert.equal(contactIdentity(noSite).state, 'none')
+  assert.equal(contactRoute(lead({ id: 'l-nosite', contact: 'contact@kyro.ai', enrichments: [emailRow] }), null, NOW_MS).provenance.state, 'unrecorded_site')
+  assert.equal(domainReviewFor({ id: 'l-nosite', contact: 'contact@kyro.ai' }, [emailRow]).state, 'required')
 })
 
 test('an invalid domain fails; a recorded failed check fails; catch-all and mail-server-found stay uncertain', () => {
