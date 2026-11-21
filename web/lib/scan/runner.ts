@@ -1798,7 +1798,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         }
         // a public-ATS posting the model listed is read itself too (guarded fetch; dated by its board), not only used to find its board
         const listedPosts = textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) && atsPublisherRef(c.jobUrl) ? [c.jobUrl] : [])
-        const ordered = [...new Set([...boardPosts, ...listedPosts, ...found.preferredPublisherUrls, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url))
+        const ordered = [...new Set([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url))
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
           return board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(url.hostname, { allowPrivateDomains: true }) ?? url.hostname
