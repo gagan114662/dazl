@@ -66,7 +66,8 @@ export const sitecrawlEnabled = (env: Record<string, string | undefined> = proce
 // opts.signal: the caller's abort (and the crawl's own deadline, #871) handed to the fetch itself, so a timed-out or
 // aborted crawl CANCELS the native operation instead of abandoning a running socket. A Get that ignores it is still
 // bounded by the crawl's own race, but production Gets (rawGet, crawl4ai) honor it.
-export type Get = (url: string, opts?: { signal?: AbortSignal; noRedirect?: boolean }) => Promise<{ status: number; body: string; finalUrl: string; text?: string } | null>
+type GetResult = { status: number; body: string; finalUrl: string; text?: string; redirect?: string }
+export type Get = (url: string, opts?: { signal?: AbortSignal; noRedirect?: boolean }) => Promise<GetResult | null>
 
 // #1122: a page's visible text, in ONE linear pass (no backtracking pattern: a page of unclosed "<script" or "<" must not cost quadratic time,
 // as /<(script|style)[\s\S]*?<\/\1>/ and /<[^>]+>/ do - measured 22 s and 53 s on 800 KB of "<script "). Script, style, noscript, svg and
@@ -117,11 +118,11 @@ function inflateEitherWay(): Transform {
   })
   return t
 }
-export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal, noRedirect = false): Promise<{ status: number; body: string; finalUrl: string; text?: string } | null> {
+export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal, noRedirect = false): Promise<GetResult | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
     let hard: NodeJS.Timeout | undefined = undefined
-    const resolve = (v: { status: number; body: string; finalUrl: string; text?: string } | null | Promise<{ status: number; body: string; finalUrl: string; text?: string } | null>) => { clearTimeout(hard); resolveRaw(v as never) }
+    const resolve = (v: GetResult | null | Promise<GetResult | null>) => { clearTimeout(hard); resolveRaw(v as never) }
     let u: URL
     try { u = new URL(rawUrl) } catch { return resolve(null) }
     if (u.protocol !== 'https:' || u.username || u.password || hops > 2) return resolve(null)
@@ -130,7 +131,10 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
       const status = res.statusCode ?? 0
       if (status >= 300 && status < 400 && res.headers.location) {
         res.resume()
-        if (noRedirect) return resolve(null)
+        if (noRedirect) {
+          const location = String(res.headers.location)
+          return resolve({ status, body: '', finalUrl: u.href, ...(location.length <= 500 ? { redirect: location } : {}) })
+        }
         let next: URL
         try { next = new URL(String(res.headers.location), u) } catch { return resolve(null) }
         if (next.hostname.replace(/^www\./, '') !== u.hostname.replace(/^www\./, '')) return resolve(null) // stay on the same site
@@ -1001,7 +1005,7 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal, opts?.noRedirect), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, buyerDiscovery: { ownAbout: boolean; authorizedHints?: readonly string[]; reserveHintSlot?: boolean } | null = null): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal, opts?.noRedirect), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, buyerDiscovery: { ownAbout: boolean; authorizedHints?: readonly string[] } | null = null): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number; withoutHint?: { url: string; found: Found[]; reason: string } }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -1085,16 +1089,28 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       paths.splice(paths[0] && BUYER_DIRECTORY_PATH.test(paths[0].path) ? 1 : 0, 0, ...buyerPaths.map(path => ({ path })))
     }
     let linkedBuyerProved = false
+    let citedOnlyUrl: string | undefined
     let queuedBio = false
     for (const { path: p, name, expectedValue } of paths) {
       if (stopped()) { stoppedBy = 'aborted'; break }
-      if (pages >= MAX_PAGES - (buyerDiscovery?.reserveHintSlot && !citedAbout ? 1 : 0)) { stoppedBy = 'pages'; break }
+      if (pages >= MAX_PAGES) { stoppedBy = 'pages'; break }
       if (deadline && Date.now() >= deadline) { stoppedBy = 'time'; break }
       if (p === citedAbout && p !== linkedAbout && linkedBuyerProved) continue
       if (!robots.allows(p)) continue
       const exactBuyerRead = buyerPaths.includes(p)
-      const requested = exactBuyerRead ? new URL(p, homePage).href : origin + p
-      const r = await polite(requested, robots.delayMs, exactBuyerRead)
+      let requested = exactBuyerRead ? new URL(p, homePage).href : origin + p
+      let r = await polite(requested, robots.delayMs, exactBuyerRead)
+      // Independently homepage-linked pages may canonicalize just a single
+      // trailing slash. Verify target robots before dispatching the second hop.
+      // A designated citation never gets this exception.
+      if (p === linkedAbout && p !== citedAbout && !p.endsWith('/') && r?.redirect &&
+          [301, 302, 307, 308].includes(r.status) && r.finalUrl === requested) {
+        let target: URL | null
+        try { target = new URL(r.redirect, requested) } catch { target = null }
+        if (target?.href !== requested + '/' || !robots.allows(p + '/')) continue
+        requested = target.href
+        r = await polite(requested, robots.delayMs, true)
+      }
       if (!r || r.status >= 400) continue
       pages++
       if (exactBuyerRead && (r.status !== 200 || r.finalUrl !== requested)) continue
@@ -1103,8 +1119,10 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       const buyerPage = sameCompanyPage(page, homePage) && PEOPLE_PAGE.test(page.pathname)
       // A redirected bio provides no contact, location or person evidence.
       if (name && (!buyerPage || page.pathname.replace(/\/+$/, '') !== p.replace(/\/+$/, ''))) continue
+      const citedOnly = p === citedAbout && p !== linkedAbout
+      if (citedOnly) citedOnlyUrl = r.finalUrl
       onPage?.(r.body, r.finalUrl, r.status)
-      if (p !== citedAbout && r.finalUrl.length <= 500 && page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
+      if (!citedOnly && r.finalUrl.length <= 500 && page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
       if (buyerPage) buyerPages++
       // Require the exact directory name, and preserve extractPeople's role/anti-quote rules.
       const people = extractPeople(r.body, r.finalUrl, buyerRoles)
@@ -1121,7 +1139,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
         if (label) boundPeople[0] = { ...boundPeople[0], label }
       }
       for (const f of [...extractContacts(r.body, r.finalUrl, site), ...boundPeople]) {
-        const key = f.kind + f.value
+        const key = (citedOnly ? 'cited:' : '') + f.kind + f.value
         if (!found.has(key) || (expectedValue === f.value && f.kind === 'person' && profileFromListedLabel(f.label))) found.set(key, f)
       }
       if (p !== citedAbout && buyerRoles && buyerPage && !name && !queuedBio) {
@@ -1156,9 +1174,14 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       }
     }
     // Addresses and phones keep their cap; listed people ride separately so they never crowd an address out, and never turn 'none_published' into 'ok'.
-    const all = [...found.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
+    const select = (omit?: string) => {
+      const unique = new Map<string, Found>()
+      for (const f of found.values()) if (f.url !== omit && !unique.has(f.kind + f.value)) unique.set(f.kind + f.value, f)
+      const all = [...unique.values()], contacts = all.filter(f => f.kind !== 'person'), people = all.filter(f => f.kind === 'person')
+      return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published' }
+    }
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], buyerPages, reason: contacts.length ? 'ok' : 'none_published', pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
+    return { ...select(), ...(citedOnlyUrl ? { withoutHint: { url: citedOnlyUrl, ...select(citedOnlyUrl) } } : {}), buyerPages, pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -1541,7 +1564,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (canReplay && !opts?.noRedirect) return null
           if (!robot && shared.pages >= MAX_PAGES) return null
           const answer = await hostGet(url, opts)
-          if (!robot && answer && answer.status < 400) {
+          if (!robot && answer && answer.status < 400 && !answer.redirect) {
             shared.pages++
             if (!shared.fetchedAt.has(answer.finalUrl)) shared.fetchedAt.set(answer.finalUrl, Math.floor((deps.now ?? Date.now()) / 1000))
           }
@@ -1550,10 +1573,18 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
         const remaining = shared ? Math.max(1, shared.deadline - Date.now()) : crawlBudgetMs
         const r = await crawlSite(cand, boundedGet, deps.gapMs, company, !nativeOnly && (deps.env ?? process.env).SITECRAWL_SOCIAL === '1', deps.signal, onPage, buyerRoles, remaining,
-          companyFirstContacts ? { ownAbout: true, authorizedHints, reserveHintSlot: shareSlot && !hintKey } : null)
+          companyFirstContacts ? { ownAbout: true, authorizedHints } : null)
         if (companyFirstContacts) strictSeenForRead.set(r, strictSeen)
-        if (hintKey) hintedRead.set(cand, { key: hintKey, crawl: r })
-        else siteRead.set(cand, r)
+        if (hintKey) {
+          hintedRead.set(cand, { key: hintKey, crawl: r })
+          if (!siteRead.has(cand) && r.homeNorm !== undefined && r.reason !== 'name_mismatch') {
+            const { withoutHint, ...rest } = r
+            const unhinted = withoutHint ? { ...rest, found: withoutHint.found, reason: withoutHint.reason,
+              pages: Math.max(1, rest.pages - 1), buyerPages: Math.max(0, (rest.buyerPages ?? 0) - 1) } : rest
+            strictSeenForRead.set(unhinted, new Map([...strictSeen].filter(([url]) => url !== withoutHint?.url)))
+            siteRead.set(cand, unhinted)
+          }
+        } else siteRead.set(cand, r)
         return r
       })()
       inflight.set(cand, reading)
