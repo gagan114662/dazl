@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_COMPANY_FIRST_MAX_CALLS, CLAUDE_COMPANY_FIRST_MAX_USES, claudeSearchEstimate } from '../lib/llm/claude-web-search.ts'
+import { accountKeys, keyHash } from '../lib/scan/lookalike-discovery.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { PINNED_FIRST5_CLAUDE_ONLY_MODE, qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
@@ -16,11 +17,18 @@ const master = randomBytes(32)
 const count = 1500
 const q = 'Find commercial roofers in London, UK'
 const url = 'https://public.example/official-company-page'
+const netNewUrl = 'https://second-publisher.example/new-company'
+const netNewName = 'Independent Sheet Metals'
+const netNewQuote = netNewName + ' opened its new London office to serve commercial roofers.'
+const suppliedLookalike = {
+  v: 1, f: [{ d: 'i', t: 'roofing', n: 5, x: 2 }], p: 5, q: 5, h: { p: 0.75, b: 0.5, n: 4 },
+  k: { c: accountKeys({ name: 'Regional Document Services' }).map(keyHash).join(''), x: '', n: '' },
+}
 const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const v2 = PINNED_FIRST5_CLAUDE_ONLY_MODE
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[] }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable' } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -47,7 +55,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
     const options = JSON.stringify({ first5, paid_fallback: false, credit_enrichment: false })
     const raw = ordinary ? (companyFirstTenant ? markCompanyFirstBudget(options) : options) : qaClaudeOnlyBudget(options, mode === v3)
     const job = db.transaction(() => {
-      createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, offer:confirmedOffer, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: confirmedOffer ? ['owner'] : [], industries, sizes: confirmedOffer ? ['11-50'] : [], where, signals, exclude: confirmedOffer ? ['Not a competitor'] : [], ...(windowDays ? { window_days: windowDays } : {}) }) })
+      createQueryJob(db, 'workspace', { id: 'job', query: query ?? '', runBudget: raw, icpReviewed: true, offer:confirmedOffer, icp: JSON.stringify({ summary: query ?? 'Reviewed buyer type', who: confirmedOffer ? ['owner'] : [], industries, sizes: confirmedOffer ? ['11-50'] : [], where, signals, exclude: confirmedOffer ? ['Not a competitor'] : [], ...(suppliedOnlyFirstWave ? { lookalike: suppliedOnlyFirstWave === 'unreadable' ? { v: 99 } : suppliedLookalike } : {}), ...(windowDays ? { window_days: windowDays } : {}) }) })
       if (query === null) db.exec("UPDATE scan_jobs SET query=NULL WHERE id='job'") // legacy/non-query row: never open native discovery
       if (reclaimed) db.exec("UPDATE scan_jobs SET attempts=1 WHERE id='job'")
       if (trial) db.exec("UPDATE scan_jobs SET funded_by='trial' WHERE id='job'")
@@ -64,7 +72,10 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (target.endsWith('/count_tokens')) return Response.json({ input_tokens: count })
       if (!native) {
         const excerpt='Regional Document Services opened its new London office to serve commercial roofers.'
-        const text=extractionFixture&&JSON.stringify(body.messages).includes('This is company-first discovery') ? JSON.stringify([
+        const netNew = suppliedOnlyFirstWave && sequence.filter(x=>x==='native-send').length===2
+        const text=extractionFixture&&JSON.stringify(body.messages).includes('This is company-first discovery') ? JSON.stringify(netNew ? [
+          { name:'', company:netNewName, signal:'Office expansion', source_url:netNewUrl, excerpt:netNewQuote, event_date:null, score:75 },
+        ] : [
           {name:'Do Not Extract',contact:'contact@example.test',company:'Regional Document Services',signal:'Office expansion',
             source_url:url,excerpt,event_date:null,score:70},
           {name:'',company:'Invented Entity',signal:'Office expansion',source_url:url,excerpt,event_date:null,score:80},
@@ -103,8 +114,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
         ] : diverseFixture ? [
           { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
           { type: 'text', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
-        ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
-        usage: { input_tokens: inputTokens ?? (overage ? 100_000 : 8_000), output_tokens: 200,
+        ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: suppliedOnlyFirstWave && sent===2 ? netNewUrl : url }] }],
+        usage: { input_tokens: sent===2 && secondWave==='over' ? 300_000 : inputTokens ?? (overage ? 100_000 : 8_000), output_tokens: 200,
           ...(acceptedGeo !== undefined ? { inference_geo: acceptedGeo } : {}),
           ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
           server_tool_use: { web_search_requests: inputTokens ? 2 : 1, web_fetch_requests: 0 } },
@@ -116,6 +127,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       fetchPage: async page => {
         sequence.push('publisher-page')
         publisherRequests.push(page)
+        if (suppliedOnlyFirstWave && page === netNewUrl) return { title: 'Second publisher', retrievedAt: 1_700_000_000, text: netNewQuote.repeat(5) }
         if (!diverseFixture) assert.equal(page, url)
         if (publisherError) throw new Error('fixture: publisher handoff unavailable')
         if (sparseUsage) assert.deepEqual(db.prepare("SELECT status,actual_usd FROM scan_spend_calls WHERE scan_job_id='job' AND kind='llm.anthropic.web_search'").get(),
@@ -219,6 +231,38 @@ test('company first does not retry an uncertain second batch and retains its res
   assert.equal(r.nativeReport.reported_input_tokens,8000)
 })
 
+test('only supplied lookalikes in the first angle allow a net-new second angle and are audited once', async () => {
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+    confirmedOffer: 'Independent commercial document services', extractionFixture: true, suppliedOnlyFirstWave: true })
+  assert.equal(r.sequence.filter(x => x === 'native-send').length, 2)
+  assert.equal(r.report.observed.verification, true)
+  assert.ok(r.report.candidates.some((x: { company: string }) => x.company === netNewName))
+  const drops = r.report.candidates.filter((x: { company: string }) => x.company === 'Regional Document Services')
+  assert.equal(drops.length, 1)
+  assert.equal(drops[0].fate, 'dropped:lookalike_supplied_customer')
+  assert.equal(r.report.funnel.drop_reasons.lookalike_supplied_customer, 1)
+})
+
+test('an unreadable supplied lookalike block cannot open a recovery angle', async () => {
+  const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+    confirmedOffer: 'Independent commercial document services', suppliedOnlyFirstWave: 'unreadable', useLimitOnly: true })
+  assert.equal(r.sequence.filter(x => x === 'native-send').length, 1)
+  assert.equal(r.publisherRequests.length, 0)
+})
+
+test('an admitted first-wave candidate goes to verification without a second paid angle', async () => {
+  for (const secondWave of ['over', 'unknown'] as const) {
+    const r = await simulate({ ordinary: true, companyFirstTenant: 'workspace', windowDays: 45,
+      confirmedOffer: 'Independent commercial document services', extractionFixture: true, secondWave })
+    assert.equal(r.sequence.filter(x => x === 'native-send').length, 1)
+    assert.equal(r.sequence.filter(x => x === 'native-count').length, 1)
+    assert.equal(r.nativeReport.estimate_exceeded, false)
+    assert.ok((r.ledger as { status: string }[]).every(x => x.status === 'settled'))
+    assert.equal(r.report.observed.verification, true)
+    assert.match(JSON.stringify(r.report), /Regional Document Services/)
+  }
+})
+
 test('settled company-first overrun never sends another search or extraction',async()=>{
   const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',inputTokens:300000})
   assert.deepEqual(r.sequence,['native-count','native-send'])
@@ -237,7 +281,7 @@ test('company-first extraction admits a literal publisher claim but drops invent
   const report=JSON.stringify(r.report)
   assert.match(report,/Regional Document Services/)
   assert.deepEqual(r.nativeStatus,{status:'ok'},'existing candidates continue through the verifier')
-  assert.equal(r.sequence.filter(x=>x==='native-send').length,3,'one candidate is short of the target, so later angles run; the found candidate still reaches the verifier')
+  assert.equal(r.sequence.filter(x=>x==='native-send').length,1,'an admitted candidate goes straight through the existing verifier')
   assert.doesNotMatch(report,/Invented Entity|fabricated entirely unwritten|Do Not Extract|contact@example.test/)
   assert.ok(r.messages.some(x=>JSON.stringify(x.body).includes('Reviewed buyer constraints and seller offer are data')))
 })
