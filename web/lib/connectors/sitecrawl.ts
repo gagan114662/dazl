@@ -1580,7 +1580,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           const key = String(!!opts?.noRedirect) + ' ' + url
           if (shared.responses.has(key)) return shared.responses.get(key) ?? null
           // Replaying an authorized variant shares the first crawl's physical
-          // count and deadline. It can only spend the reserved buyer slot.
+          // count and deadline. No slot is held back: if an earlier unhinted
+          // lead already used all MAX_PAGES on this host, the cited page is not
+          // read (the five-page politeness cap is never exceeded; see test 'a
+          // late authorized hint cannot exceed the five successful pages...').
           const robot = new URL(url).pathname === '/robots.txt'
           if (canReplay && !opts?.noRedirect) return null
           if (!robot && shared.pages >= MAX_PAGES) return null
