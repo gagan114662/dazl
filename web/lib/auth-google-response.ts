@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { cookieDomain } from './auth-google.ts'
+import { GOOGLE_LINK_RESULT_COOKIE, type GoogleLinkResult } from './google-link.ts'
 
 // Responses of the Google sign-in routes. Each one depends on the request and on runtime configuration and may carry
 // a one-time cookie, so none may be cached by the browser, a proxy or the framework.
@@ -26,6 +27,11 @@ export const clearReturnCookie = (res: NextResponse, base: string) => res.cookie
 export const LINK_NEXT_COOKIE = 'dazl_link_next'
 export const setLinkNextCookie = (res: NextResponse, base: string, value: string) => res.cookies.set(LINK_NEXT_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
 export const clearLinkNextCookie = (res: NextResponse, base: string) => res.cookies.set(LINK_NEXT_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
+// #1319: the result of a Google link, for the page it returns to (lib/google-link.ts GOOGLE_LINK_RESULT_COOKIE), never in
+// the address. Readable by that page's script (it shows the message, then clears it), so not HttpOnly; it holds only one
+// of the fixed GOOGLE_LINK_RESULTS words, nothing private. Two minutes, /app pages only.
+export const setLinkResultCookie = (res: NextResponse, base: string, result: GoogleLinkResult) =>
+  res.cookies.set(GOOGLE_LINK_RESULT_COOKIE, result, { ...cookieOpts(base, 120, '/app'), httpOnly: false })
 // The preview claim being continued through sign-in (#416): the claim token itself, host-only, short-lived. Path '/'
 // because both the Google callback and the claim route must read it; it carries no PII and is already a public-page URL.
 // Set only from a validated preview row (app/api/preview/[token]/google); every reader re-verifies it before any use.

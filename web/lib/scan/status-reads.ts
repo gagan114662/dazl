@@ -47,6 +47,16 @@ export async function readJobCost(db: Db, tenantId: string, jobId: string): Prom
   } catch { return { estimate: null, reserved_usd: null, cap_reserved_usd: null, read: false } }
 }
 
+// #1319: the per-scan cap a free-trial job ran under: what its trial reservation held (the job guard's limit, runner.ts).
+// Jobs started before the estimate kept the cap read it from here. Owner-scoped, read only; null when none is recorded.
+export async function readTrialScanCap(db: Db, tenantId: string, jobId: string): Promise<number | null> {
+  try {
+    const row = await db.get<{ r: number | string | null }>('SELECT MAX(reserve_usd) AS r FROM trial_reservations WHERE tenant_id = ? AND job_id = ?', [tenantId, jobId])
+    const v = row?.r == null ? null : Number(row.r)
+    return v !== null && Number.isFinite(v) && v > 0 ? v : null
+  } catch { return null }
+}
+
 // #1157 line 2: when this scan last did something the server recorded (a paid/free provider call sent or settled), so a
 // running page can say "last activity N s ago" instead of a silent "Still running". Owner-scoped, read only. null = no
 // call recorded yet (or the table does not exist): the page then falls back to the claim time, never an invented time.

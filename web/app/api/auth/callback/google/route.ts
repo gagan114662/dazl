@@ -1,11 +1,11 @@
-import { connection, NextRequest } from 'next/server'
+import { connection, NextRequest, type NextResponse } from 'next/server'
 import { createSession, getSessionUser, replacedSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { FRESH_AUTH_S } from '@/lib/sessions'
 import { getDb } from '@/lib/db/client'
 import { activateLifecycleForDb, recordLifecycleEventDb } from '@/lib/outreach/lifecycle'
-import { safeNext } from '@/lib/google-link'
+import { safeNext, type GoogleLinkResult } from '@/lib/google-link'
 import { exchangeCode, linkGoogle, parseCookie, resolveUser, sameString, signInConfig, verifyIdToken } from '@/lib/auth-google'
-import { clearClaimCookie, clearLinkNextCookie, clearOauthCookie, clearReturnCookie, LINK_NEXT_COOKIE, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setSessionCookie } from '@/lib/auth-google-response'
+import { clearClaimCookie, clearLinkNextCookie, clearOauthCookie, clearReturnCookie, LINK_NEXT_COOKIE, OAUTH_COOKIE, PREVIEW_CLAIM_COOKIE, redirectNoStore, RETURN_COOKIE, setClaimCookie, setLinkResultCookie, setSessionCookie } from '@/lib/auth-google-response'
 import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
@@ -14,16 +14,19 @@ import { captureError } from '@/lib/ops/errors'
 // linkMode: this attempt was a Google link (return cookie 'link'). A failed link must not leave link mode behind, or the
 // next plain Google sign-in within 10 minutes would take the link branch and never sign in (#1095). Any other return
 // intent (a #416 preview claim, Settings re-auth) is kept, so a failed round trip can resume it.
-// The page a link returns to (#1095): the /app page that asked (re-validated here), otherwise Settings, with ?google=.
-function linkLanding(base: string, req: NextRequest, result: string): URL {
+// The page a link returns to (#1095): the /app page that asked (re-validated here), as it was, otherwise Settings. The
+// result goes with it in a short-lived cookie the page reads once (#1319), never in the address: no "?google=taken".
+function linkLanding(base: string, req: NextRequest, result: GoogleLinkResult): NextResponse {
   const next = safeNext(req.cookies.get(LINK_NEXT_COOKIE)?.value)
-  return new URL(next ? `${next}${next.includes('?') ? '&' : '?'}google=${result}` : `/app/settings?google=${result}#account`, base)
+  const res = redirectNoStore(new URL(next ?? '/app/settings#account', base))
+  setLinkResultCookie(res, base, result)
+  return res
 }
 // A failed round trip. In link mode the signed-in user goes back to the page that asked, with the reason, never to the
 // sign-in page (whose Google button answers google_email_exists for a password account: the #1095 loop); both link
 // cookies are cleared. Otherwise sign-in with the error, and any other return intent (#416 preview claim) is kept.
 const back = (base: string, err: string, linkMode = false, req?: NextRequest) => {
-  const res = redirectNoStore(linkMode && req ? linkLanding(base, req, err === 'google_email_unverified' ? 'google_unverified' : 'failed') : new URL(`/sign-in?error=${err}`, base))
+  const res = linkMode && req ? linkLanding(base, req, err === 'google_email_unverified' ? 'google_unverified' : 'failed') : redirectNoStore(new URL(`/sign-in?error=${err}`, base))
   clearOauthCookie(res, base)
   if (linkMode) { clearReturnCookie(res, base); clearLinkNextCookie(res, base) }
   return res
@@ -60,7 +63,7 @@ export async function GET(req: NextRequest) {
     // sign-in does below. Best-effort: never blocks the link.
     if (result === 'linked') { try { await activateLifecycleForDb(db, id.email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:link-lifecycle', method: 'GET' }) } }
     // #1095: back to the page that asked (re-validated here), with the result; otherwise Settings as before
-    const res = redirectNoStore(linkLanding(base, req, result))
+    const res = linkLanding(base, req, result)
     clearOauthCookie(res, base)
     clearReturnCookie(res, base)
     clearLinkNextCookie(res, base)
