@@ -19,7 +19,11 @@ import { EventEmitter } from 'node:events'
 import https from 'node:https'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import { fetchPageDetailed, resetBoardMemo, type Page } from '../lib/scan/fetch-page.ts'
+import Database from 'better-sqlite3'
 import { verifyEvidence } from '../lib/scan/evidence.ts'
+import { evidenceRecheck } from '../lib/scan/evidence-recheck.ts'
+import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
+import { signalNamesBoardPosting } from '../lib/sources/ats-posting.ts'
 import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
 import { eventDayVerified, isHiringTrigger } from '../lib/scan/scoreboard.ts'
 
@@ -79,6 +83,39 @@ test('#533 live (4a6c4d7d): Rogo and voize board postings are dated by the board
       // the stored row (signal + signal_kind as the store keeps them) is what every reader judges the day on
       assert.equal(eventDayVerified(r), true, `${r.company}: stored day not verified ${JSON.stringify(r)}`)
     }
+  } finally { restore() }
+})
+
+// AC1 + AC3 on the same live postings: for the sales operations manager request neither title is the requested role (the synonym
+// set is bounded: "Post-Sales Operations" and "Revenue Operations" are not "Sales Operations"), so both are held as hiring without the
+// requested role - now dated by the board, never role-qualified. For a revenue operations manager request, voize's posting IS the
+// requested role: before this fix "revenue" kept it undated, so it could never reach the screen.
+test('#533 live: a revenue operations manager request puts voize on screen with its requested-role posting and board day; Rogo stays held', async () => {
+  const restore = fakeHttps({ rogo: ROGO_BOARD, voize: VOIZE_BOARD })
+  try {
+    const revops = { ...ICP, summary: 'B2B SaaS companies hiring a revenue operations manager', signals: ['hiring a revenue operations manager'] }
+    const x = await runFixture({ ...fixture([
+      { company: 'Rogo', signal: ROGO_SIGNAL, url: ROGO_URL, quote: ROGO_QUOTE },
+      { company: 'voize', signal: VOIZE_SIGNAL, url: VOIZE_URL, quote: VOIZE_QUOTE },
+    ]), request: REQUEST.replace('sales operations manager', 'revenue operations manager'), modelIcp: revops, reviewedIcp: revops })
+    const got = rows(x.db)
+    assert.deepEqual(got.map(r => [r.company, r.review_reason, r.event_date, r.event_date_proof]), [['Rogo', 'no_sales_hiring_evidence', ROGO_DAY, 'ats_structured'], ['voize', null, VOIZE_DAY, 'ats_structured']], JSON.stringify(got))
+    const e = x.db.prepare("SELECT e.value, e.label, e.source_url, e.source_date FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id WHERE l.company = 'voize' AND e.kind = 'hiring'").all() as { value: string; label: string; source_url: string; source_date: string }[]
+    assert.equal(e.length, 1, JSON.stringify(e))
+    assert.match(e[0].value, new RegExp(`Senior Revenue Operations Manager \\(m/f/d\\) - Sales Ops & Strategy - posted ${VOIZE_DAY}`))
+    assert.match(e[0].label, /^Requested role: revenue operations manager/)
+    assert.equal(e[0].source_date, VOIZE_DAY)
+  } finally { restore() }
+})
+
+test('#533 live (AC3): for the sales operations manager request both live titles are held as hiring without the requested role, dated by the board', async () => {
+  const restore = fakeHttps({ rogo: ROGO_BOARD, voize: VOIZE_BOARD })
+  try {
+    const x = await runFixture(fixture([
+      { company: 'Rogo', signal: ROGO_SIGNAL, url: ROGO_URL, quote: ROGO_QUOTE },
+      { company: 'voize', signal: VOIZE_SIGNAL, url: VOIZE_URL, quote: VOIZE_QUOTE },
+    ]))
+    assert.deepEqual(rows(x.db).map(r => [r.company, r.review_reason, r.event_date]), [['Rogo', 'no_sales_hiring_evidence', ROGO_DAY], ['voize', 'no_sales_hiring_evidence', VOIZE_DAY]])
   } finally { restore() }
 })
 
@@ -154,5 +191,48 @@ test('#533 review: a gapped board quote hands the judge only the words around ea
     const ok = r as { passage: string; judgeAttribution?: { matchedQuote: string } }
     assert.ok(ok.passage.length < 4000, `passage ${ok.passage.length} chars`)
     assert.equal(ok.judgeAttribution?.matchedQuote, 'post sales operations manager for the onboarding team ... full time role based in new york city')
+  } finally { restore() }
+})
+
+test('#533 review: a board-bound posting held after it is dated keeps its hiring kind on the stored row', async () => {
+  const restore = fakeHttps({ rogo: ROGO_BOARD })
+  try {
+    // the play asks for Boston; the Rogo record says New York City, so the dated posting is held for its place
+    const boston = { ...ICP, where: ['Boston'] }
+    const x = await runFixture({ ...fixture([{ company: 'Rogo', signal: ROGO_SIGNAL, url: ROGO_URL, quote: ROGO_QUOTE }]), modelIcp: boston, reviewedIcp: boston })
+    const [r] = rows(x.db)
+    assert.ok(r && r.review_reason, `held: ${JSON.stringify(r)}`)
+    assert.deepEqual([r.event_date, r.event_date_proof, r.signal_kind], [ROGO_DAY, 'ats_structured', 'hiring'], JSON.stringify(r))
+    assert.equal(isHiringTrigger(r.signal, r.signal_kind), true)
+  } finally { restore() }
+})
+
+test('#533 review: the evidence recheck dates a stored board-bound posting by the board, as the verifier does', async () => {
+  const db = new Database(':memory:'); migrateScan(db)
+  db.exec('CREATE TABLE users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)'); db.prepare('INSERT INTO users VALUES(?,?,?)').run('u', 'Revenue operations software', '')
+  const j = createQueryJob(db, 'u', { query: REQUEST })
+  db.prepare("UPDATE scan_jobs SET status='running',offer=?,icp=? WHERE id=?").run('Revenue operations software', JSON.stringify({ ...ICP, window_days: 30 }), j)
+  const quote = 'voize is hiring a Senior Revenue Operations Manager to own Sales Ops and Strategy'
+  // a row stored before this fix (signal_kind NULL), the same posting worded with a title the board does not give, and a stored non-hiring kind
+  const cases: [string, string | null, boolean][] = [[VOIZE_SIGNAL, null, true], ['Posted a Senior Revenue Account Director job on Ashby', null, false], [VOIZE_SIGNAL, 'funding', false]]
+  const ids = cases.map(([signal, kind], i) => { const id = String(i + 1).padStart(24, '0'); db.prepare('INSERT INTO leads(id,scan_job_id,company,signal,signal_kind,source_url,evidence_excerpt,event_date,review_reason) VALUES(?,?,?,?,?,?,?,?,?)').run(id, j, 'voize', signal, kind, VOIZE_URL, quote, VOIZE_DAY, 'blocked_by_site'); return id })
+  const restore = fakeHttps({ voize: VOIZE_BOARD })
+  try {
+    for (const [i, id] of ids.entries()) {
+      const p = await evidenceRecheck(db, 'u', id, undefined, new Date())
+      const c = p?.checks as { event_date_bound: boolean; event_date_proof?: string | null } | null
+      assert.deepEqual([c?.event_date_bound, c?.event_date_proof ?? null], cases[i][2] ? [true, 'ats_structured'] : [false, null], `${cases[i][0]} (${cases[i][1]}): ${JSON.stringify(p)}`)
+    }
+  } finally { restore() }
+})
+
+test('#533 review: the board binding needs a board title, the named board and a title; an inner "…" is a gap like "..."', async () => {
+  assert.equal(signalNamesBoardPosting(VOIZE_SIGNAL, VOIZE_URL, 'Senior Revenue Operations Manager (m/f/d) - Sales Ops & Strategy'), true)
+  for (const [s, u, t] of [[VOIZE_SIGNAL, VOIZE_URL, ''], [VOIZE_SIGNAL, VOIZE_URL, null], [VOIZE_SIGNAL, 'https://voize.example/careers/revops', 'Senior Revenue Operations Manager (Sales Ops)'], ['Posted a job on Ashby', VOIZE_URL, 'Senior Revenue Operations Manager']] as const) assert.equal(signalNamesBoardPosting(s, u, t), false, `${s} ${u} ${t}`)
+  const restore = fakeHttps({ rogo: ROGO_BOARD })
+  try {
+    const page = await read(ROGO_URL) as Page
+    const r = verifyEvidence({ company: 'Rogo', signal: ROGO_SIGNAL, source_url: ROGO_URL, excerpt: ROGO_QUOTE.replace(' ... ', ' … '), event_date: null } as never, page)
+    assert.equal(r.ok, true, JSON.stringify(r))
   } finally { restore() }
 })
