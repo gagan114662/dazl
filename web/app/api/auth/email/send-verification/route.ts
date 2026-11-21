@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   if (!systemMailAvailable()) return NextResponse.json({ error: 'Email delivery is not available. Try again later.' }, { status: 503 })
-  // checked in order, each refusal returned before the next counter is spent, so one exhausted limit never uses up another
+  // checked in order (IP, account, email), each refusal returned before a later counter is spent
   const hour = 60 * 60 * 1000
   for (const [key, limit] of [[`verify-send-ip:${clientIp(req)}`, 10], [`verify-send:${user.actorId}`, 3],
     [`verify-send-email:${createHash('sha256').update(user.email.toLowerCase()).digest('hex').slice(0, 32)}`, 3]] as const) {
