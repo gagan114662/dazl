@@ -105,34 +105,42 @@ async function checkBrowser(base,route,readLog){
   const {chromium}=require('playwright')
   const browser=await chromium.launch()
   try {
-    const ctx=await browser.newContext({serviceWorkers:'block'})
-    await ctx.addCookies([{name:'dazl_session',value:token,url:base}])
-    let css=0
-    await ctx.route('**/*',route=>{
-      const u=new URL(route.request().url())
-      if(u.origin!==base)return route.abort()
-      // Induce only a resource failure; app HTML/RSC and API are unmodified.
-      if(u.pathname.startsWith('/_next/static/')&&u.pathname.endsWith('.css')&&css===0){css++;return route.abort()}
-      return route.continue()
-    })
-    const page=await ctx.newPage()
-    const report=page.waitForResponse(r=>r.url()===base+'/api/client-errors'&&r.request().postDataJSON()?.kind==='signed_shell_timing')
-    const document=await page.goto(base+route)
-    assert.equal(document?.status(),200)
-    const id=document.headers()['x-request-id']
-    const posted=await report
-    assert.equal(posted.status(),204)
-    const content=posted.request().postDataJSON()
-    assert.equal(content.request_id,id)
-    assert.equal(content.route,route)
-    assert.equal(typeof content.ttfb_ms,'number')
-    assert.equal(typeof content.auth_marker_ms,'number')
-    assert.equal(content.css_failed,1)
-    assert.equal(content.js_failed,0)
-    const receipt=parseLog(readLog()).find(x=>x.request_id===id&&x.phase==='browser_document')
-    assert.ok(receipt)
-    assert.equal(receipt.css_failed,1)
-    assert.equal('receipt' in receipt,false)
+    for(const fault of [false,true]){
+      const ctx=await browser.newContext({serviceWorkers:'block'})
+      try {
+        await ctx.addCookies([{name:'dazl_session',value:token,url:base}])
+        let css=0
+        await ctx.route('**/*',route=>{
+          const u=new URL(route.request().url())
+          if(u.origin!==base)return route.abort()
+          // Induce only a resource failure; app HTML/RSC and API are unmodified.
+          if(u.pathname.startsWith('/_next/static/')&&u.pathname.endsWith('.css')&&fault&&css===0){css++;return route.abort()}
+          return route.continue()
+        })
+        const page=await ctx.newPage()
+        const report=page.waitForResponse(r=>r.url()===base+'/api/client-errors'&&r.request().postDataJSON()?.kind==='signed_shell_timing')
+        const document=await page.goto(base+route)
+        assert.equal(document?.status(),200)
+        const id=document.headers()['x-request-id']
+        const posted=await report
+        assert.equal(posted.status(),204)
+        const content=posted.request().postDataJSON()
+        assert.equal(content.request_id,id)
+        assert.equal(content.route,route)
+        assert.equal(typeof content.ttfb_ms,'number')
+        // A blocked stylesheet can prevent Suspense reveal. The fault case still proves
+        // the error receipt without mistaking an unrevealed marker for missing wire timing.
+        if(!fault||content.auth_marker_ms!==null)assert.equal(typeof content.auth_marker_ms,'number')
+        assert.equal(css,Number(fault),'exactly one stylesheet must actually be blocked in the fault case')
+        assert.equal(content.css_failed,Number(fault))
+        assert.equal(content.js_failed,0)
+        const receipt=parseLog(readLog()).find(x=>x.request_id===id&&x.phase==='browser_document')
+        assert.ok(receipt)
+        assert.equal(receipt.css_failed,Number(fault))
+        assert.equal(receipt.auth_marker_ms,content.auth_marker_ms)
+        assert.equal('receipt' in receipt,false)
+      }finally{await ctx.close()}
+    }
   }finally{await browser.close()}
 }
 async function testRoute(route, pageMarker) {

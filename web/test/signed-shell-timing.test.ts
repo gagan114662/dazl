@@ -94,3 +94,33 @@ test('async layout-auth measurement preserves decisions, exception identity, and
   ])
   assert.ok(records.every(r=>r.route===route&&r.request_id===id&&r.duration_ms>=0&&!JSON.stringify(r).includes('private detail')))
 })
+
+test('browser probe waits for a streamed auth marker to reveal after load, bounded by the deadline',()=>{
+  for(const reveal of [false,true]){
+    let hidden=true
+    const listeners:Record<string,()=>void>={}
+    const timers=new Map<number,()=>void>()
+    let mutate:()=>void=()=>{}
+    const bodies:string[]=[]
+    const fakeTiming={requestStart:30,responseStart:151,serverTiming:[{name:'dazl_request',description:id+'.61000.'+'a'.repeat(64)}]}
+    runInNewContext(SIGNED_SHELL_TIMING_BROWSER,{
+      location:{pathname:'/app',origin:'https://example.test'},
+      document:{documentElement:{},querySelector:()=>({closest:()=>hidden?{}:null})},
+      performance:{getEntriesByType:()=>[fakeTiming],now:()=>235},
+      MutationObserver:class{constructor(cb:()=>void){mutate=cb}observe(){}disconnect(){}},
+      addEventListener:(type:string,cb:()=>void)=>{listeners[type]=cb},removeEventListener:()=>{},
+      setTimeout:(cb:()=>void,ms:number)=>{timers.set(ms,cb)},
+      fetch:(_url:string,init:{body:string})=>{bodies.push(init.body);return Promise.resolve({})},
+    })
+    listeners.load()
+    timers.get(0)!()
+    assert.equal(bodies.length,0,'load alone must not report a hidden marker')
+    if(reveal){hidden=false;mutate()}
+    timers.get(12500)!()
+    assert.equal(bodies.length,1)
+    const report=JSON.parse(bodies[0])
+    assert.equal(report.auth_marker_ms,reveal?235:null)
+    assert.equal(report.observation,reveal?'load':'deadline')
+    assert.equal(report.ttfb_ms,121)
+  }
+})

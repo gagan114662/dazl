@@ -8,7 +8,7 @@ export const SIGNED_SHELL_TIMING_BROWSER = `(()=>{
   const receipt=metric&&metric.description;
   const id=(receipt||'').split('.')[0];
   if(!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id||''))return;
-  let js=0,css=0,marker=null,done=false;
+  let js=0,css=0,marker=null,done=false,loaded=false;
   const ms=x=>Number.isFinite(x)&&x>=0?Math.min(120000,Math.round(x)):null;
   const errors=e=>{
    const el=e.target;
@@ -27,7 +27,13 @@ export const SIGNED_SHELL_TIMING_BROWSER = `(()=>{
    const m=document.querySelector('#main [data-signed-shell-auth-marker]');
    if(marker===null&&m&&!m.closest('[hidden]'))marker=ms(performance.now());
   }
-  const observer=new MutationObserver(observe);
+  // A streamed Suspense boundary may still be hidden when load fires (e.g. while React reveals it).
+  // Do not freeze a false null on a healthy document; the original deadline still bounds the report.
+  function afterLoad(){
+   observe();
+   if(loaded&&marker!==null)report('load');
+  }
+  const observer=new MutationObserver(afterLoad);
   observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden']});
   addEventListener('error',errors,true);
   function report(observation){
@@ -38,7 +44,7 @@ export const SIGNED_SHELL_TIMING_BROWSER = `(()=>{
     body:JSON.stringify({kind:'signed_shell_timing',route,request_id:id,receipt,ttfb_ms:ttfb,auth_marker_ms:marker,
      js_failed:js,css_failed:css,observation})}).catch(()=>{});
   }
-  addEventListener('load',()=>setTimeout(()=>report('load'),0),{once:true});
+  addEventListener('load',()=>setTimeout(()=>{loaded=true;afterLoad()},0),{once:true});
   addEventListener('pagehide',()=>{if(js||css)report('pagehide')},{once:true});
   setTimeout(()=>report('deadline'),12500);
  }catch{}
