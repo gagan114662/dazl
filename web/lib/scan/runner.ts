@@ -1787,6 +1787,12 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // normally; the next distinct angle may still find other companies. Any other partial or unavailable result stops.
         if(found.outcome!=='ok'&&!(companyFirst&&found.outcome==='partial'&&found.stop==='end_turn'))break
       } catch (e) {
+        // An optional later angle the scan cap cannot fit ends discovery, never the run: candidates already found go on
+        // to the normal verifier exactly as if the angle had not been tried. The refusal row stays recorded.
+        if (e instanceof SpendRefused && companyFirst && angleIndex > 0 && totalNativeCandidates > 0) {
+          ledger.record(source, 'partial')
+          break
+        }
         // Closed diagnostic codes only: no response, provider message, URL or credentials in source stats.
         ledger.record(source, e instanceof SpendRefused ? 'skipped_hold'
           : e instanceof ClaudeSearchError ? `error:${e.diagnostic ?? e.code}` : 'error')
