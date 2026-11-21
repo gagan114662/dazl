@@ -47,3 +47,9 @@ test('the /app layout uses the bounded check, not the unbounded lookup', () => {
   assert.match(src, /checkSessionWithin\(/)
   assert.doesNotMatch(src, /hasLiveSession\(/)
 })
+
+test('the proxy session check is bounded too, so a stall there cannot hold the page before the layout runs', () => {
+  const src = readFileSync(new URL('../proxy.ts', import.meta.url), 'utf8')
+  assert.match(src, /checkSessionWithin\(/)
+  assert.doesNotMatch(src, /hasLiveSession\(/)
+})
