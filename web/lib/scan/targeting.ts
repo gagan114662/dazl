@@ -181,7 +181,7 @@ const CATEGORY_WORDS = /\b(?:franchis\w*|agenc(?:y|ies)|consultanc(?:y|ies)|cons
 //     "yet to raise funding", "trimmed SDR hiring"). "Declining retail chains hiring", "aren't franchises hiring" are not about the hiring.
 //   - AFTER it: right after the role (an is / has / been allowed), closing the clause ("hiring SDRs postponed", "hiring ban in place",
 //     "hiring down 30%"). "hiring SDRs at Cap Gemini", "hiring crisis counselors", "hiring SDRs again after a freeze" are not.
-const STOP_CUE = String.raw`(?:reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)|declin(?:e|es|ed|ing)|stopp?(?:ed|ing|s)?|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|quit(?:s|ting)?|froze|freez(?:e|es|ing)|frozen|cancel(?:s|led|ed|ling|ing)?|scrapp(?:ed|ing)|abandon(?:s|ed|ing)?|avoid(?:s|ed|ing)?|against|lost|losing|lose|ran\s+out\s+of|running\s+out\s+of|run\s+out\s+of|yet\s+to|instead\s+of|rather\s+than|backed\s+out\s+of|pulled\s+out\s+of|pull(?:ed|ing)?\s+back\s+on|cut(?:ting|s)?\s+back\s+on|scal(?:ed|ing)\s+back(?:\s+on)?|wound\s+down|wind(?:s|ing)?\s+down|trimm?(?:ed|ing|s)?|reduc(?:e|es|ed|ing)|ended|no\s+plans?\s+to|no\s+longer|fail(?:s|ed|ing)?\s+to|unable\s+to|struggl(?:e|es|ed|ing)\s+to|turn(?:s|ed|ing)?\s+down|barely|hardly|isn'?t|aren'?t|wasn'?t|weren'?t|won'?t|don'?t|doesn'?t|can'?t|cannot)`
+const STOP_CUE = String.raw`(?:reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)|declin(?:e|es|ed|ing)|stopp?(?:ed|ing|s)?|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|quit(?:s|ting)?|froze|freez(?:e|es|ing)|frozen|cancel(?:s|led|ed|ling|ing)?|scrapp(?:ed|ing)|abandon(?:s|ed|ing)?|(?<!\bto\s)avoid(?:s|ed|ing)?|against|cut(?:s|ting)?|lost|losing|lose|ran\s+out\s+of|running\s+out\s+of|run\s+out\s+of|yet\s+to|instead\s+of|rather\s+than|backed\s+out\s+of|pulled\s+out\s+of|pull(?:ed|ing)?\s+back\s+on|cut(?:ting|s)?\s+back\s+on|scal(?:ed|ing)\s+back(?:\s+on)?|wound\s+down|wind(?:s|ing)?\s+down|trimm?(?:ed|ing|s)?|reduc(?:e|es|ed|ing)|ended|no\s+plans?\s+to|no\s+longer|fail(?:s|ed|ing)?\s+to|unable\s+to|struggl(?:e|es|ed|ing)\s+to|turn(?:s|ed|ing)?\s+down|barely|hardly|isn'?t|aren'?t|wasn'?t|weren'?t|won'?t|don'?t|doesn'?t|can'?t|cannot)`
 // The words that may sit between a cue and the condition depend on the condition: funding words only before a funding word ("rejecting venture
 // capital funding", "failed to raise funding"), role words only before a hiring word with no role of its own ("trimmed SDR hiring"). Anything
 // else is the cue's own object ("declining sales hiring SDRs", "founders who reject VC hiring SDRs", "refused VC raised a seed round").
@@ -197,12 +197,12 @@ const AFTER_AUX = new RegExp(String.raw`^(?:\s*${AUX})*\s*:?\s*$`, 'i')
 const AFTER_TAIL = /^(?:\s*(?:%|to\s+(?:close|happen|proceed|go\s+ahead)\b.*|in\s+place|in\s+(?:q[1-4]|\d{4})\b.*|across\b.*|for\s+now|until\b.*|indefinitely|this\s+(?:year|quarter|month)|(?:within|in\s+the|over|during|last|recently|since)\b.*))?\s*$/i
 // A completed hire undone, or a raise / hiring that stopped, in the same breath: "hired SDRs and fired them", "hired a VP Sales, then fired
 // him", "raised funding but stopped". Only the hire itself is undone: "hired a CRO and fired their agency" is still a hire.
-const HIRED_OBJ = String.raw`(?:them|him|her|(?:the|our|their|its)\s+(?:new\s+)?(?:team|staff|hires?|reps?|sdrs?|bdrs?|aes?))`
+const HIRED_OBJ = String.raw`(?:them|him|her|(?:the|our|their|its)\s+(?:(?:new|sales|sdr|bdr)\s+)?(?:team|staff|hires?|reps?|sdrs?|bdrs?|aes?))`
 const UNDONE = new RegExp(String.raw`,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:fired\s+${HIRED_OBJ}|let\s+${HIRED_OBJ}\s+go|let\s+go\s+of\s+${HIRED_OBJ}|laid\s+${HIRED_OBJ}\s+off)\b|,?\s*\b(?:and|then|but)\s+(?:then\s+)?(?:stopped|ceased|quit|paused|halted)\s*$`, 'i')
 const CLAUSE_END = /[.;!?,]|\b(?:and|or|but|while|who|that|which)\b/i
 // A role word right after the hiring verb is the role ("hiring cap table managers"); "fewer" right after it shrinks the hire ("hired fewer SDRs").
 const FEWER_AFTER = /^\s*fewer\b(?!\s+than)/i
-const NOT_ROLE_WORD = /\b(?:at|in|for|after|of|from|with|to|by|on|into|across|about|over|under|again|despite|amid|amidst|through|throughout|during|since|before|following|post|the|a|an|its|their|our|this|that|these|those|than|as|like|per|via|without|beyond|until|till|toward|towards|against|around|among|between|while|when|because|so)\b/i
+const NOT_ROLE_WORD = /\b(?:at|in|for|after|of|from|with|to|by|on|into|across|about|over|under|again|despite|amid|amidst|through|throughout|during|since|before|following|post|the|a|an|its|their|our|this|that|these|those|than|as|like|per|via|without|beyond|until|till|toward|towards|against|around|among|between|while|when|because|so|though|although|whose|where|whereas|if|unless|once|even|whether)\b/i
 function afterStop(roleWords: string, after: string): RegExpExecArray | null {
   const text = roleWords + after
   const m = STOPPED_AFTER.exec(text)
@@ -306,7 +306,10 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     const pre = (a.kind === 'funding' ? (raiseVerb ? STOPPED_BEFORE.plain : STOPPED_BEFORE.funding) : conds[i].role ? STOPPED_BEFORE.plain : STOPPED_BEFORE.role).exec(before)
     const fewer = a.kind !== 'funding' ? FEWER_AFTER.exec(tail) : null
     // A funding condition's own words ("Series A") are not a role: only what follows them is read for an after-cue.
-    const found = undo ?? fewer ?? (a.kind === 'funding' ? afterStop('', after) : afterStop(tail, after))
+    // A condition named as the circumstance of another ("raised Series A amid the funding crunch", "after their seed round fell through")
+    // is not the request's own condition being stopped: no after-cue is read for it.
+    const circumstance = /\b(?:despite|amid(?:st)?|after|since|following|through(?:out)?|during|before|post|in\s+spite\s+of|because\s+of|due\s+to|to\s+(?:avoid|survive|weather|beat|escape|offset))\s+(?:(?:the|a|an|their|its|our|this)\s+)?$/i.test(before)
+    const found = undo ?? fewer ?? (circumstance ? null : a.kind === 'funding' ? afterStop('', after) : afterStop(tail, after))
     const mid = found && found.index < tail.trimEnd().length ? found : null
     // "never stopped hiring SDRs" is a double negative: still hiring. A negation right before the stop word cancels it.
     const pre2 = pre && /(?:\b(?:never|not|hasn'?t|haven'?t|didn'?t)|n't)\s*$/i.test(before.slice(0, pre.index)) ? null : pre

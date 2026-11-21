@@ -33,7 +33,7 @@ const C2 = ['hiring ban in place', 'hiring slowdown across the practice',
   'we no longer raise funding', 'hiring SDRs: paused', 'hired SDRs and let our team go',
   'hiring SDRs stopped', 'hiring SDRs paused', 'hiring SDRs is paused', 'hiring SDRs halted', 'funding rejected', 'funding declined', 'turned down VC funding',
   'failed to raise funding', 'unable to raise funding', 'funding round failed', 'hired a VP Sales, then fired him',
-  'hiring of SDRs paused', 'hiring for SDRs is on hold', 'hiring SDRs on pause', 'hiring SDRs paused in Q3', 'funding round fell apart', 'Series A funding failed to close', 'hired SDRs, then let go of them', 'Series A funding unlikely to close', 'funding round rumored', 'funding ban', 'funding slowdown', 'funding talks collapsed', 'funding round pulled', 'funding dried up']
+  'hiring of SDRs paused', 'hiring for SDRs is on hold', 'hiring SDRs on pause', 'hiring SDRs paused in Q3', 'funding round fell apart', 'Series A funding failed to close', 'hired SDRs, then let go of them', 'Series A funding unlikely to close', 'companies that hired SDRs and fired their sales reps', 'companies that cut SDR hiring', 'funding round rumored', 'funding ban', 'funding slowdown', 'funding talks collapsed', 'funding round pulled', 'funding dried up']
 
 for (const q of [...BODY, ...C1, ...C2]) {
   test(`#1163 "${q}" compiles to no positive funding / hiring / hire condition`, () => {
@@ -74,7 +74,11 @@ test('#1163 ordinary positive requests stay positive (real roles, double negativ
     'hiring SDRs following a hiring freeze', 'companies hiring SDRs throughout the downturn crisis', 'hiring SDRs during the crisis',
     'companies with declining sales hiring SDRs', 'companies that lost sales hiring SDRs', 'retailers with reduced sales hiring SDRs',
     'bootstrapped companies that avoid VC hiring SDRs', 'founders who reject VC hiring SDRs', 'founders who refused VC raised a seed round',
-    'companies that ended their hiring freeze', 'companies where hiring isn\'t paused', 'companies whose hiring is not on hold']) {
+    'companies that ended their hiring freeze', 'companies where hiring isn\'t paused', 'companies whose hiring is not on hold',
+    'hiring SDRs though budgets are frozen', 'hiring SDRs whose quota was capped', 'hiring SDRs where budgets are frozen', 'hiring SDRs if budgets are frozen',
+    'hiring ex-founders whose startups failed', 'hiring is not frozen', 'hiring SDRs is not on hold', 'hiring SDRs no longer on hold', 'hiring SDRs never paused',
+    'funding is not in doubt', 'raised Series A amid the funding crunch', 'raised a seed round despite the funding crunch', 'raised Series B after their seed round fell through',
+    'companies hiring SDRs to avoid the funding crunch', 'companies that cut costs by hiring SDRs']) {
     const t = triggers(q)
     assert.ok(t.length > 0, `${q}: no condition`)
     for (const x of t) assert.equal(x.negated, false, `${q}: ${x.cond.kind} "${x.cond.text}" read NEGATED`)
