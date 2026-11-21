@@ -106,7 +106,7 @@ test('discovery beyond the found set: announcement-style queries for a technolog
 })
 
 const NOW = Date.parse('2026-11-02T12:00:00Z')
-const LEAD: ProofLead = { company: 'Brightloop', company_domain: 'brightloop.com', evidence_excerpt: 'Brightloop raised a seed round.', signal: 'raised a seed round', source_url: 'https://news.example/a', event_date: '2026-10-20' }
+const LEAD: ProofLead = { company: 'Brightloop', company_domain: 'brightloop.com', evidence_excerpt: 'Brightloop raised a seed round.', signal: 'raised a seed round', source_url: 'https://news.example/a', event_date: '2026-10-20', event_date_proof: null }
 const scanRow = (s: TechScan): ProofRow => { const e = encodeScan(s)!; return { connector: 'sitecrawl', kind: 'tech_scan', value: e.value, label: e.label, source_url: s.url, source_date: new Date(s.at * 1000).toISOString().slice(0, 10) } }
 const changeRows = (scans: TechScan[]): ProofRow[] => techChanges(scans, 'brightloop.com').map(c => ({ connector: 'sitecrawl', kind: 'tech_change', ...changeRow(c) }))
 const cond = (q: string, i = 0) => planConditions(compileTargeting(q).root).filter(x => x.cond.kind === 'tech')[i].cond

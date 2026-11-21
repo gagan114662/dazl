@@ -5,7 +5,7 @@
 // 2026-11-10", and the card said "dated by its own source".
 // REAL wording: the public Ashby postings of Clay (claylabs c605042d, published 2026-04-15) and Rillet (rillet 30ac8f73, published
 // 2025-12-02), fetched 2026-11-21, quoted verbatim (shortened, the tracking link dropped). The lead row has the shape a scan stores for
-// a board-dated hiring lead (the Wellhub row of run 2593ed95: event_date_proof 'ats_structured', date_status 'verified'). The days are
+// a board-dated hiring lead (event_date_proof 'ats_structured', date_status 'verified'). The days are
 // moved next to the test's clock so each one sits inside the window it is checked against. Real store, real writer, no network, no model.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -86,4 +86,20 @@ test('#878 (review) on a board-dated lead: a raise with no clock stays proven wi
   const p2 = planProofs(plan2, lead, [], { ...ctx, query: q2 })
   assert.equal(evaluatePlan(plan2, p2).truth, 'unknown')
   for (const k of Object.keys(p2)) assert.notEqual(p2[k].truth === 'pass' && p2[k].date === day(11) && /raise/.test(p2[k].reason), true, `${k}: ${p2[k].reason}`)
+})
+
+test('#878 (review) an opening or a completed hire mentioned on a board-dated posting is not dated by the posting either', () => {
+  const ctx = { icp: null, salesGatePassed: false, competitors: null, graded: true }
+  const posting = (quote: string): ProofLead => ({ company: 'Clay', company_domain: CLAY.domain, evidence_excerpt: quote, signal: 'hiring Account Executives', source_url: CLAY.url, event_date: day(11), event_date_proof: 'ats_structured' })
+  for (const [q, quote] of [
+    ['B2B software companies that opened a new office in the last 30 days', 'Clay opened a new office in New York.'],
+    ['B2B software companies that made their first sales hire in the last 30 days', 'Clay made its first sales hire.'],
+  ] as const) {
+    const plan = compileTargeting(q)
+    const board = planProofs(plan, posting(quote), [], { ...ctx, query: q })
+    const own = planProofs(plan, { ...posting(quote), event_date_proof: 'page_bound' }, [], { ...ctx, query: q })
+    assert.deepEqual([own.C1.truth, own.C1.date], ['pass', day(11)], `control, dated on its own page: ${own.C1.reason}`)
+    assert.deepEqual([board.C1.truth, board.C1.date], ['unknown', undefined], `${q}: ${board.C1.reason}`)
+    assert.match(board.C1.reason, /no date of its own/)
+  }
 })

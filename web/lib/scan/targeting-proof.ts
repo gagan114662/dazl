@@ -13,7 +13,7 @@ import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRo
 
 // `event_date_proof`: what proved `event_date` (runner.ts). 'ats_structured' is a job board's own publish day for the cited POSTING: it dates a hiring
 // condition only, never a raise, an opening or a completed hire the posting's text mentions (#878: each condition on its own evidence date).
-export interface ProofLead { company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string | null; source_url: string; event_date: string | null; event_date_proof?: string | null }
+export interface ProofLead { company: string; company_domain: string | null; evidence_excerpt: string | null; signal: string | null; source_url: string; event_date: string | null; event_date_proof: string | null }
 export interface ProofRow { connector: string; kind: string; value: string; source_url: string; source_date: string; label?: string | null }
 // `graded`: the lead already passed the ICP grade, which judges the profile's `exclude` list (classifyLeads evaluates the plan only after the fit gate).
 export interface ProofContext { query: string | null | undefined; icp: string | null | undefined; salesGatePassed: boolean; competitors: string[] | null; graded?: boolean; now?: number }
@@ -186,8 +186,8 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
     case 'funding': {
       const shows = quoteShowsEvent(quote, lead.signal, true, lead.company, stageOf(c.stage)) && (c.stage !== 'pre-seed' || /\bpre-?seed\b/i.test(quote))
       const what = `a completed ${c.stage ? `${c.stage} ` : ''}raise by this company`
-      // A raise read off a board-dated posting has no day of its own (ownDay): it stays unknown on a clock. The gate's pass record does not
-      // stand in for it: the gate reads the lead's own quote without a date of its own (sales-hiring-gate.ts eventQuoteUsable, `own`).
+      // A raise read off a board-dated posting has no day of its own (ownDay): it stays unknown on a clock. When the quote shows the raise, the
+      // gate's pass record does not stand in for it: the gate reads the lead's own quote without a date of its own (sales-hiring-gate.ts eventQuoteUsable, `own`).
       if (shows) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, what)
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified the funding half on a source for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no verified source shows ${what}` }

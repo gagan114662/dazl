@@ -18,7 +18,7 @@ const NOW = Date.parse('2026-10-28T12:00:00Z')
 const ago = (d: number) => new Date(NOW - d * 86_400_000).toISOString().slice(0, 10)
 const conds = (p: QueryPlan) => planConditions(p.root).map(x => x.cond)
 const ctx = { query: 'x', icp: null, salesGatePassed: false, competitors: null, now: NOW }
-const lead = (quote: string, date: string | null, company = 'Brightloop'): ProofLead => ({ company, company_domain: 'brightloop.example', evidence_excerpt: quote, signal: null, source_url: 'https://news.example/b', event_date: date })
+const lead = (quote: string, date: string | null, company = 'Brightloop'): ProofLead => ({ company, company_domain: 'brightloop.example', evidence_excerpt: quote, signal: null, source_url: 'https://news.example/b', event_date: date, event_date_proof: null })
 
 // The audit's exact counterexample (#878 comment, audit 9379b162): the later 30-day restriction was silently ignored, ambiguities [].
 const AUDIT = 'Companies that raised seed funding within 90 days, specifically within 30 days, and hired a VP within 20 days'

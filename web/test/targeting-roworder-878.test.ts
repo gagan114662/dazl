@@ -12,7 +12,7 @@ const ago = (d: number) => new Date(NOW - d * 86_400_000).toISOString().slice(0,
 const conds = (p: QueryPlan) => planConditions(p.root).map(x => x.cond)
 const ctx = { query: 'x', icp: null, salesGatePassed: false, competitors: null, now: NOW }
 const NEWS = 'https://news.example/brightloop-seed'
-const lead = (quote: string, date: string | null, url = NEWS): ProofLead => ({ company: 'Brightloop', company_domain: 'brightloop.example', evidence_excerpt: quote, signal: null, source_url: url, event_date: date })
+const lead = (quote: string, date: string | null, url = NEWS): ProofLead => ({ company: 'Brightloop', company_domain: 'brightloop.example', evidence_excerpt: quote, signal: null, source_url: url, event_date: date , event_date_proof: null })
 const RAISE = 'Brightloop raised a 3m seed round led by Example Ventures.'
 const posting = (id: string, date: string, url = `https://boards.example/brightloop/${id}`): ProofRow => ({ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: `SDR ${id} - posted`, source_url: url, source_date: date })
 // every ordering of a small list
