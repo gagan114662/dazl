@@ -2115,7 +2115,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const blocked = deps.paidFallback === false || !newsOn || !complete || !icpForSources ? [] : fallbackTargets(outcome.review, icpForSources.where ?? [], undated)
     recoveryTargets = fallbackTargets(outcome.review, icpForSources?.where ?? [], undated)
     // #685: "searched" only once the recovery search has COMPLETED (below); a search that errored, was stopped or came back partial says it did not complete.
-    recoveryRan = blocked.length > 0 ? { searched: false, why: 'the other-press search did not complete: unavailable' } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
+    recoveryRan = blocked.length > 0 ? { searched: false, why: 'the other-press search did not complete: not_started' } : { searched: false, why: deps.paidFallback === false ? 'the run disabled the paid fallback' : !newsOn ? 'news search is off' : !complete ? 'no model for this run' : 'nothing recoverable' }
     if (blocked.length > 0) {
       const note: NewsNote = { searched: false, hits: 0, attempted: 0, failed: 0, limited: 0, malformed: 0 }
       ledger.record('fallback:news', 'started')
@@ -2132,7 +2132,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
-        recoveryRan = { searched: false, why: `the other-press search did not complete: ${e instanceof SpendRefused ? (note.searched ? partialHold(e) : 'skipped_hold') : 'error'}` }
+        recoveryRan = { searched: false, why: 'the other-press search did not complete: error' }   // the rethrown stops below never reach recordRecovery
         if (e instanceof SpendRefused) ledger.record('fallback:news', note.searched ? partialHold(e) : 'skipped_hold') // hold-stopped partial is neither "skipped" nor an outage
         if (e instanceof ScanStopped || e instanceof ScanTimedOut || e instanceof SpendRefused || e instanceof SpendAccountingFailed) throw e
         if (e instanceof ProviderError && e.kind === 'auth') throw e
