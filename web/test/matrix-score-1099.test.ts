@@ -33,7 +33,7 @@ function seed() {
 
 test('measureCase: candidates, named, email, dated, place+category are counted from the stored rows; a rejected lead and a poor fit are not', () => {
   const { db, lead, enrich } = seed()
-  lead('a', { company: 'Smile Dental', name: 'Dana Lee', contact: 'dana@smile.example', date: DAY, proof: 'page_bound' })     // named, email, dated, in place and category
+  lead('a', { company: 'Smile Dental', name: 'Dana Lee', contact: 'dana@smile.example', domain: 'smile.example', date: DAY, proof: 'page_bound' })     // named, own email on the company's domain (#1250), dated, in place and category
   lead('b', { company: 'Maple Clinic' })                                                                                                  // nobody named, no email, undated
   lead('c', { company: 'Roof Co', signal: 'Roofing company in Austin hiring' })                                                          // wrong place and category
   lead('d', { company: 'Gone Dental', q: true })                                                                                          // rejected: not counted
@@ -63,24 +63,24 @@ test('measureCase: the ready count is the product rule (heldReason) and counts a
 
 test('measureCase on an empty or unknown scan: zeros on an empty scan, a clear error on an unknown one', () => {
   const { db } = seed()
-  assert.deepEqual({ ...measureCase(db, 'A', 'j1', { expect }), held: {} }, { candidates: 12, leads: 0, ready: 0, named_pct: 0, email_pct: 0, dated_pct: 0, match_pct: 0, held: {} })
+  assert.deepEqual({ ...measureCase(db, 'A', 'j1', { expect }), held: {} }, { candidates: 12, leads: 0, ready: 0, named_pct: 0, email_pct: 0, email_guess_pct: 0, email_role_pct: 0, dated_pct: 0, match_pct: 0, held: {} })
   assert.throws(() => measureCase(db, 'B', 'j1', { expect }), /no scan j1 for tenant B/, 'another tenant cannot measure this scan')
 })
 
 test('verdict and table: the staging pass rule, the reasons in its words, the same columns', () => {
-  const good = { candidates: 30, leads: 14, ready: 12, named_pct: 85, email_pct: 40, dated_pct: 75, match_pct: 95, held: {} }
+  const good = { candidates: 30, leads: 14, ready: 12, named_pct: 85, email_pct: 40, email_guess_pct: 7, email_role_pct: 21, dated_pct: 75, match_pct: 95, held: {} }
   assert.deepEqual(verdict(good, T), { pass: true, why: [] })
   const bad = verdict({ ...good, ready: 0, named_pct: 0, dated_pct: 0, match_pct: 0 }, T)
   assert.equal(bad.pass, false); assert.equal(bad.why.length, 4); assert.match(bad.why[0], /^0 ready, needs >=10$/)
   assert.equal(verdict({ ...good, ready: 10, named_pct: 80, dated_pct: 70, match_pct: 90 }, T).pass, true, 'the thresholds are inclusive')
   const rows: CaseResult[] = [
     { id: 'toronto-dental', label: 'x', status: 'done', error: null, seconds: 61, usd: 0.1234, pass: true, why: [], ...good },
-    { id: 'berlin-fintech', label: 'y', status: 'INCOMPLETE', error: 'scan_timeout', seconds: 300, usd: null, pass: false, why: ['0 ready, needs >=10'], candidates: 3, leads: 0, ready: 0, named_pct: 0, email_pct: 0, dated_pct: 0, match_pct: 0, held: { 'no verified date': 2 } },
+    { id: 'berlin-fintech', label: 'y', status: 'INCOMPLETE', error: 'scan_timeout', seconds: 300, usd: null, pass: false, why: ['0 ready, needs >=10'], candidates: 3, leads: 0, ready: 0, named_pct: 0, email_pct: 0, email_guess_pct: 0, email_role_pct: 0, dated_pct: 0, match_pct: 0, held: { 'no verified date': 2 } },
   ]
   const t = matrixTable(rows, T, { commit: 'abc1234', date: '2026-11-14 00:00' })
   assert.match(t, /^MATRIX local @ abc1234 2026-11-14 00:00: 1\/2 PASS/)
-  for (const col of ['case', 'cand', 'leads', 'ready', 'named%', 'email%', 'dated%', 'match%', 'secs', 'usd', 'verdict']) assert.ok(t.includes(col), col)
-  assert.match(t, /toronto-dental\s+done\s+30\s+14\s+12\s+85\s+40\s+75\s+95\s+61\s+0\.123\s+PASS/)
+  for (const col of ['case', 'cand', 'leads', 'ready', 'named%', 'email%', 'guess%', 'role%', 'dated%', 'match%', 'secs', 'usd', 'verdict']) assert.ok(t.includes(col), col)
+  assert.match(t, /toronto-dental\s+done\s+30\s+14\s+12\s+85\s+40\s+7\s+21\s+75\s+95\s+61\s+0\.123\s+PASS/)
   assert.match(t, /berlin-fintech: scan_timeout; 0 ready, needs >=10 \| held: no verified date 2/)
   assert.match(t, /\?\s+FAIL/, 'an unmeasured cost prints ?, never 0')
 })

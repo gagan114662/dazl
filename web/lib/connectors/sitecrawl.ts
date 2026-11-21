@@ -722,6 +722,15 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
     if (inFormer[i]) continue
     if (same) add(same[1], same[2])
+    // Run 9697d013 family (Medsien): one caption naming several people under one PLURAL title ("Hamed Ahmadi and Sina Torabi, Co-founders").
+    // Each name must pass every check add() runs on its own; the title must be plural and its singular a whole title. Any part that is not a
+    // person name drops the whole caption (fail closed), so "Partners and Investors, Founders" lists no one.
+    const shared = /^(.{7,90}?)\s*,\s*([A-Za-z -]{4,40}s)$/.exec(lines[i])
+    if (shared) {
+      const names = shared[1].split(/\s*,\s*(?:and\s+|&\s+)?|\s+(?:and|&)\s+/).map(s => s.trim()).filter(Boolean)
+      const single = shared[2].replace(/s$/, '')
+      if (names.length >= 2 && names.length <= 4 && TITLE_FULL.test(single) && names.every(nm => NAME_LINE.test(nm) && !looksLikeJobTitle(nm))) for (const nm of names) add(nm, single)
+    }
     // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
     // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.
     // #1183 (multilingual): "Diretor Comercial" beside a buyer role "Gerente de Vendas" shares no word with any collected title, so the check above

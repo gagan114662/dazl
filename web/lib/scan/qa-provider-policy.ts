@@ -2,9 +2,9 @@
 export const QA_CLAUDE_ONLY = 'claude_only_v1'
 export const QA_SPEND_MAX_USD = 5
 
-// Older servers reject this mode as unknown instead of running the ordinary first play.
-export const FIRST5_CLAUDE_ONLY_MODE = 'first5_claude_only_v1'
-export const PINNED_FIRST5_CLAUDE_ONLY_MODE = 'first5_claude_only_pinned_v2'
+// #1398: there is no QA-only request mode. The isolated Claude-only job is minted only for the production Claude Web Search
+// opt-in (isFirst5NativeSearchRequest); the former "first5_claude_only_v1" / "first5_claude_only_pinned_v2" modes are refused
+// as unknown. Jobs already stored with provider_policy claude_only_v1 keep running under that policy (qaClaudeOnlyJob).
 export const QA_NATIVE_WEB_SEARCH_POLICY = 'anthropic_estimated_v1'
 export const QA_NATIVE_WEB_SEARCH_MAX_USES = 2
 export const QA_NATIVE_WEB_SEARCH_RESULT_TOKENS = 25_000
@@ -27,8 +27,7 @@ export function isManualNativeTargetRequest(mode: unknown, budget: unknown): boo
     b.web_search === QA_NATIVE_WEB_SEARCH_POLICY && b.target_review === 'manual_v1'
 }
 export const QA_LOCAL_EXECUTION = 'local_once_v1'
-export const isClaudeOnlyRequestMode = (mode: unknown): boolean => mode === FIRST5_CLAUDE_ONLY_MODE || mode === PINNED_FIRST5_CLAUDE_ONLY_MODE
-export const isFirst5RequestMode = (mode: unknown): boolean => mode === 'first5' || isClaudeOnlyRequestMode(mode)
+export const isFirst5RequestMode = (mode: unknown): boolean => mode === 'first5'
 
 export function qaPinnedLocalJob(raw: string | null | undefined): boolean {
   if (!qaClaudeOnlyJob(raw)) return false

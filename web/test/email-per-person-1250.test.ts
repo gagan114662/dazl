@@ -1,0 +1,111 @@
+// #1250: the matrix email column scores PER PERSON. A lead counts only when a named person on it has their OWN address on the
+// company's own domain (the site the crawl confirmed, leads.company_domain): printed on that site and filed under that person by the
+// crawl (email_candidates, tier 'published'), or an address on the lead whose local part carries that person's name. A role inbox
+// (hello@ / info@) never stands in for a person; a labelled guess is shown in its own column and never counted.
+// Real prod shapes from the issue (measured 2026-11-14 on #1036): toronto-dental's Don River Dental Clinic scored email 100% with
+// nobody named (hello@ + info@donriverdental.com from the site crawl); chicago-law's Benesch CMO, whose own address is printed on
+// beneschlaw.com/contact-us/ and recorded as a published candidate, scored 0. The person's first name is anonymised.
+// Everything is written through the real store and the crawl's own writer (recordEmailGuesses); no network, no model.
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import Database from 'better-sqlite3'
+import { migrateScan } from '../lib/scan/store.ts'
+import { migrateConnectors, addEnrichment } from '../lib/connectors/store.ts'
+import { migrateEmailGuess, recordEmailGuesses } from '../lib/people/email-pattern.ts'
+import { measureCase } from '../scripts/matrix-score.mts'
+
+const NOW = Math.floor(Date.now() / 1000)
+const expect = { location_keywords: ['toronto', 'chicago'], category_keywords: ['dental', 'law'] }
+
+function seed() {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); migrateEmailGuess(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES ('j1', 'A', 'x', '(from request)', '-', 'Dental clinics and law firms', 'running', 9, ?)").run(NOW)
+  const lead = (id: string, o: { company: string; name?: string; contact?: string | null; domain?: string | null }) =>
+    db.prepare("INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, company_domain, created_at) VALUES (?, 'j1', ?, ?, ?, 'Opened a new location', ?, ?, ?)")
+      .run(id, o.company, o.name ?? '', o.contact ?? null, `https://news.example/${id}`, o.domain ?? null, NOW)
+  const enrich = (leadId: string, kind: string, value: string, url: string) =>
+    addEnrichment(db, 'A', leadId, { connector: 'sitecrawl', kind, value, label: null, confidence: null, source_url: url, source_date: '2026-11-14', retrieved_at: NOW })
+  return { db, lead, enrich }
+}
+const only = (db: Database.Database) => { db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run(); return measureCase(db, 'A', 'j1', { expect }) }
+
+test('#1250 prod: role inboxes with nobody named are not a person email (Don River Dental Clinic: hello@ + info@)', () => {
+  const { db, lead, enrich } = seed()
+  lead('don', { company: 'Don River Dental Clinic', domain: 'donriverdental.com' })
+  enrich('don', 'email', 'hello@donriverdental.com', 'https://donriverdental.com/contact')
+  enrich('don', 'email', 'info@donriverdental.com', 'https://donriverdental.com/contact')
+  const m = only(db)
+  assert.equal(m.email_pct, 0, 'was 100%: a role inbox never counts as the buyer\'s email')
+  assert.equal(m.email_role_pct, 100, 'shown as role inbox only')
+  assert.equal(m.email_guess_pct, 0)
+})
+
+test('#1250 prod: a named buyer\'s own address printed on the company\'s site counts (Benesch CMO, published candidate)', () => {
+  const { db, lead, enrich } = seed()
+  lead('ben', { company: 'Benesch', domain: 'beneschlaw.com' })
+  const person = 'Jo Hammerstrom, Chief Marketing Officer'
+  enrich('ben', 'person', person, 'https://www.beneschlaw.com/contact-us/')
+  // the crawl's own writer files the printed address under this person (published tier, the page it was printed on)
+  const r = recordEmailGuesses(db, 'A', 'ben', 'beneschlaw.com', [], [person], { env: {}, homeText: '127 Public Square, Cleveland, OH 44114', seen: [{ address: 'jhammerstrom@beneschlaw.com', url: 'https://www.beneschlaw.com/contact-us/' }] })
+  assert.equal(r?.published, 1, 'the crawl recorded the published candidate')
+  const m = only(db)
+  assert.equal(m.email_pct, 100, 'was 0: the scorer did not read the published candidate')
+  assert.equal(m.email_role_pct, 0); assert.equal(m.email_guess_pct, 0)
+})
+
+test('#1250: per person, on the company\'s own domain, never a role inbox, another person, another domain or a guess', () => {
+  const { db, lead, enrich } = seed()
+  lead('own', { company: 'Smile Dental', name: 'Dana Lee', contact: 'dana.lee@smile.example', domain: 'smile.example' })          // counts
+  lead('site', { company: 'Pine Dental', domain: 'pine.example' })                                                                 // counts: site person + their own address
+  enrich('site', 'person', 'Priya Nair, Practice Owner', 'https://pine.example/team')
+  enrich('site', 'email', 'priya@pine.example', 'https://pine.example/team')
+  lead('role', { company: 'Oak Dental', name: 'Sam Park', contact: 'info@oak.example', domain: 'oak.example' })                    // role inbox only
+  lead('other', { company: 'Elm Dental', name: 'Ana Cruz', contact: 'pat.kim@elm.example', domain: 'elm.example' })                // someone else's mailbox
+  lead('offsite', { company: 'Birch Dental', name: 'Lee Wong', contact: 'lee.wong@gmail.example', domain: 'birch.example' })      // not the company's domain
+  lead('nodomain', { company: 'Ash Dental', name: 'Kim Roy', contact: 'kim.roy@ash.example' })                                    // no confirmed site
+  lead('guess', { company: 'Fir Dental', name: 'Tom Hale', domain: 'fir.example' })                                                // a labelled guess only
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, confidence) VALUES ('A', 'guess', 'Tom Hale', 'tom.hale@fir.example', 'first.last', 'guessed', 'high')").run()
+  lead('nobody', { company: 'Yew Dental', contact: 'dana.lee@yew.example', domain: 'yew.example' })                               // an address, but nobody named
+  const m = only(db)
+  assert.equal(m.leads, 8)
+  assert.equal(m.email_pct, 25, 'own and site only: 2 of 8')
+  assert.equal(m.email_role_pct, 13, 'role: 1 of 8')
+  assert.equal(m.email_guess_pct, 13, 'guess: 1 of 8, shown, never counted')
+})
+
+test("#1250 (council): the lead's own named buyer, a lookalike domain, an ambiguous or someone else's printed address, a contact with extra text", () => {
+  const { db, lead, enrich } = seed()
+  const home = '233 S Wacker Dr, Chicago, IL 60606'
+  lead('look', { company: 'Acme Law', name: 'Rae Moss', contact: 'rae.moss@notacme.example', domain: 'acme.example' })            // lookalike domain
+  lead('sub', { company: 'Acme Two', name: 'Rae Moss', contact: 'Rae Moss <rae.moss@mail.acme2.example>, +1 312 555 0100', domain: 'acme2.example' }) // counts: subdomain, contact with extra text
+  lead('two', { company: 'Cedar Law', domain: 'cedar.example' })                                                                    // two printed addresses: neither is settled
+  enrich('two', 'person', 'Lou Grant, Partner', 'https://cedar.example/team')
+  recordEmailGuesses(db, 'A', 'two', 'cedar.example', [], ['Lou Grant, Partner'], { env: {}, homeText: home, seen: [{ address: 'lgrant@cedar.example', url: 'https://cedar.example/team' }] })
+  recordEmailGuesses(db, 'A', 'two', 'cedar.example', [], ['Lou Grant, Partner'], { env: {}, homeText: home, seen: [{ address: 'lou.grant@cedar.example', url: 'https://cedar.example/contact' }] })
+  lead('else', { company: 'Spruce Law', name: 'Ann Bell', domain: 'spruce.example' })                                                // the printed address is another person's
+  enrich('else', 'person', 'Max Ford, Partner', 'https://spruce.example/team')
+  recordEmailGuesses(db, 'A', 'else', 'spruce.example', [], ['Max Ford, Partner'], { env: {}, homeText: home, seen: [{ address: 'mford@spruce.example', url: 'https://spruce.example/team' }] })
+  lead('surname', { company: 'Smile Dental', name: 'Dana Lee', contact: 'lee@smile.example', domain: 'smile.example' })          // a bare surname: any Lee's mailbox
+  lead('press', { company: 'Maple Law', name: 'Ira Cole', contact: 'press@maple.example', domain: 'maple.example' })                 // a role inbox outside the old short list
+  lead('dr', { company: 'Birch Dental', name: 'Dr. Jane Smith', contact: 'jane.smith@birch.example', domain: 'birch.example.' })        // counts: honorific stripped, trailing dot
+  lead('drbox', { company: 'Ash Dental', name: 'Dr. Jane Smith', contact: 'dr@ash.example', domain: 'ash.example' })                  // "dr" is not her name
+  lead('drlast', { company: 'Elm Dental', name: 'Dr. Smith', contact: 'smith@elm.example', domain: 'elm.example' })                  // a surname alone: any Smith's mailbox
+  lead('office', { company: 'Fir Dental', domain: 'fir.example' })                                                                   // a role word that matches a "name"
+  enrich('office', 'person', 'Office Manager, Front desk', 'https://fir.example/team')
+  enrich('office', 'email', 'office@fir.example', 'https://fir.example/team')
+  lead('offpub', { company: 'Pine Law', domain: 'pine.example' })                                                                    // published on another domain
+  enrich('offpub', 'person', 'Kay Dunn, Partner', 'https://pine.example/team')
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, source_url) VALUES ('A', 'offpub', 'Kay Dunn, Partner', 'kdunn@other.example', 'published', 'published', 'https://pine.example/team')").run()
+  lead('nourl', { company: 'Oak Law', domain: 'oak.example' })                                                                       // published row without the page it was printed on
+  enrich('nourl', 'person', 'Ned Shaw, Partner', 'https://oak.example/team')
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier) VALUES ('A', 'nourl', 'Ned Shaw, Partner', 'nshaw@oak.example', 'published', 'published')").run()
+  lead('tenant', { company: 'Yew Law', domain: 'yew.example' })                                                                      // another tenant's rows for this lead id
+  enrich('tenant', 'person', 'Uma Ross, Partner', 'https://yew.example/team')
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, source_url) VALUES ('B', 'tenant', 'Uma Ross, Partner', 'uross@yew.example', 'published', 'published', 'https://yew.example/team')").run()
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, tier, confidence) VALUES ('B', 'tenant', 'Uma Ross, Partner', 'uma.ross@yew.example', 'first.last', 'guessed', 'high')").run()
+  const m = only(db)
+  assert.equal(m.leads, 13)
+  assert.equal(m.email_pct, 15, 'only the subdomain lead and Dr. Jane Smith\'s own address: 2 of 13')
+  assert.equal(m.email_role_pct, 15, 'press@ and office@ are role inboxes, never a person\'s own: 2 of 13')
+  assert.equal(m.email_guess_pct, 0, 'another tenant\'s guess for the same lead id is not read')
+})

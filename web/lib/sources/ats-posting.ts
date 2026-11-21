@@ -158,7 +158,8 @@ function headerOf(kind: AtsKind, job: Record<string, unknown>, title: string, lo
 // name>" when the board states one, else the posting title alone; it is display only for every company check
 // (evidence.ts pageHeadingNames reads the board identity instead).
 // slug null: no slug identity at all (a held copy of a Greenhouse posting, below): only a quote naming the company binds it.
-export interface BoardIdentity { title: string; company: string | null; slug: string | null }
+// record: the text is the board's own API record (atsPageText), not a held copy of the posting page (heldCopyBoard)
+export interface BoardIdentity { title: string; company: string | null; slug: string | null; record?: true }
 
 // #1126 (XHawk on #1143): a TinyFish copy held for a posting URL whose board API read was blocked is still a board
 // posting, never an ordinary page whose title is phrase-matched (that title is the board page's own, e.g. "<title> @
@@ -177,6 +178,21 @@ export function atsPageText(rec: AtsRecord, descriptionText: string): { text: st
   return {
     text: [rec.header || rec.title, body, `Job posting on the ${rec.board} job board.`].filter(Boolean).join(' ').slice(0, 100_000),
     title: (rec.company ? `${rec.title} @ ${rec.company}` : rec.title).slice(0, 300),
-    board: { title: rec.title, company: rec.company || null, slug: rec.org },
+    board: { title: rec.title, company: rec.company || null, slug: rec.org, record: true },
   }
+}
+
+// #533 live (staging 4a6c4d7d): the model words a board posting candidate "Posted a <title> role|job|position|opening|vacancy
+// on <board>", and real titles carry words a free-wording stop list must refuse ("Senior Revenue Operations Manager",
+// "Post-Sales Operations Manager"). So the posting is bound by the board, not by the wording: the source URL is a posting
+// record of the named board, the board returned a title for it, and every word of the title the signal names is a word of
+// that board title. A sentence about something else ("a press release about the ... role"), another board, a title the board
+// does not give this posting or a state word ("(filled)") has a word the board title lacks, so it binds nothing.
+const POSTED_ON_BOARD = /^\s*posted an? (.{1,200}?)\s+(?:role|job|position|opening|vacancy) on (ashby|lever|greenhouse)\s*\.?\s*$/i
+const titleWords = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+export function signalNamesBoardPosting(signal: string | null | undefined, sourceUrl: string, boardTitle: string | null | undefined): boolean {
+  const m = POSTED_ON_BOARD.exec(signal ?? ''), ref = atsPostingRef(sourceUrl)
+  if (!m || !ref || m[2].toLowerCase() !== ref.kind || !boardTitle) return false
+  const named = titleWords(m[1]), board = new Set(titleWords(boardTitle))
+  return named.length > 0 && named.every(w => board.has(w))
 }

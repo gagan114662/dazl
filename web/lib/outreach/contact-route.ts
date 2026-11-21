@@ -61,11 +61,11 @@ export function emailDomainInvalid(email: string): boolean {
 
 const PHONE = /\+?\d[\d\s().-]{6,}\d/
 const norm = (v: string | null | undefined) => (v ?? '').trim().toLowerCase()
-const GENERIC_LOCAL = /^(?:hello|hi|info|information|contact|contactus|enquiries|enquiry|inquiries|inquiry|office|admin|team|sales|mail|general|reception|frontdesk|bookings?|appointments?|studio|clinic|hq|business|partners?|partnerships?|newbusiness)$/
+export const GENERIC_LOCAL = /^(?:hello|hi|info|information|contact|contactus|enquiries|enquiry|inquiries|inquiry|office|admin|team|sales|mail|general|reception|frontdesk|bookings?|appointments?|studio|clinic|hq|business|partners?|partnerships?|newbusiness)$/
 
 // Does the address's local part carry this person's own name (first, last, first.last, flast, firstl...)? A published
 // address shaped like the person's name is the only person binding read here; a shared inbox never is.
-function nameBound(local: string, name: string): boolean {
+export function nameBound(local: string, name: string): boolean {
   const parts = name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').match(/[a-z]+/g) ?? []
   if (parts.length === 0) return false
   const l = local.split('+')[0].replace(/[._-]/g, '')
