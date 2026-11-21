@@ -39,6 +39,12 @@ export async function GET(req: NextRequest) {
   const results = companyFirst ? await companyFirstResults(sqliteDb(scanDb), user.tenantId, job.id) : null
   const displayEmails = results?.displayProof ?? {}
   const leads = companyFirst ? rows.filter(l => results?.visibleIds.has(l.id)) : rows
+  // Company-first held candidates, read-only: who was found and why it is held. No contact, email or score is exposed, and
+  // nothing here can make a held candidate actionable (the hold itself is unchanged).
+  // Only once the job's final visibility checks have run (results exist and the job is done): before that every row would look held.
+  const held = companyFirst && results && job.status === 'done' ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null }[])
+    .filter(l => !results?.visibleIds.has(l.id))
+    .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? 'failed_final_proof_checks' })) : []
   const sequences = await db.sequenceStatusByLead(user.tenantId)
   const enr = await db.enrichmentsForLeads(user.tenantId, leads.map(l => l.id))
   const evts = await db.eventsForLeads(user.tenantId, leads)
@@ -81,7 +87,7 @@ export async function GET(req: NextRequest) {
   const learned = new Map<string, Learned>(leads.map(l => [l.id, learnedPreference(yields, l)]))
   const ranked = rankLeads(safeLeads, pri, Object.fromEntries([...learned].map(([id, p]) => [id, p.delta])))
   const via = gdeltAttribution(getScanDb(), user.tenantId, ranked.map(l => l.id))
-  return NextResponse.json({ job_id: job.id, status: job.status, company_first: companyFirst, company_first_counts: results?.counts ?? null, hidden_count: includeHidden || companyFirst ? 0 : await db.countHiddenLeads(user.tenantId, job.id), repeat_count: readyRepeats(leads as { review_reason?: string | null; seen_before?: number | null }[]).repeats, work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, ...(Object.hasOwn(displayEmails, l.id) ? { company_first_published_email: displayEmails[l.id] } : {}), discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  return NextResponse.json({ job_id: job.id, status: job.status, company_first: companyFirst, held, company_first_counts: results?.counts ?? null, hidden_count: includeHidden || companyFirst ? 0 : await db.countHiddenLeads(user.tenantId, job.id), repeat_count: readyRepeats(leads as { review_reason?: string | null; seen_before?: number | null }[]).repeats, work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, ...(Object.hasOwn(displayEmails, l.id) ? { company_first_published_email: displayEmails[l.id] } : {}), discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()

@@ -243,6 +243,7 @@ export default function LeadsClient() {
   // keyed to the job it was read for: a previous run's note never shows under another job
   const [capacityNote, setCapacityNote] = useState<{ job: string; text: string } | null>(null)
   const [quality, setQuality] = useState<Quality | null>(null)
+  const [heldCandidates, setHeldCandidates] = useState<{ id: string; company: string; source_url: string; signal: string | null; event_date: string | null; hold_reason: string }[]>([])
   const [resultView, setResultView] = useState<{ jobId: string; counts: CompanyFirstResultCounts | null; marked: boolean } | null>(null)
   const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number } }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
   // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
@@ -675,10 +676,11 @@ export default function LeadsClient() {
     const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
     if (l.ok) {
       const j = await l.json()
-      setLeads(j.leads); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null)
+      setLeads(j.leads); setHeldCandidates(j.job_id === jobId && Array.isArray(j.held) ? j.held : []); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null)
       setResultView({ jobId, counts: j.company_first_counts ?? null, marked: j.company_first === true || j.company_first_counts != null })
     }
   }
+  useEffect(() => { setHeldCandidates([]) }, [jobId])   // a new scan never shows the previous scan's held candidates
   useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
   // Interrupted enrichment lookups (a rate limit or crash left the outcome unknown): nothing retried itself, so a
   // lookup that may have been charged is never re-billed on its own. The owner retries each one explicitly, with
@@ -1254,6 +1256,23 @@ export default function LeadsClient() {
           <span>{barCopy(scanDrafts)}</span>
           <a className="btn-primary text-xs px-3 py-1.5 shrink-0" href={`/app/outreach?job_id=${jobId}`}>{scanDrafts.drafts > 0 ? 'Review drafts' : 'Open in Outreach'}</a>
         </div>
+      )}
+      {heldCandidates.length > 0 && (
+        <section className="card p-4 mb-4 text-sm" aria-label="Held candidates" data-testid="held-candidates">
+          <h2 className="font-medium mb-2">Held candidates ({heldCandidates.length})</h2>
+          <p className="text-[var(--ink-2)] mb-2">Found but not shown as leads. Each is held for the reason given. Read-only.</p>
+          <ul className="space-y-1">
+            {heldCandidates.map(h => (
+              <li key={h.id} data-testid="held-candidate">
+                <span className="font-medium">{h.company}</span>
+                {h.signal ? <span className="text-[var(--ink-2)]"> · {h.signal}</span> : null}
+                {h.event_date ? <span className="text-[var(--ink-2)]"> · {h.event_date}</span> : null}
+                <span className="ml-1 rounded bg-[var(--bg-2,#f3f3f3)] px-1" data-testid="held-reason">{h.hold_reason.replace(/_/g, ' ')}</span>
+                {/^https:\/\//.test(h.source_url) ? <a className="ml-1 underline" href={h.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a> : null}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
       {heldEnrich.length > 0 && (
         <section className="card p-4 mb-4 text-sm" aria-label="Contact enrichment needs attention" data-testid="enrich-held">
