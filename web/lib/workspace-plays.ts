@@ -71,5 +71,10 @@ export async function workspacePlays(db: Db, userId: string): Promise<WorkspaceP
     const once: WorkspacePlay = { key: `once-${j.id}`, kind: 'once', id: j.id, query: s, runs: [j.id], last_job_id: j.id, last_run_at: at(j.created_at), last_status: j.status }
     plays.push(once); onceBySentence.set(s, once)
   }
+  // newest activity first on both pages: a play's last run, or its newest search in the window if later (a hand re-run
+  // of a repeating play); a play that never ran goes last. Ties keep the order above (the list order is stable).
+  const madeAt = new Map(jobs.map(j => [j.id, Number(j.created_at)]))
+  const activity = (p: WorkspacePlay) => Math.max(p.last_run_at ?? -1, p.runs.length ? madeAt.get(p.runs[0]) ?? -1 : -1)
+  plays.sort((x, y) => activity(y) - activity(x))
   return { plays, watches, monitors }
 }

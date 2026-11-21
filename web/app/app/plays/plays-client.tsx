@@ -201,7 +201,7 @@ function OnceCard({ p }: { p: OncePlay }) {
         <Pill tone={TONE[p.status.tone]} testid="play-status">{p.status.label}</Pill>
       </div>
       <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 mt-4 text-sm">
-        <div className="min-w-0" data-testid="play-schedule"><dt className="text-[10px] uppercase tracking-wide text-[var(--ink-3)]">Schedule</dt><dd>Ran once, does not repeat</dd></div>
+        <div className="min-w-0" data-testid="play-schedule"><dt className="text-[10px] uppercase tracking-wide text-[var(--ink-3)]">Schedule</dt><dd>{p.schedule}</dd></div>
         <div className="min-w-0" data-testid="play-last-run"><dt className="text-[10px] uppercase tracking-wide text-[var(--ink-3)]">Last run</dt><dd className="break-words">{p.lastRun}</dd></div>
       </dl>
       <div className="flex flex-wrap gap-2 mt-4">

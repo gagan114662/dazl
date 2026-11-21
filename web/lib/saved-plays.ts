@@ -113,7 +113,7 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
 // sentence, so the two pages never disagree on what exists.
 export interface ListedPlay { key: string; kind: 'watch' | 'monitor' | 'once'; id: string; query: string; runs: string[]; last_job_id: string | null; last_run_at: number | null; last_status: string | null }
 export interface PlaysAnswer { plays: ListedPlay[]; watches: WatchRow[]; monitors: MonitorRow[]; emails?: boolean }
-export interface OncePlay { id: string; name: string; sentence: string; lastRun: string; lastHref: string; campaignHref: string; status: { tone: PlayTone; label: string } }
+export interface OncePlay { id: string; name: string; sentence: string; schedule: string; lastRun: string; lastHref: string; campaignHref: string; status: { tone: PlayTone; label: string } }
 export type PlaysPageItem = { key: string; saved: SavedPlay; once?: undefined } | { key: string; once: OncePlay; saved?: undefined }
 const ONCE_STATUS: Record<string, { tone: PlayTone; label: string }> = {
   pending: { tone: 'running', label: 'Running now' }, running: { tone: 'running', label: 'Running now' }, enriching: { tone: 'running', label: 'Running now' },
@@ -127,6 +127,7 @@ export function playsPageItems(a: PlaysAnswer, timeZone?: string, now = Math.flo
     const job = p.last_job_id
     return { key: p.key, once: {
       id: p.id, name: savedPlayTitle(p.query), sentence: p.query,
+      schedule: p.kind === 'once' ? 'Ran once, does not repeat' : 'Repeats: details could not be read',
       lastRun: p.last_run_at ? whenOf(p.last_run_at, timeZone) : 'Not run yet',
       lastHref: job ? `/app/leads?job_id=${job}` : '/app/leads', campaignHref: job ? `/app/campaigns/${job}` : '/app/campaigns',
       status: p.kind === 'once' ? ONCE_STATUS[p.last_status ?? ''] ?? { tone: 'live', label: 'Ran once' } : { tone: 'paused', label: 'Details unavailable' },

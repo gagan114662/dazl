@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { pickUiPort } from '../helpers/ui-port.mjs'
+import { oncePlaysAnswer } from '../helpers/plays-stub.mjs'
 const dir = process.env.WEB_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(dir, 'package.json'))
 const notRun = reason => { console.log(`NOT RUN${process.env.SMOKE_ALLOW_SKIP === '1' ? ' (allowed by SMOKE_ALLOW_SKIP=1)' : ''}: ${reason}`); process.exit(process.env.SMOKE_ALLOW_SKIP === '1' ? 0 : 2) }
@@ -65,7 +66,7 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan/jobs') return json({ jobs: JOBS })
   // #1471: Home's "Your plays" is GET /api/plays (lib/workspace-plays.ts), here as the real route answers for these searches:
   // no watch or monitor, so each own search (not the CSV import) is a play that ran once, newest first
-  if (p === '/api/plays') return json({ plays: JOBS.filter(j => j.query && !j.csv_domain && !j.test_only).sort((x, y) => y.created_at - x.created_at).map(j => ({ key: `once-${j.id}`, kind: 'once', id: j.id, query: j.query, runs: [j.id], last_job_id: j.id, last_run_at: j.created_at, last_status: j.status })), watches: [], monitors: [], emails: false })
+  if (p === '/api/plays') return json(oncePlaysAnswer(JOBS))
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 0, cap: 3 } })
   if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
   // No primary discovery source is configured: adding a key cannot repair that operator state.

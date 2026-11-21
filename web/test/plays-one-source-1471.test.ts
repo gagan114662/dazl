@@ -16,6 +16,6 @@ test('#1471 Home and Plays list the same plays through the real routes', () => {
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
   // SQLite always runs; Postgres runs whenever DAZL_TEST_PG_URL is set (the CI postgres job), never silently skipped there
-  assert.match(r.stdout, PG_URL ? /# pass 2\b/ : /# pass 1\b/)
+  assert.match(r.stdout, PG_URL ? /# pass 3\b/ : /# pass 2\b/)
   assert.match(r.stdout, /# fail 0\b/)
 })

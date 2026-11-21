@@ -29,6 +29,10 @@ test('/app/plays renders the saved-play list and never forwards to Leads', () =>
   assert.equal(/redirect\(|location\.(replace|assign|href\s*=)|router\.(push|replace)/.test(page + client), false, 'no redirect away from Plays')
   for (const k of ['audience', 'signal', 'schedule', 'last-run', 'next-run']) assert.ok(client.includes(`'${k}'`), `each play shows ${k}`)
   for (const id of ['play-status', 'play-toggle', 'play-delete', 'play-runs-toggle']) assert.ok(client.includes(`"${id}"`), `each play has ${id}`)
-  assert.ok(client.includes("fetch('/api/watch')") || client.includes("'/api/watch'"), 'reads the weekly plays')
-  assert.ok(client.includes("'/api/monitors'"), 'reads the scheduled monitors')
+  // #1471: the list is GET /api/plays, the one list Home shows too (weekly plays, monitors and searches that ran once)
+  assert.ok(client.includes("fetch('/api/plays')"), 'reads the plays from GET /api/plays')
+  assert.equal(/fetch\('\/api\/(watch|monitors)'\)/.test(client), false, 'no second list read beside it')
+  // pause/resume/delete stay on the watch and monitor routes
+  assert.ok(client.includes("fetch('/api/watch', { method: 'POST'"), 'weekly play actions on /api/watch')
+  assert.ok(client.includes('fetch(`/api/monitors/${p.id}`'), 'monitor actions on /api/monitors/[id]')
 })

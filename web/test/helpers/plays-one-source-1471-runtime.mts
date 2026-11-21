@@ -102,11 +102,38 @@ async function scenario(db: Db) {
   const text = JSON.stringify(v.body)
   assert.ok(!text.includes('SECRET-b') && !text.includes('b'.repeat(24)), 'GET /api/plays: another workspace\'s plays never show')
 
+  // newest activity first, on both pages: the newest one-off search, the earlier one-off, the monitor, the watch (its hand re-run)
+  assert.deepEqual(v.body.plays.map(p => p.query.trim()), [HIRING, 'Clinics adding a new service line', 'Shops that opened a second location', w.query])
+
   // B sees only its own: its one-off search and its watch, the same on both pages
   const vb = await views(B)
   assert.deepEqual(vb.page, vb.home)
   assert.deepEqual(vb.body.plays.map(p => p.kind).sort(), ['once', 'watch'])
+
+  // 3. The history window (the newest 20 searches): 21 newer one-off searches push every earlier search out of it. The
+  //    watch and the monitor are still plays on both pages (with no runs in the window, Home sends them to Plays); the
+  //    one-off plays whose searches left the window leave BOTH lists, never just one.
+  for (let i = 0; i < 21; i++) await job(db, { id: (i + 0x100).toString(16).padStart(24, 'c'), user: A, query: `Search number ${i}`, at: NOW - 600 + i })
+  v = await views(A)
+  assert.deepEqual(v.page, v.home)
+  assert.equal(v.page.length, 22, '20 one-off plays in the window, the watch and the monitor')
+  const saved = v.body.plays.filter(p => p.kind !== 'once')
+  assert.deepEqual(saved.map(p => [p.kind, p.runs.length]).sort(), [['monitor', 0], ['watch', 0]])
+  assert.ok(!v.body.plays.some(p => p.query.trim() === HIRING), 'an out-of-window one-off play is on neither page')
+  const homeRows = homePlays(v.body.plays as Parameters<typeof homePlays>[0], v.jobs, [])
+  for (const r of homeRows.filter(r => r.kind !== 'once')) { assert.equal(r.outcomeHref, '/app/plays'); assert.match(r.outcome, /^repeating play/) }
+  // Home's jobs read failed: every play is still listed (same keys), none claims counts it did not read
+  assert.deepEqual(homePlays(v.body.plays as Parameters<typeof homePlays>[0], null, []).map(r => r.key), v.home)
 }
+
+test('GET /api/plays: an unreadable store answers 503, never an empty list', async () => {
+  setUser({ id: A, business_name: 'Seller' })
+  const broken = { kind: 'sqlite', all: async () => { throw new Error('disk I/O error') }, get: async () => { throw new Error('disk I/O error') }, run: async () => { throw new Error('x') } } as unknown as Db
+  setDb(broken)
+  const r = await plays.GET()
+  assert.equal(r.status, 503)
+  assert.equal('plays' in (await r.json() as object), false)
+})
 
 test('#1471 Home and Plays list the same plays (SQLite)', async () => {
   const raw = new Database(':memory:'); migrateAllSqlite(raw)
