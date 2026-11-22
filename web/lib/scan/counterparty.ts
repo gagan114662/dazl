@@ -19,7 +19,7 @@ const CUSTOMER_PHRASE = /\b(became|becomes|becoming|is now|are now|joined|joins|
 
 // A public ATS posting (jobs.ashbyhq.com/{org}/..., jobs.lever.co/{org}/..., boards.greenhouse.io/{org}/jobs/...) belongs to the board's org, not to the board
 // host (#767: "jobs" from jobs.ashbyhq.com matched a link like zapier.com/l/jobs/... next to "using AI tools" in Zapier's own posting and held it as a counterparty).
-export function hostBrand(sourceUrl: string): string | null {
+export function hostBrand(sourceUrl: string, opts: { probe: true }): string | null { void opts
   return sourceBrand(sourceUrl)?.brand ?? null
 }
 // ats: the brand is a board org slug ("retail", "brightloophq"), so it is compared with the WHOLE company key, never its first word (#767 review: "AI Corp"
