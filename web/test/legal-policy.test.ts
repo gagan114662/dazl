@@ -8,7 +8,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
-import { API_HOSTS, DRAFT_NOTICE, FACTS, NON_REQUEST_HOSTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, PUBLIC_SOURCES, TERMS } from '../lib/legal/policy.ts'
+import { API_HOSTS, DRAFT_NOTICE, FACTS, NON_REQUEST_HOSTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, PRIVACY_REQUIRES_ENV, PRIVACY_STATUS, PUBLIC_SOURCES, TERMS } from '../lib/legal/policy.ts'
 import { MATRIX } from '../lib/sources/capability-matrix.ts'
 import { PLAN_LIMITS } from '../lib/plans.ts'
 import { SESSION_RETAIN_S } from '../lib/sessions.ts'
@@ -51,18 +51,19 @@ const MASTER = randomBytes(32)
 const OAUTH_ENV = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'csecret', PUBLIC_BASE_URL: 'https://app.test' }
 const NOW = 1_800_000_000
 
-test('the policies stay labelled DRAFT and keep their open decisions visible until the owner and counsel approve them', () => {
+test('the terms stay labelled DRAFT with their open decisions visible; the privacy policy is final, with no placeholder and no draft notice (owner instruction 2026-11-22)', () => {
   assert.equal(POLICY_STATUS, 'draft')
+  assert.equal(PRIVACY_STATUS, 'final')
+  assert.doesNotMatch(privacy, /\[(?:NEEDS|DATE|SYSTEM)[^\]]*\]/, 'the published privacy policy carries no placeholder')
+  assert.doesNotMatch(privacy, /\bDRAFT\b/)
   assert.match(DRAFT_NOTICE, /^DRAFT\b/)
   assert.match(DRAFT_NOTICE, /not yet approved by the site owner or reviewed by a lawyer/)
-  // every owner fact not in the code is still a placeholder somewhere in the text
+  // every owner-supplied fact is shown somewhere in the text
   for (const v of Object.values(OWNER_PLACEHOLDERS)) assert.ok(privacy.includes(v) || terms.includes(v), `${v} is not shown`)
   assert.match(terms, /\[NEEDS COUNSEL: warranty disclaimer, limitation of liability/)
-  for (const page of ['app/privacy/page.tsx', 'app/terms/page.tsx']) {
-    const src = read(page)
-    assert.ok(src.includes('{DRAFT_NOTICE}'), `${page} must render the draft notice`)
-    assert.ok(src.includes("from '@/lib/legal/policy'"), `${page} must render the checked policy text, not its own copy`)
-  }
+  for (const page of ['app/privacy/page.tsx', 'app/terms/page.tsx']) assert.ok(read(page).includes("from '@/lib/legal/policy'"), `${page} must render the checked policy text, not its own copy`)
+  assert.ok(read('app/terms/page.tsx').includes('{DRAFT_NOTICE}'), 'the terms page must render the draft notice')
+  assert.ok(!read('app/privacy/page.tsx').includes('DRAFT_NOTICE'), 'the privacy page renders no draft notice')
   assert.ok(read('app/privacy/page.tsx').includes('PRIVACY.map'))
   assert.ok(read('app/terms/page.tsx').includes('TERMS.map'))
 })
@@ -98,14 +99,19 @@ test('session and outbox deletion only run under the flag the policy names, and 
   const untouchable = new Proxy({}, { get() { throw new Error('reaper touched the store while off') } }) as never
   assert.deepEqual(await reapAccountHistory(untouchable, {}, {}), { sessions: 0, outbox: 0 })
   assert.ok(read('lib/account-retention.ts').includes(`env.${FACTS.accountHistoryFlag}!=='1'`))
-  assert.ok(privacy.includes(`${FACTS.accountHistoryFlag}=1`), 'the policy must keep the flag caveat while the reaper is gated')
+  // the published policy states the deletion as a fact, so production must set the flag (PRIVACY_REQUIRES_ENV)
+  assert.equal(PRIVACY_REQUIRES_ENV[FACTS.accountHistoryFlag], '1')
+  assert.ok(privacy.includes(`kept for ${FACTS.revokedSessionRetainDays} days`))
 })
 
 test('no audit record is purged until a period is chosen, as the policy says', () => {
   assert.deepEqual(auditRetention({}), { state: 'off' })
   assert.equal(auditRetention({ [FACTS.auditRetentionFlag]: String(FACTS.auditRetentionMinDays) }).state, 'on')
   assert.equal(auditRetention({ [FACTS.auditRetentionFlag]: String(FACTS.auditRetentionMinDays - 1) }).state, 'invalid')
-  assert.match(privacy, /no audit record is deleted automatically today/)
+  // the published policy states a period, so production must set it (PRIVACY_REQUIRES_ENV)
+  assert.equal(PRIVACY_REQUIRES_ENV[FACTS.auditRetentionFlag], String(FACTS.auditRetentionDays))
+  assert.equal(auditRetention({ [FACTS.auditRetentionFlag]: PRIVACY_REQUIRES_ENV[FACTS.auditRetentionFlag] }).state, 'on')
+  assert.ok(privacy.includes(`kept for ${FACTS.auditRetentionDays} days, then deleted`))
 })
 
 test('account email is held on the host while no system provider is configured, and the policy ties its 24-hour deletion to the retention flag', async () => {
@@ -122,8 +128,8 @@ test('account email is held on the host while no system provider is configured, 
   const untouchable = new Proxy({}, { get() { throw new Error('reaper ran while the flag is unset') } }) as never
   assert.deepEqual(await reapAccountHistory(untouchable, {}, {}), { sessions: 0, outbox: 0 })
   // ...and the policy says deletion applies only once the setting is on, not that it runs today
-  assert.match(privacy, /account emails are not sent and are held on the host/)
-  assert.match(privacy, /deletion under Retention applies only once ACCOUNT_RETENTION_ENABLED is turned on \(off by default\)/)
+  assert.match(privacy, /Account emails such as password resets are sent through Amazon SES\./)
+  assert.ok(privacy.includes(`deleted after ${FACTS.systemMailOutboxRetainHours} hours`))
 })
 
 test('trace capture is off unless its flag is set', () => {
@@ -247,13 +253,13 @@ test('the Gmail reading description matches the reply sync: what is read, classi
   assert.match(privacy, /turning reading off stops future reads and follow-ups but does not delete what is already stored/)
   assert.match(privacy, /deleting your account deletes them with your other workspace data/)
   assert.match(privacy, /unless the deletion request asks to keep named tables/)
-  assert.match(privacy, /NEEDS OWNER: retention period for stored reply records/)
+  assert.match(privacy, /Stored reply records are kept while your account exists/)
+  assert.match(privacy, /adheres to the Google API Services User Data Policy, including the Limited Use requirements/)
   assert.match(privacy, /reads nothing without this consent/)
 })
 
-test('no categorical sale/share assertion is published: it stays a visible counsel marker', () => {
-  assert.doesNotMatch(privacy, /We do not sell personal information\./)
-  assert.match(privacy, /\[NEEDS COUNSEL: the sale\/share statement/)
+test('the sale/share statement is the one the owner approved for publication', () => {
+  assert.match(privacy, /We do not sell personal information, and we do not share it for advertising\./)
 })
 
 test('prospect rows are tenant-scoped; the only global address-based processing is what the policy names', () => {
