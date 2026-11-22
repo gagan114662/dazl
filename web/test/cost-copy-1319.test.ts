@@ -133,3 +133,29 @@ test('a run with no limit of its own is blocked when the enforced daily cap has 
   assert.equal(tight.est.verdict.ok, false); assert.equal(tight.est.cap.binding, 'daily')
   assert.match(tight.est.verdict.message, /only \$0\.01\d* of your \$\d+\.\d\d limit is left/)
 })
+
+// Council: "This run's limit" is what stops the run: the job guard's cap, min(scan cap, max_usd, hard cap) (spend-cap.ts effectiveCapUsd),
+// never the raw max_usd; and a run with no max_usd of its own still has that cap.
+import { HARD_CAP_USD, scanCapConfig } from '../lib/scan/spend-cap.ts'
+test('the run limit shown is the cap the job guard enforces, with or without a max_usd', async () => {
+  const sc = scanCapConfig(); assert.ok(sc.ok)
+  const enforced = (m: number) => Math.min(m, sc.ok ? sc.capUsd : 0, HARD_CAP_USD)
+  const high = (await serverEstimate(ALL_OFF, 0, { budget: { max_usd: 10 } })).est
+  assert.ok(Math.abs((high.cap.run_max_usd ?? 0) - enforced(10)) < 1e-9, String(high.cap.run_max_usd))
+  assert.ok(capLine(high.cap, high.cap.capped_total)!.startsWith(`This run's limit: $${enforced(10).toFixed(2)};`), capLine(high.cap, high.cap.capped_total)!)
+  const none = (await serverEstimate(ALL_OFF, 0, { budget: undefined })).est
+  assert.ok(Math.abs((none.cap.run_max_usd ?? 0) - enforced(Infinity)) < 1e-9, String(none.cap.run_max_usd))
+})
+
+// Council: only the run's own limit can be raised by the person; an account window that binds is named, with when it resets.
+test('when the daily or monthly cap binds, the change list names that window and its reset, not a dollar limit to raise', async () => {
+  const { est, day } = await serverEstimate(ALL_OFF, 0, { budget: undefined })
+  const tight = (await serverEstimate(ALL_OFF, day - 0.01, { budget: undefined })).est
+  assert.equal(est.verdict.ok, true); assert.equal(tight.cap.binding, 'daily')
+  assert.ok(!tight.verdict.change.some(c => /^Raise the/.test(c)), tight.verdict.change.join(' | '))
+  assert.ok(tight.verdict.change.some(c => /^Your daily limit .* resets at 00:00 UTC\.$/.test(c)), tight.verdict.change.join(' | '))
+  const month = (await serverEstimate({ ...ALL_OFF, DAZL_OWNER_MONTH_MAX_USD: '5' }, 0, { budget: undefined, reservedMonth: 4.99 })).est
+  assert.equal(month.cap.binding, 'monthly')
+  assert.ok(!month.verdict.change.some(c => /^Raise the/.test(c)), month.verdict.change.join(' | '))
+  assert.ok(month.verdict.change.some(c => /^Your monthly limit .* resets on the 1st at 00:00 UTC\.$/.test(c)), month.verdict.change.join(' | '))
+})
