@@ -10,8 +10,8 @@ try {
   const { migrateAllSqlite } = await import(`${L}/lib/db/sqlite-migrations.ts`); const { createJob } = await import(`${L}/lib/scan/store.ts`)
   const { crawlJob } = await import(`${L}/lib/connectors/sitecrawl.ts`); const { findWorkEmail } = await import(`${L}/lib/people/work-email.ts`)
   const db = new Database(':memory:'); migrateAllSqlite(db)
-  const ICP = { summary: 'Toronto test companies', who: ['Head of Sales'], where: ['Toronto, ON'], signals: [] }
-  const job = createJob(db, 'T', { business_name: 'Seller', industry: 'saas', location: 'Toronto, ON' })
+  const ICP = { summary: 'Austin test companies', who: ['Head of Sales'], where: ['Austin, TX'], country: 'US', signals: [] }
+  const job = createJob(db, 'T', { business_name: 'Seller', industry: 'saas', location: 'Austin, TX' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify(ICP), job)
   const lead = 'c'.repeat(24)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score) VALUES (?,?,?,?,?,?,?,?,?)').run(lead, job, 'dazl', null, 'Test page for dazl', `https://${SITE}/`, 'dazl finds reviewed, high-intent leads and writes cold outreach from your own Gmail', 90, 80)
