@@ -12,3 +12,6 @@ export function eventDateCopy(eventDate: string | null, _status: string | null, 
   if (opts.dayVerified) return `${eventDate} (event day verified on the cited source; requested recency window unresolved - current need unconfirmed)`
   return `${eventDate} (claimed event day; event association and current need unconfirmed)`
 }
+
+// The review card's "Literal page check" date line (app/app/leads/leads-client.tsx), from the lead as the leads route returns it.
+export const reviewCheckDateLine = (l: { event_date: string | null; date_status: string | null; timing?: 'proof_backed' | 'unconfirmed' | null; day_verified?: boolean; window_missed?: boolean }): string => eventDateCopy(l.event_date, l.date_status)
