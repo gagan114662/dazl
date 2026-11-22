@@ -38,7 +38,7 @@ const js = bundle.outputFiles[0].text
 
 const JOB = 'a'.repeat(24)
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-const serve = async (statusBody) => {
+const serve = async (statusBody, leadsBody = fixture.leads_a.body) => {
   const browser = await chromium.launch()
   const page = await browser.newPage()
   await page.route('**/*', async route => {
@@ -47,8 +47,9 @@ const serve = async (statusBody) => {
     if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
     if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })
     if (u.pathname === '/api/scan/status') return json(route, statusBody)
-    if (u.pathname === '/api/leads') return json(route, fixture.leads_a.body)
+    if (u.pathname === '/api/leads') return leadsBody === null ? json(route, { error: 'boom' }, 500) : json(route, leadsBody)
     if (u.pathname === '/api/scan/jobs') return json(route, { jobs: [] })
+    if (u.pathname === '/api/leads/play-research') return json(route, { job_id: JOB, research: [] })   // the real route's shape for a job with no saved research
     return json(route, {}, 404)
   })
   await page.goto(`http://dazl.test/app/leads?job_id=${JOB}`)
@@ -67,14 +68,14 @@ const serve = async (statusBody) => {
   assert.match(issueText, /People Data Labs rate limit reached during this scan \(1 lookup affected\)/)
   assert.ok(!/Acme|Beta|Gamma|org /.test(issueText), 'no lookup text in the notice')
 
-  // Cost per verification pass: exact ratio from the real route (0.45/4), basis named, model-only scope beside it.
+  // Cost per lead shown (#1122): the real route's model cost over the 4 leads this page shows, model-only scope beside it.
   const perPass = page.getByTestId('scan-cost-per-pass')
+  await page.getByText('Northwind Dental').first().waitFor({ timeout: 10000 })   // the leads list is read before the line counts it
   await perPass.waitFor()
   const passText = await perPass.innerText()
-  assert.match(passText, /Model cost per lead that passed verification: \$0\.11/)
-  assert.match(passText, /across 4 leads/)
+  assert.match(passText, /Model cost per lead: \$0\.11/)
+  assert.match(passText, /across 4 leads shown/)
   assert.match(passText, /not included/)
-  assert.match(passText, /hygiene, not proof of a good lead/)
   // Representative populated path: the 4 leads behind the ratio and the counter are actually listed.
   assert.equal(fixture.leads_a.body.leads.length, 4)
   assert.equal(fixture.leads_a.body.job_id, fixture.a.body.job_id)
@@ -87,20 +88,33 @@ const serve = async (statusBody) => {
   await browser.close()
 }
 
-// 2) Real tenant-B response: zero passes -> no ratio, spend still visible, its own issue still shown.
+// 2) Real tenant-B responses: no leads shown -> no ratio, spend still visible, its own issue still shown.
 {
-  const { browser, page } = await serve(fixture.b.body)
+  const { browser, page } = await serve(fixture.b.body, fixture.leads_b.body)
   const perPass = page.getByTestId('scan-cost-per-pass')
   await perPass.waitFor({ timeout: 10000 })
   const t = await perPass.innerText()
-  assert.match(t, /No per-lead cost to show: no leads passed verification/)
+  assert.match(t, /No per-lead cost to show: no leads shown/)
   assert.match(t, /\$0\.23\) is still shown above/, 'spend is not hidden when the ratio is unavailable')
-  assert.match(t, /hygiene, not proof of a good lead/)
   const issues = page.getByTestId('scan-provider-issues')
   await issues.waitFor()
   assert.match(await issues.innerText(), /Apollo could not be used in this scan/)
   await perPass.screenshot({ path: (process.env.SHOT_B || '/tmp/scan-transparency-zero-pass.png').replace('.png', '-perpass.png') })
   await issues.screenshot({ path: (process.env.SHOT_B || '/tmp/scan-transparency-zero-pass.png').replace('.png', '-issues.png') })
+  await browser.close()
+}
+
+// 2b) #1122: the leads list could not be read (500) on a done scan with model cost: the per-lead line never says
+//     "no leads shown" or divides by 0 - it is not shown at all until the list is read.
+{
+  const { browser, page } = await serve(fixture.a.body, null)
+  await page.getByTestId('scan-cost').waitFor({ timeout: 10000 })
+  await page.waitForTimeout(1500)
+  assert.equal(await page.getByTestId('scan-cost-per-pass').count(), 0, 'no per-lead line without a read leads list')
+  const bodyText = await page.locator('body').innerText()
+  assert.ok(!/no leads shown/i.test(bodyText), 'an unread list is never "no leads shown"')
+  assert.ok(!/not read/i.test(bodyText), 'no "not read" hedge anywhere on the page')
+  assert.ok(!/across 0 leads/.test(bodyText))
   await browser.close()
 }
 

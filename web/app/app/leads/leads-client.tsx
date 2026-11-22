@@ -9,7 +9,7 @@ import { trialRefusedCopy } from '@/lib/trial-copy'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
-import { COST_PER_PASS_SCOPE, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
+import { COST_PER_PASS_SCOPE, costPerShownLead, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, readyRepeats, scoreLabel, quoteNote, visibleReadyLeads } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
@@ -63,8 +63,8 @@ import Caveat from '@/app/app/caveat'
 import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { lastActivityNote } from '@/lib/scan/progress'
-import { effectiveOffer, statedOffer } from '@/lib/scan/play-offer-text'
-import { canQuoteWebsiteDraft, websiteReviewOffer } from './website-review-offer'
+import { statedOffer } from '@/lib/scan/play-offer-text'
+import { canQuoteWebsiteDraft, reviewOffer, websiteReviewOffer } from './website-review-offer'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
 import PlanViewCard from './plan-view'
@@ -564,13 +564,15 @@ export default function LeadsClient() {
       setOfferConflict(choice.conflict ? {...choice.conflict,saved:choice.conflict.recorded,direct:false,requested:q} : null)
       return
     }
-    // the server's own resolution (effectiveOffer), with the base as the play's starting offer
-    const c = effectiveOffer({ seller: null, query: q }, base.offer).conflict
+    // the server's own resolution (effectiveOffer), with the base as the play's starting offer; a request naming the workspace
+    // against a different saved offer gets the same "Use: <workspace>" choice as a direct run (#1122)
+    const review = reviewOffer(q, base)
+    const c = review.conflict
     if (c) {
       // a request that withdraws an offer never falls back to the saved one: the user keeps it or writes this play's offer
-      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ambiguous: c.ambiguous, ...(c.incomplete ? { incomplete: true } : {}), ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), direct: false }); return
+      setOfferText(c.stated ?? ''); setOfferConflict({ stated: c.stated, saved: c.recorded, ambiguous: c.ambiguous, ...(c.incomplete ? { incomplete: true } : {}), ...(c.withdrawn ? { withdrawn: c.withdrawn } : {}), ...(c.freshTarget ? { freshTarget: true } : {}), direct: false }); return
     }
-    setOfferText(statedOffer(q) ?? base.offer ?? '')
+    setOfferText(review.offer)
     setOfferConflict(null)
   }
   // Extra sources this page asked the run for (unknown for a scan adopted after a reload: null).
@@ -850,6 +852,9 @@ export default function LeadsClient() {
   // #1238: repeats are collapsed only when something new remains (lib/scan/leads-view.ts visibleReadyLeads)
   const currentView = resultView?.jobId === jobId ? resultView : null
   const visibleLeads = visibleReadyLeads(leads, showSeen)
+  // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
+  // currentView is set only by a successful GET /api/leads for this job: until then there is no per-lead line at all
+  const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads, showSeen, leadsRead: currentView !== null })
   const repeats = readyRepeats(leads)
 
   return (
@@ -1187,11 +1192,11 @@ export default function LeadsClient() {
           Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start.{cost.estimate.trial_cap_line ? <> <span data-testid="scan-cost-trial-cap">{cost.estimate.trial_cap_line}</span></> : null} {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
         </p>
       )}
-      {cost?.per_verification_pass && (status === 'done' || status === 'failed') && (
-        <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost-per-pass" data-unavailable={cost.per_verification_pass.unavailable ?? ''}>
-          {cost.per_verification_pass.usd_per_pass !== null
-            ? <>Model cost per lead that passed verification: ${cost.per_verification_pass.usd_per_pass < 0.01 ? cost.per_verification_pass.usd_per_pass.toFixed(4) : cost.per_verification_pass.usd_per_pass.toFixed(2)} across {cost.per_verification_pass.verified} {cost.per_verification_pass.verified === 1 ? 'lead' : 'leads'}. {cost.model_scope ?? COST_PER_PASS_SCOPE} Passing verification is hygiene, not proof of a good lead.</>
-            : <>No per-lead cost to show: {cost.per_verification_pass.unavailable}.{cost.per_verification_pass.model_usd !== null ? ` The model cost ($${cost.per_verification_pass.model_usd < 0.01 ? cost.per_verification_pass.model_usd.toFixed(4) : cost.per_verification_pass.model_usd.toFixed(2)}) is still shown above.` : ''} Passing verification is hygiene, not proof of a good lead.</>}
+      {cost?.per_verification_pass && perLead && (status === 'done' || status === 'failed') && (
+        <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost-per-pass" data-unavailable={perLead.unavailable ?? ''}>
+          {perLead.usd_per_lead !== null
+            ? <>Model cost per lead: ${perLead.usd_per_lead < 0.01 ? perLead.usd_per_lead.toFixed(4) : perLead.usd_per_lead.toFixed(2)} across {perLead.shown} {perLead.shown === 1 ? 'lead' : 'leads'} shown. {cost.model_scope ?? COST_PER_PASS_SCOPE}</>
+            : <>No per-lead cost to show: {perLead.unavailable}.{perLead.model_usd !== null ? ` The model cost ($${perLead.model_usd < 0.01 ? perLead.model_usd.toFixed(4) : perLead.model_usd.toFixed(2)}) is still shown above.` : ''}</>}
         </p>
       )}
       {providerIssuesUnknown && (status === 'done' || status === 'failed') && (
@@ -1640,17 +1645,21 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
   const manualOnly = c.incomplete || (c.ambiguous && !c.saved)
   const explicitOffer = completeOffer(writtenOffer)
   const namesWorkspace = c.freshTarget && c.stated && c.stated.trim().toLowerCase() !== c.saved.trim().toLowerCase()
+  // The targeting choice is the direct run's only (#1122): on the review screen the targeting is the editor below, built from
+  // this request, so the choice there is only what this play sells.
+  const targeting = c.freshTarget && !onWrite
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
     {c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
-      : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
+      : targeting && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
+      : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-names-workspace">This request names <strong>{c.stated}</strong>; your saved offer is <strong>{c.saved.replace(/\.$/, "")}</strong>. Choose what this play sells. Neither choice changes Settings.</p>
       : c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
       : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request may name more than one offer because a parenthesis is unfinished. Choose or write this play’s offer before it runs.</p>
       : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => namesWorkspace ? setWriting(true) : onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}
-      {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved, 'saved')} data-testid="offer-use-saved">{c.freshTarget ? 'Keep saved targeting' : `Use: ${c.saved}`}</button>}
+      {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved, 'saved')} data-testid="offer-use-saved">{targeting ? 'Keep saved targeting' : `Use: ${c.saved}`}</button>}
       {!c.stated && (onWrite || manualOnly) && <button type="button" className="btn-primary btn-sm" onClick={onWrite ?? (() => setWriting(true))} data-testid="offer-write">Write what this play sells</button>}
     </div>
     {writing && <div className="mt-3 flex flex-wrap items-end gap-2">
