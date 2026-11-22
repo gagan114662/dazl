@@ -70,6 +70,14 @@ function dated(ok: boolean, day: { date: string | null; boardOnly: boolean }, da
 // The sales-hiring gate's durable pass proves only what that gate checked, with ITS window and stage: a condition with a narrower clock,
 // another stage or a clock relative to another event is not proven by it. Under an OR request (salesGateOr) the gate passes a lead on ONE
 // branch, so its pass record proves neither branch in particular: each condition then needs its own verified fact.
+// #1122: the specific titles a hiring condition names, each on its own (sales gate's bounded synonyms), and whether any alternative names no
+// specific title ("hiring sales staff"), which keeps main's broad rule.
+function namedRoles(c: Condition) {
+  const alts = conditionRoles(c)
+  const perAlt = alts.map(alt => requestedHiringRoles(`hiring ${alt}`, null))
+  return { named: perAlt.flat(), broad: alts.length === 0 || perAlt.some(r => r.length === 0) }
+}
+
 function gateCovers(c: Condition, ctx: ProofContext): boolean {
   if (!ctx.salesGatePassed || !salesHiringRequired(ctx.query, ctx.icp) || c.relative_to || salesGateOr(ctx.query, ctx.icp)) return false
   const gateDays = parseWindowDays(ctx.query ?? '') ?? 90
@@ -174,9 +182,7 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
   // each role matched on its own with the sales gate's bounded synonyms (an SDR posting is not an AE; a hygienist is not a receptionist).
   // A request naming no specific title ("hiring sales staff": no alternative the matcher reads as a title) keeps main's rule, and on the
   // sales path any dated sales-titled posting counts.
-  const alts = conditionRoles(c)
-  const perAlt = alts.map(alt => requestedHiringRoles(`hiring ${alt}`, null))
-  const named = perAlt.flat(), broad = alts.length === 0 || perAlt.some(r => r.length === 0)
+  const { named, broad } = namedRoles(c)
   const titlesOf = (r: ProofRow) => [String(r.value), ...String(r.label ?? '').split(/[;|\n]/)].map(t => t.trim()).filter(Boolean)
   const titleOk = (r: ProofRow) => titlesOf(r).some(t => matchedHiringRole(t, named) !== null) || (broad && (!gtm || !c.role || isGtmRole(`${r.value} ${r.label ?? ''}`)))
   // an audit row that says its posting date was not read (or read as older than the window) is no dated posting (#1122, same rule as the new-role path)
@@ -227,7 +233,10 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
     case 'hiring': {
       // Dated postings are read in ownProofs (every one of them, so row order never decides); here: the lead's own quote, then the gate's record.
       const gtm = !c.role || conditionRoles(c).some(isSalesTitle)
-      if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
+      // #1122: the lead's own quote proves a condition naming specific roles only through one of those roles: an AE quote never proves "hiring SDRs"
+      const { named, broad } = namedRoles(c)
+      const quoteRoleOk = broad || matchedHiringRole(quote, named) !== null
+      if (gtm && quoteRoleOk && affirmativeSalesHiring(quote, lead.company)) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified an open sales role for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no dated posting or verified quote shows this company hiring${c.role ? ` ${c.role}` : ''}` }
     }

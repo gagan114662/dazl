@@ -215,7 +215,7 @@ test('#1122 a lead\'s own quote proves the condition only through a role the req
   const quoted = (excerpt: string): ProofLead => ({ ...lead, evidence_excerpt: excerpt, signal: excerpt, event_date: '2026-11-10' })
   const truth = (q: string, l: ProofLead) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, l, [], ctx)[c.id].truth }
   const ae = quoted('Example Dental Group is hiring an Account Executive to grow its new-patient programme.')
-  const sdr = quoted('Example Dental Group is hiring a Sales Development Representative to book new-patient consultations.')
+  const sdr = quoted('Example Dental Group is hiring a sales development rep to book new-patient consultations.')
   assert.notEqual(truth('Companies hiring SDRs in the last 30 days', ae), 'pass', 'an AE quote never proves an SDR request')
   assert.notEqual(truth('Companies hiring a receptionist or SDR in the last 30 days', ae), 'pass')
   assert.equal(truth('Companies hiring SDRs in the last 30 days', sdr), 'pass')
