@@ -328,3 +328,22 @@ test('Quest #1534: "hiring SDRs and hiring AEs" is two conditions, both required
     assert.deepEqual(alts(v), [['sdrs'], ['aes']], v)
   assert.deepEqual(alts('Companies hiring SDRs or hiring AEs'), [['sdrs', 'aes']])
 })
+
+// Watcher (#1534): reading every hiring verb also reads a later "not hiring X" as its own negated condition (main swallowed it into the
+// first clause, so an SDR posting alone passed "hiring SDRs but not hiring AEs"). It fails closed: the absence of an AE posting is no proof
+// the company is not hiring AEs, so the plan stays unknown (held) until a source rules AEs out; an AE posting rules the lead out.
+test('#1534 "Companies hiring SDRs but not hiring AEs" is hiring SDRs AND NOT hiring AEs, and fails closed', () => {
+  for (const q of ['Companies hiring SDRs but not hiring AEs', 'Companies hiring SDRs and not hiring AEs in the last 30 days']) {
+    const p = compileTargeting(q, null)
+    assert.equal(p.root?.op, 'and', q)
+    const [pos, neg] = (p.root as { of: { op: string; cond?: { kind: string }; of?: { op: string; cond: { kind: string } } }[] }).of
+    assert.equal(pos.op, 'cond'); assert.equal(neg.op, 'not', `${q}: the second clause is negated`)
+    assert.deepEqual(planConditions(p.root).map(x => [x.cond.kind, conditionRoles(x.cond).map(r => r.toLowerCase()), x.negated]), [['hiring', ['sdrs'], false], ['hiring', ['aes'], true]], q)
+    const sdr = { ...posting('Sales Development Representative'), kind: 'hiring-role' } as ProofRow
+    const ae = { ...posting('Account Executive'), kind: 'hiring-role', source_url: 'https://boards.example/exampledental/jobs/2' } as ProofRow
+    const verdict = (rows: ProofRow[]) => evaluatePlan(p, planProofs(p, lead, rows, ctx)).truth
+    assert.equal(verdict([]), 'unknown', `${q}: nothing proven, held`)
+    assert.equal(verdict([sdr]), 'unknown', `${q}: an SDR posting alone never passes (no source rules AEs out)`)
+    assert.equal(verdict([sdr, ae]), 'fail', `${q}: an AE posting rules the lead out`)
+  }
+})
