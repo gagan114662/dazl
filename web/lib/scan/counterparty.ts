@@ -94,9 +94,10 @@ function writtenRelationship(company: string, brand: string, title: string, text
   return sentences.some((k, i) => list.test(k) && hasCo.test(k) && (hasBrand.test(k) || (i > 0 && hasBrand.test(sentences[i - 1]))))
 }
 
-// The rule reads at most this much of the page. A company name longer than it can never be found there, so the rule cannot clear it:
-// such a lead is held, never passed as "no counterparty" (#1237, fail closed).
-const READ_MAX = 3000
+// The rule reads at most READ_MAX characters of the page text, and on a customer page looks for the company within WINDOW characters of
+// the brand. A company name longer than the stretch it must fit in can never be found there, so the rule cannot clear it: such a lead is
+// held (unchecked_name), never passed as "no counterparty" (#1237, fail closed).
+const READ_MAX = 3000, WINDOW = 200
 const ATS_ORG_SUFFIX = new Set(['hq', 'inc', 'labs', 'io', 'app', 'team', 'careers', 'jobs'])
 export function counterpartySignal(c: Candidate, page: Page, passage: string): string | null {
   const src = sourceBrand(c.source_url)
@@ -110,16 +111,21 @@ export function counterpartySignal(c: Candidate, page: Page, passage: string): s
     const whole = company.replace(/ /g, '')
     const suffixed = (long: string, short: string) => short.length >= 3 && long.startsWith(short) && ATS_ORG_SUFFIX.has(long.slice(short.length))
     if (whole === brand || suffixed(brand, whole) || suffixed(whole, brand)) return null
-  } else if (company.includes(brand) || brand.includes(company.split(' ')[0])) return null // source belongs to the lead itself
-  if (company.length > READ_MAX) return `unchecked_name:${brand}`
-  if (CUSTOMER_PATH.test(pathOf(c.source_url))) {
+  } else if (company.includes(brand)) return null // source belongs to the lead itself
+  // A name longer than the stretch it must fit in is held. Only real containment (above) clears it: its first word inside the brand ("a" in
+  // "linear") is no proof of an own source for a name the rule cannot read.
+  const customerPage = CUSTOMER_PATH.test(pathOf(c.source_url))
+  if (company.length > (customerPage ? WINDOW : READ_MAX)) return `unchecked_name:${brand}`
+  if (!src.ats && brand.includes(company.split(' ')[0])) return null // source belongs to the lead itself
+  if (customerPage) {
     // The brand's own customer pages: the rule as it always was (the brand in the text, a customer word, the company beside the brand).
     const hay = norm(passage || `${page.title} ${page.text.slice(0, READ_MAX)}`)
     if (!hay.includes(brand)) return null
     if (!CUSTOMER_PHRASE.test(hay)) return null
-    // The lead's company must appear near the brand mention (same 200-char window).
+    // The lead's company must appear near the brand mention (same WINDOW-char window). It cannot contain the brand (own source, above), so it
+    // sits wholly on one side of it: a name longer than WINDOW can never be found (held above).
     const at = hay.indexOf(brand)
-    const window = hay.slice(Math.max(0, at - 200), at + 200)
+    const window = hay.slice(Math.max(0, at - WINDOW), at + WINDOW)
     return window.includes(company) ? `source_owner:${brand}` : null
   }
   return writtenRelationship(company, brand, passage ? '' : page.title, passage || page.text.slice(0, READ_MAX)) ? `source_owner:${brand}` : null
