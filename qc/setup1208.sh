@@ -1,5 +1,5 @@
 set -e
-D=/home/ubuntu/dazl-746ac1b7-prod/web; G=https://raw.githubusercontent.com/gagan114662/dazl; Q=$G/quest-proof/qc
+D=$(ls -d /home/ubuntu/dazl-87505c47*-prod | head -1)/web; G=https://raw.githubusercontent.com/gagan114662/dazl; Q=$G/quest-proof/qc
 rm -rf /tmp/dzq; mkdir -p /tmp/dzq/site/team; cd /tmp/dzq
 curl -sf $Q/run1208.mts -o run.mts; curl -sf $Q/site1208/index.html -o site/index.html; curl -sf $Q/site1208/team/index.html -o site/team/index.html
 ln -s $D/node_modules /tmp/dzq/node_modules; cp $D/package.json /tmp/dzq/
