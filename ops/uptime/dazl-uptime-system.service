@@ -1,0 +1,22 @@
+# The uptime probe (ops/uptime/probe.mjs; issues #1088, #1090) as a SYSTEM unit, for a machine where it runs without a
+# login user: ops/uptime/install.sh installs it as /etc/systemd/system/dazl-uptime.service next to dazl-uptime.timer.
+# It only reads the public health endpoints, so it runs as a throwaway unprivileged user (DynamicUser) that owns
+# nothing but its state file. dazl-uptime.service in this directory is the same probe as a systemd USER unit.
+[Unit]
+Description=dazl uptime probe (prod health, prod scheduler and stalled workspaces, staging health)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+# the alert destination (a secret when it is a Telegram bot URL): root-owned, mode 600, one line; systemd reads it as root
+EnvironmentFile=/etc/dazl-uptime/env
+# /var/lib/dazl-uptime: which checks are down and when each alert was last delivered
+StateDirectory=dazl-uptime
+ExecStart=/usr/bin/env node /usr/local/lib/dazl-uptime/probe.mjs --state %S/dazl-uptime/state.json
+# exit 1 = something is failing (already alerted or counting): not a unit failure worth a red journal every minute
+SuccessExitStatus=1
+# exit 3 (the state file cannot be written) and exit 2 (usage) stay failures
+TimeoutStartSec=60
+NoNewPrivileges=yes
