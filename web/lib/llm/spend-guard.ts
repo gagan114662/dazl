@@ -74,6 +74,7 @@ export class SpendGuard {
   }
   // A refused guard stays refused (no usage reported, an unrecorded cost, an overrun), even with room under its cap.
   checkUsd(usd: number): void {
+    if (this.prepaidUsd > 0 && !this.refused && Number.isFinite(usd) && usd >= 0 && usd <= this.prepaidUsd) return   // Qodo #1555: reserveAll checks first; a prepaid call is covered
     if (this.refused || !(this.reservedUsd + usd <= this.limitUsd)) { this.refused = true; throw new SpendRefused(this.label) }
   }
   reserve(model: string | undefined, promptBytes: number, maxOut: number): void {
@@ -85,7 +86,10 @@ export class SpendGuard {
   // one, takes the normal path and is refused there. What the call does not use stays counted: the saved total over-counts, never under.
   private prepaidUsd = 0
   private prepaidOpen = false
+  // Qodo #1555: a prepayment that does not fit is refused WITHOUT latching the guard: the run is not cut short (or a trial held) for an
+  // optional call; the buyer-fit gate then fails closed for lack of a reservation.
   prepay(usd: number): void {
+    if (this.refused || !(Number.isFinite(usd) && usd >= 0 && this.reservedUsd + usd <= this.limitUsd)) throw new SpendRefused(this.label)
     this.reserveUsd(usd); this.calls--
     this.prepaidUsd += usd
   }

@@ -2455,8 +2455,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     }
     // (4)A, run af02437c: buyer-fit runs after finish (it needs the crawl's confirmed sites), when nothing new may be reserved. Its one call is
     // reserved now, while the run owns its job: the estimate's buyer_fit row at its worst case. Refused or unpriced: the gate fails closed as before.
+    let fitPrepayRefused: string | null = null
     if (jobGuard && complete && deps.score !== false && leads.length) {
-      try { jobGuard.prepay(buyerFitWorstCaseUsd(baseProviders[vendor].configuredModel?.() ?? '')) } catch (e) { console.error('buyer-fit reservation refused', e instanceof Error ? e.message.slice(0, 80) : 'error') }
+      try { jobGuard.prepay(buyerFitWorstCaseUsd(baseProviders[vendor].configuredModel?.() ?? '')) } catch (e) { const why = e instanceof Error ? e.message.slice(0, 80) : 'error'; console.error('buyer-fit reservation refused', why); fitPrepayRefused = why }
     }
     const owned = finish(db, job, 'done', null, outcome, leads.length + walledLeads.length + selfDescribedLeads.length, ledger)
     // Stale attempt: finish() wrote nothing, so every post-finish side effect
@@ -2473,6 +2474,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     try { markSeenBefore(db, job.user_id, job.id, companyKey) } catch { /* flag only, never affects the scan */ }
     // Bounded post-processing: see runPostFinishBounded.
     const trace = new EnrichmentTrace()
+    if (fitPrepayRefused) trace.note('buyer_fit', 'failed', `reservation refused: the buyer-fit call could not be reserved under the run's cap (${fitPrepayRefused}); hiring leads fail closed`)
     if (icpForSources?.window_days) trace.note('date_resolution', datesFinished.length ? 'ok' : 'attempted_no_result', datesFinished.length ? null : 'no undated candidate declared its own event date as structured data (schema.org Event / JobPosting)', datesFinished.length ? { resolved: datesFinished.length } : undefined)
     await runPostFinishBounded(db, job, deps, trace, companyFirst)
     try { const c = enforceContactSource(db, job.user_id, job.id); if (c.removed > 0) trace.note('contact_source', 'ok', `${c.removed} site contact(s) removed: their source was not the lead's confirmed domain`) } catch (e) { console.error('contact source check failed', e instanceof Error ? e.message : 'error') }
