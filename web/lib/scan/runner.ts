@@ -1,6 +1,8 @@
 import { runClaudeWebSearch, ClaudeSearchError, CLAUDE_SEARCH_MODEL, CLAUDE_COMPANY_FIRST_MAX_CALLS, COMPANY_FIRST_MAX_PUBLISHER_READS, type ClaudeSearchEstimate, type ClaudeSearchUsage } from '../llm/claude-web-search.ts'
 import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
+import { discoverLeads } from '../discover/agent.ts'
+import { checkLeads, isShown, type CheckedLead } from '../discover/check.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
 import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
@@ -56,7 +58,7 @@ import { extractionNote } from './extraction-note.ts'
 import { canonicalUrl, limits as tfLimits, migrateTinyfish, pickFetchUrls, isLoginWalled, queryPlan, queryPrompt, windowAfter, tfFetch, tfFetchMany, tfSearch, tinyfishEnabled, sanitizeQueries, toEvidence, focusTerms, withGeography } from '../search/tinyfish.ts'
 import { buyerSourceCitation, companyHostsFromSearch, crawlJob, defaultGet, hostNamesFor, ownSiteHost, sitecrawlEnabled, TECH_AUDIT } from '../connectors/sitecrawl.ts'
 import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
-import { effectiveCapUsd, noteAccountLimitRefusal, scanSpendContext, scanSpendRow, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
+import { effectiveCapUsd, noteAccountLimitRefusal, reserveScanSpend, scanSpendContext, scanSpendRow, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, callCostUsd, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
@@ -83,7 +85,7 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
-import { audit, writeAudit } from '../connectors/store.ts'
+import { addEnrichment, audit, writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -1330,6 +1332,10 @@ function budgetDeps(deps: RunDeps, budget: RunBudget | null): RunDeps {
 }
 
 export interface RunDeps {
+  // The Claude discovery lane (runDiscoverLane). Default: on, unless DAZL_DISCOVER_LANE=0 (the fenced test harness sets that, so no test
+  // reaches the live API by accident). true forces it on whatever the environment says; false forces it off.
+  discover?: boolean
+  discoverImpl?: typeof discoverLeads   // the loop itself, replaceable in tests
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
   // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
   trace?: import('../evals/trace.ts').TraceRecorder
@@ -1400,7 +1406,75 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
   // PooledGuard (runJobCapped); every other scan's model calls reserve the owner's caps at the transport, with this cap.
   // CSV jobs included (XHawk on #1154): a named account's CSV scan takes the same PooledGuard, so its unsettled-accounting marker stops it too
   const pooledByRunner = ownerLimits(job.user_id) !== null
-  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, nativeSearch: !claudeOnly && deps.discover !== false && discoverLaneEnabled(job, 'anthropic', deps.discover ? {} : process.env), accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
+}
+
+// The Claude discovery lane (launch brief, Steps 2 and 3; lib/discover). One Claude loop with its own web search and page reads finds
+// the leads; dazl then checks each proof page and stores every lead whose proof names the company as a lead that is SHOWN. What is
+// missing (a date, a person, a website) lowers the lead's confidence and is said on the card; it never hides the lead. A lead whose
+// proof page nobody could confirm goes to review. Nothing here reads the request with rules: the request and the play's offer go to
+// Claude as written.
+// On for an ordinary request on the workspace's own Anthropic key. DAZL_DISCOVER_LANE=0 switches it off. A free-trial scan keeps the
+// older path for now: one run costs more than the trial's per-scan reserve, and raising that is the owner's decision.
+export const DISCOVER_SOURCE_KIND = 'discover'
+const DISCOVER_RESERVE_USD = 1.5   // the worst case reserved before the call; the settled cost is what the run really used
+export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'watch_id' | 'funded_by'>, vendor: string | null, env: Record<string, string | undefined> = process.env): boolean {
+  return env.DAZL_DISCOVER_LANE !== '0' && vendor === 'anthropic' && !!job.query && job.query.trim().length >= 3 && !job.csv_domain && !job.watch_id && job.funded_by !== 'trial'
+}
+const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
+function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
+  const dated = !!l.signal_date
+  return {
+    name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
+    score: DISCOVER_SCORE[l.confidence], confidence: DISCOVER_SCORE[l.confidence], excerpt: (l.evidence_quote ?? l.signal).slice(0, 400),
+    event_date: l.signal_date, event_date_proof: dated && l.date_on_page && l.proof === 'confirmed' ? 'page_bound' : null,
+    event_date_proof_note: dated && l.date_on_page ? 'the date is printed on the proof page' : null,
+    date_status: dated ? (l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
+    fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
+  }
+}
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads): Promise<'done' | 'failed'> {
+  const source = 'search:claude_discover'
+  ledger.record(source, 'started')
+  assertOwned(db, job)
+  const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, DISCOVER_RESERVE_USD, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => DISCOVER_RESERVE_USD)
+  let found: Awaited<ReturnType<typeof discoverLeads>>
+  try {
+    // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
+    const sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
+    found = await discover({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null }, { apiKey: key, fetch: fetchImpl })
+  } catch (e) {
+    await hold?.settle(null)   // the call may have been billed: keep the worst case
+    ledger.record(source, 'error')
+    const status = (e as { status?: number })?.status
+    finish(db, job, 'failed', status === 401 || status === 403 ? 'key_rejected' : status === 429 ? 'provider_rate_limited' : 'source_error', null, null, ledger)
+    return 'failed'
+  }
+  await hold?.settle(found.usage.usd)
+  assertOwned(db, job)
+  const checked = (await checkLeads(found.leads, found.seen, fetchImpl)).filter(l => l.evidence_url.length <= 500)
+  const now = Math.floor(Date.now() / 1000)
+  const shown = checked.filter(isShown), unconfirmed = checked.filter(l => !isShown(l))
+  const out: VerifyOutcome = {
+    leads: shown.map(l => discoveredLead(l, now)),
+    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required' })),
+    dropped: {},
+  }
+  ledger.record(source, 'ok')
+  if (!finish(db, job, 'done', null, out, checked.length, ledger)) return 'failed'
+  // What the lead row has no column for at insert time: the lane's tag, the company's own website, and the person with the page that names them.
+  const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
+  const tag = db.prepare('UPDATE leads SET source_kind = ?, company_domain = COALESCE(?, company_domain) WHERE id = ?')
+  for (const l of checked) {
+    const row = rows.find(r => r.source_url === l.evidence_url && r.company === l.company.slice(0, 150))
+    if (!row) continue
+    tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
+    if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
+      source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+    if (l.linkedin_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'linkedin', value: l.linkedin_url.slice(0, 254), label: 'linked from a public page', confidence: null,
+      source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+  }
+  return 'done'
 }
 
 async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Promise<'done' | 'failed' | 'retry'> {
@@ -1490,6 +1564,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
+    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env)) return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl)
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
     if (job.query) {
