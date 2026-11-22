@@ -86,7 +86,9 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
   const card = opportunityCard(l, buyerRoles)
   const email = publishedEmail(l)
   const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
-  const contactStatus = contact ? statusOf(l, !!card.who) : null
+  // #1037: why nobody is named, in the card's own words: every listed title ruled out, or no buyer the company's own site names
+  const titlesRuledOut = card.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m))
+  const contactStatus = contact ? statusOf(l, !!card.who, titlesRuledOut) : null
   const person = card.who ? { name: card.who.name, title: card.who.title, roleRelevant: buyerRoles.trim() && card.who.title ? titleMatches(card.who.title, buyerRoles).length > 0 : null } : null
   const r = contactRoute(l, person)
   const route = r.channel === 'none' ? null : r
@@ -109,7 +111,7 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
   }
 }
 
-function statusOf(l: CardLead, personShown: boolean): { confirmed: boolean; text: string } {
+function statusOf(l: CardLead, personShown: boolean, titlesRuledOut: boolean): { confirmed: boolean; text: string } {
   if (l.quarantined_at) return { confirmed: false, text: 'Quarantined or rejected: do not contact.' }
   const rows = l.enrichments ?? []
   const notes: string[] = []
@@ -119,7 +121,7 @@ function statusOf(l: CardLead, personShown: boolean): { confirmed: boolean; text
   const established = id.state === 'cited' || id.state === 'fact' || id.state === 'user_confirmed'
   if (!established) notes.unshift(`Unconfirmed - ${id.state === 'none' ? id.text : `name match only: ${id.text}`}.`)
   if (personShown) notes.push('Role as listed; current role not verified.')
-  else if (rows.some(r => r.kind === 'contact' || r.kind === 'person')) notes.push('Listed people have past, negated or assistant titles; no current buyer named.')
+  else if (rows.some(r => r.kind === 'contact' || r.kind === 'person')) notes.push(titlesRuledOut ? 'Listed people have past, negated or assistant titles; no current buyer named.' : 'No buyer named on the company\'s own site.')
   const confirmed = established && pc?.purpose !== 'non-sales'
   return { confirmed, text: confirmed ? [`Confirmed: ${id.text}.`, ...notes].join(' ') : notes.join(' ') }
 }

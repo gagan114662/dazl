@@ -3,12 +3,12 @@
 // TinyFish stubbed: no network, no paid call.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { tiedLabel } from '../lib/people/company-tie.ts'
-import { LABEL, findPeople, newPeopleStats, peopleSearchable, peopleStatsDetail, peopleTraceMessage, profileHit, SEARCHABLE_HOLDS } from '../lib/people/people-search.ts'
+import { findPeople, newPeopleStats, peopleSearchable, peopleStatsDetail, peopleTraceMessage, profileHit, SEARCHABLE_HOLDS } from '../lib/people/people-search.ts'
 import { searchableCompanyCount } from '../lib/people/searchable-holds.ts'
 import { companyKey } from '../lib/scan/evidence.ts'
 import { addEnrichment } from '../lib/connectors/store.ts'
 import { HELD_ICP as ICP, HELD_RESULTS as RESULTS, env, setup, stub } from './helpers/people-held-fixture.ts'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 test('#1037 run report: which holds the pass may search is one fail-closed list', () => {
   for (const r of ['counterparty_signal', 'location_mismatch', 'location_unconfirmed', 'self_description', 'first_party_signal', 'trial_budget_reached', 'some_future_reason', '']) assert.equal(peopleSearchable(r), false, r)
@@ -54,7 +54,8 @@ test('#1037 run report: a pass that sent no search never reads as "no profile re
     assert.equal(peopleTraceMessage(0, null, stats), 'no lead was eligible for a people search (0 searches run)') }
   // First play: every eligible lead already names its person.
   { const { db, job } = setup([['L-meshgate', 'Meshgate', 'blocked_by_site', 50]]); const stats = newPeopleStats()
-    addEnrichment(db, 'A', 'L-meshgate', { connector: 'search:people', kind: 'person', value: 'Anders Smed, VP of Sales Development & PG', label: tiedLabel(LABEL, 'domain'), confidence: null, source_url: 'https://www.linkedin.com/in/anders-smed-test', source_date: '2026-11-13', retrieved_at: 1 })
+    // Meshgate's own confirmed site lists its buyer with title and the LinkedIn that page links (the rows the real crawl stores)
+    for (const r of ownSiteBuyerRows('meshgate.example', { name: 'Anders Smed', title: 'VP of Sales Development' })) addEnrichment(db, 'A', 'L-meshgate', { ...r, source_date: '2026-11-13' })
     const s = stub(); assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: s.f, stats, maxCompanies: 10, skipNamed: true }), 0)
     assert.deepEqual(s.companies, []); assert.equal(stats.already_named, 1)
     assert.equal(peopleTraceMessage(0, null, stats), 'every eligible lead already names its person (0 searches run)') }

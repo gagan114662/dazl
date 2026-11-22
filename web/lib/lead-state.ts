@@ -5,7 +5,8 @@
 // time-window hold (undated or older than the window), someone else's customer, a different place, a closed opening, a
 // required check that could not run - is "research": kept for reading, never counted as reviewable, and never offered a
 // "widen the window" fix unless a dated lead was only too old. Unknown reasons fail closed to research.
-import { heldReason, type PreviewLead } from './journey.ts'
+import { heldReason, NO_OWN_BUYER, type PreviewLead } from './journey.ts'
+import { reviewCanNameBuyer } from './people/buyer-reach.ts'
 
 export type HeldState = 'review' | 'research' | 'rejected'
 export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need'
@@ -56,6 +57,8 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   // What still holds the lead is the timing gate (currentnessHeld -> timingProofGap: domain, named person, route or record not all confirmed by the
   // machine, and no confirmation by the user). It stays research, as the Leads card says ("Quote-backed research only"); only its words change.
   if (l.currentness_held) return 'need'
+  // #1037: dated, sourced and otherwise ready; only the buyer the company's own site must name is missing - the rest of the lead is not confirmed yet
+  if (heldReason(l) === NO_OWN_BUYER) return 'need'
   return 'unsupported'
 }
 
@@ -63,9 +66,10 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
 // journey (heldState), the Campaigns funnel, a campaign's page and the Home checklist all count by (#683), so no page calls a research-only
 // lead a review item. A time-window hold survives confirmation; an unknown, empty or non-string reason fails closed to research.
 // A REQUIRED check that has not passed (gate_held: lib/scan/held-state.ts requiredGateHeld, the draft guard's own verdict) survives it too (#1062).
-export function reviewIsActionable(l: { review_reason?: unknown; window_held?: unknown; gate_held?: unknown }): boolean {
+// buyer_unreachable (#1037): no review can give the lead its buyer (lib/people/buyer-reach.ts) - confirming the source does not make it ready.
+export function reviewIsActionable(l: { review_reason?: unknown; window_held?: unknown; gate_held?: unknown; buyer_unreachable?: unknown }): boolean {
   const r = l.review_reason
-  return typeof r === 'string' && REVIEWABLE.has(r) && !l.window_held && !l.gate_held
+  return typeof r === 'string' && REVIEWABLE.has(r) && !l.window_held && !l.gate_held && !l.buyer_unreachable
 }
 
 export function heldState(l: PreviewLead & { review_reason?: string | null }): { state: HeldState; cause: ResearchCause | null } | null {
@@ -75,8 +79,10 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
   const r = l.review_reason ?? ''
   const cause = researchCause(l)
   // A hold a look at the source can resolve is reviewable unless a time window holds the lead: confirming lifts the first, never the second.
-  if (reviewIsActionable(l)) return { state: 'review', cause: null }
-  if (!r && why === 'company website not confirmed') return { state: 'review', cause: null }
+  // #1037: and only when a review can still give the lead its buyer (lib/people/buyer-reach.ts); otherwise no check can make it ready
+  const buyer_unreachable = !reviewCanNameBuyer({ id: l.id, contact: l.contact }, l.enrichments ?? [])
+  if (reviewIsActionable({ ...l, buyer_unreachable })) return { state: 'review', cause: null }
+  if (!r && why === 'company website not confirmed' && !buyer_unreachable) return { state: 'review', cause: null }
   return { state: 'research', cause }
 }
 

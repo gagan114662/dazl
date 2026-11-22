@@ -52,7 +52,14 @@ const api = 'https://api.anthropic.com/v1/messages'
 const v3 = 'native_opt_in_fixture'
 const storedNoSearch = 'stored_claude_only_job'   // #1398: a job already stored under the Claude-only policy without the native search option
 
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp }: { mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[]; buyerSource?: string }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
+// Run aa193734: the funding pass's hits all cited one multi-company roundup page
+const ROUNDUP_URL = 'https://roundup-publisher.example/p/funding-rounds-report-weekly'
+const ROUNDUP_CANDS = [
+  { name: '', company: 'Charta Health', signal: 'Raised a seed round', source_url: ROUNDUP_URL, excerpt: 'Charta Health raised a $12M seed round led by investors this week.', event_date: null, score: 80 },
+  { name: '', company: 'Applied Carbon', signal: 'Raised a Series A', source_url: ROUNDUP_URL, excerpt: 'Applied Carbon raised a $20M Series A to scale its field operations.', event_date: null, score: 80 },
+]
+const ROUNDUP_TEXT = ('Funding rounds report. ' + ROUNDUP_CANDS.map(c => c.excerpt).join(' ') + ' More rounds below. ').repeat(4)
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp, fundingRoundup = false }: { fundingRoundup?: boolean; mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[]; buyerSource?: string }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -99,6 +106,8 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (!native) {
         const excerpt='Regional Document Services opened its new London office to serve commercial roofers.'
         const netNew = suppliedOnlyFirstWave && sequence.filter(x=>x==='native-send').length===2
+        if (fundingRoundup && sequence.filter(x=>x==='native-send').length===3 && JSON.stringify(body.messages).includes('This is company-first discovery'))
+          return Response.json({model:CLAUDE_SEARCH_MODEL,content:[{type:'text',text:JSON.stringify(ROUNDUP_CANDS)}],usage:{input_tokens:100,output_tokens:15}})
         const text=extractionFixture&&JSON.stringify(body.messages).includes('This is company-first discovery') ? JSON.stringify(netNew ? [
           { name:'', company:netNewName, signal:'Office expansion', source_url:netNewUrl, excerpt:netNewQuote, event_date:null, score:75 },
         ] : [
@@ -140,7 +149,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
         ] : diverseFixture ? [
           { type: 'web_search_tool_result', content: diverseFixture.results.map(url => ({ type: 'web_search_result', url })) },
           { type: 'text', text: diverseFixture.buyerSource ? 'BUYER_SOURCE: '+diverseFixture.buyerSource : '', citations: diverseFixture.cited.map(url => ({ type: 'web_search_result_location', url })) },
-        ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: suppliedOnlyFirstWave && sent===2 ? netNewUrl : url }] }],
+        ] : [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: fundingRoundup && sent===3 ? ROUNDUP_URL : suppliedOnlyFirstWave && sent===2 ? netNewUrl : url }] }],
         usage: { input_tokens: sent===2 && secondWave==='over' ? overTokens : inputTokens ?? (overage ? 100_000 : 8_000), output_tokens: 200,
           ...(acceptedGeo !== undefined ? { inference_geo: acceptedGeo } : {}),
           ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
@@ -154,6 +163,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
         sequence.push('publisher-page')
         publisherRequests.push(page)
         if (suppliedOnlyFirstWave && page === netNewUrl) return { title: 'Second publisher', retrievedAt: 1_700_000_000, text: netNewQuote.repeat(5) }
+        if (fundingRoundup && page === ROUNDUP_URL) return { title: 'Funding rounds report: weekly of November', retrievedAt: 1_700_000_000, text: ROUNDUP_TEXT }
         if (!diverseFixture) assert.equal(page, url)
         if (publisherError) throw new Error('fixture: publisher handoff unavailable')
         if (sparseUsage) assert.deepEqual(db.prepare("SELECT status,actual_usd FROM scan_spend_calls WHERE scan_job_id='job' AND kind='llm.anthropic.web_search'").get(),
@@ -743,4 +753,12 @@ test('case 1 (b9a34d2d): an OR request with a funding branch spends its third pa
   assert.match(prompts[2],/never cite a job posting/)
   assert.doesNotMatch(prompts[2],/Strongly prefer postings/)
   assert.doesNotMatch(prompts[2],/job_url/)
+})
+
+test('Refs #1122 (run aa193734): a funding-pass candidate cited to a page that names several companies never reaches the held list; it is counted in the run report only', async () => {
+  const query='Find B2B companies (5-200 employees) doing outbound sales that show a dated buying signal in the last 45 days: hiring their first SDR/BDR or sales rep, new funding, a new Head of Sales/VP Sales, or a founder still doing sales. Buyer: Founder, CEO or Head of Sales.'
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',inputTokens:101937,secondWave:'valid',cap:'10',query,fundingRoundup:true})
+  assert.ok(r.publisherRequests.includes(ROUNDUP_URL), 'the funding pass read the roundup page')
+  assert.deepEqual(r.report?.funding_source_rejects, { multi_company_roundup: 2 })
+  assert.doesNotMatch(JSON.stringify(r.report?.candidates ?? r.report), /Charta Health|Applied Carbon/)
 })

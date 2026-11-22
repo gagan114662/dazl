@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
-import { listCampaigns } from '../lib/outreach/campaigns.ts'
+import { listCampaigns, historyCampaigns } from '../lib/outreach/campaigns.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
 import { leadStatus } from '../lib/outreach/campaign-view.ts'
 import { campaignStatus, currentQual, currentRun, runStatusOf, listQual } from '../lib/run-status.ts'
@@ -20,6 +20,10 @@ import { qualificationLines } from '../lib/outreach/campaign-view.ts'
 import { recentPlays } from '../lib/readiness.ts'
 import { requiredGateHeld } from '../lib/scan/held-state.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
+import { addEnrichment } from '../lib/connectors/store.ts'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
+// #1037: a lead a check can release must also name its buyer on its own site (the rows the real crawl stores); without one no review makes it ready
+const buyer = (db: Database.Database, tenant: string, id: string) => { for (const r of ownSiteBuyerRows('mdental.example')) addEnrichment(db, tenant, id, r) }
 
 const DAY = 86_400_000
 const recent = new Date(Date.now() - 10 * DAY).toISOString().slice(0, 10)
@@ -100,7 +104,8 @@ test('Home journey agrees: 0 review, 2 research, stage research_only (the surfac
 test('mixed run: only leads a check can release are review items; window-held, other-place, unknown-reason and window-held source-checked leads are research', () => {
   const db = setup()
   job(db, 'A', 'jm', 'Dental practices in New York', 90)
-  lead(db, 'jm', 'm1', { review: 'quote_unconfirmed', date: recent })   // a check can release it
+  lead(db, 'jm', 'm1', { review: 'quote_unconfirmed', date: recent }); buyer(db, 'A', 'm1')   // a check can release it (its site names the buyer)
+  lead(db, 'jm', 'm8', { review: 'quote_unconfirmed', date: recent })   // the same, but its site names nobody: no check can make it ready (#1037)
   lead(db, 'jm', 'm2', { review: 'quote_unconfirmed' })                 // reviewable reason, but no date under a window: research
   lead(db, 'jm', 'm3', { review: 'location_mismatch', date: recent })   // a different place
   lead(db, 'jm', 'm4', { review: 'made_up_reason', date: recent })      // unknown: fails closed to research
@@ -113,7 +118,7 @@ test('mixed run: only leads a check can release are review items; window-held, o
   const [c, ...rest] = listCampaigns(db, 'A')
   assert.equal(rest.length, 0)
   const { needsReview, research, held, heldResearch } = c.qualification
-  assert.deepEqual({ needsReview, research, held, heldResearch }, { needsReview: 1, research: 3, held: 3, heldResearch: 2 })
+  assert.deepEqual({ needsReview, research, held, heldResearch }, { needsReview: 1, research: 4, held: 3, heldResearch: 2 })
   assert.deepEqual(c.next, { label: 'Check 1 lead that needs your review', href: '/app/leads?job_id=jm' })
   const q = readyItems({ ...base, campaigns: [c] }).find(x => x.id === 'qualified')!
   assert.equal(q.detail, '2 leads in this search need your review - open the list to see why each was held', 'm1 plus the timing-held m6; not the 5 research-only leads')
@@ -138,10 +143,12 @@ test('the shared verdict: malformed reasons and window flags fail closed to rese
   for (const w of [true, 1, 'yes', {}, []]) assert.equal(reviewIsActionable({ review_reason: 'quote_unconfirmed', window_held: w }), false, `window_held ${JSON.stringify(w)}`)
   for (const w of [false, 0, null, undefined, '']) assert.equal(reviewIsActionable({ review_reason: 'quote_unconfirmed', window_held: w }), true)
   const known = ['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'location_unconfirmed', 'no_event_evidence', 'no_sales_hiring_evidence', 'source_review_required', 'self_description', 'trial_budget_reached', 'legacy_currentness_review', 'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_future_date', 'event_date_stale', 'first_party_signal', 'outside_window', 'outside_window_undated', 'counterparty_signal', 'location_mismatch', 'job_closed', 'sales_hiring_check_failed']
-  for (const r of known) for (const w of [false, true]) {
-    const home = heldState({ id: 'x', review_reason: r, window_held: w, quarantined_at: null } as never)?.state === 'review'
-    assert.equal(reviewIsActionable({ review_reason: r, window_held: w }), home, `${r} window=${w}`)
-    assert.equal(currentQual([{ evidence_excerpt: null, confidence: null, human_confirmed_at: null, review_reason: r, quarantined_at: null, window_held: w }]).needsReview, home ? 1 : 0, `campaign page ${r} window=${w}`)
+  for (const r of known) for (const w of [false, true]) for (const named of [true, false]) {
+    // #1037: with its buyer named on its own site the reason and window decide; with none, no review can make it ready, on every page
+    const home = heldState({ id: 'x', review_reason: r, window_held: w, quarantined_at: null, contact: null, enrichments: named ? ownSiteBuyerRows('x.example') : [] } as never)?.state === 'review'
+    if (!named) assert.equal(home, false, `${r} window=${w}: no own-site buyer is never review`)
+    assert.equal(reviewIsActionable({ review_reason: r, window_held: w, buyer_unreachable: !named }), home, `${r} window=${w} named=${named}`)
+    assert.equal(currentQual([{ evidence_excerpt: null, confidence: null, human_confirmed_at: null, review_reason: r, quarantined_at: null, window_held: w, buyer_unreachable: !named }]).needsReview, home ? 1 : 0, `campaign page ${r} window=${w} named=${named}`)
   }
 })
 
@@ -207,4 +214,42 @@ test('#683 review finding 1: a clean source-checked lead beside a lead confirmed
   assert.equal(page.label, '2 leads found: 1 source-checked, 0 confirmed by you, 0 need your review, 1 research only, 0 rejected')
   assert.equal(card.run?.label, page.label); assert.equal(card.run?.tag, 'Leads found'); assert.equal(page.tag, 'Leads found')
   assert.equal(qualificationLines(c.qualification, c.discovery.leads)[0], '1 source-checked, 0 confirmed by you, 0 to review')
+})
+
+// #1037 (Qodo on PR 1528): a review-list lead whose company site names no buyer is research on EVERY surface - Home, the Campaigns list and
+// history, the campaign page and its run split - because no review can make it ready; the same lead naming its buyer stays review everywhere.
+test('#1037 a reviewable lead with no own-site buyer is research on Home, Campaigns, history and the campaign page; with one it is review on all', async () => {
+  const db = setup()
+  job(db, 'A', 'jb1037', 'Dental practices in New York', 90)
+  lead(db, 'jb1037', 'named', { review: 'quote_unconfirmed', date: recent }); buyer(db, 'A', 'named')
+  lead(db, 'jb1037', 'nobody', { review: 'quote_unconfirmed', date: recent })
+  finish(db, 'jb1037')
+  const [c] = listCampaigns(db, 'A')
+  assert.deepEqual([c.qualification.needsReview, c.qualification.research], [1, 1], 'Campaigns list')
+  const [h] = await historyCampaigns(db, sqliteDb(db), 'A', ['jb1037'])
+  assert.deepEqual([h.qualification.needsReview, h.qualification.research], [1, 1], 'Campaigns history')
+  const d = (await campaignDetail(sqliteDb(db), 'A', 'jb1037'))!
+  assert.deepEqual(Object.fromEntries(d.leads.map(l => [l.id, leadStatus(l, []).stage])), { named: 'review', nobody: 'research' }, 'campaign page rows')
+  assert.deepEqual([currentQual(d.leads).needsReview, currentQual(d.leads).research], [1, 1], 'campaign page run split')
+  const enr = (id: string) => db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id)
+  const home = (id: string) => heldState({ id, company: `Co ${id}`, contact: null, review_reason: 'quote_unconfirmed', event_date: recent, quarantined_at: null, enrichments: enr(id) } as never)?.state
+  assert.deepEqual([home('named'), home('nobody')], ['review', 'research'], 'Home')
+})
+
+// Qodo (PR 1528, second review): the buyer-reach read is bounded. It reads only the rows that can ever name a buyer (the crawl's people and
+// website-identity rows, the user's website review) - a lead's search and provider history is never loaded - and it has an overall row cap
+// that fails closed (a read that would exceed it counts its review leads as research, never as review).
+test('#1037 the buyer-reach read loads only buyer-capable rows, under a cap that fails closed', async () => {
+  const { buyerReachSql, buyerUnreachable } = await import('../lib/people/buyer-reach.ts')
+  const db = setup()
+  job(db, 'A', 'jcap', 'Dental practices in New York', 90)
+  lead(db, 'jcap', 'big', { review: 'quote_unconfirmed', date: recent }); buyer(db, 'A', 'big')
+  const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, 'big', 'A', ?, ?, ?, 'x', NULL, ?, '2026-11-01', 1)")
+  db.transaction(() => { for (let i = 0; i < 3000; i++) ins.run(`s${i}`, i % 2 ? 'search:people' : 'enrich:pdl', i % 2 ? 'person' : 'contact', `Person ${i}, Head of Sales`, `https://www.linkedin.com/in/p-${i}`) })()
+  finish(db, 'jcap')
+  const read = db.prepare(buyerReachSql(1)).all('A', 'A', 'jcap') as unknown[]
+  assert.equal(read.length, 3, `only the crawl's buyer and identity rows are read, not the 3000 search/provider rows (read ${read.length})`)
+  assert.deepEqual([...await buyerUnreachable(sqliteDb(db), 'A', ['jcap'], [{ id: 'big', contact: null }])], [], 'the own-site buyer is still found')
+  // over the cap: fail closed - every review lead of the read counts as research
+  assert.deepEqual([...await buyerUnreachable(sqliteDb(db), 'A', ['jcap'], [{ id: 'big', contact: null }], 2)], ['big'], 'a read over its cap names no buyer')
 })

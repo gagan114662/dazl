@@ -8,6 +8,7 @@ import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
 import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
+import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
 
@@ -121,8 +122,12 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // unverified is held by checks and nothing else (inside research); one they already count as research keeps that verdict.
     const byChecks = heldByChecksOf(j, shown)
     const gateHeld = (r: Row) => requiredGateHeld(db, tenantId, r.id) !== null
+    // #1037: a review that cannot give the lead its buyer cannot make it ready (lib/people/buyer-reach.ts, Home's own answer)
+    let reach: ReachRow[]
+    try { reach = db.prepare(buyerReachSql(1)).all(tenantId, tenantId, j.id) as ReachRow[] } catch (e) { reach = noTable(e) }
+    const noBuyer = buyerUnreachableFrom(rows.filter(r => r.review_reason), reach)
     const alreadyResearch = (r: Row) => evidenceStateOf(r) === 'unverified'
-      ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: gateHeld(r) }) : gateHeld(r))
+      ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: gateHeld(r), buyer_unreachable: noBuyer.has(r.id) }) : gateHeld(r))
       : currentnessHeld(db, tenantId, r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gateHeld(r))
     const liveRows = allLive.filter(r => !byChecks(r.id) || alreadyResearch(r))
     const heldByChecks = allLive.filter(r => byChecks(r.id)).length
@@ -133,7 +138,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       else if (st === 'human') confirmedByYou++
       else if (r.review_reason) {
         // A required check that has not passed outranks a reviewable reason: confirming the source cannot release it (#1062, the campaign page's verdict).
-        if (reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: requiredGateHeld(db, tenantId, r.id) !== null })) needsReview++; else research++
+        if (reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: requiredGateHeld(db, tenantId, r.id) !== null, buyer_unreachable: noBuyer.has(r.id) })) needsReview++; else research++
       }
       else if (requiredGateHeld(db, tenantId, r.id) !== null) research++   // #1062: unverified, but held by a required check checking cannot release
       else unverified++
@@ -244,13 +249,15 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
     ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number; run_budget: string | null; enrich_started_at: number | null; enrich_finished_at: number | null }[]
   if (!jobs.length) return []
   const shown = await companyFirstShown(db, tenantId, jobs, now)
-  type Row = { id: string; scan_job_id: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null; run_budget: string | null }
+  type Row = { id: string; scan_job_id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null; run_budget: string | null }
   const jq = jobs.map(() => '?').join(',')
-  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, l.event_date, j.query, j.icp, j.run_budget
+  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, l.event_date, j.query, j.icp, j.run_budget
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${jq})`).all(tenantId, ...jobs.map(j => j.id)) as Row[]
   // the required-check verdict per listed scan (requiredGateHeldForJob: the campaign page's own reader, 3 reads per scan whatever its lead count)
   const gate = new Set<string>()
   for (const id of new Set(rows.map(r => r.scan_job_id))) for (const l of await requiredGateHeldForJob(adb, tenantId, id)) gate.add(l)
+  // #1037: the leads no review can give a buyer (lib/people/buyer-reach.ts, Home's own answer), one batched read
+  const noBuyer = await buyerUnreachable(adb, tenantId, jobs.map(j => j.id), rows.filter(r => r.review_reason))
   // which listed scans have any email at all (one grouped read; test sends included, so "none" is certain)
   const mailed = new Set((db.prepare(`SELECT DISTINCT l.scan_job_id AS id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id IN (${jq})`).all(tenantId, tenantId, ...jobs.map(j => j.id)) as { id: string }[]).map(r => r.id))
   const byJob = new Map<string, Row[]>()
@@ -265,10 +272,10 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
       const st = evidenceStateOf(r), win = windowHeld(r, now), gh = gate.has(r.id)
       const heldRes = st !== 'unverified' && (win || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gh)
       if (byChecks(r.id)) heldByChecks++
-      if (byChecks(r.id) && !(st === 'unverified' ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh }) : gh) : heldRes)) { research++; continue }
+      if (byChecks(r.id) && !(st === 'unverified' ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh, buyer_unreachable: noBuyer.has(r.id) }) : gh) : heldRes)) { research++; continue }
       if (st === 'machine') sourceChecked++
       else if (st === 'human') confirmedByYou++
-      else if (r.review_reason) { if (reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh })) needsReview++; else research++ }
+      else if (r.review_reason) { if (reviewIsActionable({ review_reason: r.review_reason, window_held: win, gate_held: gh, buyer_unreachable: noBuyer.has(r.id) })) needsReview++; else research++ }
       else if (gh) research++
       else unverified++
       if (heldRes) { heldResearch++; if (st === 'machine') heldResearchSourceChecked++ }

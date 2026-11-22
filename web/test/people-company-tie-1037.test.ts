@@ -76,7 +76,7 @@ test('#1037 a result is kept only when it names the lead\'s CONFIRMED website', 
   const results = { ...RESULTS, Garage: [{ ...RESULTS.Garage[0], snippet: 'Co-Founder & CEO at Garage · withgarage.com · New York' }, RESULTS.Garage[1]] }
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: stub(results) }), 1)
   assert.deepEqual(stored(db).map(r => [r.company, r.value, r.label.split(': ').pop()]), [['Garage', 'Casey Flynn, Co-Founder & CEO', 'the result names its website']])
-  assert.equal(leadPerson(rowsOf(db, 'L-garage'), WHO.join('; '))?.name, 'Casey Flynn')
+  assert.equal(leadPerson(rowsOf(db, 'L-garage'), WHO.join('; ')), null, 'stored for the details, but a search result never names the row: only the company\'s own site does (#1037)')
   // A domain that is set but NEVER confirmed (a name guess) ties nothing, even when the result names it.
   { const g = setup(ICP, { Garage: 'withgarage.com' }); const stats = newPeopleStats()
     await findPeople(g.db, 'A', g.job, { env, fetchImpl: stub(results), stats }); assert.deepEqual(stored(g.db), []); assert.equal(stats.refused.company_unconfirmed, 6) }
@@ -104,7 +104,7 @@ test('#1037 rows already stored by the name alone are no longer the lead\'s pers
   for (const p of listed) { assert.equal(p.nameOnly, true); assert.equal(peopleSourceText(p), NAME_ONLY_SOURCE); assert.equal(isWorkEmailTarget(p, WHO.join('; ')), false) }
   assert.match(NAME_ONLY_REASON, /^No buyer named: .*nothing confirms it is this company/)
   const tied = [{ kind: 'person', value: 'Casey Flynn, Co-Founder & CEO', label: tiedLabel(LABEL, 'domain'), source_url: 'https://www.linkedin.com/in/person-c-test', connector: 'search:people' }]
-  assert.equal(leadPerson(tied, WHO.join('; '))?.name, 'Casey Flynn'); assert.equal(contactsFromEnrichments(tied, WHO.join('; '))[0].nameOnly, undefined)
+  assert.equal(leadPerson(tied, WHO.join('; ')), null, 'tied to the company, still a search result: never the row\'s buyer (#1037)'); assert.equal(contactsFromEnrichments(tied, WHO.join('; '))[0].nameOnly, undefined)
   for (const l of [LABEL, `${LABEL}; company confirmed beyond its name: trust me`, 'company confirmed beyond its name: the result names its website x', '', null, 5]) assert.equal(companyTied(l), false, String(l))
   // The old labels of the dropped ties no longer count as tied.
   for (const old of ['the result gives its Y Combinator batch', 'the result names the requested city', 'the result names the organisation the lead was found through']) assert.equal(companyTied(`${LABEL}; company confirmed beyond its name: ${old}`), false, old)
@@ -113,13 +113,14 @@ test('#1037 rows already stored by the name alone are no longer the lead\'s pers
   const bare = { connector: 'search:people', kind: 'person', value: 'Devon Marsh, Founder & CEO', label: LABEL, source_url: 'https://www.linkedin.com/in/person-d-test', source_date: '2026-11-10', confidence: null, retrieved_at: 1 }
   const tiedRow = { ...bare, value: 'Casey Flynn, Co-Founder & CEO', label: tiedLabel(LABEL, 'domain'), source_url: 'https://www.linkedin.com/in/person-c-test' }
   const card = (rows: unknown[]) => opportunityCard({ ...lead, icp_match: null, enrichments: rows } as never, WHO.join('; '))
-  assert.equal(card([bare]).who, null); assert.equal(card([bare, tiedRow]).who?.name, 'Casey Flynn')
+  assert.equal(card([bare]).who, null); assert.equal(card([bare, tiedRow]).who, null, 'a tied search result is never the card\'s buyer (#1037)')
+  assert.ok(card([bare, tiedRow]).missing.some(m => /^a buyer named on the company's own site/.test(m)), JSON.stringify(card([bare, tiedRow]).missing))
   assert.ok(card([bare]).missing.some(m => /^a confirmed buyer \(a search found people at a company with this name, but nothing confirms it is this company\)$/.test(m)), JSON.stringify(card([bare]).missing)); assert.ok(!card([bare]).missing.some(m => /past, negated/.test(m)), 'the false cause is gone')
   const { db } = setup(); const adb = sqliteDb(db); const job = (db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id
   addEnrichment(db, 'A', 'L-garage', bare as never)
   assert.equal((await bestPeople(adb, 'A', [{ lead_id: 'L-garage', job_id: job }])).get('L-garage')?.best_person, '')
   addEnrichment(db, 'A', 'L-garage', tiedRow as never)
-  assert.equal((await bestPeople(adb, 'A', [{ lead_id: 'L-garage', job_id: job }])).get('L-garage')?.best_person, 'Casey Flynn')
+  assert.equal((await bestPeople(adb, 'A', [{ lead_id: 'L-garage', job_id: job }])).get('L-garage')?.best_person, '', 'the export names no search-found person as Best Person (#1037)')
 })
 
 test('#1037 the "why nobody is shown" reason: only when every listed person is name-only (SEC history aside)', () => {

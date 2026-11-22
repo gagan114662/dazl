@@ -111,8 +111,11 @@ bothEngines('status read: dated known model prices as the recorded-token compone
   assert.match(actual?.summary ?? '', /at least \$0\.0022 from the tokens the provider reported; cache token usage was not recorded/)
   assert.doesNotMatch(actual?.summary ?? '', /no listed price/)
   assert.equal(actual?.cap_reserved_usd, 0.012504, 'the reservation is reported as itself, distinct from the settled actual')
-  assert.match(actual?.summary ?? '', /Reserved under this run's spend cap: \$0\.01 \(a reservation, not a settled charge\)/)
-  assert.doesNotMatch(actual?.summary ?? '', /Reserved under this run's spend cap: \$0\.0022/, 'the reservation never wears the settled amount')
+  // #1517: the run's final cost is the job's one recorded cost (the per-call ledger), the same number its job record carries,
+  // stated first; the token-priced model figure stays as the breakdown and never stands in for it
+  assert.equal((actual as { final_usd?: number | null } | undefined)?.final_usd, 0.012504)
+  assert.match(actual?.summary ?? '', /^Final cost \$0\.01\. Actual model cost at least \$0\.0022/)
+  assert.doesNotMatch(actual?.summary ?? '', /a reservation, not a settled charge/)
 
   // Legacy: budget_stopped with no report and no budget row - the reason was never kept, so the outcome is neutral.
   const legacy = await createJob(db, 'A', { business_name: 'legacy', industry: 'software', location: 'Toronto' })

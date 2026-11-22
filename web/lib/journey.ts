@@ -8,6 +8,14 @@ import { publishedEmail } from './outreach/published-email.ts'
 import { scanOutcome, type ScanOutcomeKind } from './scan/scan-outcome.ts'
 import type { CardLead } from './scan/opportunity.ts'
 import { heldState, type ResearchCause } from './lead-state.ts'
+import { leadPerson } from './people/lead-person.ts'
+import { identityOf } from './scan/opportunity.ts'
+
+// #1037: a ready lead names its buyer - a person the company's own website lists, with a title and the LinkedIn profile that page links
+// (lib/people/lead-person.ts). The row applies the same rule with the play's buyer roles; here no roles are passed, so a ready lead's row
+// always names that person (the roles only widen an assistant title the play itself asks for). Without one the lead is held.
+export const NO_OWN_BUYER = 'no buyer named on the company\'s own site'
+const ownSiteBuyer = (l: PreviewLead) => leadPerson(l.enrichments ?? [], '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
 
 export type PreviewLead = CardLead & { id: string; seen_before?: number | boolean | null }
 
@@ -23,6 +31,7 @@ export function heldReason(l: PreviewLead): string | null {
   if (!l.event_date || l.day_verified !== true) return 'no verified date'   // #1176: the proof the lead's own card shows (eventDayVerified, set by the leads route / home-ready); date_status is not read (no scan writes 'verified' since 2026-10-23)
   if (domainReviewFor({ id: l.id, contact: l.contact }, l.enrichments ?? []).state === 'required') return 'company website not confirmed'
   if (l.fit === 0 && l.intent === null) return 'not a fit'
+  if (!ownSiteBuyer(l)) return NO_OWN_BUYER
   return null
 }
 

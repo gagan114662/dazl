@@ -38,13 +38,23 @@ export async function readRefusedModelCalls(db: Db, tenantId: string, jobId: str
     return Number(r.sent ?? 0) > 0 ? null : Number(r.n ?? 0)
   } catch { return null }
 }
-export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null; /** the row was read: reserved_usd null then means the column is empty, not that the read failed */ read: boolean }> {
+// #1517: how many of this job's paid calls never reported a cost (still 'reserved', or 'kept' at their reservation after a
+// failed or unreadable answer), owner-scoped. They are in the job's recorded cost at the amount reserved for them, and the
+// final-cost line says so. null when unreadable.
+export async function readHeldPaidSteps(db: Db, tenantId: string, jobId: string): Promise<number | null> {
+  try {
+    const row = await db.get<{ n: number | string | null }>("SELECT COUNT(*) AS n FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ? AND c.status IN ('reserved', 'kept') AND c.reserve_usd > 0", [tenantId, jobId])
+    const n = Number(row?.n)
+    return Number.isSafeInteger(n) && n >= 0 ? n : null
+  } catch { return null }
+}
+export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null; /** the two columns as stored, for the one cost reader (job-cost.ts), which must judge the stored value itself (#1517) */ raw: { run: unknown; cap: unknown }; /** the row was read: reserved_usd null then means the column is empty, not that the read failed */ read: boolean }> {
   try {
     // Both reservation columns: spend_reserved_usd (a max_usd run's reservation) AND spend_cap_reserved_usd (the per-job
     // spend-cap ledger, spend-cap.ts). Reading only the first hid real reserved spend on cap-only runs. NULL stays null.
     const row = await db.get<{ estimate: string | null; spend_reserved_usd: number | string | null; spend_cap_reserved_usd: number | string | null }>('SELECT estimate, spend_reserved_usd, spend_cap_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
-    return { estimate: row?.estimate ?? null, reserved_usd: row?.spend_reserved_usd == null ? null : Number(row.spend_reserved_usd), cap_reserved_usd: row?.spend_cap_reserved_usd == null ? null : Number(row.spend_cap_reserved_usd), read: !!row }
-  } catch { return { estimate: null, reserved_usd: null, cap_reserved_usd: null, read: false } }
+    return { estimate: row?.estimate ?? null, reserved_usd: row?.spend_reserved_usd == null ? null : Number(row.spend_reserved_usd), cap_reserved_usd: row?.spend_cap_reserved_usd == null ? null : Number(row.spend_cap_reserved_usd), raw: { run: row?.spend_reserved_usd ?? null, cap: row?.spend_cap_reserved_usd ?? null }, read: !!row }
+  } catch { return { estimate: null, reserved_usd: null, cap_reserved_usd: null, raw: { run: null, cap: null }, read: false } }
 }
 
 // #1319: the per-scan cap a free-trial job ran under: what its trial reservation held (the job guard's limit, runner.ts).

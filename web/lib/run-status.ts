@@ -41,7 +41,7 @@ export const runStatusOf = (j: ScanRecord) => runStatus(scanOutcome(j), j.lead_c
 // state first, then a review reason - split into review a check can resolve and research it cannot (#683, the same verdict as
 // Home: lib/lead-state.ts reviewIsActionable) - else unverified.
 export interface CurrentQual { leads: number; sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; rejected: number }
-type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean; gate_held?: boolean; human_confirmed_from?: string | null }
+type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean; gate_held?: boolean; buyer_unreachable?: boolean; human_confirmed_from?: string | null }
 export function currentQual(rows: QualRow[]): CurrentQual & { research: number } {
   const q = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, rejected: 0 }
   for (const r of rows) {

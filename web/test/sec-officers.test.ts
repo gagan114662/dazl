@@ -186,7 +186,7 @@ test('SEC-only historical officer + a generic hello@ company email: NOT "Who: Ja
   assert.ok(c.missing.some(m => /SEC filing: historical, not current/.test(m)))
   assert.ok(c.assumptions.some(a => /Jane Doe/.test(a) && /not a current role and not a contact/.test(a)), 'the history stays visible, as history')
   assert.equal(recommendedPerson([{ name: 'Jane Doe', title: 'Chief Executive Officer', linkedin: null, connector: CONNECTOR, historical: true }], 'CEO'), null)
-  // with independent current evidence (a company-site listing) the SITE person is recommended, never the filing's
-  const withSite = opportunityCard({ ...lead, enrichments: [...lead.enrichments!, { connector: 'sitecrawl', kind: 'person', value: 'Dana Lee, CEO', label: 'x', source_url: 'https://acme-dental.example/team' }] }, 'CEO', new Date('2026-10-26T12:00:00Z'))
+  // with independent current evidence (a company-site bio that links her LinkedIn, #1037) the SITE person is recommended, never the filing's
+  const withSite = opportunityCard({ ...lead, enrichments: [...lead.enrichments!, { connector: 'sitecrawl', kind: 'person', value: 'Dana Lee, CEO', label: 'sitecrawl-profile-v1: https://www.linkedin.com/in/dana-lee-example', source_url: 'https://acme-dental.example/team/dana-lee', retrieved_at: Math.floor(Date.UTC(2026, 9, 20) / 1000) }] }, 'CEO', new Date('2026-10-26T12:00:00Z'))
   assert.equal(withSite.who?.name, 'Dana Lee')
 })
