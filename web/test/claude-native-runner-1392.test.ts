@@ -12,6 +12,7 @@ import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
+import { asStreaming } from './helpers/claude-sse.ts'
 
 const master = randomBytes(32)
 const count = 1500
@@ -62,7 +63,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (trial) db.exec("UPDATE scan_jobs SET funded_by='trial' WHERE id='job'")
       return ordinary ? claimKeyedJob(db, 'job')! : pinAdmittedStrictJob(db, 'workspace', 'job', raw)
     }).immediate()
-    const io: typeof fetch = async (input, init) => {
+    const io: typeof fetch = asStreaming(async (input, init) => {
       const target = String(input)
       if (target !== api && target !== api + '/count_tokens') { denied.push(target); throw Error('offline fixture refused network') }
       const body = JSON.parse(String(init?.body ?? '{}'))
@@ -121,7 +122,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
           ...(!sparseUsage ? { cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } : {}),
           server_tool_use: { web_search_requests: inputTokens ? 2 : 1, web_fetch_requests: 0 } },
       })
-    }
+    })
     globalThis.fetch = io
     const status = await runJob(db, job, {
       master, fetchImpl: io, score: false, ground: false, judge: null, now, ...(boardHttp ? { sourceHttp: boardHttp } : {}),
@@ -350,7 +351,7 @@ test('pinned V3 uses one counted, budgeted native request with workspace key and
   assert.deepEqual(native.map(m => m.url), [api + '/count_tokens', api])
   assert.deepEqual(native.map(m => m.key), ['sk-ant-workspace-fixture', 'sk-ant-workspace-fixture'])
   assert.equal('tools' in native[0].body, false)
-  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: CLAUDE_SEARCH_MAX_USES }] })
+  assert.deepEqual(native[1].body, { ...native[0].body, max_tokens: 3000, service_tier: 'standard_only', stream: true, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: CLAUDE_SEARCH_MAX_USES }] })
   assert.deepEqual(x.sequence.slice(0, 3), ['native-count', 'native-send', 'publisher-page'])
   assert.deepEqual(x.denied, [])
 })

@@ -170,10 +170,15 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
       const parts = note.split(/[;|]|,(?!\d{3})|\s+but\s+/i).map(c => c.trim()).filter(Boolean)
       // Qodo #1519: a comma list of bare criterion names ("headcount, revenue not stated") shares the cue that ends it. A part with no cue,
       // no number and only a few words is a list item: joined to the next part, so the trailing cue binds to every name in the list.
+      const bareCriterion = (c: string) => !NOTE_UNKNOWN.test(c) && !/[\d:]/.test(c) && c.split(/\s+/).length <= 3
+        && c.split(/\s+/).every(w => /^(?:and|or|the|its|company|employee|count|annual)$/i.test(w) || CRITERIA.some(k => new RegExp(`^${CRITERION_WORDS[k].source}$`, 'i').test(w)))
+        && !/^(?:large|small|based|team)$/i.test(c.trim())
       const clauses: string[] = []
       for (let i = 0; i < parts.length; i++) {
         let c = parts[i]
-        while (i + 1 < parts.length && !NOTE_UNKNOWN.test(c) && !/\d/.test(c) && c.split(/\s+/).length <= 3) c = `${c} ${parts[++i]}`
+        // Qodo on #1519: only a BARE criterion name joins ("headcount", "employee count"); a part stating a verdict or a value ("wrong role: CFO",
+        // "role mismatch", "outside region", "too large") stays its own clause, so its mismatch is never read as unknown.
+        while (i + 1 < parts.length && bareCriterion(c)) c = `${c} ${parts[++i]}`
         clauses.push(c)
       }
       const names = (c: string) => CRITERIA.filter(k => CRITERION_WORDS[k].test(c))

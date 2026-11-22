@@ -4,7 +4,7 @@ import { readProviderIssues } from './provider-issues.ts'
 import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verification-pass.ts'
 import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
-import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readHeldPaidSteps, readRefusedModelCalls, readLastActivity, readTrialScanCap } from './status-reads.ts'
+import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readHeldPaidSteps, readRefusedModelCalls, readLastActivity, readTrialScanCap, readUncertainHold } from './status-reads.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { clampToCap, compareActual, trialCapLine, trialScanCap, type RunEstimate } from './price-estimate.ts'
 import { readRunReportRows } from './run-report.ts'
@@ -47,8 +47,10 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   // Live per-source progress (pollable while the scan runs) and the one honest outcome: failed (which source) / rejected (counts per reason) / zero-match / yielded N leads.
   const progress = progressOf(source_runs, effectiveStatus(job))
   const saved = await readJobCost(db, tenantId, job.id)
-  // Spend for the "Nothing was charged" claim is BOTH ledgers (max_usd reservation + per-job cap ledger): either can hold the only record of a paid call (xhawk review of #1060).
-  const outcome = scanOutcome({ ...(job as object), spend_usd: saved.read ? recordedJobCostUsd(saved.reserved_usd, saved.cap_reserved_usd) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
+  // Spend for the "Nothing was charged" claim is the job's one recorded cost (job-cost.ts, #1517): the cap ledger, or the run guard for a job from before it; never the two added, never 0 for an unreadable column.
+  const uncertainHold = job.error === 'accounting_uncertain' ? await readUncertainHold(db, tenantId, job.id) : null
+  const uncertain_usd = uncertainHold?.usd ?? null, uncertain_steps = uncertainHold?.steps ?? null
+  const outcome = scanOutcome({ ...(job as object), uncertain_usd, uncertain_steps, spend_usd: saved.read ? recordedJobCostUsd(saved.reserved_usd, saved.cap_reserved_usd) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.

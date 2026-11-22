@@ -3,6 +3,13 @@ import { CLAUDE_SEARCH_MODEL, claudeSearchMaxUses, CLAUDE_SEARCH_MAX_OUTPUT, USD
 export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_MAX_CALLS, CLAUDE_COMPANY_FIRST_MAX_USES, COMPANY_FIRST_MAX_PUBLISHER_READS, claudeSearchMaxUses, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
 
 const CLAUDE_SEARCH_TIMEOUT_MS = Math.min(150_000, LLM_TIMEOUT_MS)
+// #1157: the call streams, and a STALL - no bytes from the provider for this long - ends it in seconds. A healthy multi-search call
+// keeps sending events (pings, blocks) and runs on up to CLAUDE_SEARCH_TIMEOUT_MS, which still bounds the whole call (the stale-scan
+// window's floor in lib/scan/store.ts depends on it). A stalled call was already sent: it is counted as billed (uncertain).
+// The window relies on the API's ping events arriving more often than every 20 s while server-side searches run; the docs list
+// pings but give no cadence, so the scan's own native-search reports (stop diagnostics) are the place to see a false stall.
+export const CLAUDE_SEARCH_STALL_MS = 20_000
+const MAX_STREAM_BYTES = 4 * 1024 * 1024
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
 const MAX_PROMPT_BYTES = 24_000
 const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
@@ -161,6 +168,76 @@ export function parseTextCandidates(text: string): TextCandidate[] {
   }
   return out
 }
+// #1157: rebuilds the final Message from the documented event stream (platform.claude.com/docs/en/build-with-claude/streaming):
+// message_start (empty content) -> per block content_block_start / _delta / _stop (server tool results arrive whole) ->
+// message_delta (stop_reason; usage counts are cumulative) -> message_stop. ping and unknown event types are skipped. An error
+// event, a stream that ends before message_stop, or an oversized stream throws: the caller counts the sent call as billed.
+async function readMessageStream(r: Response, alive: () => void, signal: AbortSignal): Promise<Record<string, unknown>> {
+  if (!r.body) throw new Error('no body')
+  const reader = r.body.getReader(), decoder = new TextDecoder()
+  // a stall or the overall limit ends the read itself, whatever the transport does with the aborted request
+  const stop = () => { void reader.cancel().catch(() => {}) }
+  if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true })
+  try {
+  let buffer = '', bytes = 0, message: Record<string, unknown> | null = null, stopped = false
+  const content: Record<string, unknown>[] = [], partialJson = new Map<number, string>()
+  const handle = (data: Record<string, unknown>) => {
+    const type = data.type, index = typeof data.index === 'number' && Number.isSafeInteger(data.index) && data.index >= 0 && data.index < 1000 ? data.index : -1
+    if (type === 'error') throw new Error('stream error event')
+    if (type === 'message_start') { message = { ...obj(data.message) }; return }
+    if (!message) throw new Error('event before message_start')
+    if (type === 'content_block_start') { if (index < 0) throw new Error('bad index'); content[index] = { ...obj(data.content_block) }; return }
+    if (type === 'content_block_delta') {
+      const block = content[index], delta = obj(data.delta)
+      if (!block) throw new Error('delta without block')
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') block.text = (typeof block.text === 'string' ? block.text : '') + delta.text
+      else if (delta.type === 'citations_delta') block.citations = [...arr(block.citations), delta.citation]
+      else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') partialJson.set(index, (partialJson.get(index) ?? '') + delta.partial_json)
+      return
+    }
+    if (type === 'content_block_stop') {
+      const block = content[index], raw = partialJson.get(index)
+      if (block && raw) { try { block.input = JSON.parse(raw) } catch { /* the tool input is not read by the parser */ } }
+      return
+    }
+    if (type === 'message_delta') {
+      const delta = obj(data.delta)
+      if ('stop_reason' in delta) message.stop_reason = delta.stop_reason
+      if ('stop_sequence' in delta) message.stop_sequence = delta.stop_sequence
+      // usage counts in message_delta are cumulative; a field it sends as null (the documented delta type allows it) is
+      // "not reported here", never a reset of the count message_start carried
+      if (data.usage !== undefined) message.usage = { ...obj(message.usage), ...Object.fromEntries(Object.entries(obj(data.usage)).filter(([, v]) => v !== null)) }
+      return
+    }
+    if (type === 'message_stop') stopped = true
+  }
+  const dispatch = (raw: string) => {
+    const data = raw.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).replace(/^ /, '')).join('\n')
+    if (data) handle(obj(JSON.parse(data)))
+  }
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    alive()
+    bytes += value.byteLength
+    if (bytes > MAX_STREAM_BYTES) { await reader.cancel().catch(() => {}); throw new Error('stream too large') }
+    buffer += decoder.decode(value, { stream: true })
+    let cut: number
+    while ((cut = buffer.search(/\r?\n\r?\n/)) >= 0) {
+      const raw = buffer.slice(0, cut), sep = /\r?\n\r?\n/.exec(buffer.slice(cut))![0]
+      buffer = buffer.slice(cut + sep.length)
+      dispatch(raw)
+      if (stopped) { await reader.cancel().catch(() => {}); break }
+    }
+    if (stopped) break
+  }
+  if (!stopped && buffer.trim()) dispatch(buffer)
+  if (!stopped || !message) throw new Error('stream ended before message_stop')
+  // a block index the stream skipped is no block at all (never a hole the readers below would trip on)
+  return { ...(message as Record<string, unknown>), content: Array.from(content, obj).filter(b => Object.keys(b).length > 0) }
+  } catch (e) { await reader.cancel().catch(() => {}); throw e   // a bad event closes the body now, not at the 150 s limit
+  } finally { signal.removeEventListener('abort', stop) }
+}
 export interface ClaudeSearchResult {
   outcome: 'ok' | 'partial' | 'unavailable'
   citedUrls: string[]
@@ -198,24 +275,33 @@ export async function runClaudeWebSearch(
   const hold = await reserve(estimate)
   if (!hold) throw new ClaudeSearchError('reservation_missing')
   let r: Response
-  const signal = AbortSignal.timeout(CLAUDE_SEARCH_TIMEOUT_MS)
+  const stall = new AbortController()
+  let stallTimer: ReturnType<typeof setTimeout> | undefined
+  const alive = () => { clearTimeout(stallTimer); stallTimer = setTimeout(() => stall.abort(), CLAUDE_SEARCH_STALL_MS) }
+  const signal = AbortSignal.any([stall.signal, AbortSignal.timeout(CLAUDE_SEARCH_TIMEOUT_MS)])
+  alive()
   try {
     r = await fetchImpl(MESSAGE, {
       // The estimate/parser only support standard rates; the API default can select legacy Priority.
-      method: 'POST', headers, body: JSON.stringify({ ...countPayload, tools, max_tokens: CLAUDE_SEARCH_MAX_OUTPUT, service_tier: 'standard_only' }),
+      method: 'POST', headers, body: JSON.stringify({ ...countPayload, tools, max_tokens: CLAUDE_SEARCH_MAX_OUTPUT, service_tier: 'standard_only', stream: true }),
       signal, redirect: 'error',
     })
   } catch {
+    clearTimeout(stallTimer)
     await hold.uncertain()
     throw new ClaudeSearchError('request_uncertain', signal.aborted ? 'timeout' : 'transport')
   }
+  alive()
+  // a non-OK answer's error body is read under the same 20 s stall window (Qodo on #1526): headers without a finished body
+  // never wait for the 150 s cap
   if (r.status === 401 || r.status === 403) {
+    clearTimeout(stallTimer)
     // Authentication/permission refusal is known, but that does not mean the vendor billed zero.
     await hold.rejected(r.status)
     throw new ClaudeSearchError('key_rejected')
   }
   if (r.status === 429) {
-    // The dedicated, non-streaming Anthropic endpoint documents this as a request rejection.
+    // Anthropic documents this HTTP status (returned before any event is streamed) as a request rejection.
     // Match its error envelope + request ID, not a proxy's bare status or an in-band tool error.
     let limited = false
     try {
@@ -226,24 +312,26 @@ export async function runClaudeWebSearch(
         (reason === undefined || reason === 'ramp_limit_exceeded') &&
         !!requestId && /^req_[a-zA-Z0-9]+$/.test(requestId) && body.request_id === requestId
     } catch { /* unreadable error still may have been billed */ }
+    clearTimeout(stallTimer)
     if (limited) {
       await hold.rejected(429)
       throw new ClaudeSearchError('rate_limited')
     }
     await hold.uncertain()
-    throw new ClaudeSearchError('request_uncertain', 'http_error')
+    throw new ClaudeSearchError('request_uncertain', signal.aborted ? 'timeout' : 'http_error')
   }
   if (!r.ok) {
+    clearTimeout(stallTimer)
     await hold.uncertain()
     throw new ClaudeSearchError('request_uncertain', 'http_error')
   }
   let json: unknown
   try {
-    json = await r.json()
+    json = await readMessageStream(r, alive, signal)
   } catch {
     await hold.uncertain()
     throw new ClaudeSearchError('request_uncertain', signal.aborted ? 'timeout' : 'response_unreadable')
-  }
+  } finally { clearTimeout(stallTimer) }
   const checked = checkUsage(json, true)
   if ('diagnostic' in checked) { await hold.uncertain(); throw new ClaudeSearchError('usage_uncertain', checked.diagnostic, rejectedUsage(json, checked.diagnostic)) }
   const { usage } = checked
