@@ -177,7 +177,7 @@ export interface SearchHit { url: string; title: string; snippet: string; date: 
 // body) cannot have cost anything we could account for: it ends as one failed page or search (settled at $0), not as accounting_uncertain, which
 // discarded a whole scan's results (owner-approved 2026-11-11). Only free TinyFish search/fetch: a priced call, any other kind and a 402 (billing
 // error) keep the maybe-billed rule, and every spend cap stays on.
-// A 429 on a free call (Hermes decision 15 Nov 03:35), for the research engine only (TfDeps.rateIsWait, set by lib/research/search-queue.ts): TinyFish's
+// A 429 on a free call (Hermes decision 15 Nov 03:35), for a caller that sets TfDeps.rateIsWait (its one caller, the research engine's search queue, was deleted in #1393): TinyFish's
 // per-minute limit on its free tier is shared by every scan on the key, so there a 429 costs nothing and says only "wait": it settles at $0, records no
 // rejection, and the research hunt backs off and retries. Every other caller (the old engine, which does not retry) and every priced call keep the
 // documented-rejection rule.

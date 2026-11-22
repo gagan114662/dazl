@@ -69,7 +69,6 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'api.anthropic.com': { name: 'Anthropic', role: 'provider' },
   'api.openai.com': { name: 'OpenAI', role: 'customer_provider' },
   'api.search.tinyfish.ai': { name: 'TinyFish', role: 'provider' },
-  'openrouter.ai': { name: 'OpenRouter', role: 'provider' }, // MISSION v2 research engine (lib/research/decider.ts): the free decision model that screens public search results; titles, snippets and URLs of public pages only, and only with LEAD_ENGINE=research
   'api.fetch.tinyfish.ai': { name: 'TinyFish', role: 'provider' },
   'r.jina.ai': { name: 'Jina AI (Reader)', role: 'provider' },
   'api.apollo.io': { name: 'Apollo', role: 'customer_provider' },
@@ -81,7 +80,7 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'api.github.com': { name: 'GitHub', role: 'public_source' },
   'boards-api.greenhouse.io': { name: 'Greenhouse job boards', role: 'public_source' },
   'api.lever.co': { name: 'Lever job boards', role: 'public_source' },
-  'api.eu.lever.co': { name: 'Lever job boards', role: 'public_source' }, // EU-hosted Lever boards (lib/research/sources/ats-boards.ts)
+  'api.eu.lever.co': { name: 'Lever job boards', role: 'public_source' }, // EU-hosted Lever boards (lib/sources/ats-board-api.ts)
   'api.ashbyhq.com': { name: 'Ashby job boards', role: 'public_source' },
   'api.gdeltproject.org': { name: 'GDELT news index', role: 'public_source' },
   'data.brreg.no': { name: 'Brønnøysundregistrene (Norway business register API)', role: 'public_source' },
@@ -92,8 +91,6 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'hn.algolia.com': { name: 'Hacker News search', role: 'public_source' },
   'efts.sec.gov': { name: 'SEC EDGAR', role: 'public_source' },
   'www.sec.gov': { name: 'SEC EDGAR', role: 'public_source' }, // filing documents (primary_doc.xml) read by lib/research/sources/sec-form-d.ts
-  'data.austintexas.gov': { name: 'Austin (City of Austin open data, building permits)', role: 'public_source' }, // lib/research/sources/socrata-permits.ts
-  'opendata.vancouver.ca': { name: 'Vancouver (City of Vancouver open data, business licences)', role: 'public_source' }, // lib/research/sources/opendatasoft-licences.ts
   'weworkremotely.com': { name: 'We Work Remotely (public job feed)', role: 'public_source' },
   'www.wikidata.org': { name: 'Wikidata (company official website)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts: the lead's company NAME only
   'nominatim.openstreetmap.org': { name: 'OpenStreetMap Nominatim (business website tag)', role: 'public_source' }, // #1122 lib/connectors/free-site-finder.ts: the lead's company name and the request's place only
@@ -117,7 +114,6 @@ export const NON_REQUEST_HOSTS: Record<string, string> = {
   'platform.claude.com': 'documentation link',
   'www.gdeltproject.org': 'citation link GDELT terms require; the API host is api.gdeltproject.org',
   'blog.gdeltproject.org': 'documentation link in a comment',
-  'x.com': 'constructed profile links for people whose public posts the search index returned (research engine, person-first source); never requested',
   'www.linkedin.com': 'constructed profile/company links; the optional advanced connector reads LinkedIn through the customer\'s own signed-in session, not this server',
   'www.youtube.com': 'evidence links to videos; data comes from the YouTube Data API (www.googleapis.com)',
   'news.ycombinator.com': 'evidence and directory links; search goes through hn.algolia.com',
@@ -245,9 +241,9 @@ export const PRIVACY: Section[] = [
     'To stop: pause or disconnect in dazl Settings, choose "Forget this browser" in the extension, or remove the extension.',
   ] },
   { heading: 'Service providers', paragraphs: [
-    `Google (sign-in and Gmail), Stripe (payments; card details are entered at Stripe, not on dazl), Anthropic (AI models, and the free trial when it is enabled), TinyFish (web search and page fetching), Jina AI Reader (reading public pages), OpenRouter (a free decision model that screens public search results for relevance: only the titles, snippets and addresses of public pages are sent, never your contacts or account data; only when the research lead engine is turned on) and ZeroBounce (checking whether a prepared work address accepts mail; only while the address-format feature below is on and an operator key is set, at most its free monthly allowance for this dazl service). Hosting: ${FACTS.hostingProvider}. Account emails such as password resets are sent through ${P.systemMailProvider}.`,
+    `Google (sign-in and Gmail), Stripe (payments; card details are entered at Stripe, not on dazl), Anthropic (AI models, and the free trial when it is enabled), TinyFish (web search and page fetching), Jina AI Reader (reading public pages), and ZeroBounce (checking whether a prepared work address accepts mail; only while the address-format feature below is on and an operator key is set, at most its free monthly allowance for this dazl service). Hosting: ${FACTS.hostingProvider}. Account emails such as password resets are sent through ${P.systemMailProvider}.`,
     `Providers you choose and connect with your own account or key: ${ai} (AI models), ${enrich} (contact enrichment), and ${crm} (lead export to your CRM). Their use of the data is governed by your agreement with them.`,
-    'Public sources dazl queries receive the search terms it sends - a company or industry name, for the Norwegian business register and UK Companies House a place and industry filter, for SEC EDGAR a city, state and date range, and for the city open-data portals a business category and date range and, for Vancouver, the business names and street addresses of licences already found there (a term can be personal data when it names a person, such as the name or address of a sole trader) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, city open-data portals (City of Austin building permits, City of Vancouver business licences), the Norwegian business register (Brønnøysundregistrene), careers pages on company websites, Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), public job feeds such as We Work Remotely, and, to find a company\'s own website, Wikidata (the company name) OpenStreetMap\'s Nominatim search (the company name and the requested place) and, as a last step, DuckDuckGo\'s HTML search (the company name and the requested place).',
+    'Public sources dazl queries receive the search terms it sends - a company or industry name, for the Norwegian business register and UK Companies House a place and industry filter, and for SEC EDGAR a city, state and date range (a term can be personal data when it names a person, such as the name or address of a sole trader) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, the Norwegian business register (Brønnøysundregistrene), careers pages on company websites, Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), public job feeds such as We Work Remotely, and, to find a company\'s own website, Wikidata (the company name) OpenStreetMap\'s Nominatim search (the company name and the requested place) and, as a last step, DuckDuckGo\'s HTML search (the company name and the requested place).',
     'Error reports, if an error-monitoring service or an operator alert channel (for example a Telegram bot the operator owns) is configured, carry only the error type, code locations and a request id: never messages, account identifiers, request bodies or personal data. The server\'s own error log keeps the fuller scrubbed record, including the scrubbed message.',
     'We do not sell personal information, and we do not share it for advertising. We pass it only to the service providers listed here, to do the jobs described.',
   ] },
