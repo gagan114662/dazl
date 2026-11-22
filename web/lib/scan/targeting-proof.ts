@@ -3,12 +3,12 @@
 // tenant's saved competitor list. Nothing here fetches, asks a model or guesses: a condition no verified fact shows stays 'unknown',
 // and 'fail' is returned only for a fact that rules the condition out (a named company that is not this lead, a competitor list it is not on).
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
-import { planConditions, eventMatches, eventMatchIndex, roleAlternatives } from './targeting.ts'
+import { planConditions, eventMatches, eventMatchIndex, conditionRoles } from './targeting.ts'
 import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, type Stage } from './sales-hiring-gate.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
-import { isSalesTitle } from './hiring-role-match.ts'
+import { isSalesTitle, requestedHiringRoles, matchedHiringRole } from './hiring-role-match.ts'
 import { parseWindowDays } from './window.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
 
@@ -76,7 +76,7 @@ function gateCovers(c: Condition, ctx: ProofContext): boolean {
   const clockOk = c.within_days === null || c.within_days >= gateDays
   let signals: string[] = []
   try { const j = JSON.parse(ctx.icp ?? '{}') as { signals?: unknown }; if (Array.isArray(j.signals)) signals = j.signals.filter((x): x is string => typeof x === 'string') } catch { /* no profile */ }
-  if (c.kind === 'hiring') return clockOk && (!c.role || roleAlternatives(c.role).some(isSalesTitle))
+  if (c.kind === 'hiring') return clockOk && (!c.role || conditionRoles(c).some(isSalesTitle))
   if (c.kind === 'funding') return clockOk && c.stage !== 'pre-seed' && needsEventBeyondHiring(signals, ctx.query ?? '') && requestAsksFunding(ctx.query, ctx.icp) && stageOf(c.stage) === requestedStage(ctx.query, ctx.icp)
   return false
 }
@@ -168,10 +168,18 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
   if (c.kind !== 'hiring') return [ownProof(c, lead, rows, ctx)]
   const now = ctx.now ?? Date.now()
   // #1122: each role the condition names is judged on its own; a sales role among them takes the sales proof path
-  const gtm = !c.role || roleAlternatives(c.role).some(isSalesTitle)
-  // #1122: a generic job-board row (kind 'hiring') proves only the condition's sales role, so it must itself name sales roles (its count line
-  // "N sales/GTM roles posted" or its title list)
-  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm && (!c.role || isGtmRole(`${r.value} ${r.label ?? ''}`)))) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
+  const gtm = !c.role || conditionRoles(c).some(isSalesTitle)
+  // #1122: the signal must match the requested role. When the condition names specific roles, a posting proves it only if one of its titles
+  // (the row's value, or each title a job-board summary row lists in its label: "Sales Representative; Account Executive") is one of them,
+  // each role matched on its own with the sales gate's bounded synonyms (an SDR posting is not an AE; a hygienist is not a receptionist).
+  // A request naming no specific title ("hiring sales staff": no alternative the matcher reads as a title) keeps main's rule, and on the
+  // sales path any dated sales-titled posting counts.
+  const alts = conditionRoles(c)
+  const perAlt = alts.map(alt => requestedHiringRoles(`hiring ${alt}`, null))
+  const named = perAlt.flat(), broad = alts.length === 0 || perAlt.some(r => r.length === 0)
+  const titlesOf = (r: ProofRow) => [String(r.value), ...String(r.label ?? '').split(/[;|\n]/)].map(t => t.trim()).filter(Boolean)
+  const titleOk = (r: ProofRow) => titlesOf(r).some(t => matchedHiringRole(t, named) !== null) || (broad && (!gtm || !c.role || isGtmRole(`${r.value} ${r.label ?? ''}`)))
+  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && titleOk(r) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
     .sort(postingOrder)
     .map((r): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }))
   const rest = ownProof(c, lead, [], ctx)
@@ -217,7 +225,7 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
     }
     case 'hiring': {
       // Dated postings are read in ownProofs (every one of them, so row order never decides); here: the lead's own quote, then the gate's record.
-      const gtm = !c.role || roleAlternatives(c.role).some(isSalesTitle)
+      const gtm = !c.role || conditionRoles(c).some(isSalesTitle)
       if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified an open sales role for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no dated posting or verified quote shows this company hiring${c.role ? ` ${c.role}` : ''}` }

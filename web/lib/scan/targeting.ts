@@ -15,7 +15,7 @@
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
 import { TECH_WORDS, techNameOf } from '../connectors/techstack.ts'
-import { endsInTitleNoun } from './hiring-role-match.ts'
+import { endsInTitleNoun, ROLE_WORD } from './hiring-role-match.ts'
 
 export type Truth = 'pass' | 'fail' | 'unknown'
 export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category' | 'tech'
@@ -24,7 +24,8 @@ export interface Condition {
   kind: CondKind
   text: string                       // the request's own words for this condition
   stage?: string                     // funding: 'pre-seed' | 'seed' | 'series a' ...
-  role?: string                      // hiring / hire_made: the role words ('' = any role)
+  role?: string                      // hiring / hire_made: the role words ('' = any role); several roles read as "A or B"
+  roles?: string[]                   // hiring (#1122): each role the clause names, when it names more than one (read with conditionRoles)
   first?: boolean                    // hire_made: the request says first / founding
   event?: string                     // event: family (open, launch, expand, acquire, relocate, contract, permit, partner, rebrand)
   object?: string                    // event: the object the request names (location, office, website ...), '' = any
@@ -59,7 +60,7 @@ const FUNDING_CUE = /\b(?:fund(?:ing|ed|s)?|rais(?:e|ed|es|ing)|round|invest(?:e
 const STAGE = '(?:pre-?seed|seed|series\\s+[a-e])'
 const RAISE = '(?:raised|closed|secured|announced|landed|completed|received)'
 
-interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; more?: string; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean; bare?: boolean }
+interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; more?: string; roles?: string[]; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean; bare?: boolean }
 
 // #389: technology conditions, only for technologies the site crawl can detect (techstack.ts). A technology word becomes a condition only
 // after a technology cue ("using", "built on", "migrated from", "switched to" ...) or before a platform noun ("Shopify stores"); words
@@ -107,7 +108,6 @@ const EVENTS: { event: string; re: RegExp; object?: number }[] = [
   { event: 'partner', re: /\b(?:partnered|partnership)\b/gi },
   { event: 'rebrand', re: /\brebrand(?:ed|ing)?\b/gi },
 ]
-const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|salesperson|account\s+executives?)\b/i
 const STOP = /\s+(?:within|in\s+the|in|over|during|this|last|recently|and|or|but|while|who|that|which|excluding|except|other\s+than|with|at|from|to)\b|[,.;:!?()]/i
 // #876: "made their first sales hire" / "has made a founding engineering hire": a completed hire, in the request's own words.
 const MADE_HIRE = /\bmade\s+(?:(?:a|an|its|their|the|our)\s+)?((?:first|founding|inaugural|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi
@@ -117,7 +117,7 @@ const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 // That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
 const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
 const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
-const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for|either)\s+)+/i, '').trim()
+const cleanRole = (s: string) => s.trimStart().split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for|either|any|some|other)\s+)+/i, '').trim()
 // #1122: one open-role clause can name several roles ("hiring an SDR/BDR or sales rep"). Every one is kept, separated by "/" (the separator a
 // role's alternatives already use, "Head of Sales/VP Sales"), and each is judged on its own (roleAlternatives). A further role is read after
 // "or" or "/" only (a comma separates conditions: "A, B, or C") while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or
@@ -128,7 +128,9 @@ const NOT_ROLE_WORD = /^(?:now|currently|recently|soon|asap|immediately|today|ac
 // A further role must END in a job-title noun ("sales rep", "BDR", "account executive", "dental assistant") and must not open with a verb form
 // or a clause word: "or opening a new office", "or companies that raised funding", "or founders who ..." are other conditions, never roles.
 const altRole = (s: string) => !!s && /^[A-Za-z][A-Za-z\s&\/-]*$/.test(s) && s.split(/\s+/).length <= 5 && endsInTitleNoun(s)
-  && !/^[A-Za-z]+(?:ed|ing)\b/i.test(s)   // a verb opens another condition ("opening a new office", "raised a Series A"); "Director of Nursing" is a title
+  // a verb opens another condition ("opening a new office", "raised a Series A", "recruiting AEs"); a modifier opens a title ("marketing manager",
+  // "accounting clerk", "Director of Nursing")
+  && !/^[A-Za-z]+(?:ed|ing)\s+(?:a|an|the|its|their|our|new|into|in|to|for|from|with|on|at)\b/i.test(s) && !/^(?:hiring|recruiting|seeking|looking|posting|posted|advertising|hired)\b/i.test(s)
   && !s.split(/[\s\/]+/).some(w => NOT_ROLE_WORD.test(w) || /^(?:who|that|which|whose|where|companies|company|firms?|businesses|startups?|teams?)$/i.test(w))
 // Run once every condition of the request is found (findAtoms' last step), so a later reading (an event, a completed hire) keeps its own span.
 function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { roles: string[]; end: number } {
@@ -137,7 +139,8 @@ function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { rol
   for (;;) {
     const sep = ALT_SEP.exec(rest); if (!sep) break
     // "SDR or sales rep roles": the trailing "roles" / "positions" belongs to the list, not to the title
-    const tail = rest.slice(sep[0].length), next = cleanRole(tail).replace(/\s+(?:roles?|positions?|jobs?|openings?|vacancies)$/i, '')
+    // "or are hiring BDRs": the repeated hiring verb is not part of the title
+    const tail = rest.slice(sep[0].length).replace(/^(?:(?:are|is|also)\s+)?(?:hiring|recruiting)(?:\s+for)?\s+/i, ''), next = cleanRole(tail).replace(/\s+(?:roles?|positions?|jobs?|openings?|vacancies)$/i, '')
     if (!altRole(next)) break
     const nextEnd = end + sep[0].length + tail.indexOf(next) + next.length
     if (atoms.some(b => b !== self && end < b.end && b.start < nextEnd)) break
@@ -145,10 +148,13 @@ function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { rol
   }
   return { roles, end }
 }
+// #1122: every role a hiring condition names, each on its own: the clause's roles (stored as a list, never re-split on a "/" inside a title),
+// each split on its own "/" only between whole titles ("SDR/BDR" -> SDR, BDR; "full-stack/backend engineer" stays one).
+export const conditionRoles = (c: { role?: string; roles?: string[] }): string[] => (c.roles?.length ? c.roles : c.role ? [c.role] : []).flatMap(roleAlternatives)
 // The roles one hiring condition names, each on its own (leading articles and "their first" dropped): "their first SDR/BDR/sales rep" -> SDR, BDR, sales rep.
 // "/" separates roles only when every piece is itself a title (the sales gate's rule): "full-stack/backend engineer" and "Sales/Marketing
 // coordinator" are one title each.
-const STRIP_LEAD = /^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|either)\s+)+/i
+const STRIP_LEAD = /^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|either|any|some|other)\s+)+/i
 export const roleAlternatives = (role: string): string[] => {
   const pieces = role.split('/').map(r => r.trim().replace(STRIP_LEAD, '').trim()).filter(Boolean)
   return pieces.length > 1 && pieces.every(endsInTitleNoun) ? pieces : [role.trim().replace(STRIP_LEAD, '').trim()].filter(Boolean)
@@ -217,7 +223,8 @@ function findAtoms(q: string): Atom[] {
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
   // #1122: the further roles of an open-role clause, read now that every other condition holds its span
   for (const a of atoms) if (a.kind === 'hiring' && a.more !== undefined && a.role) {
-    const r = moreRoles(atoms, a, a.more, a.role); a.role = r.roles.join('/'); a.end = r.end; delete a.more
+    const r = moreRoles(atoms, a, a.more, a.role); a.end = r.end; delete a.more
+    if (r.roles.length > 1) { a.roles = r.roles; a.role = r.roles.join(' or ') }
   }
   return atoms.sort((a, b) => a.start - b.start)
 }
@@ -244,7 +251,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   }
   const owner = (w: { at: number }) => { let k = -1; for (let i = 0; i < atoms.length; i++) if (atoms[i].start < w.at) k = i; return k }
   const conds: Condition[] = atoms.map((a, i) => ({ id: `C${i + 1}`, kind: a.kind, text: q.slice(a.start, a.end), within_days: null, window_source: null,
-    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first, ...(a.bare ? { new_role: true as const } : {}) } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
+    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.roles && a.roles.length > 1 ? { roles: a.roles } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first, ...(a.bare ? { new_role: true as const } : {}) } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
   const requestLevel: number[] = []
   // #878: EVERY window bound to a condition counts, not only the first. A clock counted from now and one counted from another condition's
   // event are different clocks and both hold; two different windows of the same kind take the NARROWEST and the ambiguity is recorded.

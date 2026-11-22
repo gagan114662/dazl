@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { compileTargeting, planConditions, planView, roleAlternatives } from '../lib/scan/targeting.ts'
+import { compileTargeting, planConditions, planView, conditionRoles } from '../lib/scan/targeting.ts'
 
 // #1122 follow-up, case 1: job d46c65cb asked for four signals and the plan kept two ("a new Head of Sales/VP Sales" has no verb and
 // "a founder still doing sales" is a state). The exact request and profile from prod, through the real deterministic planner.
@@ -19,7 +19,7 @@ test('d46c65cb: every requested signal is a plan condition or listed as unproven
   assert.ok(unproven.includes('Founder still doing sales'), 'a state with no dated event stays visible as unproven')
   // #1122 follow-up: the open-role condition now names every role of "SDR/BDR or sales rep", so the saved "Hiring first sales rep"
   // signal is a real condition of the plan (each role matched on its own), not an unproven note
-  assert.deepEqual(roleAlternatives(conds[0].cond.role ?? '').map(r => r.toLowerCase()), ['sdr', 'bdr', 'sales rep'])
+  assert.deepEqual(conditionRoles(conds[0].cond).map(r => r.toLowerCase()), ['sdr', 'bdr', 'sales rep'])
   assert.ok(!unproven.includes('Hiring first sales rep'), 'the sales-rep signal is covered by the plan\'s open-role condition')
   for (const u of plan.unproven) assert.match(u.reason, /never counted as met/)
   for (const s of (JSON.parse(ICP).signals as string[])) {

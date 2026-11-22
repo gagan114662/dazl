@@ -23,13 +23,14 @@ const SURFACES: Record<string, string[]> = {
 }
 export const roleSurfaceForms = (r: RequestedHiringRole): string[] => [r.term, ...(SURFACES[r.normalized] ?? [])]
 export interface RequestedHiringRole { term: string; normalized: string }
-// #1122: whether a phrase ends in a job-title noun ("sales rep", "BDR", "account executive", "dental assistant"): what makes a word after
-// "or" or "/" another role of the same clause rather than another condition, a place, a company or a qualifier.
-const TITLE_NOUN = /(?:^|\s)(?:reps?|representatives?|sdrs?|bdrs?|aes?|executives?|managers?|directors?|heads?|vps?|officers?|engineers?|developers?|designers?|analysts?|specialists?|coordinators?|assistants?|associates?|administrators?|admins?|receptionists?|hygienists?|technicians?|nurses?|accountants?|consultants?|salespersons?|salespeople|sellers?|marketers?|recruiters?|agents?|clerks?|strategists?|writers?|planners?|operators?|supervisors?|staff)$/i
-// "Head of Sales", "Director of Nursing", "VP of Marketing": the title noun sits before "of ..."; "VP Sales", "CRO": a leading rank or a C-level name
+// The role words the targeting compiler reads a title by (moved here from targeting.ts so the plan and this reader share one check; #1395's
+// typed parse replaces both). #1122: a phrase is a title when its last word - or the rank before "of ..." ("Head of Sales") - is one of these
+// (a plural too: "managers", "engineers"), or it opens with a VP rank ("VP Sales"). Anything else after "or" / "/" is not read as a role.
+export const ROLE_WORD = /\b(?:vp|vice\s+president|head|director|chief|c[a-z]o|manager|lead|executive|officer|president|engineer|reps?|representatives?|aes?|sdrs?|bdrs?|staff|team|marketer|seller|salespeople|salesperson|account\s+executives?)\b/i
 export const endsInTitleNoun = (s: string): boolean => {
   const base = s.trim().replace(/\s+of\s+[A-Za-z &-]+$/i, '')
-  return TITLE_NOUN.test(base) || /^(?:s?vp|evp|head|director|chief)\b/i.test(base) || /^c[a-z]o$/i.test(base)
+  const last = base.split(/\s+/).pop() ?? ''
+  return ROLE_WORD.test(last) || (!/^leads$/i.test(last) && ROLE_WORD.test(last.replace(/s$/i, ''))) || /^(?:s?vp|evp)\b/i.test(base) || /^vice\s+president\b/i.test(base)
 }
 
 // A capture that STARTS with a qualifier names a place or time, never a title: "hiring in Ohio", "hiring within 90 days", "hiring now".
@@ -66,7 +67,9 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
       if (LEAD_QUALIFIER.test(phrase)) continue
       // #1122: "a new Head of Sales/VP Sales" is two titles; the leading words are stripped after trimming (the split leaves a space).
       // #1122: "SDRs and/or sales reps" is one separator, as in the posted-job form above
-      for (const raw of phrase.replace(/\s+and\s*\/\s*or\s+/gi, ' or ').split(/\s+or\s+|\s+and\s+|,|\//i)) {
+      // "/" splits only between whole titles ("Head of Sales/VP Sales"), never inside one ("full-stack/backend engineer", "Sales/Marketing coordinator")
+      const pieces = phrase.replace(/\s+and\s*\/\s*or\s+/gi, ' or ').split(/\s+or\s+|\s+and\s+|,/i).flatMap(p => { const s = p.split('/'); return s.length > 1 && s.every(x => endsInTitleNoun(x.replace(LEAD_WORDS, ''))) ? s : [p] })
+      for (const raw of pieces) {
         const term = raw.trim().replace(LEAD_WORDS, '').trim()
         const n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n)) continue

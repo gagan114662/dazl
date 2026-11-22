@@ -8,7 +8,7 @@
 //    the flat profile fields keep no per-item source.
 // A section with nothing in it says so ("dazl did not find this"); nothing is invented to fill it.
 import type { Icp, ResearchedHyp } from './scan/icp.ts'
-import { compileTargeting, planConditions, roleAlternatives } from './scan/targeting.ts'
+import { compileTargeting, planConditions, conditionRoles } from './scan/targeting.ts'
 
 export interface BrainProfile { business_name?: string | null; sells?: string | null; website?: string | null; buyer?: Icp | null }
 export interface BrainMemory { icp?: string; positioning?: string; tone?: string; exclusions?: string[]; objections?: { q: string; a: string }[] }
@@ -122,7 +122,7 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
     if (HIRING_NOUN.test(words[words.length - 1])) return null
     const c = conds(x).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
     // #1122: every role the condition names, in plain words ("SDR or salesperson"), never only the first
-    const role = c?.cond.role ? roleAlternatives(c.cond.role).join(' or ').slice(0, 80) : undefined
+    const role = c ? conditionRoles(c.cond).join(' or ').slice(0, 80) || undefined : undefined
     return role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an|of)\b$/i.test(role) && !/^of\s/i.test(role) ? role : null
   }
   const plainOk = (x: string) => !hiringRole(x) && !NEGATING.test(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim()))

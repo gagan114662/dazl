@@ -3,7 +3,7 @@ import { requestedHiringRoles, roleNeedsSourceProof, isSalesTitle } from './hiri
 // browser bundle through the outreach follow-up client) imports this, and it must stay free of server-only modules (db, network, crawl).
 import { isGtmRole } from '../signals/ats-gtm.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
-import { compileTargeting, roleAlternatives, type Condition, type PlanNode } from './targeting.ts'
+import { compileTargeting, conditionRoles, type Condition, type PlanNode } from './targeting.ts'
 
 const HIRING_WORDS = /\bhir(?:e|es|ed|ing)\b|\brecruit\w*|\b(?:new|open|several|two|three|\d+)\s+(?:sales\s+|gtm\s+)?(?:role|position|opening)s?\b|\bjoin(?:ing)?\s+(?:our|the)\s+(?:sales|gtm)/i
 
@@ -39,7 +39,7 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     // #1122 (case 1): "A, B, C, or D" lists more than two branches. Extra branches are allowed only when each is another funding/event
     // condition or a "new <role>" (new_role) sales condition: the gate checks those too (newRoles); any other third branch keeps both halves required.
     if (cs.length > 2) {
-      const ev = cs.filter(c => c.kind === 'funding' || c.kind === 'event'), hi = cs.filter(c => c.kind === 'hiring' && (!c.role || roleAlternatives(c.role).some(isSalesTitle)))
+      const ev = cs.filter(c => c.kind === 'funding' || c.kind === 'event'), hi = cs.filter(c => c.kind === 'hiring' && (!c.role || conditionRoles(c).some(isSalesTitle)))
       const nr = cs.filter(c => c.kind === 'hire_made' && c.new_role && isGtmRole(c.role ?? ''))
       if (ev.length !== 1 || hi.length !== 1 || ev.length + hi.length + nr.length !== cs.length) return null
       if ([...ev, ...hi, ...nr].some(c => c.relative_to || c.clock_conflict)) return null
@@ -48,7 +48,7 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     // #876: "made their first sales hire" compiles to hire_made (a completed hire), still the sales-hiring branch of the OR. The plan's own clause
     // proof (targeting-proof.ts) then needs a source showing the completed hire; an open posting does not prove it.
     // #878 (main): a clause whose stated clocks conflict never forms the OR.
-    const event = cs.find(c => c.kind === 'funding' || c.kind === 'event'), hiring = cs.find(c => (c.kind === 'hiring' || c.kind === 'hire_made') && (!c.role || (c.kind === 'hiring' ? roleAlternatives(c.role).some(isSalesTitle) : isGtmRole(c.role))))
+    const event = cs.find(c => c.kind === 'funding' || c.kind === 'event'), hiring = cs.find(c => (c.kind === 'hiring' || c.kind === 'hire_made') && (!c.role || (c.kind === 'hiring' ? conditionRoles(c).some(isSalesTitle) : isGtmRole(c.role))))
     return event && hiring && !event.relative_to && !hiring.relative_to && !event.clock_conflict && !hiring.clock_conflict ? { event, hiring } : null
   } catch { return null }
 }

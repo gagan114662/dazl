@@ -5,13 +5,13 @@
 // Real code path: compileTargeting -> planProofs (the plan's clause proofs) and requestedHiringRoles -> matchedHiringRole (the sales gate).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { compileTargeting, planConditions, roleAlternatives } from '../lib/scan/targeting.ts'
+import { compileTargeting, planConditions, conditionRoles } from '../lib/scan/targeting.ts'
 import { planProofs, type ProofLead, type ProofRow } from '../lib/scan/targeting-proof.ts'
 import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from '../lib/scan/hiring-role-match.ts'
 
 const hiringConds = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
 // the condition's role holds its alternatives separated by '/', as the plan already writes a role's alternatives ("Head of Sales/VP Sales")
-const alts = (q: string) => hiringConds(q).map(c => roleAlternatives(c.role ?? '').map(r => r.toLowerCase()))
+const alts = (q: string) => hiringConds(q).map(c => conditionRoles(c).map(r => r.toLowerCase()))
 
 test('#1122 one hiring condition keeps every role it names, each as its own alternative', () => {
   // the real request wording (a B2B buyer play) and its plainer forms
@@ -93,6 +93,11 @@ test('#1122 an "or" inside a later place, investor or headcount never turns a li
 test('#1122 postings: a sales posting proves a sales alternative; a non-sales reading never takes the sales path', () => {
   const at = (q: string, row: ProofRow) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, lead, [row], ctx)[c.id].truth }
   assert.notEqual(at('Dental groups hiring a receptionist or opening a sales office in the last 30 days', posting('Sales Representative')), 'pass')
+  // the posting's title must be one of the named roles (Quest: the signal must match the requested role)
+  assert.notEqual(at('Companies hiring a receptionist or SDR in the last 30 days', posting('Account Executive')), 'pass')
+  assert.notEqual(at('Companies hiring SDRs in the last 30 days', { ...posting('Software Engineer'), kind: 'hiring-role' }), 'pass')
+  assert.notEqual(at('Companies hiring a full-stack/backend engineer in the last 30 days', { ...posting('Full-Stack Marketing Manager'), kind: 'hiring-role' }), 'pass')
+  assert.notEqual(at('Companies hiring a sales rep in the last 30 days', { ...posting('2 sales/GTM roles posted, newest 2026-11-10'), label: 'Account Executive; Solutions Engineer' }), 'pass')
   assert.equal(at('Companies hiring SDRs in the last 30 days', { ...posting('Sales Development Representative'), kind: 'hiring-role' }), 'pass')
   assert.equal(at('Companies hiring a receptionist or SDR in the last 30 days', { ...posting('Front Desk Receptionist'), kind: 'hiring-role' }), 'pass')
   // a broad request names no title: any dated sales posting counts, as before this change
@@ -122,6 +127,16 @@ test('#1122 round 2: "X of Y" and rank titles are roles too; a broad alternative
   assert.equal(at('Companies hiring a nurse or Director of Nursing in the last 30 days', { ...posting('Director of Nursing'), kind: 'hiring-role' }), 'pass')
   assert.equal(at('Companies hiring an SDR or sales staff in the last 30 days', posting('Account Executive')), 'pass')
   assert.deepEqual(alts('Companies hiring SDRs or inbound leads'), [['sdrs']])
+  // round 3 (sonnet): a modifier ending in -ing/-ed opens a title, not a verb; a clause verb still does not
+  assert.deepEqual(alts('Companies hiring an SDR or marketing manager'), [['sdr', 'marketing manager']])
+  assert.deepEqual(alts('Companies hiring a sales rep or engineering manager'), [['sales rep', 'engineering manager']])
+  // titles outside ROLE_WORD ("accounting clerk", "controller") are not further roles: fail closed until #1395's typed parse
+  assert.deepEqual(alts('Companies hiring an AE or accounting clerk'), [['ae']])
+  assert.deepEqual(alts('Companies hiring a CFO or controller'), [['cfo']])
+  // a repeated hiring verb ("or recruiting ...", "or are hiring ...") introduces another role of the same open-role condition
+  assert.deepEqual(alts('Companies hiring SDRs or recruiting account executives'), [['sdrs', 'account executives']])
+  const off = compileTargeting('Companies hiring a sales rep or opening a new office', null)
+  assert.deepEqual([off.root?.op, planConditions(off.root).map(x => x.cond.kind)], ['or', ['hiring', 'event']])
   // one title with a "/" inside stays one title
   assert.deepEqual(alts('Companies hiring a full-stack/backend engineer'), [['full-stack/backend engineer']])
   // "either" and a trailing "roles" are not part of a title
@@ -139,4 +154,21 @@ test('#1122 round 2: the gate reads "and/or" in the hiring form and AE as a sale
   // and the plan takes the sales proof path for an AE alternative
   const p = compileTargeting('Companies hiring a receptionist or AE in the last 30 days', null); const [c] = planConditions(p.root).map(x => x.cond)
   assert.equal(planProofs(p, lead, [posting('Account Executive')], ctx)[c.id].truth, 'pass')
+})
+
+// Council round 3 (opus, haiku): roles are a list, so a "/" inside one title never merges or splits roles; repeated verbs; -ed titles.
+test('#1122 round 3: roles stay separate even when a title has a "/" inside', () => {
+  const at = (q: string, row: ProofRow) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, lead, [row], ctx)[c.id].truth }
+  assert.deepEqual(alts('Companies hiring a full-stack/backend engineer or sales rep'), [['full-stack/backend engineer', 'sales rep']])
+  assert.equal(at('Companies hiring a full-stack/backend engineer or sales rep in the last 30 days', { ...posting('Sales Representative'), kind: 'hiring-role' }), 'pass')
+  assert.equal(at('Companies hiring a Sales/Marketing coordinator or SDR in the last 30 days', { ...posting('Sales Development Representative'), kind: 'hiring-role' }), 'pass')
+  assert.deepEqual(requestedHiringRoles('Companies hiring a Sales/Marketing coordinator', null).map(r => r.term), ['Sales/Marketing coordinator'])
+  assert.equal(at('Companies that are hiring SDRs or are hiring BDRs in the last 30 days', { ...posting('Business Development Representative'), kind: 'hiring-role' }), 'pass')
+  // a title outside the compiler's role words (ROLE_WORD) is not read as a further role: fail closed, the typed parse of #1395 reads it
+  assert.deepEqual(alts('Companies hiring a receptionist or registered nurse'), [['receptionist']])
+  assert.deepEqual(alts('Companies hiring SDRs or head office'), [['sdrs']])
+  // a summary row whose listed titles are none of the named roles proves neither
+  assert.notEqual(at('Companies hiring a nurse or AE in the last 30 days', { ...posting('2 sales/GTM roles posted, newest 2026-11-10'), label: 'Customer Success Manager' }), 'pass')
+  // the list's own final "or" makes "A, new B, a new C, or D" any-one
+  assert.equal(compileTargeting('Raised a Series A, new funding, a new Head of Sales, or hiring SDRs', null).root?.op, 'or')
 })
