@@ -613,6 +613,13 @@ export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
+// Qodo High #1532: words of site navigation and calls to action ("Contact Us", "Get Started", "Book a Demo") - a name made of any of
+// them is interface text, never a person, whatever title sits beside it and whatever the page's prose shows.
+const UI_WORDS = new Set(['contact', 'us', 'get', 'started', 'start', 'book', 'demo', 'sign', 'up', 'in', 'log', 'login', 'learn', 'more', 'request', 'try', 'free',
+  'read', 'about', 'our', 'team', 'join', 'careers', 'home', 'menu', 'apply', 'pricing', 'blog', 'watch', 'see', 'view', 'schedule', 'talk', 'to', 'sales', 'call',
+  'now', 'here', 'today', 'a', 'the', 'download', 'subscribe', 'explore', 'discover', 'meet', 'reach', 'out', 'support', 'help', 'privacy', 'terms', 'policy', 'cookie',
+  'cookies', 'accept', 'close', 'open', 'next', 'previous', 'back', 'submit', 'send', 'search', 'shop', 'buy', 'order', 'news', 'press', 'events', 'resources', 'docs'])
+export const isUiText = (name: string): boolean => name.toLowerCase().split(/[^a-z']+/).filter(Boolean).some(w => UI_WORDS.has(w))
 const SHORT_SURNAME_LINE = /^[A-Z][a-z'\u2019-]{2,20}\s+[A-Z][a-z]$/
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
@@ -780,7 +787,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     // A two-letter surname (Li, Ng, Wu) is kept only beside a buyer-level title; the prose check below still drops any word the page writes in lower case
     // ("us"), so "Contact Us" stays out (Simple AI's CEO Catheryn Li, 2026-11-22).
     const shortSurname = SHORT_SURNAME_LINE.test(name) && (buyerTitle(title, buyerRoles) || /\b(?:co-?founder|founder|ceo|chief executive)\b/i.test(title))
-    if (!(NAME_LINE.test(name) || shortSurname) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
+    if (!(NAME_LINE.test(name) || shortSurname) || isUiText(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return false
       if (lowerWords.size < 15) return false // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
@@ -837,7 +844,7 @@ export function chooseSiteBuyer(found: Found[], buyerRoles: string): Found | nul
   // A CRO or VP of Sales is not a Head of Sales here (that reading is the own-posting reader's only, PM #1513).
   const founderAsked = /\b(?:founder|ceo|chief executive)\b/i.test(buyerRoles)
   const isBuyer = (t: string) => buyerTitle(t, buyerRoles) || (founderAsked && /\b(?:co-?founder|founder|ceo|chief executive officer)\b/i.test(t))
-  const people = found.filter(f => f.kind === 'person' && isBuyer(titleOf(f))).sort(byBuyerThenSeniority(buyerRoles))
+  const people = found.filter(f => f.kind === 'person' && !isUiText(f.value.split(', ')[0]) && isBuyer(titleOf(f))).sort(byBuyerThenSeniority(buyerRoles))
   if (!people.length) return null
   const rank = (f: Found) => [titleMatches(titleOf(f), buyerRoles).length, seniority(titleOf(f))].join(':')
   const top = people.filter(f => rank(f) === rank(people[0]))
