@@ -119,3 +119,10 @@ test('Qodo #1512 M4/M6: slash titles split in every form, and a shared rep noun 
   assert.deepEqual(r.map(x => x.normalized).sort(), ['bdr', 'sdr'])
   assert.ok(matchedHiringRole('BDR', r)); assert.ok(matchedHiringRole('SDR', r))
 })
+
+test('Qodo #1512 (new): an employer heading is not a conflicting vacancy title', () => {
+  const roles = requestedHiringRoles(Q), base = { source_url: 'https://fda.example/careers/1', signal: 'x', excerpt: 'Family Dental Associates is hiring a front desk receptionist.' }
+  assert.deepEqual(hiringPostingVerdict(base, roles, { pageTitle: 'Family Dental Associates | Careers' }), { ok: true })
+  assert.deepEqual(hiringPostingVerdict({ ...base, company: 'Family Dental Associates' }, roles, { pageTitle: 'Family Dental Associates' }), { ok: true })
+  assert.deepEqual(hiringPostingVerdict({ ...base, company: 'Family Dental Associates' }, roles, { pageTitle: 'Treatment Coordinator | Family Dental Associates' }), { ok: false, reason: 'job_role_mismatch' })
+})
