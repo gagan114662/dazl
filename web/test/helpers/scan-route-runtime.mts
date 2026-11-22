@@ -181,7 +181,7 @@ test('versioned Claude-only first play restricts only its job and cannot be enab
   })
   const qaEstimate = JSON.parse((db.prepare('SELECT estimate FROM scan_jobs').get() as { estimate: string }).estimate)
   assert.equal(qaEstimate.rows.some((r: { provider: string }) => r.provider === 'TinyFish'), false)
-  assert.equal(typeof qaEstimate.cap.run_max_usd, 'number'); assert.ok(qaEstimate.cap.run_max_usd <= 5)   // #1319: the run's own limit (max_usd is the account's daily cap)
+  assert.equal(typeof qaEstimate.cap.run_max_usd, 'number'); assert.ok(qaEstimate.cap.run_max_usd <= HARD_CAP_USD)   // #1319: the run's limit is the job guard's cap
   as(db)
   for (const b of [{ query: Q, budget: { provider_policy: 'claude_only_v1' } },
     { query: Q, mode: 'first5_claude_only_v1', budget: { max_usd: 100 } },
