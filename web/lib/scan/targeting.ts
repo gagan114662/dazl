@@ -36,6 +36,7 @@ export interface Condition {
   since_days?: number                // relative_to only: the clock counted back from NOW (default within_days); a stated "in the last N days" can only narrow it
   clock_conflict?: string            // the request states clocks for this condition that one condition cannot hold (two different anchor events): never provable
   new_role?: true                    // hire_made read from a bare "a new <role>" (#1122): met by a dated source saying the person joined OR a dated posting for that role
+  role_unreadable?: string           // hiring (#1205): the role in the request could not be read; never provable, held with this reason (never an any-role condition)
 }
 export type PlanNode = { op: 'cond'; cond: Condition } | { op: 'and' | 'or'; of: PlanNode[] } | { op: 'not'; of: PlanNode }
 export interface Ambiguity { text: string; readings: string[]; chosen: string }
@@ -58,7 +59,7 @@ const FUNDING_CUE = /\b(?:fund(?:ing|ed|s)?|rais(?:e|ed|es|ing)|round|invest(?:e
 const STAGE = '(?:pre-?seed|seed|series\\s+[a-e])'
 const RAISE = '(?:raised|closed|secured|announced|landed|completed|received)'
 
-interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean; bare?: boolean }
+interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean; bare?: boolean; unreadable?: boolean }
 
 // #389: technology conditions, only for technologies the site crawl can detect (techstack.ts). A technology word becomes a condition only
 // after a technology cue ("using", "built on", "migrated from", "switched to" ...) or before a platform noun ("Shopify stores"); words
@@ -114,10 +115,6 @@ const HIRE_QUALIFIER = /^(?:first|founding|inaugural|new)$/i
 const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 // #1205: words that are never part of a role named before a job word (grammar words, and the job words themselves)
 const NOT_ROLE_WORD = /\b(?:a|an|new|about|on|to|with|that|which|for|from|in|at|by|the|our|their|its|and|or|jobs?|roles?|positions?|openings?|vacanc(?:y|ies))\b/i
-// a quantity or container in front of "of" ("dozens of", "a number of", "a list of")
-const QUANTITY_OF = /^(?:(?:a|an)\s+)?(?:number|lots?|list|dozens?|hundreds|thousands|series|couple|handful|bunch|range|set|few|several|variety)\s+of\s+/i
-// how the job is worked, not what it is ("a remote job", "a full-time role")
-const WORK_ARRANGEMENT = /^(?:(?:remote|hybrid|on-?site|in-?person|full-?time|part-?time|contract|temporary|temp|permanent|freelance|seasonal)\s*)+/i
 // #876: a modal in front of the completed verb ("may have made", "will have hired", "might have just made") says the hire may not have happened.
 // That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
 const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
@@ -174,16 +171,15 @@ function findAtoms(q: string): Atom[] {
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
   }
   // #1205 (Quest live check, prod 383ada0a): the role before the job word, "posted a front desk receptionist job in the past 90 days"
-  // The words before the job word are a role only when they are title words: never a job word, a grammar word ("a press release about a new
-  // role") or a work arrangement alone ("a remote job" is an open role with no named title). Only the unambiguous job words end it: "opening",
+  // The words before the job word are the role. When they cannot be read as one (a grammar word or a job word in them, or they end in "of":
+  // "a range of job openings for a sales rep", "dozens of jobs"), the condition fails closed (Watcher, #1205): it keeps those words, is held
+  // with a plain reason and is never searched or proven as any role. Only the unambiguous job words end it: "opening",
   // "position" and "role" also name a grand opening, a cash position or a role in a merger. "advertis*" only with an article ("Advertising
   // agencies" is an industry).
   const ROLE_JOB = String.raw`(?:jobs?|vacanc(?:y|ies))(?:\s+(?:openings?|postings?|listings?|ads?|adverts?))?\b(?=\s*(?:$|[,.;:!?)]|(?:for|in|at|on|near|across|within|over|during|this|last|past|since|from|with|via|through|using|that|which|and|or|to|based)\b))`
   for (const m of q.matchAll(new RegExp(String.raw`\b(?:posted|posting|advertis\w+(?=\s+(?:for\s+)?(?:a|an|new)\s))\s+(?:for\s+)?(?:(?:a|an|new)\s+)*([a-z][a-z&/-]*(?:\s+[a-z][a-z&/-]*){0,3}?)\s+${ROLE_JOB}`, 'gi'))) {
-    if (NOT_ROLE_WORD.test(m[1])) continue
-    // a quantity or container before "of" ("dozens of jobs", "a list of nurse jobs") is not part of the title: what follows it is the role
-    const role = /\bof$/i.test(m[1].trim()) ? '' : cleanRole(m[1]).replace(QUANTITY_OF, '').replace(WORK_ARRANGEMENT, '').trim()
-    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role })
+    const raw = m[1].trim(), unreadable = NOT_ROLE_WORD.test(raw) || /\bof$/i.test(raw)
+    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: unreadable ? raw : cleanRole(raw), ...(unreadable ? { unreadable: true } : {}) })
   }
   // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
   // like any open role: a dated posting or a source naming it). The past tense ("made their first sales hire") is a completed hire: step 1 (#876).
@@ -215,6 +211,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   // #876: a modal completed hire ("may have made their first sales hire") compiles to no condition (findAtoms); the plan says why.
   for (const m of q.matchAll(/\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*(?:made\s+(?:(?:a|an|its|their|the|our)\s+)?(?:[a-z][a-z-]*\s+){0,2}hires?|hired|appointed|named|brought\s+on|onboarded|welcomed)\b/gi))
     ambiguities.push({ text: m[0], readings: ['a completed hire', 'a hire that may not have happened'], chosen: 'no completed-hire condition: the request does not say the hire happened, so nothing is proven by it' })
+  for (const a of atoms) if (a.unreadable) ambiguities.push({ text: q.slice(a.start, a.end), readings: ['an open role named by the words before "job"'], chosen: 'held: the role could not be read, so no posting is counted for it' })
   for (const a of atoms) if (a.bare) ambiguities.push({ text: q.slice(a.start, a.end), readings: ['a person who recently joined in this role', 'an open role still being filled'], chosen: 'either one, each on its own dated source: a source saying the person joined, or a dated job posting for the role. The lead says which.' })
   // Windows, each bound to the condition it follows in the text (or to every condition when it comes first).
   const windows: { at: number; end: number; days: number; text: string; anchorWord?: string }[] = []
@@ -224,7 +221,7 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   }
   const owner = (w: { at: number }) => { let k = -1; for (let i = 0; i < atoms.length; i++) if (atoms[i].start < w.at) k = i; return k }
   const conds: Condition[] = atoms.map((a, i) => ({ id: `C${i + 1}`, kind: a.kind, text: q.slice(a.start, a.end), within_days: null, window_source: null,
-    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first, ...(a.bare ? { new_role: true as const } : {}) } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
+    ...(a.stage ? { stage: a.stage } : {}), ...(a.kind === 'hiring' || a.kind === 'hire_made' ? { role: a.role ?? '' } : {}), ...(a.unreadable ? { role_unreadable: `The role in "${q.slice(a.start, a.end)}" could not be read. Name the role before "job", e.g. "posted a sales rep job".` } : {}), ...(a.kind === 'hire_made' ? { first: !!a.first, ...(a.bare ? { new_role: true as const } : {}) } : {}), ...(a.kind === 'event' ? { event: a.event, object: a.object ?? '' } : {}), ...(a.kind === 'tech' ? { tech: a.tech, change: a.change } : {}) }))
   const requestLevel: number[] = []
   // #878: EVERY window bound to a condition counts, not only the first. A clock counted from now and one counted from another condition's
   // event are different clocks and both hold; two different windows of the same kind take the NARROWEST and the ambiguity is recorded.

@@ -137,6 +137,7 @@ function relate(c: Condition, p: Proof, anchor: string | undefined, anchorUrl: s
 // `sources` holds each anchor's source URL (planProofs fills it); without it, separate sources are told apart by date only.
 export function conditionProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext, dates: Record<string, string | undefined> = {}, sources: Record<string, string | undefined> = {}): Proof {
   if (c.clock_conflict) return { truth: 'unknown', reason: c.clock_conflict }
+  if (c.role_unreadable) return { truth: 'unknown', reason: c.role_unreadable }   // #1205: fails closed, never proven as any role
   const alts = ownProofs(c, lead, rows, ctx)
   if (!c.relative_to) return alts[0]
   const checked = alts.filter(p => p.truth === 'pass').map(p => relate(c, p, dates[c.relative_to as string], sources[c.relative_to as string]))
