@@ -41,3 +41,21 @@ test('a company name longer than the text the rule reads is held, not cleared (n
   const fits = 'b'.repeat(3_000)
   assert.equal(cp(fits, 'https://finsmes.com/2026/09/x.html', 'Linear news', 'Linear shipped a new release.'), null)
 })
+
+// Council (#1237): on the brand's own customer pages the company must sit within 200 characters of the brand, so a longer name can never
+// be found there and the rule could never clear it: held. The hold comes after the own-source checks: a long name on its own site or its
+// own board posting is still the lead's own page.
+test('on a customer page a name longer than the brand window is held; own sources stay free', () => {
+  for (const n of [201, 450, 1000, 2900]) {
+    const co = 'b'.repeat(n)
+    assert.equal(cp(co, 'https://linear.app/customers/x', 'Linear', `Linear customers: ${co} uses Linear.`), 'unchecked_name:linear', String(n))
+  }
+  assert.equal(cp('Brightloop', 'https://linear.app/customers/x', 'Linear', 'Linear customers: Brightloop uses Linear.'), 'source_owner:linear')
+  assert.equal(cp(`linear ${'b'.repeat(5000)}`, 'https://linear.app/customers/x', 'Linear', 'Linear customers.'), null)
+  // a short first word inside the brand ("a" in "linear") is no proof of an own source for a name the rule cannot read
+  assert.equal(cp(`a ${'b'.repeat(50_000)}`, 'https://linear.app/blog/x', 'Linear news', 'Linear shipped a new release.'), 'unchecked_name:linear')
+  assert.equal(cp(`a ${'b'.repeat(300)}`, 'https://linear.app/customers/x', 'Linear', 'Linear customers.'), 'unchecked_name:linear')
+  const slug = 'b'.repeat(40)
+  assert.equal(cp(slug + 'c'.repeat(5000), `https://jobs.ashbyhq.com/${slug}/0b6f3c1e-4b8a-4c1e-9f2d-1a2b3c4d5e6f`, 'Role', 'A job.'), 'unchecked_name:' + slug)
+  assert.equal(cp(slug, `https://jobs.ashbyhq.com/${slug}/0b6f3c1e-4b8a-4c1e-9f2d-1a2b3c4d5e6f`, 'Role', 'x'.repeat(4000)), null)
+})
