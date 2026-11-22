@@ -16,7 +16,7 @@
 // allowance (the cap ledger prices them at $0; the trial guard charges them at the trial's prices). It shows that trial charge,
 // an overstatement, never "Nothing was charged" for a run that drew on its trial reserve.
 const amount = (v: unknown): number | null => {
-  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*(\d+\.?\d*|\.\d+)(e[+-]?\d+)?\s*$/i.test(v) ? Number(v) : NaN   // decimal forms only (never 0x..)
   return Number.isFinite(n) && n >= 0 ? n : null
 }
 

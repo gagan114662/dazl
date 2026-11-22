@@ -127,6 +127,7 @@ test('#1517: a spend column that is not an amount makes the cost unknown, never 
   assert.equal(recordedJobCostUsd(0.41, 0), 0.41)
   assert.equal(recordedJobCostUsd('1e+0', 0), 1)
   assert.equal(recordedJobCostUsd(-0.2, null), null)
+  assert.equal(recordedJobCostUsd('0x1A', 0), null)
 })
 
 // Council: a free trial's run guard keeps each call's worst case (it never settles down) and an unknown-cost call exhausts a
@@ -156,6 +157,12 @@ bothEngines('#1517: a stranded reserved call is named in the final cost; an unre
   const u = await readScanStatus(unread, 'T', JOB) as unknown as { cost: unknown; outcome: unknown }
   assert.equal(u.cost, null)   // nothing read: no cost line at all, never a stated final cost
   assert.doesNotMatch(JSON.stringify(u), /Final cost|Nothing was charged/)
+  // the held-step count cannot be read: the cost is not stated as final (the reservation sentence stands instead)
+  const heldUnread = { ...db, get: (async (sql: string, p?: unknown[]) => { if (/status IN \('reserved', 'kept'\)/.test(sql)) throw new Error('db down'); return db.get(sql, p as never) }) as never } as typeof db
+  const h = await readScanStatus(heldUnread, 'T', JOB) as unknown as { cost: { actual: { final_usd: number | null; summary: string } } }
+  assert.equal(h.cost.actual.final_usd, null)
+  assert.doesNotMatch(h.cost.actual.summary, /Final cost/)
+  assert.match(h.cost.actual.summary, /Reserved under this run's spend cap: \$0\.35/)
 })
 
 // Council: an unreadable spend column is unknown on every surface - never $0, so never "Nothing was charged".
