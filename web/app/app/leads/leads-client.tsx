@@ -823,11 +823,14 @@ export default function LeadsClient() {
   // A restored play profile ('user' or the durable raw 'carried'): repeating its sentence OR changing the sentence
   // carries it whole - statuses, dismissals and holds intact - never a silent discard and never a fresh review.
   // (Legacy icp_inferred = 0 is not review proof either: an ordinary repeat stays raw, statuses preserved.)
-  const priorIcp = icp && (icp.source === 'user' || icp.source === 'carried') ? icp.icp : null
+  // Launch check #1571: a new sentence, or a profile that was only carried from the saved one, uses the profile saved NOW (a customer who
+  // changed their profile got the old play's profile and lost the new location). Only a profile reviewed for this same sentence repeats as it is.
+  const sameSentence = !!icp?.query && icp.query.trim().toLowerCase() === query.trim().toLowerCase()
+  const priorIcp = icp && sameSentence && (icp.source === 'user' || (icp.source === 'carried' && !savedBuyer)) ? icp.icp : null
   // A first scan (no earlier play's profile to carry): run with the saved business profile instead of letting the
   // server work out a new one, which silently discarded the review. The estimate step shows it before anything starts;
   // Review profile first still builds a fresh one from the sentence.
-  const startIcp = priorIcp ?? (!icp && savedBuyer ? savedBuyer : null)
+  const startIcp = priorIcp ?? savedBuyer ?? null
   // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
   // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
   const startReviewed = startIcp ? false : undefined
@@ -903,7 +906,7 @@ export default function LeadsClient() {
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
         {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
-          {priorIcp ? 'Find leads reuses the profile from your previous play as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Review it in Build, or use Review profile first to build a new one from your sentence.'}
+          {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Review it in Build, or use Review profile first to build a new one from your sentence.'}
         </p>}
         </div>
       </form>
@@ -1372,7 +1375,7 @@ export default function LeadsClient() {
                 </div>}
                 <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
                 {c.timing && <p className="text-xs text-[var(--ink-2)] mt-1" data-testid="card-timing">{c.timing}</p>}
-                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />{c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
+                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />Proof: {c.sourceHost}</a><span className="sr-only"> · </span>{l.company_domain && l.company_domain !== c.sourceHost && <><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" data-testid="lead-website" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">Website: {l.company_domain}</a><span className="sr-only"> · </span></>}<span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>

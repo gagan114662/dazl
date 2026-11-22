@@ -96,3 +96,24 @@ test('a proof page that prints no date takes the day the search index dates it, 
   const c = await checkLead(undated, [{ ...seen[0], page_age: null }], never, 1000, now)
   assert.deepEqual([c.date, c.date_source], [null, null])
 })
+
+test('the saved buyer profile, with its locations, goes to the engine beside the request (#1571)', async () => {
+  const { profileLines } = await import('../lib/discover/agent.ts')
+  assert.deepEqual(profileLines(null), [])
+  assert.deepEqual(profileLines({ summary: '', who: [], where: [] }), [])
+  const lines = profileLines({ summary: 'Fintech startups', who: ['Founder'], industries: ['Fintech'], where: ['London'], exclude: ['banks'] })
+  assert.equal(lines[0], "The seller's saved buyer profile:")
+  assert.ok(lines.some(l => l.startsWith('Locations') && l.endsWith(': London')))
+  assert.ok(lines.includes('Buyer roles: Founder') && lines.includes('Leave out: banks'))
+})
+
+test('an index day older than a year is not shown as the date of the signal (#1571)', async () => {
+  const { checkLead } = await import('../lib/discover/check.ts')
+  const lead = { company: 'Northwind Dental', domain: null, signal: 'Opening a second clinic', signal_date: null, evidence_url: 'https://northwind-dental.example/news', evidence_quote: '', person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '' }
+  const now = new Date('2026-11-22T00:00:00Z')
+  const page = (page_age: string) => [{ url: lead.evidence_url, title: 'Northwind Dental', page_age, text: 'Northwind Dental will open a second clinic.' }]
+  const old = await checkLead(lead as never, page('May 11, 2022') as never, undefined as never, 1000, now)
+  assert.deepEqual([old.proof, old.date, old.date_source], ['confirmed', null, null])
+  const recent = await checkLead(lead as never, page('November 10, 2026') as never, undefined as never, 1000, now)
+  assert.deepEqual([recent.date, recent.date_source], ['2026-11-10', 'index'])
+})

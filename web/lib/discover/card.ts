@@ -35,3 +35,29 @@ export function discoverSources(l: { source_url?: string | null; enrichments?: {
   if (linkedin?.value) out.push({ field: 'linkedin', label: 'LinkedIn', url: linkedin.value })
   return out
 }
+
+// The person and the published email a discovery lead carries, with the pages they came from. These are the rows the run stored
+// (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
+export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null }
+type Row = { kind: string; connector?: string; value?: string; source_url?: string | null }
+const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
+export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
+  if (!isDiscoverLead(l)) return null
+  const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
+  const p = rows.find(r => r.kind === 'person' && r.value), e = rows.find(r => r.kind === 'email' && r.value && r.source_url && EMAIL.test(r.value.trim().toLowerCase()))
+  const li = rows.find(r => r.kind === 'linkedin' && r.value)
+  let person: DiscoverContact['person'] = null
+  if (p) {
+    const i = p.value!.indexOf(', ')
+    person = { name: (i < 0 ? p.value! : p.value!.slice(0, i)).trim(), title: i < 0 ? null : p.value!.slice(i + 2).trim() || null, linkedin: li?.value ?? null, source: p.source_url ?? null }
+  } else if ((l.name ?? '').trim()) person = { name: l.name!.trim(), title: null, linkedin: li?.value ?? null, source: null }
+  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null }
+}
+// Whether a discovery lead can be approved (a draft email for the user to review; nothing is sent), and if not, the one thing to do.
+export function discoverApprove(l: { quarantined_at?: number | null; review_reason?: string | null; source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { ok: true } | { ok: false; reason: string } {
+  if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
+  if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.' }
+  const c = discoverContact(l)
+  if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
+  return { ok: true }
+}

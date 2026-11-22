@@ -8,13 +8,16 @@ import { denied, stale } from '@/lib/workspace-access'
 import { extendToday, extensionStatus, setPaused, setTimezone, setWindow } from '@/lib/linkedin-tasks/store'
 import { parseHm, validZone } from '@/lib/linkedin-tasks/limits'
 import { connectionStatus } from '@/lib/advanced/linkedin-connect'
+import { readConsent } from '@/lib/advanced'
+import { CONSENT_VERSION, linkedinConnectAllowed } from '@/lib/advanced/config'
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = await getDb()
   const s = await extensionStatus(db, user.tenantId)
-  return NextResponse.json({ connected: (await connectionStatus(db, user.tenantId)).connected, tz: s.tz, paused: s.paused, queued: s.queued, read_today: s.read_today,
+  const connect = await connectionStatus(db, user.tenantId)
+  return NextResponse.json({ available: linkedinConnectAllowed(), consent: await readConsent(db, user.tenantId, 'linkedin'), consent_version: CONSENT_VERSION, connect, connected: connect.connected, tz: s.tz, paused: s.paused, queued: s.queued, read_today: s.read_today,
     open_min: s.open_min, close_min: s.close_min, today_close_min: s.today_close_min, stopped_until: s.stopped_until })
 }
 

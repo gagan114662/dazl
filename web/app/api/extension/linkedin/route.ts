@@ -7,7 +7,7 @@
 //   status   Bearer <device token>  -> { connected: true, name }
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
-import { advFlags, platformAllowed } from '@/lib/advanced/config'
+import { linkedinConnectAllowed } from '@/lib/advanced/config'
 import { authDevice, redeemPairing } from '@/lib/advanced/linkedin-connect'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
@@ -16,7 +16,7 @@ const bearer = (req: NextRequest) => /^Bearer ([A-Za-z0-9._-]{10,200})$/.exec(re
 const no = (status: number, error: string) => NextResponse.json({ error }, { status })
 
 export async function POST(req: NextRequest) {
-  if (!platformAllowed('linkedin', advFlags())) return no(404, 'Not available')
+  if (!linkedinConnectAllowed()) return no(404, 'Not available')
   const ip = await rateLimit(`ext-li-ip:${clientIp(req)}`, 30, 10 * 60 * 1000)
   if (!ip.ok) return no(429, 'Too many attempts. Try again later.')
   const secret = bearer(req)

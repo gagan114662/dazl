@@ -67,7 +67,7 @@ export default function AdvancedPanel() {
       {([0, 1, 2] as const).map(t => (
         <div key={t} className="mt-5">
           <div className="text-xs font-mono uppercase tracking-wider text-[#555] mb-1">{TIER_LABEL[t]}</div>
-          {CHANNELS.filter(c => c.tier === t).map(c => {
+          {CHANNELS.filter(c => c.tier === t && c.id !== 'linkedin' /* LinkedIn has its own card: linkedin-extension-panel.tsx */).map(c => {
             const p = c.platform ? st.platforms.find(x => x.platform === c.platform) : undefined
             return (
               <div key={c.id} className="border-t border-[#ddd] pt-3 mt-3 text-sm">

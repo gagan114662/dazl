@@ -68,6 +68,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [sizes, setSizes] = useState('')
   const [exclude, setExclude] = useState('')
   const [readFrom, setReadFrom] = useState('')
+  const [manual, setManual] = useState(false)   // #1571: the person chose "No website": nothing was read, the fields start empty
   const [ask, setAsk] = useState('')
   // True while the sentence is a suggestion (picked or prefilled), false once the user types their own. A suggestion is
   // replaced when the profile changes, so the box never keeps a sentence built from an older profile.
@@ -414,7 +415,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
               </form>
               <div className="mt-5 flex flex-col items-center gap-2 text-sm text-[var(--ink-2)]">
-                <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" disabled={busy} onClick={() => { setError(''); setStep('brain') }}>No website? Describe your business yourself</button>
+                <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" disabled={busy} onClick={() => { setError(''); setManual(true); setStep('brain') }}>No website? Describe your business yourself</button>
                 <button type="button" className="min-h-11 px-2 text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
               </div>
             </div>}
@@ -581,8 +582,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       {trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ask" /></div>}
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
-        <h2 className="text-xl font-semibold">{freeRead ? `We read ${freeRead.site} - here is what the page itself says` : 'Here\'s what we think you sell and who buys it'}</h2>
-        <p className="text-[#555]">{freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself, or add your AI key for the full automatic read.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off. Saved to your account; your first search uses all of it.`}</p>
+        <h2 className="text-xl font-semibold">{freeRead ? `We read ${freeRead.site} - here is what the page itself says` : manual ? 'Tell us what you sell and who buys it' : 'Here\'s what we think you sell and who buys it'}</h2>
+        <p className="text-[#555]">{freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself, or add your AI key for the full automatic read.' : `${manual ? 'Nothing was read from a website, so these start empty. Fill them in.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off.`} Saved to your account; your first search uses all of it.`}</p>
         {freeRead && <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-3" data-testid="free-site-read">
           {freeRead.facts.length === 0
             ? <p className="text-[#555]">The page did not state a title or description in readable HTML.</p>

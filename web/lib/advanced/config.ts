@@ -18,6 +18,9 @@ export function advFlags(env: Record<string, string | undefined> = process.env):
   const enabled = env.ADVANCED_CONNECTORS === '1' && env.ADVANCED_KILL !== '1' && !!env.ADVANCED_WORKER_URL && !!env.ADVANCED_WORKER_TOKEN
   return { enabled, linkedin: enabled && env.ADVANCED_LINKEDIN === '1' }
 }
+// Connect LinkedIn (the dazl Connect extension reading in the customer's own browser, #1122) needs no session worker and no operator
+// allowlist: every workspace may pair its own browser. Off only when the operator sets DAZL_LINKEDIN_CONNECT=0 or the kill switch.
+export const linkedinConnectAllowed = (env: Record<string, string | undefined> = process.env): boolean => env.DAZL_LINKEDIN_CONNECT !== '0' && env.ADVANCED_KILL !== '1'
 export const platformAllowed = (p: AdvPlatform, f: AdvFlags) => (p === 'linkedin' ? f.linkedin : f.enabled)
 export const scopeFor = (p: AdvPlatform): ConsentScope => (p === 'linkedin' ? 'linkedin' : 'advanced')
 export const connectorId = (p: AdvPlatform) => `adv:${p}`

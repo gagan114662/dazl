@@ -467,7 +467,10 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   const final = a.finalUsd ?? null, held = a.finalHeldSteps ?? null
   const heldNote = held !== null && held > 0 ? `, including ${held === 1 ? 'one paid step' : `${held} paid steps`} counted as billed at the amount reserved for ${held === 1 ? 'it' : 'them'}` : ''
   // PM 2026-11-22: a mixed-model run whose ledger is fully settled shows the billed amount and nothing more
-  if (mixed && final !== null && held === 0) summary = `Final cost ${money(final)}.`
+  // #1571: a run with nothing recorded per model call (the discovery lane settles one amount for the whole run) has only its final cost
+  // to state. The token breakdown sentence against a $0.00-$0.00 estimate said nothing and read as a fault.
+  const noBreakdown = (reqs === null || reqs === 0) && usd === null && (a.refusedBeforeSending ?? 0) === 0 && modelEst.max === 0
+  if (final !== null && held === 0 && (mixed || noBreakdown)) summary = `Final cost ${money(final)}.`
   else if (final !== null && held !== null) summary = `Final cost ${money(final)}${heldNote}. ${summary}`
   else if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
   return { final_usd: final !== null && held !== null ? final : null, model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: clampToCap(est.total, trialCapUsd), within, summary }

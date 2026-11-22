@@ -11,6 +11,7 @@
 import { companyTied } from '../people/company-tie.ts'
 import { onlyNameOnly, recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
 import { leadPerson } from '../people/lead-person.ts'
+import { discoverApprove, discoverContact, discoverMissing, isDiscoverLead } from '../discover/card.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -95,6 +96,22 @@ export function contactIdentity(l: CardLead): ContactIdentity {
 }
 
 export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Date()): OpportunityCard {
+  // A lead from the Claude discovery lane says what its own run found: the person the run named for this seller, the proof page, and
+  // plainly what is missing. None of the older engine's own-site and timing checks decide what is shown (launch brief, Step 3).
+  if (isDiscoverLead(l as { source_kind?: string | null })) {
+    const d = l as CardLead & { source_kind?: string | null; name?: string | null; date_status?: string | null; timing_note?: string | null; confidence: number | null }
+    const c = discoverContact(d as never), approve = discoverApprove(d as never), missing = discoverMissing({ ...d, name: d.name ?? '', confidence: d.confidence ?? null } as never)
+    const who = c?.person ? { name: c.person.name, title: c.person.title, link: c.person.linkedin, identity: c.person.source ? 'named on a public page' : 'named in the run' } : null
+    if (!c?.email) missing.push('a published email address')
+    const next = l.quarantined_at ? 'None: quarantined.' : l.review_reason ? 'Check the source yourself before using this lead.'
+      : approve.ok ? `Draft a first message${who ? ` to ${who.name}` : ''} introducing your offer; mention the event only as context.`
+      : who?.link ? `Reach ${who.name} through their LinkedIn profile.` : who ? `Find a way to reach ${who.name}.` : 'Find the person to contact before reaching out.'
+    return {
+      whyThisBusiness: l.why?.trim() || 'Found for your request.',
+      whyNow: { claim: l.signal, date: l.event_date, dateNote: l.event_date ? (d.date_status === 'verified' ? `${l.event_date}, printed on the proof page` : `${l.event_date}, the day the page was published`) : 'event date unknown', source: l.source_url, quote: l.evidence_excerpt },
+      who, angle: l.why, facts: ['The proof page names this company.'], assumptions: ['The event is a reason to look closer, not proof they want to buy.'], missing, next,
+    }
+  }
   const rows = l.enrichments ?? []
   const match = parseMatch(l.icp_match)
   const matched = match ? CRITERIA.filter(([k]) => match[k] === 'match').map(([, n]) => n) : []

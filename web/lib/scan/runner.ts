@@ -1462,10 +1462,12 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
   // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
   const known = job.watch_id ? (db.prepare('SELECT DISTINCT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.watch_id = ? AND l.company <> ? ORDER BY l.created_at DESC LIMIT 80').all(job.user_id, job.watch_id, '') as { company: string }[]).map(r => r.company) : []
+  // the buyer profile saved on this play (who, where, what to leave out) goes with the request
+  const profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
   let run: DiscoveryRun
   try {
     // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
-    run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(known.length ? { exclude: known } : {}) },
+    run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile } : {}), ...(known.length ? { exclude: known } : {}) },
       { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? (room < DISCOVER_SMALL_MIN_USD ? DISCOVER_TINY_BUDGET : DISCOVER_TRIAL_BUDGET) : {}) },
       { apiKey: key, fetch: fetchImpl, discover, enrich })
   } catch (e) {
