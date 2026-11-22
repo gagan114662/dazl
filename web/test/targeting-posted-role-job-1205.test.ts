@@ -38,3 +38,14 @@ test('#1205 a post that is not a job is never read as hiring', () => {
     'Startups that posted a new product video',
   ]) assert.ok(!planConditions(compileTargeting(q, null).root).some(x => x.cond.kind === 'hiring'), q)
 })
+
+// council (Sonnet R1/R2): the role is a role. "job opening for a nurse" names the nurse; a phrase with grammar words in it ("a press release
+// about a new role") is not a role; a work arrangement ("remote") is an open role with no named title
+test('#1205 the role read before the job word is a role, never job words, grammar words or a work arrangement', () => {
+  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  const nurse = one('companies that posted a job opening for a nurse')
+  assert.equal(nurse.length, 1); assert.equal(nurse[0].role, 'nurse')
+  assert.equal(one('companies that posted a press release about a new role in Toronto').length, 0)
+  const remote = one('Agencies that posted a remote job in the past 30 days')
+  assert.equal(remote.length, 1); assert.equal(remote[0].role, ''); assert.equal(remote[0].within_days, 30)
+})
