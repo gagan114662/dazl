@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { eventDateCopy } from '../lib/scan/date-copy.ts'
+import { eventDateCopy, leadCardDateLine } from '../lib/scan/date-copy.ts'
+import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason } from '../lib/scan/scoreboard.ts'
 import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob, exportLeads } from '../lib/scan/store.ts'
@@ -26,7 +27,10 @@ test('export read preserves raw event date status with tenant isolation and no i
 })
 test('lead UI and CSV both expose date context alongside raw date fields', () => {
   const read = (p:string) => readFileSync(new URL(`../${p}`,import.meta.url),'utf8')
-  assert.match(read('app/app/leads/leads-client.tsx'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
+  // #1176: every date line on the lead card reads through leadCardDateLine (proof, timing and window), never a bare eventDateCopy
+  const client = read('app/app/leads/leads-client.tsx')
+  assert.match(client, /leadCardDateLine\(l\)/); assert.doesNotMatch(client, /eventDateCopy\(/)
+  assert.match(read('lib/scan/date-copy.ts'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
   const route = read('app/api/leads/export/route.ts')
   assert.match(route, /key: 'date_status'/); assert.match(route, /key: 'date_context'/)
   assert.match(route, /date_context: \(\(\) => .*eventDateCopy\(lead\.event_date/); assert.match(route, /windowMissed: timingUnconfirmedReason\(lead, o\) === 'out_of_window'/)
@@ -46,4 +50,26 @@ test('event day verified but recency window unresolved: never "claimed" or "asso
   assert.doesNotMatch(line, /claimed/); assert.doesNotMatch(line, /association unconfirmed/)
   // Reason alone is not proof: without the day-verified signal the same unresolved run keeps the claimed wording.
   assert.equal(eventDateCopy('2026-01-06', 'verified', 'unconfirmed'), '2026-01-06 (claimed event day; event association and current need unconfirmed)')
+})
+
+// #1176: the review card's "Literal page check" line read the event day without its proof, so a lead whose card says
+// "event date ... (verified on the cited source)" read "claimed event day ... unconfirmed" two lines below. The row is built
+// exactly as app/api/leads/route.ts builds it for the card, from a stored row shaped like the prod lead in the issue
+// (Zayed Law: event_date 2026-10-06, event_date_proof page_bound, date_status unverified).
+test('#1176 the review card check line reads a proven event day as the card does, never as a claimed day', () => {
+  const stored = { event_date: '2026-10-06', event_date_proof: 'page_bound', date_status: 'unverified', signal: 'Opened a new office in Chicago', signal_kind: null, intent: 3 }
+  const asCard = (windowDays: number | null) => {
+    const opts = { windowDays, timingRequired: windowDays != null }
+    const tr = timingUnconfirmedReason(stored, opts)
+    return { ...stored, timing: surfaceStoredIntent(stored, opts).timing, day_verified: eventDayVerified(stored), window_missed: tr === 'out_of_window' }
+  }
+  const card = (l: ReturnType<typeof asCard>) => eventDateCopy(l.event_date, l.date_status, l.timing, { dayVerified: l.day_verified, windowMissed: l.window_missed })
+  for (const w of [null, 365, 7]) {
+    const l = asCard(w)
+    assert.equal(leadCardDateLine(l), card(l), `window ${w}`)
+    assert.doesNotMatch(leadCardDateLine(l), /claimed event day|event association/)
+  }
+  // control: no proof (a retired date_status 'verified' row) stays a claimed day
+  const legacy = { ...asCard(null), event_date_proof: null, date_status: 'verified', day_verified: false, timing: 'unconfirmed' as const }
+  assert.match(leadCardDateLine(legacy), /claimed event day/)
 })

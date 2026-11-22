@@ -117,14 +117,15 @@ test('export contract: Best Person found-via never claims first-party verificati
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ who: ['Sales Director'] }), jobId)
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, score) VALUES ('lead1', ?, '', 'Aurora', ?, 'x', 'https://news.example/aurora', 50)").run(jobId, SITE)
   const add = (r: Row) => addEnrichment(db, 'u1', 'lead1', { connector: r.connector, kind: r.kind, value: r.value, label: r.label, confidence: 60, source_url: r.source_url, source_date: '2026-11-03', retrieved_at: r.retrieved_at ?? RECENT })
-  add(PAT); add(domainRow(SITE, 'name_probe'))
+  // Pat's bio page links her LinkedIn (as the crawl records it), so the site's identity is the only thing that varies
+  add({ ...PAT, label: 'sitecrawl-profile-v1: https://www.linkedin.com/in/pat-example' }); add(domainRow(SITE, 'name_probe'))
   const held = (await bestPeople(sqliteDb(db), 'u1', [{ lead_id: 'lead1', job_id: jobId }])).get('lead1')!
-  assert.equal(held.best_person, 'Pat Example')
-  assert.doesNotMatch(held.best_person_found_via, /verified current: named on the company's own website/)
-  assert.match(held.best_person_found_via, /search result only, not verified as current: .*not confirmed/)
+  // #1037: on an unestablished site she is not the lead's buyer at all, so the export names nobody and claims nothing
+  assert.deepEqual(held, { best_person: '', best_person_title: '', best_person_link: '', best_person_found_via: '' })
   // control: an own-domain site verifies through the export path too
   db.prepare("DELETE FROM lead_enrichments WHERE kind = 'domain'").run()
   add(domainRow(SITE, 'evidence_own_domain', `https://${SITE}/news`))
   const okRow = (await bestPeople(sqliteDb(db), 'u1', [{ lead_id: 'lead1', job_id: jobId }])).get('lead1')!
+  assert.equal(okRow.best_person, 'Pat Example'); assert.equal(okRow.best_person_link, 'https://www.linkedin.com/in/pat-example')
   assert.match(okRow.best_person_found_via, /verified current: named on the company's own website, read 2026-11-03/)
 })

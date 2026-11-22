@@ -7,6 +7,8 @@ import Database from 'better-sqlite3'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { homeReady } from '../../lib/outreach/home-ready.ts'
+import { addEnrichment } from '../../lib/connectors/store.ts'
+import { ownSiteBuyerRows } from './own-site-buyer.ts'
 import { measureCase, verdict } from '../../scripts/matrix-score.mts'
 
 const NOW = Math.floor(Date.now() / 1000), DAY = 86400
@@ -27,6 +29,9 @@ test('matrix ready and held equal Home\'s on the same scan, with ready leads: ex
   lead('dupheld', { machine: true, company: 'Co ok1', fit: 2 })                                                                       // a held lead of a ready company: still one ready company
   lead('notiming', { machine: true, date: recent, fit: 4 }); lead('review', { review: 'quote_unconfirmed', date: recent, fit: 4 }); lead('nodate', { machine: true, fit: 4 })
   lead('rej', { machine: true, confirmed: true, date: recent, q: true, fit: 4 })                                                      // rejected: not counted
+  // #1037: every lead's own site names its buyer (the rows the real crawl stores), so the buyer rule never decides a case here
+  for (const { id, company_domain } of db.prepare('SELECT id, company_domain FROM leads WHERE scan_job_id = ?').all(J) as { id: string; company_domain: string | null }[])
+    for (const r of ownSiteBuyerRows(company_domain ?? `${id}.example`)) addEnrichment(db, 'A', id, r)
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(J)
   const order = (db.prepare('SELECT id FROM leads WHERE scan_job_id = ? ORDER BY (fit IS NULL), fit DESC').all(J) as { id: string }[]).map(r => r.id)
   assert.ok(order.indexOf('twinheld') < order.indexOf('twinready'), 'the held twin is met before its ready twin')
