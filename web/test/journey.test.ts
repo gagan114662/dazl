@@ -99,3 +99,13 @@ test('#1037 a ready lead\'s card names the buyer its own site names, never a bet
   const card = opportunityCard(l, 'VP Sales; Sales Manager')
   assert.deepEqual([card.who?.name, card.who?.title, card.who?.link], ['Dana Reyes', 'Sales Manager', 'https://www.linkedin.com/in/dana-reyes-example'])
 })
+
+test('#1037 a lead held only for its buyer is research "the rest of the lead is not confirmed yet", worded on Home', async () => {
+  const { researchCause, heldState } = await import('../lib/lead-state.ts')
+  const { holdWords } = await import('../lib/outreach/hold-words.ts')
+  const l = lead({ enrichments: [] })
+  assert.equal(heldReason(l), NO_OWN_BUYER)
+  assert.equal(researchCause(l), 'need')
+  assert.deepEqual(heldState(l), { state: 'research', cause: 'need' })
+  assert.equal(holdWords(NO_OWN_BUYER, 1), "no buyer named on the company's own site")
+})
