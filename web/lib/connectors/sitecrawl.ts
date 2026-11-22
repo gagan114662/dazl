@@ -1,7 +1,7 @@
 import { COMPANY_FIRST_ROLE_LABEL, recordCompanyFirstPublishedDisplay, withdrawCompanyFirstPublishedDisplay } from '../people/company-first-published-display.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { strictOwnContactCards } from './strict-own-contacts.ts'
-import { currentReviewedDomain, domainRelationship } from '../signals/domain-basis.ts'
+import { currentReviewedDomain, domainConfirmed, domainRelationship } from '../signals/domain-basis.ts'
 import { listedProfileLabel, listedProfileUrl, profileFromListedLabel } from '../people/site-profile.ts'
 import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
@@ -2150,7 +2150,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
         // #1122: no exact card pairs the buyer with a route (most real team pages: UpGuard, OnBoard, Simple AI, 2026-11-22). The buyer the
         // page names is still stored, alone - no email, no route, so the email bar is untouched - with the page's own "listed" label.
-        if (allowed && buyerRoles && strictBuyers.length === 0) {
+        // PM ruling 2026-11-22: this person-only fallback needs the domain CONFIRMED (homepage identity-checked; wider than established),
+        // never an email or route - those stay on the established path above. Pages of this site only, no redirect elsewhere (below).
+        const confirmedSite = (r.reason === 'ok' || r.reason === 'none_published') && domainConfirmed(db, tenantId, l.id, site)
+        if (confirmedSite && buyerRoles && strictBuyers.length === 0) {
           // same guards as the exact-card path: a page on this confirmed site only (never a redirect elsewhere), a title naming no other
           // company, and the page's former/alumni sections cut (extractPeople)
           const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return '' } }
