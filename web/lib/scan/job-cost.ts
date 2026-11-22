@@ -14,7 +14,8 @@
 // guard's amount, the one record such a job has.
 // One later case also lands on the run guard: a free trial whose only paid steps were TinyFish calls inside the free
 // allowance (the cap ledger prices them at $0; the trial guard charges them at the trial's prices). It shows that trial charge,
-// an overstatement, never "Nothing was charged" for a run that drew on its trial reserve.
+// an overstatement, never "Nothing was charged" for a run that drew on its trial reserve. The trial allowance settles to this
+// same number (trial-budget.ts reservationCost), so the page and the allowance used always agree once the run has settled.
 const amount = (v: unknown): number | null => {
   const n = typeof v === 'number' ? v : typeof v === 'string' && /^\s*(\d+\.?\d*|\.\d+)(e[+-]?\d+)?\s*$/i.test(v) ? Number(v) : NaN   // decimal forms only (never 0x..)
   return Number.isFinite(n) && n >= 0 ? n : null
