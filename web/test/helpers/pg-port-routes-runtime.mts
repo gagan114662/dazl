@@ -81,9 +81,11 @@ async function seed(db: Db, { J, L, E, M }: Ids): Promise<void> {
   await run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [J.aEmpty])
   await run("UPDATE scan_jobs SET status = 'failed', error = 'no_candidates', candidates = 0, finished_at = ? WHERE id = ?", [T + 80, J.aEmpty])
   await run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', [J.aEmpty, JSON.stringify({ extraction: { reason: 'none_returned', results: 8, requested: 5, fetched: 4, fetch_failed: 1, fetched_unused: 0, fetched_too_short: 0, offered: 6, page_texts_given: 4, snippet_only: 2, job_pages_fetched: 0 } })])
-  // Two people for one lead, equal rank: the first stored must win on both engines.
-  for (const [id, who] of [[E[0], 'Dana Lee, Practice Manager'], [E[1], 'Eli Novak, Practice Manager']]) {
-    await run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'sitecrawl', 'person', ?, ?, 'https://firstdental.example/team', '2026-10-01', ?)", [id, L.first, A, who, who, T])
+  // Two people for one lead, equal rank: the first stored must win on both engines. Both are stored as the crawl stores an own-site bio
+  // (#1037: the lead's buyer is a person its confirmed site lists with the LinkedIn that page links), on the site the crawl recorded as the lead's own.
+  await run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('e0', ?, ?, 'sitecrawl', 'domain', 'firstdental.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://firstdental.example/jobs', '2026-10-01', ?)", [L.first, A, T])
+  for (const [id, who, slug] of [[E[0], 'Dana Lee, Practice Manager', 'dana-lee'], [E[1], 'Eli Novak, Practice Manager', 'eli-novak']]) {
+    await run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'sitecrawl', 'person', ?, ?, ?, '2026-10-01', ?)", [id, L.first, A, who, `sitecrawl-profile-v1: https://www.linkedin.com/in/${slug}-example`, `https://firstdental.example/team/${slug}`, T])
   }
   await run("INSERT INTO lead_sources (lead_id, collector, attempt) VALUES (?, 'news:gdelt', 1)", [L.second])
   for (const [id, lead, at] of [[M[0], L.second, T + 90], [M[1], L.first, T + 90], ['m3', L.third, T + 95]] as const) {
