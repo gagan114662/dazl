@@ -418,7 +418,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
     const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
     // #533 / #1205 live: a hiring candidate cited to an aggregate page (market report, search listing) or to another role's posting is never a lead
-    if (hiringCand) { const hv = hiringPostingVerdict(cIn, hireRoles); if (!hv.ok) { toReview(cIn, hv.reason); continue } }
+    if (hiringCand) { const hv = hiringPostingVerdict(cIn, hireRoles, page && !isFail(page) ? { boardTitle: page.board?.title ?? null, pageTitle: page.title ?? null } : undefined); if (!hv.ok) { toReview(cIn, hv.reason); continue } }
     const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
     if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
       // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed

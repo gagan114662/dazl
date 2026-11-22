@@ -39,7 +39,7 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     // #1122 (case 1): "A, B, C, or D" lists more than two branches. Extra branches are allowed only when each is another funding/event
     // condition or a "new <role>" (new_role) sales condition: the gate checks those too (newRoles); any other third branch keeps both halves required.
     if (cs.length > 2) {
-      const ev = cs.filter(c => c.kind === 'funding' || c.kind === 'event'), hi = cs.filter(c => c.kind === 'hiring' && (!c.role || isGtmRole(c.role)))
+      const ev = cs.filter(c => c.kind === 'funding' || c.kind === 'event'), hi = cs.filter(c => (c.kind === 'hiring' || (c.kind === 'hire_made' && !c.new_role)) && (!c.role || isGtmRole(c.role))) // a first / completed sales hire is the hiring branch too (Qodo #1509 M4)
       const nr = cs.filter(c => c.kind === 'hire_made' && c.new_role && isGtmRole(c.role ?? ''))
       if (ev.length !== 1 || hi.length !== 1 || ev.length + hi.length + nr.length !== cs.length) return null
       if ([...ev, ...hi, ...nr].some(c => c.relative_to || c.clock_conflict)) return null

@@ -27,13 +27,14 @@ const HIRE = (co: string) => `${co}, a London B2B SaaS company, made its first s
 // An OPEN vacancy: not a completed hire (#876), so it never proves Test B's hiring branch.
 const OPEN = (co: string) => `${co}, a London B2B SaaS company, is hiring its first Sales Representative to join the founders.`
 
-interface Lead { id?: string; company?: string; domain?: string | null; excerpt: string; date?: string | null; signal?: string }
+// A dated fixture lead's day is bound on its page (page_bound) unless the test says otherwise (Qodo #1512 M5: completed hires need that).
+interface Lead { id?: string; company?: string; domain?: string | null; excerpt: string; date?: string | null; signal?: string; proof?: string | null }
 function setup(query: string, leads: Lead[], icp: string | null = ICP_B) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, icp, jobId)
-  leads.forEach((l, i) => db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, date_status) VALUES (?, ?, '', ?, ?, ?, ?, ?, 80, ?, '', ?, 'verified')")
-    .run(l.id ?? `L${i + 1}`, jobId, l.company ?? 'Synthco', l.domain ?? null, l.signal ?? 'signal', `https://news.example/${i + 1}`, l.excerpt, 80 - i, l.date === undefined ? day(20) : l.date))
+  leads.forEach((l, i) => db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES (?, ?, '', ?, ?, ?, ?, ?, 80, ?, '', ?, ?, 'verified')")
+    .run(l.id ?? `L${i + 1}`, jobId, l.company ?? 'Synthco', l.domain ?? null, l.signal ?? 'signal', `https://news.example/${i + 1}`, l.excerpt, 80 - i, l.date === undefined ? day(20) : l.date, l.proof !== undefined ? l.proof : (l.date === null ? null : 'page_bound')))
   db.prepare("UPDATE scan_jobs SET status = 'done', verified = ?, needs_review = 0 WHERE id = ?").run(leads.length, jobId)
   return { db, job: { id: jobId, user_id: 'u1', query, icp } }
 }
