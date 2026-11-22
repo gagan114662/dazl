@@ -20,8 +20,10 @@ import { ADAPTERS } from '../lib/sources/index.ts'
 import { atsPostingRef, atsRecord, atsPageText } from '../lib/sources/ats-posting.ts'
 import { htmlToText, decode } from '../lib/scan/fetch-page.ts'
 import { enrichmentsForLeads } from '../lib/connectors/store.ts'
+import { planObject, type StubPlace } from './helpers/request-plan-stub.ts'
 
 const REQUEST = 'Austin B2B SaaS companies hiring their first account executive in the last 30 days'
+const GENERIC = 'B2B SaaS companies hiring their first account executive in the last 30 days'
 const ICP = { summary: 'Austin B2B SaaS companies hiring their first account executive', who: ['Founder', 'CEO'], industries: ['B2B SaaS'], sizes: ['1-50'], where: ['Austin, TX'], signals: ['hiring their first account executive'], exclude: [], country: 'US', language: 'en', window_days: 30 }
 const QUERIES = ['(site:boards.greenhouse.io OR site:job-boards.greenhouse.io) "first account executive" Austin, TX', 'Austin B2B SaaS first account executive hiring Austin, TX', 'Austin software company account executive job posting careers Austin, TX']
 const SAASJOBS = 'https://www.thesaasjobs.com/jobs/767593187-account-executive-mid-market-midwest'
@@ -55,7 +57,12 @@ const fetchPage = async (u: string) => {
   const page = atsPageText(rec, rec.html ? htmlToText(decode(rec.description)).text : rec.description)
   return { text: page.text, title: page.title, board: page.board, retrievedAt: Math.floor(Date.now() / 1000), published: rec.posted, postedAt: rec.posted, structured: [] }
 }
-function fx(sourceHttp: SafeGet): Fixture {
+// #1395: the model's request plan (SYNTHETIC replies): each request's place exactly as it writes it, [] when it writes none (the profile place is then used).
+// "Austin B2B SaaS companies ..." writes the city Austin (a US census city), so the request itself names the place; GENERIC writes none.
+const AUSTIN_PLACE: StubPlace = { text: 'Austin', city: 'Austin', region: null, country: 'US' }
+const EUROPE_PLACE: StubPlace = { text: 'Europe', city: null, region: null, country: null }
+const planFor = (places: StubPlace[]) => planObject(places, { buyer_type: 'B2B SaaS companies', signals: [{ kind: 'hiring', text: 'hiring their first account executive', negated: false }] })
+function fx(sourceHttp: SafeGet, request = REQUEST, places: StubPlace[] = [AUSTIN_PLACE]): Fixture {
   // The model's candidates: from the search (REAL: NinjaOne on thesaasjobs, OEC on mediabistro) and, for each board posting in its prompt,
   // one that cites the posting and quotes the sentence the source handed over.
   const fromSearch: Cand[] = [
@@ -63,7 +70,7 @@ function fx(sourceHttp: SafeGet): Fixture {
     { company: 'OEC', signal: 'is hiring a SaaS SMB account executive', source_url: MEDIA, excerpt: 'OEC is seeking a SaaS SMB Account Executive to drive the full sales cycle', event_date: null as never },
   ]
   return {
-    request: REQUEST, modelIcp: ICP, modelQueries: QUERIES,
+    request, modelIcp: ICP, modelQueries: QUERIES, modelPlan: planFor(places),
     hits: [{ url: SAASJOBS, title: 'Account Executive, Mid Market Midwest', snippet: 'The Account Executive role at NinjaOne', date: null as never }, { url: MEDIA, title: 'SaaS SMB Account Executive', snippet: 'OEC is seeking a SaaS SMB Account Executive', date: null as never }],
     tfPages: {}, own: {},
     extraction: fromSearch,
@@ -114,7 +121,8 @@ test('#1095 review at 54953a0a: a capitalised phrase before ", <State>" is not a
 
 test('#1095 review: a profile naming SEVERAL places is never narrowed to its first one: the board source says it had no place', async () => {
   const { http, seen } = boards()
-  const f = fx(http); f.modelIcp = { ...ICP, where: ['Austin, TX', 'Boston, MA'] }
+  // #1395: the profile is read only when the request names no place: GENERIC (the Austin request writes Austin itself)
+  const f = fx(http, GENERIC, []); f.modelIcp = { ...ICP, where: ['Austin, TX', 'Boston, MA'] }
   const x = await runFixture(f)
   const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
   assert.match(run?.status ?? '', /^skipped_no_place:several:/, '#1205: the skip names the places')
@@ -213,17 +221,18 @@ test('#1095 review: a profile naming a city AND its state is one place; "U.S." i
   assert.deepEqual(absorbStates(['Texas']), ['Texas'])
   assert.equal(profilePlaceText('Austin', 'U.S.'), 'Austin, TX'); assert.equal(profilePlaceText('Austin', ' usa '), 'Austin, TX')
   const { http, seen } = boards()
-  const f = fx(http); f.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Texas'] }
+  const f = fx(http, GENERIC, []); f.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Texas'] }   // #1395: a request naming no place, so the profile is read
   await runFixture(f)
   assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'where ["Austin","Texas"] runs the board source for Austin, TX')
 })
 
 test('#1095 live check: two profile entries naming the same place are one place; two different places still name none', async () => {
   const { http, seen } = boards()
-  const same = fx(http); same.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Austin, TX'] }
+  // #1395: a request naming no place, so the profile is what is read
+  const same = fx(http, GENERIC, []); same.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Austin, TX'] }
   await runFixture(same)
   assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/ninjaone/jobs'), 'Austin and Austin, TX are one place')
-  const two = boards(); const f2 = fx(two.http); f2.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Boston'] }
+  const two = boards(); const f2 = fx(two.http, GENERIC, []); f2.modelIcp = { ...REAL_STAGING_ICP, where: ['Austin', 'Boston'] }
   const x = await runFixture(f2)
   assert.match((x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined)?.status ?? '', /^skipped_no_place:several:/)
   assert.ok(!two.seen.some(u => u.includes('greenhouse')))
@@ -238,7 +247,7 @@ test('#1095 review: a profile place "<City>, <Country>" keeps the board source a
   }
   for (const [w, c] of [['Toronto, Canada', 'CA'], ['Manchester, UK', 'GB']] as const) {
     const { http, seen } = boards()
-    const f = fx(http); f.modelIcp = { ...REAL_STAGING_ICP, where: [w], country: c }
+    const f = fx(http, GENERIC, []); f.modelIcp = { ...REAL_STAGING_ICP, where: [w], country: c }   // #1395: a request naming no place, so the profile place is read
     const x = await runFixture(f)
     const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
     assert.ok(run && !run.status.startsWith('skipped_no_place'), `${w}: the board source ran (it was skipped_no_place on the previous head): ${run?.status}`)
@@ -263,7 +272,6 @@ function vancouverBoards() {
   }
   return { http, seen }
 }
-const GENERIC = 'B2B SaaS companies hiring their first account executive in the last 30 days'
 const detailIds = (seen: string[]) => seen.filter(u => /boards\/ninjaone\/jobs\/\d+$/.test(u)).map(u => +u.split('/').pop()!)
 
 test('#1205 review F1: a US profile\'s bare "Vancouver" runs the board source on Vancouver, WA (the WA posting is read, the BC one is not); a CA profile still gets Vancouver, BC', async () => {
@@ -271,13 +279,13 @@ test('#1205 review F1: a US profile\'s bare "Vancouver" runs the board source on
   assert.equal(profilePlaceText('Vancouver', 'CA'), 'Vancouver')
   assert.equal(profilePlaceText('Toronto', 'Canada'), 'Toronto')
   assert.equal(profilePlaceText('Vancouver', 'GB'), null, 'a third country is not guessed')
-  const us = vancouverBoards(); const fu = fx(us.http); fu.request = GENERIC; fu.modelIcp = { ...ICP, where: ['Vancouver'], country: 'US' }
+  const us = vancouverBoards(); const fu = fx(us.http, GENERIC, []); fu.modelIcp = { ...ICP, where: ['Vancouver'], country: 'US' }
   const xu = await runFixture(fu)
   const ru = xu.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string } | undefined
   assert.ok(ru && ['ok', 'partial'].includes(ru.status), `US profile: the board source ran: ${ru?.status}`)
   assert.ok(detailIds(us.seen).includes(WA_ID), `US profile: the Vancouver, WA posting is read: ${detailIds(us.seen)}`)
   assert.ok(!detailIds(us.seen).includes(BC_ID), `US profile: the Vancouver, BC posting is not: ${detailIds(us.seen)}`)
-  const ca = vancouverBoards(); const fc = fx(ca.http); fc.request = GENERIC; fc.modelIcp = { ...ICP, where: ['Vancouver'], country: 'CA' }
+  const ca = vancouverBoards(); const fc = fx(ca.http, GENERIC, []); fc.modelIcp = { ...ICP, where: ['Vancouver'], country: 'CA' }
   await runFixture(fc)
   assert.ok(detailIds(ca.seen).includes(BC_ID), `CA profile: the Vancouver, BC posting is read: ${detailIds(ca.seen)}`)
   assert.ok(!detailIds(ca.seen).includes(WA_ID), `CA profile: the Vancouver, WA posting is not: ${detailIds(ca.seen)}`)
@@ -286,7 +294,7 @@ test('#1205 review F1: a US profile\'s bare "Vancouver" runs the board source on
 // #1205 review (Ziggy, F2): the named skip explanation must reach the SAVED run report, not only the progress row.
 test('#1205 review F2: "in Europe": runner -> SourceRunLedger.write -> readRunReport / readScanStatus: the saved report names Europe, why the board source was skipped and the city to give', async () => {
   const { http, seen } = boards()
-  const f = fx(http); f.request = 'B2B SaaS companies in Europe hiring their first account executive in the last 30 days'; f.modelIcp = { ...ICP, where: ['Europe'], country: '' }
+  const f = fx(http, 'B2B SaaS companies in Europe hiring their first account executive in the last 30 days', [EUROPE_PLACE]); f.modelIcp = { ...ICP, where: ['Europe'], country: '' }
   const x = await runFixture(f)
   assert.ok(!seen.some(u => u.includes('greenhouse')), 'no board was read')
   const { id: jobId } = x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }

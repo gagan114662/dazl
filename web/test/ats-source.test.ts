@@ -10,6 +10,7 @@ import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { sourceRuns } from '../lib/scan/source-runs.ts'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { planObject } from './helpers/request-plan-stub.ts'
 
 const ms = (n: number) => Date.now() - n * 86_400_000
 const QUERY = 'London UK startups hiring sales account executives'
@@ -79,13 +80,15 @@ const FUNDQ = 'Brightloop, a London B2B SaaS startup, raised a 3m GBP seed round
 const filler = ' More about the company, its product and its people.'.repeat(10)
 const jobCand: Cand = { company: 'Brightloop', signal: 'hiring a sales account executive', source_url: JOB, excerpt: JOBQ, event_date: daysAgo(9) }
 const fundCand: Cand = { company: 'Brightloop', signal: 'raised a seed round', source_url: NEWS, excerpt: FUNDQ, event_date: daysAgo(12) }
+// #1395: the model's request plan for REQUEST (SYNTHETIC reply): the place as the request writes it, "London UK"
+const PLAN = planObject([{ text: 'London UK', city: 'London', region: null, country: 'GB' }], { buyer_type: 'B2B SaaS startups', signals: [{ kind: 'funding', text: 'announced seed funding within the past 90 days', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] })
 const gdelt = (articles: unknown[]) => JSON.stringify({ articles })
 function fx(newsArticles: unknown[]): Fixture {
   const sourceHttp = http({ 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { status: 200, body: GH() }, 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { status: 200, body: GHD('brightloop') } })
   const newsHttp: SafeGet = async () => ({ status: 200, body: gdelt(newsArticles) })
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup hiring account executive'], hits: [{ url: JOB, title: 'Account Executive', snippet: JOBQ, date: daysAgo(9) }], tfPages: {},
     own: { [JOB]: { title: 'Account Executive at Brightloop', text: `On ${daysAgo(9)}, ${JOBQ}.${filler}` }, [NEWS]: { title: 'Brightloop raises seed round', text: `On ${daysAgo(12)}, ${FUNDQ}.${filler}` } },
-    extraction: [jobCand, fundCand], deps: { sourceHttp, newsHttp } }
+    extraction: [jobCand, fundCand], deps: { sourceHttp, newsHttp }, modelPlan: PLAN }
 }
 const brightloop = (x: Awaited<ReturnType<typeof runFixture>>) => x.db.prepare("SELECT review_reason, confidence, source_url FROM leads WHERE company = 'Brightloop'").all() as { review_reason: string | null; confidence: number | null; source_url: string }[]
 
@@ -115,7 +118,7 @@ function seedOnly(board: { ghJobs?: unknown; ghDetail?: unknown } | null, over: 
   const sourceHttp = http(board ? { 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs': { status: 200, body: board.ghJobs }, 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/1': { status: 200, body: board.ghDetail } } : {})
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: NEWS, title: 'Brightloop raises seed round', snippet: SEED_Q, date: daysAgo(12) }], tfPages: {},
     own: { [NEWS]: { title: 'Brightloop raises seed round', text: `On ${daysAgo(12)}, ${SEED_Q}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Brightloop', text: `On ${daysAgo(9)}, ${JOBQ}.${filler}` } },
-    extraction: [seedCand, jobCand], deps: { sourceHttp }, ...over }
+    extraction: [seedCand, jobCand], deps: { sourceHttp }, modelPlan: PLAN, ...over }
 }
 const lead1 = (x: Awaited<ReturnType<typeof runFixture>>) => x.db.prepare("SELECT review_reason, confidence, why FROM leads WHERE company = 'Brightloop'").get() as { review_reason: string | null; confidence: number | null; why: string | null }
 

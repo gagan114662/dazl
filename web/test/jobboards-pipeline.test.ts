@@ -9,6 +9,9 @@ import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob, listLeads } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { isPlanPrompt, planReply } from './helpers/request-plan-stub.ts'
+// #1395: SYNTHETIC request-plan reply for 'ohio companies hiring payroll': the place exactly as the request writes it (lower case)
+const PLAN = planReply([{ text: 'ohio', city: null, region: 'ohio', country: 'US' }], { buyer_type: 'ohio companies', signals: [{ kind: 'hiring', text: 'hiring payroll', negated: false }] })
 
 const master = randomBytes(32)
 const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
@@ -39,7 +42,7 @@ async function run(research: unknown[], completeOut: (url?: string) => unknown[]
   const icp = JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] })
   const id = createQueryJob(db, 'A', { query: 'ohio companies hiring payroll', icp, sources: JSON.stringify({ adapters: ['jobboards'], feeds }) } as never)
   const prov = {
-    anthropic: { research: async () => ({ text: JSON.stringify(research), citedUrls: research.map((r: any) => r.source_url) }), complete: async (_k: string, p: string) => p.startsWith('You check one claim') ? 'supports' : JSON.stringify(completeOut()) },
+    anthropic: { research: async () => ({ text: JSON.stringify(research), citedUrls: research.map((r: any) => r.source_url) }), complete: async (_k: string, p: string) => isPlanPrompt(p) ? PLAN : p.startsWith('You check one claim') ? 'supports' : JSON.stringify(completeOut()) },
     openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' },
   }
   const res = await runJob(db, claimKeyedJob(db, id)!, { providers: prov as never, master, fetchPage: page as never, sourceHttp: http, score: false, now: new Date() })
@@ -129,7 +132,7 @@ test('runner: the scan hands the adapter its page fetcher; an off-page body neve
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const icp = JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] })
   createQueryJob(db, 'A', { query: 'ohio companies hiring payroll', icp, sources: JSON.stringify(S) } as never)
-  const prov = { anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string) => { prompts.push(p); return '[]' } }, openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' } }
+  const prov = { anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string) => { prompts.push(p); return isPlanPrompt(p) ? PLAN : '[]' } }, openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' } }
   const res = await runJob(db, claimKeyedJob(db)!, { providers: prov as never, master, fetchPage: (async () => ({ text: 'Unrelated page text only.', title: 'x', retrievedAt: 1 })) as never, sourceHttp: boardHttp(esc(P1) + esc(T5)), score: false, now: new Date() })
   assert.equal(res, 'failed') // no candidates at all
   assert.ok(!prompts.some(p => p.includes(U5)), 'the off-page posting never reached the model')
@@ -140,7 +143,7 @@ test('ledger to API: a cut board lands as status "partial" with evidence_count 0
     const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
     const icp = JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] })
     const jid = createQueryJob(db, 'A', { query: 'ohio companies hiring payroll', icp, sources: JSON.stringify(S) } as never)
-    const prov = { anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' }, openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' } }
+    const prov = { anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string) => isPlanPrompt(p) ? PLAN : '[]' }, openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' } }
     await runJob(db, claimKeyedJob(db)!, { providers: prov as never, master, fetchPage: page as never, sourceHttp: http, score: false, now: new Date() })
     return (sourceRuns(db, 'A', jid) as { collector: string; status: string; evidence_count: number | null }[]).find(r => r.collector === 'adapter:jobboards')
   }
