@@ -107,3 +107,13 @@ test('#1395 runJob: explicit sources (jobboards + careers) with a bad plan: the 
   const careers = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:careers'").get() as { status: string } | undefined
   assert.ok(careers, 'the careers source the user picked still ran')
 })
+
+// Quest: a tenant whose model key is not Claude keeps the board source exactly as before (no silent loss): no plan call is made (Claude is the
+// only paid API the plan may use) and the place is read as main read it.
+test('#1395 runJob: a non-Claude tenant keeps the job boards as before: no plan call, the Toronto postings are read', async () => {
+  const { http, seen } = board()
+  const x = await runFixture({ ...fx(http, REAL, ['Toronto, Ontario'], 'CA', undefined), vendor: 'openai' })
+  assert.ok(!x.calls.prompts.some(p => p.startsWith('You read one B2B prospecting request')), 'no plan call for a non-Claude tenant')
+  assert.deepEqual(detailed(seen), [3, 4], `the Toronto postings were read as on main (got ${JSON.stringify(detailed(seen))})`)
+  assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `the job boards ran: ${boardsStatus(x)}`)
+})
