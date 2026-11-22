@@ -45,16 +45,17 @@ test('when the run limit binds under a day cap, the verdict names the run limit,
   assert.ok(e.verdict.change.some(c => /^Raise the dollar limit to at least \$0\.0\d /.test(c)), e.verdict.change.join(' | '))
 })
 
-test('when the run limit binds and the day room is also short, the change list names the day room too', () => {
+test('when the run limit binds and the day room is also short, the change list names the day room, with no raise', () => {
   const e = estimateRun({ budget: { max_usd: 0.05 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 9.93 })
   assert.equal(e.verdict.ok, false); assert.equal(e.cap.binding, 'run')
   const min = e.cap.capped_total.min
   assert.ok(min > 0.07, 'the model minimum is above the day room')
-  assert.ok(e.verdict.change.some(c => /daily limit has only \$0\.07 left today/.test(c)), e.verdict.change.join(' | '))
-  // following the run-limit advice alone is not enough here, and the list says so
+  assert.ok(e.verdict.change.some(c => /^Your daily limit \(\$10\.00\) has \$0\.07 left today; it resets at 00:00 UTC\.$/.test(c)), e.verdict.change.join(' | '))
+  assert.ok(!e.verdict.change.some(c => /^Raise the/.test(c)), e.verdict.change.join(' | '))
+  // raising the run limit alone would not unblock it, which is why no raise is offered
   assert.equal(estimateRun({ budget: { max_usd: min }, payer: 'you', ownerCapUsd: 10, reservedUsd: 9.93 }).verdict.ok, false)
   // with day room to spare the extra line is absent
-  assert.ok(!estimateRun({ budget: { max_usd: 0.01 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 1 }).verdict.change.some(c => /daily limit has only/.test(c)))
+  assert.ok(!estimateRun({ budget: { max_usd: 0.01 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 1 }).verdict.change.some(c => /^Your daily limit/.test(c)))
 })
 
 test('a run that is never offered the run-limit raise is not told that raise is not enough', () => {
@@ -215,6 +216,14 @@ test('the change list never offers a raise that cannot unblock the run, and neve
   assert.equal(under.verdict.ok, false); assert.equal(under.cap.run_max_usd, 0.03)
   assert.ok(noRaise(under), under.verdict.change.join(' | '))
   assert.ok(under.verdict.change.some(c => c === 'Each scan is capped at $0.05.'), under.verdict.change.join(' | '))
+  // the trial's stop above the run limit but below the cost: raising the run limit cannot unblock it, and the trial stop is named
+  const trialAbove = estimateRun({ budget: { max_usd: 0.02 }, payer: 'trial', trialReserveUsd: 0.05, ownerCapUsd: 10, reservedUsd: 0, scanCapUsd: 3.33 })
+  assert.equal(trialAbove.verdict.ok, false); assert.ok(noRaise(trialAbove), trialAbove.verdict.change.join(' | '))
+  assert.ok(trialAbove.verdict.change.some(c => c === 'The free trial stops each scan at $0.05.'), trialAbove.verdict.change.join(' | '))
+  // the day's room below the cost: no raise, the daily limit is named with its reset
+  const dayShort = estimateRun({ budget: { max_usd: 0.02 }, payer: 'you', ownerCapUsd: 0.05, reservedUsd: 0, scanCapUsd: 3.33 })
+  assert.equal(dayShort.verdict.ok, false); assert.ok(noRaise(dayShort), dayShort.verdict.change.join(' | '))
+  assert.ok(dayShort.verdict.change.some(c => /^Your daily limit \(\$0\.05\) has \$0\.05 left today; it resets at 00:00 UTC\.$/.test(c)), dayShort.verdict.change.join(' | '))
   // a raise that does unblock the run is still offered
   const raisable = estimateRun({ budget: { max_usd: 0.02 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 0, scanCapUsd: 3.33 })
   assert.ok(raisable.verdict.change.some(c => /^Raise the dollar limit to at least \$0\.\d\d /.test(c)), raisable.verdict.change.join(' | '))
