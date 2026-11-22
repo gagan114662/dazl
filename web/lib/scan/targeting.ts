@@ -117,6 +117,29 @@ const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
 const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
 const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for)\s+)+/i, '').trim()
+// #1122: one open-role clause can name several roles ("hiring an SDR/BDR or sales rep"). Every one is kept, separated by "/" (the separator a
+// role's alternatives already use, "Head of Sales/VP Sales"), and each is judged on its own (roleAlternatives). A further role is read after
+// "or" or "/" only (a comma separates conditions: "A, B, or C") while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or
+// qualifier word, and it starts no other condition of the request ("hiring SDRs or raised a Series A" stays two conditions).
+const ALT_SEP = /^(?:\s*\/\s*|\s+or\s+)/i
+const NOT_ROLE_WORD = /^(?:now|currently|recently|soon|asap|immediately|today|actively|urgently|last|past|next|this|within|in|at|on|from|with|during|over|across|days?|weeks?|months?|years?)$/i
+const altRole = (s: string) => !!s && /^[A-Za-z][A-Za-z\s&\/-]*$/.test(s) && s.split(/\s+/).length <= 5
+  && !s.split(/[\s\/]+/).some(w => /ed$/i.test(w) || NOT_ROLE_WORD.test(w)) && !/^[a-z]+ing$/i.test(s)
+function moreRoles(atoms: Atom[], text: string, at: number, role: string): { roles: string[]; end: number } {
+  const roles = [role]
+  let rest = text, end = at
+  for (;;) {
+    const sep = ALT_SEP.exec(rest); if (!sep) break
+    const tail = rest.slice(sep[0].length), next = cleanRole(tail)
+    if (!altRole(next)) break
+    const nextEnd = end + sep[0].length + tail.indexOf(next) + next.length
+    if (atoms.some(b => end < b.end && b.start < nextEnd)) break
+    roles.push(next); rest = tail.slice(tail.indexOf(next) + next.length); end = nextEnd
+  }
+  return { roles, end }
+}
+// The roles one hiring condition names, each on its own (leading articles and "their first" dropped): "their first SDR/BDR/sales rep" -> SDR, BDR, sales rep.
+export const roleAlternatives = (role: string): string[] => role.split('/').map(r => r.trim().replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural)\s+)+/i, '').trim()).filter(Boolean)
 
 function findAtoms(q: string): Atom[] {
   const atoms: Atom[] = []
@@ -157,11 +180,15 @@ function findAtoms(q: string): Atom[] {
   // 3. Open roles ("hiring account executives", "posted a job for a receptionist").
   for (const m of q.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\b([^.;!?]*)/gi)) {
     const role = cleanRole(m[1])
-    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length - m[1].length + (role ? m[1].indexOf(role) + role.length : 0), role })
+    const end = (m.index ?? 0) + m[0].length - m[1].length + (role ? m[1].indexOf(role) + role.length : 0)
+    const all = role ? moreRoles(atoms, m[1].slice(m[1].indexOf(role) + role.length), end, role) : { roles: [], end }
+    add({ kind: 'hiring', start: m.index ?? 0, end: all.end, role: all.roles.join('/') })
   }
   for (const m of q.matchAll(/\b(?:posted|posting|advertis\w+|open)\s+(?:a\s+|an\s+|new\s+)?(?:jobs?|roles?|positions?|vacanc(?:y|ies)|openings?)(?:\s+for\s+([^,.;]+))?/gi)) {
     const role = m[1] ? cleanRole(m[1]) : ''
-    add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
+    const end = (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length)
+    const all = role ? moreRoles(atoms, m[1]!.slice(m[1]!.indexOf(role) + role.length), end, role) : { roles: [], end }
+    add({ kind: 'hiring', start: m.index ?? 0, end: all.end, role: all.roles.join('/') })
   }
   // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
   // like any open role: a dated posting or a source naming it). The past tense ("made their first sales hire") is a completed hire: step 1 (#876).
@@ -265,7 +292,8 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     if (/\bnor\b/i.test(t)) return 'and'
     if (/\bor\b|\beither\b/i.test(t)) return 'or'
     // #1122 follow-up: a bare comma inside a list ("A or B, C, or D") takes the list's own connective: the next and/or in the same clause.
-    if (/^\s*,\s*$/.test(t)) { const w = /\b(and|or)\b/i.exec(q.slice(atoms[i + 1].end).split(/[.;:!?]/)[0]); if (w) return w[1].toLowerCase() as 'and' | 'or' }
+    // #1122: the list item may open with an article or "new" before its condition word ("..., new funding, a new Head of Sales, or ...").
+    if (/^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)*$/i.test(t)) { const w = /\b(and|or)\b/i.exec(q.slice(atoms[i + 1].end).split(/[.;:!?]/)[0]); if (w) return w[1].toLowerCase() as 'and' | 'or' }
     return 'and'
   })
   // "not funded or hiring": (not A) or B, or neither? The narrower reading is neither.

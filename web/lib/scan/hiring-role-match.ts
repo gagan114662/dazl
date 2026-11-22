@@ -42,7 +42,8 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
   for (const text of texts) {
     // #533 live: "posted a front desk receptionist job in the past 90 days" names the posting title as plainly as "hiring a ..." does
     for (const m of text.matchAll(/\bpost(?:ed|s|ing)?\s+(?:(?:a|an|the|new|their|its|one|any)\s+)*([^.;!?\n]{2,80}?)\s+(?:job|role|position|opening|vacanc(?:y|ies)|posting|ad|listing)s?\b/gi)) {
-      for (const raw of m[1].split(/\s+or\s+|\s+and\s+|,/i)) {
+      // #1122: "an SDR/BDR or sales rep job" names three titles, like the hiring form below
+      for (const raw of m[1].split(/\s+or\s+|\s+and\s+|,|\//i)) {
         const term = raw.trim().replace(LEAD_WORDS, '').trim(), n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n) || LEAD_QUALIFIER.test(term)) continue
         if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions|job|new)$/.test(n)) continue
