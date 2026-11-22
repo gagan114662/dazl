@@ -106,7 +106,7 @@ import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRe
 import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
-import { freshBoardPostings, orderByBoardDate } from '../company-first/board-postings.ts'
+import { freshBoardPostings, orderByBoardDate, dateBoards } from '../company-first/board-postings.ts'
 import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
 import { boardOf } from '../research/sources/ats-boards.ts'
 
@@ -1747,7 +1747,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           hiringAsked ? 'Search a third distinct angle on first-party pages only: the public applicant tracking boards whose own records dazl reads and dates (boards.greenhouse.io, job-boards.greenhouse.io, jobs.lever.co, jobs.ashbyhq.com) for postings that match the requested event, using varied wording of the role titles, and the company\'s own press, news or blog posts announcing it. Skip aggregators, lists and directories, and companies already found.'
             : 'Search a third distinct angle on first-party pages only: the company\'s own careers page or its official applicant tracking system job permalinks, and its own press, news or blog posts announcing the requested event. Skip aggregators, lists and directories, and companies already found.']
         : ['']
-      let totalBoardsCited=0,totalBoardPostings=0,totalItems=0,totalNativeCandidates=0,totalPublisherReads=0,totalPublisherReturned=0,totalPublisherUsable=0,totalLookahead=0
+      let totalBoardsCited=0,totalBoardPostings=0,boardsToDate=0,boardsDated=0,boardsDateFailed=0; const boardDateCauses=new Set<string>(); let totalItems=0,totalNativeCandidates=0,totalPublisherReads=0,totalPublisherReturned=0,totalPublisherUsable=0,totalLookahead=0
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
       const phaseDeadline=jobDeadlines.get(job)
       const fundingSourceRejects: Partial<Record<FundingSourceReason, number>> = {}
@@ -1850,8 +1850,15 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // a public-ATS posting the model listed is read itself too (guarded fetch; dated by its board), not only used to find its board
         const listedPosts = textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) && atsPostingRef(c.jobUrl) ? [c.jobUrl] : [])
         // #1122: a posting its board dates outside the window never takes one of the 5 read slots; dated in-window postings go first, newest first
+        // af02437c: every board behind a slot candidate is dated on its own small deadline (never the pick step's leftover phase time)
+        if (companyFirst && hiringAsked) {
+          const left = phaseDeadline ? phaseDeadline.at - phaseDeadline.now() - 5_000 : 8_000
+          const st = await dateBoards([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls], { http: deps.sourceHttp ?? safeGet, deadlineMs: 8_000, totalMs: Math.min(30_000, Math.max(0, left)), dates: boardDates, titles: boardTitles })
+            .catch(() => ({ boards: 0, read: 0, failed: 0, cause: 'unreadable' as const }))
+          boardsToDate += st.boards; boardsDated += st.read; boardsDateFailed += st.failed; if (st.cause !== 'none' && st.cause !== 'no_boards') boardDateCauses.add(st.cause)
+        }
         const ordered = orderByBoardDate([...new Set([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url)),
-          boardDates, { windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), titles: boardTitles, roleMatch: (() => { const rs = requestedGateRoles(job.query, job.icp); return (t: string) => !!matchedHiringRole(t, rs) })() })
+          boardDates, { windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), titles: boardTitles, boardsDated: companyFirst && hiringAsked, roleMatch: (() => { const rs = requestedGateRoles(job.query, job.icp); return (t: string) => !!matchedHiringRole(t, rs) })() })
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
           return board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(url.hostname, { allowPrivateDomains: true }) ?? url.hostname
@@ -1907,7 +1914,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const items = toEvidence(hits, pages, undefined, 30, companyFirst ? { terms: focusTerms([job.query ?? '', ...(Array.isArray(icpForSources.signals) ? icpForSources.signals : [])].join(' ')), limit: 4000 } : undefined).map(e => ({ ...e, source: 'claude-web-search' }))
         totalItems+=items.length; totalPublisherReturned+=publisherReturned; totalPublisherUsable+=pages.length; totalLookahead+=lookaheadAttempted
         reportSearch(est, usage, undefined, { ...found.evidenceDiagnostic, publisher_attempted: totalPublisherReads,
-          ...(totalLookahead ? { publisher_lookahead_attempted: totalLookahead } : {}), ...(hiringAsked && companyFirst ? { ats_boards_cited: totalBoardsCited, ats_board_postings: totalBoardPostings } : {}), publisher_returned: totalPublisherReturned, publisher_failures: publisherFailures, publisher_usable: totalPublisherUsable, evidence_items: totalItems })
+          ...(totalLookahead ? { publisher_lookahead_attempted: totalLookahead } : {}), ...(hiringAsked && companyFirst ? { ats_boards_cited: totalBoardsCited, ats_board_postings: totalBoardPostings, ats_boards_to_date: boardsToDate, ats_boards_dated: boardsDated, ats_boards_date_failed: boardsDateFailed, ats_boards_date_cause: [...boardDateCauses].join(',') || 'none' } : {}), publisher_returned: totalPublisherReturned, publisher_failures: publisherFailures, publisher_usable: totalPublisherUsable, evidence_items: totalItems })
         let nativeCandidates = 0
         if (items.length) {
           assertOwned(db, job)
