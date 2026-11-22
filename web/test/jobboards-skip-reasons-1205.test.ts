@@ -7,17 +7,18 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { progressOf, skipNote } from '../lib/scan/progress.ts'
-import { boardSkipStatus } from '../lib/sources/board-skip.ts'
+import { boardStatusBeforeRun as boardSkipStatus } from '../lib/sources/board-skip.ts'
 
 // the status the runner records for adapter:jobboards when it does not select it comes from one function (runner.ts calls it)
 const RUNNER = readFileSync(new URL('../lib/scan/runner.ts', import.meta.url), 'utf8')
 
 test('#1205 the runner takes the job-board skip status from boardSkipStatus, and records nothing when the person chose job boards', () => {
-  assert.match(RUNNER, /boardSkipStatus\(\{/, 'runner.ts uses the one function')
+  assert.match(RUNNER, /boardStatusBeforeRun\(\{/, 'runner.ts uses the one function')
   assert.doesNotMatch(RUNNER, /ledger\.record\('adapter:jobboards', job\.sources \?/, 'no inline status choice left')
   // council (Sonnet R1): a selection that includes job boards is not "skipped": the board run records its own status
-  assert.equal(boardSkipStatus({ chosen: ['jobboards', 'github'], hiring: true, query: 'B2B SaaS in Austin, TX hiring SDRs', where: [] }), null)
-  assert.equal(boardSkipStatus({ chosen: ['jobboards'], hiring: false, query: 'anything', where: [] }), null)
+  // council (Haiku R7): a chosen board is 'started' before it runs, so a collection that never finishes still leaves a row (written as 'error')
+  assert.equal(boardSkipStatus({ chosen: ['jobboards', 'github'], hiring: true, query: 'B2B SaaS in Austin, TX hiring SDRs', where: [] }), 'started')
+  assert.equal(boardSkipStatus({ chosen: ['jobboards'], hiring: false, query: 'anything', where: [] }), 'started')
   assert.equal(boardSkipStatus({ chosen: ['github'], hiring: true, query: 'B2B SaaS in Austin, TX hiring SDRs', where: [] }), 'skipped_explicit_sources')
   assert.equal(boardSkipStatus({ chosen: [], hiring: true, query: 'q', where: [] }), 'skipped_explicit_sources')
   assert.equal(boardSkipStatus({ chosen: null, hiring: false, query: 'Dental clinics in Toronto', where: [] }), 'skipped_no_hiring_signal')
@@ -31,7 +32,7 @@ test('#1205 every status boardSkipStatus can give has a plain reason', () => {
     boardSkipStatus({ chosen: null, hiring: true, query: 'Fintech founders in Europe hiring sales', where: [] }),
     boardSkipStatus({ chosen: null, hiring: true, query: 'Founders hiring sales', where: [] }),
   ])
-  for (const status of given) {
+  for (const status of [...given].filter(x => x !== 'started')) {
     const note = skipNote(status!)
     assert.ok(note && note.length > 20, `${status}: ${note}`)
     assert.doesNotMatch(note!, /Not used for this search|skipped|_/, `${status}: plain words, not the status`)

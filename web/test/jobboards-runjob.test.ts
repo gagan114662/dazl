@@ -53,3 +53,13 @@ test('source status is never silent: no hiring signal, no place, or explicit sou
   assert.equal((b.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }).status, 'skipped_no_place')
   assert.equal(board().seen.length, 0)
 })
+
+// #1205 council: through the real runJob, a selection the person made: job boards in it -> the board's own status, never a skip; job boards
+// not in it -> 'skipped_explicit_sources' with its reason
+test('explicit sources: job boards chosen are run and record their own status; a selection without them says so', async () => {
+  const chosen = await runFixture({ ...fx(board().http), sources: '{"adapters":["jobboards"]}' })
+  const run = chosen.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }
+  assert.ok(['ok', 'partial'].includes(run.status), `attempted, not skipped: ${run.status}`)
+  const other = await runFixture({ ...fx(board().http), sources: '{"adapters":["github"]}' })
+  assert.equal((other.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }).status, 'skipped_explicit_sources')
+})
