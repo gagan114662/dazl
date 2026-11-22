@@ -298,7 +298,8 @@ function boardPlaceOne(p: { text: string; city: string | null; region: string | 
   const region = p.region ? regionOf(p.region) : null
   if (p.region && !region) return { reason: `skipped_no_place:region:${clean(p.region)}` }   // a region the board source cannot read is never dropped (that would widen)
   const country = p.country ?? (region ? countryOfRegion(region) : p.city ? builtInCountryOf(p.city) : null)
-  if (!country) return { reason: `skipped_no_place:${p.city ? 'city' : 'country'}:${clean(p.text)}` }
+  // a place with no city, region or country is wider than one country ("Europe", "APAC"): a region, as the run has always named it
+  if (!country) return { reason: `skipped_no_place:${p.city ? 'city' : 'region'}:${clean(p.text)}` }
   if (region && countryOfRegion(region) !== country) return { reason: `skipped_no_place:ambiguous:${clean(p.text)}` }
   const city = p.city?.trim() || null
   const key = (r: string, c: string) => `${country}|${r}|${norm(c)}`
