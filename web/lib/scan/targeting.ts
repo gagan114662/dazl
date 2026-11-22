@@ -161,9 +161,16 @@ function findAtoms(q: string): Atom[] {
     const role = cleanRole(m[1])
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length - m[1].length + (role ? m[1].indexOf(role) + role.length : 0), role })
   }
-  for (const m of q.matchAll(/\b(?:posted|posting|advertis\w+|open)\s+(?:a\s+|an\s+|new\s+)?(?:jobs?|roles?|positions?|vacanc(?:y|ies)|openings?)(?:\s+for\s+([^,.;]+))?/gi)) {
+  // #1205: the job word must end the phrase ("posted a job", "a receptionist position in Toronto"); "a position paper" is not a job
+  const JOB_WORD = String.raw`(?:jobs?|roles?|positions?|vacanc(?:y|ies)|openings?)\b(?=\s*(?:$|[,.;:!?)]|(?:for|in|at|on|near|across|within|over|during|this|last|past|since|from|with|that|which|and|or|to|based)\b))`
+  for (const m of q.matchAll(new RegExp(String.raw`\b(?:posted|posting|advertis\w+|open)\s+(?:a\s+|an\s+|new\s+)?${JOB_WORD}(?:\s+for\s+([^,.;]+))?`, 'gi'))) {
     const role = m[1] ? cleanRole(m[1]) : ''
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
+  }
+  // #1205 (Quest live check, prod 383ada0a): the role before the job word, "posted a front desk receptionist job in the past 90 days"
+  for (const m of q.matchAll(new RegExp(String.raw`\b(?:posted|posting|advertis\w+)\s+(?:a\s+|an\s+|new\s+)?([a-z][a-z&/-]*(?:\s+[a-z][a-z&/-]*){0,4}?)\s+${JOB_WORD}`, 'gi'))) {
+    const role = cleanRole(m[1])
+    if (role) add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role })
   }
   // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
   // like any open role: a dated posting or a source naming it). The past tense ("made their first sales hire") is a completed hire: step 1 (#876).
