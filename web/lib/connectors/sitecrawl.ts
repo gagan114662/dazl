@@ -122,6 +122,15 @@ function inflateEitherWay(): Transform {
   })
   return t
 }
+// The site fetch follows a redirect only within the site: https, the same host up to www, or a subdomain of it (af02437c: uare.ai -> www.uare.ai
+// -> app.uare.ai/site). Never to another domain, a look-alike suffix, or up from a subdomain to its parent.
+export function redirectStaysOnSite(from: string, to: string): boolean {
+  let a: URL, b: URL
+  try { a = new URL(from); b = new URL(to) } catch { return false }
+  if (b.protocol !== 'https:') return false
+  const base = a.hostname.toLowerCase().replace(/^www\./, ''), host = b.hostname.toLowerCase().replace(/^www\./, '')
+  return host === base || host.endsWith('.' + base)
+}
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal, noRedirect = false): Promise<GetResult | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
@@ -141,7 +150,7 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
         }
         let next: URL
         try { next = new URL(String(res.headers.location), u) } catch { return resolve(null) }
-        if (next.hostname.replace(/^www\./, '') !== u.hostname.replace(/^www\./, '')) return resolve(null) // stay on the same site
+        if (!redirectStaysOnSite(u.href, next.href)) return resolve(null) // stay on the same site (af02437c: its own subdomains included)
         return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup, signal))
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
@@ -204,8 +213,7 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
         if (typeof value !== 'string' || !value || value !== value.trim()) return false
         try {
           const target = new URL(value)
-          return target.protocol === 'https:' && !target.username && !target.password && !target.port &&
-            target.hostname.replace(/^www\./, '') === u.hostname.replace(/^www\./, '')
+          return !target.username && !target.password && !target.port && redirectStaysOnSite(u.href, target.href)
         } catch { return false }
       }
       if ((hasSource && !validRendererUrl(r.url)) || (hasRedirect && !validRendererUrl(r.redirected_url))) return null
@@ -937,6 +945,8 @@ function linkedBuyerAboutPath(html: string, home: URL): string | null {
 }
 // Search provides discovery URLs, never authority or a person record. Keep
 // these paths out of the runner's separate website-identity candidate list.
+// An app shell or sign-in page is never a company page (Qodo #1553).
+const LOGIN_PATH = /^\/(?:login|log-in|signin|sign-in|signup|sign-up|auth|account|dashboard|sso|oauth)(?:\/|$)/i
 export function buyerSourceCitation(raw: string): URL | null {
   try {
     const u = new URL(raw)
@@ -1241,7 +1251,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     const rob = await polite(`${origin}/robots.txt`, 0)
     if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
     if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
-    const robots: Robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
+    let robots: Robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
     if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
     const home = await polite(`${origin}/`, robots.delayMs)
     if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
@@ -1251,6 +1261,18 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
+    // Qodo #1553: a home that lands on the site's own subdomain (uare.ai -> app.uare.ai/site) is crawled as that host: its own robots.txt
+    // decides every later read, a login/app-shell landing is no company page, and later paths are requested on the landing origin.
+    let crawlOrigin = origin
+    { const land = new URL(home.finalUrl), bare = site.replace(/^www\./, '')
+      if (land.hostname.replace(/^www\./, '') !== bare) {
+        if (LOGIN_PATH.test(land.pathname)) return { found: [], reason: 'site_unreachable', pages: 1 }
+        const rob2 = await polite(`${land.origin}/robots.txt`, 0)
+        if (!rob2 || rob2.status >= 500) return { found: [], reason: rob2 ? 'robots_error' : 'robots_unreachable', pages: 1 }
+        robots = rob2.status >= 400 ? { allows: () => true, delayMs: robots.delayMs } : parseRobots(rob2.body, land.hostname)
+        if (!robots.allows(land.pathname)) return { found: [], reason: 'robots_disallow', pages: 1 }
+        crawlOrigin = land.origin
+      } }
     const found = new Map<string, Found>(); let pages = 1, buyerPages = 0
     const locationPages: LocationPage[] = [subpageLocationFacts(home.finalUrl, home.body)]
     onPage?.(home.body, home.finalUrl, home.status)
@@ -1287,7 +1309,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (p === citedAbout && p !== linkedAbout && linkedBuyerProved) continue
       if (!robots.allows(p)) continue
       const exactBuyerRead = buyerPaths.includes(p)
-      let requested = exactBuyerRead ? new URL(p, homePage).href : origin + p
+      let requested = exactBuyerRead ? new URL(p, homePage).href : crawlOrigin + p
       // Do not spend another ordinary page slot on an exact target we already
       // parsed. A directory-bound bio retains its separate identity checks.
       if (!exactBuyerRead && !name && !expectedValue && requested === parsedLinkedTarget) continue
@@ -1300,7 +1322,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
           [301, 302, 307, 308].includes(r.status) && r.finalUrl === requested) {
         let target: URL | null
         try { target = new URL(r.redirect, requested) } catch { target = null }
-        if (!target || target.origin !== origin || target.href === requested || !buyerSourceCitation(target.href) || !robots.allows(target.pathname)) continue
+        if (!target || target.origin !== crawlOrigin || target.href === requested || !buyerSourceCitation(target.href) || !robots.allows(target.pathname)) continue
         requested = target.href
         followedLinkedRedirect = true
         r = await polite(requested, robots.delayMs, true)
@@ -1316,7 +1338,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       const citedOnly = p === citedAbout && p !== linkedAbout
       if (citedOnly) citedOnlyUrl = r.finalUrl
       onPage?.(r.body, r.finalUrl, r.status)
-      if (!citedOnly && r.finalUrl.length <= 500 && page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
+      if (!citedOnly && r.finalUrl.length <= 500 && (page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '') || page.origin === crawlOrigin)) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
       if (buyerPage) buyerPages++
       // Require the exact directory name, and preserve extractPeople's role/anti-quote rules.
       const people = extractPeople(r.body, r.finalUrl, buyerRoles)
@@ -1756,8 +1778,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (status === 200 && !strictSeen.has(url)) {
             const page = new URL(url)
             if (page.protocol === 'https:' && !page.port && !page.username && !page.password && !page.search && !page.hash &&
-                page.href === url && page.hostname.replace(/^www\./, '') === cand) {
-              strictSeen.set(url, { cards: strictOwnContactCards(html, page.hostname.replace(/^www\./, '')), at })
+                page.href === url && (page.hostname.replace(/^www\./, '') === cand || page.hostname.endsWith(`.${cand}`))) {
+              // Qodo #1553: the crawl reaches an own subdomain only through the site's own redirect (app.uare.ai/site); its cards are the site's
+              strictSeen.set(url, { cards: strictOwnContactCards(html, cand), at })
             }
           }
           return // no reveal, inferred pattern, guessed or alternative display addresses

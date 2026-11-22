@@ -74,13 +74,27 @@ export class SpendGuard {
   }
   // A refused guard stays refused (no usage reported, an unrecorded cost, an overrun), even with room under its cap.
   checkUsd(usd: number): void {
+    if (this.prepaidUsd > 0 && !this.refused && Number.isFinite(usd) && usd >= 0 && usd <= this.prepaidUsd) return   // Qodo #1555: reserveAll checks first; a prepaid call is covered
     if (this.refused || !(this.reservedUsd + usd <= this.limitUsd)) { this.refused = true; throw new SpendRefused(this.label) }
   }
   reserve(model: string | undefined, promptBytes: number, maxOut: number): void {
     this.reserveUsd(this.cost(model, promptBytes, maxOut))
   }
   // A paid step priced in dollars up front (a search-provider call, a research call's worst case).
+  // (4)A, run af02437c: one post-finish call (buyer-fit) is paid from an amount reserved and saved while the run still owned its job. The
+  // call draws on it without a new write (the row is 'done' then, and nothing new may be reserved after finish); a larger call, or a second
+  // one, takes the normal path and is refused there. What the call does not use stays counted: the saved total over-counts, never under.
+  private prepaidUsd = 0
+  private prepaidOpen = false
+  // Qodo #1555: a prepayment that does not fit is refused WITHOUT latching the guard: the run is not cut short (or a trial held) for an
+  // optional call; the buyer-fit gate then fails closed for lack of a reservation.
+  prepay(usd: number): void {
+    if (this.refused || !(Number.isFinite(usd) && usd >= 0 && this.reservedUsd + usd <= this.limitUsd)) throw new SpendRefused(this.label)
+    this.reserveUsd(usd); this.calls--
+    this.prepaidUsd += usd
+  }
   reserveUsd(usd: number): void {
+    if (this.prepaidUsd > 0 && !this.refused && Number.isFinite(usd) && usd >= 0 && usd <= this.prepaidUsd) { this.prepaidUsd = 0; this.prepaidOpen = true; this.calls++; return }
     this.checkUsd(usd)
     const next = this.reservedUsd + usd
     if (this.persist) {
@@ -91,6 +105,7 @@ export class SpendGuard {
   // After a paid call whose real cost is known: move the reservation to it (delta < 0 releases what it did not use). Money
   // already spent is recorded even past the limit; then the guard counts as refused and every later reservation fails.
   settle(deltaUsd: number): void {
+    if (this.prepaidOpen) { this.prepaidOpen = false; if (!(deltaUsd > 0)) return }   // within the prepaid amount: already saved
     if (!Number.isFinite(deltaUsd) || deltaUsd === 0) return
     const next = Math.max(0, this.reservedUsd + deltaUsd)
     if (this.persist) this.persist(next)
@@ -98,7 +113,8 @@ export class SpendGuard {
     if (next > this.limitUsd) this.refused = true
   }
   // A call whose cost is unknown: the rest of the limit counts as spent.
-  exhaust(): void { if (this.reservedUsd < this.limitUsd) this.settle(this.limitUsd - this.reservedUsd); this.refused = true }
+  exhaust(): void { if (this.prepaidOpen) { this.prepaidOpen = false; this.refused = true; return }   // an uncertain prepaid call: nothing more may be reserved after finish
+    if (this.reservedUsd < this.limitUsd) this.settle(this.limitUsd - this.reservedUsd); this.refused = true }
 }
 
 // The owner's workspace pool, held in the shared store (lib/llm/spend-pool.ts): every job, retry, restart and instance of

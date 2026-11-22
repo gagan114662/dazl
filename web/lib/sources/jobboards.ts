@@ -283,6 +283,26 @@ export type BoardPlace = { place: Place } | { reason: string }
 type PlanPlaceIn = { text: string; city: string | null; region: string | null; country: string | null }
 export interface BoardContext { country?: string | null; where?: readonly string[] }
 type Resolved = { place: Place; input: string } | { reason: string }
+// PM ruling 2026-11-22: a request that names no place still reads the job boards - on the ICP's country when one is set, else anywhere.
+// A posting is in the country when a segment of its location is that country, or a region (US state, Canadian province ...) of it. A
+// posting with no readable location is not in it (never assumed).
+export function countryPlace(code: string): Place | null {
+  const c = countryFromField(code)
+  if (!c) return null
+  // Qodo #1556: "Remote, United States or Austin, Texas HQ" and "Virtual - California (Bay Area)" are split on "or" and " - ", and work-mode
+  // / HQ words are dropped; Australian states (no AU in regionOf) are read here: full names, or an abbreviation with its 4-digit postcode.
+  const AU = /^(?:new south wales|victoria|queensland|western australia|south australia|tasmania|northern territory|australian capital territory|(?:nsw|vic|qld|wa|sa|tas|nt|act)\s+\d{4})$/i
+  const segOk = (raw: string) => {
+    const seg = raw.replace(/\b(?:hq|headquarters|remote|virtual|hybrid|on-?site|office|bay area)\b/gi, ' ').replace(/\s+/g, ' ').trim()
+    if (!seg) return false
+    if (c === 'AU' && AU.test(seg)) return true
+    const r = regionOf(seg)
+    return resolveSegment(seg, true) === c || countriesIn(seg).includes(c) || (!!r && countryOfRegion(r) === c)
+  }
+  const inIt = (loc: string) => loc.split(/[,;/|()]+|\s+or\s+|\s+[-–]\s+/i).map(s => s.trim()).filter(Boolean).some(segOk)
+  return { name: c, ok: (...locs) => locs.some(l => typeof l === 'string' && !!l && inIt(l)) }
+}
+export const ANYWHERE: Place = { name: '', ok: () => true }
 export function boardPlaceOf(places: readonly PlanPlaceIn[], ctx: BoardContext = {}): BoardPlace {
   if (places.length === 0) return { reason: 'skipped_no_place' }
   const built = places.map(p => boardPlaceOne(p, ctx))
