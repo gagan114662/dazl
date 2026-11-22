@@ -11,6 +11,8 @@ import { companyKey } from '../../lib/scan/evidence.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as readyGET } from '../../app/api/home/ready/route.ts'
 import { homeReady, READY_LEADS_MAX } from '../../lib/outreach/home-ready.ts'
+import { addEnrichment } from '../../lib/connectors/store.ts'
+import { ownSiteBuyerRows } from './own-site-buyer.ts'
 const READY_SCANS_MAX = 10   // the old scan bound: the whole window is judged now, so more scans than this must all count
 
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
@@ -24,9 +26,14 @@ function seed() {
   const job = (id: string, user: string, query: string, at: number, testOnly = false) => db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, candidates, created_at) VALUES (?, ?, 'x', ?, ?, ?, NULL, 'running', 5, ?)")
     .run(id, user, testOnly ? 'test only' : '(from request)', testOnly ? 'test only' : '-', query, at + t++)
   // confirmed: the user checked the source themselves (a machine-verified lead also needs a full timing proof to be ready)
-  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string; source?: string }) => db.prepare(
+  // #1037: each lead's own site names its buyer (the rows the real crawl stores) unless `buyer: false`, so the buyer rule decides no case here
+  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string; source?: string; buyer?: boolean }) => { db.prepare(
     "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, event_date_proof, fit, created_at, quarantined_at, human_confirmed_at, seen_before, company_domain, source_kind) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'unverified' : null, o.date ? 'page_bound' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0, o.domain ?? null, o.source ?? null)
+    if (o.buyer === false) return
+    const tenant = (db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string }).user_id
+    for (const r of ownSiteBuyerRows(o.domain ?? `${id}.example`)) addEnrichment(db, tenant, id, r)
+  }
   const done = (id: string) => db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
   return { db, job, lead, done }
 }

@@ -5,7 +5,7 @@ import { evidenceStateOf } from './evidence-state.ts'
 import { listQual } from '../run-status.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
 
-export interface ViewLead { id: string; company?: string | null; name?: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; window_held?: boolean; gate_held?: boolean; human_confirmed_from?: string | null }
+export interface ViewLead { id: string; company?: string | null; name?: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason?: string | null; quarantined_at?: number | null; quarantine_reason?: string | null; window_held?: boolean; buyer_unreachable?: boolean; gate_held?: boolean; human_confirmed_from?: string | null }
 export interface ViewMsg { id: string; lead_id: string; to_email: string; subject: string; status: string; sent_at: number | null }
 export type Stage = 'rejected' | 'review' | 'research' | 'unverified' | 'qualified' | 'draft' | 'approved' | 'sending' | 'sent' | 'other'
 export interface LeadStatus { stage: Stage; text: string }

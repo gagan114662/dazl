@@ -3,6 +3,7 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
+import { ownSiteBuyerRows } from '../helpers/own-site-buyer.ts'
 
 const [dbPath, token] = process.argv.slice(2)
 const db = new Database(dbPath)
@@ -22,6 +23,8 @@ const end = (id: string, status = 'done', error: string | null = null) => db.pre
 job('A', 'a'.repeat(24), 'Dental owners in Ohio - opened a new location', 9)
 lead('a'.repeat(24), 'l1', { contact: 'hello@one.example' }); lead('a'.repeat(24), 'l2', { contact: 'hi@two.example' })
 lead('a'.repeat(24), 'l3', { confidence: null, excerpt: null, review: 'quote_unconfirmed' }); lead('a'.repeat(24), 'l4', { quarantined: 1, contact: 'q@x.example' })
+// #1037: l3's own site names its buyer (the rows the real crawl stores), so a review can make it ready - it stays the card's "1 to review"
+for (const [i, r] of ownSiteBuyerRows('three.example').entries()) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, 'l3', 'A', ?, ?, ?, ?, NULL, ?, ?, ?)").run(`l3-buyer-${i}`, r.connector, r.kind, r.value, r.label, r.source_url, r.source_date, r.retrieved_at)
 end('a'.repeat(24))
 msg('A', 'l1', 'draft'); msg('A', 'l2', 'sent')
 db.prepare("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at) VALUES ('g1','A','t1','l2','a@b.example','yes please','positive',1)").run()

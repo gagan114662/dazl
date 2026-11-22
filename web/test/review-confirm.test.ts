@@ -11,6 +11,7 @@ import { confirmLeadReview, unconfirmLeadReview } from '../lib/scan/review-confi
 import { createDraft } from '../lib/outreach/service.ts'
 import { REVIEWABLE, RESEARCH_REASONS, heldState } from '../lib/lead-state.ts'
 import { reviewAction } from '../lib/scan/review-action.ts'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 // Human confirmation of needs-review leads: the machine verdict never changes, the
 // original reason is preserved, confirmation is reversible, tenant-scoped, and it makes
@@ -140,9 +141,12 @@ test('#352: for every hold reason, Home, the Leads card and the draft gate agree
   for (const reason of [...REVIEWABLE, ...RESEARCH_REASONS]) {
     const dated = { review_reason: reason, event_date: '2026-10-20', window_held: reason === 'outside_window' || reason === 'outside_window_undated' }
     const card = reviewAction(dated, new Date('2026-11-03T12:00:00Z')).label !== 'Keep as research'
-    const home = heldState({ id: 'x', company: 'C', signal: 's', source_url: 'https://a.example', evidence_excerpt: 'e', date_status: 'verified', fit: 4, intent: 4, why: '', icp_match: null, company_domain: null, contact: null, quarantined_at: null, confidence: null, human_confirmed_at: null, currentness_held: false, enrichments: [], ...dated } as never)?.state === 'review'
+    // #1037: the lead names its buyer on its own site (as a ready lead must), so the reason alone decides; without one Home never calls it review
+    const home = heldState({ id: 'x', company: 'C', signal: 's', source_url: 'https://a.example', evidence_excerpt: 'e', date_status: 'verified', fit: 4, intent: 4, why: '', icp_match: null, company_domain: null, contact: null, quarantined_at: null, confidence: null, human_confirmed_at: null, currentness_held: false, enrichments: ownSiteBuyerRows('a.example'), ...dated } as never)?.state === 'review'
+    const homeNoBuyer = heldState({ id: 'x', company: 'C', signal: 's', source_url: 'https://a.example', evidence_excerpt: 'e', date_status: 'verified', fit: 4, intent: 4, why: '', icp_match: null, company_domain: null, contact: null, quarantined_at: null, confidence: null, human_confirmed_at: null, currentness_held: false, enrichments: [], ...dated } as never)?.state === 'review'
     const server = (await outcome(reason)) === 'drafted'
     assert.equal(card, REVIEWABLE.has(reason), `${reason}: reviewable reasons, and only they, get a draftable confirm`)
     assert.ok(card === home && home === server, `${reason}: card=${card} home=${home} server=${server}`)
+    assert.equal(homeNoBuyer, false, `${reason}: no buyer the company site names - no review can make it ready (#1037)`)
   }
 })

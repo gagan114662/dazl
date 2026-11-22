@@ -25,7 +25,7 @@ const JOB: Row[] = [
   ['L-surveyhive', 'Surveyhive', null, 30],
 ]
 
-test('#1037 held leads: a lead held for review gets a people search too, and its row names the person (Pagewake: Marta Solberg, Regional Sales Director)', async () => {
+test('#1037 held leads: a lead held for review gets a people search too; its results are stored for the details and never name the row (only the company\'s own site names the buyer)', async () => {
   const { db, job } = setup(JOB); const s = stub(); const stats = newPeopleStats()
   const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, stats })
   assert.equal(n, 4, 'Ewan C. Tomas (ready Surveyhive) + Marta Solberg, Anya Braun (held Pagewake) + Anders Smed (held Meshgate)')
@@ -34,10 +34,11 @@ test('#1037 held leads: a lead held for review gets a people search too, and its
     ['Pagewake', 'quote_unconfirmed', 'Anya Braun, Strategic Partner Sales Manager', 'https://www.linkedin.com/in/anya-braun-test'],
     ['Meshgate', 'blocked_by_site', 'Anders Smed, VP of Sales Development & PG', 'https://www.linkedin.com/in/anders-smed-test'],
   ])
-  // The row rule (the same one the Leads page renders with) now names the held lead's person, LinkedIn link included.
-  const row = (id: string) => leadPerson(db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('person','contact') ORDER BY insert_seq").all(id), WHO.join('; '))
-  assert.deepEqual(row('L-pagewake'), { name: 'Marta Solberg', title: 'Regional Sales Director', linkedin: 'https://www.linkedin.com/in/marta-solberg-test', source: null, via: 'a public LinkedIn search result (not verified as current)', current: false })
-  assert.equal(row('L-meshgate')?.name, 'Anders Smed'); assert.equal(row('L-meshgate')?.linkedin, 'https://www.linkedin.com/in/anders-smed-test')
+  // The row rule (the same one the Leads page renders with): a public profile search result is not the company naming its buyer (#1037),
+  // so none of these rows names a person, LinkedIn link or not.
+  const row = (id: string) => leadPerson(db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? ORDER BY insert_seq").all(id), WHO.join('; '))
+  assert.equal(row('L-pagewake'), null, 'Marta Solberg was found by search, not on Pagewake\'s own site')
+  assert.equal(row('L-meshgate'), null, 'Anders Smed was found by search, not on Meshgate\'s own site')
   assert.equal(row('L-corvane'), null, 'searched, nobody found: the row reads "No buyer named yet"')
   // A person on a held row never releases the hold.
   assert.equal((db.prepare("SELECT review_reason FROM leads WHERE id = 'L-pagewake'").get() as { review_reason: string }).review_reason, 'quote_unconfirmed')

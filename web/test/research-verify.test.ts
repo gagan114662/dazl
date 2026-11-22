@@ -100,6 +100,10 @@ test('the proof of a READY verdict makes a stored lead Ready by the same rule Ho
   const J = 'r'.repeat(24)
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, status, candidates, created_at) VALUES (?, 'A', 'x', '(from request)', '-', 'Law firms in Chicago, Illinois that opened or expanded an office', NULL, 'running', 1, ?)").run(J, Math.floor(NOW / 1000) - 3600)
   db.prepare("INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, fit, created_at) VALUES ('L1', ?, ?, ?, ?, 80, ?, 4, ?)").run(J, r.company, 'moved to a larger Chicago office', r.source_url, r.trigger_quote, Math.floor(NOW / 1000) - 600)
+  // #1037: the firm's own site names its buyer with title and LinkedIn (the rows the real crawl stores); what this test varies is the research proof
+  const { ownSiteBuyerRows } = await import('./helpers/own-site-buyer.ts')
+  const { addEnrichment } = await import('../lib/connectors/store.ts')
+  for (const row of ownSiteBuyerRows(new URL(r.person_url!).hostname.replace(/^www\./, ''))) addEnrichment(db, 'A', 'L1', row)
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(J)
   const home = () => measureCase(db, 'A', J, { expect: { location_keywords: ['chicago'], category_keywords: ['law'] } }, new Date(NOW))
   assert.equal(home().ready, 0, 'stored but not proven: held'); assert.deepEqual(home().held, { 'event timing unknown': 1 })
@@ -117,14 +121,14 @@ test('the proof of a READY verdict makes a stored lead Ready by the same rule Ho
   const m = home(); assert.equal(m.ready, 1, JSON.stringify(m.held)); assert.equal(m.named_pct, 100); assert.equal(m.dated_pct, 100)
   const stored = db.prepare("SELECT event_date, event_date_proof FROM leads WHERE id = 'L1'").get() as { event_date: string; event_date_proof: string }
   assert.deepEqual({ ...stored }, { event_date: '2026-10-02', event_date_proof: 'page_bound' })
-  const shown = db.prepare("SELECT kind, value, label, source_url FROM lead_enrichments WHERE lead_id = 'L1' AND kind <> 'timing_proof'").all()
+  const shown = db.prepare("SELECT kind, value, label, source_url FROM lead_enrichments WHERE lead_id = 'L1' AND kind <> 'timing_proof' AND connector <> 'sitecrawl'").all()   // the proof's own rows
   assert.deepEqual(shown, [{ kind: 'person', value: 'Alan G. Brackett', label: 'Managing Member', source_url: r.person_url }], 'the card shows the person with the page that names them; the binding record is internal')
   // drift: the stored quote changes, the day changes, the person row goes, the window passes, a review reason appears -> held again
   const again = (sql: string, gap: string, undo: string) => { db.prepare(sql).run(); assert.equal(researchProofGap(db, 'A', 'L1', new Date(NOW)), gap, sql); assert.equal(home().ready, 0, sql); db.prepare(undo).run() }
   again("UPDATE leads SET evidence_excerpt = evidence_excerpt || ' (edited)' WHERE id = 'L1'", 'binding_changed', `UPDATE leads SET evidence_excerpt = '${r.trigger_quote.replace(/'/g, "''")}' WHERE id = 'L1'`)
   again("UPDATE leads SET event_date = '2026-10-05' WHERE id = 'L1'", 'binding_changed', "UPDATE leads SET event_date = '2026-10-02' WHERE id = 'L1'")
   again("UPDATE leads SET review_reason = 'quote_unconfirmed' WHERE id = 'L1'", 'needs_review', "UPDATE leads SET review_reason = NULL WHERE id = 'L1'")
-  db.prepare("DELETE FROM lead_enrichments WHERE lead_id = 'L1' AND kind = 'person'").run()
+  db.prepare("DELETE FROM lead_enrichments WHERE lead_id = 'L1' AND kind = 'person' AND connector <> 'sitecrawl'").run()   // the proof's person row goes
   assert.equal(researchProofGap(db, 'A', 'L1', new Date(NOW)), 'person_missing'); assert.equal(home().ready, 0)
   assert.equal(writeResearchProof(db, 'A', 'L1', v, ev, person, new Date(NOW)), true)
   assert.equal(researchProofGap(db, 'A', 'L1', new Date(Date.parse('2027-01-15T12:00:00Z'))), 'out_of_window')

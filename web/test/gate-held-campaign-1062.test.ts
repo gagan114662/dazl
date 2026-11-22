@@ -2,6 +2,7 @@
 // DEFAULT-DENY branch, where the row reads machine-verified with no review_reason - showed as "Source-checked, not drafted" on its campaign page
 // and was counted as source-checked in the page's run label, while the draft guard refused it. The page now reads the guard's own verdict on the
 // Db layer (requiredGateHeldForJob), on SQLite and Postgres, and says research only.
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 import { test } from 'node:test'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -53,6 +54,8 @@ async function seed(db: Db) {
   await lead(db, 'js', 'report'); await gateMark(db, 'A', 'report', 'gate_passed')  // held only by the run report below
   await lead(db, 'js', 'from', { machine: false, confirmedFrom: 'sales_hiring_check_failed' })  // confirmed OUT of the failed check
   await lead(db, 'js', 'review', { machine: false, review: 'quote_unconfirmed' })     // ordinary review: not a gate hold
+  // #1037: its company site names its buyer (the rows the real crawl stores), so a review can make it ready - the control stays a control
+  for (const [i, r] of ownSiteBuyerRows('coreview.example').entries()) await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, 'review', 'A', ?, ?, ?, ?, NULL, ?, ?, ?)", [`review-buyer-${i}`, r.connector, r.kind, r.value, r.label, r.source_url, r.source_date, r.retrieved_at])
   await lead(db, 'js', 'reviewheld', { machine: false, review: 'quote_unconfirmed' }); await gateMark(db, 'A', 'reviewheld', 'gate_failed')  // reviewable reason, but the gate failed
   await lead(db, 'js', 'oldreport'); await gateMark(db, 'A', 'oldreport', 'gate_passed')  // held only by an OLDER run attempt: not held
   await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', ['js', JSON.stringify({ held_lead_ids: ['oldreport'] })])
@@ -180,7 +183,7 @@ test('#1062 route seam: GET /api/leads carries gate_held and Home / Leads count 
 })
 
 test('#1062 Home / onboarding: a lead that is otherwise READY (verified source, verified date, a fit) but gate-held is research, never an opportunity', () => {
-  const ready = (o: Partial<PreviewLead> = {}): PreviewLead => ({ id: 'r', company: 'Co r', signal: 's', source_url: 'https://n.example/a', evidence_excerpt: 'q', event_date: new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10), date_status: 'unverified', day_verified: true, review_reason: null, fit: 4, intent: 4, why: 'w', icp_match: null, company_domain: 'r.example', contact: 'a@r.example', quarantined_at: null, confidence: 90, human_confirmed_at: null, ...o } as PreviewLead)
+  const ready = (o: Partial<PreviewLead> = {}): PreviewLead => ({ id: 'r', company: 'Co r', signal: 's', source_url: 'https://n.example/a', evidence_excerpt: 'q', event_date: new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10), date_status: 'unverified', day_verified: true, review_reason: null, fit: 4, intent: 4, why: 'w', icp_match: null, company_domain: 'r.example', contact: 'a@r.example', quarantined_at: null, confidence: 90, human_confirmed_at: null, enrichments: ownSiteBuyerRows('r.example'), ...o } as PreviewLead)   // #1037: names its buyer on its own site
   assert.equal(heldReason(ready()), null, 'control: without the gate the lead is ready')
   assert.deepEqual(previewSplit([ready()]).opportunities.map(l => l.id), ['r'], 'control: an opportunity')
   assert.equal(heldReason(ready({ gate_held: true })), 'a required check has not passed')
