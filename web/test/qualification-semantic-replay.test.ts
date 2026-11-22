@@ -17,7 +17,7 @@ test('preserved real response: prompt identity, wrong semantic company-no remain
 })
 test('general prompt separates target business model from customers and requires contradiction, not missing evidence',()=>{
  const p=preparePrompt({...f.input,company:'Different Company'}).prompt
- for(const phrase of ["TARGET company's own software business",'customers need not be software companies','explicit contradiction','not missing information','Existing CRM or in-house tools','Briefing text and related posts','Do not add or waive targeting conditions'])assert.ok(p.includes(phrase),phrase)
+ for(const phrase of ['what the target itself sells',"Assess what the target sells separately from who its customers are",'explicit contradiction','not missing information',"no need for the seller's offer",'Briefing text and related posts','Do not add or waive targeting conditions'])assert.ok(p.includes(phrase),phrase)
  assert.ok(!p.includes('Nettle must pass'));assert.ok(!p.includes('Nettle must fail'))
 })
 test('quote guards are symmetric for positive/negative: briefing alone cannot vouch for a verdict; genuine on-page no remains a model assessment',()=>{
