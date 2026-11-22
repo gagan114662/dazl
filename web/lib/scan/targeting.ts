@@ -120,6 +120,8 @@ const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
 const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
 const cleanRole = (s: string) => s.trimStart().split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for|either|any|some|other)\s+)+/i, '').trim()
+  // Qodo #1509 M6: a trailing "hire" noun ("a new VP of Sales hire") is the event, not part of the title the evidence must name.
+  .replace(/\s+(?:hires?|appointments?|appointees?)$/i, '').trim()
 // #1122: one open-role clause can name several roles ("hiring an SDR/BDR or sales rep"). Every one is kept, separated by "/" (the separator a
 // role's alternatives already use, "Head of Sales/VP Sales"), and each is judged on its own (roleAlternatives). A further role is read after
 // "or", "/" or a comma in a list of titles ("SDRs, AEs, or sales reps"; a bare "SDRs, AEs" is an OR of roles too, the #1509 comma rule), while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or

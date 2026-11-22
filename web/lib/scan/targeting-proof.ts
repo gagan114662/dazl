@@ -161,12 +161,19 @@ const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a
 const roleAlts = (role: string) => role.split('/').map(roleWords).filter(w => w.length)
 const titleNamesRole = (title: string, role: string) => { const t = new Set(roleWords(title)); return roleAlts(role).some(a => a.every(w => t.has(w))) }
 const NOT_DATED = /posting date was not read|^unconfirmed:/i
+// The title of ONE posting record ("Head of Sales - posted 2026-11-02" -> "Head of Sales"); null for a row listing several titles or a count.
+const singlePostingTitle = (v: string): string | null => { const t = v.split(/\s+-\s+posted\b/i)[0].trim(); return !t || /[;|\n]|\b\d+\s+(?:open\s+)?(?:roles|positions|jobs|openings)\b|\band\s+\d+\s+more\b/i.test(t) ? null : t }
 function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof[] {
   if (c.kind === 'hire_made' && c.new_role) {
     // "a new Head of Sales": a dated source saying the person joined, or a dated posting whose title IS that role. Each says which it is.
     const now = ctx.now ?? Date.now(), role = c.role ?? ''
-    const joined = ownProof(c, lead, rows, ctx)
-    const posts: Proof[] = rows.filter(r => (r.kind === 'hiring-role' || r.kind === 'hiring') && isDate(r.source_date) && typeof r.source_url === 'string' && !NOT_DATED.test(`${r.value} ${r.label ?? ''}`) && titleNamesRole(`${r.value} ${r.label ?? ''}`, role) && onClock(r.source_date, clockOf(c), now) === 'in')
+    // Qodo #1509 H3: on a clock, a joined quote counts only when its day is bound to it on its own source (page_bound); a bare date string or a board's day never dates a hire.
+    const joined = clockOf(c) !== null && lead.event_date_proof !== 'page_bound'
+      ? { truth: 'unknown' as const, reason: `no source-bound date shows when the new ${role || 'role'} joined` }
+      : ownProof(c, lead, rows, ctx)
+    // Qodo #1509 H1: one individually dated posting record whose OWN title is the role. An aggregate row (a board listing, several titles, a label
+    // carrying other titles) never proves it: its date may belong to another posting.
+    const posts: Proof[] = rows.filter(r => (r.kind === 'hiring-role' || r.kind === 'hiring') && isDate(r.source_date) && typeof r.source_url === 'string' && typeof r.value === 'string' && !NOT_DATED.test(`${r.value} ${r.label ?? ''}`) && !/board listing audit/i.test(r.label ?? '') && singlePostingTitle(r.value) !== null && titleNamesRole(singlePostingTitle(r.value)!, role) && onClock(r.source_date, clockOf(c), now) === 'in')
       .sort(postingOrder).map(r => ({ truth: 'pass', reason: `hiring a ${role}, posted ${r.source_date} (${r.value})`.slice(0, 300), source_url: r.source_url, date: r.source_date }))
     // The lead's own cited posting, dated by its board (ats_structured), whose title is the role.
     if (lead.event_date_proof === 'ats_structured' && titleNamesRole(`${lead.signal ?? ''} ${lead.evidence_excerpt ?? ''}`, role) && onClock(lead.event_date, clockOf(c), now) === 'in')

@@ -418,7 +418,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
     const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
     // #533 / #1205 live: a hiring candidate cited to an aggregate page (market report, search listing) or to another role's posting is never a lead
-    if (hiringCand) { const hv = hiringPostingVerdict(cIn, hireRoles); if (!hv.ok) { toReview(cIn, hv.reason); continue } }
+    if (hiringCand) { const hv = hiringPostingVerdict(cIn, hireRoles, page && !isFail(page) ? { boardTitle: page.board?.title ?? null, pageTitle: page.title ?? null } : undefined); if (!hv.ok) { toReview(cIn, hv.reason); continue } }
     const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
     if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
       // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
@@ -1349,6 +1349,14 @@ function holdTrialBudget(db: Database.Database, job: Job): void {
 
 // Production trace capture (lib/evals/capture.ts) is OFF unless DAZL_TRACE_CAPTURE=1: then this attempt is recorded and,
 // once it ends, its redacted trace is stored. Off, the run is exactly runJobUntraced.
+// Qodo High on #1511 (+ #1521 follow-up): enough raw candidates stops further company-first passes, except that an OR request's only
+// funding-announcement pass is always reached: board passes after the target are skipped, the funding pass runs. Board hits are
+// unverified, so stopping first would mean no funding prospect is ever searched for. Spend, deadline and cap stops still apply.
+export function companyFirstTargetStep(distinct: number, target: number, isFundingPass: boolean, fundingPassAhead: boolean): 'run' | 'skip' | 'stop' {
+  if (distinct < target || isFundingPass) return 'run'
+  return fundingPassAhead ? 'skip' : 'stop'
+}
+
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const capture = beginScanTrace(job, deps)
   if (!capture) return runJobUntraced(db, job, deps)
@@ -1715,7 +1723,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // Runs 9697d013 / b9a34d2d: an OR request with a funding branch searched boards only, so every funding claim came from a job posting's
       // "we raised..." line, undated and held. Its funding branch takes the third pass: a dated announcement on the company's own newsroom /
       // press / blog page (or a dated news article about it), cited as the source - never a job posting. Same call count.
-      const fundingOr = companyFirst && reviewedOffer && hiringAsked && salesGateOr(job.query, JSON.stringify(icpForSources ?? {}))?.event.kind === 'funding'
+      const fundingOr = companyFirst && reviewedOffer && hiringAsked && (() => { const o = salesGateOr(job.query, JSON.stringify(icpForSources ?? {})); return !!o && (o.events ?? [o.event]).some(e => e.kind === 'funding') })()   // Qodo #1522: any funding branch, not only the first
       const CF_FUNDING_ANGLE = 'Search for the requested funding: a dated announcement of the round on the company\'s own newsroom, press or blog page (or a dated news article about that round). Cite that announcement page as source_url with its published date as event_date; never cite a job posting, careers page or list for funding.'
       const CF_FUNDING_RETURN = 'Return up to 15 companies as JSON inside <json></json>: a list of objects with keys company, website (the company\'s own official domain), source_url (the funding announcement page), event_date (YYYY-MM-DD published date, or null if the page shows none), why (one sentence).'
       const angles = fundingOr ? [CF_HIRING_ANGLES[1], CF_HIRING_ANGLES[2], CF_FUNDING_ANGLE]
@@ -1739,7 +1747,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           (phaseDeadline && phaseDeadline.at - phaseDeadline.now() < 45_000)) break
         // Keep searching while too few candidates survive the supplied-account drop; each one found still goes to the verifier.
         const kept = leads?.length ? (cohort ? dropKnown(cohort, leads).kept : leads) : []
-        if (new Set(kept.map(dedupKey)).size >= COMPANY_FIRST_TARGET_CANDIDATES) break
+        const step = companyFirstTargetStep(new Set(kept.map(dedupKey)).size, COMPANY_FIRST_TARGET_CANDIDATES, !!fundingOr && angle === CF_FUNDING_ANGLE,
+          !!fundingOr && angles.slice(angleIndex, CLAUDE_COMPANY_FIRST_MAX_CALLS).includes(CF_FUNDING_ANGLE))
+        if (step === 'stop') break
+        if (step === 'skip') continue
       }
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days

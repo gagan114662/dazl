@@ -192,8 +192,10 @@ test('(4) malformed plans fall back to AND in all three steps', () => {
     assert.equal(corroborationTargets({ query: OR_B, icp }, [boardLead], others).some(x => x.branch !== undefined), gateOr, icp.slice(0, 30))
     assert.equal(compoundHalves(OR_B, icp)?.or === true, gateOr && compoundHalves(OR_B, icp) !== null, icp.slice(0, 30))
   }
-  // A third branch, a negated branch or a non-sales role: not the two-branch OR, so AND.
-  for (const q of ['London B2B SaaS startups that raised seed funding or made their first sales hire or opened an office in the last 90 days', 'London B2B SaaS startups that raised seed funding or made their first engineering hire in the last 90 days']) {
+  // A non-sales role: not the sales OR, so AND. (Qodo #1509 M8: "seed funding or first sales hire or opened an office" is one OR of three
+  // alternatives, "any one of them" (#1122); each event branch is proven on its own clock at the gate: test/qodo-1509-m678.test.ts.)
+  assert.ok(salesGateOr('London B2B SaaS startups that raised seed funding or made their first sales hire or opened an office in the last 90 days', icpB)?.events?.length === 2)
+  for (const q of ['London B2B SaaS startups that raised seed funding or made their first engineering hire in the last 90 days']) {
     assert.equal(compoundHalves(q, ICP_B)?.or, undefined, q); assert.ok(corroborationTargets({ query: q, icp: icpB }, [boardLead], others).every(x => x.branch === undefined), q)
   }
   for (const q of [null, undefined, '']) assert.deepEqual(corroborationTargets({ query: q, icp: icpB }, [boardLead], others), corroborationTargets({ query: q, icp: icpB }, [boardLead]))

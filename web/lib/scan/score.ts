@@ -130,6 +130,15 @@ const clamp5 = (n: number) => Math.max(0, Math.min(5, Math.round(n)))
 
 // Tolerant parser: models rarely keep the exact pipe format. Split on LEAD <n> markers and read
 // each axis wherever it appears in that lead's chunk (colon, pipe or comma separated).
+const NOTE_UNKNOWN = /\b(?:unknown|not\s+(?:stated|shown|given|specified|known|clear|mentioned|provided|available|listed|disclosed|found)|unclear|unstated|unspecified|no\s+(?:size|headcount|data|info\w*)|not\s+in\s+(?:the\s+)?evidence)\b/i
+const CRITERIA = ['role', 'industry', 'size', 'location'] as const
+const CRITERION_WORDS: Record<typeof CRITERIA[number], RegExp> = {
+  role: /\b(?:role|title|founder|ceo|cto|head|vp|director|contact|buyer|position|seniority)\b/i,
+  industry: /\b(?:industry|sector|vertical|niche)\b/i,
+  size: /\b(?:size|headcount|employees?|staff|team|revenue|large|small)\b/i,
+  location: /\b(?:location|country|city|region|based|hq|headquarter\w*|geo\w*)\b/i,
+}
+const MISSES_ONE = (m: IcpMatch) => (['role', 'industry', 'size', 'location'] as const).filter(k => m[k] === 'mismatch').length === 1
 export function parseScores(text: string, count: number): LeadScore[] | null {
   const out: (LeadScore | null)[] = Array.from({ length: count }, () => null)
   const chunks = text.split(/(?=LEAD\s+\d+)/i)
@@ -153,6 +162,33 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
     const match: IcpMatch = mm
       ? { role: letter(mm[1][0]), industry: letter(mm[1][1]), size: letter(mm[1][2]), location: letter(mm[1][3]), note }
       : { ...UNKNOWN_MATCH }
+    // Run 679a7354: an "n" whose own note says the criterion is unknown / not stated is the model contradicting itself; it is unknown, never a
+    // mismatch. A note that states a different value ("5,000+ employees") keeps the mismatch.
+    // Qodo #1516: each unknown cue is read per clause and bound to the criterion that clause names; an unknown cue about another criterion
+    // ("founder not stated") never erases a stated mismatch ("12000 staff"), and a clause stating a number keeps its mismatch.
+    if (note && NOTE_UNKNOWN.test(note)) {
+      const parts = note.split(/[;|]|,(?!\d{3})|\s+but\s+/i).map(c => c.trim()).filter(Boolean)
+      // Qodo #1519: a comma list of bare criterion names ("headcount, revenue not stated") shares the cue that ends it. A part with no cue,
+      // no number and only a few words is a list item: joined to the next part, so the trailing cue binds to every name in the list.
+      const bareCriterion = (c: string) => !NOTE_UNKNOWN.test(c) && !/[\d:]/.test(c) && c.split(/\s+/).length <= 3
+        && c.split(/\s+/).every(w => /^(?:and|or|the|its|company|employee|count|annual)$/i.test(w) || CRITERIA.some(k => new RegExp(`^${CRITERION_WORDS[k].source}$`, 'i').test(w)))
+        && !/^(?:large|small|based|team)$/i.test(c.trim())
+      const clauses: string[] = []
+      for (let i = 0; i < parts.length; i++) {
+        let c = parts[i]
+        // Qodo on #1519: only a BARE criterion name joins ("headcount", "employee count"); a part stating a verdict or a value ("wrong role: CFO",
+        // "role mismatch", "outside region", "too large") stays its own clause, so its mismatch is never read as unknown.
+        while (i + 1 < parts.length && bareCriterion(c)) c = `${c} ${parts[++i]}`
+        clauses.push(c)
+      }
+      const names = (c: string) => CRITERIA.filter(k => CRITERION_WORDS[k].test(c))
+      const unknownClause = (c: string) => NOTE_UNKNOWN.test(c) && !/\d/.test(c)
+      for (const k of CRITERIA) {
+        if (match[k] !== 'mismatch') continue
+        const own = clauses.filter(c => names(c).includes(k))
+        if (own.length ? own.every(unknownClause) : MISSES_ONE(match) && clauses.every(c => unknownClause(c) && names(c).length === 0)) match[k] = 'unknown'
+      }
+    }
     out[idx] = { fit, intent, action, signals, why: why.slice(0, WHY_MAX), match }
   }
   // All-or-nothing: a partially parsed batch would rank unscored leads unfairly.
