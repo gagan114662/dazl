@@ -5,7 +5,11 @@ import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import { onCompanyPeopleResult } from '../lib/linkedin-tasks/buyers.ts'
 import { enqueueLanePeople, MAX_COMPANY_READS_PER_SCAN } from '../lib/linkedin-tasks/lane-people.ts'
-import { completeTask, createExtensionToken, nextTask } from '../lib/linkedin-tasks/store.ts'
+import {completeTask, nextTask } from '../lib/linkedin-tasks/store.ts'
+import { pairLinkedIn } from './helpers/li-pair.ts'
+import { createExtensionToken } from '../lib/linkedin-tasks/store.ts'
+import { disconnect } from '../lib/advanced/linkedin-connect.ts'
+import { removeConsent, writeConsent } from '../lib/advanced/index.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import type { Db } from '../lib/db/client.ts'
 
@@ -30,7 +34,7 @@ bothEngines('a workspace that has not connected LinkedIn queues nothing and read
 
 bothEngines('connected: the one company page the homepage links is queued, read, and the named person gets their profile', async ({ db }) => {
   await seed(db)
-  await createExtensionToken(db, 'A', 'u1', 'America/Toronto', TEN_AM)
+  await pairLinkedIn(db, 'A', 'u1', 'America/Toronto', TEN_AM)
   assert.equal(await enqueueLanePeople(db, 'A', 'j1', leads, home, TEN_AM), 1)
   assert.deepEqual(await queued(db), ['https://www.linkedin.com/company/acme-inc/people/'])
   await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('e1', 'l1', 'A', 'discover', 'person', 'Dana Ruiz, Chief Executive', 'named on a public page', NULL, 'https://acme.example/team', '2026-11-22', ?)", [TEN_AM])
@@ -44,4 +48,31 @@ bothEngines('connected: the one company page the homepage links is queued, read,
   assert.deepEqual(rows.find(r => r.kind === 'linkedin'), { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/dana-ruiz/', source_url: 'https://www.linkedin.com/in/dana-ruiz/' })
   assert.equal(leadPerson(rows, '')?.linkedin, 'https://www.linkedin.com/in/dana-ruiz/')
   assert.equal(await onCompanyPeopleResult(db, 'A', id), 'already_named')
+})
+
+// Review of #1574: admission must follow the REAL connected state (the device row pairing writes and Disconnect removes, plus the
+// accepted notice), in this workspace only. The old token table alone connects nothing.
+bothEngines('pair -> queues; disconnect -> nothing; re-pair -> queues again; notice withdrawn -> nothing; another workspace -> nothing', async ({ db }) => {
+  await seed(db)
+  const one = [{ id: 'l1', domain: 'acme.example', hasProfile: false }]
+  let reads = 0
+  const read = async (u: string) => { reads++; return home(u) }
+  await createExtensionToken(db, 'A', 'u1', 'America/Toronto', TEN_AM)
+  assert.equal(await enqueueLanePeople(db, 'A', 'j1', one, read, TEN_AM), 0, 'a row in the old token table is not a connected browser')
+  assert.equal(reads, 0)
+  await pairLinkedIn(db, 'A', 'u1', 'America/Toronto', TEN_AM)
+  assert.equal(await enqueueLanePeople(db, 'B', 'j1', one, read, TEN_AM), 0, 'pairing workspace A connects nothing for workspace B')
+  assert.equal(await enqueueLanePeople(db, 'A', 'j1', one, read, TEN_AM), 1)
+  assert.deepEqual(await queued(db), ['https://www.linkedin.com/company/acme-inc/people/'])
+  assert.equal(await disconnect(db, 'A'), true)
+  await db.run("DELETE FROM li_tasks WHERE tenant_id = 'A'")   // so the weekly same-page dedupe is not what refuses the next ask
+  assert.equal(await enqueueLanePeople(db, 'A', 'j1', one, read, TEN_AM + 60), 0, 'disconnected')
+  await pairLinkedIn(db, 'A', 'u1', 'America/Toronto', TEN_AM + 120)
+  assert.equal(await enqueueLanePeople(db, 'A', 'j1', one, read, TEN_AM + 120), 1, 're-paired')
+  assert.equal(await removeConsent(db, 'A', 'linkedin'), true)
+  await db.run("DELETE FROM li_tasks WHERE tenant_id = 'A'")
+  assert.equal(await enqueueLanePeople(db, 'A', 'j1', one, read, TEN_AM + 180), 0, 'the notice withdrawn: a paired device alone queues nothing')
+  await writeConsent(db, 'A', 'linkedin')
+  assert.equal(await enqueueLanePeople(db, 'A', 'j1', one, read, TEN_AM + 180), 1)
+  assert.equal((await db.all("SELECT 1 FROM li_tasks WHERE tenant_id = 'B'")).length, 0)
 })
