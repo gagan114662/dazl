@@ -11,7 +11,7 @@
 //                            scrub leaves unchanged and that has no run of 4+ digits
 // Never read: request bodies, headers, cookies, query strings. The scrub (emails, keys, tokens, IPs, phone numbers,
 // DB URLs, URL queries) is a backstop for free text, not a licence: callers pass the error and the tenant id only.
-import { alertRequest } from './alert-destination.ts'
+import { alertDestinationProblem, alertRequest } from './alert-destination.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { appCodeFile, bundleFile } from './emitted.ts'
 
@@ -202,11 +202,18 @@ export function outboundRecord(r: ErrorRecord, d: Deployment) {
 }
 
 // Alert hooks. Both are throttled the same way: one alert per fingerprint per window and a global cap per window, so an
-// error loop cannot flood them. Fire and forget, with a timeout; a failing hook is dropped silently (it must not log
-// through captureError and loop). Each sends the scrubbed record only, never anything the record does not hold.
+// error loop cannot flood them. Fire and forget, with a timeout. A send the destination refuses (not 2xx) or that cannot
+// reach it is said in one plain stderr line (alertNote: never through captureError, which would loop; never the URL, token
+// or DSN, only the HTTP status or "timeout" / "network"), at most once per throttled send (#1088). Each sends the scrubbed
+// record only, never anything the record does not hold.
+type AlertSinkName = 'alert' | 'sentry'
+export function alertNote(fields: { type: 'alert_destination'; sink: AlertSinkName; problem: string } | { type: 'alert_delivery'; sink: AlertSinkName; status?: number; reason?: 'timeout' | 'network' }): void {
+  try { process.stderr.write(JSON.stringify({ level: 'warn', ts: new Date().toISOString(), ok: false, ...fields }) + '\n') } catch { /* logging never breaks the caller */ }
+}
+const failureReason = (e: unknown): 'timeout' | 'network' => (e instanceof Error || (typeof e === 'object' && e !== null)) && ['TimeoutError', 'AbortError'].includes((e as { name?: string }).name ?? '') ? 'timeout' : 'network'
 export interface AlertOptions { url?: string; fetchImpl?: typeof fetch; windowMs?: number; maxPerWindow?: number; timeoutMs?: number; clock?: () => number; deployment?: Deployment }
 
-function throttled(o: AlertOptions, send: (r: ErrorRecord, f: typeof fetch, signal: AbortSignal) => Promise<unknown>): ErrorSink {
+function throttled(o: AlertOptions, sink: AlertSinkName, send: (r: ErrorRecord, f: typeof fetch, signal: AbortSignal) => Promise<unknown>): ErrorSink {
   const windowMs = o.windowMs ?? 10 * 60_000, max = o.maxPerWindow ?? 20, clock = o.clock ?? Date.now
   const lastSent = new Map<string, number>()
   let windowStart = 0, sentInWindow = 0
@@ -220,7 +227,9 @@ function throttled(o: AlertOptions, send: (r: ErrorRecord, f: typeof fetch, sign
     sentInWindow++
     if (lastSent.size > 1000) lastSent.delete(lastSent.keys().next().value!)
     const f = o.fetchImpl ?? fetch
-    void Promise.resolve().then(() => send(r, f, AbortSignal.timeout(o.timeoutMs ?? 3000))).catch(() => {})
+    void Promise.resolve().then(() => send(r, f, AbortSignal.timeout(o.timeoutMs ?? 3000))).then(
+      res => { const st = (res as { ok?: unknown; status?: unknown } | null)?.status; if ((res as { ok?: unknown } | null)?.ok === false && typeof st === 'number') alertNote({ type: 'alert_delivery', sink, status: st }) },
+      e => alertNote({ type: 'alert_delivery', sink, reason: failureReason(e) })).catch(() => {})
   }
 }
 
@@ -231,7 +240,7 @@ export function makeAlertHook(o: AlertOptions): ErrorSink {
   if (!url || !/^https:\/\//.test(url)) return () => {}
   const d = o.deployment ?? deployment()
   if (alertRequest(url, {}, 'x') === null) return () => {}   // a Telegram URL with no chat_id: every send would be rejected
-  return throttled(o, (r, f, signal) => {
+  return throttled(o, 'alert', (r, f, signal) => {
     const rec = outboundRecord(r, d), req = alertRequest(url, rec, alertText(rec))!
     return f(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body, signal })
   })
@@ -280,7 +289,7 @@ export function makeSentryHook(o: Omit<AlertOptions, 'url'> & { dsn?: string }):
   if (!d) return () => {}
   const dep = o.deployment ?? deployment()
   const auth = `Sentry sentry_version=7, sentry_key=${d.publicKey}, sentry_client=dazl-ops/1.0`
-  return throttled(o, (r, f, signal) => f(d.endpoint, {
+  return throttled(o, 'sentry', (r, f, signal) => f(d.endpoint, {
     method: 'POST', headers: { 'content-type': 'application/x-sentry-envelope', 'x-sentry-auth': auth },
     body: toSentryEnvelope(r, d, dep), signal,
   }))
@@ -293,6 +302,11 @@ function alertHooks(): ErrorSink[] {
   if (!hook || hook.key !== key) {
     const dep = deployment(e)
     hook = { key, sinks: [makeAlertHook({ url: e.OPS_ALERT_WEBHOOK_URL, deployment: dep }), makeSentryHook({ dsn: e.SENTRY_DSN, deployment: dep })] }
+    // #1088: a destination that is SET but cannot be used sends nothing; say so once per configuration (an unset one is the
+    // operator's choice and stays quiet). The problem text never contains the URL, token or DSN.
+    const alertProblem = e.OPS_ALERT_WEBHOOK_URL ? alertDestinationProblem(e.OPS_ALERT_WEBHOOK_URL) : null
+    if (alertProblem) alertNote({ type: 'alert_destination', sink: 'alert', problem: alertProblem })
+    if (e.SENTRY_DSN && !parseSentryDsn(e.SENTRY_DSN)) alertNote({ type: 'alert_destination', sink: 'sentry', problem: 'SENTRY_DSN is not an https DSN of the form https://<key>@<host>/<project number>' })
   }
   return hook.sinks
 }
