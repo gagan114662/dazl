@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "matrix:local": "node --experimental-strip-types --no-warnings scripts/matrix-local.mts",
+    "bench": "node --experimental-strip-types --no-warnings scripts/matrix-local.mts --matrix ../bench/prompts.json --out ../bench/results",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -34,6 +35,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.84",
+    "@anthropic-ai/sdk": "^1.12.0",
     "@crawlee/utils": "^3.18.2",
     "@types/better-sqlite3": "^9.6.0",
     "@types/nodemailer": "^8.0.2",

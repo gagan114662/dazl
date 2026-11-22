@@ -16,7 +16,7 @@ import { sameSite, ROLE } from '../lib/connectors/sitecrawl.ts'
 export interface MatrixThresholds { ready_leads_min: number; named_contact_min_pct: number; dated_source_min_pct: number; location_category_match_min_pct: number; per_case_confirm_cap_usd: number }
 export interface MatrixCase { id: string; label: string; seller?: string; offer?: string; query: string; expect: { location_keywords: string[]; category_keywords: string[] } }
 export interface CaseMetrics {
-  candidates: number; leads: number; ready: number; named_pct: number; email_pct: number; email_guess_pct: number; email_role_pct: number; dated_pct: number; match_pct: number
+  candidates: number; leads: number; ready: number; domain_pct: number; named_pct: number; email_pct: number; email_guess_pct: number; email_role_pct: number; dated_pct: number; match_pct: number
   held: Record<string, number>   // why the leads that are not ready are not: the product's own hold words, with counts
 }
 export interface CaseResult extends CaseMetrics { id: string; label: string; status: string; error: string | null; seconds: number; usd: number | null; pass: boolean; why: string[] }
@@ -80,13 +80,14 @@ export function measureCase(db: Database.Database, tenantId: string, jobId: stri
   const enr = enrichmentsForLeads(db, tenantId, leads.map(l => l.id)) as Record<string, Enrichment[]>
   const loc = c.expect.location_keywords.map(k => k.toLowerCase()), cat = c.expect.category_keywords.map(k => k.toLowerCase())
   const published = publishedCandidateRowsForLeads(db, tenantId, leads.map(l => l.id)), guessed = guessedRowsForLeads(db, tenantId, leads.map(l => l.id))
-  let named = 0, email = 0, guess = 0, role = 0, dated = 0, match = 0
+  let named = 0, email = 0, guess = 0, role = 0, dated = 0, match = 0, domain = 0
   // one verdict per COMPANY, matched the way Home's tile and "seen before" match: the same domain OR the same normalised name
   // (a lead with a domain and one without, both "Smile Dental", are one company); ready wins
   const byKey = new Map<string, { ready: boolean; why: string | null }>(), companies: { ready: boolean; why: string | null }[] = []
   for (const l of leads) {
     const e = enr[l.id] ?? []
     const company = (l.company ?? '').trim()
+    if ((l.company_domain ?? '').trim()) domain++
     if ((l.name ?? '').trim() && (l.name ?? '').trim() !== company) named++
     else if (e.some(x => x.kind === 'person' && x.value.trim())) named++
     const ec = emailClass(l, e, published[l.id], guessed[l.id] ?? [])
@@ -104,7 +105,7 @@ export function measureCase(db: Database.Database, tenantId: string, jobId: stri
   const held: Record<string, number> = {}
   for (const v of companies) if (!v.ready && v.why !== null) held[v.why] = (held[v.why] ?? 0) + 1
   const ready = companies.filter(v => v.ready).length
-  return { candidates: Number(job.candidates ?? 0), leads: leads.length, ready, named_pct: pct(named, leads.length), email_pct: pct(email, leads.length), email_guess_pct: pct(guess, leads.length), email_role_pct: pct(role, leads.length), dated_pct: pct(dated, leads.length), match_pct: pct(match, leads.length), held }
+  return { candidates: Number(job.candidates ?? 0), leads: leads.length, ready, domain_pct: pct(domain, leads.length), named_pct: pct(named, leads.length), email_pct: pct(email, leads.length), email_guess_pct: pct(guess, leads.length), email_role_pct: pct(role, leads.length), dated_pct: pct(dated, leads.length), match_pct: pct(match, leads.length), held }
 }
 
 // The pass rule, with its reasons in the words the staging table uses.
@@ -119,6 +120,7 @@ export function verdict(m: CaseMetrics, t: MatrixThresholds): { pass: boolean; w
 
 export const DEFINITIONS = [
   'ready: companies (one per domain or normalised name) the product shows ready (lib/outreach/lead-hold.ts, the rule Home and Leads use); staging counts leads with no review reason',
+  'domain %: of the leads the scan listed, those with a company website on the lead',
   'named/email/dated/match %: of the leads the scan listed (not of ready ones); named = a person on the lead or on the company\'s own site; email = the lead\'s named buyer (its own named person, else the people on the company\'s site) with their own address on the company\'s own domain: printed on its site under their name, or carrying their name (first name, or first name or initial with surname; a bare surname, a role word or a guess never counts); guess% = a named person with only a pattern guess; role% = a role inbox only, no guess (both shown, never counted); dated = a proven event day (event_date_proof) with a source URL; match = a place AND a category keyword in the lead\'s text (a proxy: staging opens the source pages)',
   'usd: settled model and paid-vendor calls (refused calls excluded); TinyFish search/fetch inside its free allowance is priced at 0 and is not in it',
   'icp: inferred by the runner from the query (staging runs with the profile reviewed in the UI), so queries can differ from a staging run',
@@ -132,8 +134,8 @@ export const CONTACTS_LINE = {
 export function matrixTable(rows: CaseResult[], t: MatrixThresholds, meta: { commit: string; date: string; contacts?: string[] | null }): string {
   const pass = rows.filter(r => r.pass).length
   const head = `MATRIX local @ ${meta.commit} ${meta.date}: ${pass}/${rows.length} PASS (per case: >=${t.ready_leads_min} ready, >=${t.named_contact_min_pct}% named, >=${t.dated_source_min_pct}% dated, >=${t.location_category_match_min_pct}% in place and category; cap US$${t.per_case_confirm_cap_usd}/case)`
-  const cols = ['case', 'status', 'cand', 'leads', 'ready', 'named%', 'email%', 'guess%', 'role%', 'dated%', 'match%', 'secs', 'usd', 'verdict']
-  const body = rows.map(r => [r.id, r.status, r.candidates, r.leads, r.ready, r.named_pct, r.email_pct, r.email_guess_pct, r.email_role_pct, r.dated_pct, r.match_pct, r.seconds, r.usd == null ? '?' : r.usd.toFixed(3), r.pass ? 'PASS' : 'FAIL'].map(String))
+  const cols = ['case', 'status', 'cand', 'leads', 'ready', 'domain%', 'named%', 'email%', 'guess%', 'role%', 'dated%', 'match%', 'secs', 'usd', 'verdict']
+  const body = rows.map(r => [r.id, r.status, r.candidates, r.leads, r.ready, r.domain_pct, r.named_pct, r.email_pct, r.email_guess_pct, r.email_role_pct, r.dated_pct, r.match_pct, r.seconds, r.usd == null ? '?' : r.usd.toFixed(3), r.pass ? 'PASS' : 'FAIL'].map(String))
   const w = cols.map((c, i) => Math.max(c.length, ...body.map(b => b[i].length)))
   const line = (cells: string[]) => cells.map((c, i) => c.padEnd(w[i])).join('  ')
   const held = rows.filter(r => !r.pass).map(r => `  ${r.id}: ${r.error ? `${r.error}; ` : ''}${r.why.join('; ')}${Object.keys(r.held).length ? ` | held: ${Object.entries(r.held).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ')}` : ''}`)

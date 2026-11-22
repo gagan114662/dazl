@@ -1,4 +1,5 @@
 'use client'
+import { discoverLine, discoverSources, isDiscoverLead } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
@@ -1494,13 +1495,15 @@ export default function LeadsClient() {
             {l.evidence_excerpt && <blockquote className="text-gray-500 text-xs border-l border-white/10 pl-3 my-1">{l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).prefix : ''}&ldquo;{l.evidence_excerpt}&rdquo;</blockquote>}
             {l.stored_why && <details className="text-xs my-2"><summary>Saved historical grade (not a currentness verdict; a saved grade may have been made without your offer text and is not rescored)</summary><p>Saved intent: {l.stored_intent ?? 'unknown'}. {l.stored_why}</p></details>}
             {!l.currentness_held && !l.window_held && l.human_confirmed_at === null && l.confidence !== null && l.timing_proof_gap === null && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-proof">Draftable without your review: the event day is proven on the cited source inside your window, and the company website, a named contact and a contact route the company published are confirmed. A current buying need is still not verified.</p>}
-            {l.window_held && <p className="text-xs border-l-2 border-black pl-3 my-2">Outside the time window you asked for, or its date is unknown - research only. It cannot be drafted or sent, even after you review the source. Run a scan with a wider window to include it.</p>}
-            {l.gate_held && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="gate-held">A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.</p>}
-            {l.currentness_held && !l.window_held && !l.gate_held && (l.timing === 'proof_backed'
+            {isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="discover-confidence">{discoverLine(l)}</p>}
+            {isDiscoverLead(l) && <p className="text-xs pl-3 my-2" data-testid="discover-sources">Sources: {discoverSources(l).map((x, i) => <span key={x.field}>{i > 0 ? ' · ' : ''}<a className="underline underline-offset-2" href={x.url} target="_blank" rel="noreferrer noopener">{x.label}</a></span>)}</p>}
+            {l.window_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2">Outside the time window you asked for, or its date is unknown - research only. It cannot be drafted or sent, even after you review the source. Run a scan with a wider window to include it.</p>}
+            {l.gate_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="gate-held">A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.</p>}
+            {l.currentness_held && !l.window_held && !l.gate_held && !isDiscoverLead(l) && (l.timing === 'proof_backed'
               ? <p className="text-xs border-l-2 border-black pl-3 my-2">Quote-backed research only - the event day is verified against the cited source, but no current buying need was verified. Drafting requires your source review.</p>
               : <p className="text-xs border-l-2 border-black pl-3 my-2">Quote-backed research only - event timing unknown. Fit and contact research can be useful, but no current buying need was verified. Drafting requires your source review.</p>)}
             {l.evidence_origin === 'tinyfish_copy' && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="evidence-origin">{evidenceOriginLabel(l.evidence_origin, l.own_fetch_failure)}{l.evidence_purged_at ? purgedNote(l.evidence_purged_at) : l.evidence_copy_id ? <> <a className="underline" href={`/api/leads/evidence?lead_id=${l.id}`} target="_blank" rel="noreferrer">View the exact copied text</a></> : ''}</p>}
-            {l.timing_note && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-note">Researched opportunity - {l.timing_note}</p>}
+            {l.timing_note && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-note">Researched opportunity - {l.timing_note}</p>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).confirmed : 'not verified') : `confidence ${l.confidence}`}{`, ${leadCardDateLine(l)}`}</span>
             {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
               <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${reviewLabel(l.human_confirmed_from) ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>

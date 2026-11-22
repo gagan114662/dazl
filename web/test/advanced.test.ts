@@ -41,9 +41,12 @@ test('gates: no consent, flag off, then success, with audit and per-tenant isola
   assert.deepEqual(seen[seen.length - 1], { platform: 'reddit', query: 'q', session: 'session-of-tenant-A-123' })
   saveCredential(db, 'A', 'adv:linkedin', 'li-session-of-A-1234', master); acceptConsent(db, 'A', 'linkedin')
   assert.equal((await run('A', ON, 'linkedin')).length, 0) // linkedin flag off
-  assert.equal((await run('A', { ...ON, ADVANCED_LINKEDIN: '1' }, 'linkedin')).length, 1)
+  // #1122: LinkedIn is read only in the user's browser (the extension); the server never sends the stored session, even with every flag on
+  const before = seen.length
+  assert.equal((await run('A', { ...ON, ADVANCED_LINKEDIN: '1' }, 'linkedin')).length, 0)
+  assert.equal(seen.length, before)
   const st = (recentAudit(db, 'A', 50) as { status: string }[]).map(a => a.status)
-  assert.ok(st.includes('no_consent') && st.includes('no_session') && st.includes('disabled') && st.includes('ok'))
+  assert.ok(st.includes('no_consent') && st.includes('no_session') && st.includes('disabled') && st.includes('ok') && st.includes('read_in_extension'))
 })
 
 test('rate limit: per user per hour, kill switch stops calls', async () => {

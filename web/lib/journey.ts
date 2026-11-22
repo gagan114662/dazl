@@ -22,6 +22,9 @@ export type PreviewLead = CardLead & { id: string; seen_before?: number | boolea
 // Why a lead is not an opportunity (first failing check), or null when it is one.
 export function heldReason(l: PreviewLead): string | null {
   if (l.quarantined_at) return 'rejected'
+  // A lead from the Claude discovery lane (lib/scan/runner.ts runDiscoverLane) is shown once its proof page names the company. A missing
+  // date, person or website lowers its confidence and is said on the card; it does not hold the lead (launch brief, Step 3).
+  if ((l as { source_kind?: string | null }).source_kind === 'discover') return l.review_reason ? 'needs your review' : null
   // #1062: a REQUIRED check that has not passed (requiredGateHeld, the draft guard's own verdict) holds it whatever its review reason, evidence and date say.
   if (l.gate_held) return 'a required check has not passed'
   if (l.review_reason) return 'needs your review'

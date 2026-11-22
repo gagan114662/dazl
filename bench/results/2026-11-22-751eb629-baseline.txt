@@ -1,0 +1,44 @@
+MATRIX local @ unknown 2026-11-22 18:24: 0/16 PASS (per case: >=5 ready, >=70% named, >=100% dated, >=0% in place and category; cap US$1/case)
+case                                  status  cand  leads  ready  domain%  named%  email%  guess%  role%  dated%  match%  secs  usd    verdict
+------------------------------------  ------  ----  -----  -----  -------  ------  ------  ------  -----  ------  ------  ----  -----  -------
+toronto-dental-expanding              done    6     5      0      60       40      0       0       40     0       100     90    0.061  FAIL   
+austin-saas-sales-hiring              done    13    10     0      40       10      0       0       10     30      10      177   0.076  FAIL   
+pune-roofing-expanding                done    10    7      0      71       14      0       0       43     0       86      173   0.081  FAIL   
+dubai-law-new-partner                 done    11    10     0      50       70      0       0       20     10      60      155   0.071  FAIL   
+london-fintech-funding                done    10    7      0      43       0       0       0       14     0       100     142   0.074  FAIL   
+us-seed-first-sales                   done    5     3      0      0        0       0       0       0      0       0       120   0.048  FAIL   
+ohio-payroll-hiring                   done    11    3      0      0        0       0       0       0      33      100     112   0.062  FAIL   
+sydney-logistics-new-leader           done    12    10     0      10       100     0       0       0      20      10      107   0.070  FAIL   
+berlin-ecommerce-marketing-hiring     done    6     1      0      0        0       0       0       0      100     0       127   0.050  FAIL   
+bengaluru-hospitals-new-branch        failed  0     0      0      0        0       0       0       0      0       0       56    0.065  FAIL   
+illinois-manufacturing-new-plant      done    13    10     0      10       0       0       0       0      10      90      118   0.078  FAIL   
+singapore-restaurants-new-outlets     done    7     6      0      50       17      0       0       0      0       83      130   0.078  FAIL   
+linkedin-competitor-post-engagers     failed  0     0      0      0        0       0       0       0      0       0       79    0.075  FAIL   
+linkedin-new-heads-of-sales           done    12    8      0      63       100     0       0       13     50      0       159   0.099  FAIL   
+linkedin-first-marketer-hiring-posts  done    7     3      0      67       100     0       0       67     33      0       131   0.073  FAIL   
+linkedin-crm-evaluating-posts         done    1     1      0      100      100     0       0       0      0       0       85    0.039  FAIL   
+
+  toronto-dental-expanding: 0 ready, needs >=5; 40% named, needs >=70%; 0% dated, needs >=100% | held: event timing unknown 3, needs your review 2
+  austin-saas-sales-hiring: 0 ready, needs >=5; 10% named, needs >=70%; 30% dated, needs >=100% | held: needs your review 10
+  pune-roofing-expanding: 0 ready, needs >=5; 14% named, needs >=70%; 0% dated, needs >=100% | held: event timing unknown 4, needs your review 3
+  dubai-law-new-partner: 0 ready, needs >=5; 10% dated, needs >=100% | held: needs your review 9, event timing unknown 1
+  london-fintech-funding: 0 ready, needs >=5; 0% named, needs >=70%; 0% dated, needs >=100% | held: needs your review 7
+  us-seed-first-sales: 0 ready, needs >=5; 0% named, needs >=70%; 0% dated, needs >=100% | held: needs your review 3
+  ohio-payroll-hiring: 0 ready, needs >=5; 0% named, needs >=70%; 33% dated, needs >=100% | held: event timing unknown 2, needs your review 1
+  sydney-logistics-new-leader: 0 ready, needs >=5; 20% dated, needs >=100% | held: event timing unknown 6, needs your review 4
+  berlin-ecommerce-marketing-hiring: 0 ready, needs >=5; 0% named, needs >=70% | held: needs your review 1
+  bengaluru-hospitals-new-branch: unbounded_fallback_hold; 0 ready, needs >=5; 0% named, needs >=70%; 0% dated, needs >=100%
+  illinois-manufacturing-new-plant: 0 ready, needs >=5; 0% named, needs >=70%; 10% dated, needs >=100% | held: event timing unknown 6, needs your review 4
+  singapore-restaurants-new-outlets: 0 ready, needs >=5; 17% named, needs >=70%; 0% dated, needs >=100% | held: event timing unknown 5, needs your review 1
+  linkedin-competitor-post-engagers: unbounded_fallback_hold; 0 ready, needs >=5; 0% named, needs >=70%; 0% dated, needs >=100%
+  linkedin-new-heads-of-sales: 0 ready, needs >=5; 50% dated, needs >=100% | held: needs your review 5, a required check has not passed 3
+  linkedin-first-marketer-hiring-posts: 0 ready, needs >=5; 33% dated, needs >=100% | held: event timing unknown 2, needs your review 1
+  linkedin-crm-evaluating-posts: 0 ready, needs >=5; 0% dated, needs >=100% | held: event timing unknown 1
+
+definitions:
+  ready: companies (one per domain or normalised name) the product shows ready (lib/outreach/lead-hold.ts, the rule Home and Leads use); staging counts leads with no review reason
+  domain %: of the leads the scan listed, those with a company website on the lead
+  named/email/dated/match %: of the leads the scan listed (not of ready ones); named = a person on the lead or on the company's own site; email = the lead's named buyer (its own named person, else the people on the company's site) with their own address on the company's own domain: printed on its site under their name, or carrying their name (first name, or first name or initial with surname; a bare surname, a role word or a guess never counts); guess% = a named person with only a pattern guess; role% = a role inbox only, no guess (both shown, never counted); dated = a proven event day (event_date_proof) with a source URL; match = a place AND a category keyword in the lead's text (a proxy: staging opens the source pages)
+  usd: settled model and paid-vendor calls (refused calls excluded); TinyFish search/fetch inside its free allowance is priced at 0 and is not in it
+  icp: inferred by the runner from the query (staging runs with the profile reviewed in the UI), so queries can differ from a staging run
+  contacts: this run gave each case a run budget (max_usd), which switches the paid contact pass OFF, so Apollo/PDL contacts never appear here; named/email come from the lead, the company site and people search only. Run with --contacts to measure the contact pass

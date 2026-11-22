@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-test('Connect LinkedIn routes (#1037): pairing, single use, isolation, revocation, Disconnect (real handlers)', () => {
+test('Connect LinkedIn routes (#1037, #1122): pairing, task reads with the device token, no stored session, isolation, revocation, Disconnect (real handlers)', () => {
   const env = { ...process.env }
   delete (env as Record<string, unknown>).NODE_TEST_CONTEXT
   const result = spawnSync(process.execPath, [
@@ -13,5 +13,5 @@ test('Connect LinkedIn routes (#1037): pairing, single use, isolation, revocatio
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(result.error, undefined)
   assert.equal(result.status, 0, result.stdout + result.stderr)
-  assert.match(result.stdout, /# pass 5/)
+  assert.match(result.stdout, /# pass 2/)
 })

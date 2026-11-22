@@ -9,6 +9,7 @@ import https from 'node:https'
 import zlib from 'node:zlib'
 import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
+import { asDb } from '../db/client.ts'
 import robotsParser from 'robots-parser'
 import { getDomain, getDomainWithoutSuffix } from 'tldts'
 import { parse, type DefaultTreeAdapterMap } from 'parse5'
@@ -29,6 +30,7 @@ import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
+import { companyPeopleUrl, enqueueCompanyPeople } from '../linkedin-tasks/buyers.ts'
 import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales, postingOrgIs } from '../scan/site-contact.ts'
 export { OWN_POSTING_PERSON_LABEL }
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
@@ -1199,7 +1201,7 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal, opts?.noRedirect), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, buyerDiscovery: { ownAbout: boolean; authorizedHints?: readonly string[] } | null = null): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number; withoutHint?: { url: string; found: Found[]; reason: string } }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal, opts?.noRedirect), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, buyerDiscovery: { ownAbout: boolean; authorizedHints?: readonly string[] } | null = null): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number; linkedinPeople?: string | null; withoutHint?: { url: string; found: Found[]; reason: string } }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -1398,7 +1400,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published' }
     }
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { ...select(), ...(citedOnlyUrl ? { withoutHint: { url: citedOnlyUrl, ...select(citedOnlyUrl) } } : {}), buyerPages, pages, tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
+    return { ...select(), ...(citedOnlyUrl ? { withoutHint: { url: citedOnlyUrl, ...select(citedOnlyUrl) } } : {}), buyerPages, pages, linkedinPeople: companyPeopleUrl(home.body), tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -2284,6 +2286,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: buyer.email,
               label: contextLabel({ excerpt: buyer.name + ' | ' + buyer.email, source_url: buyer.source }), confidence: null, ...dated }); n++
           }
+        }
+        // #1122 step 3: still no buyer on a confirmed site that links exactly one LinkedIn company page -> one read of that page's People
+        // list in the user's own browser (the dazl LinkedIn Reader), only when the workspace set it up. Nothing is fetched from LinkedIn here.
+        if (confirmedSite && buyerRoles && named === 0 && r.linkedinPeople) {
+          try { await enqueueCompanyPeople(asDb(db), tenantId, jobId, l.id, r.linkedinPeople) } catch { /* the queue is optional */ }
         }
       } else for (const f of r.found) {
         const baseLabel = guessed && profileFromListedLabel(f.label) ? 'listed with this title on this company page, not verified as current staff' : f.label

@@ -27,6 +27,7 @@
 // is counts only; a tenant sees only its own rows.
 // Queries are on the Db layer (SQLite today, Postgres after the cutover: lib/db/migrations/pg/0019_scheduler_runs.sql).
 import { tinyfishTotals } from '../search/tinyfish.ts'
+import { stallCounts, type StallCounts } from './stalls.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { asDb, type DbLike } from '../db/client.ts'
@@ -312,5 +313,9 @@ export async function schedulerHealthResponse(d: DbLike, now = nowS()): Promise<
   // Never affects ok/status.
   let tinyfish_today: { search: { used: number; cap: number }; fetch: { used: number; cap: number } } | null = null
   try { tinyfish_today = await tinyfishTotals(d, now) } catch { tinyfish_today = null }
-  return Response.json({ ...h, tinyfish_today }, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
+  // #1090: workspaces whose work has stalled (lib/ops/stalls.ts), counts only. Never affects ok/status: the uptime
+  // probe (ops/uptime/probe.mjs) alerts on them once a day. null = could not be read (a store without those tables).
+  let stalls: StallCounts | null = null
+  try { stalls = await stallCounts(d, now) } catch { stalls = null }
+  return Response.json({ ...h, tinyfish_today, stalls }, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

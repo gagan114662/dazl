@@ -173,7 +173,9 @@ test('inventory: each gated module reserves its kind before its request, and daz
     for (const k of p.kind) assert.ok(SPEND_KINDS.includes(k), k)
     assert.ok(/reserveScanSpend\(/.test(src), `${p.file} (${e}) reserves on the scan cap`)
   }
-  assert.deepEqual(SOURCES.filter(s => s.rel !== 'lib/scan/spend-cap.ts' && /cache_control/.test(s.text)).map(s => s.rel), [], 'a cache write would be billed above the reserved input price')
+  // lib/discover is exempt: it reserves a flat worst case for the whole loop and settles at the usage the API reports, cache writes included,
+  // and without caching its search loop costs about five times as much (BENCHMARK.md, 2026-11-22).
+  assert.deepEqual(SOURCES.filter(s => s.rel !== 'lib/scan/spend-cap.ts' && !s.rel.startsWith('lib/discover/') && /cache_control/.test(s.text)).map(s => s.rel), [], 'a cache write would be billed above the reserved input price')
   const nativeGate = SOURCES.find(s => s.rel === NATIVE_SEARCH.gate)!.text
   assert.match(nativeGate, /from '\.\/spend-cap\.ts'/, 'native search adapter imports the scan gate')
   assert.ok(nativeGate.includes(`reserveScanSpend('${NATIVE_SEARCH.kind}',`), 'native search reserves its own spend kind')
@@ -184,7 +186,7 @@ test('inventory: each gated module reserves its kind before its request, and daz
   assert.match(runner, /const claudeOnly = qaClaudeOnlyJob\(job\.run_budget\)/, 'restricted mode is derived from the saved job policy')
   assert.match(runner, /const requested = job\.csv_domain \? null : parseRunBudget\(job\.run_budget\)\?\.max_usd \?\? null/, 'ordinary requested ceilings and CSV behavior are unchanged')
   assert.match(runner, /const requestMaxUsd = claudeOnly \? Math\.min\(requested \?\? QA_SPEND_MAX_USD, QA_SPEND_MAX_USD\) : requested/, 'strict adds only a lower ceiling; ordinary requests keep their existing limit')
-  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, claudeOnly, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
+  assert.match(runner, /return runWithScanSpend\(\{ db, jobId: job\.id, tenantId: job\.user_id, attempt: job\.attempts, cap: scanCapConfig\(\), requestMaxUsd, claudeOnly, nativeSearch: .+?, accountLimits: pooledByRunner \? null : accountLimits\(job\.user_id\) \}, \(\) => runJobCapped\(db, job, deps\)\)/)
   // XHawk on #1154: CSV jobs of a named account take the same PooledGuard (its unsettled-accounting marker stops them too)
   assert.match(runner, /const pooledByRunner = ownerLimits\(job\.user_id\) !== null/)
   assert.match(runner, /const owner = ownerLimits\(job\.user_id\)\n/)

@@ -179,6 +179,9 @@ export interface ScanSpendCtx {
   // The request's own run_budget.max_usd, when it set one: it can only lower the cap.
   requestMaxUsd?: number | null
   claudeOnly?: boolean
+  // The scan may reserve Claude's own web search: the discovery lane (lib/scan/runner.ts runDiscoverLane). Like every other paid step it
+  // is reserved at its worst case before the call, under this scan's cap and the account's limits, and settled at what it cost.
+  nativeSearch?: boolean
   // #846/#847: the owner's day/month account caps (lib/llm/spend-pool.ts accountLimits), reserved on tenant_spend_pools
   // in the same transaction as this scan's cap, for every priced step of the scan (#1167: models, render, TinyFish, Apollo /
   // PDL). Null when the runner reserves the owner pool itself for model calls (an account with its own operator entry:
@@ -324,7 +327,7 @@ export async function reserveScanSpend(kind: SpendKind, cost: () => number, nati
   if (nativeOwnerHold && (!nativeSearch || !/^n[0-9a-z]{9}$/.test(nativeOwnerHold.id) ||
       !Number.isSafeInteger(nativeOwnerHold.bookedAt) || nativeOwnerHold.bookedAt < 0 ||
       nativeOwnerHold.bookedAt > 253402300799 || ctx?.accountLimits !== null)) throw new SpendRefused('reservation_invalid')
-  if (nativeSearch && (!ctx?.claudeOnly || asDb(ctx.db).kind !== 'sqlite')) throw new SpendRefused('qa_provider_disabled')
+  if (nativeSearch && (!(ctx?.claudeOnly || ctx?.nativeSearch) || asDb(ctx.db).kind !== 'sqlite')) throw new SpendRefused('qa_provider_disabled')
   // Outside a scan: a model call needs an account context (or the named escape hatch); a non-model step is counted on the account's windows
   // when it runs inside one (#1167), and is otherwise bounded by its own vendor caps (TinyFish's tenant / global daily caps).
   if (!ctx) return isModel(kind) ? reserveAccountSpend(kind, cost) : accountStore.getStore() ? reserveAccountSpend(kind, cost) : null

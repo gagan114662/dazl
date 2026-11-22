@@ -57,6 +57,8 @@ export async function GET(req: NextRequest) {
   const jobId = req.nextUrl.searchParams.get('job_id') ?? ''
   const db = await getDb()
   if (jobId && !/^[a-f0-9]{24}$/.test(jobId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  // #830: a scan id that is not this workspace's own is not found, the same as one that does not exist (never an empty file)
+  if (jobId && !(await db.get('SELECT 1 AS x FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, user.tenantId]))) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   // Default export is real leads only; ?include_fixtures=1 is the explicit opt-in
   // that keeps the verification fixture rows in the file.
   const includeFixtures = req.nextUrl.searchParams.get('include_fixtures') === '1'

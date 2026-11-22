@@ -5,12 +5,7 @@
 // BEFORE a change and AFTER it, and show both in the PR.
 //
 //   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--dry] [--json] [--timeout 300]
-//        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir] [--engine old|research]
-//
-// --engine research (MISSION v2): runs every case on the research engine (LEAD_ENGINE=research, lib/research/scan-job.ts) with its own
-// per-scan search budget (RESEARCH_SEARCH_BUDGET, default 160); a case the engine cannot run (a stage not built, no place or category)
-// runs the old engine, and the table says which engine was asked for. --engine old (default) clears LEAD_ENGINE, so an inherited value
-// never switches a before-run.
+//        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir]
 //
 // Keys (never printed, never stored; the in-memory store dies with the process). Same ones the staging scans use:
 //   TINYFISH_API_KEY                         search and fetch; without it scans fall back to model web search, which no cap bounds: refused
@@ -23,7 +18,7 @@
 // contacts. Without --contacts every case carries a run budget, which switches that pass OFF (the table says which mode ran).
 // In --contacts mode the cap is the scan spend ledger's per-scan cap (DAZL_SCAN_CAP_CAD, set by this script to the case cap and
 // checked before every paid call), and the runner also stops the job when its recorded spend reaches the cap.
-// Cost cap: US$0.50 per case (--cap lowers it, never raises it): the case's own run budget (max_usd), enforced by the scan spend
+// Cost cap: US$1.00 per case (--cap lowers it, never raises it): the case's own run budget (max_usd), enforced by the scan spend
 // ledger before every paid call; the table prints what each case cost. TinyFish calls are priced at US$0 while dazl's own daily
 // counters stay inside TinyFish's free allowance, so the US$ column leaves TinyFish out (the table says so).
 // Exit 0 prints the table; exit 2 = not run (missing keys, bad flags or matrix); exit 1 = a case crashed the runner itself.
@@ -49,9 +44,8 @@ if (envFile) {
   for (const [k, v] of Object.entries(parseEnvFile(readFileSync(p, 'utf8')))) if (!process.env[k]) process.env[k] = v
 }
 
-const engine = opt('engine') ?? 'old'
-if (engine !== 'old' && engine !== 'research') refuse(`--engine must be old or research (got ${engine}). Not running.`)
-if (engine === 'research') process.env.LEAD_ENGINE = 'research'; else delete process.env.LEAD_ENGINE
+const engine = 'old'   // the research engine was deleted (#1393); one engine is left
+if (opt('engine') !== undefined && opt('engine') !== 'old') refuse(`--engine: only the one engine is left (the research engine was deleted, #1393). Not running.`)
 
 const matrixPath = expand(opt('matrix') ?? process.env.MATRIX_FILE ?? path.join(root, '..', 'scorecard', 'matrix.json'))
 if (!existsSync(matrixPath)) refuse(`matrix file ${matrixPath} not found (set --matrix or MATRIX_FILE). Not running.`)
@@ -60,7 +54,7 @@ const only = opt('cases')?.split(',').map(s => s.trim()).filter(Boolean)
 const cases = matrix.cases.filter(c => !only || only.includes(c.id))
 if (only) for (const id of only) if (!matrix.cases.some(c => c.id === id)) refuse(`unknown case "${id}"; the matrix has: ${matrix.cases.map(c => c.id).join(', ')}`)
 if (cases.length === 0) refuse('no cases to run. Not running.')
-const HARD_CAP = 0.5   // the lane's cap per case; --cap and the matrix file can only lower it
+const HARD_CAP = 1   // the owner's cap per prompt (launch brief, 2026-11-22); --cap and the matrix file can only lower it
 const capReq = opt('cap') === undefined ? HARD_CAP : Number(opt('cap'))
 const fileCap = Number(matrix.thresholds?.per_case_confirm_cap_usd ?? HARD_CAP)
 const cap = Math.min(capReq, fileCap, HARD_CAP)
@@ -78,7 +72,7 @@ const contacts = flag('contacts')
 const contactKeys = { pdl: (process.env.MATRIX_PDL_KEY || '').trim(), apollo: (process.env.MATRIX_APOLLO_KEY || '').trim() }
 if (flag('dry')) {
   // no network, no model call, nothing created: the plan and what is missing
-  console.log(`engine: ${engine}${engine === 'research' ? ` (research search budget ${process.env.RESEARCH_SEARCH_BUDGET || 160} per scan)` : ''}`)
+  console.log(`engine: ${engine}`)
   console.log(`matrix:local --dry @ ${commit}: ${cases.length} case(s) from ${matrixPath}, cap US$${cap.toFixed(2)} each (total at most US$${(cap * cases.length).toFixed(2)}), timeout ${timeoutS}s each`)
   for (const c of cases) console.log(`  ${c.id.padEnd(24)} ${c.query}`)
   const knobs = ['TINYFISH_SEARCHES_PER_SCAN', 'TINYFISH_FETCHES_PER_SCAN', 'SITECRAWL_ENABLED', 'NEWS_SEARCH_ENABLED', 'EMAIL_GUESS_ENABLED']
@@ -131,7 +125,7 @@ for (const c of cases) {
 const table = matrixTable(results, thresholds, { commit, date, contacts: contacts ? savedContactKeys : null })
 const outDir = path.resolve(expand(opt('out') ?? process.env.MATRIX_OUT ?? path.join(root, '..', 'matrix-local-results')))
 mkdirSync(outDir, { recursive: true })
-const stamp = `${new Date().toISOString().slice(0, 10)}-${commit}${engine === 'research' ? '-research' : ''}-${Date.now().toString(36)}`
+const stamp = `${new Date().toISOString().slice(0, 10)}-${commit}-${Date.now().toString(36)}`
 writeFileSync(path.join(outDir, `${stamp}.txt`), table + '\n')
 if (flag('json')) writeFileSync(path.join(outDir, `${stamp}.json`), JSON.stringify({ commit, date, engine, mode: contacts ? 'contacts' : 'budget', cap_usd: cap, thresholds, results }, null, 2))
 console.log(`engine: ${engine}`)

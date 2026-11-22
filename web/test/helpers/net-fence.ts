@@ -18,6 +18,9 @@ for (const name of Object.keys(process.env)) {
 for (const name of ['DAZL_PG_ADMIN', 'DATABASE_URL']) delete process.env[name]
 // #1122: the free site finder (Wikidata / OpenStreetMap) stays off in fenced tests; a test that exercises it passes its own env and fetch.
 process.env.DAZL_FREE_SITE_FINDER = '0'
+// The Claude discovery lane (lib/scan/runner.ts runDiscoverLane) stays off in fenced tests, so a scan run with stubbed providers keeps the
+// path it was written for; a test of the lane passes discover: true and its own canned loop.
+process.env.DAZL_DISCOVER_LANE = '0'
 // 1b) Store fence: code under test that reaches the app's own store (getAuthDb / getDb, e.g. the shared rate limiter in
 //     a route) must never open the default production path. A test that did not choose a DB_PATH gets a throwaway
 //     SQLite file for this process, removed on exit.

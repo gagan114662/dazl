@@ -82,7 +82,7 @@ const AREAS: [RegExp, string][] = [
   [/memory/, 'profile & memory'],
   [/enrich|people|find-contact|contact|sitecrawl|email-pattern|page-signals|hiring-feed|job-feed|qualify/, 'enrichment'],
   [/watch|monitor|competitor-reddit|tick|app\/api\/plays\//, 'monitors'],
-  [/scan|leads|search\/|signals\/|advanced|lookalike|campaigns|connectors|events/, 'scans'],
+  [/scan|leads|search\/|signals\/|advanced|lookalike|campaigns|connectors|events|linkedin-tasks|app\/api\/tasks\//, 'scans'],
   [/queue|lease|ops\/|health/, 'platform'],
 ]
 export function areaOf(file: string): string { return AREAS.find(([re]) => re.test(file))?.[1] ?? 'other' }

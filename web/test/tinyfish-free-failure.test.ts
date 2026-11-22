@@ -93,14 +93,3 @@ test('rateIsWait never lifts a PRICED call\'s 429 or a free call\'s 401/403: tho
     } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD }
   }
 })
-
-test('the research engine\'s own search (researchSearch) is the one caller that treats a free 429 as a wait', async () => {
-  const { researchSearch, SearchQueue } = await import('../lib/research/search-queue.ts')
-  const s = await setup()
-  const f = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch
-  const out = await runWithScanSpend(s.ctx(), async () => {
-    const r = await researchSearch(s.db, 'A', { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }, new SearchQueue(1000, () => 0, async () => {}))('q')
-    return { r, rej: spendAttemptRejected() }
-  })
-  assert.equal(out.r.ok, false); assert.equal(out.rej, null, 'no rejection recorded: the hunt retries it')
-})

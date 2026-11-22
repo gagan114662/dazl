@@ -16,7 +16,7 @@ export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed
 //   - the evidence a person can affirm by reading the source: no_event_evidence, no_sales_hiring_evidence, source_review_required, self_description,
 //     trial_budget_reached (found before a free scan's checks ran out), legacy_currentness_review;
 //   - a date a person can vouch for ("I checked the date - use it"): event_timing_unconfirmed, event_date_bad_date, event_date_future_date, event_date_stale;
-//   - research_unverified (LEAD_ENGINE=research, lib/research/scan-job.ts RESEARCH_HELD): the event's quote is literally on the cited page and the
+//   - research_unverified (written by the research engine, deleted in #1393; kept so rows it wrote still read right): the event's quote is literally on the cited page and the
 //     second model supported it, and the place and category passed the gate; what is not proven is the day on that page or a named decision-maker,
 //     both of which a person reads off the same source. Confirming it is the same act as for event_timing_unconfirmed.
 // Under a time window none of them is reviewable: the window hold survives confirmation (researchCause gives undated / older).
