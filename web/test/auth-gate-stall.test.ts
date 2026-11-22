@@ -64,3 +64,10 @@ test('#1463: every check logs its timing and which stage ran it, not only the sl
   const src = readFileSync(new URL('../proxy.ts', import.meta.url), 'utf8')
   assert.match(src, /type: 'app_request'/)
 })
+
+test('Qodo #1543: the timing line never decides the check (a throwing logger), and /app paths are logged as route templates', async () => {
+  const { db, token } = await realStore()
+  assert.equal(await checkSessionWithin(token, { getDb: async () => db, log: () => { throw new Error('stdout closed') } }), true)
+  const src = readFileSync(new URL('../proxy.ts', import.meta.url), 'utf8')
+  assert.match(src, /type: 'app_request'[^\n]*path: routeTemplate\(pathname\)/)
+})

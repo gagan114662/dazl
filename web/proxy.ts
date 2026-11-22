@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { logRequest, newRequestId, requestLogLine } from '@/lib/ops/request-log'
+import { logRequest, newRequestId, requestLogLine, routeTemplate } from '@/lib/ops/request-log'
 import { getDb } from '@/lib/db/client'
 import { checkSessionWithin } from '@/lib/auth-gate'
 import { warmStore } from '@/lib/store-warm'
@@ -32,7 +32,7 @@ export async function proxy(req: NextRequest) {
     return r
   }
   // #1463: each /app page request's time in this proxy (store warm + session check), logged on every request
-  if (pathname.startsWith('/app')) logLine({ level: 'info', type: 'app_request', request_id: id, path: pathname.slice(0, 120), proxy_ms: Math.round(performance.now() - t0) })
+  if (pathname.startsWith('/app')) logLine({ level: 'info', type: 'app_request', request_id: id, path: routeTemplate(pathname), proxy_ms: Math.round(performance.now() - t0) })
   const headers = new Headers(req.headers)
   headers.set('x-request-id', id)
   const res = NextResponse.next({ request: { headers } })
