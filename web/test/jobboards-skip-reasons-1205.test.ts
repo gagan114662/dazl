@@ -7,17 +7,32 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { progressOf, skipNote } from '../lib/scan/progress.ts'
+import { boardSkipStatus } from '../lib/sources/jobboards.ts'
 
-// the statuses the runner can record for adapter:jobboards when it does not select it (the exact ledger.record line in runner.ts)
+// the status the runner records for adapter:jobboards when it does not select it comes from one function (runner.ts calls it)
 const RUNNER = readFileSync(new URL('../lib/scan/runner.ts', import.meta.url), 'utf8')
-const SKIP_LINE = RUNNER.split('\n').find(l => l.includes("ledger.record('adapter:jobboards'"))!
-const RECORDED = [...SKIP_LINE.matchAll(/'(skipped_[a-z_]+)'/g)].map(m => m[1])
 
-test('#1205 every status the runner records for a job-board source it did not select has a plain reason', () => {
-  assert.ok(SKIP_LINE, 'the runner records why the job-board source was not selected')
-  assert.deepEqual(RECORDED.sort(), ['skipped_explicit_sources', 'skipped_no_hiring_signal'])
-  for (const status of RECORDED) {
-    const note = skipNote(status)
+test('#1205 the runner takes the job-board skip status from boardSkipStatus, and records nothing when the person chose job boards', () => {
+  assert.match(RUNNER, /boardSkipStatus\(\{/, 'runner.ts uses the one function')
+  assert.doesNotMatch(RUNNER, /ledger\.record\('adapter:jobboards', job\.sources \?/, 'no inline status choice left')
+  // council (Sonnet R1): a selection that includes job boards is not "skipped": the board run records its own status
+  assert.equal(boardSkipStatus({ chosen: ['jobboards', 'github'], hiring: true, query: 'B2B SaaS in Austin, TX hiring SDRs', where: [] }), null)
+  assert.equal(boardSkipStatus({ chosen: ['jobboards'], hiring: false, query: 'anything', where: [] }), null)
+  assert.equal(boardSkipStatus({ chosen: ['github'], hiring: true, query: 'B2B SaaS in Austin, TX hiring SDRs', where: [] }), 'skipped_explicit_sources')
+  assert.equal(boardSkipStatus({ chosen: [], hiring: true, query: 'q', where: [] }), 'skipped_explicit_sources')
+  assert.equal(boardSkipStatus({ chosen: null, hiring: false, query: 'Dental clinics in Toronto', where: [] }), 'skipped_no_hiring_signal')
+  assert.equal(boardSkipStatus({ chosen: null, hiring: true, query: 'Fintech founders in Europe hiring sales', where: [] }), 'skipped_no_place:region:Europe')
+})
+
+test('#1205 every status boardSkipStatus can give has a plain reason', () => {
+  const given = new Set([
+    boardSkipStatus({ chosen: ['github'], hiring: true, query: 'q', where: [] }),
+    boardSkipStatus({ chosen: null, hiring: false, query: 'q', where: [] }),
+    boardSkipStatus({ chosen: null, hiring: true, query: 'Fintech founders in Europe hiring sales', where: [] }),
+    boardSkipStatus({ chosen: null, hiring: true, query: 'Founders hiring sales', where: [] }),
+  ])
+  for (const status of given) {
+    const note = skipNote(status!)
     assert.ok(note && note.length > 20, `${status}: ${note}`)
     assert.doesNotMatch(note!, /Not used for this search|skipped|_/, `${status}: plain words, not the status`)
   }
