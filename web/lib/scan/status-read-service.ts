@@ -1,4 +1,5 @@
 import { shownIcp } from './carry-exclusions.ts'
+import { recordedJobCostUsd } from './job-cost.ts'
 import { readProviderIssues } from './provider-issues.ts'
 import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verification-pass.ts'
 import { getJob } from './store-db.ts'
@@ -47,7 +48,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const progress = progressOf(source_runs, effectiveStatus(job))
   const saved = await readJobCost(db, tenantId, job.id)
   // Spend for the "Nothing was charged" claim is BOTH ledgers (max_usd reservation + per-job cap ledger): either can hold the only record of a paid call (xhawk review of #1060).
-  const outcome = scanOutcome({ ...(job as object), spend_usd: saved.read ? (saved.reserved_usd ?? 0) + (saved.cap_reserved_usd ?? 0) : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
+  const outcome = scanOutcome({ ...(job as object), spend_usd: saved.read ? recordedJobCostUsd(saved.reserved_usd, saved.cap_reserved_usd) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.
@@ -68,7 +69,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
       }
       const capUnknown = trial && trialCap === null
       const ended = job.status === 'done' || job.status === 'failed'
-      const compared = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }, trialCap) : null
+      const compared = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, finalUsd: saved.read ? recordedJobCostUsd(saved.reserved_usd, saved.cap_reserved_usd) : null, servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }, trialCap) : null
       const actual = compared
       // Cost per verification pass: the scan's own verified counter as denominator, model cost as
       // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead

@@ -1,4 +1,5 @@
 import type { Db } from '../db/client.ts'
+import { recordedJobCostUsd } from '../scan/job-cost.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults, type CompanyFirstResultCounts } from '../scan/company-first-results.ts'
 import { hasSentHistory } from './campaign-view.ts'
@@ -30,7 +31,7 @@ export interface CampaignDetail {
 // On the Db layer (SQLite or Postgres). Leads list in insertion order and messages newest first with insertion order
 // breaking same-second ties, as the raw queries did with rowid (insert_seq: lib/db/insertion-order.ts).
 export async function campaignDetail(db: Db, tenantId: string, jobId: string): Promise<CampaignDetail | null> {
-  const job = await db.get<CampaignDetail['job']>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, coalesce(spend_reserved_usd, 0) + coalesce(spend_cap_reserved_usd, 0) AS spend_usd, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
+  const job = await db.get<CampaignDetail['job'] & { spend_run_usd?: number | string | null; spend_cap_usd?: number | string | null }>("SELECT id, query, status, error, CASE WHEN funded_by = 'trial' THEN 'trial' END AS funded_by, spend_reserved_usd AS spend_run_usd, spend_cap_reserved_usd AS spend_cap_usd, created_at, candidates, verified, needs_review, dropped, enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ? AND user_id = ?", [jobId, tenantId])
   if (!job) return null
   const w = await db.get<{ icp: string | null; run_budget: string | null }>('SELECT icp, run_budget FROM scan_jobs WHERE id = ? AND user_id = ?', [job.id, tenantId])
   const rows = await db.all<Omit<CampaignDetail['leads'][number], 'window_held' | 'gate_held'> & { event_date: string | null }>(`SELECT id, company, name, evidence_excerpt, confidence, human_confirmed_at, review_reason, human_confirmed_from, quarantined_at, quarantine_reason, event_date
@@ -48,6 +49,8 @@ export async function campaignDetail(db: Db, tenantId: string, jobId: string): P
     FROM outreach_messages m JOIN leads l ON l.id = m.lead_id
     WHERE m.tenant_id = ? AND l.scan_job_id = ? ORDER BY m.created_at DESC, m.insert_seq DESC`, [tenantId, job.id])
   // The row was read: an empty spend column means no paid call was recorded (0), the same as the status read and the history list.
-  return { job: { ...job, spend_usd: job.spend_usd ?? 0 }, leads, messages: marked ? messages.filter(m => hasSentHistory(m) || proof?.readyIds.has(m.lead_id)) : messages,
+  const { spend_run_usd, spend_cap_usd, ...row } = job
+  // the job's one recorded cost (job-cost.ts, #1517): never the two guards' columns added
+  return { job: { ...row, spend_usd: recordedJobCostUsd(spend_run_usd, spend_cap_usd) ?? 0 }, leads, messages: marked ? messages.filter(m => hasSentHistory(m) || proof?.readyIds.has(m.lead_id)) : messages,
     ...(marked ? { company_first_counts: proof?.counts ?? null } : {}) }
 }
