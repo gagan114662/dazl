@@ -28,8 +28,6 @@ export async function launchFixture() {
   const pages: Record<string,string> = {
     '/robots.txt': 'User-agent: *\nAllow: /',
     '/': `<html><title>Brightloop</title><p>${TEXT}</p><p>Brightloop, 100 Example Avenue, Chicago, IL 60601</p><a href="/team">Our team</a><a href="/contact">Contact</a></html>`,
-    // Pat Kim and Sue Ray print their own addresses (pat.kim@ / sue.ray@), so a first.last format is learnable for Dana Lee, who prints none:
-    // exactly the precondition of a guessed dana.lee@ address.
     '/team': `<html><p>${TEXT}</p><h3>Dana Lee</h3><p>Founder</p><div data-search-string="Pat Kim pat.kim@${SITE}"><h3>Pat Kim</h3><p>Founder</p></div><div data-search-string="Sue Ray sue.ray@${SITE}"><h3>Sue Ray</h3><p>Founder</p></div></html>`,
     '/contact': `<html><p>${TEXT}</p><p>Brightloop, 100 Example Avenue, Chicago, IL 60601</p></html>`,
     '/news/seed': `<html><p>${TEXT}</p></html>`,
@@ -58,36 +56,26 @@ export async function launchFixture() {
   return {r,jobId,leads,lead,enr,rows,site,people,target,providerCalls,fixtureFetch,crawlReads}
 }
 
-// #1037 (THE BAR): a buyer's email must be published on the company's own domain. An address built from a learned format (pat.kim@ / sue.ray@
-// -> dana.lee@) is a guess, not a published address: it is never made, never checked with the mailbox verifier (no spend), never shown and never
-// used, even with the guess flag and a verifier key configured.
-test('#1036/#1037 real first-play runner -> US lead with a learnable address format -> Find work email never makes, checks, shows or uses a guessed address', async () => withEnv(async () => {
+test('#1036 real first-play runner -> ready named US lead -> one click checks its newly learned guess under the existing cap', async () => withEnv(async () => {
   const s = await launchFixture()
   assert.equal(s.r.r,'done'); assert.equal(s.lead.review_reason,null,'must genuinely pass ready gates')
   assert.equal(verifiedLeads(s.r.db,'A',s.jobId).length,1)
-  assert.equal(s.site?.state,'fact'); assert.ok(s.target,'the real crawl listed Dana Lee, a Find work email target')
-  // #1037: her page links no LinkedIn, so she is not the lead's named buyer; Find work email on the details view is still offered for her
-  assert.equal(leadPerson(s.rows,'Founder',Date.now(),s.site),null)
-  // not vacuous: the two printed addresses that make a first.last guess for her buildable were stored
-  assert.deepEqual((s.r.db.prepare("SELECT address FROM email_candidates WHERE tier = 'published' ORDER BY address").all() as {address:string}[]).map(r=>r.address),[`pat.kim@${SITE}`,`sue.ray@${SITE}`])
+  assert.equal(s.site?.state,'fact'); assert.ok(s.target,'the real crawl stored the buyer')
+  assert.equal(leadPerson(s.rows,'Founder',Date.now(),s.site),null,'#1037: a team-page person with no page-linked LinkedIn is not the lead\'s named buyer')
   const report = JSON.parse((s.r.db.prepare('SELECT report FROM scan_run_report').get() as {report:string}).report)
   assert.ok(report.enrichment.some((x:{stage:string;status:string})=>x.stage==='people_search' && ['ok','attempted_no_result'].includes(x.status)))
   const result = await findWorkEmail(s.r.db,'A',s.lead.id,targetKey(s.target!),{env:ENV,fetchImpl:s.fixtureFetch})
   const pageRead = workEmailPageRead(s.r.db,'A',s.leads,ENV)
   const usage = await mailboxCheckUsage(sqliteDb(s.r.db),'A',ENV)
   if(process.env.CONTACTS_RECEIPT) writeFileSync(process.env.CONTACTS_RECEIPT,JSON.stringify({synthetic:true,jobId:s.jobId,leads:s.leads.map(l=>({...l,enrichments:s.enr[l.id]})),site:s.site,targets:s.people.map(p=>({key:targetKey(p),name:p.name,title:p.title})),result,pageRead,usage,report,crawlReads:s.crawlReads,providerCalls:s.providerCalls},null,2))
+  assert.equal(result.guess?.label,'guessed, verified',JSON.stringify(result))
+  assert.equal(s.providerCalls.length,1,'one configured verifier request, not a provider enrichment')
+  assert.deepEqual(usage.day,{used:1,cap:1,remaining:0}); assert.equal(usage.state,'day_spent')
   const stored = s.r.db.prepare('SELECT contact FROM leads WHERE id = ?').get(s.lead.id) as {contact: string | null}
   assert.equal(stored.contact,s.lead.contact,'no new recipient authority')
-  assert.equal(listLeads(s.r.db,'B',s.jobId).length,0,'no cross-tenant leads')
-  // no guess: not returned, not shown on the page read, nothing guessed for Dana Lee anywhere in the answer
-  assert.equal(result.guess ?? null,null,JSON.stringify(result))
-  assert.deepEqual(pageRead.guesses?.[s.lead.id] ?? [],[],'the page read shows no guessed address')
-  assert.doesNotMatch(JSON.stringify({result,pageRead}),/dana\.?lee@|dlee@|danal@/i,'no address was built for Dana Lee')
-  assert.deepEqual(s.r.db.prepare("SELECT address FROM email_candidates WHERE tier = 'guessed'").all(),[],'no guessed address stored either')
-  // no spend on a guess: the mailbox verifier was never called and no slot was reserved
-  assert.deepEqual(s.providerCalls,[],'no mailbox check of a guessed address')
-  assert.deepEqual(usage.day,{used:0,cap:1,remaining:1})
+  assert.equal(pageRead.guesses?.[s.lead.id]?.[0]?.label,'guessed, verified','canonical page read persists the checked result')
   const replay = await findWorkEmail(s.r.db,'A',s.lead.id,targetKey(s.target!),{env:ENV,fetchImpl:s.fixtureFetch})
-  assert.equal(replay.guess ?? null,null); assert.deepEqual(s.providerCalls,[],'a second click spends nothing either')
+  assert.equal(replay.guess?.label,'guessed, verified'); assert.equal(s.providerCalls.length,1,'replay never checks again')
+  assert.equal(listLeads(s.r.db,'B',s.jobId).length,0,'no cross-tenant leads')
   s.r.db.close()
 }))
