@@ -1,0 +1,5 @@
+[
+  { "issue": 1428, "check": "ops/acceptance/checks/privacy-final.sh" },
+  { "issue": 1393, "check": "ops/acceptance/checks/research-engine-gone.sh" },
+  { "issue": 1122, "check": "ops/acceptance/checks/extension-task-api.sh" }
+]
