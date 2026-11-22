@@ -95,3 +95,19 @@ test('#1205 a, an and new are never the role; job posting / listing / ad name th
     if (days !== null) assert.equal(h[0].within_days, days, q)
   }
 })
+
+// council (Opus R6/R10/R11): vacancy postings name the job like job postings; a quantity before "of" ("dozens of jobs", "a list of jobs") is no
+// role; "advertising for new jobs" is an open role with no title
+test('#1205 vacancy listings, quantities and "advertising for new jobs" never leave a filler word as the role', () => {
+  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  for (const [q, role, days] of [
+    ['Firms that posted a vacancy listing for a nurse', 'nurse', null],
+    ['Firms that posted a new vacancy ad in the past 30 days', '', 30],
+    ['Firms advertising for new jobs', '', null],
+    ['Firms that posted dozens of jobs', '', null],
+    ['Firms that posted a list of jobs in Toronto', '', null],
+  ] as const) {
+    const h = one(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q)
+    if (days !== null) assert.equal(h[0].within_days, days, q)
+  }
+})
