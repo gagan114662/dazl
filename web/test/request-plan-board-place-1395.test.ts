@@ -117,3 +117,23 @@ test('#1395 runJob: a non-Claude tenant keeps the job boards as before: no plan 
   assert.deepEqual(detailed(seen), [3, 4], `the Toronto postings were read as on main (got ${JSON.stringify(detailed(seen))})`)
   assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `the job boards ran: ${boardsStatus(x)}`)
 })
+
+// Qodo Medium (#1527): a bare US city name is a US place only for a US profile (main's profilePlace rule, #1205 review F1): a UK profile's
+// "Birmingham" is never Birmingham, AL, whatever country the model guessed.
+test('#1395 runJob: a UK profile\'s request for "Birmingham" with a model guess of US never searches Birmingham, AL', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, 'SaaS firms hiring account executives in Birmingham', ['Birmingham'], 'GB',
+    plan([{ text: 'Birmingham', city: 'Birmingham', region: null, country: 'US' }])))
+  assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed for a US Birmingham')
+  assert.match(boardsStatus(x) ?? '', /^skipped_/)
+})
+
+// Qodo Medium (#1527): an industry word the model returns as the city ("Fintech") is not a place the data knows in that state: the board source
+// holds (a named reason) rather than searching a city "Fintech, CA" (#1171), and never widens an unknown city to its whole state.
+test('#1395 runJob: a model reply naming "Fintech" as the city of California holds the boards; no "Fintech, CA" search', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, 'Companies in Fintech, California hiring account executives', ['California'], 'US',
+    plan([{ text: 'Fintech, California', city: 'Fintech', region: 'California', country: 'US' }])))
+  assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed for a city that is no place')
+  assert.match(boardsStatus(x) ?? '', /^skipped_no_place:city:/)
+})

@@ -167,3 +167,21 @@ test('#1395 grounding: a written region or country the plan omits or contradicts
   const p = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => ({ text: JSON.stringify(plan([{ text: 'London, Ontario', city: 'London', region: null, country: null }])), model: 'm' }) } as unknown as Provider
   assert.deepEqual(await readRequestPlan(p, 'k', req, 'T'), { ok: false, reason: 'place_not_in_request' })
 })
+
+// Qodo Medium (#1527), against the REAL guard: a refused reservation latches a SpendGuard (every later reservation is refused, even one with room).
+// The optional plan call therefore checks room first and reserves nothing when there is none, so no guard latches and later paid steps go on.
+test('#1395 the plan call checks room on the real guards first: no room means no reservation, no latch; a later step still reserves', async () => {
+  const { SpendGuard } = await import('../lib/llm/spend-guard.ts')
+  const { optionalCallHasRoom } = await import('../lib/scan/runner.ts')
+  // what a reservation without the check does: the real guard latches
+  const latched = new SpendGuard(0.01, 0.0095)
+  assert.throws(() => latched.reserveUsd(0.004), (e: unknown) => e instanceof SpendRefused)
+  assert.throws(() => latched.reserveUsd(0.0001), (e: unknown) => e instanceof SpendRefused, 'a latched guard refuses even a step with room')
+  // with the check: no room for the plan, nothing reserved, the guard is not latched and a later small step still reserves
+  const g = new SpendGuard(0.01, 0.0095)
+  assert.equal(await optionalCallHasRoom([g], 0.004), false)
+  assert.equal(g.refused, false)
+  g.reserveUsd(0.0004)
+  assert.ok(Math.abs(g.reservedUsd - 0.0099) < 1e-12)
+  assert.equal(await optionalCallHasRoom([new SpendGuard(1)], 0.004), true)
+})
