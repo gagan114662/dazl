@@ -17,6 +17,8 @@ test('the actual-vs-estimate line names the model estimate it compares against, 
     { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0 },
   ]) {
     const s = compareActual(est, a).summary
+    // PM 2026-11-22 (changed, no-hedge rule): an unpriceable run shows 'Final cost $X.' or nothing
+    if (a.requests > 0) { assert.equal(s, '', s); continue }
     assert.match(s, /model-request estimate/, s)
     assert.doesNotMatch(s, /(?<!model-request )\b[Ee]stimate (was|\$)/, s)
   }

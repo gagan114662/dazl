@@ -30,7 +30,7 @@ test('#1168 item 1: three model calls refused before sending -> the cost line sa
   assert.doesNotMatch(a.summary, /recorded|unknown/)
   // one refused call reads in the singular; calls that WERE sent keep the existing wording (the refusals do not hide them)
   assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0, refusedBeforeSending: 1 }).summary, /^No model call was made: 1 was refused/)
-  assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 2, requestsWithTokens: 0, refusedBeforeSending: 1 }).summary, /^2 model calls recorded/)
+  assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 2, requestsWithTokens: 0, refusedBeforeSending: 1 }).summary, /^$/) // PM 2026-11-22 (changed, no-hedge rule): an unpriceable run shows 'Final cost $X.' or nothing
   assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0 }).summary, /^Actual model cost was not recorded/)
 })
 

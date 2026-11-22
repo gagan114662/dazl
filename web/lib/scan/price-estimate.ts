@@ -430,6 +430,7 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
   // what IS known (call count, reported tokens, why no USD) and that the actual cost is unknown - never $0 or free.
   let summary: string
+  let noFigure = false   // PM 2026-11-22: the model cost cannot be priced - the line shows the final cost or nothing, never a hedge
   if (settled !== null) {
     const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
     summary = `Actual model cost ${money(settled)}, the sum of each call's settled cost (${served.join(', ')}), against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
@@ -439,9 +440,9 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
     const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
     summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
   }
-  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) { noFigure = true; summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.` }
+  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) { noFigure = true; summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.` }
+  else if (reqs !== null && reqs > 0) { noFigure = true; summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.` }
   // #1168: nothing was sent, so nothing was charged: say so, never "unknown" and never "recorded"
   else if ((a.refusedBeforeSending ?? 0) > 0) summary = `No model call was made: ${a.refusedBeforeSending} ${a.refusedBeforeSending === 1 ? 'was' : 'were'} refused by a spending limit before sending, so the model cost is $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   else summary = `Actual model cost was not recorded (model-request estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
@@ -455,7 +456,8 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   const final = a.finalUsd ?? null, held = a.finalHeldSteps ?? null
   const heldNote = held !== null && held > 0 ? `, including ${held === 1 ? 'one paid step' : `${held} paid steps`} counted as billed at the amount reserved for ${held === 1 ? 'it' : 'them'}` : ''
   // PM 2026-11-22: a mixed-model run whose ledger is fully settled shows the billed amount and nothing more
-  if (mixed && final !== null && held === 0) summary = `Final cost ${money(final)}.`
+  if (noFigure) summary = final !== null ? `Final cost ${money(final)}.` : ''
+  else if (mixed && final !== null && held === 0) summary = `Final cost ${money(final)}.`
   else if (final !== null && held !== null) summary = `Final cost ${money(final)}${heldNote}. ${summary}`
   else if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
   return { final_usd: final !== null && held !== null ? final : null, model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: clampToCap(est.total, trialCapUsd), within, summary }

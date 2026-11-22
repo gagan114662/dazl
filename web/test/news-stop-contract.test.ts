@@ -161,17 +161,12 @@ test('compareActual: recorded calls with unsettled USD are stated truthfully; th
   const a = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-future-unlisted', searches: null, reservedUsd: null, requests: 1, requestsWithTokens: 1, capReservedUsd: 0.002214 })
   assert.equal(a.model_usd, null, 'no fabricated USD')
   assert.equal(a.within, 'unknown')
-  assert.match(a.summary, /1 model call recorded/)
-  assert.match(a.summary, /368 input \/ 74 output tokens/)
-  assert.match(a.summary, /no listed price/)
-  assert.match(a.summary, /unknown, not \$0/, 'unsettled is unknown, never free')
-  assert.match(a.summary, /Reserved under this run's spend cap: \$0\.0022 \(a reservation, not a settled charge\)/, 'the reservation is named as itself')
+  // PM 2026-11-22 (changed, no-hedge rule): an unpriceable run shows 'Final cost $X.' or nothing
+  assert.equal(a.summary, '')
   assert.equal(a.cap_reserved_usd, 0.002214)
   // Calls recorded but the provider reported no tokens at all.
   const b = compareActual(est, { inputTokens: null, outputTokens: null, tokensComplete: false, model: null, searches: null, reservedUsd: null, requests: 2, requestsWithTokens: 0 })
-  assert.match(b.summary, /2 model calls recorded/)
-  assert.match(b.summary, /no token usage/)
-  assert.match(b.summary, /unknown - not \$0/)
+  assert.equal(b.summary, '') // PM 2026-11-22 (changed, no-hedge rule): an unpriceable run shows 'Final cost $X.' or nothing
   // Nothing recorded at all keeps the old honest "not recorded".
   const c = compareActual(est, { inputTokens: null, outputTokens: null, tokensComplete: false, model: null, searches: null, reservedUsd: null, requests: 0, requestsWithTokens: 0 })
   assert.match(c.summary, /was not recorded/)
@@ -354,13 +349,11 @@ test('compareActual: a dated KNOWN served model prices (the QA token shape settl
   // Genuinely unlisted model: honestly unknown with the real reason.
   const unlisted = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-future-unlisted', searches: 0, reservedUsd: null, requests: 1, requestsWithTokens: 1 })
   assert.equal(unlisted.model_usd, null)
-  assert.match(unlisted.summary, /no listed price/)
-  assert.match(unlisted.summary, /unknown, not \$0/)
+  assert.equal(unlisted.summary, '') // PM 2026-11-22 (changed, no-hedge rule): an unpriceable run shows 'Final cost $X.' or nothing
   // Mixed served models with different prices: the stored sums cannot be priced as one total - never fabricated.
   const mixed = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', servedModels: ['claude-sonnet-4-5-20250929', 'claude-opus-4-1'], searches: 0, reservedUsd: null, requests: 2, requestsWithTokens: 2 })
   assert.equal(mixed.model_usd, null)
-  assert.match(mixed.summary, /more than one served model/)
-  assert.match(mixed.summary, /not \$0/)
+  assert.equal(mixed.summary, '') // PM 2026-11-22 (changed, no-hedge rule): an unpriceable run shows 'Final cost $X.' or nothing
   // Mixed ids that normalize to the SAME price entry price fine (dated + undated sonnet) - still the recorded-token
   // component while cache usage is unrecorded.
   const samePrice = compareActual(est, { inputTokens: 368, outputTokens: 74, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', servedModels: ['claude-sonnet-4-5-20250929', 'claude-sonnet-4-5'], searches: 0, reservedUsd: null, requests: 2, requestsWithTokens: 2 })
