@@ -57,7 +57,10 @@ export interface Fixture {
   researchRealReserve?: boolean            // the stub research reserves through the REAL spend ledger before failing (durable production-model uncertainty, not a no-reserve stub)
   fundedBy?: 'trial'                       // the job is a free-trial scan (funded_by = 'trial'; the caller sets the DAZL_TRIAL_* env)
   model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
+  modelPlan?: object | string | 'provider_error'   // SYNTHETIC request-plan reply (#1395): an object is sent as JSON, a string as written; 'provider_error' fails the call. Unset: the plan prompt gets the extraction reply (off the schema, so the board source holds)
 }
+// #1395: the request-plan prompt opens with this line (the contract lib/scan/request-plan.ts writes to)
+const PLAN_PROMPT_HEAD = 'You read one B2B prospecting request and return its plan as JSON.'
 export async function runFixture(f: Fixture) {
   resetTinyfishState()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateCompetitors(db); migrateNeedEvidence(db)
@@ -97,7 +100,13 @@ export async function runFixture(f: Fixture) {
     }
     return new Response('{}', { status: 200 })
   }) as typeof fetch
-  const reply = (p: string, maxTokens?: number) => { calls.prompts.push(p); return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
+  const reply = (p: string, maxTokens?: number) => {
+    calls.prompts.push(p)
+    if (p.startsWith(PLAN_PROMPT_HEAD) && f.modelPlan !== undefined) {
+      if (f.modelPlan === 'provider_error') throw new ProviderError('retry', 'http 529', 'none')
+      return typeof f.modelPlan === 'string' ? f.modelPlan : JSON.stringify(f.modelPlan)
+    }
+    return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async (_rk: string, _rp: string, _rf?: typeof fetch) => {
