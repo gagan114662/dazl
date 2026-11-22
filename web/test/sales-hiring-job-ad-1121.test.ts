@@ -59,7 +59,7 @@ test('#1121 HELD: no vacancy title, another company, a negation, the wrong title
     ['past', 'Sales Development Representative at Mercury was filled previously', 'Mercury'],
     ['a manager of the role', 'Sales Development Representative Manager at Mercury', 'Mercury'],
     ['a hiring sentence, not an ad heading (the clause reading decides those)', 'Mercury is hiring a Sales Development Representative', 'Mercury'],
-    ['a different role than requested', 'Account Executive at Mercury', 'Mercury'],
+    // d84a33a0 (changed, PM): a generic 'sales rep'/'salesperson' request accepts an AE posting, so 'Account Executive at Mercury' is no longer a different role
     ['empty quote', '', 'Mercury'],
   ] as const) assert.equal(jobAdQuoteRole(quote, company, roles), null, why)
 })

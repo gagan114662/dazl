@@ -70,7 +70,9 @@ test('#1122 the sales gate reads both roles of "posted an SDR/BDR or sales rep j
   assert.equal(matchedHiringRole('Sales Development Representative', roles)?.normalized, 'sdr')
   assert.equal(matchedHiringRole('Business Development Representative', roles)?.normalized, 'bdr')
   assert.equal(matchedHiringRole('Sales Representative', roles)?.normalized, 'salesperson')
-  assert.equal(matchedHiringRole('Account Executive', roles), null, 'an adjacent role still does not match')
+  // d84a33a0 (changed, PM): a generic sales rep accepts an AE posting; AE requests, SDR/BDR and 'AE Manager' are unchanged
+  assert.equal(matchedHiringRole('Account Executive', roles)?.normalized, 'salesperson')
+  assert.equal(matchedHiringRole('Account Executive', roles.filter(r => r.normalized !== 'salesperson')), null, 'SDR/BDR alone still do not match an AE')
 })
 
 // Council (opus, haiku): readings that must not change, each one failed on the first version of this change.
@@ -98,7 +100,8 @@ test('#1122 postings: a sales posting proves a sales alternative; a non-sales re
   assert.notEqual(at('Companies hiring a receptionist or SDR in the last 30 days', posting('Account Executive')), 'pass')
   assert.notEqual(at('Companies hiring SDRs in the last 30 days', { ...posting('Software Engineer'), kind: 'hiring-role' }), 'pass')
   assert.notEqual(at('Companies hiring a full-stack/backend engineer in the last 30 days', { ...posting('Full-Stack Marketing Manager'), kind: 'hiring-role' }), 'pass')
-  assert.notEqual(at('Companies hiring a sales rep in the last 30 days', { ...posting('2 sales/GTM roles posted, newest 2026-11-10'), label: 'Account Executive; Solutions Engineer' }), 'pass')
+  // d84a33a0 (changed, PM): a generic sales rep request is answered by an Account Executive board title
+  assert.equal(at('Companies hiring a sales rep in the last 30 days', { ...posting('2 sales/GTM roles posted, newest 2026-11-10'), label: 'Account Executive; Solutions Engineer' }), 'pass')
   assert.equal(at('Companies hiring SDRs in the last 30 days', { ...posting('Sales Development Representative'), kind: 'hiring-role' }), 'pass')
   assert.equal(at('Companies hiring a receptionist or SDR in the last 30 days', { ...posting('Front Desk Receptionist'), kind: 'hiring-role' }), 'pass')
   // a broad request names no title: any dated sales posting counts, as before this change

@@ -23,7 +23,7 @@ const SURFACES: Record<string, string[]> = {
   sdr: ['SDR', 'sales development representative', 'sales development rep'],
   bdr: ['BDR', 'business development representative', 'business development rep'],
   ae: ['AE', 'account executive'],
-  salesperson: ['salesperson', 'sales person', 'sales representative', 'sales rep'],
+  salesperson: ['salesperson', 'sales person', 'sales representative', 'sales rep', 'AE', 'account executive'],
 }
 const roleSurfaceForms = (r: RequestedHiringRole): string[] => [r.term, ...(SURFACES[r.normalized] ?? [])]
 // Quest #1534 (M5): where a requested role sits in a title, read by the planner's own normalization (singular(), and a bare "of" ignored), so the
@@ -114,7 +114,9 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
 export function matchedHiringRole(title: string, roles: RequestedHiringRole[]): RequestedHiringRole | null {
   const ofless = (t: string) => t.replace(/ of /g, ' ')
   const n = ofless(` ${normal(title)} `)
-  return roles.find(r => n.includes(ofless(` ${r.normalized} `))) ?? null
+  // d84a33a0 (Knack "Sales Account Executive"): an account executive is a sales rep, so a requested generic salesperson / sales rep accepts
+  // an AE title. One way only: a requested AE is not answered by "Sales Representative", and SDR / BDR stay their own roles.
+  return roles.find(r => n.includes(ofless(` ${r.normalized} `)) || (r.normalized === 'salesperson' && n.includes(' ae '))) ?? null
 }
 // Only sales/GTM-family requested titles gate drafting: the required proof is the SALES-hiring check. A requested
 // non-GTM title (receptionist, payroll, front-desk) is a buying signal - recorded as evidence, never a drafting hold.
