@@ -128,3 +128,12 @@ test('#1205 "dozens of nurse jobs" reads the nurse, not the quantity', () => {
     ['Companies that posted a VP of Sales job in the last 60 days', 'VP of Sales'],
   ] as const) { const h = one(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q) }
 })
+
+// council (Haiku R13/R14): a "for <role>" clause never swallows a second posting; a container before "of" is not the title
+test('#1205 a second posting after "and" is its own condition; "a list of receptionist jobs" reads the receptionist', () => {
+  const conds = planConditions(compileTargeting('Companies that posted a job opening for a sales rep and advertised new vacancies in the past 30 days', null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  assert.equal(conds.length, 2, JSON.stringify(conds.map(c => c.role)))
+  assert.equal(conds[0].role, 'sales rep'); assert.equal(conds[1].role, ''); assert.equal(conds[1].within_days, 30)
+  const list = planConditions(compileTargeting('Dental practices that posted a list of receptionist jobs in the past 90 days', null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  assert.equal(list.length, 1); assert.equal(list[0].role, 'receptionist')
+})
