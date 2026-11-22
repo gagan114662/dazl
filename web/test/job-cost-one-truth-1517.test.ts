@@ -177,3 +177,20 @@ test('#1517: an unreadable spend column makes no charge claim on the history lis
   assert.doesNotMatch(s.outcome.label, /Nothing was charged/)
   db.close()
 })
+
+// Qodo (#1535): the page's status read must judge the STORED value with the same reader as history and campaign. Number()
+// first would turn '0x1A' into 26 and '' into 0 (a "Nothing was charged" claim) before the reader could call it unknown.
+for (const stored of ['0x1A', '']) {
+  test(`#1517: a stored spend of ${JSON.stringify(stored)} is unknown on the page too: no final cost, no "Nothing was charged"`, async () => {
+    const db = new Database(':memory:')
+    migrateAllSqlite(db)
+    db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, error, funded_by, estimate, spend_reserved_usd, spend_cap_reserved_usd, created_at, finished_at) VALUES (?, 'T', 'x', 'i', 'l', 'q', 'failed', 'budget_stopped', 'trial', ?, ?, 0, 1795300000, 1795300100)").run(JOB, estimate, stored)
+    const h = (await historyJobs(sqliteDb(db), 'T')).find(j => j.id === JOB) as Record<string, unknown>
+    assert.equal('spend_usd' in h, false)
+    const s = await readScanStatus(sqliteDb(db), 'T', JOB) as unknown as { outcome: { label: string }; cost: { actual: { final_usd: number | null; summary: string } | null } | null }
+    assert.doesNotMatch(s.outcome.label, /Nothing was charged/)
+    assert.equal(s.cost?.actual?.final_usd ?? null, null)
+    assert.doesNotMatch(JSON.stringify(s.cost), /Final cost/)
+    db.close()
+  })
+}
