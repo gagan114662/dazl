@@ -79,13 +79,14 @@ for (const [name, modelPlan, status] of [
 
 // Quest (#1395 review): never search a different place than the request named. A place the request writes but the board source cannot place
 // (a bare country) holds the board source; the profile's one place is NOT searched instead.
-test('#1395 runJob: a request place the boards cannot place ("Canada") holds them; the profile place (Toronto) is never searched instead', async () => {
+// PM 2026-11-22 (changed from #1395, which held a bare "Canada"): the request's country is read on the boards; the profile place (Toronto) is
+// still never searched instead of what the request names.
+test('#1395 runJob: a request naming only "Canada" reads the boards on Canada, never narrowed to the profile place (Toronto)', async () => {
   const { http, seen } = board()
   const x = await runFixture(fx(http, 'SaaS startups in Canada hiring account executives', ['Toronto'], 'CA',
     plan([{ text: 'Canada', city: null, region: null, country: 'CA' }])))
-  assert.deepEqual(detailed(seen), [], 'no posting was detail-fetched')
-  assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
-  assert.match(boardsStatus(x) ?? '', /^skipped_no_place:country:Canada/)
+  assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `ran: ${boardsStatus(x)}`)
+  assert.ok(detailed(seen).length > 0 && detailed(seen).every(i => i >= 3), `Canadian postings only (got ${JSON.stringify(detailed(seen))})`)
 })
 
 // Quest: a refused reservation for the plan call holds ONLY the board source; the rest of the scan finishes, and nothing comes from the boards.
@@ -142,7 +143,8 @@ test('#1395 runJob: a model reply naming "Fintech" as the city of California hol
 // with the named reason, never run with no place (which recorded "empty" over the reason). The other picked source still runs.
 test('#1395 runJob: picked job boards with an unplaceable or absent request place record the reason, not "empty"', async () => {
   for (const [req, places, want] of [
-    ['SaaS startups in Canada hiring account executives', [{ text: 'Canada', city: null, region: null, country: 'CA' }], /^skipped_no_place:country:Canada/],
+    // PM 2026-11-22 (changed): a bare country now runs (test above); a region the boards cannot place still records its reason
+    ['SaaS startups in Europe hiring account executives', [{ text: 'Europe', city: null, region: 'Europe', country: null }], /^skipped_no_place:region:Europe/],
   ] as const) {
     const { http, seen } = board()
     const x = await runFixture({ ...fx(http, req, [], 'CA', plan([...places])), sources: JSON.stringify({ adapters: ['jobboards', 'careers'] }) })
@@ -186,4 +188,18 @@ test('Qodo #1556: a place-free request with profile where ["Europe"] keeps the s
     assert.match(boardsStatus(x) ?? '', /^skipped_no_place/, `country=${country}`)
     assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
   }
+})
+
+// PM 2026-11-22: a bare country ("Canada"), in the request or the profile, reads the boards on that country - any country name.
+test('PM: a request naming only "Canada" reads the Canadian boards', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, 'SaaS startups in Canada hiring account executives', [], '', plan([{ text: 'Canada', city: null, region: null, country: 'CA' }])))
+  assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `ran: ${boardsStatus(x)}`)
+  assert.ok(detailed(seen).length > 0 && detailed(seen).every(i => i >= 3), `Canadian postings only (got ${JSON.stringify(detailed(seen))})`)
+})
+test('PM: a profile naming only "United States" reads the US boards for a place-free request', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, CASE1, ['United States'], '', plan([])))
+  assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `ran: ${boardsStatus(x)}`)
+  assert.ok(detailed(seen).length > 0 && detailed(seen).every(i => i <= 2), `US postings only (got ${JSON.stringify(detailed(seen))})`)
 })

@@ -41,6 +41,7 @@ import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, s
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
 import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason, boardPlaceOf, countryPlace, ANYWHERE, type Place } from '../sources/jobboards.ts'
+import { resolveSegment } from './countries.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr, salesHiringRequired } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
@@ -2081,7 +2082,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // PM ruling 2026-11-22 (over #1205/#1395 for this case only): a request that names NO place, with no profile place, still reads the boards -
     // on the ICP's country when one is set, else with no place filter. A place the request names but the boards cannot place still holds them.
     const noPlaceAnywhere = !legacyBoards && wantsBoards && !planHold && !requestNamesPlace && !planPlace && !(icpForSources?.where ?? []).some(w => typeof w === 'string' && w.trim())   // any profile place, even one the boards cannot resolve ('Europe', Qodo #1556) or several (#1095), still holds
-    const boardPlace: Place | null = planPlace ?? (profilePlace ? placeIn(`in ${profilePlace}`) : noPlaceAnywhere ? (icpForSources?.country ? countryPlace(icpForSources.country) : null) ?? ANYWHERE : null)
+    // PM 2026-11-22: a profile whose every place entry is a bare country name, all one country, reads the boards on that country
+    const profileWhere = (icpForSources?.where ?? []).filter((w): w is string => typeof w === 'string' && !!w.trim())
+    const profileCountries = [...new Set(profileWhere.map(w => resolveSegment(w.trim(), true)))]
+    const profileCountry = !legacyBoards && wantsBoards && !planHold && !requestNamesPlace && !planPlace && profileWhere.length > 0 && profileCountries.length === 1 && profileCountries[0] ? countryPlace(profileCountries[0]) : null
+    const boardPlace: Place | null = planPlace ?? profileCountry ?? (profilePlace ? placeIn(`in ${profilePlace}`) : noPlaceAnywhere ? (icpForSources?.country ? countryPlace(icpForSources.country) : null) ?? ANYWHERE : null)
     const boardsQuery = job.query ? (!planPlace && profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = legacyBoards ? !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery)) : !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
