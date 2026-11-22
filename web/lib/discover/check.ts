@@ -8,13 +8,15 @@ import type { DiscoveredLead, SeenPage } from './agent.ts'
 export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen'
 // date: the day shown for the signal. date_source says where it came from: 'page' = Claude read it on the proof page (date_on_page says whether
 // dazl also found it in the page text); 'index' = the proof page prints no date, so this is the day the search index dates the page itself.
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null }
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
-// ...and the page shows something of the SIGNAL, not just the company: the quoted words or the signal's day are in the page text, or the
-// search index dates the page inside the last year (a recent page about the company). A directory or profile page that only names
-// the company (#1571: a review-site listing accepted as proof of an expansion) shows none of these and goes to the user's review.
-export const signalSeen = (l: CheckedLead): boolean => l.quote_on_page || l.date_on_page || l.date_source === 'index'
-export const isShown = (l: CheckedLead): boolean => (l.proof === 'confirmed' || l.proof === 'listed') && signalSeen(l)
+// ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
+//   - a page whose text was read: the words the run quoted as evidence are in that text, and those words are about the signal;
+//   - a page nobody could read: the search result's own title names the company and speaks of the signal.
+// A date is never support. The day the search index gives a page, and a day-of-month number found somewhere on a page, only label
+// the lead (date, date_source, date_on_page): a recently indexed directory profile, or a company page that happens to print the
+// year and a number, says nothing about the signal (#1571, review of #1575). Such a lead goes to the user's review.
+export const isShown = (l: CheckedLead): boolean => (l.proof === 'confirmed' || l.proof === 'listed') && l.signal_seen
 
 const text = (html: string) => html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')
 const fold = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -27,6 +29,32 @@ export function companyOnPage(company: string, page: string): boolean {
   const words = c.split(' ').filter(w => w.length > 2)
   return words.length > 0 && words.every(w => p.includes(` ${w} `))
 }
+// The words of a text that carry meaning for matching: four letters or more, or any token with a digit ("12m", "2026").
+const content = (s: string): string[] => fold(s).split(' ').filter(w => w.length >= 4 || /\d/.test(w))
+// Two words are the same word when they share their first five letters ("expansion" / "expanding"), or are equal.
+const same = (a: string, b: string) => a === b || (a.length >= 5 && b.length >= 5 && a.slice(0, 5) === b.slice(0, 5))
+// How many of the signal's own words (the company's name left out) appear in a text.
+export function signalWordsIn(signal: string, company: string, textToSearch: string): number {
+  const name = new Set(content(company))
+  const want = [...new Set(content(signal).filter(w => !name.has(w)))]
+  const have = content(textToSearch)
+  return want.filter(w => have.some(h => same(w, h))).length
+}
+// The quoted evidence is on the page: the whole quote, or any six consecutive words of it (a quote is often trimmed or joined with an ellipsis).
+export function quoteOnPage(quote: string | null, page: string): boolean {
+  const q = fold(quote ?? ''), p = fold(page)
+  if (q.length < 12) return false
+  if (p.includes(q)) return true
+  const w = q.split(' ')
+  for (let i = 0; i + 6 <= w.length; i++) if (p.includes(w.slice(i, i + 6).join(' '))) return true
+  return false
+}
+// A read page supports the signal when the quoted evidence is on it and that quote shares a word with the signal.
+const quoteSupports = (lead: DiscoveredLead, page: string): boolean => quoteOnPage(lead.evidence_quote, page) && signalWordsIn(lead.signal, lead.company, lead.evidence_quote ?? '') >= 1
+// An unread search result supports the signal when its title shares two of the signal's words (one shared word is too easy:
+// "opening hours" on a directory listing against "opening a second clinic").
+const titleSupports = (lead: DiscoveredLead, title: string): boolean => signalWordsIn(lead.signal, lead.company, title) >= 2
+
 // The day is on the page when its year is and either the ISO day or the day-of-month number is (pages print dates in many
 // styles and languages, so this is a weak check on purpose: it labels, it does not decide).
 export function dayOnPage(day: string | null, page: string): boolean {
@@ -73,9 +101,9 @@ function publicUrl(raw: string): URL | null {
 const pageKey = (raw: string): string => { try { const u = new URL(raw); return `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}${u.search}` } catch { return raw } }
 
 function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_age: string | null, now: Date): CheckedLead {
-  const quote = lead.evidence_quote ? fold(lead.evidence_quote) : ''
-  return { ...lead, ...dated(lead, page_age, now), proof: companyOnPage(lead.company, body) ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
-    quote_on_page: quote.length >= 12 && fold(body).includes(quote), date_on_page: dayOnPage(lead.signal_date, body) }
+  const named = companyOnPage(lead.company, body)
+  return { ...lead, ...dated(lead, page_age, now), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
+    quote_on_page: quoteOnPage(lead.evidence_quote, body), signal_seen: named && quoteSupports(lead, body), date_on_page: dayOnPage(lead.signal_date, body) }
 }
 
 export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date()): Promise<CheckedLead> {
@@ -93,7 +121,8 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
   const base = { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
-  return { ...base, proof: hit && companyOnPage(lead.company, hit.title ?? '') ? 'listed' : 'unseen' }
+  const listed = !!hit && companyOnPage(lead.company, hit.title ?? '')
+  return { ...base, proof: listed ? 'listed' : 'unseen', signal_seen: listed && titleSupports(lead, hit!.title ?? '') }
 }
 
 export async function checkLeads(leads: DiscoveredLead[], seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, concurrency = 4): Promise<CheckedLead[]> {

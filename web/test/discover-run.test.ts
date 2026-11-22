@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { runDiscovery } from '../lib/discover/run.ts'
 import type { DiscoverResult, DiscoveredLead } from '../lib/discover/agent.ts'
 
-const lead = (company: string, o: Partial<DiscoveredLead> = {}): DiscoveredLead => ({ company, domain: null, signal: 'opening a new site', signal_date: '2026-10-14', evidence_url: `https://news.example/${company.toLowerCase().replace(/\W+/g, '-')}`, evidence_quote: null, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '', ...o })
+const lead = (company: string, o: Partial<DiscoveredLead> = {}): DiscoveredLead => ({ company, domain: null, signal: 'opening a new site', signal_date: '2026-10-14', evidence_url: `https://news.example/${company.toLowerCase().replace(/\W+/g, '-')}`, evidence_quote: `${company} said it is opening a new site`, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '', ...o })
 const result = (leads: DiscoveredLead[], usd: number, unseen: string[] = []): DiscoverResult => ({ leads, seen: leads.filter(l => !unseen.includes(l.company)).map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `On 14 October 2026 ${l.company} said it is opening a new site.` })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 1, usd }, stop: 'end_turn', model: 'm', note: null })
 const never = (() => { throw new Error('no network in this test') }) as unknown as typeof fetch
 

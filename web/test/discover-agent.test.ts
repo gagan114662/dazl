@@ -53,18 +53,42 @@ test('checkLead: the text Claude read decides first, then the read by dazl, then
   const ours = await checkLead(l, [], page('<html><body><p>14 October 2026</p><p>Northwind Dental will open its second clinic in the spring.</p></body></html>'))
   assert.deepEqual([ours.proof, ours.proof_read_by], ['confirmed', 'dazl'])
   assert.equal((await checkLead(l, [], page('<p>Unrelated story</p>'))).proof, 'company_not_on_page')
-  // a page nobody could read: shown only when the search index dates it recently; a bare listing with the company in its title is not proof of the signal
-  const listed = await checkLead({ ...l, signal_date: null }, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: '3 days ago', text: null }], page('blocked', 403))
-  assert.deepEqual([listed.proof, listed.date_source, isShown(listed)], ['listed', 'index', true])
-  const bare = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental - reviews and opening hours', page_age: null, text: null }], page('blocked', 403))
-  assert.deepEqual([bare.proof, isShown(bare)], ['listed', false])
-  // a page that was read and names the company, but shows neither the quoted words nor the day (a directory profile): to review
-  const profile = await checkLead(l, [], page('<h1>Northwind Dental</h1><p>Family dentist. 212 reviews. Open Monday to Friday.</p>'))
-  assert.deepEqual([profile.proof, profile.quote_on_page, profile.date_on_page, isShown(profile)], ['confirmed', false, false, false])
-  assert.equal(isShown(read), true)
+  // a page nobody could read: shown when the search result's own title names the company AND speaks of the signal, dated or not
+  const listed = await checkLead({ ...l, signal_date: null }, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('blocked', 403))
+  assert.deepEqual([listed.proof, listed.signal_seen, isShown(listed)], ['listed', true, true])
+  assert.equal(isShown(read), true, 'a real expansion page: the quoted words are in the text that was read')
   const unseen = await checkLead(l, [{ url: 'https://news.example/other', title: 'Northwind Dental', page_age: null, text: null }], page('blocked', 403))
   assert.deepEqual([unseen.proof, isShown(unseen)], ['unseen', false], 'a proof URL the run never saw and nobody can read is not shown')
   assert.equal((await checkLead({ ...l, evidence_url: 'http://127.0.0.1/admin' }, [], never)).proof, 'unseen', 'a private address is never fetched')
+})
+
+// Review of #1575: recency and a date-like number are labels, never support for the buying signal.
+test('a recently indexed directory result nobody could read is not shown, however fresh the index date', async () => {
+  const blocked = (async () => new Response('blocked', { status: 403 })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead({ signal_date: null, evidence_quote: null })] }), 1).leads[0]
+  const dir = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental - reviews and opening hours', page_age: '3 days ago', text: null }], blocked)
+  assert.deepEqual([dir.proof, dir.date_source, dir.signal_seen, isShown(dir)], ['listed', 'index', false, false], 'the index date still labels the lead; it does not admit it')
+})
+
+test('a company page that prints the year and a routine number is not shown for a signal dated that day', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0]   // signal_date 2026-10-14, quote about the second clinic
+  const plain = await checkLead(l, [], page('<h1>Northwind Dental</h1><p>Family dentistry at 14 Main Street. Open Monday to Friday.</p><footer>Copyright 2026</footer>'))
+  assert.deepEqual([plain.proof, plain.date_on_page, plain.quote_on_page, plain.signal_seen, isShown(plain)], ['confirmed', true, false, false, false], 'the weak date check still labels; it does not admit')
+  // a quote that IS on the page but says nothing of the signal (the company describing itself) is not support either
+  const self = await checkLead({ ...l, evidence_quote: 'Family dentistry at 14 Main Street' }, [], page('<h1>Northwind Dental</h1><p>Family dentistry at 14 Main Street. Open Monday to Friday.</p>'))
+  assert.deepEqual([self.quote_on_page, self.signal_seen, isShown(self)], [true, false, false])
+})
+
+test('real signal pages stay shown: the full quote, a trimmed quote, and an undated page', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0]
+  const body = '<article><h1>Northwind Dental grows</h1><p>The practice said Northwind Dental will open its second clinic on King Street next spring, adding six chairs.</p></article>'
+  assert.equal(isShown(await checkLead(l, [], page(body))), true)
+  const trimmed = await checkLead({ ...l, evidence_quote: 'Northwind Dental will open its second clinic on King Street ... adding six chairs' }, [], page(body))
+  assert.deepEqual([trimmed.quote_on_page, isShown(trimmed)], [true, true], 'six consecutive quoted words on the page')
+  const undated = await checkLead({ ...l, signal_date: null }, [], page(body))
+  assert.deepEqual([undated.date, isShown(undated)], [null, true], 'no date is a missing label, not a missing proof')
 })
 
 test('second pass: only empty fields are filled, a person needs the page that names them, and the first pass is never overwritten', () => {
