@@ -104,9 +104,9 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
   const is404 = (s: number) => s === 404
   await asB('GET /api/crm', () => crm.GET(), s => s === 200)
   await asB('POST /api/crm', () => crm.POST(req('/api/crm', 'POST', { action: 'push', lead_id: f.lead })), is404)
-  await asB('GET /api/leads/hiring-feed', () => hiringFeed.GET(req(`/api/leads/hiring-feed?job_id=${f.job}`, 'GET')), (s, b) => s === 200 && JSON.parse(b).contacts.length === 0)
-  await asB('POST /api/leads/hiring-feed', () => hiringFeed.POST(req('/api/leads/hiring-feed', 'POST', { retry_job_id: f.job })), (s, b) => s === 202 && JSON.parse(b).retrying === 0)
-  await asB('POST /api/outreach/polish', () => polish.POST(req('/api/outreach/polish', 'POST', { message_id: f.draft })), (s, b) => s === 200 && JSON.parse(b).rewritten === false)
+  await asB('GET /api/leads/hiring-feed', () => hiringFeed.GET(req(`/api/leads/hiring-feed?job_id=${f.job}`, 'GET')), is404) // #830: a foreign id is not found, never an empty 2xx
+  await asB('POST /api/leads/hiring-feed', () => hiringFeed.POST(req('/api/leads/hiring-feed', 'POST', { retry_job_id: f.job })), is404) // #830: a foreign id is not found, never an empty 2xx
+  await asB('POST /api/outreach/polish', () => polish.POST(req('/api/outreach/polish', 'POST', { message_id: f.draft })), is404) // #830: a foreign id is not found, never an empty 2xx
   await asB('GET /api/outreach/reopen', () => reopen.GET(), s => s === 200)
   await asB('POST /api/outreach', () => outreach.POST(req('/api/outreach', 'POST', { lead_id: f.lead })), is404)
   await asB('GET /api/replies', () => replies.GET(), s => s === 200)

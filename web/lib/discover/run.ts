@@ -9,7 +9,8 @@ import { checkLeads, isShown, type CheckedLead } from './check.ts'
 import { enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
-export interface DiscoveryRun { leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null }
+// pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
+export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null }
 export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; now?: Date }
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
@@ -27,6 +28,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   const first = await discover(sized, api)
   add(first.usage)
   let leads = await checkLeads(first.leads, first.seen, deps.fetch, 4)
+  const pages = first.seen.map(p => p.url)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
@@ -34,6 +36,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
+      pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
       const more = (await checkLeads(second.leads, second.seen, deps.fetch, 4)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
@@ -53,5 +56,5 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       leads = leads.map(l => { const m = byCompany.get(l.company); return m && isShown(l) ? { ...l, ...mergeEnriched(l, m) } : l })
     } catch { /* the leads stay as found */ }
   }
-  return { leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop, model, note }
+  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop, model, note }
 }

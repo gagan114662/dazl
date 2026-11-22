@@ -94,7 +94,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'leads/page-signals', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
   { path: 'leads/evidence-recheck', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
   { path: 'leads/qualify-preview', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-ids-runtime.mts' }, role: 'read' },
-  { path: 'leads/qualify', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
+  { path: 'leads/qualify', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/isolation-all-routes-runtime.mts' }, role: 'operate' },
   { path: 'leads/ranking-fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'operate' },
   { path: 'leads', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'leads/source-metrics', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
@@ -141,7 +141,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'outreach', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
   { path: 'outreach', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-pending-runtime.mts' }, role: 'operate' },
   { path: 'outreach/sequences', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
-  { path: 'outreach/sequences', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'send' },
+  { path: 'outreach/sequences', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/isolation-all-routes-runtime.mts' }, role: 'send' },
   { path: 'outreach/sequences/fixture', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'send' },
   { path: 'outreach/sequences/fixture', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'send' },
   { path: 'outreach/settings', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
@@ -187,7 +187,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'sources/capabilities', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/calcom', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
-  { path: 'settings/calcom', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'settings/calcom', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/isolation-all-routes-runtime.mts' }, role: 'configure', fresh: true },
 
   { path: 'settings/competitors', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/competitors', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
@@ -241,3 +241,29 @@ export function routeFile(path: string): string {
 const STAGING_FIXTURE_ROUTES = new Set([
   'leads/ranking-fixture', 'leads/tech-fixture', 'leads/verification-fixture', 'outreach/inbox/fixture', 'outreach/sequences/fixture',
 ])
+
+// #830: every route that takes the id of a tenant-owned thing from the caller (path, query string or JSON body), as
+// 'METHOD /api/path'. test/isolation-all-routes.test.ts calls each one as tenant B with tenant A's id and demands a 404/403
+// refusal with A's rows byte-unchanged, then the same call as A. `undriven`: that sweep cannot call it, and why; the
+// test named there covers it instead.
+export const ID_ROUTES: { route: string; undriven?: string }[] = [
+  ...[
+    'GET /api/campaigns/[id]', 'POST /api/campaigns/[id]',
+    'POST /api/leads/[lead]/confirm', 'DELETE /api/leads/[lead]/confirm', 'POST /api/leads/[lead]/domain-review', 'POST /api/leads/[lead]/enrich-retry',
+    'GET /api/leads/[lead]/feedback', 'POST /api/leads/[lead]/feedback', 'DELETE /api/leads/[lead]/feedback', 'POST /api/leads/[lead]/find-contact',
+    'POST /api/leads/[lead]/quarantine', 'DELETE /api/leads/[lead]/quarantine',
+    'GET /api/leads/[lead]/warm-path', 'POST /api/leads/[lead]/warm-path', 'DELETE /api/leads/[lead]/warm-path',
+    'GET /api/leads/[lead]/work-email', 'POST /api/leads/[lead]/work-email',
+    'GET /api/monitors/[id]', 'PATCH /api/monitors/[id]', 'DELETE /api/monitors/[id]', 'PATCH /api/outreach/[id]', 'POST /api/outreach/[id]',
+    'GET /api/plays/[kind]/[id]/new', 'POST /api/plays/[kind]/[id]/run', 'GET /api/plays/[kind]/[id]/runs', 'POST /api/replies/[id]',
+    'GET /api/scan/commenters/[batch]', 'DELETE /api/scan/commenters/[batch]', 'GET /api/scan/csv/[batch]', 'POST /api/scan/csv/[batch]',
+    'GET /api/leads', 'GET /api/leads/export', 'GET /api/leads/evidence', 'GET /api/leads/evidence-recheck', 'GET /api/leads/page-signals', 'GET /api/leads/qualify-preview',
+    'GET /api/leads/hiring-feed', 'GET /api/leads/play-research', 'GET /api/scan/status', 'GET /api/outreach/inbox',
+    'POST /api/crm', 'POST /api/leads/hiring-feed', 'POST /api/leads/play-research', 'POST /api/leads/qualify', 'POST /api/outreach', 'POST /api/outreach/inbox',
+    'POST /api/outreach/polish', 'POST /api/outreach/reopen', 'POST /api/outreach/sequences', 'POST /api/replies', 'POST /api/scan/cancel', 'POST /api/seo/newsjack',
+    'POST /api/watch', 'POST /api/settings/calcom', 'POST /api/preview/issue', 'DELETE /api/auth/sessions', 'DELETE /api/workspace/invitations',
+    'PATCH /api/workspace/members', 'DELETE /api/workspace/members',
+    'POST /api/tasks/complete', // not a session route: the extension's device token names the workspace
+  ].map(route => ({ route })),
+  { route: 'POST /api/workspace/switch', undriven: 'reads the session cookie through next/headers, which needs a request scope: helpers/workspace-members-runtime.mts' },
+]

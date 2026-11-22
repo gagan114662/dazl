@@ -253,10 +253,10 @@ test('batch 2 routes on SQLite: settings, Cal.com and warm paths behave, and ten
   // Credit usage (#363) is tenant-scoped: B sees no usage and no limit of A's, and nothing is capped by default.
   assert.ok(be.credits.length === 4 && be.credits.every(c => c.reserved === 0 && c.charged === 0 && c.limit === null))
   assert.equal((o('B warm status').body as { count: number }).count, 0)
-  // #830: another workspace's lead is not found, the same as a lead that does not exist (it used to answer 200 with nothing)
-  assert.equal(o('B warm path of A').status, 404, 'not their lead: not found')
+  // #830: another workspace's lead is not found (never an empty 200), for the read and for the report
+  assert.equal(o('B warm path of A').status, 404)
   assert.equal(o('B report on A').status, 404, 'not their lead: not found, nothing written')
-  assert.equal(o('B remove A path').status, 404, 'not their lead: not found, nothing removed')
+  assert.equal(o('B remove A path').status, 404)
   assert.deepEqual([(o('warm remove path').body as { deleted: boolean }).deleted, (o('warm delete').body as { deleted: number }).deleted], [true, 2])
 })
 

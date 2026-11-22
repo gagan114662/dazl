@@ -220,3 +220,16 @@ test('the dry run reports and changes nothing', async () => {
   assert.ok(calls.every(m => m === 'GET'))
   assert.match(lines[0], /^#7 \[closed\/completed\]: WOULD REOPEN/); assert.match(lines[1], /^#8 \[closed\/completed\]: stays closed/)
 })
+
+test('a no-deploy issue (a benchmark, a report, repo tooling) closes on a repo check; the label alone, or the line without the label, does not', async () => {
+  const { decide } = await import('./live-check-gate.mjs')
+  const issue = labels => ({ number: 9, state: 'closed', state_reason: 'completed', labels })
+  const by = (body, who = 'OWNER') => ({ id: 1, body, author_association: who, created_at: '2026-11-22T10:00:00Z' })
+  const REPO = 'Repo check (commit 0b95441cb1): PASS\n\nBENCHMARK.md on main holds the Gojiberry table for all 16 prompts and the dazl runs beside it; bench/results has the run tables.'
+  assert.equal(decide(issue(['no-deploy']), [by(REPO)]).reopen, false)
+  assert.equal(decide(issue(['no-deploy']), []).reopen, true, 'the label alone is not a pass')
+  assert.equal(decide(issue([]), [by(REPO)]).reopen, true, 'without the label a repo check does not close a product issue')
+  assert.equal(decide(issue(['no-deploy']), [by(REPO, 'NONE')]).reopen, true, 'not from a maintainer')
+  assert.equal(decide(issue(['no-deploy']), [by('Repo check (commit 0b95441cb1): PASS')]).reopen, true, 'no evidence beside the line')
+  assert.equal(decide(issue(['no-deploy']), [by(REPO)], '2026-11-22T11:00:00Z').reopen, true, 'posted before the last reopen')
+})

@@ -56,7 +56,7 @@ export interface RunEstimate {
 export interface EstimateInput {
   budget: RunBudget | null
   // The run goes through the Claude discovery lane (lib/scan/runner.ts runDiscoverLane): one priced step replaces the older pipeline's rows.
-  discoverLane?: 'full' | 'small' | null
+  discoverLane?: 'full' | 'small' | 'tiny' | null
   companyFirst?: boolean
   qaClaudeOnly?: boolean
   qaNativeWebSearch?: boolean
@@ -222,7 +222,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   if (i.discoverLane) {
     // What the lane really spends, measured on the 16 benchmark prompts (BENCHMARK.md): about US$0.30 to US$0.90 a run with the full
     // search budget, less with the smaller one. The run reserves its worst case before it starts and is settled at the reported usage.
-    const usd = i.discoverLane === 'small' ? { min: 0.25, max: 0.6 } : { min: 0.3, max: 1 }
+    const usd = i.discoverLane === 'tiny' ? { min: 0.08, max: 0.3 } : i.discoverLane === 'small' ? { min: 0.25, max: 0.6 } : { min: 0.3, max: 1 }
     rows.splice(0, rows.length, {
       id: 'claude_discover', label: 'Claude finds leads and checks their proof', provider: 'Anthropic', kind: 'search', unit: 'run',
       unit_usd: 'web searches, page reads and model tokens, billed at what the run uses', units: { min: 1, max: 1 }, usd, capped,

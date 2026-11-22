@@ -55,14 +55,14 @@ export async function POST(req: NextRequest) {
     else if ((b.action === 'mark_sent' || b.action === 'retry') && Number.isInteger(b.step)) resolveSequenceUncertain(db,user.tenantId,b.id,b.step,b.action === 'mark_sent' ? 'sent' : 'retry')
     else if (b.action === 'stop') {
       // stopping a sequence that is not running (or is not this workspace's) changes nothing, so it records nothing
-      if (db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'user_stopped' WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved','active')").run(b.id,user.tenantId).changes === 0) return NextResponse.json({ ok: true })
+      if (db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'user_stopped' WHERE id = ? AND tenant_id = ? AND status IN ('draft','approved','active')").run(b.id,user.tenantId).changes === 0) return db.prepare('SELECT 1 FROM sequences WHERE id = ? AND tenant_id = ?').get(b.id,user.tenantId) ? NextResponse.json({ ok: true }) : NextResponse.json({ error: 'not_found' }, { status: 404 }) // #830
     }
     else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     // approving schedules automated sends; stop, mark sent and retry change what the tick will send (edits are content)
     if (b.action !== 'edit') await audit(user, req, { action: `sequence.${b.action}`, resource: 'sequence', id: b.id, summary: Number.isInteger(b.step) ? { step: b.step } : undefined })
     return NextResponse.json({ ok: true })
   } catch (e) {
-    if (e instanceof SequenceError || e instanceof OutreachError) return NextResponse.json({ error: e.code }, { status: e.code === 'recipient_provenance_missing' ? 409 : 400 })
+    if (e instanceof SequenceError || e instanceof OutreachError) return NextResponse.json({ error: e.code }, { status: e.code === 'not_found' ? 404 : e.code === 'recipient_provenance_missing' ? 409 : 400 }) // #830: not this workspace's draft or sequence
     throw e
   }
 }
