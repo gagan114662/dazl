@@ -157,3 +157,17 @@ test('#1205 a non-hiring phrase before "job" is no condition; an unreadable name
   const held = hiring('Companies that posted a sales and marketing job in the past 90 days')
   assert.equal(held.length, 1); assert.ok(held[0].role_unreadable)
 })
+
+// council (Opus R14): a hyphen is not a word gap. "in-house", "on-call", "in-store" and "on-site" are parts of a role, so a role with one is
+// read as that role; the request never silently loses its posting condition
+test('#1205 a hyphenated role is read as the role, never dropped', () => {
+  const hiring = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  for (const [q, role] of [
+    ['Law firms that posted an in-house counsel job in the past 90 days', 'in-house counsel'],
+    ['Hospitals that posted an on-call nurse job in the past 30 days', 'on-call nurse'],
+    ['Retailers that posted an in-store associate job in the last 30 days', 'in-store associate'],
+    ['Companies that posted an on-site technician job', 'on-site technician'],
+  ] as const) {
+    const h = hiring(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q); assert.ok(!h[0].role_unreadable, q)
+  }
+})
