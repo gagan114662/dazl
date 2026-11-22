@@ -25,7 +25,9 @@ type E = { connector: string; kind: string; value: string; label: string | null;
 const S = 'https://x.example/news'
 const dom = (site: string, token: string): E => ({ connector: 'sitecrawl', kind: 'domain', value: `${site}|${token}`, label: `domain-basis-v1:${token}`, source_url: S })
 const mail = (a: string, label: string | null = null): E => ({ connector: 'sitecrawl', kind: 'email', value: a, label, source_url: 'https://x.example/contact' })
-const person: E = { connector: 'sitecrawl', kind: 'person', value: 'Dana Lee, Practice Owner', label: null, source_url: 'https://x.example/team' }
+// #1037: the person as the crawl stores an own-site bio that links her LinkedIn, so a lead on its confirmed site names its buyer
+const person: E = { connector: 'sitecrawl', kind: 'person', value: 'Dana Lee, Practice Owner', label: 'sitecrawl-profile-v1: https://www.linkedin.com/in/dana-lee-example', source_url: 'https://x.example/team/dana-lee' }
+const READ_AT = Math.floor(NOW.getTime() / 1000) - 6 * 86_400   // the day the crawl read the pages: one clock for the store and the card
 const privacyCtx = 'contact-context-v1:' + JSON.stringify({ excerpt: 'For privacy requests email hello@x.example', restriction: 'restricted-purpose context' })
 
 type Scenario = { name: string; contact: string | null; date: string | null; rows: E[]; quarantine?: boolean; expectHeld?: boolean; icp?: string; query?: string }
@@ -59,15 +61,15 @@ async function build(s: Scenario) {
   const id = randomBytes(12).toString('hex')
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, fit, intent, event_date, human_confirmed_at, score) VALUES (?, ?, ?, ?, ?, ?, ?, 90, 4, 2, ?, 1, 70)')
     .run(id, job, 'X Dental', s.contact, 'X Dental opened a clinic', S, 'X Dental opened a clinic', s.date)
-  const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', ?, ?, ?, ?, ?, '2026-10-20', 10)")
-  for (const r of s.rows) ins.run(randomBytes(8).toString('hex'), id, r.connector, r.kind, r.value, r.label, r.source_url)
+  const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', ?, ?, ?, ?, ?, '2026-10-20', ?)")
+  for (const r of s.rows) ins.run(randomBytes(8).toString('hex'), id, r.connector, r.kind, r.value, r.label, r.source_url, READ_AT)
   if (s.quarantine) await setQuarantine(sqliteDb(db), 'A', id, 'quarantine', 'wrong company', NOW.getTime())
   const q = db.prepare('SELECT quarantined_at FROM leads WHERE id = ?').get(id) as { quarantined_at: number | null }
   const lead: CardLead = {
     id, company: 'X Dental', signal: 'X Dental opened a clinic', source_url: S, evidence_excerpt: 'X Dental opened a clinic', event_date: s.date,
     date_status: 'verified', review_reason: null, fit: 4, intent: 2, why: null, icp_match: null, company_domain: null, contact: s.contact,
     confidence: 90, human_confirmed_at: 1, quarantined_at: q.quarantined_at,
-    currentness_held: currentnessHeld(db, 'A', id), window_held: leadWindowHeld(db, 'A', id), enrichments: s.rows,
+    currentness_held: currentnessHeld(db, 'A', id), window_held: leadWindowHeld(db, 'A', id), enrichments: s.rows.map(r => ({ ...r, retrieved_at: READ_AT })),
   }
   return { db, id, lead }
 }

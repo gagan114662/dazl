@@ -75,6 +75,7 @@ import { regradeFromKeptContacts, enforceContactSource } from './contact-agreeme
 import { primarySignalKind } from './score.ts'
 import { HIRING_KINDS } from '../play-alerts.ts'
 import { isHiringTrigger } from './scoreboard.ts'
+import { scanEnded, scanStarted } from '../ops/loop-stall.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -88,7 +89,6 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
-import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import { searchableCompanyCount } from '../people/searchable-holds.ts'
 import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
@@ -107,6 +107,7 @@ import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } f
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 import { freshBoardPostings } from '../company-first/board-postings.ts'
+import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
 import { boardOf } from '../research/sources/ats-boards.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -1738,6 +1739,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       let totalBoardsCited=0,totalBoardPostings=0,totalItems=0,totalNativeCandidates=0,totalPublisherReads=0,totalPublisherReturned=0,totalPublisherUsable=0,totalLookahead=0
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
       const phaseDeadline=jobDeadlines.get(job)
+      const fundingSourceRejects: Partial<Record<FundingSourceReason, number>> = {}
       for (const [angleIndex, angle] of angles.slice(0,CLAUDE_COMPANY_FIRST_MAX_CALLS).entries()) {
       if (angleIndex > 0) {
         // Protect any candidate that can reach the verifier. A readable set containing only supplied
@@ -1906,6 +1908,25 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
             return !!l.company.trim()&&excerpt.length>=20&&text.includes(excerpt)&&
               hasPhrase(norm((p?.title??'')+' '+(p?.text??'')),norm(l.company))
           }).map(l => ({ ...l, name: '', contact: null })) : parsed
+          // Refs #1122 (run aa193734): the funding pass's candidates must cite the company's own dated announcement or a dated article about
+          // that one company (lib/company-first/funding-source.ts). Rejects are counted in the internal run report only - never shown in the
+          // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website
+          // hint below is only a hint. Undated candidates go on to the reader, which dates them from the page or the window rule holds them.
+          if (fundingOr && angle === CF_FUNDING_ANGLE && extra.length) {
+            // the model's website hint for this company (company-first text candidates): it only lets own_site / undated_own_site be told
+            // apart here. It never confirms a domain - the normal domain proof still decides that later.
+            const hints = textSitesByJob.get(job) ?? []
+            // Judged over EVERY parsed candidate (before the excerpt/name check), so a page cited for two companies is a roundup even when
+            // one of them was dropped first, and with the cited page's own title and text, so a roundup is known by the page (Qodo #1530 b).
+            const pageOf = (u: string) => pages.find(x => x.url === u)
+            const all = fundingSourceVerdicts(parsed.map(l => ({ company: l.company, website: hints.find(h => norm(h.company) === norm(l.company))?.website ?? null,
+              source_url: l.source_url, event_date: l.event_date, page: pageOf(l.source_url) ? { title: pageOf(l.source_url)!.title, text: pageOf(l.source_url)!.text } : null })))
+            const verdictOf = new Map(parsed.map((l, i) => [l, all[i]]))
+            for (const x of all) if (x.verdict === 'reject') fundingSourceRejects[x.reason] = (fundingSourceRejects[x.reason] ?? 0) + 1
+            const keep = extra.filter(l => { const src = parsed.find(p => p.company === l.company && p.source_url === l.source_url && p.excerpt === l.excerpt); return (src ? verdictOf.get(src)?.verdict : 'reject') !== 'reject' })
+            extra.splice(0, extra.length, ...keep)
+            if (Object.keys(fundingSourceRejects).length) ledger.report({ funding_source_rejects: { ...fundingSourceRejects } })
+          }
           ledger.evidenceCandidates(items.map(e => ({ ...e, source })), extra)
           nativeCandidates = extra.length
           if (extra.length) leads = [...(leads ?? []), ...extra]
@@ -2447,7 +2468,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const icpText = nativeJudgeContext && job.query
           ? nativeBuyerFitTarget(icpForSources, job.query, playDraftOffer(db, job.user_id, job.id)?.offer ?? null)
           : gradingTarget + offerBlockFor(db, job.user_id, job.id)
-        await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
+        const bf = await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', bf.noAnswer ? 'failed' : 'ok', bf.noAnswer ? `no answer for ${bf.noAnswer} lead(s) (${bf.noAnswerCause}) - capped below the qualified bar` : null)
       } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
@@ -2547,12 +2568,6 @@ export function postFinishAliveStrict(db: Database.Database, job: { id: string; 
 }
 export function postFinishAlive(db: Database.Database, job: { id: string; attempts: number }): boolean {
   try { const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined; return !!r && r.attempts === job.attempts && (r.status === 'done' || r.status === 'running') } catch { return true }
-}
-// #899: the mailbox check's own time budget (EMAIL_VERIFY_BUDGET_MS, default 20 s, between 1 s and 60 s): it runs after the
-// post-finish budget's steps, so this is the most it can add to a scan's wall time.
-export function emailVerifyBudgetMs(env: Record<string, string | undefined> = process.env): number {
-  const n = Number(env.EMAIL_VERIFY_BUDGET_MS)
-  return Number.isFinite(n) && n > 0 ? Math.min(60_000, Math.max(1_000, Math.floor(n))) : 20_000
 }
 export function postFinishBudgetMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SCAN_POST_FINISH_BUDGET_MS
@@ -2711,24 +2726,9 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, ...(nativeOnly ? { thirdPartyReader: false } : {}), alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else notePaidEnrichment(trace, db, job.user_id, job.id)
-    // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, under its OWN short budget
-    // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
-    // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
-    if (nativeOnly) trace.note('email_verify', 'skipped', 'Claude-only play: mailbox verifier was not called')
-    else if (emailGuessEnabled()) {
-      const verifier = verifierFromEnv(process.env, deps.fetchImpl)
-      if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
-      else if (!postFinishAliveStrict(db, job)) trace.note('email_verify', 'skipped', 'the scan was cancelled or taken over (or its state could not be read): nothing was sent')
-      else try {
-        const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: AbortSignal.timeout(emailVerifyBudgetMs()), alive: () => postFinishAliveStrict(db, job) })
-        const detail = { leads: v.leads, checked: v.checked, verified: v.verified, over_cap: v.capped }
-        if (v.skipped) trace.note('email_verify', 'skipped', v.skipped)
-        // The provider's own words describe the operator's shared account: they go to the server log, not into a tenant's trace.
-        else if (v.stopped) { console.error('[email-verify] stopped: the verifier refused (bad key, no credits or rate limit)'); trace.note('email_verify', 'failed', 'the mailbox check is unavailable right now, so no further address was sent', detail) }
-        else if (v.aborted) trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', `stopped early (time budget ${emailVerifyBudgetMs()} ms, or the scan was cancelled); unchecked addresses stay unchecked`, detail)
-        else trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', v.checked ? null : v.capped ? 'the monthly or daily check cap was reached' : 'no high-confidence US guess to check', detail)
-      } catch (e) { trace.note('email_verify', 'failed', e instanceof Error ? e.message.slice(0, 160) : 'error') }
-    }
+    // #1037 (THE BAR): a buyer's email must be published on the company's own domain, so a scan never spends a mailbox check on an
+    // address built from a learned format (#899's after-run check of guesses is gone, whatever EMAIL_GUESS_ENABLED says).
+    trace.note('email_verify', 'skipped', 'guessed addresses are never checked or used: only an address published on the company\'s own site counts')
   } finally {
     clearTimeout(postTimer)
   }
@@ -2757,7 +2757,8 @@ function inFlightSet(): Map<Job, number | null> {
   const g = globalThis as unknown as Record<symbol, Map<Job, number | null> | undefined>
   return (g[IN_FLIGHT_KEY] ??= new Map<Job, number | null>())
 }
-export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); return () => { m.delete(job) } }
+// #1463 / Qodo #1529: each scan's span is noted for the event-loop stall line (lib/ops/loop-stall.ts)
+export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); scanStarted(job.id.slice(0, 8)); return () => { m.delete(job); scanEnded(job.id.slice(0, 8)) } }
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0

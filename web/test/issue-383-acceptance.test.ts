@@ -26,6 +26,7 @@ import { identityOf } from '../lib/scan/opportunity.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { contactCurrency, isoDay, providerContactLabel, splitByCurrency, FIRST_PARTY_DAYS, PROVIDER_DAYS } from '../lib/people/currency.ts'
 import { readFileSync } from 'node:fs'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 const master = randomBytes(32)
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
@@ -195,9 +196,12 @@ test('criterion 4d: the leads page shows "Verified current" and "Search result o
   for (const sec of [verified, searchOnly]) for (let i = 1; i < sec.length; i++) assert.ok(sec[i - 1].score >= sec[i].score, 'ordered by title match within the section')
   const page = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
   assert.ok(page.includes('splitByCurrency(people)') && page.includes('>Verified current<') && page.includes('>Search result only<'), 'the Right people block renders the two sections from splitByCurrency')
-  // export: Best Person found-via names the verified evidence; a search-only best person keeps its plain source
+  // export: a provider record, however fresh, is never Best Person (#1037); the own-site buyer is, and found-via names the verified evidence
   const { db, jobId } = seed()
   addEnrichment(db, 'u1', 'lead1', { connector: 'enrich:apollo', kind: 'contact', value: 'Val Vp - VP Sales', label: providerContactLabel('enrich:apollo', fresh), confidence: 70, source_url: 'https://linkedin.com/in/valvp', source_date: fresh, retrieved_at: Math.floor(now / 1000) })
+  assert.equal((await bestPeople(sqliteDb(db), 'u1', [{ lead_id: 'lead1', job_id: jobId }])).get('lead1')?.best_person, '')
+  for (const r of ownSiteBuyerRows('lead-one.example', { name: 'Ola Own', title: 'VP Sales', at: Math.floor(now / 1000) })) addEnrichment(db, 'u1', 'lead1', r)
   const best = await bestPeople(sqliteDb(db), 'u1', [{ lead_id: 'lead1', job_id: jobId }])
-  assert.equal(best.get('lead1')?.best_person_found_via, `${PEOPLE_SOURCE['enrich:apollo']}; verified current: Apollo record dated ${fresh}`)
+  assert.equal(best.get('lead1')?.best_person, 'Ola Own')
+  assert.equal(best.get('lead1')?.best_person_found_via, `${PEOPLE_SOURCE.sitecrawl}; verified current: named on the company's own website, read ${new Date(now).toISOString().slice(0, 10)}`)
 })

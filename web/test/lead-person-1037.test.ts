@@ -18,18 +18,23 @@ import { confirmDomain, domainOf } from './helpers/people-held-fixture.ts'
 // A search result row as the search stores it now: its label says what tied it to the company beyond the name.
 const P = (value: string, source_url: string, connector = 'search:people', kind = 'person') => ({ kind, value, label: connector === 'search:people' ? tiedLabel(LABEL, 'domain') : 'x', source_url, connector })
 const LI = 'https://www.linkedin.com/in/jane-doe-1'
+// A company-site row as the crawl stores it: read on a page of the lead's confirmed site, with the LinkedIn profile that page links (site-profile.ts).
+const NOW = Date.now(), SITE = { state: 'fact' as const, site: 'acme.example', text: 'acme.example: the cited page is on this site' }
+const S = (value: string, linkedin: string, page = 'https://acme.example/team/jane-doe') => ({ kind: 'person', value, label: 'sitecrawl-profile-v1: ' + linkedin, source_url: page, connector: 'sitecrawl', retrieved_at: Math.floor(NOW / 1000) })
 
 // ---- the row rule (lib/people/lead-person.ts) ----
-test('row: a role-matching person with a LinkedIn profile is named with title and link, labelled search result', () => {
-  const p = leadPerson([P('Jane Doe, Head of Sales', LI)], 'Head of Sales; VP Sales')
-  assert.deepEqual(p, { name: 'Jane Doe', title: 'Head of Sales', linkedin: LI, source: null, via: 'a public LinkedIn search result (not verified as current)', current: false })
+test('row: a public profile search result never names the row, even with a LinkedIn profile; a company page that lists the person with title and its own LinkedIn link does', () => {
+  assert.equal(leadPerson([P('Jane Doe, Head of Sales', LI)], 'Head of Sales; VP Sales', NOW, SITE), null, 'a search result is not the company naming its buyer')
+  const p = leadPerson([S('Jane Doe, Head of Sales', LI)], 'Head of Sales; VP Sales', NOW, SITE)
+  assert.deepEqual(p, { name: 'Jane Doe', title: 'Head of Sales', linkedin: LI, source: 'https://acme.example/team/jane-doe', via: 'the company website (listed with this title)', current: true })
   assert.equal(leadPersonLine(p), 'Jane Doe · Head of Sales')
   assert.equal(leadPersonLine(null), NO_BUYER); assert.equal(NO_BUYER, 'No buyer named yet')
 })
 
-test('row: a site-listed person keeps its source page as the link; the best title match wins', () => {
-  const p = leadPerson([P('Al Weak, Sales Associate', 'https://acme.example/team', 'sitecrawl'), P('Bo Strong, VP Sales', 'https://acme.example/team', 'sitecrawl')], 'VP Sales')
-  assert.equal(p?.name, 'Bo Strong'); assert.equal(p?.linkedin, null); assert.equal(p?.source, 'https://acme.example/team')
+test('row: a site-listed person without a LinkedIn link on its company page names nobody; among linked ones the best title match wins', () => {
+  assert.equal(leadPerson([P('Bo Strong, VP Sales', 'https://acme.example/team', 'sitecrawl')], 'VP Sales', NOW, SITE), null, 'no LinkedIn link on the company page')
+  const p = leadPerson([S('Al Weak, Sales Associate', 'https://www.linkedin.com/in/al-weak', 'https://acme.example/team/al-weak'), S('Bo Strong, VP Sales', 'https://www.linkedin.com/in/bo-strong', 'https://acme.example/team/bo-strong')], 'VP Sales', NOW, SITE)
+  assert.equal(p?.name, 'Bo Strong'); assert.equal(p?.linkedin, 'https://www.linkedin.com/in/bo-strong'); assert.equal(p?.source, 'https://acme.example/team/bo-strong')
 })
 
 test('row fails closed: historical, contradicted, off-role, untitled, non-names and unlinked rows never become the person', () => {
@@ -55,27 +60,27 @@ test('row fails closed: historical, contradicted, off-role, untitled, non-names 
 })
 
 test('row: malformed input of every shape returns null (or skips the bad row) and never throws', () => {
-  const good = P('Jane Doe, Head of Sales', LI)
+  const good = S('Jane Doe, Head of Sales', LI)
   for (const rows of [null, undefined, 5, 'Jane Doe', {}, { length: 3 }, true, [null], [5], ['x'], [[good]], [{}], [{ kind: 'person' }], [{ kind: 'person', value: 7, source_url: LI }],
     [{ kind: 'person', value: { a: 1 }, source_url: LI }], [{ kind: ['person'], value: 'Jane Doe, Head of Sales', source_url: LI }], [{ kind: 'person', value: 'Jane Doe, Head of Sales', source_url: 42 }],
     [{ kind: 'person', value: 'x'.repeat(5000), source_url: LI }], [{ kind: 'person', value: '\uFFFD\uD800 bad, Head of Sales', source_url: LI }]])
-    assert.equal(leadPerson(rows as unknown, 'Head of Sales'), null, JSON.stringify(rows)?.slice(0, 80))
+    assert.equal(leadPerson(rows as unknown, 'Head of Sales', NOW, SITE), null, JSON.stringify(rows)?.slice(0, 80))
   // bad rows around a good one: the good one is still found
-  assert.equal(leadPerson([null, 5, { kind: 'person', value: 9 }, good, 'x'], 'Head of Sales')?.name, 'Jane Doe')
+  assert.equal(leadPerson([null, 5, { kind: 'person', value: 9 }, good, 'x'], 'Head of Sales', NOW, SITE)?.name, 'Jane Doe')
   // icp text of the wrong type is treated as no roles (any titled person), never a crash
-  for (const icp of [null, 5, {}, ['Head of Sales'], undefined]) assert.equal(leadPerson([good], icp)?.name, 'Jane Doe')
+  for (const icp of [null, 5, {}, ['Head of Sales'], undefined]) assert.equal(leadPerson([good], icp, NOW, SITE)?.name, 'Jane Doe')
   // a non-finite clock does not throw
-  assert.equal(leadPerson([good], 'Head of Sales', Number.NaN)?.name, 'Jane Doe')
+  assert.equal(leadPerson([good], 'Head of Sales', Number.NaN, SITE)?.name, 'Jane Doe')
   // a getter that throws on a row is contained
   const evil = { get kind() { throw new Error('boom') } }
-  assert.equal(leadPerson([evil], 'Head of Sales'), null)
+  assert.equal(leadPerson([evil], 'Head of Sales', NOW, SITE), null)
 })
 
 test('row: the best buyer-role match is named first; an off-role titled person is only named when nobody better is stored; contradicted ones never', () => {
-  assert.equal(leadPerson([P('Sam Roe, Software Engineer', 'https://www.linkedin.com/in/sam-roe'), P('Jane Doe, VP Sales', LI)], 'Head of Sales; VP Sales')?.name, 'Jane Doe')
-  assert.equal(leadPerson([P('Omar Haddad, Co-founder', 'https://www.linkedin.com/in/omar-h')], 'Founder')?.title, 'Co-founder')
-  assert.equal(leadPerson([P('Jane Doe, Software Engineer', LI)], '')?.name, 'Jane Doe')
-  assert.equal(leadPerson([P('Jane Doe, Former CEO', LI)], ''), null)
+  assert.equal(leadPerson([S('Sam Roe, Software Engineer', 'https://www.linkedin.com/in/sam-roe', 'https://acme.example/team/sam-roe'), S('Jane Doe, VP Sales', LI)], 'Head of Sales; VP Sales', NOW, SITE)?.name, 'Jane Doe')
+  assert.equal(leadPerson([S('Omar Haddad, Co-founder', 'https://www.linkedin.com/in/omar-h', 'https://acme.example/team/omar')], 'Founder', NOW, SITE)?.title, 'Co-founder')
+  assert.equal(leadPerson([S('Jane Doe, Software Engineer', LI)], '', NOW, SITE)?.name, 'Jane Doe')
+  assert.equal(leadPerson([S('Jane Doe, Former CEO', LI)], '', NOW, SITE), null)
 })
 
 // ---- the first-play people pass (lib/people/people-search.ts) ----
@@ -101,14 +106,14 @@ function stub() {
   return { f, queries }
 }
 
-test('first play: one search per lead, capped at maxCompanies; every searched lead then names its person', async () => {
+test('first play: one search per lead, capped at maxCompanies; each search result is stored, and none of them names the lead row (only the company\'s own site does)', async () => {
   const { db, job } = setup(14); const s = stub()
   const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true })
   assert.equal(s.queries.length, 10); assert.equal(n, 10)
   const named = (db.prepare("SELECT count(DISTINCT lead_id) AS c FROM lead_enrichments WHERE kind = 'person'").get() as { c: number }).c
   assert.equal(named, 10)
   const rows = db.prepare("SELECT kind, value, label, source_url, connector FROM lead_enrichments WHERE lead_id = 'L0'").all()
-  assert.match(leadPersonLine(leadPerson(rows, 'Head of Sales')), /^Pat Lee · Head of Sales$/)
+  assert.equal(leadPersonLine(leadPerson(rows, 'Head of Sales', NOW, identityOf({ id: 'L0', contact: null }, rows as never))), NO_BUYER, 'a profile search result never names the row')
 })
 
 test('first play cap is clamped: above FIRST_PLAY_MAX -> FIRST_PLAY_MAX; zero, negative, fractional, NaN, Infinity -> no search', async () => {
@@ -123,7 +128,8 @@ test('first play cap is clamped: above FIRST_PLAY_MAX -> FIRST_PLAY_MAX; zero, n
 
 test('first play skips a lead that already names its person, but still searches one whose only person is historical or former', async () => {
   const { db, job } = setup(3); const s = stub()
-  addEnrichment(db, 'A', 'L0', { connector: 'sitecrawl', kind: 'person', value: 'Ana Ruiz, Head of Sales', label: 'site', confidence: null, source_url: 'https://companyaa.example/team', source_date: daysAgo(1), retrieved_at: Math.floor(Date.now() / 1000) })
+  // L0's own confirmed site lists its buyer with title and the LinkedIn that page links: it already names its buyer
+  addEnrichment(db, 'A', 'L0', { connector: 'sitecrawl', kind: 'person', value: 'Ana Ruiz, Head of Sales', label: 'sitecrawl-profile-v1: https://www.linkedin.com/in/ana-ruiz-example', confidence: null, source_url: `https://${domainOf('CompanyAA Labs')}/team/ana-ruiz`, source_date: daysAgo(1), retrieved_at: Math.floor(Date.now() / 1000) })
   addEnrichment(db, 'A', 'L1', { connector: 'signals:sec-form-d', kind: 'person', value: 'Old Officer, Head of Sales', label: 'sec', confidence: null, source_url: 'https://sec.example/x', source_date: daysAgo(400), retrieved_at: Math.floor(Date.now() / 1000) })
   addEnrichment(db, 'A', 'L2', { connector: 'search:people', kind: 'person', value: 'Ex Person, Former Head of Sales', label: 'x', confidence: null, source_url: 'https://www.linkedin.com/in/ex-person', source_date: daysAgo(1), retrieved_at: Math.floor(Date.now() / 1000) })
   await findPeople(db, 'A', job, { env, fetchImpl: s.f, maxCompanies: 10, skipNamed: true })
@@ -262,12 +268,12 @@ test('FREE TRIAL: a search that would eat into the last quarter of the reserve i
 // ---- review round 1 (xhawk / Greptile findings on #1046) ----
 
 test('review: full names written without spaces (Han, Hangul, Kana) are names; a bare Latin given name is still not', () => {
-  assert.equal(leadPerson([P('王伟, 销售总监', 'https://www.linkedin.com/in/wang-wei-1')], '')?.name, '王伟')
-  assert.equal(leadPerson([P('김민준, 영업 이사', 'https://www.linkedin.com/in/kim-mj')], '')?.name, '김민준')
-  assert.equal(leadPerson([P('山田タロウ, 営業部長', 'https://www.linkedin.com/in/yamada-t')], '')?.name, '山田タロウ')
-  assert.equal(leadPerson([P('王, 销售总监', 'https://www.linkedin.com/in/wang')], ''), null, 'one character is not a full name')
-  assert.equal(leadPerson([P('Jane, Head of Sales', LI)], ''), null)
-  assert.equal(leadPerson([P('王伟Jane, Head of Sales', LI)], ''), null, 'mixed script with no space is not accepted as a no-space name')
+  assert.equal(leadPerson([S('王伟, 销售总监', 'https://www.linkedin.com/in/wang-wei-1')], '', NOW, SITE)?.name, '王伟')
+  assert.equal(leadPerson([S('김민준, 영업 이사', 'https://www.linkedin.com/in/kim-mj')], '', NOW, SITE)?.name, '김민준')
+  assert.equal(leadPerson([S('山田タロウ, 営業部長', 'https://www.linkedin.com/in/yamada-t')], '', NOW, SITE)?.name, '山田タロウ')
+  assert.equal(leadPerson([S('王, 销售总监', 'https://www.linkedin.com/in/wang')], '', NOW, SITE), null, 'one character is not a full name')
+  assert.equal(leadPerson([S('Jane, Head of Sales', LI)], '', NOW, SITE), null)
+  assert.equal(leadPerson([S('王伟Jane, Head of Sales', LI)], '', NOW, SITE), null, 'mixed script with no space is not accepted as a no-space name')
 })
 
 test('review: the first-play pass searches only leads the first play lists (fit 0-1 and gate-held leads get no search)', async () => {
@@ -486,9 +492,21 @@ test('linked profile metadata preserves the independent company source and fails
   const identified = { state: 'fact' as const, site: 'brightloop.com', text: 'company site' }
   const unconfirmed = { ...identified, state: 'unconfirmed' as const }
   assert.deepEqual(leadPerson([row], 'Founder', now, identified), { name: 'Jane Quinn', title: 'Founder', linkedin: profile, source: evidence, via: 'the company website (listed with this title)', current: true })
-  assert.equal(leadPerson([row], 'Founder', now, unconfirmed)?.linkedin, null)
-  assert.equal(leadPerson([row], 'Founder', now, { ...identified, site: 'other.example' })?.linkedin, null)
-  assert.equal(leadPerson([{ ...row, retrieved_at: 1 }], 'Founder', now, identified)?.linkedin, null)
-  assert.equal(leadPerson([{ ...row, connector: 'import:other' }], 'Founder', now, identified)?.linkedin, null)
-  assert.equal(leadPerson([{ ...row, label: 'sitecrawl-profile-v1: https://www.linkedin.com.bad.test/in/wrong-url' }], 'Founder', now, identified)?.linkedin, null)
+  // without the company's authority for the page or the link, the lead names nobody (#1037: no person without the own page's LinkedIn)
+  assert.equal(leadPerson([row], 'Founder', now, unconfirmed), null)
+  assert.equal(leadPerson([row], 'Founder', now, { ...identified, site: 'other.example' }), null)
+  assert.equal(leadPerson([{ ...row, retrieved_at: 1 }], 'Founder', now, identified), null)
+  assert.equal(leadPerson([{ ...row, connector: 'import:other' }], 'Founder', now, identified), null)
+  assert.equal(leadPerson([{ ...row, label: 'sitecrawl-profile-v1: https://www.linkedin.com.bad.test/in/wrong-url' }], 'Founder', now, identified), null)
+})
+
+// Qodo (PR 1528): a lead's rows grow without a per-lead cap (signals, tech scans, domains). The own-site buyer stored after 500 other rows
+// is still the lead's buyer; the bound applies to the people rows read, not to everything stored before them.
+test('#1037 the own-site buyer is found behind 600 non-person rows; the people bound still holds', () => {
+  const filler = Array.from({ length: 600 }, (_, i) => ({ kind: 'signal', value: `signal ${i}`, label: null, source_url: `https://news.example/${i}`, connector: 'news:gdelt' }))
+  const buyer = S('Jane Doe, Head of Sales', 'https://www.linkedin.com/in/jane-doe-example')
+  assert.equal(leadPerson([...filler, buyer], 'Head of Sales', NOW, SITE)?.name, 'Jane Doe')
+  // the bound is on people rows: 500 unqualified people first, then the buyer, still fails closed (no unbounded read)
+  const many = Array.from({ length: 500 }, (_, i) => ({ kind: 'person', value: `Pat Example${String.fromCharCode(97 + (i % 26))}, Head of Sales`, label: null, source_url: 'https://acme.example/team', connector: 'search:people' }))
+  assert.equal(leadPerson([...many, buyer], 'Head of Sales', NOW, SITE), null)
 })

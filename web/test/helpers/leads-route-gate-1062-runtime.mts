@@ -11,6 +11,8 @@ import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { heldState } from '../../lib/lead-state.ts'
 import { previewSplit, type PreviewLead } from '../../lib/journey.ts'
 import { reviewAction } from '../../lib/scan/review-action.ts'
+import { addEnrichment } from '../../lib/connectors/store.ts'
+import { ownSiteBuyerRows } from './own-site-buyer.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
@@ -27,6 +29,8 @@ test('#1062 GET /api/leads: gate_held is the draft guard verdict, and Home/Leads
   add('deny', true, null)                                            // DEFAULT-DENY: machine-verified, no pass record
   add('reviewheld', false, 'quote_unconfirmed'); mark('reviewheld', 'gate_failed')   // reviewable reason, failed required check
   add('review', false, 'quote_unconfirmed'); mark('review', 'gate_passed')           // control: ordinary review
+  // #1037: the control's company site names its buyer (the rows the real crawl stores), so a review can make it ready
+  for (const r of ownSiteBuyerRows('coreview.example')) addEnrichment(db, 'A', 'review', r)
   const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${job}&all=1`))
   assert.equal(res.status, 200)
   const rows = (await res.json() as { leads: (PreviewLead & { review_reason?: string | null; gate_held?: boolean })[] }).leads

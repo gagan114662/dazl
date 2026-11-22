@@ -1,8 +1,9 @@
-// The one person to reach first for each lead, for exports (the leads page shows the full ranked list). Same ranking
-// as the page: contactsFromEnrichments ordered by the scan ICP's buyer roles. Nothing is invented: a lead with no
-// found person gets empty fields.
+// The one person to reach first for each lead, for exports (the leads page shows the full ranked list): the lead's buyer
+// as the row and card name it (leadPerson, with the scan ICP's buyer roles). Nothing is invented: a lead with no buyer
+// named on the company's own site gets empty fields.
 import type { Db } from '../db/client.ts'
-import { contactsFromEnrichments, peopleSourceText, roleContradicted } from './rank.ts'
+import { contactsFromEnrichments, peopleSourceText } from './rank.ts'
+import { leadPerson } from './lead-person.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { currencyText } from './currency.ts'
 
@@ -17,9 +18,9 @@ async function buyerRoles(db: Db, jobId: string): Promise<string> {
   } catch { return '' }
 }
 
-// Recommendation, not scoring: a person whose title explicitly contradicts the buyer role (past, retired, negated,
-// assistant-to; roleContradicted, the same rule as the opportunity card's recommendedPerson) is never Best Person, for any
-// connector, with or without an ICP. If every stored person is contradicted the export fields are empty. A contradictory
+// Recommendation, not scoring: only the company's own site can name Best Person (#1037), and a person whose title
+// explicitly contradicts the buyer role (past, retired, negated, assistant-to; roleContradicted, applied inside
+// leadPerson) never is, with or without an ICP. If every stored person is contradicted the export fields are empty. A contradictory
 // CURRENT employer is the people-search parser's job, not detectable here.
 
 // Tenant-scoped on both sides: the enrichment row must carry the tenant AND its lead must belong to a job that tenant
@@ -44,8 +45,12 @@ export async function bestPeople(db: Db, tenantId: string, rows: { lead_id: stri
        ORDER BY e.insert_seq`, [r.lead_id, tenantId, tenantId])
     const contact = enr[0]?.contact ?? null
     const site = identityOf({ id: r.lead_id, contact }, enr.map(x => ({ ...x, retrieved_at: typeof x.retrieved_at === 'number' ? x.retrieved_at : typeof x.retrieved_at === 'string' && /^\d{1,12}$/.test(x.retrieved_at) ? Number(x.retrieved_at) : null })))
-    const top = contactsFromEnrichments(enr, rolesByJob.get(r.job_id)!, Date.now(), site).find(c => !c.historical && !c.nameOnly && (!c.title || !roleContradicted(c.title, rolesByJob.get(r.job_id)!)))
-    out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: top.verified && (top.currency === 'verified_current' || top.verified.reason) ? `${peopleSourceText(top)}; ${currencyText(top.verified, top.connector)}` : peopleSourceText(top) } : EMPTY)
+    // #1037: Best Person is the lead's buyer and nobody else - the one person leadPerson names (listed on the company's own,
+    // confirmed site with a title and the LinkedIn that page links); a search, provider or SEC person is never recommended here.
+    const roles = rolesByJob.get(r.job_id)!, now = Date.now(), buyer = leadPerson(enr, roles, now, site)
+    // the export's fields are the buyer's own (as the card shows them); the ranked row only supplies its currency evidence for Found Via
+    const top = buyer ? contactsFromEnrichments(enr, roles, now, site).find(c => c.connector === 'sitecrawl' && c.name.replace(/\s+/g, ' ').trim() === buyer.name && c.linkedin === buyer.linkedin) : undefined
+    out.set(r.lead_id, buyer && top ? { best_person: buyer.name, best_person_title: buyer.title, best_person_link: buyer.linkedin ?? '', best_person_found_via: top.verified && (top.currency === 'verified_current' || top.verified.reason) ? `${peopleSourceText(top)}; ${currencyText(top.verified, top.connector)}` : peopleSourceText(top) } : EMPTY)
   }
   return out
 }

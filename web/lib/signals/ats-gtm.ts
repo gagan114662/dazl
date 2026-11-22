@@ -94,7 +94,9 @@ export interface CheckedListing { board: GtmHiring['board']; boardUrl: string; a
   // detail cap, or no date in the payload); rawFreshExcluded = fresh entries excluded for another reason (closed / unusable) - outside any
   // 0-fresh claim. datedStale = the stored (capped) titles known stale, for per-title row labels. "0 fresh" may only be claimed when
   // rawUnread = rawFreshExcluded = 0 and rawDatedStale = rawTotal. }
-  rawTotal: number; rawDatedStale: number; rawUnread: number; rawFreshExcluded: number; datedStale: string[] }
+  rawTotal: number; rawDatedStale: number; rawUnread: number; rawFreshExcluded: number; datedStale: string[]
+  // Qodo on #1522 (4): the clock each stale title was judged on, when a title has its own (windowFor); absent = the board's window.
+  staleDays?: Record<string, number> }
 export async function atsGtmBoard(company: string, domain: string | null, fetchImpl: typeof fetch = fetch, opts: { now?: number; windowDays?: number; roleMatch?: (title: string) => boolean; windowFor?: (title: string) => number } = {}): Promise<{ hiring: GtmHiring | null; contradictory: boolean; checked?: CheckedListing | null; probeErrors: string[]; fetchAborted: boolean }> {
   const roleOk = opts.roleMatch ?? isGtmRole
   const titleFilter: GtmHiring['titleFilter'] = opts.roleMatch ? 'role-match' : 'gtm'
@@ -179,6 +181,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
       if (!checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: listTitles, listedCount: new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found, rawTotal: ashbyTitles.length, rawDatedStale: abDatedStale, rawUnread: abUnread, rawFreshExcluded: abFreshExcluded, datedStale: listTitles.filter(t => abStaleTitles.has(t.trim().toLowerCase())), allListed: abAll, listedCountAll: abAllCount }
     }
   }
+  if (checked && opts.windowFor) checked.staleDays = Object.fromEntries(checked.datedStale.map(t => [t.trim().toLowerCase(), Math.min(Math.round(win / 86_400_000), opts.windowFor!(t))]))
   return { hiring: null, contradictory: false, checked, probeErrors: [...fetchBox.probeErrors], fetchAborted: fetchBox.aborted }
 }
 
@@ -235,7 +238,7 @@ export function checkedAuditRows(c: CheckedListing, windowDays: number, retrieve
     connector: `signals:${c.board}-gtm`, kind: 'hiring-role',
     value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${t}`.slice(0, 254),
     label: [unconfirmedNote, stale.has(t.trim().toLowerCase())
-      ? `Board listing audit (${filterText}): posting date read as older than the last ${windowDays} days (long-open; repost history unknown); no dated evidence row was stored`
+      ? `Board listing audit (${filterText}): posting date read as older than the last ${c.staleDays?.[t.trim().toLowerCase()] ?? windowDays} days (long-open; repost history unknown); no dated evidence row was stored`
       : `Board listing audit (${filterText}): title listed on the board when checked; its posting date was not read - freshness unknown`].filter(Boolean).join('; ').slice(0, 200),
     confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }))
@@ -243,11 +246,14 @@ export function checkedAuditRows(c: CheckedListing, windowDays: number, retrieve
 export function checkedCoverageRow(c: CheckedListing, windowDays: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
   const truncated = c.listedCount > c.allTitles.length
   const filterText = c.titleFilter === 'gtm' ? 'sales/GTM-role titles only' : 'requested-role-matching titles only'
+  // Qodo on #1522 (4): with per-title clocks, the count is against each posting's own clock, never one window.
+  const mixed = !!c.staleDays && Object.values(c.staleDays).some(d => d !== windowDays)
+  const within = mixed ? 'within their requested role\'s clock' : `in the last ${windowDays} days`, older = mixed ? 'older than their requested role\'s clock' : `older than the last ${windowDays} days`
   const core = c.listedCount === 0
     ? `0 fresh postings in the last ${windowDays} days; 0 ${filterText} listed on an empty board listing`
     : c.rawUnread === 0 && c.rawFreshExcluded === 0 && c.rawDatedStale === c.rawTotal
-      ? `0 fresh postings in the last ${windowDays} days across the full listing (${c.listedCount} ${filterText}, all posting dates read)`
-      : `posting dates read for ${c.rawDatedStale + c.rawFreshExcluded} of ${c.rawTotal} listed postings${c.rawDatedStale || c.rawFreshExcluded ? ` (${[c.rawDatedStale ? `${c.rawDatedStale} older than the last ${windowDays} days` : '', c.rawFreshExcluded ? `${c.rawFreshExcluded} fresh but closed or unusable` : ''].filter(Boolean).join(', ')})` : ''}; the other ${c.rawTotal - c.rawDatedStale - c.rawFreshExcluded} were never date-read, so absence is not proven`
+      ? `0 fresh postings ${within} across the full listing (${c.listedCount} ${filterText}, all posting dates read)`
+      : `posting dates read for ${c.rawDatedStale + c.rawFreshExcluded} of ${c.rawTotal} listed postings${c.rawDatedStale || c.rawFreshExcluded ? ` (${[c.rawDatedStale ? `${c.rawDatedStale} ${older}` : '', c.rawFreshExcluded ? `${c.rawFreshExcluded} fresh but closed or unusable` : ''].filter(Boolean).join(', ')})` : ''}; the other ${c.rawTotal - c.rawDatedStale - c.rawFreshExcluded} were never date-read, so absence is not proven`
   return {
     connector: `signals:${c.board}-gtm`, kind: 'hiring-board-coverage',
     value: `Board checked: ${core}; ${c.allTitles.length} stored as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),
