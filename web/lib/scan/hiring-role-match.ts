@@ -23,6 +23,10 @@ const SURFACES: Record<string, string[]> = {
 }
 export const roleSurfaceForms = (r: RequestedHiringRole): string[] => [r.term, ...(SURFACES[r.normalized] ?? [])]
 export interface RequestedHiringRole { term: string; normalized: string }
+// #1122: whether a phrase ends in a job-title noun ("sales rep", "BDR", "account executive", "dental assistant"): what makes a word after
+// "or" or "/" another role of the same clause rather than another condition, a place, a company or a qualifier.
+const TITLE_NOUN = /(?:^|\s)(?:reps?|representatives?|sdrs?|bdrs?|aes?|executives?|managers?|directors?|heads?|vps?|leads?|officers?|engineers?|developers?|designers?|analysts?|specialists?|coordinators?|assistants?|associates?|administrators?|admins?|receptionists?|hygienists?|technicians?|nurses?|accountants?|consultants?|salespersons?|salespeople|sellers?|marketers?|recruiters?|agents?|clerks?|strategists?|writers?|planners?|operators?|supervisors?|staff)$/i
+export const endsInTitleNoun = (s: string): boolean => TITLE_NOUN.test(s.trim())
 
 // A capture that STARTS with a qualifier names a place or time, never a title: "hiring in Ohio", "hiring within 90 days", "hiring now".
 const LEAD_QUALIFIER = /^(?:within|in|at|on|from|with|during|over|across|now|currently|recently|soon|asap|immediately)\b/i
@@ -42,8 +46,11 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
   for (const text of texts) {
     // #533 live: "posted a front desk receptionist job in the past 90 days" names the posting title as plainly as "hiring a ..." does
     for (const m of text.matchAll(/\bpost(?:ed|s|ing)?\s+(?:(?:a|an|the|new|their|its|one|any)\s+)*([^.;!?\n]{2,80}?)\s+(?:job|role|position|opening|vacanc(?:y|ies)|posting|ad|listing)s?\b/gi)) {
-      // #1122: "an SDR/BDR or sales rep job" names three titles, like the hiring form below
-      for (const raw of m[1].split(/\s+or\s+|\s+and\s+|,|\//i)) {
+      // #1122: "an SDR/BDR or sales rep job" names three titles. "/" splits only when every piece is itself a title ("Sales/Marketing
+      // coordinator" and "full-stack/backend engineer" are one title each), and "and/or" is one separator.
+      const phrase = m[1].replace(/\s+and\s*\/\s*or\s+/gi, ' or ')
+      const parts = phrase.split(/\s+or\s+|\s+and\s+|,/i).flatMap(p => { const s = p.split('/'); return s.length > 1 && s.every(x => endsInTitleNoun(x.replace(LEAD_WORDS, ''))) ? s : [p] })
+      for (const raw of parts) {
         const term = raw.trim().replace(LEAD_WORDS, '').trim(), n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n) || LEAD_QUALIFIER.test(term)) continue
         if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions|job|new)$/.test(n)) continue

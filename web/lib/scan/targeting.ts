@@ -15,6 +15,7 @@
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
 import { TECH_WORDS, techNameOf } from '../connectors/techstack.ts'
+import { endsInTitleNoun } from './hiring-role-match.ts'
 
 export type Truth = 'pass' | 'fail' | 'unknown'
 export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category' | 'tech'
@@ -58,7 +59,7 @@ const FUNDING_CUE = /\b(?:fund(?:ing|ed|s)?|rais(?:e|ed|es|ing)|round|invest(?:e
 const STAGE = '(?:pre-?seed|seed|series\\s+[a-e])'
 const RAISE = '(?:raised|closed|secured|announced|landed|completed|received)'
 
-interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean; bare?: boolean }
+interface Atom { kind: Exclude<CondKind, 'competitor' | 'company_named' | 'category'>; start: number; end: number; more?: string; stage?: string; role?: string; first?: boolean; event?: string; object?: string; tech?: string; change?: 'uses' | 'adopted' | 'removed'; neg?: boolean; bare?: boolean }
 
 // #389: technology conditions, only for technologies the site crawl can detect (techstack.ts). A technology word becomes a condition only
 // after a technology cue ("using", "built on", "migrated from", "switched to" ...) or before a platform noun ("Shopify stores"); words
@@ -121,19 +122,22 @@ const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|t
 // role's alternatives already use, "Head of Sales/VP Sales"), and each is judged on its own (roleAlternatives). A further role is read after
 // "or" or "/" only (a comma separates conditions: "A, B, or C") while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or
 // qualifier word, and it starts no other condition of the request ("hiring SDRs or raised a Series A" stays two conditions).
-const ALT_SEP = /^(?:\s*\/\s*|\s+or\s+)/i
+const ALT_SEP = /^(?:\s*\/\s*|\s+or\s+|\s+and\s*\/\s*or\s+)/i
 const NOT_ROLE_WORD = /^(?:now|currently|recently|soon|asap|immediately|today|actively|urgently|last|past|next|this|within|in|at|on|from|with|during|over|across|days?|weeks?|months?|years?)$/i
-const altRole = (s: string) => !!s && /^[A-Za-z][A-Za-z\s&\/-]*$/.test(s) && s.split(/\s+/).length <= 5
-  && !s.split(/[\s\/]+/).some(w => /ed$/i.test(w) || NOT_ROLE_WORD.test(w)) && !/^[a-z]+ing$/i.test(s)
-function moreRoles(atoms: Atom[], text: string, at: number, role: string): { roles: string[]; end: number } {
+// A further role must END in a job-title noun ("sales rep", "BDR", "account executive", "dental assistant") and must not open with a verb form
+// or a clause word: "or opening a new office", "or companies that raised funding", "or founders who ..." are other conditions, never roles.
+const altRole = (s: string) => !!s && /^[A-Za-z][A-Za-z\s&\/-]*$/.test(s) && s.split(/\s+/).length <= 5 && endsInTitleNoun(s)
+  && !s.split(/[\s\/]+/).some(w => /(?:ed|ing)$/i.test(w) || NOT_ROLE_WORD.test(w) || /^(?:who|that|which|whose|where|companies|company|firms?|businesses|startups?|teams?)$/i.test(w))
+// Run once every condition of the request is found (findAtoms' last step), so a later reading (an event, a completed hire) keeps its own span.
+function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { roles: string[]; end: number } {
   const roles = [role]
-  let rest = text, end = at
+  let rest = text, end = self.end
   for (;;) {
     const sep = ALT_SEP.exec(rest); if (!sep) break
     const tail = rest.slice(sep[0].length), next = cleanRole(tail)
     if (!altRole(next)) break
     const nextEnd = end + sep[0].length + tail.indexOf(next) + next.length
-    if (atoms.some(b => end < b.end && b.start < nextEnd)) break
+    if (atoms.some(b => b !== self && end < b.end && b.start < nextEnd)) break
     roles.push(next); rest = tail.slice(tail.indexOf(next) + next.length); end = nextEnd
   }
   return { roles, end }
@@ -181,14 +185,12 @@ function findAtoms(q: string): Atom[] {
   for (const m of q.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\b([^.;!?]*)/gi)) {
     const role = cleanRole(m[1])
     const end = (m.index ?? 0) + m[0].length - m[1].length + (role ? m[1].indexOf(role) + role.length : 0)
-    const all = role ? moreRoles(atoms, m[1].slice(m[1].indexOf(role) + role.length), end, role) : { roles: [], end }
-    add({ kind: 'hiring', start: m.index ?? 0, end: all.end, role: all.roles.join('/') })
+    add({ kind: 'hiring', start: m.index ?? 0, end, role, ...(role ? { more: m[1].slice(m[1].indexOf(role) + role.length) } : {}) })
   }
   for (const m of q.matchAll(/\b(?:posted|posting|advertis\w+|open)\s+(?:a\s+|an\s+|new\s+)?(?:jobs?|roles?|positions?|vacanc(?:y|ies)|openings?)(?:\s+for\s+([^,.;]+))?/gi)) {
     const role = m[1] ? cleanRole(m[1]) : ''
     const end = (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length)
-    const all = role ? moreRoles(atoms, m[1]!.slice(m[1]!.indexOf(role) + role.length), end, role) : { roles: [], end }
-    add({ kind: 'hiring', start: m.index ?? 0, end: all.end, role: all.roles.join('/') })
+    add({ kind: 'hiring', start: m.index ?? 0, end, role, ...(role ? { more: m[1]!.slice(m[1]!.indexOf(role) + role.length) } : {}) })
   }
   // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
   // like any open role: a dated posting or a source naming it). The past tense ("made their first sales hire") is a completed hire: step 1 (#876).
@@ -204,6 +206,10 @@ function findAtoms(q: string): Atom[] {
   }
   // 4. Other events.
   for (const e of EVENTS) for (const m of q.matchAll(e.re)) add({ kind: 'event', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, event: e.event, object: e.object && m[e.object] ? m[e.object].toLowerCase().replace(/(?:es|s)$/, '') : '' })
+  // #1122: the further roles of an open-role clause, read now that every other condition holds its span
+  for (const a of atoms) if (a.kind === 'hiring' && a.more !== undefined && a.role) {
+    const r = moreRoles(atoms, a, a.more, a.role); a.role = r.roles.join('/'); a.end = r.end; delete a.more
+  }
   return atoms.sort((a, b) => a.start - b.start)
 }
 
@@ -286,16 +292,21 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   // Negation, then the connective between each pair of neighbouring conditions.
   const negated = atoms.map((a, i) => !!a.neg || NEG_BEFORE.test(q.slice(i === 0 ? Math.max(0, a.start - 40) : Math.max(atoms[i - 1].end, a.start - 40), a.start)))
   const gaps = atoms.slice(1).map((a, i) => q.slice(atoms[i].end, a.start))
-  const conn: ('and' | 'or')[] = gaps.map((g, i) => {
-    const t = g.replace(WINDOW_RE, ' ')
+  const conn: ('and' | 'or')[] = []
+  const connAt = (i: number): 'and' | 'or' => {
+    const t = gaps[i].replace(WINDOW_RE, ' ')
     if (/\band\s*\/\s*or\b/i.test(t)) { ambiguities.push({ text: `${conds[i].text} and/or ${conds[i + 1].text}`, readings: ['either condition', 'both conditions'], chosen: 'both conditions (and)' }); return 'and' }
     if (/\bnor\b/i.test(t)) return 'and'
     if (/\bor\b|\beither\b/i.test(t)) return 'or'
     // #1122 follow-up: a bare comma inside a list ("A or B, C, or D") takes the list's own connective: the next and/or in the same clause.
-    // #1122: the list item may open with an article or "new" before its condition word ("..., new funding, a new Head of Sales, or ...").
-    if (/^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)*$/i.test(t)) { const w = /\b(and|or)\b/i.exec(q.slice(atoms[i + 1].end).split(/[.;:!?]/)[0]); if (w) return w[1].toLowerCase() as 'and' | 'or' }
+    if (/^\s*,\s*$/.test(t)) { const w = /\b(and|or)\b/i.exec(q.slice(atoms[i + 1].end).split(/[.;:!?]/)[0]); if (w) return w[1].toLowerCase() as 'and' | 'or' }
+    // #1122: a list item may open with an article or "new" before its condition word ("..., new funding, a new Head of Sales, or ..."). Such a
+    // comma takes the connective of the NEXT gap of the same list, and only when that gap is itself a list gap; otherwise it stays 'and'. So an
+    // "or" inside a later place, investor or headcount ("based in Ohio or Texas", "10 or more employees") never turns the list into an OR.
+    if (/^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)+$/i.test(t) && i + 1 < gaps.length && /^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)*$/i.test(gaps[i + 1].replace(WINDOW_RE, ' '))) return connAt(i + 1)
     return 'and'
-  })
+  }
+  for (let i = 0; i < gaps.length; i++) conn.push(connAt(i))
   // "not funded or hiring": (not A) or B, or neither? The narrower reading is neither.
   for (let i = 0; i < conn.length; i++) if (negated[i] && !negated[i + 1] && conn[i] === 'or') {
     ambiguities.push({ text: q.slice(atoms[i].start, atoms[i + 1].end), readings: [`(not ${conds[i].text}) or ${conds[i + 1].text}`, `neither ${conds[i].text} nor ${conds[i + 1].text}`], chosen: `neither ${conds[i].text} nor ${conds[i + 1].text}` })

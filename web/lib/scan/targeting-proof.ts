@@ -8,6 +8,7 @@ import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedS
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
+import { requestedHiringRoles, matchedHiringRole } from './hiring-role-match.ts'
 import { parseWindowDays } from './window.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
 
@@ -168,7 +169,12 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
   const now = ctx.now ?? Date.now()
   // #1122: each role the condition names is judged on its own; a sales role among them takes the sales proof path
   const gtm = !c.role || roleAlternatives(c.role).some(isGtmRole)
-  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
+  // #1122: when the condition names roles, a posting proves it only if its own title is one of them (each role matched on its own, with the
+  // sales gate's bounded synonyms: an SDR posting is not an AE, a hygienist is not a receptionist). With no role named, any posting counts as before.
+  const named = c.role ? roleAlternatives(c.role).flatMap(alt => requestedHiringRoles(`hiring ${alt}`, null)) : []
+  // a broad role ("sales staff", "sales team") names no title the matcher reads: any posting of the condition's kind counts, as before
+  const titleOk = (title: string) => named.length === 0 || matchedHiringRole(title, named) !== null
+  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && titleOk(String(r.value)) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
     .sort(postingOrder)
     .map((r): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }))
   const rest = ownProof(c, lead, [], ctx)
