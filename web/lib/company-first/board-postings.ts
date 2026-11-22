@@ -62,8 +62,9 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
 // an ATS posting URL that could take a slot is read once, in parallel, on its own small deadline, only to fill dates/titles. It picks
 // nothing. The counts and the cause go to the run report.
 export type BoardDating = { boards: number; read: number; failed: number; cause: 'none' | 'deadline' | 'unreadable' | 'no_boards' }
-export async function dateBoards(urls: string[], o: { http: SafeGet; deadlineMs: number; clock?: () => number; concurrency?: number; dates?: Map<string, string>; titles?: Map<string, string> }): Promise<BoardDating> {
-  const clock = o.clock ?? Date.now, deadline = clock() + Math.max(0, o.deadlineMs)
+// Qodo #1552: deadlineMs is each board's own deadline, started when a worker takes it; totalMs (default deadlineMs) caps the whole step.
+export async function dateBoards(urls: string[], o: { http: SafeGet; deadlineMs: number; totalMs?: number; clock?: () => number; concurrency?: number; dates?: Map<string, string>; titles?: Map<string, string> }): Promise<BoardDating> {
+  const clock = o.clock ?? Date.now, deadline = clock() + Math.max(0, o.totalMs ?? o.deadlineMs)
   const boards = new Map<string, Board>()
   for (const u of urls) { if (!atsPostingRef(u)) continue; const b = boardOf(u); if (b && !b.host && !boards.has(`${b.ats}:${b.token}`)) boards.set(`${b.ats}:${b.token}`, b) }
   if (!boards.size) return { boards: 0, read: 0, failed: 0, cause: 'no_boards' }
@@ -71,14 +72,16 @@ export async function dateBoards(urls: string[], o: { http: SafeGet; deadlineMs:
   let read = 0, failed = 0, late = false
   const one = async (b: Board) => {
     if (clock() >= deadline) { late = true; return }
-    const res = await o.http(boardApi(b), { accept: 'application/json', signal: AbortSignal.timeout(Math.max(1, deadline - clock())) }).catch(() => null)
+    const own = Math.min(clock() + Math.max(0, o.deadlineMs), deadline)
+    const res = await o.http(boardApi(b), { accept: 'application/json', signal: AbortSignal.timeout(Math.max(1, own - clock())) }).catch(() => null)
     let roles: ReturnType<typeof boardRoles> = null
     if (res && res.status === 200 && !res.truncated && !looksLikeHtml(res.body)) { try { roles = boardRoles(b, JSON.parse(res.body)) } catch { roles = null } }
-    if (!roles) { if (clock() >= deadline) late = true; else failed++; return }
+    if (!roles) { if (clock() >= own) late = true; return }
     read++
     for (const r of roles) { const k = postingKey(r.url); if (k && r.posted) { o.dates?.set(k, r.posted); if (r.title) o.titles?.set(k, r.title) } }
   }
   await Promise.all(Array.from({ length: Math.min(o.concurrency ?? 6, queue.length) }, async () => { for (let b = queue.shift(); b; b = queue.shift()) await one(b) }))
+  failed = boards.size - read   // Qodo #1552: a board skipped at the deadline or timed out is not dated either; never reported as zero
   return { boards: boards.size, read, failed, cause: read === boards.size ? 'none' : late ? 'deadline' : 'unreadable' }
 }
 
@@ -92,14 +95,15 @@ export function postingKey(url: string): string | null {
 // keeps its order after them and is dated by the verifier as before. The window is never widened.
 // Qodo #1548: among the in-window ones, a posting whose board title is a requested role (roleMatch: the hiring gate's own matcher over the
 // request's roles) goes first, newest first; other in-window roles follow, newest first; undated URLs last.
-export function orderByBoardDate(urls: string[], dates: ReadonlyMap<string, string>, o: { windowDays: number | null; now: Date; titles?: ReadonlyMap<string, string>; roleMatch?: (title: string) => boolean }): string[] {
+// Qodo #1552: undated ATS postings go last only when boardsDated says the dating step ran; otherwise they keep their order.
+export function orderByBoardDate(urls: string[], dates: ReadonlyMap<string, string>, o: { windowDays: number | null; now: Date; titles?: ReadonlyMap<string, string>; roleMatch?: (title: string) => boolean; boardsDated?: boolean }): string[] {
   const since = o.windowDays && o.windowDays > 0 ? new Date(o.now.getTime() - o.windowDays * 86_400_000).toISOString().slice(0, 10) : null
   const today = o.now.toISOString().slice(0, 10)
   const dated: { url: string; posted: string; i: number; req: boolean }[] = [], rest: string[] = [], undatedAts: string[] = []
   urls.forEach((url, i) => {
     const k = postingKey(url), posted = k ? dates.get(k) : undefined
     // af02437c: an ATS posting its board did not date (board unread) goes after every other source; the verifier still dates it
-    if (!posted) { (k ? undatedAts : rest).push(url); return }
+    if (!posted) { (k && o.boardsDated ? undatedAts : rest).push(url); return }
     if (posted > today || (since && posted < since)) return
     const title = k ? o.titles?.get(k) : undefined
     dated.push({ url, posted, i, req: !!(title && o.roleMatch?.(title)) })

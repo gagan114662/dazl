@@ -1853,12 +1853,12 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         // af02437c: every board behind a slot candidate is dated on its own small deadline (never the pick step's leftover phase time)
         if (companyFirst && hiringAsked) {
           const left = phaseDeadline ? phaseDeadline.at - phaseDeadline.now() - 5_000 : 8_000
-          const st = await dateBoards([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls], { http: deps.sourceHttp ?? safeGet, deadlineMs: Math.min(8_000, Math.max(0, left)), dates: boardDates, titles: boardTitles })
+          const st = await dateBoards([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls], { http: deps.sourceHttp ?? safeGet, deadlineMs: 8_000, totalMs: Math.min(30_000, Math.max(0, left)), dates: boardDates, titles: boardTitles })
             .catch(() => ({ boards: 0, read: 0, failed: 0, cause: 'unreadable' as const }))
           boardsToDate += st.boards; boardsDated += st.read; boardsDateFailed += st.failed; if (st.cause !== 'none' && st.cause !== 'no_boards') boardDateCauses.add(st.cause)
         }
         const ordered = orderByBoardDate([...new Set([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url)),
-          boardDates, { windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), titles: boardTitles, roleMatch: (() => { const rs = requestedGateRoles(job.query, job.icp); return (t: string) => !!matchedHiringRole(t, rs) })() })
+          boardDates, { windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), titles: boardTitles, boardsDated: companyFirst && hiringAsked, roleMatch: (() => { const rs = requestedGateRoles(job.query, job.icp); return (t: string) => !!matchedHiringRole(t, rs) })() })
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
           return board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(url.hostname, { allowPrivateDomains: true }) ?? url.hostname

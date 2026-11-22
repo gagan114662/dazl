@@ -116,7 +116,7 @@ test('af02437c: every ATS posting slot candidate gets its own board dated (past 
 test('af02437c: an undated ATS posting (board unread) never beats a dated in-window one, and stays after undated non-ATS sources', async () => {
   const { orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
   const dates = new Map([['greenhouse:acme:1', '2026-11-10']])
-  const out = orderByBoardDate(['https://jobs.ashbyhq.com/x/11111111-0000-0000-0000-000000000000', 'https://news.example/a', 'https://job-boards.greenhouse.io/acme/jobs/1'], dates, { windowDays: 45, now })
+  const out = orderByBoardDate(['https://jobs.ashbyhq.com/x/11111111-0000-0000-0000-000000000000', 'https://news.example/a', 'https://job-boards.greenhouse.io/acme/jobs/1'], dates, { windowDays: 45, now, boardsDated: true } as never)
   assert.deepEqual(out, ['https://job-boards.greenhouse.io/acme/jobs/1', 'https://news.example/a', 'https://jobs.ashbyhq.com/x/11111111-0000-0000-0000-000000000000'])
 })
 test('af02437c: the dating step has its own deadline; when it runs out the cause is "deadline"', async () => {
@@ -125,4 +125,22 @@ test('af02437c: the dating step has its own deadline; when it runs out the cause
   const http = async () => { t += 5_000; return { status: 200, body: JSON.stringify({ jobs: [] }), finalUrl: '' } as never }
   const st = await dateBoards(['https://boards.greenhouse.io/a/jobs/1', 'https://boards.greenhouse.io/b/jobs/2', 'https://boards.greenhouse.io/c/jobs/3'], { http, deadlineMs: 8_000, clock: () => t, concurrency: 1 })
   assert.equal(st.boards, 3); assert.equal(st.read, 2); assert.equal(st.cause, 'deadline')
+})
+
+// Qodo #1552 (1): each board gets its own deadline when a worker takes it (deadlineMs), inside a separate whole-step cap (totalMs), so later
+// boards in a long queue are still read. (3): every board not dated, skipped at the deadline or timed out, is counted in failed.
+test('Qodo #1552: later boards are read on their own deadline; skipped boards count as failed', async () => {
+  const { dateBoards } = await import('../lib/company-first/board-postings.ts')
+  let t = 0
+  const http = async () => { t += 5_000; return { status: 200, body: JSON.stringify({ jobs: [] }), finalUrl: '' } as never }
+  const urls = Array.from({ length: 8 }, (_, i) => `https://boards.greenhouse.io/b${i}/jobs/${i + 1}`)
+  const st = await dateBoards(urls, { http, deadlineMs: 8_000, totalMs: 30_000, clock: () => t, concurrency: 1 } as never)
+  assert.equal(st.read, 6, 'six 5s boards fit the 30s step though each is past the 8s mark')
+  assert.equal(st.failed, 2, 'the two boards the step could not reach are failed, not silent'); assert.equal(st.cause, 'deadline')
+})
+// Qodo #1552 (2): when no board dating ran, an undated ATS posting keeps its place (only a dated run demotes it).
+test('Qodo #1552: without board dating, undated ATS postings keep their order', async () => {
+  const { orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
+  const urls = ['https://job-boards.greenhouse.io/acme/jobs/1', 'https://a.example/1', 'https://b.example/2', 'https://c.example/3', 'https://d.example/4', 'https://e.example/5']
+  assert.deepEqual(orderByBoardDate(urls, new Map(), { windowDays: 45, now }), urls)
 })
