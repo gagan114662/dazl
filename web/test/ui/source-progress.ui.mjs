@@ -5,7 +5,9 @@
 //   1. each source that has started gets a row with its state; one that has not started is not listed (nothing invented);
 //   2. rows update from the next status poll without a reload (running -> done with counts, a new source appears, a failure
 //      is named), counts are shown as recorded and an unknown count is "-", never 0;
-//   3. no source rows yet says so; loading and watching the scan writes nothing.
+//   3. no source rows yet says so; loading and watching the scan writes nothing;
+//   4. (#1157) the live step names what is running and its last progress: "Search and read sources" reads "Searching... N min -
+//      last activity N s ago" from the status' running_since and last_progress_at.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -56,7 +58,7 @@ await ctx.route('**/*', async route => {
   if (p === '/api/settings/advanced') return json({ available: true, platforms: [] })
   if (p === '/api/scan/sources') return json({ web_index: true, news: true, websites: true })
   if (p === '/api/scan/jobs') return json({ jobs: [{ id: JOB, status: 'running', error: null, query: 'Dental practices in Ohio', business_name: 'Acme', csv_domain: null, created_at: 1, finished_at: null, candidates: null, verified: null, needs_review: null, dropped: null, lead_count: 0, test_only: false }] })
-  if (p === '/api/scan/status') return json({ job_id: JOB, status: 'running', progress: STEP[step], lead_count: step === 2 ? 3 : 0, attempts: 1, max_attempts: 3, claimed_at: T0, created_at: T0, error: null, quality: null })
+  if (p === '/api/scan/status') return json({ job_id: JOB, status: 'running', progress: STEP[step], lead_count: step === 2 ? 3 : 0, attempts: 1, max_attempts: 3, claimed_at: T0, created_at: T0, running_since: T0, last_progress_at: Math.floor(Date.now() / 1000) - 12, error: null, quality: null })
   if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
   return json({}, 404)
 })
@@ -72,6 +74,12 @@ try {
   step = 1
   await page.getByTestId('source-row').first().waitFor({ timeout: 15000 })
   assert.deepEqual(await rows(), [['Web search', 'Searching...', null]], 'only a started source is listed')
+  // #1157: the live step says what is running, for how long, and when it last made progress
+  const live = page.getByTestId('scan-stepper').locator('li[data-state=live]')
+  assert.equal(await live.locator('.font-medium').textContent(), 'Search and read sources')
+  const note = await live.locator('span').last().textContent()
+  const ago = Number(/^Searching\.\.\. 3 min - last activity (\d+) s ago$/.exec(note ?? '')?.[1])
+  assert.ok(ago >= 12 && ago <= 40, `live step note: ${note}`)
   await shot('after-running')
   step = 2
   await page.waitForFunction(() => document.querySelectorAll('[data-testid=source-row]').length === 5, null, { timeout: 15000 })
@@ -80,7 +88,7 @@ try {
     ['News articles', 'Searching...', null],
     ['Job postings', 'Not used for this search', null],
     ['GitHub', 'Failed', null],
-    ['AI web research (retired)', 'Done', '2 found · - checked · - to review · - rejected'],
+    ['Web research with your AI key', 'Done', '2 found · - checked · - to review · - rejected'],
   ])
   assert.equal(docs, 1, 'updated from the status poll, no reload')
   assert.equal(await page.getByText('dazl cannot show a per-source count yet').count(), 0)

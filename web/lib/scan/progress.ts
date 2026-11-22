@@ -51,7 +51,9 @@ export function partialNote(raw: string): string | null {
     // the source RAN, then a later request was refused: not "skipped", not an outage - and the copy names the ACTUAL hold reason
     const why = hold[1] ?? ''
     if (why === 'over_cap' || why === 'run_budget') return 'stopped by the spending limit after partial results'
-    if (why === 'accounting_uncertain' || why === 'ledger_unavailable') return 'stopped after a request may have been billed without a settled cost; partial results kept'
+    if (why === 'accounting_uncertain') return 'stopped after a request ended without a settled cost; it is counted as billed at the amount reserved for it; partial results kept'
+    // refused BEFORE send: the spend store did not answer, so no reservation was written and nothing was sent (spend-cap.ts)
+    if (why === 'ledger_unavailable') return 'stopped because spend accounting could not be written, so the next paid request was not sent; partial results kept'
     if (why === 'provider_rejected' || why === 'key_rejected') return 'stopped after the provider rejected a request; partial results kept'
     return 'stopped by the spend guard after partial results'
   }
