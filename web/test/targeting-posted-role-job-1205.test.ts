@@ -81,3 +81,17 @@ test('#1205 titles with "of" and "advertised for a <role> job" are read', () => 
   assert.equal(one('companies that posted a press release about a new role in the past 90 days').length, 0)
   assert.equal(one('Advertising agencies in Toronto that opened a new office').length, 0)
 })
+
+// council (Opus R6/R9): an article or "new" is never the role; "job posting / listing / ad" is a job word, and the role after "for" is read
+test('#1205 a, an and new are never the role; job posting / listing / ad name the job', () => {
+  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  for (const [q, role, days] of [
+    ['Firms that posted a new job in the past 30 days', '', 30],
+    ['Firms that posted a job posting in the last 30 days', '', 30],
+    ['Firms that posted a job ad for a paralegal', 'paralegal', null],
+    ['Firms that posted a new job posting for a nurse', 'nurse', null],
+  ] as const) {
+    const h = one(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q)
+    if (days !== null) assert.equal(h[0].within_days, days, q)
+  }
+})
