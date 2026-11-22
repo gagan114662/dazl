@@ -12,7 +12,7 @@ import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
 import { runResearchScan, HAIKU } from '../research/scan-job.ts'
-import { readRequestPlan } from './request-plan.ts'
+import { readRequestPlan, planPrompt, PLAN_MAX_TOKENS } from './request-plan.ts'
 import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
@@ -57,7 +57,7 @@ import { buyerSourceCitation, companyHostsFromSearch, crawlJob, defaultGet, host
 import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
 import { effectiveCapUsd, noteAccountLimitRefusal, scanSpendContext, scanSpendRow, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
-import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, callCostUsd, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
@@ -681,6 +681,17 @@ async function poolRoomFor(guards: SpendGuard[], usd: number): Promise<boolean> 
     const room = await g.pool.headroom().catch(() => -Infinity)
     if (!(room >= usd)) return false
   }
+  return true
+}
+// #1395: room for an OPTIONAL paid call (the request plan), read-only and never latching: every job guard has room under its limit, every owner
+// pool behind the guards has headroom, and the scan's recorded cap (when this scan has one) has room. A reservation that does not fit latches a
+// SpendGuard (every later reservation refused), so an optional call that would not fit is not reserved at all and later paid steps go on.
+export async function optionalCallHasRoom(guards: SpendGuard[], usd: number): Promise<boolean> {
+  if (!(Number.isFinite(usd) && usd >= 0)) return false
+  if (guards.some(g => g.refused || (!(g instanceof PooledGuard) && !(g.reservedUsd + usd <= g.limitUsd)))) return false
+  if (!(await poolRoomFor(guards, usd))) return false
+  const ctx = scanSpendContext()
+  if (ctx && effectiveCapUsd(ctx) !== null && !(await scanCapRoomFor(usd))) return false
   return true
 }
 async function scanCapRoomFor(usd: number): Promise<boolean> {
@@ -2022,9 +2033,19 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       assertOwned(db, job)
       const pm = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(HAIKU), c => ledger.model(c))
       const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
-      const r = await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl, (icpForSources?.where ?? []).filter((w): w is string => typeof w === 'string'))
+      // the plan is optional: without room for it on every guard, the pool and the scan cap, nothing is reserved (no guard latches) and the boards hold
+      // (a model this check cannot price is left to the guarded call itself, which refuses an unpriced model and stops the scan, as for every paid call)
+      let planUsd: number | null = null
+      try { planUsd = callCostUsd(pm.configuredModel?.() ?? HAIKU, Buffer.byteLength(planPrompt(job.query!)), PLAN_MAX_TOKENS) } catch { planUsd = null }
+      const room = planUsd === null ? true : await optionalCallHasRoom(spendGuards, planUsd)
+      const r = room ? await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl) : { ok: false as const, reason: 'spend_refused' as const }
       if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
-      else { requestNamesPlace = r.plan.places.length > 0; const b = boardPlaceOf(r.plan.places); if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason }
+      else {
+        requestNamesPlace = r.plan.places.length > 0
+        // the plan says which words are the place; the existing resolvers read them, with the profile's country and entries as a profile place is read
+        const b = boardPlaceOf(r.plan.places, { country: icpForSources?.country ?? null, where: (icpForSources?.where ?? []).filter((w): w is string => typeof w === 'string') })
+        if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason
+      }
     }
     const named = new Map<string, string>()
     // the profile's place only when the request names NONE: a place the request names but the boards cannot place holds them, never another place

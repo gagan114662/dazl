@@ -42,37 +42,18 @@ test('#1395 the schema is strict: wrong types, unknown keys, bad codes and overs
   assert.equal(parsePlan(`Here is the plan: ${JSON.stringify(ok)}`), null, 'prose around the object is refused')
 })
 
-test('#1395 grounding: a place must be written in the request; its country written there or implied by data', () => {
+test('#1395 grounding: a place must be written in the request; a model country can never move the place the words name', () => {
   const g = (request: string, text: string, city: string | null, region: string | null, country: string | null) => groundedIn(request, { text, city, region, country })
   assert.equal(g('Startups SaaS à Toronto, Canada', 'Toronto, Canada', 'Toronto', null, 'CA'), true)
   assert.equal(g('SaaS-Startups in München, Deutschland', 'München, Deutschland', 'München', null, 'DE'), true, 'a country name in another language the resolver reads')
-  assert.equal(g('startups in Toronto hiring', 'Toronto', 'Toronto', null, 'CA'), true, 'the country is implied by the listed world city')
-  assert.equal(g('startups in toronto hiring', 'toronto', 'toronto', null, 'CA'), false, 'a city not written as a name implies no country (main read none either)')
   assert.equal(g('hiring in Austin, TX', 'Austin, TX', 'Austin', 'TX', 'US'), true, "a US state's country")
-  assert.equal(g('Startups in Toronto', 'Toronto', 'Toronto', null, 'GB'), false, 'a country neither written nor implied is refused')
   assert.equal(g('Startups in Toronto', 'Toronto, Canada', 'Toronto', null, 'CA'), false, 'text the request does not write is refused')
   assert.equal(g('Startups in Toronto', 'Toronto', 'Montreal', null, 'CA'), false, 'a city outside the place text is refused')
-})
-
-test('#1395 boardPlaceOf: the posting side is the existing one; several places, unreadable regions and bare countries never widen', () => {
-  const one = (p: { text: string; city: string | null; region: string | null; country: string | null }) => boardPlaceOf([p])
-  const ca = one({ text: 'California', city: null, region: 'California', country: 'US' })
-  assert.ok('place' in ca && ca.place.ok('Los Angeles, CA') && ca.place.ok('San Francisco, California') && !ca.place.ok('Austin, TX'))
-  const tor = one({ text: 'Toronto, Ontario', city: 'Toronto', region: 'Ontario', country: 'CA' })
-  assert.ok('place' in tor && tor.place.ok('Toronto, ON, Canada') && !tor.place.ok('Vancouver, BC, Canada') && !tor.place.ok('Toronto, OH'))
-  const lon = one({ text: 'London, Ontario', city: 'London', region: 'Ontario', country: 'CA' })
-  assert.ok('place' in lon && lon.place.ok('London, ON') && !lon.place.ok('London, UK') && !lon.place.ok('Greater London'), 'London, Ontario is never the UK London')
-  const uk = one({ text: 'London', city: 'London', region: null, country: 'GB' })
-  assert.ok('place' in uk && uk.place.ok('London, UK') && !uk.place.ok('London, ON'))
-  const nyc = one({ text: 'NYC', city: 'NYC', region: null, country: 'US' })
-  assert.ok('place' in nyc && nyc.place.name === 'New York City')
-  const aus = one({ text: 'Austin', city: 'Austin', region: null, country: 'US' })
-  assert.ok('place' in aus && aus.place.name === 'Austin, TX', 'a bare US city by the census list')
-  assert.deepEqual(boardPlaceOf([]), { reason: 'skipped_no_place' })
-  assert.match((boardPlaceOf([{ text: 'Dubai', city: 'Dubai', region: null, country: 'AE' }, { text: 'Lagos', city: 'Lagos', region: null, country: 'NG' }]) as { reason: string }).reason, /^skipped_no_place:several:/)
-  assert.match((one({ text: 'Canada', city: null, region: null, country: 'CA' }) as { reason: string }).reason, /^skipped_no_place:country:Canada/)
-  assert.match((one({ text: 'Bayern', city: null, region: 'Bayern', country: 'DE' }) as { reason: string }).reason, /^skipped_no_place:region:/)
-  assert.match((one({ text: 'Springfield', city: 'Springfield', region: null, country: 'US' }) as { reason: string }).reason, /^skipped_no_place:ambiguous:/)
+  assert.equal(g('Startups SaaS à Toronto, Canada', 'Toronto, Canada', 'Toronto', null, 'GB'), false, 'a country the text writes must be the plan\'s')
+  // the board place comes from the words, read by the existing resolvers: a model's wrong country for "Toronto" changes nothing
+  const tor = boardPlaceOf([{ text: 'Toronto', city: 'Toronto', region: null, country: 'GB' }])
+  assert.ok('place' in tor && tor.place.ok('Toronto, ON, Canada') && !tor.place.ok('Toronto, UK'), 'Toronto is the listed Canadian city whatever the plan says')
+  assert.ok(!('place' in boardPlaceOf([{ text: 'toronto', city: 'toronto', region: null, country: 'CA' }])), 'a city not written as a name is no place (main read none either)')
 })
 
 // Council review (sonnet R1): a place must be written in the request as whole words, never inside another word.
@@ -113,22 +94,25 @@ test('#1395 a UK city with its constituent country keeps that region: Manchester
 })
 
 // Council review (opus R1): the built-in places are data too: a bare "London" is the UK's and "NYC" is New York City, as the board source has always
-// read them; the model's country for them is grounded, and a null country is filled from the same data.
-test('#1395 grounding: the built-in London (GB) and New York City (US) imply their country; a bare London with no country is the UK London', async () => {
+// read them (the resolver's own data, whatever country the plan gives), and a profile in another country never takes a bare shared London.
+test('#1395 board place: the built-in London and New York City are read from the words; another country\'s profile never takes the UK London', async () => {
   assert.equal(groundedIn('SDRs hiring in London', { text: 'London', city: 'London', region: null, country: 'GB' }), true)
-  assert.equal(groundedIn('hiring in NYC', { text: 'NYC', city: 'NYC', region: null, country: 'US' }), true)
-  assert.equal(groundedIn('hiring in Brooklyn', { text: 'Brooklyn', city: 'Brooklyn', region: null, country: 'US' }), true)
-  assert.equal(groundedIn('SDRs hiring in London', { text: 'London', city: 'London', region: null, country: 'CA' }), false, 'London alone is never another London')
-  const lon = boardPlaceOf([{ text: 'London', city: 'London', region: null, country: null }])
-  assert.ok('place' in lon && lon.place.name === 'London' && lon.place.ok('London, UK') && !lon.place.ok('London, ON'))
+  for (const country of ['GB', null, 'CA'] as const) {
+    const lon = boardPlaceOf([{ text: 'London', city: 'London', region: null, country }])
+    assert.ok('place' in lon && lon.place.name === 'London' && lon.place.ok('London, UK') && !lon.place.ok('London, ON'), `plan country ${country}`)
+  }
+  for (const text of ['NYC', 'Brooklyn']) { const p = boardPlaceOf([{ text, city: text, region: null, country: 'US' }]); assert.ok('place' in p && p.place.name === 'New York City', text) }
+  assert.ok(!('place' in boardPlaceOf([{ text: 'London', city: 'London', region: null, country: 'GB' }], { country: 'CA' })), 'a Canadian profile\'s bare London is never the UK London (#1205)')
 })
 
-// Council review (opus R5): a country implied by data (not written) needs the city written as a name: "mobile app teams" is not Mobile, AL.
-test('#1395 grounding: an implied country needs the city written as a name; lowercase words are not cities', () => {
-  assert.equal(groundedIn('mobile app teams hiring', { text: 'mobile', city: 'Mobile', region: null, country: 'US' }), false)
+// Council review (opus R5): lowercase words are not cities: "mobile app teams" is not Mobile, AL; "bathroom" holds no Bath.
+test('#1395 board place: lowercase words are no place; a word inside another word is not written', () => {
+  assert.ok(!('place' in boardPlaceOf([{ text: 'mobile', city: 'Mobile', region: null, country: 'US' }], { country: 'US' })), '"mobile" is not Mobile, AL')
   assert.equal(groundedIn('bathroom fitters hiring', { text: 'Bath', city: 'Bath', region: null, country: 'GB' }), false)
-  assert.equal(groundedIn('Startups SaaS à Toronto qui recrutent', { text: 'Toronto', city: 'Toronto', region: null, country: 'CA' }), true)
-  assert.equal(groundedIn('dentists in toronto, canada', { text: 'toronto, canada', city: 'toronto', region: null, country: 'CA' }), true, 'a country WRITTEN in the request is grounded whatever the case')
+  const t = boardPlaceOf([{ text: 'Toronto', city: 'Toronto', region: null, country: 'CA' }])
+  assert.ok('place' in t && t.place.name === 'Toronto')
+  const tc = boardPlaceOf([{ text: 'toronto, canada', city: 'toronto', region: null, country: 'CA' }])
+  assert.ok('place' in tc && tc.place.ok('Toronto, ON, Canada'), 'a country WRITTEN with the city reads it whatever the case')
 })
 
 // Council review (opus R7): a rejected key is not a missing plan: it stops the scan like every other step's auth failure.
@@ -139,19 +123,13 @@ test('#1395 readRequestPlan: an auth failure is rethrown, never held as a plan e
 })
 
 // Quest (coverage): "in Faro" with the profile's "Faro, Portugal" is the SAME place: the user's own reviewed profile writes its country. A profile
-// naming another city (or none) implies nothing: the profile never stands in for a place the request names.
-test('#1395 grounding: a profile entry naming the same city with its country grounds that country; another city never does', async () => {
+// naming another city (or none) gives nothing: the profile never stands in for a place the request names.
+test('#1395 board place: a profile entry naming the same city with its country reads that city; another city never does', () => {
   const faro = { text: 'Faro', city: 'Faro', region: null, country: 'PT' }
-  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', faro, ['Faro, Portugal']), true)
-  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', faro, ['Lisbon, Portugal']), false, 'another city of the profile implies nothing')
-  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', faro, []), false, 'no profile, no implied country')
-  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', { ...faro, country: 'ES' }, ['Faro, Portugal']), false, 'only the country the profile writes')
-  assert.equal(groundedIn('hiring in faro', { ...faro, text: 'faro', city: 'faro' }, ['Faro, Portugal']), false, 'the city written as a name, as for every implied country')
-  clearRequestPlanCache()
-  const reply = JSON.stringify(plan([faro]))
-  const p = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => ({ text: reply, model: 'm' }) } as unknown as Provider
-  assert.equal((await readRequestPlan(p, 'k', 'Find employers hiring refrigeration technicians in Faro', 'T', undefined, ['Faro, Portugal'])).ok, true)
-  assert.deepEqual(await readRequestPlan(p, 'k', 'Find employers hiring refrigeration technicians in Faro', 'T', undefined, []), { ok: false, reason: 'place_not_in_request' }, 'the cache is per profile too')
+  const same = boardPlaceOf([faro], { where: ['Faro, Portugal'] })
+  assert.ok('place' in same && same.place.ok('Faro, Portugal') && !same.place.ok('Lisbon, Portugal'))
+  assert.ok(!('place' in boardPlaceOf([faro], { where: ['Lisbon, Portugal'] })), 'another city of the profile gives nothing')
+  assert.ok(!('place' in boardPlaceOf([faro], {})), 'no profile, no place')
 })
 
 // Qodo High (#1527): a region or country WRITTEN in the place text must be in the plan's fields; omitted or conflicting qualifiers are refused,

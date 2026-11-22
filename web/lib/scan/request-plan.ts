@@ -4,15 +4,16 @@
 // Fail closed. A model error, a reply that is not exactly the schema, or a place the request does not write gives NO plan (a named reason),
 // and a caller then holds what depended on it; it never falls back to a looser regex reading. A refused spend reservation is one of those
 // named failures (the caller holds only what needed the plan); a lost job still stops the scan.
-// Places are grounded in the request: a place's text must be written in the request, its city and region inside that text, and its country
-// either written there (a name the country resolver reads) or implied by data (a region's country, a listed world city, a US city of the
-// census list). A place that is not grounded is refused, never added.
+// Places are grounded in the request: a place's text must be written in the request as whole words, its city and region inside that text, and
+// every region and country that text writes must be in the plan's fields. A place that is not grounded is refused, never added. The plan's
+// country never picks the place: the board source resolves the place's own text with the existing resolvers (lib/sources/jobboards.ts boardPlaceOf).
 import { createHash } from 'node:crypto'
 import type { Provider } from '../llm/provider.ts'
 import { ProviderError } from '../llm/provider.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { countriesIn, countryFromField, countryOfRegion, regionOf, resolveSegment } from './countries.ts'
-import { WORLD_CITIES, bareUsCity, builtInCountryOf } from '../sources/jobboards.ts'
+import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
+import { TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 
 export interface PlanPlace { text: string; city: string | null; region: string | null; country: string | null }
 export type SignalKind = 'hiring' | 'funding' | 'event' | 'tech' | 'other'
@@ -77,7 +78,7 @@ export function parsePlan(reply: string): RequestPlan | null {
   const places: PlanPlace[] = []
   for (const p of o.places) {
     if (!isObj(p) || !exactKeys(p, PLACE_KEYS) || !str(p.text, MAX_PLACE) || !strOrNull(p.city, MAX_PLACE) || !strOrNull(p.region, MAX_PLACE)) return null
-    if (!(p.country === null || (typeof p.country === 'string' && /^[A-Z]{2}$/.test(p.country) && countryFromField(p.country) === p.country))) return null
+    if (!(p.country === null || (typeof p.country === 'string' && countryFromField(p.country) === p.country))) return null
     places.push({ text: p.text as string, city: p.city as string | null, region: p.region as string | null, country: p.country as string | null })
   }
   const signals: PlanSignal[] = []
@@ -95,44 +96,20 @@ function writtenCountries(text: string): Set<string> {
   for (let i = 0; i < words.length; i++) for (let n = 1; n <= 3 && i + n <= words.length; n++) { const c = resolveSegment(words.slice(i, i + n).join(' '), true); if (c) out.add(c) }
   return out
 }
-// The countries data ties to the place without the request writing one: a region's country, a built-in city place (London, New York City: read in
-// any case, as the board source always has), and - only for a city the request writes as a name, in its own capitals ("mobile app teams" is not
-// Mobile, AL) - a listed world city's country or a US census city.
-function impliedCountries(request: string, p: PlanPlace, profileWhere: readonly string[]): Set<string> {
-  const out = new Set<string>()
-  const r = p.region ? regionOf(p.region) : null
-  if (r) out.add(countryOfRegion(r))
-  if (p.city) {
-    const b = builtInCountryOf(p.city); if (b) out.add(b)
-    const city = p.city.trim()
-    if (/^\p{Lu}/u.test(city) && hasWords(request.normalize('NFC'), city.normalize('NFC'))) {
-      const listed = Object.prototype.hasOwnProperty.call(WORLD_CITIES, city) ? WORLD_CITIES[city] : null
-      const c = listed ? resolveSegment(listed, true) : null
-      if (c) out.add(c)
-      if (bareUsCity(city)) out.add('US')
-      // the user's own reviewed profile writing the SAME city with its country ("in Faro" + profile "Faro, Portugal"): never another city of the profile
-      for (const w of profileWhere) {
-        const [head, ...rest] = w.split(','), tail = rest.join(',')
-        if (!tail.trim() || fold(head) !== fold(city)) continue
-        for (const c of countriesIn(tail)) out.add(c)
-        for (const seg of tail.split(',')) { const r = regionOf(seg); if (r) out.add(countryOfRegion(r)) }
-      }
-    }
-  }
-  return out
-}
 // `needle` is in `hay` as whole words, never inside another word: "or" is not in "for", "rome" is not in "chrome".
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const hasWords = (hay: string, needle: string): boolean => !!needle && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(needle)}(?![\\p{L}\\p{N}])`, 'u').test(hay)
-// A place is kept only when the request writes it: its text in the request, its city and region in its text, its country written or implied.
-export function groundedIn(request: string, p: PlanPlace, profileWhere: readonly string[] = []): boolean {
+// A place is kept only when the request writes it: its text in the request, its city and region in its text, the text's own qualifiers in its fields.
+export function groundedIn(request: string, p: PlanPlace): boolean {
   const req = fold(request), text = fold(p.text)
   if (!text || !hasWords(req, text)) return false
   if (p.city !== null && !hasWords(text, fold(p.city))) return false
   if (p.region !== null && !hasWords(text, fold(p.region))) return false
-  if (p.country !== null && !writtenCountries(p.text).has(p.country) && !impliedCountries(request, p, profileWhere).has(p.country)) return false
   // Every region and country the place text writes (beyond the city's own words) must be in the plan's fields: an omitted or contradicted
   // qualifier is refused, never left for a resolver to infer another place ("London, Ontario" with only city London is not the UK London).
+  // a plan contradicting itself (Ontario with a country other than Ontario's) is no reading of the request
+  const ownRegion = p.region !== null ? regionOf(p.region) : null
+  if (ownRegion && p.country !== null && countryOfRegion(ownRegion) !== p.country) return false
   const rest = withoutCity(p.text, p.city)
   const countries = writtenCountries(rest), regions = writtenRegions(rest)
   if (countries.size && (p.country === null || !countries.has(p.country))) return false
@@ -158,13 +135,14 @@ function writtenRegions(text: string): Set<string> {
 // plan is kept; a failure is asked again next time. Bounded, oldest out first.
 const CACHE_MAX = 500
 const cache = new Map<string, RequestPlan>()
-const PLAN_VERSION = 1   // bump with any change to the prompt or the schema: a cached plan of another version is never served
-const cacheKey = (tenantId: string, request: string, profileWhere: readonly string[]) => `${PLAN_VERSION}\u0000${tenantId}\u0000${createHash('sha256').update(JSON.stringify([request.normalize('NFC').trim(), profileWhere])).digest('hex')}`
+const PLAN_VERSION = 2   // bump with any change to the prompt, schema or grounding: a cached plan of another version is never served
+// the refusals that mean "no budget for this optional call" (a guard's limit, the owner's pool, the trial budget)
+const BUDGET_REFUSALS = new Set(['over_limit', OWNER_POOL_LIMIT_REASON, TRIAL_BUDGET_REASON])
+const cacheKey = (tenantId: string, request: string) => `${PLAN_VERSION}\u0000${tenantId}\u0000${createHash('sha256').update(request.normalize('NFC').trim()).digest('hex')}`
 export function clearRequestPlanCache(): void { cache.clear() }
 
-// profileWhere: the job profile's place entries, used only to ground the country of the SAME city the request names (never a place of their own)
-export async function readRequestPlan(provider: Provider, apiKey: string, request: string, tenantId: string, fetchImpl?: typeof fetch, profileWhere: readonly string[] = []): Promise<PlanResult> {
-  const key = cacheKey(tenantId, request, profileWhere)
+export async function readRequestPlan(provider: Provider, apiKey: string, request: string, tenantId: string, fetchImpl?: typeof fetch): Promise<PlanResult> {
+  const key = cacheKey(tenantId, request)
   const hit = cache.get(key)
   if (hit) return { ok: true, plan: hit, cached: true }
   let reply: string
@@ -175,12 +153,13 @@ export async function readRequestPlan(provider: Provider, apiKey: string, reques
   } catch (e) {
     if (e instanceof ProviderError && e.kind !== 'auth') return { ok: false, reason: 'error' }   // a rejected key stops the scan like every other step's
     // A refused reservation is a named failure: the caller holds only what needed the plan (Quest, #1395). The call was never sent.
-    if (e instanceof SpendRefused && e.reason !== 'ownership_lost') return { ok: false, reason: 'spend_refused' }
+    // Only a BUDGET refusal (a guard's limit, the owner's pool, the trial budget) is that; an accounting refusal or a lost job stops the scan as elsewhere.
+    if (e instanceof SpendRefused && BUDGET_REFUSALS.has(e.reason)) return { ok: false, reason: 'spend_refused' }
     throw e   // a lost job or anything unexpected stops the scan: never a silent reading
   }
   const plan = parsePlan(reply)
   if (!plan) return { ok: false, reason: 'schema' }
-  if (!plan.places.every(p => groundedIn(request, p, profileWhere))) return { ok: false, reason: 'place_not_in_request' }
+  if (!plan.places.every(p => groundedIn(request, p))) return { ok: false, reason: 'place_not_in_request' }
   cache.set(key, plan)
   if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!)
   return { ok: true, plan, cached: false }
