@@ -13,7 +13,15 @@ const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_SEARCHES || 14)
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
-export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[] }
+export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null }
+// The customer's saved buyer profile for this play, in their own words. It narrows the request; the request's own words win where they differ.
+export interface DiscoverProfile { summary?: string; who?: string[]; industries?: string[]; sizes?: string[]; where?: string[]; exclude?: string[] }
+export function profileLines(p: DiscoverProfile | null | undefined): string[] {
+  if (!p) return []
+  const list = (label: string, v: unknown) => { const xs = Array.isArray(v) ? v.map(x => str(x, 120)).filter(Boolean).slice(0, 8) : []; return xs.length ? `${label}: ${xs.join('; ')}` : '' }
+  const lines = [p.summary ? `Who they sell to: ${str(p.summary, 400)}` : '', list('Buyer roles', p.who), list('Industries', p.industries), list('Company sizes', p.sizes), list('Locations (only companies in these places, unless the request names another place)', p.where), list('Leave out', p.exclude)].filter(Boolean)
+  return lines.length ? ["The seller's saved buyer profile:", ...lines] : []
+}
 export interface DiscoveredLead {
   company: string
   domain: string | null
@@ -111,6 +119,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const today = (input.today ?? new Date()).toISOString().slice(0, 10)
   const user = [`Today is ${today}.`, input.offer ? `The seller sells: ${str(input.offer, 600)}` : '', `Find: ${str(input.query, 1000)}`,
     // a play that runs again: the companies it already found are not leads this time
+    ...profileLines(input.profile),
     input.exclude?.length ? `Already found, do not return these companies again: ${input.exclude.slice(0, 80).map(c => str(c, 80)).filter(Boolean).join('; ')}` : '',
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]

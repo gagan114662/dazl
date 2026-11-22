@@ -96,3 +96,13 @@ test('a proof page that prints no date takes the day the search index dates it, 
   const c = await checkLead(undated, [{ ...seen[0], page_age: null }], never, 1000, now)
   assert.deepEqual([c.date, c.date_source], [null, null])
 })
+
+test('the saved buyer profile, with its locations, goes to the engine beside the request (#1571)', async () => {
+  const { profileLines } = await import('../lib/discover/agent.ts')
+  assert.deepEqual(profileLines(null), [])
+  assert.deepEqual(profileLines({ summary: '', who: [], where: [] }), [])
+  const lines = profileLines({ summary: 'Fintech startups', who: ['Founder'], industries: ['Fintech'], where: ['London'], exclude: ['banks'] })
+  assert.equal(lines[0], "The seller's saved buyer profile:")
+  assert.ok(lines.some(l => l.startsWith('Locations') && l.endsWith(': London')))
+  assert.ok(lines.includes('Buyer roles: Founder') && lines.includes('Leave out: banks'))
+})
