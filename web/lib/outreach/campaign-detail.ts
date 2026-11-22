@@ -41,7 +41,7 @@ export async function campaignDetail(db: Db, tenantId: string, jobId: string): P
   const now = new Date()
   // The draft guard's own verdict (lib/scan/held-state.ts), read for the whole scan on this Db (#1062).
   const gateHeld = await requiredGateHeldForJob(db, tenantId, job.id)
-  const noBuyer = await buyerUnreachable(db, tenantId, rows.filter(r => r.review_reason))
+  const noBuyer = await buyerUnreachable(db, tenantId, [job.id], rows.filter(r => r.review_reason))
   const marked = hasCompanyFirstBudget(w?.run_budget)
   const proof = marked ? await companyFirstResults(db, tenantId, job.id, now) : null
   const displayed = marked ? rows.filter(l => proof?.visibleIds.has(l.id)) : rows

@@ -8,7 +8,7 @@ import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
 import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
-import { buyerUnreachable, buyerUnreachableSync } from '../people/buyer-reach.ts'
+import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
 
@@ -123,7 +123,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const byChecks = heldByChecksOf(j, shown)
     const gateHeld = (r: Row) => requiredGateHeld(db, tenantId, r.id) !== null
     // #1037: a review that cannot give the lead its buyer cannot make it ready (lib/people/buyer-reach.ts, Home's own answer)
-    const noBuyer = buyerUnreachableSync(db, tenantId, rows.filter(r => r.review_reason))
+    const noBuyer = buyerUnreachableFrom(rows.filter(r => r.review_reason), db.prepare(buyerReachSql(1)).all(tenantId, tenantId, j.id) as ReachRow[])
     const alreadyResearch = (r: Row) => evidenceStateOf(r) === 'unverified'
       ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: gateHeld(r), buyer_unreachable: noBuyer.has(r.id) }) : gateHeld(r))
       : currentnessHeld(db, tenantId, r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gateHeld(r))
@@ -255,7 +255,7 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
   const gate = new Set<string>()
   for (const id of new Set(rows.map(r => r.scan_job_id))) for (const l of await requiredGateHeldForJob(adb, tenantId, id)) gate.add(l)
   // #1037: the leads no review can give a buyer (lib/people/buyer-reach.ts, Home's own answer), one batched read
-  const noBuyer = await buyerUnreachable(adb, tenantId, rows.filter(r => r.review_reason))
+  const noBuyer = await buyerUnreachable(adb, tenantId, jobs.map(j => j.id), rows.filter(r => r.review_reason))
   // which listed scans have any email at all (one grouped read; test sends included, so "none" is certain)
   const mailed = new Set((db.prepare(`SELECT DISTINCT l.scan_job_id AS id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id IN (${jq})`).all(tenantId, tenantId, ...jobs.map(j => j.id)) as { id: string }[]).map(r => r.id))
   const byJob = new Map<string, Row[]>()

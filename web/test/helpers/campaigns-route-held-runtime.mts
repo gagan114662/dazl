@@ -14,7 +14,8 @@ import { migrateSourceReview } from '../../lib/scan/source-review.ts'
 import { migrateWatch } from '../../lib/watch.ts'
 import { migrateKeys } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
-import { migrateConnectors } from '../../lib/connectors/store.ts'
+import { migrateConnectors, addEnrichment } from '../../lib/connectors/store.ts'
+import { ownSiteBuyerRows } from './own-site-buyer.ts'
 import { migrateAdvanced } from '../../lib/advanced/index.ts'
 import { migrateBilling } from '../../lib/billing/stripe.ts'
 import { migrateOutreach } from '../../lib/outreach/store.ts'
@@ -68,7 +69,8 @@ test('GET /api/campaigns (list and history): leads held by a company-first scan\
   // Control: an ordinary (not company-first) scan whose one lead is in the review list still asks for that review.
   const plain = createJob(db, 'A', { business_name: 'Synthetic A', industry: 'software', location: 'London' })
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(plain)
-  lead(plain, 'Review Co', 'quote_unconfirmed')
+  const reviewCo = lead(plain, 'Review Co', 'quote_unconfirmed')
+  for (const r of ownSiteBuyerRows('reviewco.example')) addEnrichment(db, 'A', reviewCo, r)   // #1037: its own site names its buyer, so a review can make it ready
   finish(plain, null, 1, 'Find London software companies that raised a seed round.')
 
   // A company-first scan marked done whose enrichment is still running: its final checks have not run, so nothing is "held by checks" yet
