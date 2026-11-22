@@ -7,7 +7,7 @@
 // home page. No site, a blocked page, "no", "unknown", a quote not on the page, or a failed call caps fit at
 // FIT_CAP, below the scoreboard's qualified bar, with the reason named in why. Non-hiring leads are untouched.
 import type Database from 'better-sqlite3'
-import type { Provider } from '../llm/provider.ts'
+import { ProviderError, type Provider } from '../llm/provider.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { norm } from './evidence.ts'
 import { ICP_JSON_BUDGET, MAX_QUERY, type Icp } from './icp.ts'
@@ -117,17 +117,24 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
   // An answer that still never comes fails closed below, counted and named (noAnswer / noAnswerCause), never silently.
   const answers = new Map<number, FitAnswer>()
   let cause: string | undefined
-  for (let attempt = 0; attempt < 2; attempt++) {
+  let reran = false, held = false
+  for (let attempt = 0; attempt < 2 && !held; attempt++) {
     const ask = items.filter(i => !answers.has(i.n))
     if (!ask.length) break
     const renum = ask.map((i, k) => ({ ...i, n: k + 1 }))
     try {
       if (!provider.complete) throw new Error('no completion')
       const reply = await provider.complete(apiKey, buyerFitPrompt(icpText, renum), deps.fetchImpl, 600)
+      if (attempt > 0) reran = true
       const got = parseBuyerFit(reply)
       for (const [k, a] of got) if (ask[k - 1]) answers.set(ask[k - 1].n, a)
       if (ask.some(i => !answers.has(i.n))) cause = `unreadable reply: ${reply.replace(/\s+/g, ' ').slice(0, 80)}`
-    } catch (e) { cause = `call failed: ${(e instanceof Error ? e.message : 'error').slice(0, 80)}` }
+    } catch (e) {
+      cause = `call failed: ${(e instanceof Error ? e.message : 'error').slice(0, 80)}`
+      // Qodo #1541: a request that may have been processed and billed (uncertain, rejected, or unclassified) is never sent again - the spend
+      // guard would refuse it anyway. Only a failure with nothing outstanding at the vendor (charge 'none') gets the ordinary rerun.
+      if (!(e instanceof ProviderError && e.charge === 'none' && e.kind !== 'auth')) held = true
+    }
   }
   let noAnswer = 0
   let confirmed = 0
@@ -138,11 +145,11 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
       note.run(`Company site confirms fit: "${a!.quote}". ${it.lead.why ?? ''}`.trim().slice(0, WHY_MAX), it.lead.id)
     } else {
       if (!a) noAnswer++
-      capWith(it.lead, a ? (a.fit === 'yes' ? 'the quoted fit evidence was not found on the company\'s home page.' : `the company's home page does not show fit (${a.fit}).`) : `the fit check returned no answer after a rerun (${cause ?? 'no line for this company'}).`)
+      capWith(it.lead, a ? (a.fit === 'yes' ? 'the quoted fit evidence was not found on the company\'s home page.' : `the company's home page does not show fit (${a.fit}).`) : `the fit check returned no answer ${reran ? 'after a rerun' : 'and was not rerun'} (${cause ?? 'no line for this company'}).`)
       capped++
     }
   }
-  return { checked: hiring.length, confirmed, capped, noAnswer, ...(noAnswer ? { noAnswerCause: cause ?? 'no line for this company' } : {}) }
+  return { checked: hiring.length, confirmed, capped, noAnswer, ...(noAnswer ? { noAnswerCause: `${cause ?? 'no line for this company'}${reran ? ', after a rerun' : ', not rerun'}` } : {}) }
 }
 
 // The gate itself failed before it could cap anything (a database error, not a model answer): every hiring lead still graded fit >= 4 is capped below the qualified bar.
