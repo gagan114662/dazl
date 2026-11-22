@@ -36,6 +36,7 @@
 // every later day's global ceiling. A read that never settles at all (the process died between admission and settle)
 // is treated as ended READ_GRACE_S after it was admitted for the day ceiling, and keeps its reserve for the account.
 // It is not one of the scan attempts.
+import { recordedJobCostUsd } from '../scan/job-cost.ts'
 import { isStaging } from '../staging.ts'
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
@@ -144,17 +145,20 @@ const TRIAL_REQUIREMENT_CHECKS: { [K in typeof TRIAL_REQUIRES[number]]: { refusa
 }
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
 
-// A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then what the
-// scan recorded as spent once it ended: scan_jobs.spend_reserved_usd, every paid step the runner counted against the
-// trial budget (the runner never records more than the reserve; if a row ever did, it counts in full). The rows: this account's reservations on any day, and every reservation that
+// A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then, once the run
+// has settled, the job's one recorded cost (lib/scan/job-cost.ts, #1517): what the providers billed for each paid call
+// (the per-scan cap ledger), a call that never reported a cost at the amount reserved for it. The difference from the
+// worst-case reservation goes back to the allowance, and the scan's page and job record show that same number. The trial
+// run guard (spend_reserved_usd) never settles down from its worst case, so it is not the cost of a ledgered scan; it stays
+// the record only for a scan from before the cap ledger. A cost that cannot be read counts as the full reserve. The rows: this account's reservations on any day, and every reservation that
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
 // SETTLED_SQL and settled() are the same rule: the scan is finished and its current attempt's run has settled.
 const SETTLED_SQL = "(j.status IN ('done', 'failed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)"
-const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd
+const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd, j.spend_cap_reserved_usd
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
   WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND ((r.kind = 'site_read' AND COALESCE(r.settled_at, r.created_at + ${READ_GRACE_S}) >= ?)
     OR (r.kind <> 'site_read' AND (NOT COALESCE(${SETTLED_SQL}, FALSE) OR r.settled_at >= ?))))`
-export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; candidates?: number | null; attempts: number | null; spend_reserved_usd: number | null }
+export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; candidates?: number | null; attempts: number | null; spend_reserved_usd: number | null; spend_cap_reserved_usd?: number | string | null }
 const isRead = (r: LedgerRow) => r.kind === 'site_read'
 // A website read has ended once its call settled (settled_at); it then counts as the cost the provider reported (or its
 // full reserve, for a failed or unreported call). For the day ceiling only, a read that never settled counts as ended
@@ -169,7 +173,7 @@ const settled = (r: LedgerRow) => (r.status === 'done' || r.status === 'failed')
 // maximum, so a reported cost above it is real spend and later work is refused against it.
 export const reservationCost = (r: LedgerRow) => isRead(r)
   ? (readSettled(r) ? Math.max(0, Number(r.spent_usd)) : Number(r.reserve_usd))
-  : settled(r) ? Math.max(0, Number(r.spend_reserved_usd ?? 0)) : Number(r.reserve_usd)
+  : settled(r) ? Math.max(0, recordedJobCostUsd(r.spend_reserved_usd, r.spend_cap_reserved_usd) ?? Number(r.reserve_usd)) : Number(r.reserve_usd)
 const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
   || (Number(r.day) < day && (isRead(r) ? readEndedAt(r) >= day * 86400 : (!settled(r) || Number(r.settled_at) >= day * 86400)))
 // A trial attempt released before any cost: its scan failed (not cancelled: a cancelled scan may have paid for work

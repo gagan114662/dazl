@@ -3,8 +3,8 @@
 // tenant's saved competitor list. Nothing here fetches, asks a model or guesses: a condition no verified fact shows stays 'unknown',
 // and 'fail' is returned only for a fact that rules the condition out (a named company that is not this lead, a competitor list it is not on).
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
-import { planConditions, eventMatches, eventMatchIndex, conditionRoles } from './targeting.ts'
-import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, type Stage } from './sales-hiring-gate.ts'
+import { planConditions, eventMatchIndex, conditionRoles } from './targeting.ts'
+import { quoteShowsEvent, eventBranchShown, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, type Stage } from './sales-hiring-gate.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
@@ -246,7 +246,7 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
-      const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
+      const shows = GATE_EVENTS.has(c.event ?? '') ? eventBranchShown(c.event, c.object, quote, lead.signal, lead.company) : eventShown(c.event, c.object, quote, lead.company)
       return dated(shows, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {
