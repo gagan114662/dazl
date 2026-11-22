@@ -62,3 +62,16 @@ test('#1122 discovery volume: the board posting date filters BEFORE the 5-slot c
   // no window: nothing dropped for age
   assert.ok(orderByBoardDate([stale], dates, { windowDays: null, now }).includes(stale))
 })
+
+test('#1122 discovery volume, Ashby shape (run a94417536: Complete 2023-08-22): a board-dated stale Ashby posting never takes a read slot', async () => {
+  const { orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
+  const stale = 'https://jobs.ashbyhq.com/complete/f810333f-06ad-4729-85ea-5fba62257846', fresh = 'https://jobs.ashbyhq.com/complete/0b0c1f6e-1111-4a2b-9c3d-222233334444'
+  const http = (async (u: string) => (u === 'https://api.ashbyhq.com/posting-api/job-board/complete' ? { status: 200, finalUrl: u, body: JSON.stringify({ jobs: [
+    { title: 'Account Executive', isListed: true, publishedAt: '2023-08-22T10:00:00Z', jobUrl: stale },
+    { title: 'Sales Development Representative', isListed: true, publishedAt: '2026-11-15T10:00:00Z', jobUrl: fresh },
+  ] }) } : null)) as never
+  const dates = new Map<string, string>()
+  await freshBoardPostings([stale], { terms: ['sales'], windowDays: 45, now, http, dates })
+  // the listed URL in its /application shape is the same posting
+  assert.deepEqual(orderByBoardDate([stale + '/application', 'https://news.example/a', fresh], dates, { windowDays: 45, now }), [fresh, 'https://news.example/a'])
+})
