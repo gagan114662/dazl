@@ -137,3 +137,19 @@ test('#1395 readRequestPlan: an auth failure is rethrown, never held as a plan e
   const auth = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => { throw new ProviderError('auth', 'http 401', 'none') } } as unknown as Provider
   await assert.rejects(readRequestPlan(auth, 'k', REAL, 'T'), (e: unknown) => e instanceof ProviderError && e.kind === 'auth')
 })
+
+// Quest (coverage): "in Faro" with the profile's "Faro, Portugal" is the SAME place: the user's own reviewed profile writes its country. A profile
+// naming another city (or none) implies nothing: the profile never stands in for a place the request names.
+test('#1395 grounding: a profile entry naming the same city with its country grounds that country; another city never does', async () => {
+  const faro = { text: 'Faro', city: 'Faro', region: null, country: 'PT' }
+  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', faro, ['Faro, Portugal']), true)
+  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', faro, ['Lisbon, Portugal']), false, 'another city of the profile implies nothing')
+  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', faro, []), false, 'no profile, no implied country')
+  assert.equal(groundedIn('Find employers hiring refrigeration technicians in Faro', { ...faro, country: 'ES' }, ['Faro, Portugal']), false, 'only the country the profile writes')
+  assert.equal(groundedIn('hiring in faro', { ...faro, text: 'faro', city: 'faro' }, ['Faro, Portugal']), false, 'the city written as a name, as for every implied country')
+  clearRequestPlanCache()
+  const reply = JSON.stringify(plan([faro]))
+  const p = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => ({ text: reply, model: 'm' }) } as unknown as Provider
+  assert.equal((await readRequestPlan(p, 'k', 'Find employers hiring refrigeration technicians in Faro', 'T', undefined, ['Faro, Portugal'])).ok, true)
+  assert.deepEqual(await readRequestPlan(p, 'k', 'Find employers hiring refrigeration technicians in Faro', 'T', undefined, []), { ok: false, reason: 'place_not_in_request' }, 'the cache is per profile too')
+})
