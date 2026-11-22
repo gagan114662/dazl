@@ -309,6 +309,16 @@ function publisherNamesCitedSite(html: string, quote: string): boolean {
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
 // (3) a link whose visible text names the company. The crawl then checks the homepage really names the company.
 // Domains written out in an employer's own posting record whose name label is exactly the company's (no anchor needed: the record is plain text).
+// Uare.ai (Greenhouse, no website setting, no link in any posting): the employer's own ATS record names the company with a domain ("Uare.ai").
+// When that record name IS the lead's company and is itself a hostname, it is the employer's own statement of its site, bound like a link
+// (evidence_link_domain_label); the homepage identity check still decides. A plain name gives nothing (no guess).
+export function recordCompanyDomain(recordCompany: string, company: string): string | null {
+  const n = recordCompany.trim().toLowerCase()
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(n) || norm(n) !== norm(company)) return null
+  const host = registrable(n)
+  if (!host || SOCIAL.test(host) || !siteHostOk(host)) return null
+  return host
+}
 export function recordNamedSites(text: string, company: string): string[] {
   const want = norm(company); if (want.length < 4) return []
   const out: string[] = []
@@ -1936,12 +1946,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       // Run 9697d013 (LiveKit): the lead's own ATS posting is the employer's own record. A domain its description writes out ("livekit.io"),
       // whose label IS the company's name, is bound by that record as a link would be (evidence_link_domain_label); the homepage name check
-      // still decides. Never a guess: a record that names no such domain adds nothing (Uare.ai stays unresolved).
+      // still decides. Never a guess: a record that names no such domain adds nothing (a company name written as a domain, "Uare.ai", is the record naming it).
       const ownRef = !anchored ? atsPostingRef(l.source_url) : null
       if (ownRef && !deps.signal?.aborted) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
-        if (rec && rec !== 'missing') for (const site of recordNamedSites(`${rec.header} ${rec.description}`, l.company)) {
+        const named = rec && rec !== 'missing' ? [...recordNamedSites(`${rec.header} ${rec.description}`, l.company), ...[recordCompanyDomain(rec.company, l.company)].filter((s): s is string => !!s)] : []
+        for (const site of [...new Set(named)]) {
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
