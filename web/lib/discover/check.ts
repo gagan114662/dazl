@@ -11,8 +11,8 @@ export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unsee
 export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
-//   - a page whose text was read: the words the run quoted as evidence are in that text, and those words are about the signal;
-//   - a page nobody could read: the search result's own title names the company and speaks of the signal.
+//   - a page whose text was read: the words the run quoted as evidence are in that text, and those words state the signal's claim (statesSignal);
+//   - a page nobody could read: the search result's own title names the company and states that claim.
 // A date is never support. The day the search index gives a page, and a day-of-month number found somewhere on a page, only label
 // the lead (date, date_source, date_on_page): a recently indexed directory profile, or a company page that happens to print the
 // year and a number, says nothing about the signal (#1571, review of #1575). Such a lead goes to the user's review.
@@ -29,16 +29,25 @@ export function companyOnPage(company: string, page: string): boolean {
   const words = c.split(' ').filter(w => w.length > 2)
   return words.length > 0 && words.every(w => p.includes(` ${w} `))
 }
-// The words of a text that carry meaning for matching: four letters or more, or any token with a digit ("12m", "2026").
-const content = (s: string): string[] => fold(s).split(' ').filter(w => w.length >= 4 || /\d/.test(w))
-// Two words are the same word when they share their first five letters ("expansion" / "expanding"), or are equal.
+// The words of a text that carry meaning for matching: four letters or more, or any token with a digit ("12m", "2026"), each reduced
+// to a plain stem so "opening", "opens" and "opened" are the word "open".
+const stem = (w: string) => { for (const suf of ['ing', 'ed', 'es', 's']) if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, -suf.length); return w }
+const content = (s: string): string[] => fold(s).split(' ').filter(w => w.length >= 4 || /\d/.test(w)).map(stem)
+// Two stems are the same word when equal, or when they share their first five letters ("expansion" / "expand").
 const same = (a: string, b: string) => a === b || (a.length >= 5 && b.length >= 5 && a.slice(0, 5) === b.slice(0, 5))
-// How many of the signal's own words (the company's name left out) appear in a text.
-export function signalWordsIn(signal: string, company: string, textToSearch: string): number {
+// The signal's own words (the company's name left out), and how many of them a text carries.
+export function signalWordsIn(signal: string, company: string, textToSearch: string): { want: number; found: number } {
   const name = new Set(content(company))
   const want = [...new Set(content(signal).filter(w => !name.has(w)))]
   const have = content(textToSearch)
-  return want.filter(w => have.some(h => same(w, h))).length
+  return { want: want.length, found: want.filter(w => have.some(h => same(w, h))).length }
+}
+// A text states the signal's CLAIM, not merely its topic, when it carries the claim's distinguishing words: every one of them for a
+// short signal (three words or fewer), three in four for a longer one. Sharing some words is not enough: "clinic opening hours" shares
+// two of the three words of "opening a second clinic" and says nothing about a second clinic (second review of #1575).
+export function statesSignal(signal: string, company: string, textToSearch: string): boolean {
+  const { want, found } = signalWordsIn(signal, company, textToSearch)
+  return want > 0 && found >= (want <= 3 ? want : Math.ceil(want * 0.75))
 }
 // The quoted evidence is on the page: the whole quote, or any six consecutive words of it (a quote is often trimmed or joined with an ellipsis).
 export function quoteOnPage(quote: string | null, page: string): boolean {
@@ -49,11 +58,10 @@ export function quoteOnPage(quote: string | null, page: string): boolean {
   for (let i = 0; i + 6 <= w.length; i++) if (p.includes(w.slice(i, i + 6).join(' '))) return true
   return false
 }
-// A read page supports the signal when the quoted evidence is on it and that quote shares a word with the signal.
-const quoteSupports = (lead: DiscoveredLead, page: string): boolean => quoteOnPage(lead.evidence_quote, page) && signalWordsIn(lead.signal, lead.company, lead.evidence_quote ?? '') >= 1
-// An unread search result supports the signal when its title shares two of the signal's words (one shared word is too easy:
-// "opening hours" on a directory listing against "opening a second clinic").
-const titleSupports = (lead: DiscoveredLead, title: string): boolean => signalWordsIn(lead.signal, lead.company, title) >= 2
+// A read page supports the signal when the quoted evidence is on it and that quote states the signal's claim.
+const quoteSupports = (lead: DiscoveredLead, page: string): boolean => quoteOnPage(lead.evidence_quote, page) && statesSignal(lead.signal, lead.company, lead.evidence_quote ?? '')
+// An unread search result supports the signal when its own title states the signal's claim.
+const titleSupports = (lead: DiscoveredLead, title: string): boolean => statesSignal(lead.signal, lead.company, title)
 
 // The day is on the page when its year is and either the ISO day or the day-of-month number is (pages print dates in many
 // styles and languages, so this is a weak check on purpose: it labels, it does not decide).

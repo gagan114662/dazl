@@ -39,7 +39,7 @@ test('a scan through the lane: confirmed leads are ready, an undated one too, an
   const canned: DiscoverResult = {
     leads: [
       lead({}),
-      lead({ company: 'Harbour Smiles', domain: null, evidence_url: 'https://harboursmiles.example/news', evidence_quote: 'Harbour Smiles is opening a new location', signal_date: null, person: null, title: null, person_source_url: null, confidence: 'medium' }),
+      lead({ company: 'Harbour Smiles', signal: 'Opening a new location', domain: null, evidence_url: 'https://harboursmiles.example/news', evidence_quote: 'Harbour Smiles is opening a new location', signal_date: null, person: null, title: null, person_source_url: null, confidence: 'medium' }),
       lead({ company: 'Ghost Dental', evidence_url: 'https://nowhere.example/ghost' }),
     ],
     seen: [

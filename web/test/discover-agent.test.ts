@@ -148,3 +148,21 @@ test('an index day older than a year is not shown as the date of the signal (#15
   const recent = await checkLead(lead as never, page('November 10, 2026') as never, undefined as never, 1000, now)
   assert.deepEqual([recent.date, recent.date_source], ['2026-11-10', 'index'])
 })
+
+// Second review of #1575: overlapping words are not the claim. Signal: "Opening a second clinic".
+test('routine directory text that shares words with the signal is not shown; the real second-clinic announcement is', async () => {
+  const page = (body: string, status = 200) => (async () => new Response(body, { status })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead({ signal_date: null })] }), 1).leads[0]
+  // the quoted words ARE on the page and share "opening" and "clinic" with the signal; nothing says a second clinic is opening
+  const routine = 'Northwind Dental clinic opening hours Monday to Friday'
+  const hours = await checkLead({ ...l, evidence_quote: routine }, [], page(`<h1>Northwind Dental</h1><p>${routine}. Call to book.</p>`))
+  assert.deepEqual([hours.proof, hours.quote_on_page, hours.signal_seen, isShown(hours)], ['confirmed', true, false, false])
+  // the same kind of title on a result nobody could read
+  const title = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental clinic reviews and opening hours', page_age: '3 days ago', text: null }], page('blocked', 403))
+  assert.deepEqual([title.proof, title.signal_seen, isShown(title)], ['listed', false, false])
+  // the real announcement, read and unread
+  const real = await checkLead(l, [], page('<p>Northwind Dental will open its second clinic on King Street next spring.</p>'))
+  assert.deepEqual([real.proof, real.signal_seen, isShown(real)], ['confirmed', true, true])
+  const realTitle = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental opens second clinic downtown', page_age: null, text: null }], page('blocked', 403))
+  assert.deepEqual([realTitle.proof, realTitle.signal_seen, isShown(realTitle)], ['listed', true, true])
+})
