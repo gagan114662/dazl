@@ -292,8 +292,10 @@ export async function runClaudeWebSearch(
     throw new ClaudeSearchError('request_uncertain', signal.aborted ? 'timeout' : 'transport')
   }
   alive()
-  if (!r.ok) clearTimeout(stallTimer)
+  // a non-OK answer's error body is read under the same 20 s stall window (Qodo on #1526): headers without a finished body
+  // never wait for the 150 s cap
   if (r.status === 401 || r.status === 403) {
+    clearTimeout(stallTimer)
     // Authentication/permission refusal is known, but that does not mean the vendor billed zero.
     await hold.rejected(r.status)
     throw new ClaudeSearchError('key_rejected')
@@ -310,14 +312,16 @@ export async function runClaudeWebSearch(
         (reason === undefined || reason === 'ramp_limit_exceeded') &&
         !!requestId && /^req_[a-zA-Z0-9]+$/.test(requestId) && body.request_id === requestId
     } catch { /* unreadable error still may have been billed */ }
+    clearTimeout(stallTimer)
     if (limited) {
       await hold.rejected(429)
       throw new ClaudeSearchError('rate_limited')
     }
     await hold.uncertain()
-    throw new ClaudeSearchError('request_uncertain', 'http_error')
+    throw new ClaudeSearchError('request_uncertain', signal.aborted ? 'timeout' : 'http_error')
   }
   if (!r.ok) {
+    clearTimeout(stallTimer)
     await hold.uncertain()
     throw new ClaudeSearchError('request_uncertain', 'http_error')
   }
