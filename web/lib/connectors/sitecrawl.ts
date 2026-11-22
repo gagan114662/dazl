@@ -29,7 +29,7 @@ import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
-import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales } from '../scan/site-contact.ts'
+import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales, postingOrgIs } from '../scan/site-contact.ts'
 export { OWN_POSTING_PERSON_LABEL }
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
@@ -679,9 +679,13 @@ export function companyRouteRow(found: { kind: string; value: string; url: strin
   return f ? { connector: 'sitecrawl', kind: 'company_route', value: f.value.toLowerCase().slice(0, 254), label: COMPANY_ROUTE_LABEL, confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: at } : null
 }
 export function reportsToBuyer(text: string, buyerRoles: string): { name: string; title: string } | null {
+  // Greenhouse keeps HTML (often entity-escaped) in the record: read the text, not the markup (Qodo #1513 c)
+  const plain = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/[ \t]+/g, ' ')
   // The title is read up to its role word (Sales / Revenue / Officer / CEO / Founder): plain-text records run straight on ("SVP of Sales US Benefits").
-  const m = /\bReports?\s+to\s*:\s*([A-Z][A-Za-z'\u2019-]+(?:\s+[A-Z][A-Za-z'\u2019-]+){1,2})\s*,\s*((?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President|Head)(?:\s+(?:of|&|and|[A-Z][a-z]+))*?\s+(?:Sales|Revenue)|Chief\s+[A-Z][a-z]+\s+Officer|CEO|CRO|(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?)\b/.exec(text.replace(/&amp;/g, '&'))
+  const m = /\bReports?\s+to\s*:\s*([A-Z][A-Za-z'\u2019-]+(?:\s+[A-Z][A-Za-z'\u2019-]+){1,2})\s*,\s*((?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President|Head)(?:\s+(?:of|&|and|[A-Z][a-z]+))*?\s+(?:Sales|Revenue)|Chief\s+[A-Z][a-z]+\s+Officer|CEO|CRO|(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?)\b/.exec(plain)
   if (!m) return null
+  // a leader AT another company (a parent, a client) is not this company's buyer (Qodo #1513 a)
+  if (/^\s*(?:at|@|for|with|of|from)\s+(?:our\s+|the\s+|a\s+)?(?:client\s+|parent\s+|partner\s+)?[A-Z]/.test(plain.slice(m.index + m[0].length))) return null
   const name = m[1].trim(), title = m[2].trim()
   if (!NAME_LINE.test(name) || looksLikeJobTitle(name)) return null
   // A request for a Head of Sales takes the company's top sales leader by its own title: a (Senior / Executive) VP of Sales or a CRO.
@@ -2117,7 +2121,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // lead's confirmed site only; the label names the person and says where it was printed.
       // Run 679a7354 (HowGood): no buyer on the site, but the lead's own posting names one. Only on a site established for this lead.
       const postRef = named === 0 && buyerRoles && (r.reason === 'ok' || r.reason === 'none_published') && domainRelationship(db, tenantId, l.id, site) === 'established' ? atsPostingRef(l.source_url) : null
-      if (postRef && buyerRoles && !deps.signal?.aborted) {
+      // the lead's own board only: the posting's org token is this company / this confirmed site's name (Qodo #1513 a)
+      if (postRef && buyerRoles && !deps.signal?.aborted && (postingOrgIs(postRef.org, site) || norm(postRef.org) === norm(l.company))) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(postRef)); rec = page ? atsRecord(JSON.parse(page.body), postRef) : null } catch { rec = null }
         const b = rec && rec !== 'missing' ? reportsToBuyer(`${rec.header} ${rec.description}`, buyerRoles) : null

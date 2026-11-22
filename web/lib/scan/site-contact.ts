@@ -41,7 +41,8 @@ export interface SiteRow { connector: string; kind: string; value: string; sourc
 export function onCompanySite(r: SiteRow, ld: string | null): boolean {
   if (!ld || r.connector !== 'sitecrawl') return false
   // Run 679a7354: a person named in the lead's own ATS posting (written only by sitecrawl, from the lead's own source record) beside the confirmed domain
-  if (r.kind === 'person' && r.label === OWN_POSTING_PERSON_LABEL && atsPostingRef(r.source_url ?? '') !== null) return true
+  // ...and only when that posting is THIS company's own board: its org token is the confirmed domain's name (Qodo #1513 a)
+  if (r.kind === 'person' && r.label === OWN_POSTING_PERSON_LABEL) { const ref = atsPostingRef(r.source_url ?? ''); return !!ref && postingOrgIs(ref.org, ld) }
   if (urlIdentity(r.source_url) !== ld) return false
   return r.kind !== 'email' || emailIdentity(r.value) === ld
 }
@@ -52,8 +53,16 @@ const canonical = (a: SiteRow, b: SiteRow): number => cmp(a.kind, b.kind) || cmp
 const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0)
 // PM call (#1513): for a Head of Sales request, a person named in the company's own posting with its top sales title ((S)VP / EVP of Sales,
 // CRO) is that buyer. Posting rows only; a site-listed person keeps personMatchesRole as it is.
-export const postingTopSales = (value: string, who: string): boolean => /\bhead\s+of\s+sales\b/i.test(who) &&
+const alnum = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+// The posting's board org names this registrable domain's company: "HowGood" for howgood.com. Never a partial or fuzzy match.
+export const postingOrgIs = (org: string, ld: string): boolean => { const label = ld.split('.')[0]; return !!label && alnum(org) === alnum(label) }
+// "Head of Sales" as the whole requested role, not the start of a longer one ("Head of Sales Operations"; Qodo #1513 b)
+const HEAD_OF_SALES = /\bhead\s+of\s+sales\b(?!\s+(?!or\b|and\b)[a-z])/i
+export const postingTopSales = (value: string, who: string): boolean => HEAD_OF_SALES.test(who) &&
   /^(?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President)\s+(?:of\s+)?Sales$|^(?:CRO|Chief\s+Revenue\s+Officer)$/i.test(value.split(',').slice(1).join(',').trim())
+// A posting-named person (Qodo #1513 b) takes the posting reader's own bar, not the looser one-shared-word rule: a founder-level title,
+// two or more of the requested role's words, or the top-sales reading for an exact Head of Sales request.
+export const postingPersonMatches = (value: string, who: string): boolean => { const t = value.split(',').slice(1).join(',').trim(); return FOUNDER.test(t) || titleMatches(t, who).length >= 2 || postingTopSales(value, who) }
 export interface SiteContact { confirmed: boolean; domain: string | null; person: SiteRow | null; route: SiteRow | null }
 const ROWS_SQL = "SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'phone', 'email')"
 // The lead's current confirmed domain, role-matching person and published route, from the rows as they are now. Pass `rows` to
@@ -72,7 +81,7 @@ export function siteContactFromRows(domain:string|null,confirmed:boolean,who:str
   const own = rows.filter(r => onCompanySite(r, ld)).sort(canonical)
   return {
     confirmed, domain: ld,
-    person: own.find(r => r.kind === 'person' && (personMatchesRole(r.value, who || 'founder') || (r.label === OWN_POSTING_PERSON_LABEL && postingTopSales(r.value, who)))) ?? null,
+    person: own.find(r => r.kind === 'person' && (r.label === OWN_POSTING_PERSON_LABEL ? postingPersonMatches(r.value, who || 'founder') : personMatchesRole(r.value, who || 'founder'))) ?? null,
     route: own.find(isFounderRoute) ?? null,
   }
 }

@@ -52,3 +52,24 @@ test('Qodo #1513: standalone executive titles parse, and a posting-named CRO rea
   // the top-sales reading is the posting reader's only: a site-listed CRO keeps the existing rule, and a request without Head of Sales never takes it
   assert.equal(siteContactFromRows('howgood.com', true, 'Founder', [cro]).person, null)
 })
+
+test('Qodo #1513 (a): the posting must be THIS company\'s own; a leader of another company never counts', () => {
+  const who = 'Founder, CEO, Head of Sales'
+  const person = { connector: 'sitecrawl', kind: 'person', value: 'Rachel Calomeni, SVP of Sales', source_url: URL_, label: OWN_POSTING_PERSON_LABEL }
+  // another company's posting (org token is not this domain's name) beside a confirmed howgood.com: no buyer
+  assert.equal(siteContactFromRows('howgood.com', true, who, [{ ...person, source_url: 'https://jobs.lever.co/othercorp/a9cf54b8-b57f-4293-ac40-009ebb3aadd9' }]).person, null)
+  assert.equal(siteContactFromRows('acme.com', true, who, [person]).person, null)
+  // a "Reports to" line naming a leader AT another company (parent, client) is not this company's buyer
+  assert.equal(reportsToBuyer('Reports to: Jane Smith, VP of Sales at Parentco Holdings', who), null)
+  assert.equal(reportsToBuyer('Reports to: Jane Smith, VP of Sales for our client Bigco', who), null)
+})
+test('Qodo #1513 (b): a Head of Sales Operations request never takes a VP of Sales as its buyer', () => {
+  const who = 'Head of Sales Operations'
+  assert.equal(reportsToBuyer('Reports to: Jane Smith, VP of Sales', who), null)
+  assert.equal(siteContactFromRows('howgood.com', true, who, [{ connector: 'sitecrawl', kind: 'person', value: 'Jane Smith, VP of Sales', source_url: URL_, label: OWN_POSTING_PERSON_LABEL }]).person, null)
+  assert.deepEqual(reportsToBuyer('Reports to: Jane Smith, VP of Sales', 'Founder, Head of Sales/VP Sales'), { name: 'Jane Smith', title: 'VP of Sales' })
+})
+test('Qodo #1513 (c): a Greenhouse record keeps HTML; the "Reports to" line is read through it', () => {
+  assert.deepEqual(reportsToBuyer('<p>Reports to: <strong>Jane Smith</strong>, VP of Sales</p>', 'Founder, CEO, Head of Sales'), { name: 'Jane Smith', title: 'VP of Sales' })
+  assert.deepEqual(reportsToBuyer('&lt;p&gt;Reports to: &lt;strong&gt;Jane Smith&lt;/strong&gt;, VP of Sales&lt;/p&gt;', 'Founder, CEO, Head of Sales'), { name: 'Jane Smith', title: 'VP of Sales' })
+})
