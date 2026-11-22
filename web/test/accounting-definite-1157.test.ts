@@ -62,6 +62,7 @@ bothEngines('#1157 two still-reserved paid calls: the stopped scan names two ste
   const ins = "INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, 'A', ?, 1, 'llm.anthropic', ?, NULL, 'reserved', NULL, ?, NULL)"
   await db.run(ins, ['p1', job, 0.03, 1001])
   await db.run(ins, ['p2', job, 0.05, 1002])
+  await db.run(ins, ['p0', job, 0, 1003])   // a $0 hold (a free call) is no billed step
   await db.run("UPDATE scan_jobs SET status = 'failed', error = 'accounting_uncertain', finished_at = 2213, claimed_at = NULL WHERE id = ?", [job])
   const o = (await readScanStatus(db, 'A', job))?.outcome as { label: string; detail: string }
   assert.equal(o.label, 'Stopped after an interruption - 2 paid steps counted as billed ($0.08)')

@@ -88,7 +88,7 @@ try {
     ['News articles', 'Searching...', null],
     ['Job postings', 'Not used for this search', null],
     ['GitHub', 'Failed', null],
-    ['AI web research (retired)', 'Done', '2 found · - checked · - to review · - rejected'],
+    ['Web research with your AI key', 'Done', '2 found · - checked · - to review · - rejected'],
   ])
   assert.equal(docs, 1, 'updated from the status poll, no reload')
   assert.equal(await page.getByText('dazl cannot show a per-source count yet').count(), 0)
