@@ -307,6 +307,17 @@ function publisherNamesCitedSite(html: string, quote: string): boolean {
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
 // (3) a link whose visible text names the company. The crawl then checks the homepage really names the company.
 // Domains written out in an employer's own posting record whose name label is exactly the company's (no anchor needed: the record is plain text).
+// Run 679a7354 (n8n, Mintlify): an Ashby posting page carries the employer's own organization record ({"name", "publicWebsite"}). The website
+// the company set there is its own statement, bound like a link (evidence_link_domain_label); the homepage name check still decides. Only when
+// the record's name is this company and the site's label is its name; any length (n8n), since the setting is the employer's, not a guess.
+export function ashbyOrgWebsite(html: string, company: string): string | null {
+  const m = /"organization"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"\\]{1,120})"[^{}]*?"publicWebsite"\s*:\s*"(https?:\/\/[^"\\\s]{3,200})"/.exec(html)
+  const want = norm(company)
+  if (!m || want.length < 2 || norm(m[1]) !== want) return null
+  let host: string; try { host = registrable(new URL(m[2]).hostname.toLowerCase()) } catch { return null }
+  if (!host || SOCIAL.test(host) || !siteHostOk(host) || nameLabel(host) !== want) return null
+  return host
+}
 export function recordNamedSites(text: string, company: string): string[] {
   const want = norm(company); if (want.length < 4) return []
   const out: string[] = []
@@ -1835,6 +1846,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
+      }
+      const orgSite = !anchored && ownRef?.kind === 'ashby' && ev?.body ? ashbyOrgWebsite(ev.body, l.company) : null
+      if (orgSite) {
+        if (!basisOf.has(orgSite)) { basisOf.set(orgSite, 'evidence_link_domain_label'); sourceOf.set(orgSite, l.source_url) }
+        if (!structured.includes(orgSite) && !sites.includes(orgSite)) structured.push(orgSite)
       }
       const fromSlug = board.slug ? slugDomains(board.slug, where).filter(notBlockedHost) : []
       // ATS employer identity is the first source, even when the posting also links a website.
