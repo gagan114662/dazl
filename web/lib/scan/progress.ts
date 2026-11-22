@@ -29,7 +29,7 @@ export const stateOf = (raw: string, status: SourceStatus): SourceState => (/^(?
 // "skipped_no_place:<kind>:<text>"; a bare "skipped_no_place" (no place anywhere) still gets a reason.
 export function skipNote(raw: string): string | null {
   // the two other reasons the runner records for a job-board source it did not select (runner.ts, adapter:jobboards)
-  if (raw === 'skipped_no_hiring_signal') return "Job postings are searched only for companies that are hiring. Add the role to your search, e.g. 'hiring a sales rep'."
+  if (raw === 'skipped_no_hiring_signal') return "Job postings are searched only when your search asks for companies that are hiring, e.g. add 'hiring a sales rep'."
   if (raw === 'skipped_explicit_sources') return 'This search used only the sources you chose, and job postings were not one of them.'
   const m = /^skipped_no_place(?::([a-z]+)(?::(.*))?)?$/i.exec(raw); if (!m) return null
   const t = (m[2] ?? '').trim()
