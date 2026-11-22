@@ -7,7 +7,7 @@ import { companyFirstDiscoveryEnabled } from '../company-first/product-discovery
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_SPEND_MAX_USD, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
-import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
+import { HARD_CAP_USD, scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { accountLimits, ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
@@ -76,6 +76,9 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   // estimate shows the SAME day/month caps for every account, read from the same source (accountLimits), so the screen's numbers are
   // the ones that stop a run.
   const named = ownerLimits(ctx.tenantId), caps = accountLimits(ctx.tenantId)
+  // #1319: the job guard's per-scan cap (spend-cap.ts effectiveCapUsd). An unreadable cap refuses every paid call of the run, so nothing is priced.
+  const scanCap = scanCapConfig()
+  if (!scanCap.ok) return { ok: false, status: 503, error: 'spend_config_invalid', detail: 'The scan cap cannot be verified. Nothing was started.' }
   const limited = !ctx.hasOwnKey || budget?.max_usd != null || named !== null
   const estimate = estimateRun({
     budget, qaClaudeOnly, qaNativeWebSearch, companyFirst, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
@@ -89,7 +92,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,
-    ownerCapUsd: caps.day, ownerMonthCapUsd: caps.month, ownerNamed: named !== null,
+    ownerCapUsd: caps.day, ownerMonthCapUsd: caps.month, ownerNamed: named !== null, scanCapUsd: Math.min(scanCap.capUsd, HARD_CAP_USD),
   })
   // model_unpriced (a limited run whose model its guard cannot price) is decided inside estimateRun, so the confirmation covers it.
   return { ok: true, estimate }

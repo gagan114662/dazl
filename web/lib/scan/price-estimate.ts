@@ -87,6 +87,9 @@ export interface EstimateInput {
   // ownerMonthCapUsd), but only a run limit, a named account or a trial switches its own paid enrichment off (runner.ts creditEnrichment).
   // Omitted (direct callers): any cap passed counts as named, as before.
   ownerNamed?: boolean
+  // #1319: the job guard's own per-scan cap (spend-cap.ts effectiveCapUsd without max_usd: min(scan cap, hard cap)). The run's limit is
+  // min(max_usd, this), whether or not the request set a max_usd. Omitted (direct callers): max_usd alone.
+  scanCapUsd?: number | null
   ownerMonthCapUsd?: number | null   // the operator's monthly cap for this owner (DAZL_OWNER_MONTH_MAX_USD_USERS); the room left is the tighter of the day's and the month's
   reservedMonthUsd?: number          // already reserved against the owner's monthly pool
   poolUnknown?: boolean              // the shared pool could not be read: the reserved amounts above are NOT known (never treated as zero)
@@ -215,7 +218,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   // The run's own max_usd is a PER-RUN ceiling (its job guard counts only this run's reservations), so today's pooled
   // reservations come off the owner's day cap only, never off max_usd (case-1 runs were blocked once the day's earlier
   // runs exceeded one run's max_usd while the day cap still had room).
-  const runMax = typeof b?.max_usd === 'number' ? b.max_usd : Infinity, ownerDay = i.ownerCapUsd ?? null
+  const runMax = Math.min(typeof b?.max_usd === 'number' ? b.max_usd : Infinity, typeof i.scanCapUsd === 'number' ? i.scanCapUsd : Infinity), ownerDay = i.ownerCapUsd ?? null
   // #1319: with no day cap known here, the run's limit is its own room: the day's reservations never come off it
   const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : runMax, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
   const monthBinds = monthLeft < dayLeft
@@ -256,7 +259,10 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       message = trialBinds
         ? `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but the free trial stops each scan at ${money(eff)}.`
         : `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
-      if (!native) change.push(`Raise the ${monthBinds ? 'monthly ' : ''}dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
+      // #1319: only this run's limit is the person's to raise; a binding account window is named with when it resets
+      if (monthBinds) change.push(`Your monthly limit (${money(monthCap as number)}) has ${money(Math.max(0, monthLeft))} left this month; it resets on the 1st at 00:00 UTC.`)
+      else if (!runBinds && ownerDay !== null) change.push(`Your daily limit (${money(ownerDay)}) has ${money(Math.max(0, ownerDay - reserved))} left today; it resets at 00:00 UTC.`)
+      else if (!native) change.push(`Raise the dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       // #1319: raising this run's limit alone cannot unblock a run whose day room is short too: name that room
       if (!native && runBinds && ownerDay !== null && cappedTotal.min > ownerDay - reserved) change.push(`Your daily limit has only ${money(Math.max(0, ownerDay - reserved))} left today (${money(ownerDay)} limit, ${money(reserved)} already reserved), so raising this run's limit alone is not enough.`)
       const judge = rows.find(r => r.id === 'judge')
