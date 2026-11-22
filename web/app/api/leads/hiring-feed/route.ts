@@ -12,6 +12,8 @@ export async function GET(req:NextRequest){
  const job=q===null?latestHiringFeedJob(getScanDb(),user.tenantId):q
  if(job===null)return NextResponse.json({job_id:null,contacts:[]})
  if(!/^[0-9a-f]{24}$/.test(job))return NextResponse.json({error:'Bad request'},{status:400})
+ // #830: a play id that is not this workspace's own is not found (never an empty 200)
+ if(!getScanDb().prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(job,user.tenantId))return NextResponse.json({error:'Not found'},{status:404})
  return NextResponse.json({job_id:job,contacts:hiringFeedStatus(getScanDb(),user.tenantId,job)})
 }
 
@@ -27,6 +29,7 @@ export async function POST(req:NextRequest){
  if(!body||typeof body!=='object')return NextResponse.json({error:'Bad request'},{status:400})
  if(body.retry_job_id!==undefined){
  if(typeof body.retry_job_id!=='string'||!/^[0-9a-f]{24}$/.test(body.retry_job_id))return NextResponse.json({error:'Bad request'},{status:400})
+ if(!getScanDb().prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(body.retry_job_id,user.tenantId))return NextResponse.json({error:'Not found'},{status:404}) // #830
  if(!(await rateLimit(`hiring-feed-retry:${user.tenantId}`,6,60*60*1000)).ok)return NextResponse.json({error:'Too many retries. Try again later.'},{status:429})
  const {crawl,...result}=await retryHiringFeedContacts(getScanDb(),user.tenantId,body.retry_job_id)
  void crawl

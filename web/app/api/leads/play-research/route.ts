@@ -10,6 +10,8 @@ export async function GET(req:NextRequest){
  const user=await requireUser();if(!user)return NextResponse.json({error:'Not signed in'},{status:401})
  const job=req.nextUrl.searchParams.get('job_id')??''
  if(!/^[a-f0-9]{24}$/.test(job))return NextResponse.json({error:'Play not found'},{status:404})
+ // #830: a play that is not this workspace's own is not found (never an empty 200)
+ if(!(await (await getDb()).get('SELECT 1 AS x FROM scan_jobs WHERE id = ? AND user_id = ?',[job,user.tenantId])))return NextResponse.json({error:'Play not found'},{status:404})
  return NextResponse.json({job_id:job,research:await playResearchCards(await getDb(),user.tenantId,job)})
 }
 export async function POST(req:NextRequest){
@@ -22,5 +24,6 @@ export async function POST(req:NextRequest){
  const text=await req.text();if(text.length>10000)return NextResponse.json({error:'That research is too large.'},{status:400})
  let raw:Record<string,unknown>;try{raw=JSON.parse(text);if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error()}catch{return NextResponse.json({error:'Bad request'},{status:400})}
  if(typeof raw.job_id!=='string'||!/^[a-f0-9]{24}$/.test(raw.job_id))return NextResponse.json({error:'Play not found'},{status:404})
+ if(!(await (await getDb()).get('SELECT 1 AS x FROM scan_jobs WHERE id = ? AND user_id = ?',[raw.job_id,user.tenantId])))return NextResponse.json({error:'Play not found'},{status:404}) // #830
  try{return NextResponse.json(await savePlayResearch(await getDb(),user.tenantId,raw.job_id,raw),{status:201})}catch(e){if(e instanceof PlayResearchError||e instanceof SourceReviewError)return NextResponse.json({error:e.message},{status:400});throw e}
 }

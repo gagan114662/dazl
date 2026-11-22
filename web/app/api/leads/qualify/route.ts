@@ -28,5 +28,6 @@ export async function POST(req:NextRequest){
  const db=getScanDb(),vendor=pickVendor(db,user.tenantId)
  const k=vendor?readKey(db,user.tenantId,vendor):{key:null,unreadable:false}
  const r=await runQualification(db,user.tenantId,b.lead_id,a as never,{enabled:true,sellerText:await readSellerLine(await getDb(),user.tenantId),vendor,provider:vendor?providers[vendor]:null,apiKey:k.key})
+ if(r.status==='blocked'&&r.reason==='not_found')return NextResponse.json({error:'Not found'},{status:404}) // #830: not this workspace's lead
  return NextResponse.json(r,{status:r.status==='done'||r.status==='exists'?200:r.status==='failed'?502:409})
 }
