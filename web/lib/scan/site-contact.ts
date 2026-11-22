@@ -50,6 +50,10 @@ export const isFounderRoute = (r: SiteRow): boolean =>
 
 const canonical = (a: SiteRow, b: SiteRow): number => cmp(a.kind, b.kind) || cmp(a.value, b.value) || cmp(a.source_url ?? '', b.source_url ?? '') || cmp(a.label ?? '', b.label ?? '')
 const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0)
+// PM call (#1513): for a Head of Sales request, a person named in the company's own posting with its top sales title ((S)VP / EVP of Sales,
+// CRO) is that buyer. Posting rows only; a site-listed person keeps personMatchesRole as it is.
+export const postingTopSales = (value: string, who: string): boolean => /\bhead\s+of\s+sales\b/i.test(who) &&
+  /^(?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President)\s+(?:of\s+)?Sales$|^(?:CRO|Chief\s+Revenue\s+Officer)$/i.test(value.split(',').slice(1).join(',').trim())
 export interface SiteContact { confirmed: boolean; domain: string | null; person: SiteRow | null; route: SiteRow | null }
 const ROWS_SQL = "SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = 'sitecrawl' AND kind IN ('person', 'phone', 'email')"
 // The lead's current confirmed domain, role-matching person and published route, from the rows as they are now. Pass `rows` to
@@ -68,7 +72,7 @@ export function siteContactFromRows(domain:string|null,confirmed:boolean,who:str
   const own = rows.filter(r => onCompanySite(r, ld)).sort(canonical)
   return {
     confirmed, domain: ld,
-    person: own.find(r => r.kind === 'person' && personMatchesRole(r.value, who || 'founder')) ?? null,
+    person: own.find(r => r.kind === 'person' && (personMatchesRole(r.value, who || 'founder') || (r.label === OWN_POSTING_PERSON_LABEL && postingTopSales(r.value, who)))) ?? null,
     route: own.find(isFounderRoute) ?? null,
   }
 }

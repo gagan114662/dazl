@@ -29,7 +29,7 @@ import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
-import { isFounderRoute, OWN_POSTING_PERSON_LABEL } from '../scan/site-contact.ts'
+import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales } from '../scan/site-contact.ts'
 export { OWN_POSTING_PERSON_LABEL }
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
@@ -680,13 +680,15 @@ export function companyRouteRow(found: { kind: string; value: string; url: strin
 }
 export function reportsToBuyer(text: string, buyerRoles: string): { name: string; title: string } | null {
   // The title is read up to its role word (Sales / Revenue / Officer / CEO / Founder): plain-text records run straight on ("SVP of Sales US Benefits").
-  const m = /\bReports?\s+to\s*:\s*([A-Z][A-Za-z'\u2019-]+(?:\s+[A-Z][A-Za-z'\u2019-]+){1,2})\s*,\s*((?:Senior\s+|Executive\s+)?(?:S?VP|EVP|Vice\s+President|Head|Chief\s+[A-Za-z]+\s+Officer|CEO|CRO|Co-?Founder|Founder)(?:\s+(?:of|&|and|[A-Z][a-z]+|CEO))*?\s*\b(?:Sales|Revenue|Officer|CEO|Founder))\b/.exec(text.replace(/&amp;/g, '&'))
+  const m = /\bReports?\s+to\s*:\s*([A-Z][A-Za-z'\u2019-]+(?:\s+[A-Z][A-Za-z'\u2019-]+){1,2})\s*,\s*((?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President|Head)(?:\s+(?:of|&|and|[A-Z][a-z]+))*?\s+(?:Sales|Revenue)|Chief\s+[A-Z][a-z]+\s+Officer|CEO|CRO|(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?)\b/.exec(text.replace(/&amp;/g, '&'))
   if (!m) return null
   const name = m[1].trim(), title = m[2].trim()
   if (!NAME_LINE.test(name) || looksLikeJobTitle(name)) return null
   // A request for a Head of Sales takes the company's top sales leader by its own title: a (Senior / Executive) VP of Sales or a CRO.
-  const topSales = /\bhead\s+of\s+sales\b/i.test(buyerRoles) && /^(?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President)\s+(?:of\s+)?Sales$|^(?:CRO|Chief\s+Revenue\s+Officer)$/i.test(title)
-  return buyerTitle(title, buyerRoles) || topSales ? { name, title } : null
+  const topSales = postingTopSales(`${name}, ${title}`, buyerRoles)
+  // a founder-level title for a request that names Founder or CEO (personMatchesRole's own founder rule downstream)
+  const founder = /\b(?:founder|ceo|chief executive)\b/i.test(buyerRoles) && /^(?:(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?|CEO|Chief\s+Executive\s+Officer)$/i.test(title)
+  return buyerTitle(title, buyerRoles) || topSales || founder ? { name, title } : null
 }
 export function buyerTitle(title: string, buyerRoles?: string): boolean {
   if (!buyerRoles || roleContradicted(title, buyerRoles) || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
