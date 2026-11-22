@@ -130,7 +130,8 @@ test('the US pair needs its own sender route for that address and page, a curren
 })
 
 test('a scan scoped to a place outside the US never gets the pair, even when the homepage prints a US address', async () => {
-  for (const where of ['London', 'Toronto, ON', 'Remote', 'Toronto, CA']) {
+  // A bare ", CA" is California or Canada ("Windsor, CA" is both): never a US scope; the state or country spelled out is.
+  for (const where of ['London', 'Toronto, ON', 'Remote', 'Toronto, CA', 'Windsor, CA', 'San Francisco, CA']) {
     const s = await companyFirstLead(where, '200 Example Ave, Chicago, IL 60606')
     assert.ok(s.rows.some(r => r.kind === 'email'), where + ': the crawl wrote a US sender route from the homepage address')
     assert.equal(currentnessHeld(s.db, 'A', s.lead, s.now), false, where + ': the lead is current, so only the scope can refuse')
@@ -139,7 +140,7 @@ test('a scan scoped to a place outside the US never gets the pair, even when the
     assert.ok(!(await (await s.get()).json() as { lookups: { address: string | null }[] }).lookups.some(l => l.address === s.email), where)
     s.db.close()
   }
-  for (const where of ['Austin, TX', 'Portland, Oregon, United States', 'San Francisco, CA']) {
+  for (const where of ['Austin, TX', 'Portland, Oregon, United States', 'San Francisco, California', 'San Francisco, CA, USA']) {
     const s = await companyFirstLead(where, '200 Example Ave, Chicago, IL 60606')
     assert.equal(((await (await s.post(s.target)).json()) as { lookup: { address: string | null } }).lookup.address, s.email, where)
     s.db.close()
