@@ -3,17 +3,13 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
-import { findWorkEmail, workEmailProviders, workEmailsFor, strictPublishedWorkEmailsForLeads, PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS } from '@/lib/people/work-email'
-import { guessesForLead } from '@/lib/people/email-formats'
-import { isWorkEmailFixtureLead } from '@/lib/people/work-email-eligible'
+import { findWorkEmail, strictPublishedWorkEmailsForLeads, PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS } from '@/lib/people/work-email'
 import { captureError } from '@/lib/ops/errors'
-import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
-import { qaClaudeOnlyJob } from '@/lib/scan/qa-provider-policy'
 import { requestIdOf } from '@/lib/ops/request-log'
 
-// #1036 Find work email for one buyer named on a lead (lib/people/work-email.ts). GET: the lead's stored lookups and which
-// of the workspace's own keys a lookup would use. POST { target }: run (or replay) one lookup. The person is re-derived on
-// the server from the lead's stored rows; the body only names which one.
+// #1036 Find work email for one buyer named on a lead (lib/people/work-email.ts): the address the company prints for that person on its
+// own website. GET: the answer for each buyer on the lead. POST { target }: the answer for one. The person is re-derived on the server
+// from the lead's stored rows; the body only names which one.
 const LEAD_ID = /^[a-f0-9]{24}$/
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
@@ -22,14 +18,10 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ lea
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   if (!LEAD_ID.test(lead)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   const db = getScanDb()
-  const own = db.prepare('SELECT l.company, l.source_kind, j.run_budget FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId) as { company: string; source_kind: string | null; run_budget: string | null } | undefined
+  const own = db.prepare('SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead, user.tenantId)
   if (!own) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  if (qaClaudeOnlyJob(own.run_budget) || hasCompanyFirstBudget(own.run_budget)) return NextResponse.json({ providers: PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS,
-    lookups: strictPublishedWorkEmailsForLeads(db, user.tenantId, [lead])[lead] ?? [], guesses: [] })
-  // The test-only work-email fixture lead never calls Apollo and runs its saved PDL key regardless of the Apollo-gated opt-in
-  // (lib/people/work-email.ts), so the panel states exactly that.
-  const providers = workEmailProviders(db, user.tenantId)
-  return NextResponse.json({ providers: isWorkEmailFixtureLead(own) ? { ...providers, apollo: false, pdl: providers.pdl || providers.pdlNeedsOptIn, pdlNeedsOptIn: false } : providers, lookups: workEmailsFor(db, user.tenantId, lead), guesses: guessesForLead(db, user.tenantId, lead) })
+  // #1036 / #1250: only an address the company prints on its own site; no stored provider answer, no guess.
+  return NextResponse.json({ providers: PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS, lookups: strictPublishedWorkEmailsForLeads(db, user.tenantId, [lead])[lead] ?? [], guesses: [] })
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ lead: string }> }) {
@@ -49,11 +41,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
   try { r = await findWorkEmail(db, user.tenantId, lead, target) }
   catch (e) {
     captureError(e, { source: 'route', where: '/api/leads/[lead]/work-email', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
-    return NextResponse.json({ error: 'The lookup could not run. Nothing was charged to dazl; try again.' }, { status: 500 })
+    return NextResponse.json({ error: 'The lookup could not run; try again.' }, { status: 500 })
   }
   if (r.status === 'lead_not_found') return NextResponse.json({ error: 'Lead not found' }, { status: 404 })
   if (r.status === 'not_eligible' || r.status === 'site_unsettled') return NextResponse.json({ error: r.detail, status: r.status }, { status: 422 })
-  if (r.status === 'busy') return NextResponse.json({ error: r.detail, status: r.status }, { status: 409 })
-  if (!('row' in r)) return NextResponse.json({ status: r.status, detail: r.detail, ...(r.guess ? { guess: r.guess } : {}) }) // no_key: nothing ran, nothing stored (a learned-format guess may still come with it)
-  return NextResponse.json({ status: r.status, lookup: r.row, replayed: r.replayed, ...(r.guess ? { guess: r.guess } : {}) })
+  if (!('row' in r)) return NextResponse.json({ error: r.detail, status: r.status }, { status: 422 })
+  return NextResponse.json({ status: r.status, lookup: r.row, replayed: r.replayed })
 }

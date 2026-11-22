@@ -65,7 +65,9 @@ export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date
       if (!title || title.length > 120 || roleContradicted(title, icp)) continue
       const linkedin = p.linkedin && PROFILE.test(p.linkedin) ? p.linkedin : null   // for a sitecrawl row: only the profile its own page links (rank.ts)
       const source = p.source && SOURCE.test(p.source) ? p.source : null
-      if (!linkedin || !source) continue // the company page and the LinkedIn it links: both, or not the lead's buyer
+      // the company page and the LinkedIn it links (#1037). PM #1540: on a site known only by the homepage identity check (no email or route can
+      // come from it, so the lead stays held) the person is shown with the LinkedIn only when the page links one.
+      if (!source || (!linkedin && !(site?.state === 'unconfirmed' && site.identityChecked))) continue
       return { name, title, linkedin, source, via: peopleSourceText(p), current: true }
     }
     return null

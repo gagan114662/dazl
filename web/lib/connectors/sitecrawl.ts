@@ -1,7 +1,7 @@
 import { COMPANY_FIRST_ROLE_LABEL, recordCompanyFirstPublishedDisplay, withdrawCompanyFirstPublishedDisplay } from '../people/company-first-published-display.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { strictOwnContactCards } from './strict-own-contacts.ts'
-import { currentReviewedDomain, domainRelationship } from '../signals/domain-basis.ts'
+import { currentReviewedDomain, domainConfirmed, domainRelationship } from '../signals/domain-basis.ts'
 import { listedProfileLabel, listedProfileUrl, profileFromListedLabel } from '../people/site-profile.ts'
 import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
@@ -623,11 +623,21 @@ export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
+// Qodo High #1532: words of site navigation and calls to action ("Contact Us", "Get Started", "Book a Demo") - a name made of any of
+// them only is interface text, never a person (a real name holding one word of it - "Maya A. Thornton", "Bill Read" - stays), whatever title sits beside it and whatever the page's prose shows.
+const UI_WORDS = new Set(['contact', 'us', 'get', 'started', 'start', 'book', 'demo', 'sign', 'up', 'in', 'log', 'login', 'learn', 'more', 'request', 'try', 'free',
+  'read', 'about', 'our', 'team', 'join', 'careers', 'home', 'menu', 'apply', 'pricing', 'blog', 'watch', 'see', 'view', 'schedule', 'talk', 'to', 'sales', 'call',
+  'now', 'here', 'today', 'a', 'the', 'download', 'subscribe', 'explore', 'discover', 'meet', 'reach', 'out', 'support', 'help', 'privacy', 'terms', 'policy', 'cookie',
+  'cookies', 'accept', 'close', 'open', 'next', 'previous', 'back', 'submit', 'send', 'search', 'shop', 'buy', 'order', 'news', 'press', 'events', 'resources', 'docs'])
+const isUiText = (name: string): boolean => name.toLowerCase().split(/[^a-z']+/).filter(Boolean).every(w => UI_WORDS.has(w))
 const SHORT_SURNAME_LINE = /^[A-Z][a-z'\u2019-]{2,20}\s+[A-Z][a-z]$/
 // Qodo High #1532: a person's name is made of name tokens. A grammar word (pronoun, determiner, preposition, particle) is never a name
 // token, and a token shaped like a past participle ("Started", "Connected") in the surname slot is a verb phrase. This is closed-class
 // grammar, not a vocabulary of companies or people: it is what makes "Contact Us" / "Sign In" / "Learn More" a phrase on any page.
 const GRAMMAR_WORD = /^(?:us|we|me|you|your|our|my|it|its|them|they|a|an|the|this|that|these|those|more|less|all|any|some|in|on|out|up|down|to|at|by|for|of|from|with|off|over|now|here|there|today)$/i
+// The one person-name rule (#1542 + #1540), used by every extraction path and by the site buyer chooser: closed-class grammar tokens
+// (properNameTokens) and text made wholly of navigation / call-to-action words (isUiText, "Book Demo", "Request Demo") are never a name.
+export function isPersonName(name: string): boolean { return properNameTokens(name) && !isUiText(name) }
 function properNameTokens(name: string): boolean {
   const toks = name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/)
   // Qodo #1542: the given name is a name slot ("An Nguyen"), and a capital initial is an initial ("Maya A. Thornton"); a lower-case
@@ -816,7 +826,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     // A two-letter surname (Li, Ng, Wu) is kept only beside a buyer-level title; the prose check below still drops any word the page writes in lower case
     // ("us"), so "Contact Us" stays out (Simple AI's CEO Catheryn Li, 2026-11-22).
     const shortSurname = SHORT_SURNAME_LINE.test(name) && (buyerTitle(title, buyerRoles) || /\b(?:co-?founder|founder|ceo|chief executive)\b/i.test(title))
-    if (!properNameTokens(name)) return false // Qodo High #1532: "Contact Us", "Sign In", "Learn More", "Get Started" are phrases, not names
+    if (!isPersonName(name)) return false // Qodo High #1532: "Contact Us", "Sign In", "Learn More", "Get Started" are phrases, not names (one rule: isPersonName)
     if (!(NAME_LINE.test(name) || shortSurname) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return false
@@ -874,12 +884,15 @@ export function chooseSiteBuyer(found: Found[], buyerRoles: string): Found | nul
   // A CRO or VP of Sales is not a Head of Sales here (that reading is the own-posting reader's only, PM #1513).
   const founderAsked = /\b(?:founder|ceo|chief executive)\b/i.test(buyerRoles)
   const isBuyer = (t: string) => buyerTitle(t, buyerRoles) || (founderAsked && /\b(?:co-?founder|founder|ceo|chief executive officer)\b/i.test(t))
-  const people = found.filter(f => f.kind === 'person' && isBuyer(titleOf(f))).sort(byBuyerThenSeniority(buyerRoles))
+  const people = found.filter(f => f.kind === 'person' && isPersonName(f.value.split(', ')[0]) && isBuyer(titleOf(f))).sort(byBuyerThenSeniority(buyerRoles))
   if (!people.length) return null
   const rank = (f: Found) => [titleMatches(titleOf(f), buyerRoles).length, seniority(titleOf(f))].join(':')
   const top = people.filter(f => rank(f) === rank(people[0]))
   return new Set(top.map(f => f.value.split(', ')[0].toLowerCase())).size === 1 ? people[0] : null
 }
+// PM #1540 (no warning labels in the product): the fallback's person row says only where it was listed. How the site was reached
+// (its domain basis) is internal provenance, written to the crawl trace (connector_audit 'buyer_fallback basis=...'), never rendered.
+export const FALLBACK_BUYER_LABEL = "listed on the company's own team page"
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
@@ -2188,7 +2201,10 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         }
         // #1122: no exact card pairs the buyer with a route (most real team pages: UpGuard, OnBoard, Simple AI, 2026-11-22). The buyer the
         // page names is still stored, alone - no email, no route, so the email bar is untouched - with the page's own "listed" label.
-        if (allowed && buyerRoles && strictBuyers.length === 0) {
+        // PM ruling 2026-11-22: this person-only fallback needs the domain CONFIRMED (homepage identity-checked; wider than established),
+        // never an email or route - those stay on the established path above. Pages of this site only, no redirect elsewhere (below).
+        const confirmedSite = (r.reason === 'ok' || r.reason === 'none_published') && domainConfirmed(db, tenantId, l.id, site)
+        if (confirmedSite && buyerRoles && strictBuyers.length === 0) {
           // same guards as the exact-card path: a page on this confirmed site only (never a redirect elsewhere), a title naming no other
           // company, and the page's former/alumni sections cut (extractPeople)
           const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return '' } }
@@ -2196,8 +2212,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             !/\s(?:at|@|for|with)\s+\S/i.test(titleOf(f)))
           const buyer = chooseSiteBuyer(own, buyerRoles)
           if (buyer) {
-            addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: buyer.value.slice(0, 254), label: buyer.label.slice(0, 200), confidence: null,
+            addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: buyer.value.slice(0, 254), label: FALLBACK_BUYER_LABEL, confidence: null,
               source_url: buyer.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }); n++; named++
+            try { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: `buyer_fallback basis=${basisOf.get(site) ?? 'unknown'}`.slice(0, 180), results: 1 }) } catch { /* trace only */ }
           }
         }
         // Current product readiness selects person and route independently.

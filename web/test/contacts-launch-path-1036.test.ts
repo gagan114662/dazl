@@ -20,7 +20,7 @@ const TEXT = `On ${DAY}, ${QUOTE}. ${'Brightloop makes software for business tea
 const ICP = { summary: 'B2B SaaS startups', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['Chicago, Illinois, United States'], signals: ['announced seed funding'], exclude: [], country: 'US', language: 'en', window_days: 90 }
 const ENV = { SITECRAWL_ENABLED: '1', PEOPLE_SEARCH_ENABLED: '1', EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '1', EMAIL_VERIFY_MONTHLY_CAP: '2', ZEROBOUNCE_API_KEY: 'fixture-only' }
 async function withEnv<T>(f: () => Promise<T>): Promise<T> {
-  const old = Object.fromEntries(Object.keys(ENV).map(k => [k, process.env[k]])); Object.assign(process.env, ENV); process.env.EMAIL_GUESS_ENABLED = '0' // the published tier still runs; the click is the first enabled guess path
+  const old = Object.fromEntries(Object.keys(ENV).map(k => [k, process.env[k]])); Object.assign(process.env, ENV); // every old guess/check input is on: none of them is used
   try { return await f() } finally { for (const [k,v] of Object.entries(old)) { if(v === undefined) delete process.env[k]; else process.env[k] = v } }
 }
 
@@ -56,7 +56,7 @@ export async function launchFixture() {
   return {r,jobId,leads,lead,enr,rows,site,people,target,providerCalls,fixtureFetch,crawlReads}
 }
 
-test('#1036 real first-play runner -> ready named US lead -> one click checks its newly learned guess under the existing cap', async () => withEnv(async () => {
+test('#1036 #1250 real first-play runner -> ready named US lead -> one click on a buyer the site prints no address for: no guess shown or used, no check, no call', async () => withEnv(async () => {
   const s = await launchFixture()
   assert.equal(s.r.r,'done'); assert.equal(s.lead.review_reason,null,'must genuinely pass ready gates')
   assert.equal(verifiedLeads(s.r.db,'A',s.jobId).length,1)
@@ -64,18 +64,25 @@ test('#1036 real first-play runner -> ready named US lead -> one click checks it
   assert.equal(leadPerson(s.rows,'Founder',Date.now(),s.site),null,'#1037: a team-page person with no page-linked LinkedIn is not the lead\'s named buyer')
   const report = JSON.parse((s.r.db.prepare('SELECT report FROM scan_run_report').get() as {report:string}).report)
   assert.ok(report.enrichment.some((x:{stage:string;status:string})=>x.stage==='people_search' && ['ok','attempted_no_result'].includes(x.status)))
+  // Pat Kim and Sue Ray print first.last addresses: the old flow learned that format and guessed Dana Lee's. Now nothing is built from it.
   const result = await findWorkEmail(s.r.db,'A',s.lead.id,targetKey(s.target!),{env:ENV,fetchImpl:s.fixtureFetch})
-  const pageRead = workEmailPageRead(s.r.db,'A',s.leads,ENV)
+  const pageRead = workEmailPageRead(s.r.db,'A',s.leads)
   const usage = await mailboxCheckUsage(sqliteDb(s.r.db),'A',ENV)
   if(process.env.CONTACTS_RECEIPT) writeFileSync(process.env.CONTACTS_RECEIPT,JSON.stringify({synthetic:true,jobId:s.jobId,leads:s.leads.map(l=>({...l,enrichments:s.enr[l.id]})),site:s.site,targets:s.people.map(p=>({key:targetKey(p),name:p.name,title:p.title})),result,pageRead,usage,report,crawlReads:s.crawlReads,providerCalls:s.providerCalls},null,2))
-  assert.equal(result.guess?.label,'guessed, verified',JSON.stringify(result))
-  assert.equal(s.providerCalls.length,1,'one configured verifier request, not a provider enrichment')
-  assert.deepEqual(usage.day,{used:1,cap:1,remaining:0}); assert.equal(usage.state,'day_spent')
+  assert.ok('row' in result); assert.deepEqual([result.status,result.row.address],['not_found',null],JSON.stringify(result))
+  assert.equal('guess' in result,false,'no guess is returned')
+  assert.equal(s.providerCalls.length,0,'no mailbox check and no provider call')
+  assert.equal(usage.day.used,0)
+  assert.equal(s.r.db.prepare("SELECT count(*) FROM email_candidates WHERE tier = 'guessed'").pluck().get(),0,'no guessed candidate is written')
   const stored = s.r.db.prepare('SELECT contact FROM leads WHERE id = ?').get(s.lead.id) as {contact: string | null}
   assert.equal(stored.contact,s.lead.contact,'no new recipient authority')
-  assert.equal(pageRead.guesses?.[s.lead.id]?.[0]?.label,'guessed, verified','canonical page read persists the checked result')
-  const replay = await findWorkEmail(s.r.db,'A',s.lead.id,targetKey(s.target!),{env:ENV,fetchImpl:s.fixtureFetch})
-  assert.equal(replay.guess?.label,'guessed, verified'); assert.equal(s.providerCalls.length,1,'replay never checks again')
+  assert.deepEqual(pageRead.guesses[s.lead.id],undefined,'the Leads page shows no guess')
+  assert.ok(!JSON.stringify(pageRead).includes(`dana.lee@${SITE}`),'the guessed address appears nowhere on the page read')
+  // the buyers whose own address the site prints get exactly that address, from the page it is printed on
+  const pat = s.people.find(p=>p.name==='Pat Kim'); assert.ok(pat,'the crawl stored Pat Kim as a buyer')
+  const shown = await findWorkEmail(s.r.db,'A',s.lead.id,targetKey(pat),{env:ENV,fetchImpl:s.fixtureFetch})
+  assert.ok('row' in shown); assert.deepEqual([shown.status,shown.row.address,shown.row.source_url],['published',`pat.kim@${SITE}`,`https://${SITE}/team`])
+  assert.equal(s.providerCalls.length,0)
   assert.equal(listLeads(s.r.db,'B',s.jobId).length,0,'no cross-tenant leads')
   s.r.db.close()
 }))

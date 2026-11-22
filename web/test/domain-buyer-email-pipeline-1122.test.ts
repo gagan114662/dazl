@@ -93,13 +93,15 @@ async function pipeline(mode: 'board' | 'own' | 'people_error' | 'empty' | 'no_d
   }
 }
 
-test('same-job own-site resolution -> buyer-role search -> user-clicked email -> checked mailbox; replay spends nothing', async () => {
-  const p = await pipeline('own')
+// #1036 / #1250: the buyer's email is only an address printed on the company's own site. With a provider key and a mailbox verifier
+// configured, the click calls neither: the address People Data Labs / Apollo would have returned is never shown or checked.
+for (const mailbox of ['valid', 'catch-all']) test('same-job own-site resolution -> buyer-role search -> user-clicked email: no provider, no mailbox check (' + mailbox + ' verifier)', async () => {
+  const p = await pipeline('own', mailbox)
   assert.equal(p.lead.company_domain, SITE)
-  assert.equal(p.email.status, 'unverified')
   assert.ok('row' in p.email && p.email.row)
-  assert.equal(workEmailCopy(p.email.row).checked, true)
-  assert.deepEqual(p.events.filter(x => x === 'email_provider' || x.startsWith('mailbox:')), ['email_provider', 'mailbox:jane.doe@' + SITE])
+  assert.deepEqual([p.email.status, p.email.row.address, p.email.row.provider], ['not_found', null, null])
+  assert.equal(workEmailCopy(p.email.row).showAddress, false)
+  assert.deepEqual(p.events.filter(x => x === 'email_provider' || x.startsWith('mailbox:')), [])
   let calls = 0
   await findWorkEmail(p.r.db, 'A', p.lead.id, 'Jane Doe|Founder', { master, env: ON, fetchImpl: async () => { calls++; throw new Error('replay must not send') } })
   assert.equal(calls, 0)
@@ -120,13 +122,5 @@ for (const mode of ['people_error', 'empty', 'no_domain'] as const) test('same-j
   assert.equal(p.person, null)
   assert.ok(p.email.status === 'not_eligible' || p.email.status === 'site_unsettled')
   assert.ok(!p.events.includes('email_provider') && !p.events.some(x => x.startsWith('mailbox:')))
-  p.r.db.close()
-})
-
-test('same-job catch-all stays found-not-checked after successful domain and buyer stages', async () => {
-  const p = await pipeline('own', 'catch-all')
-  assert.ok('row' in p.email && p.email.row)
-  assert.equal(workEmailCopy(p.email.row).checked, false)
-  assert.equal(p.email.row.mailbox_check, 'catch_all')
   p.r.db.close()
 })

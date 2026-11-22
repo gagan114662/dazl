@@ -20,7 +20,10 @@ function fixture() {
     { address: 'ben.ortiz@acme.example', url: 'https://acme.example/team' },
   ] }
   const recorded = recordEmailGuesses(db, 'A', 'lead', args[0], [...args[1]], [...args[2]], context)
-  assert.equal(recorded?.candidates, 1); assert.equal(recorded?.published, 2)
+  // #1036 / #1250: the crawl writes the two printed addresses and builds none for Cara Diaz; the guess an earlier release filed for
+  // her is still in storage, which is what these gates must never read
+  assert.equal(recorded?.candidates, 0); assert.equal(recorded?.published, 2)
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES ('A', 'lead', 'Cara Diaz, COO', 'cara.diaz@acme.example', 'first.last', 'homepage address: Austin, TX 78701', 'guessed', 'high')").run()
   return db
 }
 

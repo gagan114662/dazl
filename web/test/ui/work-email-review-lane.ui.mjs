@@ -83,7 +83,7 @@ try {
   await blocks.first().getByRole('button', { name: 'Find work email' }).click()
   await page.locator('[data-testid="work-email-address"]').first().waitFor({ timeout: 15000 })
   assert.deepEqual(weCalls, [`POST ${A}`], 'one POST for the clicked lead, nothing else')
-  assert.match(await blocks.first().innerText(), /Published work email/)
+  assert.match(await blocks.first().innerText(), /Work email\. Printed on the company website\./)
   await shot('review-lane-after-1280')
   // ... and at 390 px the long address wraps inside the card: no horizontal overflow of the page or of the block
   await page.setViewportSize({ width: 390, height: 844 })
