@@ -3,7 +3,7 @@
 //  - an aggregate page (a market report, a search / results / browse / category listing, salary or outlook statistics) is not a posting:
 //    it names no single opening and dates none, so it never proves a hiring signal;
 //  - a posting whose title names none of the requested roles is another vacancy ("treatment coordinator" for "front desk receptionist").
-import type { RequestedHiringRole } from './hiring-role-match.ts'
+import { matchedHiringRole, roleNeedsSourceProof, type RequestedHiringRole } from './hiring-role-match.ts'
 
 const AGGREGATE_SEGMENT = /^(?:market-?reports?|marketreport|reports?|search|results?|browse|listings?|categor(?:y|ies)|directory|trends?|outlook|salar(?:y|ies)|wages?|statistics|stats|insights?|explore)$/i
 const SEARCH_PARAM = /^(?:q|query|keywords?|search|what|term|searchterm|kw)$/i
@@ -20,14 +20,22 @@ const words = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-
 const stem = (w: string) => w.replace(/(?:ies)$/, 'y').replace(/(?<!s)s$/, '')
 // A requested role is named when its head noun (the last word: "receptionist" of "front desk receptionist") is in the text. Lenient on
 // qualifiers ("dental receptionist" is a receptionist posting), strict on the role itself.
+const GENERIC_TAIL = new Set(['role', 'position', 'job', 'opening', 'vacancy', 'staff', 'team', 'people', 'hire', 'worker', 'employee'])
 export function namesRequestedRole(text: string, roles: RequestedHiringRole[]): boolean {
+  if (matchedHiringRole(text, roles)) return true // the bounded synonyms (SDR = sales development representative)
   const have = new Set(words(text).map(stem))
-  return roles.some(r => { const w = words(r.term); return w.length > 0 && have.has(stem(w[w.length - 1])) })
+  return roles.some(r => {
+    const w = words(r.term).map(stem)
+    while (w.length > 1 && GENERIC_TAIL.has(w[w.length - 1])) w.pop() // "payroll roles" names payroll
+    return w.length > 0 && have.has(w[w.length - 1])
+  })
 }
 
 export type HiringPostingVerdict = { ok: true } | { ok: false; reason: 'posting_not_specific' | 'job_role_mismatch' }
 export function hiringPostingVerdict(c: { source_url: string; signal: string | null; excerpt?: string | null }, roles: RequestedHiringRole[]): HiringPostingVerdict {
   if (isAggregateJobPage(c.source_url)) return { ok: false, reason: 'posting_not_specific' }
-  if (roles.length && !namesRequestedRole(`${c.signal ?? ''} ${c.excerpt ?? ''}`, roles)) return { ok: false, reason: 'job_role_mismatch' }
+  // Sales / GTM titles are judged by the sales-hiring gate (sales-hiring-gate.ts, its own bounded title rules); this gate covers every other requested title.
+  const plain = roles.filter(r => !roleNeedsSourceProof(r))
+  if (plain.length && plain.length === roles.length && !namesRequestedRole(`${c.signal ?? ''} ${c.excerpt ?? ''}`, plain)) return { ok: false, reason: 'job_role_mismatch' }
   return { ok: true }
 }

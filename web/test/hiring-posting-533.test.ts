@@ -50,3 +50,7 @@ test('#533 a hiring signal carries the "not proof they will buy" line; other sig
   assert.equal(hiringTimingLine('Raised a $5M seed round'), null)
   assert.equal(hiringTimingLine(null), null)
 })
+
+test('#533 a posted list of titles is several titles', () => {
+  assert.deepEqual(requestedHiringRoles('Ohio companies that recently posted a payroll, HR or office manager job').map(r => r.term), ['payroll', 'HR', 'office manager'])
+})

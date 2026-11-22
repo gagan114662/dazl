@@ -2120,7 +2120,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     let datesFinished: Awaited<ReturnType<typeof finishUndatedLeads>> = []
     let fallbackNotes: FallbackNote[] = []
     let recoveryTargets: FallbackTarget[] = []; let recoveryRan: { searched: boolean; why?: string } = { searched: false, why: 'not needed' }
-    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
+    const outcome = partial.outcome = await verifyLeads(await forget(leads), fetchP, deps.now, judge, null, diag.held && evidenceCopyRoom(db, job.user_id) >= diag.held.size ? { text: diag.held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources?.where ?? [], boardDates, requestedHiringRoles(job.query))
     const verifiedUrls = leads.map(l => l.source_url) // verify_provenance
     // A candidate whose OWN page blocks us is held with nothing readable. Look for the same company on other press (free news search): its pages go through the same extraction and verifier, and a
     // verified candidate for that company replaces the held row. Bounded (3 companies, one search+extraction), no extra model call for a run that disabled the paid fallback.
@@ -2144,7 +2144,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (found && found.length > 0) {
           ledger.candidates('fallback:news', found)
           verifiedUrls.push(...found.map(l => l.source_url))
-          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [], undefined, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
+          const o2 = await verifyLeads(await forget(found), fetchP, deps.now, judge, null, undefined, audit, icpForSources!.where ?? [], undefined, requestedHiringRoles(job.query))
           fallbackNotes = mergeFallback(outcome, o2, blocked)
         }
       } catch (e) {
@@ -2214,7 +2214,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
               // D3: a round-two lead may cite a page only round one fetched (or vice versa for a later re-check);
               // both were read within this one attempt, so the verifier gets the union, not round two's pages alone.
               const held = HeldText.merge(diag.held, diag2.held)
-              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
+              const o2 = await verifyLeads(gated, fetchP, deps.now, judge, null, held && evidenceCopyRoom(db, job.user_id) >= held.size ? { text: held, attempt: `${job.id}:${job.attempts}` } : undefined, audit, icpForSources.where ?? [], boardDates, requestedHiringRoles(job.query))
               const seenKeys = new Set(outcome.leads.map(dedupKey))
               for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
               const seenReview = new Set(outcome.review.map(dedupKey))
@@ -2254,7 +2254,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         if (fresh.length > 0) {
           assertOwned(db, job)
           verifiedUrls.push(...fresh.map(l => l.source_url))
-          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [], undefined, requestedHiringRoles(job.query, JSON.stringify(icpForSources ?? {})))
+          const o2 = await verifyLeads(await forget(fresh), fetchP, deps.now, judge, null, undefined, audit, icpForSources?.where ?? [], undefined, requestedHiringRoles(job.query))
           const seenKeys = new Set(outcome.leads.map(dedupKey))
           for (const l of o2.leads) { const k = dedupKey(l); if (!seenKeys.has(k)) { seenKeys.add(k); outcome.leads.push(l) } }
           const seenReview = new Set(outcome.review.map(dedupKey))
