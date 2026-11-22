@@ -32,6 +32,14 @@ test('the card shows the person and the email, and Approve is on when a public p
   assert.deepEqual(noEmail.approve, { ok: false, reason: 'No email address is published for this lead. Reach them through their LinkedIn profile.' })
   assert.equal(leadCardSummary(lead([person, email], { review_reason: 'source_review_required' }) as never).approve.ok, false, 'an unconfirmed proof page is reviewed first')
   assert.equal(leadCardSummary(lead([person, email], { quarantined_at: 1 }) as never).approve.ok, false)
+  // the safety rules stay: an undated signal, an address off the company's site, a support inbox, a failed required check
+  const why = (e: unknown[], o: Record<string, unknown> = {}) => { const a = leadCardSummary(lead(e, o) as never).approve; return a.ok ? 'ok' : a.reason }
+  assert.match(why([person, email], { event_date: null }), /no date/)
+  assert.match(why([person, { ...email, value: 'dana@other-company.example', source_url: 'https://directory.example/northwind' }]), /not on the company's own website/)
+  assert.equal(why([person, { ...email, value: 'dana@other-mail.example', source_url: 'https://www.northwind-dental.example/contact' }]), 'ok', 'an address printed on the company\'s own site')
+  assert.match(why([person, { ...email, value: 'privacy@northwind-dental.example' }]), /not a sales contact/)
+  assert.match(why([person, email], { gate_held: true }), /required check/)
+  assert.match(why([person, email], { company_domain: null }), /not on the company's own website/)
 })
 
 test('Approve creates a draft for the published address; autopilot and calibration still get every older check', () => {
@@ -52,6 +60,16 @@ test('Approve creates a draft for the published address; autopilot and calibrati
   const draft = db.prepare("SELECT to_email, status FROM outreach_messages WHERE tenant_id = 'T' AND lead_id = ?").get(id) as { to_email: string; status: string }
   assert.equal(draft.to_email, 'dana@northwind-dental.example')
   assert.equal(code(() => createDraft(db, 'OTHER', id, 'x', { manual: true })), 'not_found', 'another workspace cannot draft to this lead')
+  // the same rules at the server, whatever the page shows
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j2', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
+  const cases = [{ date: null }, { domain: 'someone-else.example' }, { to: 'privacy@northwind-dental.example' }].map((o: { date?: string | null; domain?: string | null; to?: string }) => {
+    const lid = randomBytes(12).toString('hex')
+    db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j2', 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', ?, 85, 'Northwind Dental will open its second clinic', ?, 'verified', 85, 4, 4, 'expanding', 'discover', ?)").run(lid, `https://news.example/${lid}`, o.date === undefined ? '2026-10-14' : o.date, o.domain === undefined ? 'northwind-dental.example' : o.domain)
+    return { lid, to: o.to ?? email.value }
+  })
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j2'").run()
+  const [undated, offSite, privacy] = cases.map(c => { addEnrichment(db, 'T', c.lid, { ...email, value: c.to, confidence: null, source_date: '2026-11-22', retrieved_at: now }); return code(() => createDraft(db, 'T', c.lid, 'Fit-out Co', { manual: true })) })
+  assert.deepEqual([undated, offSite, privacy], ['lead_currentness_unconfirmed', 'domain_unconfirmed', 'not_sales_contact'])
 })
 
 test('the scheduler enrols a first search into a repeat only when the operator switch is on', () => {

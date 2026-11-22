@@ -5,7 +5,7 @@
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
 import { discoverApprove, discoverContact, isDiscoverLead } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
-import { publishedContact, publishedEmail } from '../outreach/published-email.ts'
+import { classifyPurpose, publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
 import { evidenceStateOf } from '../outreach/evidence-state.ts'
 import { contactRoute, deliverabilityBlocked, type ContactRoute } from '../outreach/contact-route.ts'
@@ -43,7 +43,13 @@ const firstSentence = (s: string) => {
 
 export function approveState(l: CardLead): ApproveState {
   // a discovery-lane lead: approvable when its proof was confirmed and a public page prints an email for it
-  if (isDiscoverLead(l as { source_kind?: string | null })) return discoverApprove(l as never)
+  if (isDiscoverLead(l as { source_kind?: string | null })) {
+    const a = discoverApprove(l as never)
+    const to = a.ok ? discoverContact(l as never)?.email?.address ?? '' : ''
+    if (a.ok && classifyPurpose(to).purpose === 'non-sales') return { ok: false, reason: 'The published address is a press, support or privacy inbox, not a sales contact.' }
+    if (a.ok && deliverabilityBlocked(to, l.enrichments ?? [])) return { ok: false, reason: 'This address cannot receive mail (invalid domain or a failed mailbox check).' }
+    return a
+  }
   if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
   // #1062: before the review reason - confirming the source cannot release a required check that has not passed.
   if (l.gate_held) return { ok: false, reason: 'A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.' }

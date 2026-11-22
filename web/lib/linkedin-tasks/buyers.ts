@@ -49,10 +49,23 @@ export async function onCompanyPeopleResult(db: Db, tenantId: string, taskId: st
     if (!job || !lead) return 'not_a_lead_task'
     let roles = ''
     try { const who = job.icp ? (JSON.parse(job.icp) as { who?: unknown }).who : null; if (Array.isArray(who)) roles = who.filter(x => typeof x === 'string').join('; ').slice(0, 600) } catch { roles = '' }
-    if (!roles) return 'no_buyer'
     const res = yield* t.get<{ fetched_at: number; payload: string }>('SELECT fetched_at, payload FROM li_results WHERE task_id = ? AND tenant_id = ?', [taskId, tenantId])
     let people: ReadPerson[] = []
     try { people = ((JSON.parse(res?.payload ?? '{}') as { people?: unknown[] }).people ?? []).map(personOk).filter((p): p is ReadPerson => !!p) } catch { people = [] }
+    // A discovery-lane lead already names its person (connector 'discover'): the read attaches that same person's profile, by exact name.
+    const known = yield* t.get<{ value: string }>("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'person' ORDER BY retrieved_at, id LIMIT 1", [tenantId, leadId])
+    if (known) {
+      const fold = (x: string) => x.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase()
+      const name = fold(known.value.split(', ')[0] ?? '')
+      const same = people.filter(p => fold(p.name) === name)
+      if (same.length !== 1) return 'no_buyer'   // nobody, or two people with that name: nothing is attached
+      if (yield* t.get("SELECT 1 AS x FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'linkedin' LIMIT 1", [tenantId, leadId])) return 'already_named'
+      const at = Number(res!.fetched_at)
+      yield* addEnrichmentTx(t, tenantId, leadId, { connector: 'discover', kind: 'linkedin', value: same[0].profile_url.slice(0, 254), label: LINKEDIN_PEOPLE_LABEL, confidence: null,
+        source_url: same[0].profile_url, source_date: new Date(at * 1000).toISOString().slice(0, 10), retrieved_at: at })
+      return 'stored'
+    }
+    if (!roles) return 'no_buyer'
     const buyer = chooseLinkedInBuyer(people, roles)
     if (!buyer) return 'no_buyer'
     const named = yield* t.get<{ x: number }>("SELECT 1 AS x FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'sitecrawl' AND kind = 'person' LIMIT 1", [tenantId, leadId])

@@ -6,6 +6,7 @@ import { isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
 import { enqueuePostEngagement } from '../linkedin-tasks/engagers.ts'
+import { enqueueLanePeople, type LaneLead } from '../linkedin-tasks/lane-people.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
 import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
@@ -1492,9 +1493,11 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   // What the lead row has no column for at insert time: the lane's tag, the company's own website, and the person with the page that names them.
   const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
   const tag = db.prepare('UPDATE leads SET source_kind = ?, company_domain = COALESCE(?, company_domain) WHERE id = ?')
+  const forLinkedIn: LaneLead[] = []
   for (const l of checked) {
     const row = rows.find(r => r.source_url === l.evidence_url && r.company === l.company.slice(0, 150))
     if (!row) continue
+    if (isShown(l)) forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
@@ -1506,6 +1509,8 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
   // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.
   try { await enqueuePostEngagement(sqliteDb(db), job.user_id, job.id, [...checked.map(l => l.evidence_url), ...run.pages]) } catch { /* the scan's own leads stand */ }
+  // ...and the company People page of a lead whose person has no LinkedIn profile yet (lib/linkedin-tasks/lane-people.ts)
+  try { await enqueueLanePeople(sqliteDb(db), job.user_id, job.id, forLinkedIn) } catch { /* the scan's own leads stand */ }
   return 'done'
 }
 

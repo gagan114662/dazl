@@ -16,7 +16,8 @@ import { GmailError, GmailSendError, confirmedSendResult, getAccessTokenBound, g
 import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
-import { pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
+import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
+import { emailOnCompanySite } from '../discover/card.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -313,16 +314,23 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 
 // Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
 // A lead from the Claude discovery lane, when a PERSON asks for the draft (the Approve button; never autopilot or calibration, which keep
-// every check below): the lead's proof page was confirmed when it was stored, so the draft needs only an email address a public page
-// prints for it. The address safety rules (test inbox, suppression list, undeliverable, personal mailbox) still apply. Nothing is sent
-// by a draft; the person reviews it in Outreach.
+// the older engine's path). Every safety rule still applies: a failed required check, an unconfirmed proof page, an ungraded lead, a
+// press / support / privacy inbox, an undeliverable, personal or suppressed address. What differs is where the facts come from: the
+// address is the one a public page prints (the run's own record, with that page), timing is the lead's own dated signal (an undated
+// lead is not drafted to), and the address must belong to the company's own website (lib/discover/card.ts emailOnCompanySite), else
+// the person confirms the website first. Nothing is sent by a draft; the person reviews it in Outreach.
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
-  const state = db.prepare('SELECT review_reason FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null } | undefined
-  if (state?.review_reason) throw new OutreachError('lead_not_verified')
+  if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
+  const state = db.prepare('SELECT review_reason, event_date, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; event_date: string | null; company_domain: string | null } | undefined
+  if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
+  if (!state?.event_date) throw new OutreachError('lead_currentness_unconfirmed')
+  if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   const row = db.prepare("SELECT value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string; source_url: string } | undefined
   const to = norm(row?.value ?? '')
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  if (classifyPurpose(to).purpose === 'non-sales') throw new OutreachError('not_sales_contact')
+  if (!emailOnCompanySite(to, row!.source_url, state?.company_domain ?? null)) throw new OutreachError('domain_unconfirmed')
   if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db, tenantId, to)) throw new OutreachError('personal_email')
