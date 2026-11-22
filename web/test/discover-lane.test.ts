@@ -70,3 +70,20 @@ test('a scan through the lane: confirmed leads are ready, an undated one too, an
   assert.deepEqual(spend.map(s => [s.kind, s.actual_usd]), [['llm.anthropic.web_search', 0.055]], 'the run is reserved before the call and settled at what both passes cost')
   assert.equal(leads.find(l => l.company === 'Harbour Smiles')!.company_domain, 'harboursmiles.example', 'the second pass filled the empty website')
 })
+
+test('a request with its own lower limit gets the smaller search budget and never reserves more than its limit', async () => {
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor', runBudget: JSON.stringify({ max_usd: 1 }) })
+  const job = claimKeyedJob(db, id)
+  let asked: Record<string, unknown> | null = null
+  const empty: DiscoverResult = { leads: [], seen: [], usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.2 }, stop: 'end_turn', model: 'm', note: null }
+  assert.equal(await runJob(db, job!, { master, discover: true, enrichImpl: null, discoverImpl: async input => { asked = input as unknown as Record<string, unknown>; return empty } }), 'done')
+  assert.deepEqual([asked!.maxSearches, asked!.maxFetches], [10, 8], 'US$1 of room is less than a full run: the smaller budget')
+  const spend = db.prepare('SELECT reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id = ?').all(id) as { reserve_usd: number; actual_usd: number }[]
+  assert.equal(spend.length, 1)
+  assert.ok(spend[0].reserve_usd <= 1 && spend[0].actual_usd === 0.2, JSON.stringify(spend))
+})

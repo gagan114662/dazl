@@ -1440,9 +1440,16 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
-  const small = trialReserveUsd !== null   // a free-trial run: dazl's own money, a smaller budget
-  const reserveUsd = small ? Math.min(DISCOVER_RESERVE_USD, trialReserveUsd) : DISCOVER_RESERVE_USD
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed' | 'no_room'> {
+  // What this run may still spend: the tightest of the job's own budget, the account's limits and the scan's cap. With room for a full
+  // run it gets the full search budget; with less (a free-trial run, or a request that set its own lower limit) it gets the smaller
+  // budget and reserves what there is; with too little for even that, the lane does not run and the older path takes the request.
+  const ctx = scanSpendContext()
+  const capRoom = ctx ? (effectiveCapUsd(ctx) ?? 0) - ((await scanSpendRow(ctx.db, ctx.jobId, ctx.tenantId))?.spend_cap_reserved_usd ?? 0) : Infinity
+  const room = Math.min(capRoom, trialReserveUsd ?? Infinity, ...spendGuards.map(g => g.limitUsd - g.reservedUsd))
+  if (!(room >= DISCOVER_TRIAL_MIN_USD)) return 'no_room'
+  const small = room < DISCOVER_RESERVE_USD
+  const reserveUsd = Math.min(DISCOVER_RESERVE_USD, Math.floor(room * 100) / 100)
   const source = 'search:claude_discover'
   ledger.record(source, 'started')
   assertOwned(db, job)
@@ -1580,7 +1587,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
-    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env, trial?.reserveUsd ?? null)) return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
+    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env, trial?.reserveUsd ?? null)) {
+      const lane = await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
+      if (lane !== 'no_room') return lane
+    }
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
     if (job.query) {
