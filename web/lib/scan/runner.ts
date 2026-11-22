@@ -1723,7 +1723,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // Runs 9697d013 / b9a34d2d: an OR request with a funding branch searched boards only, so every funding claim came from a job posting's
       // "we raised..." line, undated and held. Its funding branch takes the third pass: a dated announcement on the company's own newsroom /
       // press / blog page (or a dated news article about it), cited as the source - never a job posting. Same call count.
-      const fundingOr = companyFirst && reviewedOffer && hiringAsked && salesGateOr(job.query, JSON.stringify(icpForSources ?? {}))?.event.kind === 'funding'
+      const fundingOr = companyFirst && reviewedOffer && hiringAsked && (() => { const o = salesGateOr(job.query, JSON.stringify(icpForSources ?? {})); return !!o && (o.events ?? [o.event]).some(e => e.kind === 'funding') })()   // Qodo #1522: any funding branch, not only the first
       const CF_FUNDING_ANGLE = 'Search for the requested funding: a dated announcement of the round on the company\'s own newsroom, press or blog page (or a dated news article about that round). Cite that announcement page as source_url with its published date as event_date; never cite a job posting, careers page or list for funding.'
       const CF_FUNDING_RETURN = 'Return up to 15 companies as JSON inside <json></json>: a list of objects with keys company, website (the company\'s own official domain), source_url (the funding announcement page), event_date (YYYY-MM-DD published date, or null if the page shows none), why (one sentence).'
       const angles = fundingOr ? [CF_HIRING_ANGLES[1], CF_HIRING_ANGLES[2], CF_FUNDING_ANGLE]
