@@ -16,8 +16,8 @@ const TIMEOUT_MS = 2500
 const TRIES = 2
 export const SCAN_DNS_CONCURRENCY = 16
 
-let shared: Resolver | null = null
-function resolver(): Resolver {
+let shared: InstanceType<typeof Resolver> | null = null
+function resolver(): InstanceType<typeof Resolver> {
   shared ??= new Resolver({ timeout: TIMEOUT_MS, tries: TRIES })
   return shared
 }
@@ -46,8 +46,8 @@ export function scanLookupAll(hostname: string): Promise<Address[]> {
     const r = resolver()
     const [v4, v6] = await Promise.allSettled([r.resolve4(hostname), r.resolve6(hostname)])
     const out: Address[] = [
-      ...(v4.status === 'fulfilled' ? v4.value.map(address => ({ address, family: 4 })) : []),
-      ...(v6.status === 'fulfilled' ? v6.value.map(address => ({ address, family: 6 })) : []),
+      ...(v4.status === 'fulfilled' ? v4.value.map((address: string) => ({ address, family: 4 })) : []),
+      ...(v6.status === 'fulfilled' ? v6.value.map((address: string) => ({ address, family: 6 })) : []),
     ]
     if (out.length) return out
     const err = v4.status === 'rejected' ? v4.reason : v6.status === 'rejected' ? v6.reason : null
