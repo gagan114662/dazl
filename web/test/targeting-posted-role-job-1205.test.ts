@@ -69,3 +69,15 @@ test('#1205 business wording with opening / position / role is never a hiring co
   const neg = planConditions(compileTargeting('Dental practices that have not posted a receptionist job in the past 90 days', null).root)
   assert.equal(neg.length, 1); assert.equal(neg[0].cond.kind, 'hiring'); assert.equal(neg[0].negated, true)
 })
+
+// council (Haiku R8/R9): a title with "of" in it is a role; "advertised for a <role> job" is a job advert
+test('#1205 titles with "of" and "advertised for a <role> job" are read', () => {
+  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  for (const [q, role] of [
+    ['Companies that posted a Director of Sales job in the past 90 days', 'Director of Sales'],
+    ['Startups that posted a Head of Marketing job in the last 60 days', 'Head of Marketing'],
+    ['Dental practices that advertised for a receptionist job in the past 90 days', 'receptionist'],
+  ] as const) { const h = one(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q) }
+  assert.equal(one('companies that posted a press release about a new role in the past 90 days').length, 0)
+  assert.equal(one('Advertising agencies in Toronto that opened a new office').length, 0)
+})
