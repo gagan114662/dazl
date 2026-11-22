@@ -170,6 +170,13 @@ test('card: a sole contradicted stored person is never the recommended who, for 
       assert.ok(c.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m)))
     }
   }
+  // the contradiction filter itself: listed on the company's OWN confirmed site with the LinkedIn its page links, still never the buyer
+  for (const t of ['Former Practice Manager', 'Not Practice Manager', 'Assistant to Practice Manager', 'Retired Practice Manager', 'Ex-Practice Manager']) {
+    const c = whoOf([own('Eli Novak', t, 'eli-novak')], 'Practice manager')
+    assert.equal(c.who, null, `own site: ${t}`)
+    assert.ok(c.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m)), JSON.stringify(c.missing))
+  }
+  assert.equal(whoOf([own('Eli Novak', 'Practice Manager', 'eli-novak')], 'Practice manager').who?.name, 'Eli Novak', 'control: the same row with a current title is the buyer')
 })
 test('card: a contradicted person never beats a valid one; valid role controls; no-ICP and assistant-requested policies', () => {
   const bad = row('sitecrawl', 'Eli Novak', 'Former Practice Manager'); const good = own('Dana Lee', 'Practice Manager', 'dana-lee-pm')

@@ -99,9 +99,11 @@ try {
   // Contact uncertainty is on the collapsed card, beside the contact, not only in Details.
   const statusOf = name => cards.filter({ hasText: name }).getByTestId('contact-status')
   const pico = cards.filter({ hasText: 'Pico Dental' })
-  assert.match(await pico.textContent(), /Dana Smith, Practice owner - hello@name-guessed\.example/)
+  // #1037: a person on a site only guessed by name is never presented as the buyer: the card shows the address and names nobody
+  assert.match(await pico.textContent(), /hello@name-guessed\.example/)
+  assert.doesNotMatch(await pico.textContent(), /Dana Smith/)
   assert.equal(await statusOf('Pico Dental').isVisible(), true)
-  assert.equal(await statusOf('Pico Dental').textContent(), 'Unconfirmed - name match only: name-guessed.example: found by name search, not linked from the source. Role as listed; current role not verified.')
+  assert.equal(await statusOf('Pico Dental').textContent(), 'Unconfirmed - name match only: name-guessed.example: found by name search, not linked from the source.')
   assert.equal(await pico.getByRole('button', { name: 'Approve' }).isDisabled(), true)
   assert.match(await statusOf('Twin Dental').textContent(), /^Unconfirmed - name match only: several websites recorded \(a-dental\.example, b-dental\.example\); which one is theirs is not settled\./)
   assert.match(await statusOf('Quiet Dental').textContent(), /Restricted inbox \(privacy\): not a sales contact\./)
