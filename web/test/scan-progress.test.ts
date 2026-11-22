@@ -184,6 +184,10 @@ test('runJob: hold-stopped AFTER partial work reads partial_hold - not skipped, 
   assert.equal(mapped.status, 'partial', 'maps to partial, never to unavailable (no false outage) or skipped')
   assert.equal(mapped.note, 'stopped by the spending limit after partial results')
   // every hold reason maps to its own honest copy
+  // Qodo (#1526): ledger_unavailable is a refusal BEFORE send (the spend store did not answer, so no reservation was written
+  // and nothing was sent): it never reads as a billed or reserved step.
+  assert.equal(partialNote('partial_hold:ledger_unavailable'), 'stopped because spend accounting could not be written, so the next paid request was not sent; partial results kept')
+  assert.doesNotMatch(partialNote('partial_hold:ledger_unavailable') ?? '', /billed|reserved/)
   assert.equal(partialNote('partial_hold:accounting_uncertain'), 'stopped after a request ended without a settled cost; it is counted as billed at the amount reserved for it; partial results kept')
   assert.equal(partialNote('partial_hold:provider_rejected'), 'stopped after the provider rejected a request; partial results kept')
   assert.equal(partialNote('partial_hold'), 'stopped by the spend guard after partial results')

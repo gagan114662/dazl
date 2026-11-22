@@ -158,3 +158,23 @@ for (const [name, response] of [
     } finally { mock.timers.reset() }
   })
 }
+
+// Qodo (#1526): a 429 whose headers arrive but whose error body never finishes must end at the 20 s stall too, not the 150 s cap.
+test('#1157 a 429 whose body never finishes ends at the 20 s stall, counted as billed (uncertain)', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const log: string[] = []
+    const p = runClaudeWebSearch('not-an-api-key', 'Fixture request', () => hold(log), async (url, init) => {
+      if (String(url).endsWith('/count_tokens')) return Response.json({ input_tokens: 1500 })
+      // like a real fetch body, it errors when the request's signal aborts; until then it stays open and silent
+      const body = new ReadableStream<Uint8Array>({ start(c) { init?.signal?.addEventListener('abort', () => c.error(init.signal!.reason), { once: true }) } })
+      return new Response(body, { status: 429, headers: { 'content-type': 'application/json', 'request-id': 'req_fixture' } })
+    })
+    const settled = p.then(() => 'resolved', e => e as { code?: string })
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r))
+    mock.timers.tick(20_100)
+    const e = await within(settled, 2_000)
+    assert.equal((e as { code?: string }).code, 'request_uncertain')
+    assert.deepEqual(log, ['uncertain'])
+  } finally { mock.timers.reset() }
+})
