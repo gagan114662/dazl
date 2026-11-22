@@ -46,6 +46,16 @@ BACKUPS=${PROD_BACKUP_DIR:-/var/lib/dazl-prod-backups}
 KEEP_BACKUPS=${PROD_KEEP_BACKUPS-10}
 APP_USER=${PROD_APP_USER:-ubuntu}
 RUN_ENV=${PROD_RUN_ENV:-/home/ubuntu/dazl-pr16-run.env}
+# >>> scan-worker (#1463): runs only with PROD_SCAN_WORKER=1; with it unset this block does nothing
+SCAN_WORKER=${PROD_SCAN_WORKER:-0}
+worker_swap() {   # worker_swap <port to run> <port to stop>
+  [ "$SCAN_WORKER" = 1 ] || return 0
+  systemctl reset-failed "dazl-prod-worker@$1.service" 2>/dev/null || true
+  if systemctl start "dazl-prod-worker@$1.service"; then systemctl enable --quiet "dazl-prod-worker@$1.service" || true; log "scan worker running beside :$1 (dazl-prod-worker@$1)"
+  else log "WARNING: dazl-prod-worker@$1 did not start: scans wait in the queue until it runs"; fi
+  if [[ ${2:-} =~ ^31[0-9]{2}$ ]] && [ "$2" != "$1" ]; then systemctl stop "dazl-prod-worker@$2.service" 2>/dev/null || true; systemctl disable --quiet "dazl-prod-worker@$2.service" 2>/dev/null || true; fi
+}
+# <<< scan-worker
 REPO_URL=${PROD_REPO_URL:-https://github.com/gagan114662/dazl.git}
 PUBLIC_URL=${PROD_PUBLIC_URL:-https://dazl.ai}
 PORTS=${PROD_PORTS:-3104 3105}
@@ -254,6 +264,9 @@ case "${1:-}" in
     fi
     write_state "$cur" "$NEW_SHA" "$PREV_SHA" "$PREV_PORT"
     set_boot "$PREV_PORT"
+    # >>> scan-worker (#1463): runs only with PROD_SCAN_WORKER=1; with it unset this block does nothing
+    worker_swap "$PREV_PORT" "$cur"
+    # <<< scan-worker
     log "ROLLED BACK: dazl.ai now $PREV_SHA on :$PREV_PORT; $NEW_SHA still running on :$cur (rollback again to return)"; exit 0 ;;
 esac
 
@@ -361,6 +374,12 @@ as_app rm -rf -- "$DIR"
 as_app git clone -q --filter=blob:none "$REPO_URL" "$DIR" || die "git clone failed; prod untouched"
 as_app git -C "$DIR" checkout -q "$SHA" || die "git checkout $SHA failed; prod untouched"
 as_app bash "$PULL" extract "$SHA" "$DIR/web" "$LIVE_WEB" "$PROD_MIN_FREE_BYTES" 0 || { as_app rm -rf -- "$DIR"; die "the prebuilt build did not unpack; prod untouched"; }
+# >>> scan-worker (#1463): runs only with PROD_SCAN_WORKER=1; with it unset this block does nothing
+if [ "$SCAN_WORKER" = 1 ]; then   # the app claims no scan in-process; the worker takes them from the shared queue
+  grep -v -E '^(DAZL_SCAN_SHARED_QUEUE|SCAN_MAX_CONCURRENT)=' "$OPS/prod.env.next" > "$OPS/prod.env.next.w" || true
+  printf 'DAZL_SCAN_SHARED_QUEUE=1\nSCAN_MAX_CONCURRENT=0\n' >> "$OPS/prod.env.next.w"; mv -f "$OPS/prod.env.next.w" "$OPS/prod.env.next"
+fi
+# <<< scan-worker
 as_app bash -c 'umask 077; cat > "$1"' _ "$DIR/.release.env" < "$OPS/prod.env.next"
 log "3/10 release ready in $DIR (no build ran on this box)"
 
@@ -439,6 +458,9 @@ log "9/10 public smoke + ${STABLE_S}s stability ok"
 mv -f "$OPS/prod.env.next" "$OPS/prod.env"
 if [ -n "$OLD_SHA" ]; then write_state "$LIVE" "$OLD_SHA" "$SHA" "$NEW"; else write_state none "" "$SHA" "$NEW"; fi
 set_boot "$NEW"
+# >>> scan-worker (#1463): runs only with PROD_SCAN_WORKER=1; with it unset this block does nothing
+worker_swap "$NEW" "$LIVE"
+# <<< scan-worker
 if [ "$PRUNE" = 1 ]; then
   keep=" $DIR ${LIVE_WEB%/web} "
   cwds=$(for p in $(ss -l -t -n -p -H | grep -oP 'pid=\K[0-9]+' | sort -u); do readlink "/proc/$p/cwd" 2>/dev/null || echo '?'; done)

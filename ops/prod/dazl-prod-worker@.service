@@ -1,0 +1,29 @@
+# #1463: production scan worker for the release on port %i (installed as /etc/systemd/system/dazl-prod-worker@.service).
+# Off unless deploy-prod.sh runs with PROD_SCAN_WORKER=1: it starts dazl-prod-worker@<new port> after the new release
+# passes its stability window and stops the old port's worker; --rollback swaps them back. It follows the live release
+# the same way dazl-prod@%i does (DAZL_RELEASE from /etc/dazl-prod/ports/%i.conf). PartOf: stopping or restarting the
+# release's app unit stops / restarts its worker too.
+# KNOWN BLOCKER before PROD_SCAN_WORKER=1: the QA Claude-only pinned-local lane (web/lib/scan/qa-provider-policy.ts
+# strictLocalTopologySupported) is refused while DAZL_SCAN_SHARED_QUEUE=1; that lane must run on the worker first.
+[Unit]
+Description=dazl production scan worker (%i)
+After=network.target dazl-prod@%i.service
+PartOf=dazl-prod@%i.service
+
+[Service]
+User=ubuntu
+EnvironmentFile=/etc/dazl-prod/ports/%i.conf
+Environment=NODE_ENV=production
+ExecStart=/usr/local/lib/dazl-prod/run-worker.sh %i
+Restart=on-failure
+RestartSec=5
+# One scan at a time (SCAN_WORKER_CONCURRENCY, default 1), memory capped: a worker killed at the cap fails its scan
+# closed and the lease hands it back. Raise only from a real-scan MemoryPeak and the box's free memory.
+MemoryHigh=320M
+MemoryMax=384M
+# SIGTERM: the worker hands its running scan back to the queue and exits (143 is its normal stop)
+SuccessExitStatus=143
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

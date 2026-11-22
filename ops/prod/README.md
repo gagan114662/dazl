@@ -7,6 +7,7 @@ for byte, so what runs is a reviewed file in this repository (NEVER-AGAIN #1, #2
 | --- | --- |
 | `deploy-prod.sh` | the **v2** deploy (blue/green on :3104/:3105, systemd units `dazl-prod@<port>`, rollback, `--stop-port`, `--status`). Run as root by the ops door. Never builds on the box. |
 | `run-release.sh` | `ExecStart` of `dazl-prod@<port>.service`: loads the release env and runs `next start` directly. |
+| `run-worker.sh` | `ExecStart` of `dazl-prod-worker@<port>.service` (#1463, gated off by `PROD_SCAN_WORKER`): the scan worker beside the release on that port. Unit: `dazl-prod-worker@.service`. Known blocker before turning it on: the QA Claude-only pinned-local lane refuses the shared queue (`web/lib/scan/qa-provider-policy.ts`). |
 | `pull-release.sh` | downloads and verifies the prebuilt build that GitHub made (size, sha256, `.build-commit`) and unpacks it. |
 | `check-installed.sh` | read-only: compares the installed copies with these, by sha256. Exit 1 and the file's name when one differs or is missing. |
 | `prebuilt-manifest.mjs` | builds the manifest the prebuilt workflow publishes. |
