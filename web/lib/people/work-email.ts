@@ -41,6 +41,7 @@ import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
+import { US_CITY_RANKS } from '../sources/us-city-ranks.ts'
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
@@ -159,12 +160,15 @@ function markedWorkEmailHeld(db:Database.Database,tenantId:string,lead:LeadRow,n
 }
 
 // The scan's places name the United States: each one either names it as its country or ends in a US state (name or postal code)
-// and names no other country. "London", "Toronto, ON", "Remote" or no place at all is not a US scope. A postal code shared with a
-// country ("Toronto, CA") reads as the state; the pair still needs the crawl's US sender route, which a Canadian homepage never gets.
+// and names no other country. "London", "Toronto, ON", "Remote", "Toronto, CA" or no place at all is not a US scope.
+const CA_PLACES = new Set(US_CITY_RANKS.filter(r => r.split('|')[1] === 'CA').map(r => r.split('|')[0].toLowerCase()))
 const usPlace = (w: string) => {
   const codes = countriesIn(w)
   if (codes.length) return codes.length === 1 && codes[0] === 'US'
-  const last = (w.split(',').pop() ?? '').trim()
+  const parts = w.split(',').map(x => x.trim())
+  const last = parts.pop() ?? ''
+  // "CA" is also Canada: "<City>, CA" is a US scope only when the city is a California place in the Census list.
+  if (last.toUpperCase() === 'CA') return parts.length > 0 && CA_PLACES.has((parts.pop() ?? '').toLowerCase())
   return !!last && ((last.length === 2 && Object.hasOwn(US_STATES, last.toUpperCase())) || Object.values(US_STATES).includes(last.toLowerCase()))
 }
 const usScope = (where: string[]) => where.length > 0 && where.every(usPlace)
