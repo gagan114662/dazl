@@ -46,3 +46,50 @@ test('recruiter, intern and non-sales roles sharing a request word are not picke
   ])
   assert.deepEqual(await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sdr', 'sales'], windowDays: 45, now, http }), ['https://job-boards.greenhouse.io/acme/jobs/3'])
 })
+
+test('#1122 discovery volume: the board posting date filters BEFORE the 5-slot cap; in-window postings first, newest first', async () => {
+  const { orderByBoardDate, postingKey } = await import('../lib/company-first/board-postings.ts')
+  const dates = new Map<string, string>()
+  await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sales'], windowDays: 45, now, dates, http: gh([
+    { id: 1, title: 'Account Executive', first_published: '2023-08-01T00:00:00Z' },
+    { id: 2, title: 'Engineer', first_published: '2026-11-10T00:00:00Z' },
+    { id: 3, title: 'SDR', first_published: '2026-10-20T00:00:00Z' },
+  ]) })
+  assert.equal(dates.get(postingKey('https://boards.greenhouse.io/acme/jobs/1')!), '2023-08-01')
+  const stale = 'https://boards.greenhouse.io/acme/jobs/1', older = 'https://job-boards.greenhouse.io/acme/jobs/3', newer = 'https://job-boards.greenhouse.io/acme/jobs/2'
+  const out = orderByBoardDate(['https://news.example/a', stale, older, newer, 'https://news.example/b'], dates, { windowDays: 45, now })
+  assert.deepEqual(out, [newer, older, 'https://news.example/a', 'https://news.example/b'])
+  // no window: nothing dropped for age
+  assert.ok(orderByBoardDate([stale], dates, { windowDays: null, now }).includes(stale))
+})
+
+test('#1122 discovery volume, Ashby shape (run a94417536: Complete 2023-08-22): a board-dated stale Ashby posting never takes a read slot', async () => {
+  const { orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
+  const stale = 'https://jobs.ashbyhq.com/complete/f810333f-06ad-4729-85ea-5fba62257846', fresh = 'https://jobs.ashbyhq.com/complete/0b0c1f6e-1111-4a2b-9c3d-222233334444'
+  const http = (async (u: string) => (u === 'https://api.ashbyhq.com/posting-api/job-board/complete' ? { status: 200, finalUrl: u, body: JSON.stringify({ jobs: [
+    { title: 'Account Executive', isListed: true, publishedAt: '2023-08-22T10:00:00Z', jobUrl: stale },
+    { title: 'Sales Development Representative', isListed: true, publishedAt: '2026-11-15T10:00:00Z', jobUrl: fresh },
+  ] }) } : null)) as never
+  const dates = new Map<string, string>()
+  await freshBoardPostings([stale], { terms: ['sales'], windowDays: 45, now, http, dates })
+  // the listed URL in its /application shape is the same posting
+  assert.deepEqual(orderByBoardDate([stale + '/application', 'https://news.example/a', fresh], dates, { windowDays: 45, now }), [fresh, 'https://news.example/a'])
+})
+
+test('Qodo #1548: within in-window board postings, requested-role titles first (newest first), then other roles, then undated', async () => {
+  const { orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
+  const { requestedGateRoles } = await import('../lib/scan/sales-hiring-gate.ts')
+  const { matchedHiringRole } = await import('../lib/scan/hiring-role-match.ts')
+  const roles = requestedGateRoles('Find B2B companies hiring their first SDR/BDR or sales rep', null)
+  assert.ok(roles.length > 0)
+  const dates = new Map<string, string>(), titles = new Map<string, string>()
+  await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sales'], windowDays: 45, now, dates, titles, http: gh([
+    { id: 1, title: 'Customer Success Manager', first_published: '2026-11-20T00:00:00Z' },
+    { id: 2, title: 'Sales Development Representative', first_published: '2026-10-20T00:00:00Z' },
+    { id: 3, title: 'BDR', first_published: '2026-11-01T00:00:00Z' },
+    { id: 4, title: 'Marketing Manager', first_published: '2026-11-10T00:00:00Z' },
+  ]) })
+  const u = (id: number) => `https://job-boards.greenhouse.io/acme/jobs/${id}`
+  const out = orderByBoardDate(['https://news.example/a', u(1), u(2), u(3), u(4)], dates, { windowDays: 45, now, titles, roleMatch: t => !!matchedHiringRole(t, roles) })
+  assert.deepEqual(out, [u(3), u(2), u(1), u(4), 'https://news.example/a'])
+})

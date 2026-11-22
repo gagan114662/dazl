@@ -328,6 +328,15 @@ export function quoteShowsCompletedHire(quote: string | null | undefined, compan
     return !subjectIsOther(k.slice(0, m.index), company) || (/^join/i.test(m[0]) && !!next && own.includes(next))
   })
 }
+// The roles the gate reads postings for: the request's own titles plus each "new <role>" branch of the plan (salesGateOr), deduplicated.
+// Discovery orders its read slots by the same list and matcher (matchedHiringRole), so a slot never goes to a role the gate would not count.
+export function requestedGateRoles(query: string | null | undefined, icp: string | null | undefined): RequestedHiringRole[] {
+  const roles = requestedHiringRoles(query, icp).filter(roleNeedsSourceProof)
+  for (const c of salesGateOr(query, icp)?.newRoles ?? []) for (const r of requestedHiringRoles(`hiring ${c.role ?? ''}`, null).filter(roleNeedsSourceProof)) {
+    if (!roles.some(x => x.normalized === r.normalized)) roles.push(r)
+  }
+  return roles
+}
 export async function applySalesHiringGate(db: Database.Database, job: JobLike, fetchImpl: typeof fetch = fetch, opts: { now?: number; quotes?: Map<string, QuoteEvidence[]>; postingTitles?: Map<string, string>; careersGet?: Get } = {}): Promise<{ required: boolean; checked: number; passed: number; demoted: number; demotions: { company: string; url: string; reason: string }[] }> {
   const none = { required: false, checked: 0, passed: 0, demoted: 0, demotions: [] as { company: string; url: string; reason: string }[] }
   if (!salesHiringRequired(job.query, job.icp)) return none
