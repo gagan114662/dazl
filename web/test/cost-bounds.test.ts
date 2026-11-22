@@ -16,6 +16,7 @@ import { icpPrompt, MAX_QUERY } from '../lib/scan/icp.ts'
 import { MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { BUDGET_EXCLUDED_PATHS, DEFAULT_TINYFISH, PEOPLE_SEARCHES_MAX, describeRunBudget, profileGenerationWorstCaseUsd } from '../lib/scan/run-budget.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { isPlanPrompt, planReply, PLACE } from './helpers/request-plan-stub.ts'
 
 // The remaining paths around the PARTIAL per-run budget (STATUS "Next"; #216/#217 follow-up). Stubs only, no network, no price.
 // max_usd stays a reservation limit on guarded model requests; this file pins what ELSE bounds (or does not bound) each path.
@@ -57,8 +58,10 @@ async function runScan(budget: string | null) {
   const job = claimKeyedJob(db, id)!
   // The extraction call (the one paid model call of the primary path) answers with the candidate; every other model
   // call (query planning, verification, fit) answers 'supports' as before. research() must never be reached: #379.
+  // #1395 SYNTHETIC request plan for 'Find Ohio companies hiring a payroll specialist': its one place as written ("Ohio").
+  const OHIO_PLAN = planReply([PLACE.ohio], { signals: [{ kind: 'hiring', text: 'hiring a payroll specialist', negated: false }] })
   let researchCalls = 0
-  const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => { researchCalls++; return { text: '', citedUrls: [] } }, complete: async (_k, _p, _f, max) => max === 3000 ? JSON.stringify([lead]) : 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
+  const providers: Record<'anthropic' | 'openai', Provider> = { anthropic: { research: async () => { researchCalls++; return { text: '', citedUrls: [] } }, complete: async (_k, p, _f, max) => isPlanPrompt(p) ? OHIO_PLAN : max === 3000 ? JSON.stringify([lead]) : 'supports' }, openai: { research: async () => ({ text: '', citedUrls: [] }) } }
   saveCredential(db, 'A', 'enrich:apollo', 'apollo-test-key', master)
   let autopilot = 0; let apollo = 0
   const fetchImpl = (async (url: string | URL | Request) => {

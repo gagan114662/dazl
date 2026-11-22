@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { planObject, type StubPlace } from './helpers/request-plan-stub.ts'
 
 const REQUEST = 'Find independent dental practices in New York City that posted a front desk receptionist job in the past 90 days.'
 const ICP = { summary: 'NYC dental practices hiring', who: ['Practice manager'], industries: ['dental'], sizes: [], where: ['New York City'], signals: ['posted a front desk receptionist job'], exclude: [], country: 'US', language: 'en' }
@@ -21,11 +22,14 @@ function board() {
   }
   return { http, seen }
 }
-function fx(sourceHttp: SafeGet, request = REQUEST, icp: object = ICP): Fixture {
+// #1395: the model's request plan for each request (SYNTHETIC replies): the place exactly as the request writes it, [] when it writes none
+const NYC: StubPlace = { text: 'New York City', city: 'New York City', region: null, country: 'US' }
+const planOf = (places: StubPlace[], signal: string) => planObject(places, { buyer_type: 'independent dental practices', signals: [{ kind: signal.includes('job') ? 'hiring' : 'other', text: signal, negated: false }] })
+function fx(sourceHttp: SafeGet, request = REQUEST, icp: object = ICP, modelPlan: object = planOf([NYC], 'posted a front desk receptionist job')): Fixture {
   // The stubbed model would happily turn EVERY posting into a candidate - location must be settled before extraction, not by it.
   const extraction: Cand[] = LOCS.map((_, i) => ({ company: QUOTE(i).split(' Smiles')[0] + ' Smiles Dental', signal: 'front desk receptionist job', source_url: gh(i), excerpt: QUOTE(i), event_date: daysAgo(9) }))
   return { request, modelIcp: icp, modelQueries: ['dental front desk receptionist job New York'], hits: [{ url: gh(4), title: 'Front Desk Receptionist', snippet: QUOTE(4), date: daysAgo(9) }], tfPages: {},
-    own: Object.fromEntries(LOCS.map((_, i) => [gh(i), { title: 'Front Desk Receptionist', text: `Posted ${daysAgo(9)}. ${QUOTE(i)}. ${' The practice welcomes patients every week.'.repeat(8)}` }])), extraction, deps: { sourceHttp } }
+    own: Object.fromEntries(LOCS.map((_, i) => [gh(i), { title: 'Front Desk Receptionist', text: `Posted ${daysAgo(9)}. ${QUOTE(i)}. ${' The practice welcomes patients every week.'.repeat(8)}` }])), extraction, deps: { sourceHttp }, modelPlan }
 }
 test('runJob: for an exact New York City request, Albany / Buffalo / New York State / remote postings are never detail-fetched and never reach extraction; the Brooklyn and Manhattan postings do', async () => {
   const { http, seen } = board()
@@ -45,10 +49,10 @@ test('runJob: even when a (stubbed) model returns the wrong-city postings as can
   for (const i of [0, 1, 2, 3]) assert.ok(!qualified.includes(gh(i)), `wrong-city posting ${i + 1} is not qualified`)
 })
 test('source status is never silent: no hiring signal, no place, or explicit sources each say why the job boards were skipped', async () => {
-  const none = fx(board().http, 'Find independent dental practices in New York City that opened a new location in the past 90 days.', { ...ICP, signals: ['opened a new location'] })
+  const none = fx(board().http, 'Find independent dental practices in New York City that opened a new location in the past 90 days.', { ...ICP, signals: ['opened a new location'] }, planOf([NYC], 'opened a new location'))
   const a = await runFixture(none)
   assert.equal((a.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }).status, 'skipped_no_hiring_signal')
-  const noPlace = fx(board().http, 'Find independent dental practices that posted a front desk receptionist job in the past 90 days.', { ...ICP, where: [] })
+  const noPlace = fx(board().http, 'Find independent dental practices that posted a front desk receptionist job in the past 90 days.', { ...ICP, where: [] }, planOf([], 'posted a front desk receptionist job'))
   const b = await runFixture(noPlace)
   assert.equal((b.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }).status, 'skipped_no_place')
   assert.equal(board().seen.length, 0)

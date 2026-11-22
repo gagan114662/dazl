@@ -12,6 +12,7 @@ import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { SpendGuard } from '../lib/llm/spend-guard.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { describeRunBudget, normalizeScanBudget, MAX_BUDGET_USD } from '../lib/scan/run-budget.ts'
+import { isPlanPrompt, OHIO_PAYROLL_PLAN } from './helpers/request-plan-stub.ts'
 
 // Per-run cost control on the ordinary scan route (STATUS "Next" 1; #204 cost-control comment). Stubs only: no network, no
 // key, no price. The disclosure rows are pinned to what the runner really does. A max_usd is a reservation limit computed
@@ -69,9 +70,10 @@ async function run(budget: string | null, opts: { reserved?: number; model?: str
     if (u === 'https://api.anthropic.com/v1/messages/count_tokens') return new Response(JSON.stringify({ input_tokens: 1000 }), { status: 200 })
     return new Response('{}', { status: 404 })
   }) as unknown as typeof fetch
+  // #1395: the request plan reply is SYNTHETIC (REQUEST writes one place, "Ohio"); it is a paid call and is counted like every other
   const anth: Provider = {
     research: async () => { c.research++; return { text: opts.leads ? JSON.stringify([LEAD]) : '[]', citedUrls: opts.leads ? [LEAD.source_url] : [] } },
-    complete: async (_k, p, _f, maxTokens) => { c.complete++; if (c.complete === 1) opts.onFirstComplete?.(db, id); if (p.startsWith('You check one claim')) { c.judge++; return 'supports' } return maxTokens === 300 ? '["payroll specialist Ohio"]' : JSON.stringify([LEAD]) },
+    complete: async (_k, p, _f, maxTokens) => { c.complete++; if (c.complete === 1) opts.onFirstComplete?.(db, id); if (p.startsWith('You check one claim')) { c.judge++; return 'supports' } if (isPlanPrompt(p)) return OHIO_PAYROLL_PLAN; return maxTokens === 300 ? '["payroll specialist Ohio"]' : JSON.stringify([LEAD]) },
     // A real provider reports usage; a guarded run settles to it. Without usage the guard stops after one call (#850).
     completeDetailed: async (k, p, f, maxTokens) => ({ text: await anth.complete!(k, p, f, maxTokens), model: opts.model ?? null, usage: { input_tokens: 1000, output_tokens: 100 } }),
     ...(opts.model ? { configuredModel: () => opts.model! } : {}),

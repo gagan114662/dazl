@@ -10,6 +10,7 @@ import { leadPerson } from '../lib/people/lead-person.ts'
 import { findPeople, MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { HELD_ICP as ICP, HELD_WHO as WHO, HELD_RESULTS as RESULTS, env, setup, stub, type Row } from './helpers/people-held-fixture.ts'
 import { runFixture, type Fixture } from './helpers/acceptance-harness.ts'
+import { planObject } from './helpers/request-plan-stub.ts'
 
 // The counts object the pass fills (people-search.ts PeopleStats), written out so this file needs nothing the fix added.
 const newPeopleStats = () => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {} as Record<string, number>, failed: {} as Record<string, number> })
@@ -103,6 +104,8 @@ test('#1037 held leads: another tenant\'s job id searches nothing (job ownership
 
 // ---- through the real runJob: a scan whose only candidate is held still looks up its person, and the report counts it ----
 const REQUEST = 'Find B2B software companies hiring account executives within the past 90 days.'
+// #1395 SYNTHETIC request plan: REQUEST writes no place, so the profile place is used.
+const PLAN = planObject([], { buyer_type: 'B2B software companies', signals: [{ kind: 'hiring', text: 'hiring account executives', negated: false }] })
 const RICP = { ...ICP, signals: ['Hiring account executives'], country: 'US', language: 'en', window_days: 90 }
 const SRC = 'https://news.example.test/pagewake-hiring'
 const QUOTE = 'Pagewake is hiring account executives across its enterprise sales team'
@@ -117,7 +120,7 @@ function fx(queries: string[], over: Partial<Fixture> = {}): Fixture {
     }
     return globalThis.fetch(u, init)
   }) as typeof fetch
-  return { request: REQUEST, modelIcp: RICP, modelQueries: ['B2B software hiring account executives'], hits: [{ url: SRC, title: page.title, snippet: QUOTE, date: null }], tfPages: { [SRC]: page }, own: { [SRC]: page },
+  return { request: REQUEST, modelPlan: PLAN, modelIcp: RICP, modelQueries: ['B2B software hiring account executives'], hits: [{ url: SRC, title: page.title, snippet: QUOTE, date: null }], tfPages: { [SRC]: page }, own: { [SRC]: page },
     extraction: [{ company: 'Pagewake', signal: 'hiring account executives', source_url: SRC, excerpt: QUOTE, event_date: null }], deps: { fetchImpl }, ...over }
 }
 const stage = (r: Awaited<ReturnType<typeof runFixture>>) => {

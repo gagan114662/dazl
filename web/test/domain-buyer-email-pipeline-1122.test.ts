@@ -8,6 +8,7 @@ import { leadPerson } from '../lib/people/lead-person.ts'
 import { findWorkEmail } from '../lib/people/work-email.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { workEmailCopy } from '../lib/people/work-email-eligible.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 const ATS = 'https://ats.rippling.com/war-room-careers/jobs/3d46c27a-6efa-4505-b2b4-790d52ce4ee7'
 const BOARD = 'https://growthroles.com/jobs/war-room-business-development-representative-torontoremote-toronto-7d65eab6263dde76'
@@ -62,6 +63,8 @@ async function pipeline(mode: 'board' | 'own' | 'people_error' | 'empty' | 'no_d
     modelIcp: { summary: 'agencies', who: ['Founder'], industries: [], sizes: [], where: [place], signals: ['hiring SDR'], exclude: [], country: mode === 'board' ? 'CA' : 'US', language: 'en' },
     modelQueries: ['agencies SDR'], hits: [{ url: source, title: page.title, snippet: quote, date: daysAgo(1) }], tfPages: { [source]: page }, own: { [source]: page },
     extraction: [{ company: 'War Room', signal: quote, source_url: source, excerpt: quote, event_date: daysAgo(1) }],
+    // #1395 SYNTHETIC request plan: the request's one place exactly as it writes it
+    modelPlan: planObject([mode === 'board' ? PLACE.torontoOntario : PLACE.austinTexas], { buyer_type: 'agencies', signals: [{ kind: 'hiring', text: 'hiring an SDR', negated: false }] }),
     beforeRun: db => { migrateAllSqlite(db) },
     onVerify: (db, job) => { handle = { db, job } },
     deps: { fetchImpl, crawlGet, creditEnrichment: false, paidFallback: false },

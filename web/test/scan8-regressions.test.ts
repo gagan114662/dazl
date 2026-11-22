@@ -5,9 +5,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import { isPlanPrompt, planReply, PLACE } from './helpers/request-plan-stub.ts'
 
 const REQUEST = 'Find London UK B2B SaaS startups with 10-50 employees that announced seed funding within the past 90 days and are hiring sales staff. Exclude agencies and recruiters. Include founder contacts and dated evidence.'
 const ICP = { summary: 'London seed-funded B2B SaaS hiring sales', who: ['Founder'], industries: ['SaaS'], sizes: ['10-50'], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
+// #1395 SYNTHETIC request plan for REQUEST: its one place as written ("London UK"), its signals and exclusions.
+const PLAN = planReply([PLACE.londonUK], { buyer_type: 'B2B SaaS startups', exclusions: ['agencies', 'recruiters'], signals: [{ kind: 'funding', text: 'announced seed funding', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] })
 const ART = 'https://funding-news.example/querix-raises-seed'
 const pad = (s: string) => `${s} ${'More about the company and its people. '.repeat(15)}`
 const resp = (body: string, url: string) => ({ status: 200, body, finalUrl: url }), nf = (url: string) => ({ status: 404, body: '', finalUrl: url })
@@ -19,7 +22,7 @@ interface Opts { company: string; quote: string; articleBody?: string; siteHost:
 function fx(o: Opts): Fixture {
   const page = { title: `${o.company} funding`, text: pad(`On ${daysAgo(12)}, ${o.articleBody ?? o.quote}.`) }
   const cand = { company: o.company, signal: 'raised a seed round', source_url: ART, excerpt: o.quote, event_date: daysAgo(12) }
-  const reply = (p: string, mt?: number) => p.includes('LEAD <n> | fit') ? `LEAD 1 | fit ${o.fit ?? 5} | intent 4 | action 4 | match yyyy | signals seed_round | why London seed-funded SaaS.` : mt === 300 ? JSON.stringify(['London SaaS startup seed round']) : JSON.stringify([cand])
+  const reply = (p: string, mt?: number) => isPlanPrompt(p) ? PLAN : p.includes('LEAD <n> | fit') ? `LEAD 1 | fit ${o.fit ?? 5} | intent 4 | action 4 | match yyyy | signals seed_round | why London seed-funded SaaS.` : mt === 300 ? JSON.stringify(['London SaaS startup seed round']) : JSON.stringify([cand])
   const prov = { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, mt?: number) => reply(p, mt), completeDetailed: async (_k: string, p: string, _f?: typeof fetch, mt?: number) => ({ text: reply(p, mt), model: 'stub', usage: { input_tokens: 1, output_tokens: 1 } }), configuredModel: () => 'stub' }
   const home = pad(`<html><body><h1>${o.company}</h1> <p>${o.homeText}</p> <a href="/team">Team</a> <a href="/careers">Careers</a> <a href="/contact">Contact</a>`)
   const crawl = async (url: string) => {

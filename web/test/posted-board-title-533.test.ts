@@ -26,6 +26,7 @@ import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { signalNamesBoardPosting } from '../lib/sources/ats-posting.ts'
 import { verifyLeads, type LeadDraft } from '../lib/scan/runner.ts'
 import { eventDayVerified, isHiringTrigger } from '../lib/scan/scoreboard.ts'
+import { planObject } from './helpers/request-plan-stub.ts'
 
 const REQUEST = 'B2B SaaS companies hiring a sales operations manager in the last 30 days (job posts on Greenhouse, Lever or Ashby)'
 const ICP = { summary: 'B2B SaaS companies hiring a sales operations manager', who: ['VP Sales'], industries: ['B2B SaaS'], sizes: [], where: [], signals: ['hiring a sales operations manager'], exclude: [], country: 'US', language: 'en' }
@@ -57,8 +58,10 @@ function fakeHttps(boards: Record<string, unknown>) {
   return () => { (https as { request: unknown }).request = real }
 }
 const read = (u: string) => fetchPageDetailed(u, async () => null)
+// #1395 SYNTHETIC request plan: REQUEST (and its revenue-operations variant) writes no place, so the profile place is used.
+const PLAN = planObject([], { buyer_type: 'B2B SaaS companies', signals: [{ kind: 'hiring', text: 'hiring a sales operations manager', negated: false }] })
 const fixture = (cands: { company: string; signal: string; url: string; quote: string }[]): Fixture => ({
-  request: REQUEST, modelIcp: ICP, reviewedIcp: ICP, icpReviewed: true, modelQueries: ['sales operations manager jobs.ashbyhq.com'],
+  request: REQUEST, modelPlan: PLAN, modelIcp: ICP, reviewedIcp: ICP, icpReviewed: true, modelQueries: ['sales operations manager jobs.ashbyhq.com'],
   hits: cands.map(c => ({ url: c.url, title: `${c.company} job`, snippet: c.quote, date: null })),
   tfPages: {}, own: {},
   extraction: cands.map(c => ({ company: c.company, signal: c.signal, source_url: c.url, excerpt: c.quote, event_date: null })),

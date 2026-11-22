@@ -7,10 +7,13 @@ import { fallbackTargets, mergeFallback, MAX_FALLBACK } from '../lib/scan/blocke
 import { sourceRuns } from '../lib/scan/source-runs.ts'
 import { runReportFor } from '../lib/scan/run-report.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { planObject } from './helpers/request-plan-stub.ts'
 
 const ms = (n: number) => Date.now() - n * 86_400_000
 const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days and are hiring sales staff.'
 const ICP = { summary: 'London seed B2B SaaS', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [], country: 'GB', language: 'en', window_days: 90 }
+// #1395: the model's request plan for REQUEST (SYNTHETIC reply): the place as the request writes it, "London UK"
+const PLAN = planObject([{ text: 'London UK', city: 'London', region: null, country: 'GB' }], { buyer_type: 'B2B SaaS startups', signals: [{ kind: 'funding', text: 'announced seed funding within the past 90 days', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] })
 const filler = ' More about the company, its product and its people.'.repeat(10)
 const BLOG = 'https://clera.example/blog/seed-round', PRESS = 'https://sifted.example/clera-raises-seed', JOB = 'https://boards.greenhouse.io/clera/jobs/1'
 const FUND = 'Clera, a London B2B SaaS startup, raised a 3m GBP seed round this month'
@@ -33,7 +36,7 @@ function scenario(o: Opt) {
   const pressText = o.otherCompany ? 'Orbitly, a London B2B SaaS startup, raised a 2m GBP seed round this month' : o.place ? FUND.replace('London', o.place) : FUND
   const f: Fixture = { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: [{ url: BLOG, title: 'Clera raises seed', snippet: FUND, date: daysAgo(10) }], tfPages: {},
     own: { [BLOG]: 'blocked', [PRESS]: { title: 'Clera raises seed round', text: `On ${daysAgo(fundDays)}, ${pressText}.${filler}` }, [JOB]: { title: 'Sales Account Executive at Clera', text: `On ${daysAgo(9)}, ${HIRE}.${filler}` } },
-    extraction: [seedCand, o.otherCompany ? { ...pressCand, company: 'Orbitly', excerpt: pressText } : { ...pressCand, excerpt: pressText, event_date: daysAgo(fundDays) }, jobCand], deps: { sourceHttp, newsHttp, ...(o.paid === false ? { paidFallback: false } : {}) } }
+    extraction: [seedCand, o.otherCompany ? { ...pressCand, company: 'Orbitly', excerpt: pressText } : { ...pressCand, excerpt: pressText, event_date: daysAgo(fundDays) }, jobCand], deps: { sourceHttp, newsHttp, ...(o.paid === false ? { paidFallback: false } : {}) }, modelPlan: PLAN }
   return { f, newsCalls }
 }
 async function run(o: Opt) {

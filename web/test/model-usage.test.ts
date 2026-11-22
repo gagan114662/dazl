@@ -12,6 +12,8 @@ import { meterProvider, modelUsage, writeModelCalls, stageOfPrompt, type ModelCa
 import { icpPrompt } from '../lib/scan/icp.ts'
 import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { guardProvider, SpendGuard, SpendRefused } from '../lib/llm/spend-guard.ts'
+import { PLAN_MAX_TOKENS } from '../lib/scan/request-plan.ts'
+import { isPlanPrompt, planReply, PLACE } from './helpers/request-plan-stub.ts'
 
 // Model usage tracking for the ordinary route (live acceptance run, Oct 26). Stubs only: no network, no key, no price.
 const stub = (over: Partial<Provider> = {}): Provider => ({
@@ -82,12 +84,19 @@ test('runner: a scan that ends in no_candidates still leaves its model requests;
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
   saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
   const id = createQueryJob(db, 'A', { query: 'Find London seed-funded companies hiring sales', icp: JSON.stringify({ summary: 's', who: ['Founder'], industries: [], sizes: [], where: ['London'], signals: [], exclude: [] }) } as never)
-  const providers = { anthropic: stub({ research: async () => ({ text: '[]', citedUrls: [] }) }), openai: stub() } as Record<'anthropic' | 'openai', Provider>
+  // #1395: a hiring request is read once into a request plan. SYNTHETIC plan reply: the place as the request writes it, "London" (built-in, GB)
+  const plan = planReply([{ text: 'London', city: 'London', region: null, country: 'GB' }], { signals: [{ kind: 'funding', text: 'seed-funded', negated: false }, { kind: 'hiring', text: 'hiring sales', negated: false }] })
+  const base = stub()
+  const providers = { anthropic: stub({ research: async () => ({ text: '[]', citedUrls: [] }), completeDetailed: async (k: string, p: string, f?: typeof fetch, m?: number) => isPlanPrompt(p) ? { text: plan, model: 'claude-test-served', usage: { input_tokens: 100, output_tokens: 7 } } : base.completeDetailed!(k, p, f, m) }), openai: stub() } as Record<'anthropic' | 'openai', Provider>
   const out = await runJob(db, claimKeyedJob(db, id)!, { providers, master, fetchPage: async () => null as never, judge: null, score: false, ground: false })
   assert.equal(out, 'failed')
   const u = modelUsage(db, 'A', id)
-  // exactly the one web-research request the stub received, with no usage reported: counted, tokens null (not 0)
-  assert.deepEqual([u.recorded, u.requests_recorded, u.by_stage, u.input_tokens, u.output_tokens, u.tokens_complete, u.requested_models, u.served_models], [true, 1, { research: 1 }, null, null, false, ['claude-test-requested'], []])
+  // the one web-research request the stub received, with no usage reported: counted, tokens null (not 0) - and, since #1395, the one request-plan
+  // call (the stub reports 100 in / 7 out for it), recorded under stage "other". The totals are the plan call's only: the research request adds nothing.
+  assert.deepEqual([u.recorded, u.requests_recorded, u.by_stage, u.input_tokens, u.output_tokens, u.tokens_complete, u.requested_models, u.served_models], [true, 2, { other: 1, research: 1 }, 100, 7, false, ['claude-test-requested'], ['claude-test-served']])
+  assert.deepEqual([u.requests_with_reported_tokens, u.requests_without_reported_tokens], [1, 1], 'the research request still counts as one without reported tokens')
+  assert.deepEqual(db.prepare("SELECT stage, method, max_tokens, input_tokens FROM scan_model_calls WHERE job_id = ? ORDER BY rowid").all(id).map(r => ({ ...(r as object) })).sort((x, y) => String((x as { stage: string }).stage).localeCompare(String((y as { stage: string }).stage))),
+    [{ stage: 'other', method: 'completeDetailed', max_tokens: PLAN_MAX_TOKENS, input_tokens: 100 }, { stage: 'research', method: 'research', max_tokens: null, input_tokens: null }], 'the extra request is exactly the plan call')
   assert.equal(modelUsage(db, 'B', id).recorded, false)
 })
 
@@ -115,10 +124,12 @@ test('successful scan: buyer-fit (after finish) is recorded with tenant and atte
   const icp = { summary: 'Independent dental practices in Toronto', who: ['Practice manager'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['hiring'], exclude: [] }
   const id = createQueryJob(db, 'A', { query: 'Toronto dental practices hiring front desk staff', icp: JSON.stringify(icp) } as never)
   const lead = { name: '', company: 'Acme Dental', contact: null, signal: 'Hiring a front desk coordinator', source_url: 'https://jobs.example/a', score: 80, excerpt: QUOTE, event_date: recent }
+  const torontoPlan = planReply([PLACE.toronto], { buyer_type: 'dental practices', signals: [{ kind: 'hiring', text: 'hiring front desk staff', negated: false }] })
   let buyerFitCalls = 0
   const completeDetailed = async (_k: string, p: string) => {
     let text = '[]'
-    if (p.includes('Reply with one line per lead')) text = 'LEAD 1 | fit 5 | intent 3 | action 3 | match yyy? | signals hiring | why Hiring front desk staff at a Toronto dental practice.'
+    if (isPlanPrompt(p)) text = torontoPlan   // #1395 SYNTHETIC: the request writes one place, "Toronto"
+    else if (p.includes('Reply with one line per lead')) text = 'LEAD 1 | fit 5 | intent 3 | action 3 | match yyy? | signals hiring | why Hiring front desk staff at a Toronto dental practice.'
     else if (p.startsWith('You check whether companies fit')) { buyerFitCalls++; text = 'COMPANY 1 | fit yes | quote "independent dental practice in Toronto"' }
     return { text, model: 'served-model-x', usage: { input_tokens: 200, output_tokens: 20 } }
   }
