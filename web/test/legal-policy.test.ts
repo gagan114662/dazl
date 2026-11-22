@@ -128,7 +128,7 @@ test('account email is held on the host while no system provider is configured, 
   const untouchable = new Proxy({}, { get() { throw new Error('reaper ran while the flag is unset') } }) as never
   assert.deepEqual(await reapAccountHistory(untouchable, {}, {}), { sessions: 0, outbox: 0 })
   // ...and the policy says deletion applies only once the setting is on, not that it runs today
-  assert.match(privacy, /Account emails such as password resets are sent through Amazon SES\./)
+  assert.match(privacy, /Account emails such as password resets are sent through Resend\./)
   assert.ok(privacy.includes(`deleted after ${FACTS.systemMailOutboxRetainHours} hours`))
 })
 

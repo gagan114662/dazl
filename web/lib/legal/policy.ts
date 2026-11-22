@@ -30,7 +30,7 @@ export const OWNER_PLACEHOLDERS = {
   companyRegistration: 'a Free Zone Establishment with limited liability in the Ajman Free Zone, United Arab Emirates (licence and registration no. 47839, first issued 23 July 2025; authorized capital AED 100,000), with its premises at Office C1-1F-SF11592, Ajman Free Zone C1 Building, Ajman, United Arab Emirates',
   lastUpdated: '22 November 2026',
   privacyContact: 'privacy@dazl.ai',
-  systemMailProvider: 'Amazon SES',
+  systemMailProvider: 'Resend',   // production's SYSTEM_MAIL_SMTP_URL host is smtp.resend.com (checked 2026-11-22)
 } as const
 
 // Facts held to the code by test/legal-policy.test.ts. The comment on each names its source.
