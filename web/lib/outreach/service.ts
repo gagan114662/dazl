@@ -17,7 +17,7 @@ import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
-import { emailOnCompanySite } from '../discover/card.ts'
+import { emailOnCompanySite, signalStale } from '../discover/card.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -319,11 +319,21 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // address is the one a public page prints (the run's own record, with that page), timing is the lead's own dated signal (an undated
 // lead is not drafted to), and the address must belong to the company's own website (lib/discover/card.ts emailOnCompanySite), else
 // the person confirms the website first. Nothing is sent by a draft; the person reviews it in Outreach.
+// The recipient rules for a discovery lead's published address, for the lead card: the SAME two refusals discoverDraftChecks makes
+// (a personal mailbox, the do-not-contact list), so Approve is never on for an address the server would refuse. null: not refused,
+// or the lead has no published address.
+export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | null {
+  let row: { value: string } | undefined
+  try { row = db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string } | undefined } catch { return null }
+  const to = norm(row?.value ?? '')
+  if (!EMAIL_RE.test(to)) return null
+  return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
+}
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
   const state = db.prepare('SELECT review_reason, event_date, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; event_date: string | null; company_domain: string | null } | undefined
   if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  if (!state?.event_date) throw new OutreachError('lead_currentness_unconfirmed')
+  if (!state?.event_date || signalStale(state.event_date)) throw new OutreachError('lead_currentness_unconfirmed')
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   const row = db.prepare("SELECT value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string; source_url: string } | undefined
   const to = norm(row?.value ?? '')

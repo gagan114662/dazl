@@ -64,17 +64,28 @@ export function emailOnCompanySite(email: string, sourceUrl: string | null | und
   if (!email.includes('@')) return false
   try { const u = new URL(sourceUrl ?? ''); return (u.protocol === 'https:' || u.protocol === 'http:') && under(bare(u.hostname)) } catch { return false }
 }
+// A signal older than this is history, not a reason to write now: the lead keeps its card and its proof, and Approve stays off.
+export const SIGNAL_MAX_AGE_DAYS = 365
+export const signalStale = (eventDate: string | null | undefined, now: Date = new Date()): boolean => {
+  const t = Date.parse(`${(eventDate ?? '').slice(0, 10)}T00:00:00Z`)
+  return Number.isFinite(t) && now.getTime() - t > SIGNAL_MAX_AGE_DAYS * 86_400_000
+}
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
 // Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
 // (lib/scan/lead-card.ts), which already has them.
-export function discoverApprove(l: { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; company_domain?: string | null; fit?: number | null; intent?: number | null; source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { ok: true } | { ok: false; reason: string } {
+export function discoverApprove(l: { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; company_domain?: string | null; fit?: number | null; intent?: number | null; source_kind?: string | null; name?: string | null; enrichments?: Row[]; recipient_refused?: string | null }, now: Date = new Date()): { ok: true } | { ok: false; reason: string } {
   if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
   if (l.gate_held) return { ok: false, reason: 'A required check has not passed. Research only.' }
   if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.' }
   if (!l.event_date) return { ok: false, reason: 'The signal has no date, so its timing is unknown. Open the proof to check it.' }
+  if (signalStale(l.event_date, now)) return { ok: false, reason: 'The signal is more than a year old. It stays here as background; it is not a reason to write now.' }
   if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
   const c = discoverContact(l)
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
   if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address was not found on the company\'s own website, only on another site.' }
+  // the server's own verdict on the address (lib/outreach/service.ts discoverRecipientRefusal), sent with the lead: a personal mailbox
+  // (a free webmail address, even one the company's site prints) or an address on the workspace's do-not-contact list
+  if (l.recipient_refused === 'personal_email') return { ok: false, reason: 'The published address is a personal mailbox (free webmail), not a company address.' }
+  if (l.recipient_refused) return { ok: false, reason: 'This address is on your do-not-contact list.' }
   return { ok: true }
 }
