@@ -10,13 +10,26 @@ export function loopStallLine(blockedMs: number, scans: string[]): string | null
   return JSON.stringify({ level: 'warn', type: 'event_loop_stall', blocked_ms: Math.round(blockedMs), scans })
 }
 
+// Qodo #1529: the stall is reported after the loop wakes, when the scan that caused it may already have ended. Every scan's start and end
+// are kept (the last few minutes only), so the line names each scan that was running at any point of the blocked window.
+const spans = new Map<string, { start: number; end: number | null }>()
+const KEEP_MS = 10 * 60_000
+export function scanStarted(id: string, at = performance.now()): void { spans.set(id, { start: at, end: null }) }
+export function scanEnded(id: string, at = performance.now()): void {
+  const s = spans.get(id); if (s) s.end = at
+  for (const [k, v] of spans) if (v.end !== null && at - v.end > KEEP_MS) spans.delete(k)
+}
+export function scansDuring(from: number, to: number): string[] {
+  return [...spans].filter(([, s]) => s.start <= to && (s.end === null || s.end >= from)).map(([id]) => id)
+}
+
 let installed = false
-export function installLoopStallWatch(running: () => string[], log: (l: string) => void = l => console.warn(l)): void {
+export function installLoopStallWatch(log: (l: string) => void = l => console.warn(l)): void {
   if (installed) return
   installed = true
   let last = performance.now()
   const t = setInterval(() => {
-    const now = performance.now(), line = loopStallLine(now - last - TICK_MS, running())
+    const now = performance.now(), line = loopStallLine(now - last - TICK_MS, scansDuring(last, now))
     last = now
     if (line) log(line)
   }, TICK_MS)
