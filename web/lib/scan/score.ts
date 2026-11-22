@@ -130,6 +130,8 @@ const clamp5 = (n: number) => Math.max(0, Math.min(5, Math.round(n)))
 
 // Tolerant parser: models rarely keep the exact pipe format. Split on LEAD <n> markers and read
 // each axis wherever it appears in that lead's chunk (colon, pipe or comma separated).
+const NOTE_UNKNOWN = /\b(?:unknown|not\s+(?:stated|shown|given|specified|known|clear|mentioned)|unclear|unstated|unspecified|no\s+(?:size|headcount|data|info\w*)|not\s+in\s+(?:the\s+)?evidence)\b/i
+const MISSES_ONE = (m: IcpMatch) => (['role', 'industry', 'size', 'location'] as const).filter(k => m[k] === 'mismatch').length === 1
 export function parseScores(text: string, count: number): LeadScore[] | null {
   const out: (LeadScore | null)[] = Array.from({ length: count }, () => null)
   const chunks = text.split(/(?=LEAD\s+\d+)/i)
@@ -153,6 +155,11 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
     const match: IcpMatch = mm
       ? { role: letter(mm[1][0]), industry: letter(mm[1][1]), size: letter(mm[1][2]), location: letter(mm[1][3]), note }
       : { ...UNKNOWN_MATCH }
+    // Run 679a7354: an "n" whose own note says the criterion is unknown / not stated is the model contradicting itself; it is unknown, never a
+    // mismatch. A note that states a different value ("5,000+ employees") keeps the mismatch.
+    if (note && NOTE_UNKNOWN.test(note)) for (const k of ['role', 'industry', 'size', 'location'] as const) {
+      if (match[k] === 'mismatch' && (MISSES_ONE(match) || new RegExp(`\\b${k === 'size' ? '(?:size|headcount|employees?|staff)' : k}\\b`, 'i').test(note))) match[k] = 'unknown'
+    }
     out[idx] = { fit, intent, action, signals, why: why.slice(0, WHY_MAX), match }
   }
   // All-or-nothing: a partially parsed batch would rank unscored leads unfairly.
