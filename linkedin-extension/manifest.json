@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "dazl LinkedIn Reader",
+  "short_name": "dazl Reader",
+  "version": "0.1.0",
+  "description": "Reads the LinkedIn pages your dazl workspace asks for (company People pages, profiles, post comments) in your own signed-in browser, at a slow, fixed pace.",
+  "permissions": ["alarms", "tabs", "storage"],
+  "host_permissions": ["https://www.linkedin.com/*", "https://dazl.ai/*", "https://www.dazl.ai/*", "https://staging.dazl.ai/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["https://www.linkedin.com/*"], "js": ["extract.js", "content.js"], "run_at": "document_idle" }],
+  "options_page": "options.html",
+  "action": { "default_title": "dazl LinkedIn Reader", "default_icon": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" } },
+  "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "minimum_chrome_version": "110"
+}
