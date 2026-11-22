@@ -136,7 +136,8 @@ test('#1136 HIST-BATCH: the history read is a bounded number of queries, whateve
     return n
   }
   const small = await count(1), big = await count(250)
-  assert.ok(big <= 63, `bounded: ${big} queries for 20 x 250 leads`)
+  // 64: one more fixed read since #1037 (the buyer-reach rows of every listed scan's review leads, ONE query whatever the lead count)
+  assert.ok(big <= 64, `bounded: ${big} queries for 20 x 250 leads`)
   assert.equal(big, small, `independent of the lead count: ${small} vs ${big}`)
 })
 

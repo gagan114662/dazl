@@ -61,7 +61,7 @@ test('#1036 #1250 real first-play runner -> ready named US lead -> one click on 
   assert.equal(s.r.r,'done'); assert.equal(s.lead.review_reason,null,'must genuinely pass ready gates')
   assert.equal(verifiedLeads(s.r.db,'A',s.jobId).length,1)
   assert.equal(s.site?.state,'fact'); assert.ok(s.target,'the real crawl stored the buyer')
-  assert.ok(leadPerson(s.rows,'Founder',Date.now(),s.site))
+  assert.equal(leadPerson(s.rows,'Founder',Date.now(),s.site),null,'#1037: a team-page person with no page-linked LinkedIn is not the lead\'s named buyer')
   const report = JSON.parse((s.r.db.prepare('SELECT report FROM scan_run_report').get() as {report:string}).report)
   assert.ok(report.enrichment.some((x:{stage:string;status:string})=>x.stage==='people_search' && ['ok','attempted_no_result'].includes(x.status)))
   // Pat Kim and Sue Ray print first.last addresses: the old flow learned that format and guessed Dana Lee's. Now nothing is built from it.

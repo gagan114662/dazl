@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { zeroBounceVerifier, VerifierError, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_URL, ZEROBOUNCE_STAGING_FAKE } from '../lib/people/zerobounce.ts'
 import { recordEmailGuesses, verifyCandidates, verifierFromEnv, verifyMonthlyCap, migrateEmailGuess, verifyJobCandidates } from '../lib/people/email-pattern.ts'
-import { runPostFinishBounded, emailVerifyBudgetMs } from '../lib/scan/runner.ts'
+import { runPostFinishBounded } from '../lib/scan/runner.ts'
 import { EnrichmentTrace } from '../lib/scan/enrichment-trace.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -176,24 +176,23 @@ test('#899 job check: no verifier, flag off, daily cap 0 or monthly cap 0 -> no 
   assert.equal(calls, 0)
 })
 
-test('#899 runner: the check is the LAST post-finish step, traced as email_verify; without a key it is skipped visibly', async () => {
+test('#899/#1037 runner: a scan never spends a mailbox check on a guessed address, flag on with or without a key; email_verify is still traced LAST and says why', async () => {
   const { db, job } = await crawl(ON)
+  assert.ok((db.prepare("SELECT COUNT(*) n FROM email_candidates WHERE tier = 'guessed'").get() as { n: number }).n > 0, 'not vacuous: the crawl recorded a guess a check could have been spent on')
   const keep = { ...process.env }
   Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0' })
   try {
-    delete process.env.ZEROBOUNCE_API_KEY
-    const t0 = new EnrichmentTrace()
-    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false } as never, t0)
-    const s0 = JSON.stringify(t0)
-    assert.match(s0, /email_verify/); assert.match(s0, /no ZEROBOUNCE_API_KEY/)
-    process.env.ZEROBOUNCE_API_KEY = 'k'
-    let calls = 0
-    const t1 = new EnrichmentTrace()
-    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t1)
-    assert.equal(calls, 1)
-    const s1 = JSON.stringify(t1)
-    assert.match(s1, /email_verify/); assert.match(s1, /"verified":1/)
-    for (const before of ['crawl', 'signals', 'paid_enrichment']) assert.ok(s1.indexOf(before) >= 0 && s1.indexOf(before) < s1.indexOf('email_verify'), `after ${before}`)
+    for (const key of [undefined, 'k']) {
+      if (key) process.env.ZEROBOUNCE_API_KEY = key; else delete process.env.ZEROBOUNCE_API_KEY
+      let calls = 0
+      const t = new EnrichmentTrace()
+      await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t)
+      assert.equal(calls, 0, `no mailbox check (key ${key ?? 'unset'})`)
+      const s1 = JSON.stringify(t)
+      assert.match(s1, /email_verify/); assert.match(s1, /guessed addresses are never checked or used/)
+      for (const before of ['crawl', 'signals', 'paid_enrichment']) assert.ok(s1.indexOf(before) >= 0 && s1.indexOf(before) < s1.indexOf('email_verify'), `after ${before}`)
+    }
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM email_candidates WHERE verification != 'none'").get() as { n: number }).n, 0, 'no candidate was checked or reserved')
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
 })
 
@@ -225,26 +224,6 @@ test('#899 an address another run already took is skipped, not reported as a cap
   assert.ok(run.checked >= 2, `the remaining addresses were still checked (${run.checked})`)
 })
 
-test('#899 runner: a stop shows a generic line in the tenant trace, never the provider\'s account message', async () => {
-  const { db, job } = await crawl(ON)
-  const keep = { ...process.env }
-  Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0', ZEROBOUNCE_API_KEY: 'k' })
-  const err = console.error; console.error = () => {}
-  try {
-    const t = new EnrichmentTrace()
-    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => new Response(JSON.stringify({ error: 'Invalid API key or your account ran out of credits' }))) as unknown as typeof fetch } as never, t)
-    const s = JSON.stringify(t)
-    assert.match(s, /the mailbox check is unavailable right now/)
-    assert.ok(!/ran out of credits|Invalid API key/.test(s), s)
-  } finally { console.error = err; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
-})
-
-test('#899 the check\'s own budget: default 20 s, clamped to 1-60 s', () => {
-  assert.equal(emailVerifyBudgetMs({}), 20_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '500' }), 1_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '900000' }), 60_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: 'x' }), 20_000)
-})
 
 test('#899 a later crawl that no longer shows a US address clears the unchecked guesses\' US basis: nothing of them is checked', async () => {
   const { db, on } = seeded('A', 'L1')
@@ -256,7 +235,7 @@ test('#899 a later crawl that no longer shows a US address clears the unchecked 
   assert.equal(calls, 0); assert.equal(run.checked, 0)
 })
 
-test('#899 runner: a job row that cannot be read counts as NOT alive: no address is sent (fail closed)', async () => {
+test('#899/#1037 runner: a job row that cannot be read sends no address either (fail closed)', async () => {
   const { db, job } = await crawl(ON)
   const keep = { ...process.env }
   Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0', ZEROBOUNCE_API_KEY: 'k' })
@@ -266,7 +245,6 @@ test('#899 runner: a job row that cannot be read counts as NOT alive: no address
     const t = new EnrichmentTrace()
     await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t)
     assert.equal(calls, 0)
-    assert.match(JSON.stringify(t), /its state could not be read/)
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
 })
 

@@ -1,13 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { heldState, researchCause } from '../lib/lead-state.ts'
-import { journey, previewSplit, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
+import { heldReason, journey, previewSplit, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
 import { widenActions } from '../lib/play-card.ts'
 import { readFileSync } from 'node:fs'
 import { reviewAction } from '../lib/scan/review-action.ts'
 import { REVIEWABLE, RESEARCH_REASONS, uncheckableCause } from '../lib/lead-state.ts'
 import { RESEARCH_HELD } from '../lib/research/scan-job.ts'
 import { peopleSearchable } from '../lib/people/searchable-holds.ts'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 // Synthetic leads shaped like the two reported failures: an undated customer-mention and a blocked, undated page.
 // No real company, run id or URL.
@@ -15,7 +16,7 @@ const lead = (o: Partial<PreviewLead> = {}): PreviewLead => ({
   id: 'l1', company: 'Example Dental', signal: 'Opened a second office', source_url: 'https://news.example/a', evidence_excerpt: 'Example Dental opened a second office',
   event_date: null, date_status: 'undated', review_reason: null, fit: 4, intent: 4, why: 'fits', icp_match: null,
   company_domain: 'exampledental.example', contact: null, quarantined_at: null, confidence: 90, human_confirmed_at: null,
-  currentness_held: false, window_held: false, enrichments: [], ...o,
+  currentness_held: false, window_held: false, enrichments: ownSiteBuyerRows('exampledental.example'), ...o,   // #1037: names its buyer on its own site
 })
 const nyc = [lead({ id: 'a', review_reason: 'counterparty_signal', window_held: true }), lead({ id: 'b', review_reason: 'outside_window_undated', window_held: true })]
 const london = [lead({ id: 'c', review_reason: 'counterparty_signal' }), lead({ id: 'd', review_reason: 'blocked_by_site', window_held: true })]
@@ -263,4 +264,43 @@ test('#1176 researchTip controls: each cause in the per-lead words, counted, mos
   assert.equal(researchTip(['need']), `1: Event day verified on the cited source; the rest of the lead is not confirmed yet.${tail}`)
   assert.equal(researchTip(['place', 'closed', 'unsupported']), `1: Evidence names a different place. 1: The opening is closed. 1: Evidence not verified.${tail}`)
   assert.equal(researchTip([]), tail.trim())
+})
+
+// Qodo (PR 1528): Home counts a lead as "review" only when a review can make it ready. Checking the source or confirming the website never
+// names a buyer, so a lead whose company site lists nobody with a title and a page-linked LinkedIn is research, not review (#1037).
+test('#1037 a reviewable hold with no buyer the company site could name is research, not review; a confirmable site that lists one stays review', () => {
+  const dated = { event_date: '2026-10-01', date_status: 'unverified' as const, day_verified: true }
+  for (const r of ['quote_unconfirmed', 'blocked_by_site', 'needs_javascript']) {
+    assert.equal(heldState(lead({ ...dated, review_reason: r, enrichments: [] }))?.state, 'research', `${r}: nobody on the company site`)
+    assert.equal(heldState(lead({ ...dated, review_reason: r }))?.state, 'review', `${r}: control, the buyer is named`)
+  }
+  // the website is not confirmed (only guessed by name): confirming it makes its listed buyer current, so review; with nobody listed, research
+  const probed = ownSiteBuyerRows('exampledental.example').map(e => e.kind === 'domain' ? { ...e, value: 'exampledental.example|name_probe', label: 'domain-basis-v1:name_probe' } : e)
+  // a crawled address on that guessed domain is what puts the website up for the user's confirmation (lib/outreach/domain-review.ts)
+  const rows = [...probed, { ...probed[0], kind: 'email', value: 'office@exampledental.example', label: 'x', source_url: 'https://exampledental.example/contact' }]
+  assert.equal(heldReason(lead({ ...dated, enrichments: rows })), 'company website not confirmed', 'not vacuous: the website review is the hold')
+  const unconfirmed = heldState(lead({ ...dated, enrichments: rows }))
+  assert.equal(unconfirmed?.state, 'review', JSON.stringify(unconfirmed))
+  assert.equal(heldState(lead({ ...dated, enrichments: rows.filter(e => e.kind !== 'person') }))?.state, 'research', 'unconfirmed site, nobody listed')
+})
+
+// Qodo (PR 1528, second review): "a review can name the buyer" is exactly what confirming the website would produce - the real buyer rule
+// on that site once confirmed - not merely "a crawled person has a page-linked LinkedIn". A stale bio, an incomplete name or a past title
+// stays unqualified after confirmation, so the lead is research; a current, complete bio is review.
+test('#1037 confirming the website names the buyer only if the real buyer rule then accepts the listed person', () => {
+  const dated = { event_date: '2026-10-01', date_status: 'unverified' as const, day_verified: true }
+  const unconfirmed = (o: Parameters<typeof ownSiteBuyerRows>[1] = {}) => {
+    const probed = ownSiteBuyerRows('exampledental.example', o).map(e => e.kind === 'domain' ? { ...e, value: 'exampledental.example|name_probe', label: 'domain-basis-v1:name_probe' } : e)
+    return [...probed, { ...probed[0], kind: 'email', value: 'office@exampledental.example', label: 'x', source_url: 'https://exampledental.example/contact' }]
+  }
+  const state = (rows: unknown[]) => heldState(lead({ ...dated, enrichments: rows as never }))?.state
+  assert.equal(heldReason(lead({ ...dated, enrichments: unconfirmed() as never })), 'company website not confirmed', 'not vacuous: the website review is the hold')
+  assert.equal(state(unconfirmed()), 'review', 'control: a current, complete bio becomes the buyer once the site is confirmed')
+  assert.equal(state(unconfirmed({ at: Math.floor(Date.now() / 1000) - 200 * 86_400 })), 'research', 'a bio read 200 days ago is not current after confirmation either')
+  assert.equal(state(unconfirmed({ name: 'Dana' })), 'research', 'a one-word name is not a named buyer after confirmation either')
+  assert.equal(state(unconfirmed({ title: 'Former Head of Sales' })), 'research', 'a past title is not the buyer after confirmation either')
+  // a confirmed site already: confirming changes nothing, so a person the rule rejects there gives no review either
+  const rq = (o: Parameters<typeof ownSiteBuyerRows>[1]) => heldState(lead({ ...dated, review_reason: 'quote_unconfirmed', enrichments: ownSiteBuyerRows('exampledental.example', o) as never }))?.state
+  assert.equal(rq({ at: Math.floor(Date.now() / 1000) - 200 * 86_400 }), 'research', 'confirmed site, stale bio: no review can name the buyer')
+  assert.equal(rq({}), 'review', 'control: confirmed site, current bio')
 })

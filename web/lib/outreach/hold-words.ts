@@ -4,6 +4,8 @@ const WORDS: Record<string, [string, string]> = {   // [one, many]
   'source not verified': ['source not verified', 'source not verified'], 'outside your time window or undated': ['outside your time window or undated', 'outside your time window or undated'],
   'event timing unknown': ['event timing not confirmed', 'event timing not confirmed'], 'no verified date': ['no verified date', 'no verified date'],
   'company website not confirmed': ['company website not confirmed', 'company website not confirmed'], 'not a fit': ['not a fit', 'not a fit'],
+  // #1037: no person listed on the company's own website with title and the LinkedIn that page links
+  "no buyer named on the company's own site": ["no buyer named on the company's own site", "no buyer named on the company's own site"],
   // #1062: a company-first scan's final checks keep it off its run page (lib/outreach/campaigns.ts gateHoldReason)
   'held by the final checks': ['held by the final checks', 'held by the final checks'], 'final checks not finished': ['final checks not finished yet', 'final checks not finished yet'],
 }
