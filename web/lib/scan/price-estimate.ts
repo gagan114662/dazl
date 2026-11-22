@@ -214,10 +214,12 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : Number.isFinite(limit) ? limit - reserved : Infinity, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
   const monthBinds = monthLeft < dayLeft
   // #1319: the run's own limit binds when it, not the day's room, sets dayLeft; the label names it ("this run's limit"), never "daily"
-  const runBinds = ownerDay !== null && runMax < ownerDay - reserved
+  const runBinds = !monthBinds && ownerDay !== null && runMax < ownerDay - reserved
   const remaining = capped && !unknown ? Math.max(0, Math.min(dayLeft, monthLeft)) : null   // unknown reserved amounts -> unknown remaining, never 0
   const binding: 'run' | 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : runBinds ? 'run' : 'daily'
-  const dayCapShown = ownerDay ?? limit, shownLimit = monthBinds ? (monthCap as number) : dayCapShown, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
+  const dayCapShown = ownerDay ?? limit, shownLimit = monthBinds ? (monthCap as number) : runBinds ? runMax : dayCapShown
+  // a run limit under a day cap is never charged the day's reservations (dayLeft above)
+  const shownReserved = monthBinds ? monthReserved : runBinds ? 0 : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null, trialRefusalWhy: string | null = null
