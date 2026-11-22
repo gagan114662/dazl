@@ -1,4 +1,4 @@
-import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof, roleSurfaceForms, type RequestedHiringRole } from './hiring-role-match.ts'
+import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof, roleSurfacePatterns, type RequestedHiringRole } from './hiring-role-match.ts'
 // "Seed funding AND hiring sales": a request whose play needs an event beyond hiring plus sales / GTM hiring is not answered by the
 // funding quote alone. After the contact crawl has bound each lead to its company domain, a verified lead keeps its place only when
 //   (a) its own saved quote already names a sales / GTM hiring (the source says it), or
@@ -52,9 +52,8 @@ export function titleIsRole(title: string, roles: RequestedHiringRole[]): Reques
   const m = matchedHiringRole(title, roles); if (!m) return null
   // #1121: the role may be written in another form ("Sales Development Representative" for a requested "SDR"): the earliest form found is the role
   let hit: RegExpExecArray | null = null
-  for (const f of roleSurfaceForms(m)) {
-    const t = f.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]+')
-    const h = new RegExp(`\\b${t}s?\\b`, 'i').exec(title)
+  for (const re of roleSurfacePatterns(m)) {
+    const h = re.exec(title)
     if (h && (!hit || h.index < hit.index)) hit = h
   }
   if (!hit) return null
@@ -147,9 +146,8 @@ export function jobAdQuoteRole(excerpt: string | null | undefined, company: stri
 // the words after the role's earliest surface form (and its bracketed abbreviation) read as another title ("- Senior Manager", "/ Sales Manager")
 function suffixAfterRole(title: string, role: RequestedHiringRole): boolean {
   let hit: RegExpExecArray | null = null
-  for (const f of roleSurfaceForms(role)) {
-    const t = f.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '[\\s-]+')
-    const h = new RegExp(`\\b${t}s?\\b`, 'i').exec(title)
+  for (const re of roleSurfacePatterns(role)) {
+    const h = re.exec(title)
     if (h && (!hit || h.index < hit.index)) hit = h
   }
   if (!hit) return true

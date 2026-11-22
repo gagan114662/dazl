@@ -268,7 +268,7 @@ test('Qodo #1534 M3: "or recruiting AEs" keeps the condition span whole; the lis
   assert.deepEqual(conds.map(c => c.kind), ['hiring', 'funding', 'event'])
   assert.equal(p.root?.op, 'or')
   // a conjunction never opens a further role
-  assert.deepEqual(alts('Companies hiring SDRs, and hiring AEs').map(r => r.filter(x => /^(?:and|or)\b/.test(x))), [[]])
+  assert.deepEqual(alts('Companies hiring SDRs, and hiring AEs').flat().filter(x => /^(?:and|or)\b/.test(x)), [])
 })
 
 // Qodo #1534 M4 (#1122's own rule, test 16): a role proves a hiring condition only when the hiring statement itself names it. A role
@@ -319,9 +319,10 @@ test('Quest #1534: "hiring SDRs and hiring AEs" is two conditions, both required
   assert.notEqual(verdict([sdr]), 'pass', 'an SDR posting alone never proves the AE half')
   assert.notEqual(verdict([ae]), 'pass')
   assert.equal(verdict([sdr, ae]), 'pass', 'each role proven by its own posting')
-  // the gate never covers either half: it checked a title the other half names
+  // the gate's durable pass covers only the half whose title it checked (here SDR): the AE half still needs its own evidence
   const gp = planProofs(p, lead, [], { ...ctx, query: q, salesGatePassed: true })
-  assert.deepEqual(conds.map(c => gp[c.id].truth === 'pass'), [false, false])
+  assert.equal(gp[conds[1].id].truth === 'pass', false, 'the gate pass never proves the AE half')
+  assert.notEqual(evaluatePlan(p, gp).truth, 'pass', 'a gate pass alone never proves the pair')
   // the same with "are hiring" / "recruiting", and an "or" between the clauses stays an OR of roles
   for (const v of ['Companies hiring SDRs and are hiring AEs', 'Companies hiring SDRs and recruiting AEs'])
     assert.deepEqual(alts(v), [['sdrs'], ['aes']], v)

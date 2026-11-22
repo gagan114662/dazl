@@ -204,10 +204,15 @@ function findAtoms(q: string): Atom[] {
     add({ kind: 'funding', start, end, ...(st ? { stage: st[0].toLowerCase().replace(/\s+/g, ' ').replace('preseed', 'pre-seed') } : {}) })
   }
   // 3. Open roles ("hiring account executives", "posted a job for a receptionist").
-  for (const m of q.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\b([^.;!?]*)/gi)) {
+  // Quest #1534: every hiring verb is read, not only the first ("hiring SDRs and hiring AEs" is two conditions, both required, each proven on its
+  // own evidence). A verb repeated after "or", "/" or a list comma straight after a role ("hiring SDRs or recruiting AEs") is the same condition's
+  // next alternative, read by moreRoles.
+  for (const m of q.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\b(?=([^.;!?]*))/gi)) {
+    const at = m.index ?? 0
+    if (atoms.some(b => b.kind === 'hiring' && b.role && b.end <= at && /^(?:\s*\/\s*|\s+or\s+|\s+and\s*\/\s*or\s+|\s*,\s*(?:or\s+)?)(?:(?:are|is|also)\s+)?$/i.test(q.slice(b.end, at)))) continue
     const role = cleanRole(m[1])
-    const end = (m.index ?? 0) + m[0].length - m[1].length + (role ? m[1].indexOf(role) + role.length : 0)
-    add({ kind: 'hiring', start: m.index ?? 0, end, role, ...(role ? { more: m[1].slice(m[1].indexOf(role) + role.length) } : {}) })
+    const end = at + m[0].length + (role ? m[1].indexOf(role) + role.length : 0)
+    add({ kind: 'hiring', start: at, end, role, ...(role ? { more: m[1].slice(m[1].indexOf(role) + role.length) } : {}) })
   }
   for (const m of q.matchAll(/\b(?:posted|posting|advertis\w+|open)\s+(?:a\s+|an\s+|new\s+)?(?:jobs?|roles?|positions?|vacanc(?:y|ies)|openings?)(?:\s+for\s+([^,.;]+))?/gi)) {
     const role = m[1] ? cleanRole(m[1]) : ''

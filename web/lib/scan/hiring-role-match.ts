@@ -25,7 +25,15 @@ const SURFACES: Record<string, string[]> = {
   ae: ['AE', 'account executive'],
   salesperson: ['salesperson', 'sales person', 'sales representative', 'sales rep'],
 }
-export const roleSurfaceForms = (r: RequestedHiringRole): string[] => [r.term, ...(SURFACES[r.normalized] ?? [])]
+const roleSurfaceForms = (r: RequestedHiringRole): string[] => [r.term, ...(SURFACES[r.normalized] ?? [])]
+// Quest #1534 (M5): where a requested role sits in a title, read by the planner's own normalization (singular(), and a bare "of" ignored), so the
+// gate finds every title matchedHiringRole accepts: "VP Sales" for a requested "VP of Sales" (and the reverse), "Sales Manager" for "sales managers".
+// Each word is matched in the singular, with or without its plural ending; a bare "of" may stand between any two words or be absent.
+const escapeRe = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+export const roleSurfacePatterns = (r: RequestedHiringRole): RegExp[] => roleSurfaceForms(r).map(f => {
+  const words = f.trim().toLowerCase().split(/[\s-]+/).filter(w => w && w !== 'of').map(w => `${escapeRe(singular(w))}(?:e?s)?`)
+  return new RegExp(`\\b${words.join('(?:[\\s-]+of)?[\\s-]+')}\\b`, 'i')
+})
 export interface RequestedHiringRole { term: string; normalized: string }
 // The role words the targeting compiler reads a title by (moved here from targeting.ts so the plan and this reader share one check; #1395's
 // typed parse replaces both). #1122: a phrase is a title when its last word - or the rank before "of ..." ("Head of Sales") - is one of these
