@@ -29,6 +29,8 @@ import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
+import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales, postingOrgIs } from '../scan/site-contact.ts'
+export { OWN_POSTING_PERSON_LABEL }
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, ownProbePlace, US_STATES } from '../scan/place-agreement.ts'
@@ -669,6 +671,29 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
 // before: short, no comma, and nothing naming another employer ("at", "@", "for").
 // Word-preserving, any alphabet (this file's norm() drops spaces and company words, which suits domains, not titles).
 const titleNorm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+// Run 679a7354 (HowGood): the lead's own ATS posting is the employer's own record. "Reports to: <Name>, <Title>" there names a person the
+// company itself published; it counts as a buyer only when the name is a person's name (not a title) and the title is a requested buyer role.
+export const COMPANY_ROUTE_LABEL = "the company's own published role mailbox: a company contact route, not the buyer's email"
+export function companyRouteRow(found: { kind: string; value: string; url: string }[], site: string, at: number, today: string): Enrichment | null {
+  const f = found.find(f => f.kind === 'email' && isFounderRoute({ connector: 'sitecrawl', kind: 'email', value: f.value, source_url: f.url }) && sameSite(f.value.split('@')[1] ?? '', site) && (() => { try { return sameSite(new URL(f.url).hostname.replace(/^www\./, ''), site) } catch { return false } })())
+  return f ? { connector: 'sitecrawl', kind: 'company_route', value: f.value.toLowerCase().slice(0, 254), label: COMPANY_ROUTE_LABEL, confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: at } : null
+}
+export function reportsToBuyer(text: string, buyerRoles: string): { name: string; title: string } | null {
+  // Greenhouse keeps HTML (often entity-escaped) in the record: read the text, not the markup (Qodo #1513 c)
+  const plain = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/[ \t]+/g, ' ')
+  // The title is read up to its role word (Sales / Revenue / Officer / CEO / Founder): plain-text records run straight on ("SVP of Sales US Benefits").
+  const m = /\bReports?\s+to\s*:\s*([A-Z][A-Za-z'\u2019-]+(?:\s+[A-Z][A-Za-z'\u2019-]+){1,2})\s*,\s*((?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President|Head)(?:\s+(?:of|&|and|[A-Z][a-z]+))*?\s+(?:Sales|Revenue)|Chief\s+[A-Z][a-z]+\s+Officer|CEO|CRO|(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?)\b/.exec(plain)
+  if (!m) return null
+  // a leader AT another company (a parent, a client) is not this company's buyer (Qodo #1513 a)
+  if (/^\s*(?:at|@|for|with|of|from)\s+(?:our\s+|the\s+|a\s+)?(?:client\s+|parent\s+|partner\s+)?[A-Z]/.test(plain.slice(m.index + m[0].length))) return null
+  const name = m[1].trim(), title = m[2].trim()
+  if (!NAME_LINE.test(name) || looksLikeJobTitle(name)) return null
+  // A request for a Head of Sales takes the company's top sales leader by its own title: a (Senior / Executive) VP of Sales or a CRO.
+  const topSales = postingTopSales(`${name}, ${title}`, buyerRoles)
+  // a founder-level title for a request that names Founder or CEO (personMatchesRole's own founder rule downstream)
+  const founder = /\b(?:founder|ceo|chief executive)\b/i.test(buyerRoles) && /^(?:(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?|CEO|Chief\s+Executive\s+Officer)$/i.test(title)
+  return buyerTitle(title, buyerRoles) || topSales || founder ? { name, title } : null
+}
 export function buyerTitle(title: string, buyerRoles?: string): boolean {
   if (!buyerRoles || roleContradicted(title, buyerRoles) || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
   const t = titleNorm(title)
@@ -2094,6 +2119,24 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
       // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this
       // lead's confirmed site only; the label names the person and says where it was printed.
+      // Run 679a7354 (HowGood): no buyer on the site, but the lead's own posting names one. Only on a site established for this lead.
+      const postRef = named === 0 && buyerRoles && (r.reason === 'ok' || r.reason === 'none_published') && domainRelationship(db, tenantId, l.id, site) === 'established' ? atsPostingRef(l.source_url) : null
+      // the lead's own board only: the posting's org token is this company / this confirmed site's name (Qodo #1513 a)
+      if (postRef && buyerRoles && !deps.signal?.aborted && (postingOrgIs(postRef.org, site) || norm(postRef.org) === norm(l.company))) {
+        let rec: ReturnType<typeof atsRecord> = null
+        try { const page = await evidenceGet(atsRecordUrl(postRef)); rec = page ? atsRecord(JSON.parse(page.body), postRef) : null } catch { rec = null }
+        const b = rec && rec !== 'missing' ? reportsToBuyer(`${rec.header} ${rec.description}`, buyerRoles) : null
+        if (b) {
+          const at = Math.floor((deps.now ?? Date.now()) / 1000)
+          addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: `${b.name}, ${b.title}`.slice(0, 120), label: OWN_POSTING_PERSON_LABEL, confidence: null, source_url: l.source_url.slice(0, 500), source_date: today, retrieved_at: at }); n++; named++
+          // PM (#1513 review): the site's own role mailbox is the COMPANY's contact route, never the buyer's email. It is stored under its own
+          // kind (company_route), which no recipient, email count or actionability route reads.
+          if (companyFirstContacts) {
+            const row = companyRouteRow(r.found, site, at, today)
+            if (row) { addEnrichment(db, tenantId, l.id, row); n++ }
+          }
+        }
+      }
       if (!companyFirstContacts && (r.reason === 'ok' || r.reason === 'none_published')) {
         const have = new Set(r.found.filter(f => f.kind === 'email').map(f => f.value.toLowerCase()))
         for (const f of r.found) {
