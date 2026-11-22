@@ -147,3 +147,13 @@ test('#1205 a role that cannot be read is held with a plain reason, never search
     assert.equal(proofs[conds[0].id].truth, 'unknown', q); assert.equal(proofs[conds[0].id].reason, conds[0].role_unreadable, q)
   }
 })
+
+// council (Opus R13): a phrase that is not a role at all ("a press release about a job") is no condition; only a role the request names but
+// this reader cannot read is held (it ends in "of", joins titles with and/or, or has a job word in it)
+test('#1205 a non-hiring phrase before "job" is no condition; an unreadable named role is held', () => {
+  const hiring = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  for (const q of ['Firms that posted a press release about a job in Toronto', 'Firms that posted a story about the jobs in Toronto', 'Firms that posted an article on jobs and the economy'])
+    assert.equal(hiring(q).length, 0, q)
+  const held = hiring('Companies that posted a sales and marketing job in the past 90 days')
+  assert.equal(held.length, 1); assert.ok(held[0].role_unreadable)
+})
