@@ -114,6 +114,8 @@ const HIRE_QUALIFIER = /^(?:first|founding|inaugural|new)$/i
 const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 // #1205: words that are never part of a role named before a job word (grammar words, and the job words themselves)
 const NOT_ROLE_WORD = /\b(?:a|an|new|about|on|to|with|that|which|for|from|in|at|by|the|our|their|its|and|or|jobs?|roles?|positions?|openings?|vacanc(?:y|ies))\b/i
+// a quantity or container in front of "of" ("dozens of", "a number of", "a list of")
+const QUANTITY_OF = /^(?:(?:a|an)\s+)?(?:number|lots?|list|dozens?|hundreds|thousands|series|couple|handful|bunch|range|set|few|several|variety)\s+of\s+/i
 // how the job is worked, not what it is ("a remote job", "a full-time role")
 const WORK_ARRANGEMENT = /^(?:(?:remote|hybrid|on-?site|in-?person|full-?time|part-?time|contract|temporary|temp|permanent|freelance|seasonal)\s*)+/i
 // #876: a modal in front of the completed verb ("may have made", "will have hired", "might have just made") says the hire may not have happened.
@@ -167,7 +169,7 @@ function findAtoms(q: string): Atom[] {
   }
   // #1205: the job word must end the phrase ("posted a job", "a receptionist position in Toronto"); "a position paper" is not a job
   const JOB_WORD = String.raw`(?:(?:jobs?|vacanc(?:y|ies))(?:\s+(?:openings?|postings?|listings?|ads?|adverts?))?|roles?|positions?|openings?)\b(?=\s*(?:$|[,.;:!?)]|(?:for|in|at|on|near|across|within|over|during|this|last|past|since|from|with|via|through|using|that|which|and|or|to|based)\b))`
-  for (const m of q.matchAll(new RegExp(String.raw`\b(?:posted|posting|advertis\w+|open)\s+(?:for\s+)?(?:(?:a|an|new)\s+)*(?:job\s+)?${JOB_WORD}(?:\s+for\s+([^,.;]+))?`, 'gi'))) {
+  for (const m of q.matchAll(new RegExp(String.raw`\b(?:posted|posting|advertis\w+|open)\s+(?:for\s+)?(?:(?:a|an|new)\s+)*(?:job\s+)?${JOB_WORD}(?:\s+for\s+((?:(?!\s+(?:and|or)\s+(?:posted|posting|advertis\w*|open)\b)[^,.;])+))?`, 'gi'))) {
     const role = m[1] ? cleanRole(m[1]) : ''
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + (m[1] ? m[0].length - m[1].length + m[1].indexOf(role) + role.length : m[0].length), role })
   }
@@ -179,8 +181,8 @@ function findAtoms(q: string): Atom[] {
   const ROLE_JOB = String.raw`(?:jobs?|vacanc(?:y|ies))(?:\s+(?:openings?|postings?|listings?|ads?|adverts?))?\b(?=\s*(?:$|[,.;:!?)]|(?:for|in|at|on|near|across|within|over|during|this|last|past|since|from|with|via|through|using|that|which|and|or|to|based)\b))`
   for (const m of q.matchAll(new RegExp(String.raw`\b(?:posted|posting|advertis\w+(?=\s+(?:for\s+)?(?:a|an|new)\s))\s+(?:for\s+)?(?:(?:a|an|new)\s+)*([a-z][a-z&/-]*(?:\s+[a-z][a-z&/-]*){0,3}?)\s+${ROLE_JOB}`, 'gi'))) {
     if (NOT_ROLE_WORD.test(m[1])) continue
-    // a quantity or container before "of" ("dozens of jobs", "a list of jobs") names no role: an open role with no title
-    const role = /\bof$/i.test(m[1].trim()) ? '' : cleanRole(m[1]).replace(WORK_ARRANGEMENT, '').trim()
+    // a quantity or container before "of" ("dozens of jobs", "a list of nurse jobs") is not part of the title: what follows it is the role
+    const role = /\bof$/i.test(m[1].trim()) ? '' : cleanRole(m[1]).replace(QUANTITY_OF, '').replace(WORK_ARRANGEMENT, '').trim()
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role })
   }
   // "making / make / makes their first sales hire": the request states no completed hire, so it is the open-role condition its role names (proven
