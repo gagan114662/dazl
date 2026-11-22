@@ -11,7 +11,7 @@ export function sseEvents(message: Msg): string[] {
   const u = usage && typeof usage === 'object' ? usage : undefined
   // message_start carries the request-time usage fields (input side, tier, geo, speed); message_delta the cumulative counts
   const startUsage = u ? Object.fromEntries(Object.entries(u).filter(([k]) => ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'cache_creation', 'service_tier', 'inference_geo', 'speed'].includes(k))) : undefined
-  const out = [ev('message_start', { type: 'message_start', message: { type: 'message', role: 'assistant', ...rest, content: [], stop_reason: null, stop_sequence: null, ...(startUsage ? { usage: { ...startUsage, output_tokens: 1 } } : {}) } })]
+  const out = [ev('message_start', { type: 'message_start', message: { type: 'message', role: 'assistant', ...rest, content: [], stop_reason: null, stop_sequence: null, ...(startUsage ? { usage: startUsage } : {}) } })]
   const blocks = Array.isArray(content) ? content : []
   blocks.forEach((raw, index) => {
     const b = raw as Msg
@@ -53,8 +53,12 @@ export function asStreaming(f: typeof fetch): typeof fetch {
     const res = await f(url, init)
     let streaming = false
     try { streaming = String(url).endsWith('/v1/messages') && JSON.parse(String(init?.body ?? '{}')).stream === true } catch { streaming = false }
-    if (!streaming || !res.ok || !(res.headers.get('content-type') ?? '').includes('application/json')) return res
-    const json = await res.json() as Msg
-    return sseResponse(sseEvents(json))
+    if (!streaming || !res.ok) return res
+    const text = await res.text()
+    let json: unknown
+    try { json = JSON.parse(text) } catch { json = null }
+    // a body that is not a JSON object is passed on as it came (the parser must treat it as unreadable)
+    if (!json || typeof json !== 'object' || Array.isArray(json)) return new Response(text, { status: res.status, headers: res.headers })
+    return sseResponse(sseEvents(json as Msg))
   }) as typeof fetch
 }

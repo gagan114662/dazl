@@ -25,6 +25,7 @@ import { renderViaService } from '../lib/scan/fetch-page.ts'
 import { outsideScanSpend, runWithoutAccountSpend, runWithScanSpend, scanCapConfig, scanSpendCalls, scanSpendContext, SPEND_KINDS, type SpendKind } from '../lib/scan/spend-cap.ts'
 import { runValidation, RUN_RECORD_CONTRACT, type RunDeps } from '../lib/evals/judge-validation-run.ts'
 import type { JudgeCorpus } from '../lib/evals/judge.ts'
+import { asStreaming } from './helpers/claude-sse.ts'
 
 // fileURLToPath, never .pathname: .pathname is the raw percent-encoded URL component (a checkout path with a space
 // becomes literal "%20", which readdirSync then can't find) - fileURLToPath decodes it to a real filesystem path.
@@ -290,7 +291,7 @@ test('native Claude search: durable hold before messages; cap refusal sends only
         })
       }
       const run = () => runWithScanSpend({ db: s.db, jobId: 'j1', tenantId: A, attempt: 1, cap: scanCapConfig({}), claudeOnly: true, accountLimits: null }, () =>
-        runClaudeWebSearch('fixture-key', 'Find public publisher sources', e => reserveNativeSearch([new SpendGuard(3)], e.estimatedUsd, () => {}), f))
+        runClaudeWebSearch('fixture-key', 'Find public publisher sources', e => reserveNativeSearch([new SpendGuard(3)], e.estimatedUsd, () => {}), asStreaming(f)))
       if (full) await assert.rejects(run, (e: unknown) => e instanceof SpendRefused && e.reason === 'over_cap')
       else await run()
       assert.deepEqual(urls, [NATIVE_SEARCH.endpoint + '/count_tokens', ...(full ? [] : [NATIVE_SEARCH.endpoint])])
