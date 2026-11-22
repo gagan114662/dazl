@@ -141,6 +141,8 @@ const BUDGET_REFUSALS = new Set(['over_limit', OWNER_POOL_LIMIT_REASON, TRIAL_BU
 const cacheKey = (tenantId: string, request: string) => `${PLAN_VERSION}\u0000${tenantId}\u0000${createHash('sha256').update(request.normalize('NFC').trim()).digest('hex')}`
 export function clearRequestPlanCache(): void { cache.clear() }
 
+// A plan already read for this tenant's request (no call, nothing to reserve), or null.
+export function cachedRequestPlan(tenantId: string, request: string): RequestPlan | null { return cache.get(cacheKey(tenantId, request)) ?? null }
 export async function readRequestPlan(provider: Provider, apiKey: string, request: string, tenantId: string, fetchImpl?: typeof fetch): Promise<PlanResult> {
   const key = cacheKey(tenantId, request)
   const hit = cache.get(key)

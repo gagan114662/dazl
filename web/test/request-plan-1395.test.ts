@@ -3,7 +3,7 @@
 // The runner-path tests are in request-plan-board-place-1395.test.ts. SYNTHETIC requests and replies, except REAL (a prod matrix request).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parsePlan, groundedIn, readRequestPlan, clearRequestPlanCache, type RequestPlan } from '../lib/scan/request-plan.ts'
+import { parsePlan, groundedIn, readRequestPlan, cachedRequestPlan, clearRequestPlanCache, type RequestPlan } from '../lib/scan/request-plan.ts'
 import { boardPlaceOf } from '../lib/sources/jobboards.ts'
 import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { SpendRefused } from '../lib/llm/spend-guard.ts'
@@ -162,4 +162,14 @@ test('#1395 the plan call checks room on the real guards first: no room means no
   g.reserveUsd(0.0004)
   assert.ok(Math.abs(g.reservedUsd - 0.0099) < 1e-12)
   assert.equal(await optionalCallHasRoom([new SpendGuard(1)], 0.004), true)
+})
+
+// A plan already read for the play is served from the cache with no call, so the runner's room check never refuses it (it reserves nothing).
+test('#1395 cachedRequestPlan: a play read once is available without a call; another tenant\'s is not', async () => {
+  clearRequestPlanCache()
+  const p = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => ({ text: JSON.stringify(plan([])), model: 'm' }) } as unknown as Provider
+  assert.equal(cachedRequestPlan('T', REAL), null)
+  await readRequestPlan(p, 'k', REAL, 'T')
+  assert.ok(cachedRequestPlan('T', REAL))
+  assert.equal(cachedRequestPlan('T2', REAL), null)
 })

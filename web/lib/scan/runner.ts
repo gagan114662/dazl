@@ -12,7 +12,7 @@ import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
 import { runResearchScan, HAIKU } from '../research/scan-job.ts'
-import { readRequestPlan, planPrompt, PLAN_MAX_TOKENS } from './request-plan.ts'
+import { readRequestPlan, cachedRequestPlan, planPrompt, PLAN_MAX_TOKENS } from './request-plan.ts'
 import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
@@ -2037,7 +2037,8 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // (a model this check cannot price is left to the guarded call itself, which refuses an unpriced model and stops the scan, as for every paid call)
       let planUsd: number | null = null
       try { planUsd = callCostUsd(pm.configuredModel?.() ?? HAIKU, Buffer.byteLength(planPrompt(job.query!)), PLAN_MAX_TOKENS) } catch { planUsd = null }
-      const room = planUsd === null ? true : await optionalCallHasRoom(spendGuards, planUsd)
+      // a plan already read for this play costs nothing: it needs no room
+      const room = planUsd === null || !!cachedRequestPlan(job.user_id, job.query!) ? true : await optionalCallHasRoom(spendGuards, planUsd)
       const r = room ? await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl) : { ok: false as const, reason: 'spend_refused' as const }
       if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
       else {
