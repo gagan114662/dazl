@@ -118,3 +118,13 @@ test('#1205 "advertised new vacancies" in a compound request reads no role "new"
   assert.ok(conds.some(c => c.kind === 'hiring' && c.role === 'sales rep'))
   assert.ok(!conds.some(c => c.role === 'new'), JSON.stringify(conds.map(c => c.role)))
 })
+
+// council (Opus R10): a quantity or container before "of" is not part of the title: what follows it is the role
+test('#1205 "dozens of nurse jobs" reads the nurse, not the quantity', () => {
+  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  for (const [q, role] of [
+    ['Firms that posted dozens of nurse jobs', 'nurse'],
+    ['Firms that posted a number of sales jobs', 'sales'],
+    ['Companies that posted a VP of Sales job in the last 60 days', 'VP of Sales'],
+  ] as const) { const h = one(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q) }
+})
