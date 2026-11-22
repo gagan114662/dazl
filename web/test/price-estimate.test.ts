@@ -42,7 +42,8 @@ test('over the remaining limit: blocked, with a raise-the-limit amount that clea
 })
 
 test('already-reserved spend and the operator owner cap reduce what is left', () => {
-  const e = estimateRun({ budget: { max_usd: 1 }, payer: 'you', reservedUsd: 0.95 })
+  // #1319 (Quest): the day's reservations come off the daily cap the transport enforces, never off one run's max_usd
+  const e = estimateRun({ budget: null, payer: 'you', ownerCapUsd: 1, reservedUsd: 0.95 })
   assert.equal(e.verdict.ok, false); assert.ok(Math.abs(e.cap.remaining_usd! - 0.05) < 1e-9); assert.match(e.verdict.message, /already reserved/)
   const o = estimateRun({ budget: null, payer: 'you', ownerCapUsd: 0.02 })
   assert.equal(o.verdict.ok, false); assert.equal(o.cap.max_usd, 0.02, 'the tighter of the two limits applies')
@@ -87,7 +88,7 @@ test('actual vs estimate: priced from the tokens the provider reported; unknown 
 })
 
 test('the confirmation changes with everything the person agreed to: payer, cap, reserved room, warning, rows on/off', () => {
-  const base = { budget: { max_usd: 2 }, payer: 'you' as const }
+  const base = { budget: { max_usd: 2 }, payer: 'you' as const, ownerCapUsd: 2 }   // #1319: a daily cap, so reservations reduce the room
   const a = estimateRun(base)
   assert.notEqual(estimateRun({ ...base, payer: 'trial' }).ack, a.ack, 'trial -> own key (or back) needs a new confirmation')
   const reserved = estimateRun({ ...base, reservedUsd: 1.5 })
@@ -123,10 +124,11 @@ test('NEGATIVE: an unreadable budget shows "Remaining: unknown", never $0.00 lef
   assert.match(capLine(m.cap, m.cap.capped_total)!, /Monthly limit: \$3\.00; Remaining: unknown/); assert.doesNotMatch(capLine(m.cap, m.cap.capped_total)!, /\$0\.00/)
 })
 test('monthly constraint: daily and monthly limits are labelled with their own reserved amounts and the binding remaining amount names which one binds', () => {
-  const m = estimateRun({ budget: { max_usd: 2 }, payer: 'you', reservedUsd: 0.5, ownerMonthCapUsd: 3, reservedMonthUsd: 2.4 })
+  // #1319 (Quest): the daily limit is the account's day cap (ownerCapUsd), not a run's max_usd
+  const m = estimateRun({ budget: null, payer: 'you', ownerCapUsd: 2, reservedUsd: 0.5, ownerMonthCapUsd: 3, reservedMonthUsd: 2.4 })
   assert.equal(m.cap.binding, 'monthly'); assert.ok(Math.abs((m.cap.remaining_usd ?? 0) - 0.6) < 1e-9)
   assert.match(capLine(m.cap, m.cap.capped_total)!, /^Daily limit: \$2\.00 \(\$0\.50 already reserved today\); Monthly limit: \$3\.00 \(\$2\.40 already reserved this month\); \$0\.60 left \(monthly limit binds\)\./)
-  const d = estimateRun({ budget: { max_usd: 2 }, payer: 'you', reservedUsd: 1.9, ownerMonthCapUsd: 30, reservedMonthUsd: 1 })
+  const d = estimateRun({ budget: null, payer: 'you', ownerCapUsd: 2, reservedUsd: 1.9, ownerMonthCapUsd: 30, reservedMonthUsd: 1 })
   assert.equal(d.cap.binding, 'daily'); assert.match(capLine(d.cap, d.cap.capped_total)!, /\$0\.10 left \(daily limit binds\)/)
   assert.equal(capLine(estimateRun({ budget: null, payer: 'you' }).cap, { min: 0, max: 0 }), null)
 })
@@ -314,7 +316,7 @@ test('explicit own-key native search opts into a soft reservation preview; legac
   assert.equal(row?.usd?.max, claudeSearchEstimate(8_000).estimatedUsd)
   assert.equal(row?.capped, true)
   assert.match(native.verdict.warning ?? '', /not a hard billing limit/)
-  assert.equal(native.cap.max_usd, 1)
+  assert.equal(native.cap.run_max_usd, 1)   // #1319: the run's own limit
   assert.notEqual(native.ack, legacy.ack)
   assert.equal(legacy.rows.some(r => r.id === 'anthropic_native_web_search'), false)
   assert.equal(trial.rows.some(r => r.id === 'anthropic_native_web_search'), false)
@@ -331,5 +333,5 @@ test('company-first estimate covers the widened guarded search reservation and e
   assert.equal(search?.usd?.max, strict.estimatedUsd * CLAUDE_COMPANY_FIRST_MAX_CALLS)
   assert.equal(search?.units.max, strict.maxSearches * CLAUDE_COMPANY_FIRST_MAX_CALLS)
   assert.match(search?.note ?? '', /50,000/)
-  assert.equal(result.cap.max_usd, 3.33)
+  assert.equal(result.cap.run_max_usd, 3.33)   // #1319: the run's own limit
 })

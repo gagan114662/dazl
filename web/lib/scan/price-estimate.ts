@@ -42,7 +42,7 @@ export const FREE_TRIAL_SCANS = 3
 export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null; trial_refusal?: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
-  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
+  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'run' | 'daily' | 'monthly' | null; run_max_usd?: number | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
   verdict: Verdict; ack: string
   // A trial account's remaining dollar allowance (lib/billing/trial-budget.ts trialAllowanceLeft). Display only: deliberately NOT part of `ack`, so the
   // confirmation of an estimate never goes stale because a read changed it, and POST /api/scan (which does not read it) never answers estimate_changed.
@@ -83,6 +83,13 @@ export interface EstimateInput {
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
   ownerCapUsd?: number | null        // the operator's cap for this owner (DAZL_RUN_MAX_USD_USERS); the tighter of it and budget.max_usd applies
+  // #1319: whether the operator named this account (ownerLimits). Every account's day/month caps are shown (ownerCapUsd /
+  // ownerMonthCapUsd), but only a run limit, a named account or a trial switches its own paid enrichment off (runner.ts creditEnrichment).
+  // Omitted (direct callers): any cap passed counts as named, as before.
+  ownerNamed?: boolean
+  // #1319: the job guard's own per-scan cap (spend-cap.ts effectiveCapUsd without max_usd: min(scan cap, hard cap)). The run's limit is
+  // min(max_usd, this), whether or not the request set a max_usd. Omitted (direct callers): max_usd alone.
+  scanCapUsd?: number | null
   ownerMonthCapUsd?: number | null   // the operator's monthly cap for this owner (DAZL_OWNER_MONTH_MAX_USD_USERS); the room left is the tighter of the day's and the month's
   reservedMonthUsd?: number          // already reserved against the owner's monthly pool
   poolUnknown?: boolean              // the shared pool could not be read: the reserved amounts above are NOT known (never treated as zero)
@@ -194,7 +201,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people + site }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${site ? `; plus at most ${site} company-website searches, one for each lead whose source page links no website` : ''}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
     rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches }, usd: price(tfFetch, fetches), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}` })
   }
-  const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
+  const runLimited = i.ownerNamed === undefined ? capped : typeof b?.max_usd === 'number' || i.ownerNamed
+  const enrichOff = runLimited || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
   for (const v of ['apollo', 'pdl']) {
     // Refs #1099: a saved key the paid-vendor policy keeps off makes no call, so it has no row in the estimate
     const have = (i.enrichmentVendors ?? []).includes(v) && paidVendorOn(v as 'apollo' | 'pdl', env)
@@ -210,12 +218,20 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   // The run's own max_usd is a PER-RUN ceiling (its job guard counts only this run's reservations), so today's pooled
   // reservations come off the owner's day cap only, never off max_usd (case-1 runs were blocked once the day's earlier
   // runs exceeded one run's max_usd while the day cap still had room).
-  const runMax = typeof b?.max_usd === 'number' ? b.max_usd : Infinity, ownerDay = i.ownerCapUsd ?? null
-  const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : Number.isFinite(limit) ? limit - reserved : Infinity, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
+  const runMax = Math.min(typeof b?.max_usd === 'number' ? b.max_usd : Infinity, typeof i.scanCapUsd === 'number' ? i.scanCapUsd : Infinity), ownerDay = i.ownerCapUsd ?? null
+  // #1319: with no day cap known here, the run's limit is its own room: the day's reservations never come off it
+  const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : runMax, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
   const monthBinds = monthLeft < dayLeft
+  // #1319: the run's own limit binds when it, not the day's room, sets dayLeft (or there is no day cap); the label names it
+  // ("this run's limit"), never "daily"
+  const runBinds = !monthBinds && Number.isFinite(runMax) && (ownerDay === null || runMax < ownerDay - reserved)
   const remaining = capped && !unknown ? Math.max(0, Math.min(dayLeft, monthLeft)) : null   // unknown reserved amounts -> unknown remaining, never 0
-  const binding: 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : 'daily'
-  const dayCapShown = ownerDay ?? limit, shownLimit = monthBinds ? (monthCap as number) : dayCapShown, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
+  const binding: 'run' | 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : runBinds ? 'run' : 'daily'
+  const dayCapShown = ownerDay ?? Infinity, shownLimit = monthBinds ? (monthCap as number) : runBinds ? runMax : dayCapShown
+  // a run limit under a day cap is never charged the day's reservations (dayLeft above)
+  // #1319: a max_usd can only lower the per-scan cap; when the per-scan cap itself binds the person has no limit to raise
+  const personBinds = runBinds && typeof b?.max_usd === 'number' && b.max_usd <= runMax
+  const shownReserved = monthBinds ? monthReserved : runBinds ? 0 : reserved, limitWord = monthBinds ? 'monthly limit' : runBinds && !personBinds ? 'per-scan limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null, trialRefusalWhy: string | null = null
@@ -245,7 +261,23 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       message = trialBinds
         ? `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but the free trial stops each scan at ${money(eff)}.`
         : `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
-      if (!native) change.push(`Raise the ${monthBinds ? 'monthly ' : ''}dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
+      // #1319: only this run's limit is the person's to raise, and a raise is offered only when every other ceiling of the run (the per-scan
+      // cap a max_usd can only lower, the free trial's stop, the day's and the month's room) covers the cost. Otherwise the ceiling that
+      // stops the run is named: the account windows with when they reset, the per-scan cap, or the trial's stop.
+      const need = cappedTotal.min + shownReserved
+      const scanCeil = typeof i.scanCapUsd === 'number' ? i.scanCapUsd : Infinity, trialRoom = trialCeil ?? Infinity
+      const dayRoom = ownerDay !== null ? ownerDay - reserved : Infinity, dayLine = `Your daily limit (${money(ownerDay ?? 0)}) has ${money(Math.max(0, dayRoom))} left today; it resets at 00:00 UTC.`
+      const monthLine = `Your monthly limit (${money(monthCap ?? 0)}) has ${money(Math.max(0, monthLeft))} left this month; it resets on the 1st at 00:00 UTC.`
+      if (trialBinds) { /* the free trial's own per-scan stop: nothing the person can raise (the message names it) */ }
+      else if (monthBinds) change.push(monthLine)
+      else if (!runBinds && ownerDay !== null) change.push(dayLine)
+      else if (runBinds) {
+        if (cappedTotal.min > dayRoom) change.push(dayLine)
+        else if (cappedTotal.min > monthLeft) change.push(monthLine)
+        else if (cappedTotal.min > trialRoom) change.push(`The free trial stops each scan at ${money(trialRoom)}.`)
+        else if (!personBinds || need > scanCeil) change.push(`Each scan is capped at ${money(Number.isFinite(scanCeil) ? scanCeil : runMax)}.`)
+        else if (!native) change.push(`Raise the dollar limit to at least ${money(need)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
+      }
       const judge = rows.find(r => r.id === 'judge')
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
@@ -302,7 +334,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
-  const cap = { max_usd: Number.isFinite(dayCapShown) ? dayCapShown : null, reserved_usd: reserved, remaining_usd: remaining, binding, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
+  // #1319: a trial's guard stops each scan at the trial reserve (runner.ts guardMax): that is the run's limit on screen
+  const runShown = Math.min(runMax, trialCeil ?? Infinity), trialRun = trialCeil !== null && remaining !== null && trialCeil < remaining
+  const cap = { max_usd: Number.isFinite(dayCapShown) ? dayCapShown : null, reserved_usd: reserved, remaining_usd: trialRun ? trialCeil : remaining, binding: trialRun ? 'run' as const : binding, run_max_usd: Number.isFinite(runShown) ? runShown : null, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
   const verdict = { ok, reason, message, change, warning, ...(trialRefusalWhy ? { trial_refusal: trialRefusalWhy } : {}) }
   // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
   // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
@@ -312,7 +346,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     payer: i.payer, model,
     rows: rows.map(r => [r.id, r.kind, r.capped, r.units, r.unit_usd, r.usd && { min: r4(r.usd.min), max: r4(r.usd.max) }, r.note]),
     total: { min: r4(total.min), max: r4(total.max) }, unpriced,
-    cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) }, ...(trialCeil !== null ? { trial: r4(trialCeil) } : {}) },
+    cap: { max: cap.max_usd, run: r4(cap.run_max_usd), binding: cap.binding, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) }, ...(trialCeil !== null ? { trial: r4(trialCeil) } : {}) },
     verdict,
   })).digest('hex').slice(0, 16)
   // Never beside a trial refusal: "$1.00 left" next to "your company already had its free trial" (or "$0.40 left" next to "all 3 free scans used") contradicts the block.
@@ -389,14 +423,14 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   if (usd !== null) {
     const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
     const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
-    summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
+    summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
   }
-  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   // #1168: nothing was sent, so nothing was charged: say so, never "unknown" and never "recorded"
-  else if ((a.refusedBeforeSending ?? 0) > 0) summary = `No model call was made: ${a.refusedBeforeSending} ${a.refusedBeforeSending === 1 ? 'was' : 'were'} refused by a spending limit before sending, so the model cost is $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else summary = `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
+  else if ((a.refusedBeforeSending ?? 0) > 0) summary = `No model call was made: ${a.refusedBeforeSending} ${a.refusedBeforeSending === 1 ? 'was' : 'were'} refused by a spending limit before sending, so the model cost is $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else summary = `Actual model cost was not recorded (model-request estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
   // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
   const capRes = a.capReservedUsd ?? null
   // #1517: the run's final cost is the job's one recorded cost (the per-call ledger: each paid call at its reported cost, a
@@ -415,11 +449,12 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
 // each with its own reserved amount, and the amount left says which of them binds.
 const cur = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
 export function capLine(cap: RunEstimate['cap'], capped: Range): string | null {
-  if (cap.max_usd == null && cap.month_cap_usd == null) return null
+  if (cap.max_usd == null && cap.month_cap_usd == null && cap.run_max_usd == null) return null
   const parts: string[] = []
+  if (cap.run_max_usd != null) parts.push(`This run's limit: ${cur(cap.run_max_usd)}`)
   if (cap.max_usd != null) parts.push(`Daily limit: ${cur(cap.max_usd)}${cap.unknown ? '' : cap.reserved_usd > 0 ? ` (${cur(cap.reserved_usd)} already reserved today)` : ''}`)
   if (cap.month_cap_usd != null) parts.push(`Monthly limit: ${cur(cap.month_cap_usd)}${cap.unknown ? '' : cap.month_reserved_usd > 0 ? ` (${cur(cap.month_reserved_usd)} already reserved this month)` : ''}`)
-  const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding} limit binds)` : ''}`
+  const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding === 'run' ? "this run's" : cap.binding} limit binds)` : ''}`
   return `${parts.join('; ')}; ${left}. Model requests expected: ${capped.min === capped.max ? cur(capped.min) : `${cur(capped.min)} - ${cur(capped.max)}`}.`
 }
 
