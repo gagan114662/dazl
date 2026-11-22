@@ -12,5 +12,9 @@ set -a
 . "$DAZL_RELEASE/.release.env"
 set +a
 export PORT=$PORT_ARG
+# #1463: libuv's pool (fs, async zlib, dns.lookup) is 4 threads by default. A scan's slow lookups filled it and every
+# /_next/static chunk read queued behind them, so /app never hydrated until the scan ended. Read once, at process start,
+# so it must be set here, before exec (setting it from app code is too late). An explicit value from the env wins.
+export UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-32}
 cd "$DAZL_RELEASE/web"
 exec ./node_modules/.bin/next start -p "$PORT_ARG"

@@ -6,7 +6,9 @@
 // Scan hosts are therefore resolved here with c-ares (dns.promises.Resolver): network queries on the event loop, no pool
 // thread, with a per-query timeout, a bounded retry and a per-process cap on lookups in flight. /etc/hosts is not consulted,
 // which is right for public company hosts (anything private or local is refused by the callers anyway).
-import { Resolver } from 'node:dns/promises'
+import { promises as dnsPromises } from 'node:dns'
+const { Resolver } = dnsPromises
+import { isIP } from 'node:net'
 
 export type Address = { address: string; family: number }
 
@@ -37,6 +39,9 @@ const notFound = (e: unknown) => /ENODATA|ENOTFOUND|NXDOMAIN|ENONAME/.test(Strin
 
 // Every A and AAAA record for the host. Rejects (like dns.lookup) when the name has none or the queries fail.
 export function scanLookupAll(hostname: string): Promise<Address[]> {
+  // An IP literal is its own answer (dns.lookup returns it as is; c-ares would query it as a name). The callers' public-address checks still apply.
+  const lit = hostname.replace(/^\[|\]$/g, ''), fam = isIP(lit)
+  if (fam) return Promise.resolve([{ address: lit, family: fam }])
   return slot(async () => {
     const r = resolver()
     const [v4, v6] = await Promise.allSettled([r.resolve4(hostname), r.resolve6(hostname)])

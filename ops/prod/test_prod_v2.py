@@ -37,7 +37,9 @@ PINNED = {
     'check-hydration.mjs': '0b0dd3a6bbc16870c2bdec5619febb8f4399e28a5d0c1ba8743c081d9657aa2e',
     'check-pages.py': 'c496397af58568d92012d816024058dda943f94fb9f8ae680b2eb2ff72aa918b',
     'pull-release.sh': '029301eacd3ab83044e2d6cb58fd8206a8118af6c9cfe236cd0d3ac1e26a88d6',
-    'run-release.sh': 'ea5a8de89bfea25de428ab1979b6015f61528894eb90e0f5e90fa6a406e7d14a',
+    # #1463: run-release.sh sets UV_THREADPOOL_SIZE=32 before exec. NOT YET INSTALLED: this pin is this PR's file; the box keeps ea5a8de8
+    # until the owner reviews the diff and installs it (check-installed.sh says so until then).
+    'run-release.sh': 'eea258663a01027865caa605ee5b799362e12107d763373b37d6a85eb71d66d9',
 }
 A = 'a' * 40
 BUILD_RE = re.compile(r'next build|npm ci\b|npm install|npm run build|\byarn\b|\bpnpm\b|\btsc\b')
@@ -45,6 +47,30 @@ BUILD_RE = re.compile(r'next build|npm ci\b|npm install|npm run build|\byarn\b|\
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+class ThreadpoolIsSetBeforeStart(unittest.TestCase):
+    # #1463: the libuv pool size is read once when the process starts; it must be exported before `exec next start`.
+    def test_run_release_exports_the_pool_size_before_exec(self):
+        lines = (HERE / 'run-release.sh').read_text().splitlines()
+        at = [i for i, l in enumerate(lines) if l.strip().startswith('export UV_THREADPOOL_SIZE=')]
+        ex = [i for i, l in enumerate(lines) if l.strip().startswith('exec ')]
+        self.assertEqual(len(at), 1, 'run-release.sh exports UV_THREADPOOL_SIZE exactly once')
+        self.assertIn('${UV_THREADPOOL_SIZE:-32}', lines[at[0]])
+        self.assertTrue(ex and at[0] < ex[-1], 'set before the exec of next start')
+
+    def test_the_started_process_sees_it(self):
+        with tempfile.TemporaryDirectory() as t:
+            rel = Path(t) / 'dazl-0123abcd-prod'
+            (rel / 'web/node_modules/.bin').mkdir(parents=True)
+            (rel / '.release.env').write_text('')
+            nxt = rel / 'web/node_modules/.bin/next'
+            nxt.write_text('#!/usr/bin/env bash\necho "POOL=$UV_THREADPOOL_SIZE"\n'); nxt.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if k != 'UV_THREADPOOL_SIZE'}
+            env['DAZL_RELEASE'] = str(rel)
+            r = subprocess.run(['bash', str(HERE / 'run-release.sh'), '3105'], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('POOL=32', r.stdout)
 
 
 class RepoCopiesAreTheBoxCopies(unittest.TestCase):
