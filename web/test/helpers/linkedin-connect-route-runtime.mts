@@ -70,7 +70,7 @@ test('Connect LinkedIn: pair once, then the device token reads tasks; no session
   assert.equal((await nextTask(null)).status, 401)
   assert.equal((await nextTask(device_token)).status, 200)
   migrateLiTasks(db)
-  assert.equal(db.prepare("SELECT tz FROM li_task_gate WHERE tenant_id = 'A'").get()?.tz, 'America/Toronto')
+  assert.equal((db.prepare("SELECT tz FROM li_task_gate WHERE tenant_id = 'A'").get() as { tz?: string } | undefined)?.tz, 'America/Toronto')
   await enqueueTask(adb, 'A', 'company_people', 'https://www.linkedin.com/company/acme-test/people/', 'job1')
   const r = await (await nextTask(device_token)).json() as { task?: { id: string }; wait?: string }
   if (r.task) assert.equal((await done(device_token, { id: r.task.id, people: [] })).status, 200)

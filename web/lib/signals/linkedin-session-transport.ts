@@ -14,9 +14,9 @@ import type { LinkedInTransport, TransportRequest, TransportResult } from './lin
 // lib/linkedin-tasks). The server never replays a LinkedIn session cookie: this transport is always off, and the operator allowlist / throwaway-account
 // settings it used are gone. Kept as a type-stable stub until the session worker code is removed in a later PR.
 export type SessionProblem = 'off'
-export function sessionTransportProblem(_tenantId: string, _env: Record<string, string | undefined> = process.env): SessionProblem { return 'off' }
-export function sessionCookieReserved(_tenantId: string, _env: Record<string, string | undefined> = process.env): boolean { return false }
-export function sessionTransportEnabled(_tenantId: string, _env: Record<string, string | undefined> = process.env): boolean { return false }
+export function sessionTransportProblem(tenantId?: string, env?: Record<string, string | undefined>): SessionProblem { void tenantId; void env; return 'off' }
+export function sessionCookieReserved(tenantId?: string, env?: Record<string, string | undefined>): boolean { void tenantId; void env; return false }
+export function sessionTransportEnabled(tenantId?: string, env?: Record<string, string | undefined>): boolean { void tenantId; void env; return false }
 
 // A worker reply, streamed with a byte cap: an oversized body is never buffered whole (#949 review). null = over the cap.
 export const MAX_REPLY_BYTES = 1_000_000

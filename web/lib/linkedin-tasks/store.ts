@@ -16,6 +16,7 @@ import type { Db, Tx, TxBody } from '../db/client.ts'
 import { LIMITS, MAX_PEOPLE, endOfLocalDay, inWorkingHours, isTaskKind, nextGapS, personOk, taskUrlOk, validZone, type ReadPerson, type TaskKind } from './limits.ts'
 
 export function migrateLiTasks(db: Database.Database): void {
+  const first = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'li_task_gate'").get()
   db.exec(`
     CREATE TABLE IF NOT EXISTS li_tasks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL, status TEXT NOT NULL,
       requested_by TEXT, attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER, created_at INTEGER NOT NULL, served_at INTEGER, done_at INTEGER, outcome TEXT);
@@ -28,7 +29,8 @@ export function migrateLiTasks(db: Database.Database): void {
       open_min INTEGER NOT NULL DEFAULT 540, close_min INTEGER NOT NULL DEFAULT 1020, override_close_min INTEGER, override_until INTEGER);`)
   // Owner brief 2026-11-22 (#1122): LinkedIn is read only in the user's browser; the server keeps no LinkedIn session. The saved
   // li_at/JSESSIONID session credentials ('adv:linkedin' rows, and only those) are deleted; nothing writes them any more.
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tenant_connectors'").get()) db.exec("DELETE FROM tenant_connectors WHERE connector = 'adv:linkedin'")
+  // Once, when this migration first runs (as the Postgres migration 0072 does once).
+  if (first && db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tenant_connectors'").get()) db.exec("DELETE FROM tenant_connectors WHERE connector = 'adv:linkedin'")
 }
 
 const nowS = () => Math.floor(Date.now() / 1000)
