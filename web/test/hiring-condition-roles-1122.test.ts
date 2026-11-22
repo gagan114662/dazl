@@ -5,7 +5,8 @@
 // Real code path: compileTargeting -> planProofs (the plan's clause proofs) and requestedHiringRoles -> matchedHiringRole (the sales gate).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { compileTargeting, planConditions, conditionRoles } from '../lib/scan/targeting.ts'
+import { compileTargeting, planConditions, conditionRoles, evaluatePlan } from '../lib/scan/targeting.ts'
+import { titleIsRole } from '../lib/scan/sales-hiring-gate.ts'
 import { planProofs, type ProofLead, type ProofRow } from '../lib/scan/targeting-proof.ts'
 import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from '../lib/scan/hiring-role-match.ts'
 
@@ -291,4 +292,38 @@ test('Qodo #1534 M4: a dot inside the company name never splits the hiring state
   const l: ProofLead = { ...lead, company: 'Example.com', evidence_excerpt: 'Example.com is hiring SDRs to book consultations.', signal: 'Example.com is hiring SDRs to book consultations.', event_date: '2026-11-10' }
   const p = compileTargeting('Companies hiring SDRs in the last 30 days', null); const [c] = planConditions(p.root).map(x => x.cond)
   assert.equal(planProofs(p, l, [], ctx)[c.id].truth, 'pass')
+})
+
+// Quest (#1534 M5): the sales gate finds the role in a title by the planner's own normalization (one shared normalizer): plural and
+// singular, and "VP of Sales" = "VP Sales". Its surrounding-title rules still apply.
+test('Quest #1534 M5: the gate reads a title by the planner\'s normalization', () => {
+  const rs = (q: string) => requestedHiringRoles(q, null)
+  assert.ok(titleIsRole('VP Sales', rs('Companies hiring a VP of Sales')), 'VP Sales is the requested VP of Sales')
+  assert.ok(titleIsRole('VP of Sales', rs('Companies hiring a VP Sales')), 'and the reverse')
+  assert.ok(titleIsRole('Sales Manager', rs('Companies hiring sales managers')), 'a plural request names the singular title')
+  assert.ok(titleIsRole('Sales Managers', rs('Companies hiring a sales manager')), 'and the reverse')
+  // the gate's title rules still hold: another title around the role is not it
+  assert.equal(titleIsRole('VP Sales Operations Analyst', rs('Companies hiring a VP of Sales')), null)
+  assert.equal(titleIsRole('Sales Manager Recruiter', rs('Companies hiring sales managers')), null)
+})
+
+// Quest (#1534): a required pair. "hiring SDRs and hiring AEs" keeps both roles, AND-ed, and each is proven on its own evidence.
+test('Quest #1534: "hiring SDRs and hiring AEs" is two conditions, both required', () => {
+  const q = 'Companies hiring SDRs and hiring AEs in the last 30 days'
+  const p = compileTargeting(q, null); const conds = planConditions(p.root).map(x => x.cond)
+  assert.deepEqual(conds.map(c => [c.kind, conditionRoles(c).map(r => r.toLowerCase())]), [['hiring', ['sdrs']], ['hiring', ['aes']]])
+  assert.equal(p.root?.op, 'and')
+  const sdr = { ...posting('Sales Development Representative'), kind: 'hiring-role' } as ProofRow
+  const ae = { ...posting('Account Executive'), kind: 'hiring-role', source_url: 'https://boards.example/exampledental/jobs/2' } as ProofRow
+  const verdict = (rows: ProofRow[]) => evaluatePlan(p, planProofs(p, lead, rows, ctx)).truth
+  assert.notEqual(verdict([sdr]), 'pass', 'an SDR posting alone never proves the AE half')
+  assert.notEqual(verdict([ae]), 'pass')
+  assert.equal(verdict([sdr, ae]), 'pass', 'each role proven by its own posting')
+  // the gate never covers either half: it checked a title the other half names
+  const gp = planProofs(p, lead, [], { ...ctx, query: q, salesGatePassed: true })
+  assert.deepEqual(conds.map(c => gp[c.id].truth === 'pass'), [false, false])
+  // the same with "are hiring" / "recruiting", and an "or" between the clauses stays an OR of roles
+  for (const v of ['Companies hiring SDRs and are hiring AEs', 'Companies hiring SDRs and recruiting AEs'])
+    assert.deepEqual(alts(v), [['sdrs'], ['aes']], v)
+  assert.deepEqual(alts('Companies hiring SDRs or hiring AEs'), [['sdrs', 'aes']])
 })
