@@ -705,3 +705,17 @@ test('cf_runner stage 1: a company-first hiring request runs cf_runner\'s board 
   assert.match(ps[0], /Search approach for this pass: Search company career pages and public applicant-tracking job boards/)
   for (const p of ps) { assert.match(p, /JSON inside <json><\/json>/); assert.match(p, /website \(the company's own official domain\), job_title, job_url/); assert.match(p, /never invent/) }
 })
+
+test('case 1 (b9a34d2d): an OR request with a funding branch spends its third pass on a dated funding announcement, never a job posting',async()=>{
+  const query='Find B2B companies (5-200 employees) doing outbound sales that show a dated buying signal in the last 45 days: hiring their first SDR/BDR or sales rep, new funding, a new Head of Sales/VP Sales, or a founder still doing sales.'
+  const r=await simulate({ordinary:true,companyFirstTenant:'workspace',windowDays:45,confirmedOffer:'Independent commercial document services',
+    inputTokens:101937,secondWave:'valid',cap:'10',query})
+  const prompts=r.messages.filter(x=>Array.isArray(x.body.tools)).map(x=>JSON.stringify(x.body.messages))
+  assert.equal(prompts.length,3)
+  assert.match(prompts[0],/jobs.ashbyhq.com and jobs.lever.co specifically/)
+  assert.match(prompts[1],/boards.greenhouse.io and job-boards.greenhouse.io specifically/)
+  assert.match(prompts[2],/dated announcement of the round on the company\\?'s own newsroom/)
+  assert.match(prompts[2],/never cite a job posting/)
+  assert.doesNotMatch(prompts[2],/Strongly prefer postings/)
+  assert.doesNotMatch(prompts[2],/job_url/)
+})
