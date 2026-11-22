@@ -27,7 +27,8 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   const first = await discover(sized, api)
   add(first.usage)
   let leads = await checkLeads(first.leads, first.seen, deps.fetch, 4)
-  let passes = 1, stop = first.stop, model = first.model, note = first.note
+  const stop = first.stop, model = first.model
+  let passes = 1, note = first.note
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
   if (leads.filter(isShown).length < want && first.stop !== 'refusal' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
     try {
