@@ -186,7 +186,7 @@ test('#1043 Hermes 01387296: a hiring play needs the signal to start with hiring
   assert.deepEqual(q(['Opened a new location', 'hiring front-desk staff', 'hiring an office manager']),
     ['Practice owner - Opened a new location', 'Practice owner at companies hiring front-desk staff', 'Practice owner at companies hiring office manager'])
   assert.deepEqual(q(['Opened a new office', 'hiring recruiters'], ['Agency owner']), ['Agency owner - Opened a new office', 'Agency owner at companies hiring recruiters'])
-  assert.deepEqual(q(['Hiring their first SDR or salesperson', 'posting about outbound or lead gen pain'], ['Founder']), ['Founder at companies hiring SDR'])
+  assert.deepEqual(q(['Hiring their first SDR or salesperson', 'posting about outbound or lead gen pain'], ['Founder']), ['Founder at companies hiring SDR or salesperson'])
   assert.deepEqual(q(['Company expressing frustration with enterprise software complexity', 'Team adopting remote or distributed work', 'Business rejecting venture capital funding',
     'Organization implementing calmer work policies', 'Company switching away from ad-supported or data-selling tools'], ['Small team leaders']), [])
   // a signal that only mentions hiring after something else is not a hiring play, but stays a plain one when nothing negates it
@@ -208,7 +208,7 @@ test('#1043 Hermes c12ab77d: a hiring play only when a role, and nothing but a r
   // these keep their plays
   for (const [s, play, who] of [
     ['hiring front-desk staff', 'Practice owner at companies hiring front-desk staff'], ['hiring an office manager', 'Practice owner at companies hiring office manager'],
-    ['hiring recruiters', 'Agency owner at companies hiring recruiters', 'Agency owner'], ['Hiring their first SDR or salesperson', 'Founder at companies hiring SDR', 'Founder'],
+    ['hiring recruiters', 'Agency owner at companies hiring recruiters', 'Agency owner'], ['Hiring their first SDR or salesperson', 'Founder at companies hiring SDR or salesperson', 'Founder'],
     ['hiring a Head of Sales', 'Practice owner at companies hiring Head of Sales'], ['now hiring recruiters', 'Practice owner at companies hiring recruiters'],
     ['just started hiring front-desk staff', 'Practice owner at companies hiring front-desk staff'], ['are currently actively hiring SDRs', 'Practice owner at companies hiring SDRs']] as [string, string, string?][])
     assert.deepEqual(q(s, [who ?? 'Practice owner']), [play], s)
