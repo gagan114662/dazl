@@ -283,6 +283,16 @@ export type BoardPlace = { place: Place } | { reason: string }
 type PlanPlaceIn = { text: string; city: string | null; region: string | null; country: string | null }
 export interface BoardContext { country?: string | null; where?: readonly string[] }
 type Resolved = { place: Place; input: string } | { reason: string }
+// PM ruling 2026-11-22: a request that names no place still reads the job boards - on the ICP's country when one is set, else anywhere.
+// A posting is in the country when a segment of its location is that country, or a region (US state, Canadian province ...) of it. A
+// posting with no readable location is not in it (never assumed).
+export function countryPlace(code: string): Place | null {
+  const c = countryFromField(code)
+  if (!c) return null
+  const inIt = (loc: string) => loc.split(/[,;/|()]+/).map(s => s.trim()).filter(Boolean).some(seg => resolveSegment(seg, true) === c || countriesIn(seg).includes(c) || (() => { const r = regionOf(seg); return !!r && countryOfRegion(r) === c })())
+  return { name: c, ok: (...locs) => locs.some(l => !!l && inIt(l)) }
+}
+export const ANYWHERE: Place = { name: '', ok: () => true }
 export function boardPlaceOf(places: readonly PlanPlaceIn[], ctx: BoardContext = {}): BoardPlace {
   if (places.length === 0) return { reason: 'skipped_no_place' }
   const built = places.map(p => boardPlaceOne(p, ctx))
