@@ -180,8 +180,8 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   // revoking records only consent that was given (audit-coverage-runtime.mts has the no-op case): give it first
   acceptReadConsent(raw, 'A')
   await step('reply reading revoked', t.A, () => replies.POST(req('/api/outreach/replies', 'POST', { action: 'revoke' })))
-  // stopping a sequence that does not exist changes nothing and records nothing
-  await step('sequence stop no-op', t.A, () => sequences.POST(req('/api/outreach/sequences', 'POST', { action: 'stop', id: 'zzz' })))
+  // stopping a sequence that does not exist (or is another workspace's, #830) is not found, changes nothing and records nothing
+  await step('sequence stop no-op', t.A, () => sequences.POST(req('/api/outreach/sequences', 'POST', { action: 'stop', id: 'zzz' })), 404)
   assert.equal((raw.prepare("SELECT count(*) AS n FROM audit_events WHERE action LIKE 'sequence.%'").get() as { n: number }).n, 0)
   const more = ((await (await read(t.A, '?limit=4')).json()) as { events: Ev[] }).events.reverse()
   assert.deepEqual(more.map(e => `${e.actor_id} ${e.action} ${e.resource_type}${e.resource_id ? ` ${e.resource_id}` : ''}`), [
