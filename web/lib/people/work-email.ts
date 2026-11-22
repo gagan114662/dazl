@@ -160,12 +160,12 @@ function markedWorkEmailHeld(db:Database.Database,tenantId:string,lead:LeadRow,n
 // A company-first crawl files the buyer's own address from their own card on the company page (company_first_published_email_display),
 // not as a published candidate. On a US lead the same strict step also wrote the sender route for that exact address and page; only
 // then is the pair this buyer's published candidate here, so Find work email gives what the scan already found. Never outside the US.
-function withUsCompanyFirst(db: Database.Database, tenantId: string, base: Record<string, PublishedCandidateRow[]>, leadIds: string[], now: number): Record<string, PublishedCandidateRow[]> {
+function withUsCompanyFirst(db: Database.Database, tenantId: string, base: Record<string, PublishedCandidateRow[]>, leadIds: string[], now: number, known?: Record<string, Enrichment[]>): Record<string, PublishedCandidateRow[]> {
   if (!leadIds.length) return base
   const pairs = companyFirstPublishedDisplayRowsSync(db, tenantId, leadIds, now)
   const ids = Object.keys(pairs)
   if (!ids.length) return base
-  const routes = enrichmentsForLeads(db, tenantId, ids)
+  const routes = known ?? enrichmentsForLeads(db, tenantId, ids)
   const out = { ...base }
   for (const id of ids) {
     const pair = pairs[id]
@@ -191,7 +191,7 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
     const projected = readable.map(l => ({ l, ctx: workEmailTargetContext(l, enriched[l.id] ?? [], now) }))
     const companyFirstIds = new Set(readable.filter(l => hasCompanyFirstBudget(l.run_budget)).map(l => l.id))
     const idsFor = (country: 'CA' | 'GB' | null) => projected.filter(r => r.ctx && publishedDisplayCountry(r.ctx.where) === country).map(r => r.l.id)
-    const candidates = { ...withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, idsFor(null)), idsFor(null).filter(id => companyFirstIds.has(id)), now),
+    const candidates = { ...withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, idsFor(null)), idsFor(null).filter(id => companyFirstIds.has(id)), now, enriched),
       ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
     for (const { l, ctx } of projected) {
       if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
@@ -373,7 +373,7 @@ async function lookupWorkEmail(
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
   if (derived.publishedOnly) {
     const country = publishedDisplayCountry(ctx.where)
-    const candidates = country ? publishedDisplayRows(db, tenantId, country, [lead.id]) : withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, [lead.id]), hasCompanyFirstBudget(lead.run_budget) ? [lead.id] : [], now)
+    const candidates = country ? publishedDisplayRows(db, tenantId, country, [lead.id]) : withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, [lead.id]), hasCompanyFirstBudget(lead.run_budget) ? [lead.id] : [], now, { [lead.id]: rows })
     const row = strictPublishedRow(target, person.name, ctx, candidates[lead.id] ?? [], now)
     return { status: row.status, row, replayed: false }
   }

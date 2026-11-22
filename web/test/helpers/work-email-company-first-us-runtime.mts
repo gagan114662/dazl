@@ -20,6 +20,7 @@ import { recordActionability } from '../../lib/scan/actionable.ts'
 import { recordTimingProof } from '../../lib/scan/timing-proof.ts'
 import { currentnessHeld } from '../../lib/outreach/currentness.ts'
 import { workEmailPageRead } from '../../lib/people/work-email.ts'
+import { qaClaudeOnlyBudget } from '../../lib/scan/qa-provider-policy.ts'
 import { timingProofGap } from '../../lib/scan/timing-proof.ts'
 import { requiredGateHeld } from '../../lib/scan/held-state.ts'
 
@@ -98,19 +99,27 @@ test('Canadian company-first buyer stays display-only: the one-click lookup give
   s.db.close()
 })
 
-test('the US pair needs its own sender route on the same page, an unsuppressed address and a company-first job', async () => {
+test('the US pair needs its own sender route for that address and page, a current unsuppressed pair and a company-first job', async () => {
   const cases: [string, (s: Awaited<ReturnType<typeof companyFirstLead>>) => void][] = [
     // the lead stays current through its published company phone, so only the sender-route check stands between the pair and the button
     ['no sender route', s => { s.phone(); s.db.prepare("DELETE FROM lead_enrichments WHERE lead_id=? AND kind='email'").run(s.lead) }],
     ['sender route from another page', s => { s.phone(); s.db.prepare("UPDATE lead_enrichments SET source_url='https://harlowgrant.com/' WHERE lead_id=? AND kind='email'").run(s.lead) }],
     ['suppressed address', s => { s.db.prepare("INSERT INTO suppressions (tenant_id,email,reason,created_at) VALUES ('A',?,'manual',?)").run(s.email, Math.floor(Date.now() / 1000)) }],
-    ['not a company-first job', s => { s.db.prepare('UPDATE scan_jobs SET run_budget=NULL').run() }],
+    ['sender route for another address on the page', s => { s.phone(); s.db.prepare("UPDATE lead_enrichments SET value='office.lead@harlowgrant.com' WHERE lead_id=? AND kind='email'").run(s.lead) }],
+    ['pair from an earlier scan attempt', s => { s.phone(); s.db.prepare('UPDATE scan_jobs SET attempts=attempts+1').run() }],
+    ['pair older than 45 days', s => {
+      s.phone()
+      s.db.prepare('UPDATE company_first_published_email_display SET observed_at=observed_at-46*86400').run()
+      s.db.prepare("UPDATE lead_enrichments SET retrieved_at=retrieved_at-46*86400 WHERE lead_id=? AND kind='person'").run(s.lead)
+    }],
+    // published-only, but not company-first: the pair is never read
+    ['a published-only QA job that is not company-first', s => { s.db.prepare('UPDATE scan_jobs SET run_budget=?').run(qaClaudeOnlyBudget(null)) }],
   ]
   for (const [why, change] of cases) {
     const s = await companyFirstLead('Chicago, IL', '200 Example Ave, Chicago, IL 60606')
     change(s)
     await s.refresh()
-    if (why.includes('sender route')) assert.equal(currentnessHeld(s.db, 'A', s.lead, s.now), false, why + ': the lead is current, so only the guard can refuse')
+    if (why.includes('sender route') || why.includes('attempt')) assert.equal(currentnessHeld(s.db, 'A', s.lead, s.now), false, why + ': the lead is current, so only the guard can refuse')
     const body = await (await s.post(s.target)).json() as { lookup?: { address: string | null } }
     assert.notEqual(body.lookup?.address ?? null, s.email, why)
     assert.ok(!(await (await s.get()).json() as { lookups: { address: string | null }[] }).lookups.some(l => l.address === s.email), why)
