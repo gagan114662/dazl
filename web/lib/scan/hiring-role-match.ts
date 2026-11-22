@@ -43,8 +43,9 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
     for (const m of text.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\s+([^.;!?\n]+)/gi)) {
       const phrase = m[1].split(/\s+(?:within|in|at|with|on|from|that|who|whose|during|over|across)\b|\(/i)[0].trim()
       if (LEAD_QUALIFIER.test(phrase)) continue
-      for (const raw of phrase.split(/\s+or\s+|\s+and\s+|,/i)) {
-        const term = raw.replace(LEAD_WORDS, '').trim()
+      // #1122: "a new Head of Sales/VP Sales" is two titles; the leading words are stripped after trimming (the split leaves a space).
+      for (const raw of phrase.split(/\s+or\s+|\s+and\s+|,|\//i)) {
+        const term = raw.trim().replace(LEAD_WORDS, '').trim()
         const n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n)) continue
         // Broad hiring is not a named title. Keep the existing generic-GTM contract for it.

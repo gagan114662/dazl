@@ -148,7 +148,22 @@ const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a
 
 // The candidate proofs of a condition, best first. Only hiring can have more than one: every posting inside its now-clock, then the
 // lead's own quote when that passes too. Every other kind has exactly one. Without a relative clock the first candidate is the proof.
+// #1122 (case 1): the posting title names one of the role's own alternatives ("Head of Sales/VP Sales"): every word of that alternative.
+const roleAlts = (role: string) => role.split('/').map(roleWords).filter(w => w.length)
+const titleNamesRole = (title: string, role: string) => { const t = new Set(roleWords(title)); return roleAlts(role).some(a => a.every(w => t.has(w))) }
+const NOT_DATED = /posting date was not read|^unconfirmed:/i
 function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof[] {
+  if (c.kind === 'hire_made' && c.new_role) {
+    // "a new Head of Sales": a dated source saying the person joined, or a dated posting whose title IS that role. Each says which it is.
+    const now = ctx.now ?? Date.now(), role = c.role ?? ''
+    const joined = ownProof(c, lead, rows, ctx)
+    const posts: Proof[] = rows.filter(r => (r.kind === 'hiring-role' || r.kind === 'hiring') && isDate(r.source_date) && typeof r.source_url === 'string' && !NOT_DATED.test(`${r.value} ${r.label ?? ''}`) && titleNamesRole(`${r.value} ${r.label ?? ''}`, role) && onClock(r.source_date, clockOf(c), now) === 'in')
+      .sort(postingOrder).map(r => ({ truth: 'pass', reason: `hiring a ${role}, posted ${r.source_date} (${r.value})`.slice(0, 300), source_url: r.source_url, date: r.source_date }))
+    // The lead's own cited posting, dated by its board (ats_structured), whose title is the role.
+    if (lead.event_date_proof === 'ats_structured' && titleNamesRole(`${lead.signal ?? ''} ${lead.evidence_excerpt ?? ''}`, role) && onClock(lead.event_date, clockOf(c), now) === 'in')
+      posts.push({ truth: 'pass', reason: `hiring a ${role}, posted ${lead.event_date}`, source_url: lead.source_url, date: lead.event_date! })
+    return joined.truth === 'pass' ? [joined, ...posts] : posts.length ? posts : [joined]
+  }
   if (c.kind !== 'hiring') return [ownProof(c, lead, rows, ctx)]
   const now = ctx.now ?? Date.now()
   const gtm = !c.role || isGtmRole(c.role)
@@ -206,7 +221,9 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
     case 'hire_made': {
       const want = roleWords(c.role ?? '')
       // Shared with the OR gate (sales-hiring-gate.ts) so both read a completed hire the same way: this company's own, affirmative, not conditional.
-      const shows = quoteShowsCompletedHire(quote, lead.company, want, !!c.first)
+      // A "new <role>" names alternatives ("Head of Sales/VP Sales"): the quote must show a hire of one of them.
+      const shows = c.new_role ? roleAlts(c.role ?? '').some(a => quoteShowsCompletedHire(quote, lead.company, a, false)) : quoteShowsCompletedHire(quote, lead.company, want, !!c.first)
+      if (c.new_role && shows) { const p = dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, `this company made a ${c.role || 'role'} hire`); return p.truth === 'pass' ? { ...p, reason: `new ${c.role || 'role'} joined${p.date ? ` ${p.date}` : ''} (a verified source says the hire was made)` } : p }
       return dated(shows, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, `this company ${c.first ? 'made its first' : 'made a'} ${c.role || 'role'} hire`)
     }
   }
