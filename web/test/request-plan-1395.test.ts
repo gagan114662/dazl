@@ -153,3 +153,17 @@ test('#1395 grounding: a profile entry naming the same city with its country gro
   assert.equal((await readRequestPlan(p, 'k', 'Find employers hiring refrigeration technicians in Faro', 'T', undefined, ['Faro, Portugal'])).ok, true)
   assert.deepEqual(await readRequestPlan(p, 'k', 'Find employers hiring refrigeration technicians in Faro', 'T', undefined, []), { ok: false, reason: 'place_not_in_request' }, 'the cache is per profile too')
 })
+
+// Qodo High (#1527): a region or country WRITTEN in the place text must be in the plan's fields; omitted or conflicting qualifiers are refused,
+// never left for a resolver to infer another place ("London, Ontario" with only city London would be the UK London).
+test('#1395 grounding: a written region or country the plan omits or contradicts is refused', async () => {
+  const req = 'Dental clinics in London, Ontario hiring front-desk staff'
+  assert.equal(groundedIn(req, { text: 'London, Ontario', city: 'London', region: null, country: null }), false, 'region and country omitted')
+  assert.equal(groundedIn(req, { text: 'London, Ontario', city: 'London', region: null, country: 'GB' }), false, 'region omitted, wrong country')
+  assert.equal(groundedIn(req, { text: 'London, Ontario', city: 'London', region: 'Ontario', country: 'CA' }), true)
+  assert.equal(groundedIn('Startups SaaS à Toronto, Canada', { text: 'Toronto, Canada', city: 'Toronto', region: null, country: null }), false, 'a written country omitted')
+  assert.equal(groundedIn('hiring in Austin, TX', { text: 'Austin, TX', city: 'Austin', region: null, country: 'US' }), false, 'a written state omitted')
+  clearRequestPlanCache()
+  const p = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => ({ text: JSON.stringify(plan([{ text: 'London, Ontario', city: 'London', region: null, country: null }])), model: 'm' }) } as unknown as Provider
+  assert.deepEqual(await readRequestPlan(p, 'k', req, 'T'), { ok: false, reason: 'place_not_in_request' })
+})
