@@ -1421,9 +1421,11 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
 // DISCOVER_TRIAL_MIN_USD, and then with a smaller search budget so a run fits that reserve. Below that it keeps the older path.
 export const DISCOVER_SOURCE_KIND = 'discover'
 const DISCOVER_RESERVE_USD = 1.5   // the worst case reserved before the call; the settled cost is what the run really used
-export const DISCOVER_TRIAL_MIN_USD = 0.75
+export const DISCOVER_TRIAL_MIN_USD = 0.3   // the least a run can do anything useful with (measured: US$0.08 to US$0.20 at the smallest budget)
+const DISCOVER_SMALL_MIN_USD = 0.75
 const DISCOVER_MAX_USD = 1   // the owner's ceiling for one request (launch brief)
-const DISCOVER_TRIAL_BUDGET = { maxSearches: 10, maxFetches: 8, enrichLeads: 6 } as const   // measured at about US$0.35 to US$0.60 a run
+const DISCOVER_TRIAL_BUDGET = { maxSearches: 10, maxFetches: 8, enrichLeads: 6 } as const   // measured at US$0.34 to US$0.46 a run
+const DISCOVER_TINY_BUDGET = { maxSearches: 5, maxFetches: 4, enrichLeads: 2 } as const     // measured at US$0.08 to US$0.20 a run; fits a US$0.30 trial scan
 export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'watch_id' | 'funded_by'>, vendor: string | null, env: Record<string, string | undefined> = process.env, trialReserveUsd: number | null = null): boolean {
   if (job.funded_by === 'trial' && !(trialReserveUsd !== null && trialReserveUsd >= DISCOVER_TRIAL_MIN_USD)) return false
   return env.DAZL_DISCOVER_LANE !== '0' && vendor === 'anthropic' && !!job.query && job.query.trim().length >= 3 && !job.csv_domain
@@ -1463,7 +1465,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   try {
     // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
     run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(known.length ? { exclude: known } : {}) },
-      { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? { maxSearches: DISCOVER_TRIAL_BUDGET.maxSearches, maxFetches: DISCOVER_TRIAL_BUDGET.maxFetches, enrichLeads: DISCOVER_TRIAL_BUDGET.enrichLeads } : {}) },
+      { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? (room < DISCOVER_SMALL_MIN_USD ? DISCOVER_TINY_BUDGET : DISCOVER_TRIAL_BUDGET) : {}) },
       { apiKey: key, fetch: fetchImpl, discover, enrich })
   } catch (e) {
     await hold?.settle(null)   // the call may have been billed: keep the worst case

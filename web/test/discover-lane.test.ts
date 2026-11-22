@@ -21,8 +21,8 @@ test('the lane runs for an ordinary request on the workspace\'s own Anthropic ke
   assert.equal(discoverLaneEnabled(job, 'anthropic', { DAZL_DISCOVER_LANE: '0' }), false, 'the switch turns it off')
   assert.equal(discoverLaneEnabled(job, 'openai', {}), false)
   assert.equal(discoverLaneEnabled({ ...job, funded_by: 'trial' }, 'anthropic', {}), false, 'a free-trial scan with no stated reserve keeps the older path')
-  assert.equal(discoverLaneEnabled({ ...job, funded_by: 'trial' }, 'anthropic', {}, 0.3), false, 'a trial reserve too small for one run keeps the older path')
-  assert.equal(discoverLaneEnabled({ ...job, funded_by: 'trial' }, 'anthropic', {}, 0.75), true, 'a trial reserve that covers one run uses the lane')
+  assert.equal(discoverLaneEnabled({ ...job, funded_by: 'trial' }, 'anthropic', {}, 0.2), false, 'a trial reserve too small for any run keeps the older path')
+  assert.equal(discoverLaneEnabled({ ...job, funded_by: 'trial' }, 'anthropic', {}, 0.3), true, 'the current US$0.30 trial scan uses the lane, at its smallest budget')
   assert.equal(discoverLaneEnabled({ ...job, csv_domain: 'acme.example' }, 'anthropic', {}), false)
   assert.equal(discoverLaneEnabled({ ...job, watch_id: 'w1' }, 'anthropic', {}), true, 'a play that runs again uses the lane too')
 })
@@ -88,4 +88,20 @@ test('a request with its own lower limit gets the smaller search budget and neve
   const spend = db.prepare('SELECT reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id = ?').all(id) as { reserve_usd: number; actual_usd: number }[]
   assert.equal(spend.length, 1)
   assert.ok(spend[0].reserve_usd <= 1 && spend[0].actual_usd === 0.4, JSON.stringify(spend))   // two passes: the first found nothing
+})
+
+test('a request limited to US$0.30 gets the smallest budget: five searches, no second pass', async () => {
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor', runBudget: JSON.stringify({ max_usd: 0.3 }) })
+  const job = claimKeyedJob(db, id)
+  const asked: Record<string, unknown>[] = []
+  const empty: DiscoverResult = { leads: [], seen: [], usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.15 }, stop: 'end_turn', model: 'm', note: null }
+  assert.equal(await runJob(db, job!, { master, discover: true, enrichImpl: null, discoverImpl: async input => { asked.push(input as unknown as Record<string, unknown>); return empty } }), 'done')
+  assert.deepEqual([asked.length, asked[0].maxSearches, asked[0].maxFetches], [1, 5, 4])
+  const spend = db.prepare('SELECT reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id = ?').all(id) as { reserve_usd: number; actual_usd: number }[]
+  assert.ok(spend.length === 1 && spend[0].reserve_usd <= 0.3 && spend[0].actual_usd === 0.15, JSON.stringify(spend))
 })

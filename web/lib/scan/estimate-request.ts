@@ -83,9 +83,9 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   // The same test the runner applies (runner.ts discoverLaneEnabled and its room check): an ordinary request on an Anthropic key, or a
   // free-trial run whose reserve covers one; a request that set its own limit under a full run gets the smaller budget.
   const trialReserve = ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null
-  const laneOn = process.env.DAZL_DISCOVER_LANE !== '0' && typeof query === 'string' && query.trim().length >= 3 && (ctx.hasOwnKey ? /^claude/i.test(own ?? '') : (trialReserve ?? 0) >= 0.75)
+  const laneOn = process.env.DAZL_DISCOVER_LANE !== '0' && typeof query === 'string' && query.trim().length >= 3 && (ctx.hasOwnKey ? /^claude/i.test(own ?? '') : (trialReserve ?? 0) >= 0.3)
   const laneRoom = Math.min(trialReserve ?? Infinity, typeof budget?.max_usd === 'number' ? budget.max_usd : Infinity)
-  const discoverLane = !laneOn || laneRoom < 0.75 ? null : laneRoom < 1.5 ? 'small' as const : 'full' as const
+  const discoverLane = !laneOn || laneRoom < 0.3 ? null : laneRoom < 0.75 ? 'tiny' as const : laneRoom < 1.5 ? 'small' as const : 'full' as const
   const estimate = estimateRun({
     discoverLane,
     budget, qaClaudeOnly, qaNativeWebSearch, companyFirst, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
