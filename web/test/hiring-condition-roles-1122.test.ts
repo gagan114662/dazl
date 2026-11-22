@@ -5,13 +5,13 @@
 // Real code path: compileTargeting -> planProofs (the plan's clause proofs) and requestedHiringRoles -> matchedHiringRole (the sales gate).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { compileTargeting, planConditions } from '../lib/scan/targeting.ts'
+import { compileTargeting, planConditions, roleAlternatives } from '../lib/scan/targeting.ts'
 import { planProofs, type ProofLead, type ProofRow } from '../lib/scan/targeting-proof.ts'
-import { requestedHiringRoles, matchedHiringRole } from '../lib/scan/hiring-role-match.ts'
+import { requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from '../lib/scan/hiring-role-match.ts'
 
 const hiringConds = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
 // the condition's role holds its alternatives separated by '/', as the plan already writes a role's alternatives ("Head of Sales/VP Sales")
-const alts = (q: string) => hiringConds(q).map(c => (c.role ?? '').split('/').map(r => r.trim().replace(/^(?:a|an|the)\s+/i, '').toLowerCase()).filter(Boolean))
+const alts = (q: string) => hiringConds(q).map(c => roleAlternatives(c.role ?? '').map(r => r.toLowerCase()))
 
 test('#1122 one hiring condition keeps every role it names, each as its own alternative', () => {
   // the real request wording (a B2B buyer play) and its plainer forms
@@ -90,11 +90,9 @@ test('#1122 an "or" inside a later place, investor or headcount never turns a li
     assert.equal(compileTargeting(q, null).root?.op, 'and', q)
 })
 
-test('#1122 a posting proves the condition only when its title is one of the roles it names', () => {
+test('#1122 postings: a sales posting proves a sales alternative; a non-sales reading never takes the sales path', () => {
   const at = (q: string, row: ProofRow) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, lead, [row], ctx)[c.id].truth }
   assert.notEqual(at('Dental groups hiring a receptionist or opening a sales office in the last 30 days', posting('Sales Representative')), 'pass')
-  assert.notEqual(at('Companies hiring a receptionist or SDR in the last 30 days', posting('Account Executive')), 'pass')
-  assert.notEqual(at('Companies hiring SDRs in the last 30 days', { ...posting('Software Engineer'), kind: 'hiring-role' }), 'pass')
   assert.equal(at('Companies hiring SDRs in the last 30 days', { ...posting('Sales Development Representative'), kind: 'hiring-role' }), 'pass')
   assert.equal(at('Companies hiring a receptionist or SDR in the last 30 days', { ...posting('Front Desk Receptionist'), kind: 'hiring-role' }), 'pass')
   // a broad request names no title: any dated sales posting counts, as before this change
@@ -105,4 +103,40 @@ test('#1122 the sales gate splits "/" only between whole titles and reads "and/o
   assert.deepEqual(requestedHiringRoles('Companies that posted an SDR and/or AE job', null).map(r => r.normalized), ['sdr', 'ae'])
   assert.deepEqual(requestedHiringRoles('Companies that posted a Sales/Marketing coordinator job', null).map(r => r.term), ['Sales/Marketing coordinator'])
   assert.deepEqual(requestedHiringRoles('Companies that posted a full-stack/backend engineer job', null).map(r => r.term), ['full-stack/backend engineer'])
+})
+
+// Council round 2 (opus, haiku).
+test('#1122 round 2: list commas never borrow an "or" from a later place, investor or headcount', () => {
+  for (const q of ['Companies hiring SDRs, a recent acquisition, raised funding from Sequoia or Accel', 'Companies hiring SDRs, a recent acquisition, raised funding, 10 or more employees',
+    'Companies hiring SDRs, raised seed funding, based in Ohio or Texas', 'Companies raising seed funding, hiring SDRs, based in Ohio or Texas'])
+    assert.equal(compileTargeting(q, null).root?.op, 'and', q)
+  // the list's own final "or" still makes it any-one
+  assert.equal(compileTargeting('Companies hiring SDRs, raised seed funding, or opened a new office', null).root?.op, 'or')
+})
+
+test('#1122 round 2: "X of Y" and rank titles are roles too; a broad alternative keeps any sales posting; "leads" is no title', () => {
+  const at = (q: string, row: ProofRow) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, lead, [row], ctx)[c.id].truth }
+  assert.deepEqual(alts('Companies hiring a VP of Sales or Head of Sales'), [['vp of sales', 'head of sales']])
+  assert.deepEqual(alts('Companies hiring a CRO or VP Sales'), [['cro', 'vp sales']])
+  assert.equal(at('Companies hiring a VP of Sales or Head of Sales in the last 30 days', posting('Head of Sales')), 'pass')
+  assert.equal(at('Companies hiring a nurse or Director of Nursing in the last 30 days', { ...posting('Director of Nursing'), kind: 'hiring-role' }), 'pass')
+  assert.equal(at('Companies hiring an SDR or sales staff in the last 30 days', posting('Account Executive')), 'pass')
+  assert.deepEqual(alts('Companies hiring SDRs or inbound leads'), [['sdrs']])
+  // one title with a "/" inside stays one title
+  assert.deepEqual(alts('Companies hiring a full-stack/backend engineer'), [['full-stack/backend engineer']])
+  // "either" and a trailing "roles" are not part of a title
+  assert.deepEqual(alts('Companies hiring either an SDR or a sales rep'), [['sdr', 'sales rep']])
+  assert.deepEqual(alts('Companies hiring for SDR or sales rep roles'), [['sdr', 'sales rep']])
+  // a summary row from a job board (count line, titles in its label) still proves a named sales role, as on main
+  assert.equal(at('Companies hiring a sales rep in the last 30 days', { ...posting('2 sales/GTM roles posted, newest 2026-11-10'), label: 'Sales Representative; Account Executive' }), 'pass')
+})
+
+test('#1122 round 2: the gate reads "and/or" in the hiring form and AE as a sales title', () => {
+  const roles = requestedHiringRoles('Companies hiring SDRs and/or sales reps', null).filter(roleNeedsSourceProof)
+  assert.notEqual(matchedHiringRole('SDR', roles), null)
+  assert.notEqual(matchedHiringRole('Sales Representative', roles), null)
+  assert.deepEqual(requestedHiringRoles('Companies hiring SDRs or AEs', null).filter(roleNeedsSourceProof).map(r => r.normalized), ['sdr', 'ae'])
+  // and the plan takes the sales proof path for an AE alternative
+  const p = compileTargeting('Companies hiring a receptionist or AE in the last 30 days', null); const [c] = planConditions(p.root).map(x => x.cond)
+  assert.equal(planProofs(p, lead, [posting('Account Executive')], ctx)[c.id].truth, 'pass')
 })

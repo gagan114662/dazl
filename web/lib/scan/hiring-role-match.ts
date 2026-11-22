@@ -25,8 +25,12 @@ export const roleSurfaceForms = (r: RequestedHiringRole): string[] => [r.term, .
 export interface RequestedHiringRole { term: string; normalized: string }
 // #1122: whether a phrase ends in a job-title noun ("sales rep", "BDR", "account executive", "dental assistant"): what makes a word after
 // "or" or "/" another role of the same clause rather than another condition, a place, a company or a qualifier.
-const TITLE_NOUN = /(?:^|\s)(?:reps?|representatives?|sdrs?|bdrs?|aes?|executives?|managers?|directors?|heads?|vps?|leads?|officers?|engineers?|developers?|designers?|analysts?|specialists?|coordinators?|assistants?|associates?|administrators?|admins?|receptionists?|hygienists?|technicians?|nurses?|accountants?|consultants?|salespersons?|salespeople|sellers?|marketers?|recruiters?|agents?|clerks?|strategists?|writers?|planners?|operators?|supervisors?|staff)$/i
-export const endsInTitleNoun = (s: string): boolean => TITLE_NOUN.test(s.trim())
+const TITLE_NOUN = /(?:^|\s)(?:reps?|representatives?|sdrs?|bdrs?|aes?|executives?|managers?|directors?|heads?|vps?|officers?|engineers?|developers?|designers?|analysts?|specialists?|coordinators?|assistants?|associates?|administrators?|admins?|receptionists?|hygienists?|technicians?|nurses?|accountants?|consultants?|salespersons?|salespeople|sellers?|marketers?|recruiters?|agents?|clerks?|strategists?|writers?|planners?|operators?|supervisors?|staff)$/i
+// "Head of Sales", "Director of Nursing", "VP of Marketing": the title noun sits before "of ..."; "VP Sales", "CRO": a leading rank or a C-level name
+export const endsInTitleNoun = (s: string): boolean => {
+  const base = s.trim().replace(/\s+of\s+[A-Za-z &-]+$/i, '')
+  return TITLE_NOUN.test(base) || /^(?:s?vp|evp|head|director|chief)\b/i.test(base) || /^c[a-z]o$/i.test(base)
+}
 
 // A capture that STARTS with a qualifier names a place or time, never a title: "hiring in Ohio", "hiring within 90 days", "hiring now".
 const LEAD_QUALIFIER = /^(?:within|in|at|on|from|with|during|over|across|now|currently|recently|soon|asap|immediately)\b/i
@@ -61,7 +65,8 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
       const phrase = m[1].split(/\s+(?:within|in|at|with|on|from|that|who|whose|during|over|across)\b|\(/i)[0].trim()
       if (LEAD_QUALIFIER.test(phrase)) continue
       // #1122: "a new Head of Sales/VP Sales" is two titles; the leading words are stripped after trimming (the split leaves a space).
-      for (const raw of phrase.split(/\s+or\s+|\s+and\s+|,|\//i)) {
+      // #1122: "SDRs and/or sales reps" is one separator, as in the posted-job form above
+      for (const raw of phrase.replace(/\s+and\s*\/\s*or\s+/gi, ' or ').split(/\s+or\s+|\s+and\s+|,|\//i)) {
         const term = raw.trim().replace(LEAD_WORDS, '').trim()
         const n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n)) continue
@@ -81,4 +86,7 @@ export function matchedHiringRole(title: string, roles: RequestedHiringRole[]): 
 }
 // Only sales/GTM-family requested titles gate drafting: the required proof is the SALES-hiring check. A requested
 // non-GTM title (receptionist, payroll, front-desk) is a buying signal - recorded as evidence, never a drafting hold.
-export const roleNeedsSourceProof = (r: RequestedHiringRole): boolean => isGtmRole(r.term) || /\bcrm\b/i.test(r.term)
+// #1122: a sales title by its short name too ("AE", "AEs" read as account executive, like SDR / BDR / salesperson): the generic GTM test
+// does not know "AE", so a request naming it took no sales proof path.
+export const isSalesTitle = (term: string): boolean => isGtmRole(term) || ['sdr', 'bdr', 'ae', 'salesperson'].includes(normal(term))
+export const roleNeedsSourceProof = (r: RequestedHiringRole): boolean => isSalesTitle(r.term) || /\bcrm\b/i.test(r.term)

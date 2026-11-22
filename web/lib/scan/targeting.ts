@@ -117,24 +117,27 @@ const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 // That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
 const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
 const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
-const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for)\s+)+/i, '').trim()
+const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for|either)\s+)+/i, '').trim()
 // #1122: one open-role clause can name several roles ("hiring an SDR/BDR or sales rep"). Every one is kept, separated by "/" (the separator a
 // role's alternatives already use, "Head of Sales/VP Sales"), and each is judged on its own (roleAlternatives). A further role is read after
 // "or" or "/" only (a comma separates conditions: "A, B, or C") while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or
 // qualifier word, and it starts no other condition of the request ("hiring SDRs or raised a Series A" stays two conditions).
+const LIST_GAP = /^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)*$/i
 const ALT_SEP = /^(?:\s*\/\s*|\s+or\s+|\s+and\s*\/\s*or\s+)/i
 const NOT_ROLE_WORD = /^(?:now|currently|recently|soon|asap|immediately|today|actively|urgently|last|past|next|this|within|in|at|on|from|with|during|over|across|days?|weeks?|months?|years?)$/i
 // A further role must END in a job-title noun ("sales rep", "BDR", "account executive", "dental assistant") and must not open with a verb form
 // or a clause word: "or opening a new office", "or companies that raised funding", "or founders who ..." are other conditions, never roles.
 const altRole = (s: string) => !!s && /^[A-Za-z][A-Za-z\s&\/-]*$/.test(s) && s.split(/\s+/).length <= 5 && endsInTitleNoun(s)
-  && !s.split(/[\s\/]+/).some(w => /(?:ed|ing)$/i.test(w) || NOT_ROLE_WORD.test(w) || /^(?:who|that|which|whose|where|companies|company|firms?|businesses|startups?|teams?)$/i.test(w))
+  && !/^[A-Za-z]+(?:ed|ing)\b/i.test(s)   // a verb opens another condition ("opening a new office", "raised a Series A"); "Director of Nursing" is a title
+  && !s.split(/[\s\/]+/).some(w => NOT_ROLE_WORD.test(w) || /^(?:who|that|which|whose|where|companies|company|firms?|businesses|startups?|teams?)$/i.test(w))
 // Run once every condition of the request is found (findAtoms' last step), so a later reading (an event, a completed hire) keeps its own span.
 function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { roles: string[]; end: number } {
   const roles = [role]
   let rest = text, end = self.end
   for (;;) {
     const sep = ALT_SEP.exec(rest); if (!sep) break
-    const tail = rest.slice(sep[0].length), next = cleanRole(tail)
+    // "SDR or sales rep roles": the trailing "roles" / "positions" belongs to the list, not to the title
+    const tail = rest.slice(sep[0].length), next = cleanRole(tail).replace(/\s+(?:roles?|positions?|jobs?|openings?|vacancies)$/i, '')
     if (!altRole(next)) break
     const nextEnd = end + sep[0].length + tail.indexOf(next) + next.length
     if (atoms.some(b => b !== self && end < b.end && b.start < nextEnd)) break
@@ -143,7 +146,13 @@ function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { rol
   return { roles, end }
 }
 // The roles one hiring condition names, each on its own (leading articles and "their first" dropped): "their first SDR/BDR/sales rep" -> SDR, BDR, sales rep.
-export const roleAlternatives = (role: string): string[] => role.split('/').map(r => r.trim().replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural)\s+)+/i, '').trim()).filter(Boolean)
+// "/" separates roles only when every piece is itself a title (the sales gate's rule): "full-stack/backend engineer" and "Sales/Marketing
+// coordinator" are one title each.
+const STRIP_LEAD = /^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|either)\s+)+/i
+export const roleAlternatives = (role: string): string[] => {
+  const pieces = role.split('/').map(r => r.trim().replace(STRIP_LEAD, '').trim()).filter(Boolean)
+  return pieces.length > 1 && pieces.every(endsInTitleNoun) ? pieces : [role.trim().replace(STRIP_LEAD, '').trim()].filter(Boolean)
+}
 
 function findAtoms(q: string): Atom[] {
   const atoms: Atom[] = []
@@ -299,11 +308,14 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     if (/\bnor\b/i.test(t)) return 'and'
     if (/\bor\b|\beither\b/i.test(t)) return 'or'
     // #1122 follow-up: a bare comma inside a list ("A or B, C, or D") takes the list's own connective: the next and/or in the same clause.
-    if (/^\s*,\s*$/.test(t)) { const w = /\b(and|or)\b/i.exec(q.slice(atoms[i + 1].end).split(/[.;:!?]/)[0]); if (w) return w[1].toLowerCase() as 'and' | 'or' }
-    // #1122: a list item may open with an article or "new" before its condition word ("..., new funding, a new Head of Sales, or ..."). Such a
-    // comma takes the connective of the NEXT gap of the same list, and only when that gap is itself a list gap; otherwise it stays 'and'. So an
-    // "or" inside a later place, investor or headcount ("based in Ohio or Texas", "10 or more employees") never turns the list into an OR.
-    if (/^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)+$/i.test(t) && i + 1 < gaps.length && /^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)*$/i.test(gaps[i + 1].replace(WINDOW_RE, ' '))) return connAt(i + 1)
+    // A list comma ("A or B, C, or D"; #1122: the item may open with an article or "new": "..., new funding, a new Head of Sales, or ...")
+    // takes the list's own connective: the next gap's, when that gap is itself part of the list; after the last condition, only a ", or" /
+    // ", and" right after the comma. An "or" inside a later place, investor or headcount ("based in Ohio or Texas", "10 or more employees")
+    // never turns the list into an OR; anything else stays 'and'.
+    if (LIST_GAP.test(t)) {
+      if (i + 1 < gaps.length) { const n = gaps[i + 1].replace(WINDOW_RE, ' '); return /\bor\b|\beither\b/i.test(n) && !/\band\s*\/\s*or\b|\bnor\b/i.test(n) ? 'or' : LIST_GAP.test(n) ? connAt(i + 1) : 'and' }
+      const w = /^\s*,\s*(and|or)\b/i.exec(q.slice(atoms[i + 1].end)); if (w) return w[1].toLowerCase() as 'and' | 'or'
+    }
     return 'and'
   }
   for (let i = 0; i < gaps.length; i++) conn.push(connAt(i))
