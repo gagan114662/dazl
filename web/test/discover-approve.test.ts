@@ -2,6 +2,7 @@
 // (a draft email to review; nothing is sent) when a public page prints an email for it. Autopilot keeps every older check.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
@@ -9,7 +10,6 @@ import { addEnrichment } from '../lib/connectors/store.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
 import { createDraft, OutreachError } from '../lib/outreach/service.ts'
-import { firstPlayRepeatEnabled } from '../lib/play-repeat.ts'
 
 const person = { connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: 'named on a public page', source_url: 'https://northwind-dental.example/team' }
 const email = { connector: 'discover', kind: 'email', value: 'dana@northwind-dental.example', label: 'published on a public page', source_url: 'https://northwind-dental.example/contact' }
@@ -54,8 +54,7 @@ test('Approve creates a draft for the published address; autopilot and calibrati
   assert.equal(code(() => createDraft(db, 'OTHER', id, 'x', { manual: true })), 'not_found', 'another workspace cannot draft to this lead')
 })
 
-test('a first search does not start repeating by itself unless the operator turns that on', () => {
-  assert.equal(firstPlayRepeatEnabled({}), false)
-  assert.equal(firstPlayRepeatEnabled({ DAZL_FIRST_PLAY_REPEAT: '0' }), false)
-  assert.equal(firstPlayRepeatEnabled({ DAZL_FIRST_PLAY_REPEAT: '1' }), true)
+test('the scheduler enrols a first search into a repeat only when the operator switch is on', () => {
+  const src = readFileSync(new URL('../app/api/internal/tick/route.ts', import.meta.url), 'utf8')
+  assert.ok(src.includes("if (process.env.DAZL_FIRST_PLAY_REPEAT === '1') try { firstPlayRepeats = (await repeatFirstPlays("))
 })

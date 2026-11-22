@@ -7,7 +7,7 @@ import { runFollowups } from '@/lib/outreach/followups'
 import { drainFirstTouch, runAutopilot } from '@/lib/outreach/autopilot'
 import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
-import { firstPlayRepeatEnabled, repeatFirstPlays } from '@/lib/play-repeat'
+import { repeatFirstPlays } from '@/lib/play-repeat'
 import { sendPlayRunMails } from '@/lib/play-mail'
 import { kickRunner } from '@/lib/scan/runner'
 import { sharedScanQueue } from '@/lib/queue/scan-claimer'
@@ -135,8 +135,8 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   // nothing about it runs early: its first scheduled run is a week after the play finished. Best-effort per account.
   let firstPlayRepeats = 0
   // Launch check #1571: a first search no longer starts repeating by itself (it ran again daily without the person asking and used up
-  // their free trial searches). A search repeats only when the person saves it as a play. The operator can turn enrolment back on.
-  if (firstPlayRepeatEnabled()) try { firstPlayRepeats = (await repeatFirstPlays(shared, { fence })).length } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:first-play-repeat', requestId }) }
+  // their free trial searches). A search repeats only when the person saves it as a play. The operator can turn enrolment back on with DAZL_FIRST_PLAY_REPEAT=1.
+  if (process.env.DAZL_FIRST_PLAY_REPEAT === '1') try { firstPlayRepeats = (await repeatFirstPlays(shared, { fence })).length } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:first-play-repeat', requestId }) }
   const watches = await runDueWatches(shared, { fence })
   // The scan runner works outside the tick's lease (its own claims), so it gets the raw handle.
   if (watches.ran > 0) after(() => kickRunner(raw))
