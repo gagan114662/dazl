@@ -2,14 +2,15 @@
 // reading of the request, never evidence: it says which place, buyer, signals and exclusions the user wrote, and every later check still
 // verifies leads against their own sources.
 // Fail closed. A model error, a reply that is not exactly the schema, or a place the request does not write gives NO plan (a named reason),
-// and a caller then holds what depended on it; it never falls back to a looser regex reading. A refused spend reservation is not caught here:
-// it stops the scan like every other refused paid call.
+// and a caller then holds what depended on it; it never falls back to a looser regex reading. A refused spend reservation is one of those
+// named failures (the caller holds only what needed the plan); a lost job still stops the scan.
 // Places are grounded in the request: a place's text must be written in the request, its city and region inside that text, and its country
 // either written there (a name the country resolver reads) or implied by data (a region's country, a listed world city, a US city of the
 // census list). A place that is not grounded is refused, never added.
 import { createHash } from 'node:crypto'
 import type { Provider } from '../llm/provider.ts'
 import { ProviderError } from '../llm/provider.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 import { countriesIn, countryFromField, countryOfRegion, regionOf, resolveSegment } from './countries.ts'
 import { WORLD_CITIES, bareUsCity } from '../sources/jobboards.ts'
 
@@ -25,7 +26,7 @@ export interface RequestPlan {
   exclusions: string[]
   language: string               // ISO 639-1
 }
-export type PlanFailure = 'error' | 'schema' | 'place_not_in_request'
+export type PlanFailure = 'error' | 'schema' | 'place_not_in_request' | 'spend_refused'
 export type PlanResult = { ok: true; plan: RequestPlan; cached: boolean } | { ok: false; reason: PlanFailure }
 
 export const PLAN_MAX_TOKENS = 700
@@ -107,12 +108,15 @@ function impliedCountries(p: PlanPlace): Set<string> {
   }
   return out
 }
+// `needle` is in `hay` as whole words, never inside another word: "or" is not in "for", "rome" is not in "chrome".
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const hasWords = (hay: string, needle: string): boolean => !!needle && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(needle)}(?![\\p{L}\\p{N}])`, 'u').test(hay)
 // A place is kept only when the request writes it: its text in the request, its city and region in its text, its country written or implied.
 export function groundedIn(request: string, p: PlanPlace): boolean {
   const req = fold(request), text = fold(p.text)
-  if (!text || !req.includes(text)) return false
-  if (p.city !== null && !text.includes(fold(p.city))) return false
-  if (p.region !== null && !text.includes(fold(p.region))) return false
+  if (!text || !hasWords(req, text)) return false
+  if (p.city !== null && !hasWords(text, fold(p.city))) return false
+  if (p.region !== null && !hasWords(text, fold(p.region))) return false
   if (p.country !== null && !writtenCountries(p.text).has(p.country) && !impliedCountries(p).has(p.country)) return false
   return true
 }
@@ -135,7 +139,9 @@ export async function readRequestPlan(provider: Provider, apiKey: string, reques
     else return { ok: false, reason: 'error' }
   } catch (e) {
     if (e instanceof ProviderError) return { ok: false, reason: 'error' }
-    throw e   // a refused spend reservation, a lost job or anything unexpected stops the scan: never a silent reading
+    // A refused reservation is a named failure: the caller holds only what needed the plan (Quest, #1395). The call was never sent.
+    if (e instanceof SpendRefused && e.reason !== 'ownership_lost') return { ok: false, reason: 'spend_refused' }
+    throw e   // a lost job or anything unexpected stops the scan: never a silent reading
   }
   const plan = parsePlan(reply)
   if (!plan) return { ok: false, reason: 'schema' }

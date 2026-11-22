@@ -1997,12 +1997,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // #1395: the REQUEST's place is read once by the model into the request plan (lib/scan/request-plan.ts), never from the request's words by regex.
     // Only when the board source would run (a hiring request, or the user picked it). Fail closed: no plan (a model error, a reply off the schema,
     // a place the request does not write, a tenant whose key is not Claude) holds the board source, named in its status; it never falls back to
-    // reading the words. A refused spend reservation stops the scan, as for every paid call.
+    // reading the words. A refused spend reservation for the plan holds the board source too; the rest of the scan goes on (Quest, #1395).
     const explicitSel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
     const wantsBoards = !!(job.query && icpForSources && complete && (explicitSel ? explicitSel.adapters.includes('jobboards') : hiringRequest))
     let planHold: string | null = null
     let planPlace: Place | null = null
     let planSkip: string | null = null
+    let requestNamesPlace = false   // the plan read a place from the request: only that place is ever searched (Quest, #1395)
     if (wantsBoards) {
       if (vendor !== 'anthropic') planHold = 'held_request_plan:unavailable'
       else {
@@ -2011,11 +2012,12 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
         const r = await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl)
         if (!r.ok) planHold = `held_request_plan:${r.reason}`
-        else { const b = boardPlaceOf(r.plan.places); if ('place' in b) planPlace = b.place; else if (r.plan.places.length) planSkip = b.reason }
+        else { requestNamesPlace = r.plan.places.length > 0; const b = boardPlaceOf(r.plan.places); if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason }
       }
     }
     const named = new Map<string, string>()
-    if (wantsBoards && !planHold && !planPlace) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
+    // the profile's place only when the request names NONE: a place the request names but the boards cannot place holds them, never another place
+    if (wantsBoards && !planHold && !requestNamesPlace) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
     const profilePlaces = absorbStates([...named.keys()])
     const profilePlace = profilePlaces.length === 1 ? named.get(profilePlaces[0])! : null
     // the profile's place is read from the PROFILE entry alone ("in <entry>"), never from the request's words appended to it

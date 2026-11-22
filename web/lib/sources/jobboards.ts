@@ -271,44 +271,50 @@ export function placeIn(query: string): Place | null {
 // (it never widens a city to its country or a country to everywhere), each named so the run says why.
 // The plan type is structural here (lib/scan/request-plan.ts PlanPlace) so the source layer does not import the scan layer.
 export type BoardPlace = { place: Place } | { reason: string }
+type Resolved = { place: Place; key: string } | { reason: string }
 const NYC_NAMES = new Set(['new york', 'new york city', 'nyc', 'manhattan', 'brooklyn', 'queens', 'bronx', 'the bronx', 'staten island'])
+// the built-in places by name, never by position in their lists
+const builtIn = (name: string) => placeOf([...CITY_PLACES, ...COUNTRY_PLACES].find(c => c.name === name)!)
 export function boardPlaceOf(places: readonly { text: string; city: string | null; region: string | null; country: string | null }[]): BoardPlace {
   if (places.length === 0) return { reason: 'skipped_no_place' }
   const built = places.map(p => boardPlaceOne(p))
-  const named = new Map<string, Place>()
-  for (const b of built) if ('place' in b) named.set(b.place.name, b.place)
-  // two places are never narrowed to one of them (the rule placeIn and the profile places already keep)
-  if (places.length > 1 && named.size !== 1) return { reason: `skipped_no_place:several:${clean(places.slice(0, 3).map(p => p.text).join(', '))}` }
-  const fail = built.find(b => 'reason' in b)
+  // Places are compared by the place each RESOLVES to (country, region, city), never by their display name: "Cambridge, UK" and
+  // "Cambridge, Canada" are two places; "Toronto" and "Toronto, Canada" are one. Two places are never narrowed to one of them.
+  const resolved = new Map<string, Place>()
+  for (const b of built) if ('place' in b) resolved.set(b.key, b.place)
+  if (places.length > 1 && (resolved.size !== 1 || built.some(b => 'reason' in b))) return { reason: `skipped_no_place:several:${clean(places.slice(0, 3).map(p => p.text).join(', '))}` }
+  const fail = built.find((b): b is { reason: string } => 'reason' in b)
   if (fail) return fail
-  return { place: [...named.values()][0] }
+  return { place: [...resolved.values()][0] }
 }
-function boardPlaceOne(p: { text: string; city: string | null; region: string | null; country: string | null }): BoardPlace {
+function boardPlaceOne(p: { text: string; city: string | null; region: string | null; country: string | null }): Resolved {
   const region = p.region ? regionOf(p.region) : null
   if (p.region && !region) return { reason: `skipped_no_place:region:${clean(p.region)}` }   // a region the board source cannot read is never dropped (that would widen)
   const country = p.country ?? (region ? countryOfRegion(region) : null)
   if (!country) return { reason: `skipped_no_place:${p.city ? 'city' : 'country'}:${clean(p.text)}` }
   if (region && countryOfRegion(region) !== country) return { reason: `skipped_no_place:ambiguous:${clean(p.text)}` }
   const city = p.city?.trim() || null
+  const key = (r: string, c: string) => `${country}|${r}|${norm(c)}`
   if (country === 'US') {
     const abbr = region?.startsWith('US-') ? region.slice(3).toUpperCase() : null
-    if (city && NYC_NAMES.has(norm(city)) && (!abbr || abbr === 'NY')) return { place: placeOf(CITY_PLACES[1]) }
+    if (city && NYC_NAMES.has(norm(city)) && (!abbr || abbr === 'NY')) return { place: builtIn('New York City'), key: key('NY', 'new york city') }
     if (city) {
       const st = abbr ?? bareUsCity(city)?.abbr ?? null
       const pl = st && STATES[st] ? cityPlaceOf(city, st) : null
-      return pl ? { place: pl } : { reason: `skipped_no_place:${st ? 'city' : 'ambiguous'}:${clean(p.text)}` }
+      return pl ? { place: pl, key: key(st!, city) } : { reason: `skipped_no_place:${st ? 'city' : 'ambiguous'}:${clean(p.text)}` }
     }
-    if (abbr && STATES[abbr] && abbr !== 'DC') { const st = STATES[abbr]; return { place: { name: st, ok: (...l) => locationInState(st, ...l) } } }
+    if (abbr && STATES[abbr] && abbr !== 'DC') { const st = STATES[abbr]; return { place: { name: st, ok: (...l) => locationInState(st, ...l) }, key: key(abbr, '') } }
     return { reason: `skipped_no_place:country:${clean(p.text)}` }
   }
   if (country === 'GB') {
-    if (city && norm(city) === 'london' && (!region || region === 'GB-eng')) return { place: placeOf(CITY_PLACES[0]) }
-    if (city) { const pl = cityCountryPlace(city, 'GB'); return pl ? { place: pl } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
-    if (!region) return { place: placeOf(COUNTRY_PLACES[0]) }
+    if (city && norm(city) === 'london' && (!region || region === 'GB-eng')) return { place: builtIn('London'), key: key('', 'london') }
+    if (city) { const pl = cityCountryPlace(city, 'GB'); return pl ? { place: pl, key: key(region ?? '', city) } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
+    if (!region) return { place: builtIn('United Kingdom'), key: key('', '') }
     return { reason: `skipped_no_place:region:${clean(p.text)}` }
   }
-  if (city) { const pl = cityCountryPlace(city, country, region?.startsWith('CA-') ? region : null); return pl ? { place: pl } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
-  return { reason: `skipped_no_place:${region?.startsWith('CA-') ? 'province' : 'country'}:${clean(p.text)}` }
+  const province = region?.startsWith('CA-') ? region : null
+  if (city) { const pl = cityCountryPlace(city, country, province); return pl ? { place: pl, key: key(province ?? '', city) } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
+  return { reason: `skipped_no_place:${province ? 'province' : 'country'}:${clean(p.text)}` }
 }
 // #1205: a bounded list of large non-US cities that name one place on their own ("in Toronto", a profile place "Mumbai"): each resolves as "<City>, <Country>"
 // would. A data list, no network call. Cities sharing their name with a sizeable US / UK place (Paris, Dublin, Melbourne, Manchester, Birmingham,
