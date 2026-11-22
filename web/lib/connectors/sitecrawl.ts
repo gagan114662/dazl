@@ -619,8 +619,10 @@ const SHORT_SURNAME_LINE = /^[A-Z][a-z'\u2019-]{2,20}\s+[A-Z][a-z]$/
 // grammar, not a vocabulary of companies or people: it is what makes "Contact Us" / "Sign In" / "Learn More" a phrase on any page.
 const GRAMMAR_WORD = /^(?:us|we|me|you|your|our|my|it|its|them|they|a|an|the|this|that|these|those|more|less|all|any|some|in|on|out|up|down|to|at|by|for|of|from|with|off|over|now|here|there|today)$/i
 function properNameTokens(name: string): boolean {
-  const toks = name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).map(t => t.replace(/\.$/, ''))
-  if (toks.some(t => GRAMMAR_WORD.test(t))) return false
+  const toks = name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/)
+  // Qodo #1542: the given name is a name slot ("An Nguyen"), and a capital initial is an initial ("Maya A. Thornton"); a lower-case
+  // single letter ("Book a Demo") is still a grammar word.
+  if (toks.slice(1).some(t => !/^[A-Z]\.?$/.test(t) && GRAMMAR_WORD.test(t.replace(/\.$/, '')))) return false
   return !/[a-z]{2,}ted$/.test(toks[toks.length - 1])
 }
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname

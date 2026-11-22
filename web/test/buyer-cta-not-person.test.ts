@@ -35,3 +35,8 @@ test('#1532 High: real names beside a CEO line still pass, short surnames includ
     assert.deepEqual(names(`<p>${n}, CEO</p>`), [n], `${n} same line`)
   }
 })
+
+test('Qodo #1542: a capital middle initial and the given name An are name tokens; a stacked listing keeps every pair', () => {
+  assert.deepEqual(names('<ul><li><p>Maya A. Thornton</p><p>Chief Executive Officer</p></li><li><p>Ana Lee</p><p>Founder</p></li></ul>'), ['Maya A. Thornton', 'Ana Lee'])
+  assert.deepEqual(names('<ul><li><p>An Nguyen</p><p>CEO</p></li></ul>'), ['An Nguyen'])
+})
