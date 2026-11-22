@@ -59,10 +59,16 @@ async function companyFirstLead(where: string, homeAddress: string) {
   await recordNeedEvidence(sqliteDb(db), 'A', job, { asOf: new Date(now), windowDays: 20 })
   recordActionability(db, jobRow)
   recordTimingProof(db, jobRow, new Date(now))
+  const refresh = async () => {
+    await recordNeedEvidence(sqliteDb(db), 'A', job, { asOf: new Date(now), windowDays: 20 })
+    recordActionability(db, jobRow)
+    recordTimingProof(db, jobRow, new Date(now))
+  }
   const params = { params: Promise.resolve({ lead }) }
   const url = `http://localhost/api/leads/${lead}/work-email`
   return {
-    db, lead, email, contact, target: `${name}|${title}`, now: new Date(now),
+    db, lead, email, contact, target: `${name}|${title}`, now: new Date(now), refresh,
+    phone: () => addEnrichment(db, 'A', lead, { connector: 'sitecrawl', kind: 'phone', value: '+1 312 555 0100', label: 'phone published on the company site', confidence: null, source_url: contact, source_date: day, retrieved_at: at }),
     rows: (enrichmentsForLeads(db, 'A', [lead])[lead] ?? []).filter(r => r.kind === 'person' || r.kind === 'email'),
     get: () => WE_GET(new NextRequest(url), params),
     post: (target: string) => WE_POST(new NextRequest(url, { method: 'POST', body: JSON.stringify({ target }), headers: hdr }), params),
@@ -90,4 +96,24 @@ test('Canadian company-first buyer stays display-only: the one-click lookup give
   assert.notEqual(body.lookup?.address ?? null, s.email)
   assert.deepEqual((await (await s.get()).json() as { lookups: unknown[] }).lookups, [])
   s.db.close()
+})
+
+test('the US pair needs its own sender route on the same page, an unsuppressed address and a company-first job', async () => {
+  const cases: [string, (s: Awaited<ReturnType<typeof companyFirstLead>>) => void][] = [
+    // the lead stays current through its published company phone, so only the sender-route check stands between the pair and the button
+    ['no sender route', s => { s.phone(); s.db.prepare("DELETE FROM lead_enrichments WHERE lead_id=? AND kind='email'").run(s.lead) }],
+    ['sender route from another page', s => { s.phone(); s.db.prepare("UPDATE lead_enrichments SET source_url='https://harlowgrant.com/' WHERE lead_id=? AND kind='email'").run(s.lead) }],
+    ['suppressed address', s => { s.db.prepare("INSERT INTO suppressions (tenant_id,email,reason,created_at) VALUES ('A',?,'manual',?)").run(s.email, Math.floor(Date.now() / 1000)) }],
+    ['not a company-first job', s => { s.db.prepare('UPDATE scan_jobs SET run_budget=NULL').run() }],
+  ]
+  for (const [why, change] of cases) {
+    const s = await companyFirstLead('Chicago, IL', '200 Example Ave, Chicago, IL 60606')
+    change(s)
+    await s.refresh()
+    if (why.includes('sender route')) assert.equal(currentnessHeld(s.db, 'A', s.lead, s.now), false, why + ': the lead is current, so only the guard can refuse')
+    const body = await (await s.post(s.target)).json() as { lookup?: { address: string | null } }
+    assert.notEqual(body.lookup?.address ?? null, s.email, why)
+    assert.ok(!(await (await s.get()).json() as { lookups: { address: string | null }[] }).lookups.some(l => l.address === s.email), why)
+    s.db.close()
+  }
 })
