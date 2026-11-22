@@ -234,3 +234,41 @@ test('#1122 a bare role list with no "or" ("SDRs, AEs") is an OR of roles too (t
   // a comma before another condition still separates conditions
   assert.deepEqual(alts('Companies hiring SDRs, raised funding'), [['sdrs']])
 })
+
+// Qodo #1534 High 1: the generic board row says its posting date is unknown (the row date is when the board was read); a title it lists
+// is no dated posting, even when the request names that title.
+test('Qodo #1534 H1: an aggregate board row whose posting date is unknown proves no named role', () => {
+  const generic: ProofRow = { connector: 'signals:greenhouse', kind: 'hiring', value: '2 open roles (generic hiring; posting date unknown - the row date is when the board was read, not a posting date)', label: 'Receptionist; Account Executive', source_url: 'https://boards.example/exampledental', source_date: '2026-11-18' }
+  for (const q of ['Companies hiring a receptionist or AE in the last 30 days', 'Companies hiring AEs in the last 30 days', 'Companies hiring sales staff in the last 30 days']) {
+    const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond)
+    assert.notEqual(planProofs(p, lead, [generic], ctx)[c.id].truth, 'pass', q)
+  }
+})
+
+// Qodo #1534 High 2: the gate's durable pass does not record which title it verified, so it covers a hiring condition only when every
+// title the gate checked is one of that condition's own roles; separate SDR and AE conditions each need their own evidence.
+test('Qodo #1534 H2: the gate pass for one role never proves a condition naming another', () => {
+  // the gate checks SDR or AE (every title the request names); the plan's condition names SDRs only, so the gate's pass may be an AE posting
+  const q = 'Companies hiring SDRs and posted an AE job in the last 30 days'
+  assert.deepEqual(requestedHiringRoles(q, null).filter(roleNeedsSourceProof).map(r => r.normalized).sort(), ['ae', 'sdr'])
+  const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond)
+  assert.deepEqual(conditionRoles(c).map(r => r.toLowerCase()), ['sdrs'])
+  assert.notEqual(planProofs(p, lead, [], { ...ctx, query: q, salesGatePassed: true })[c.id].truth, 'pass', 'an AE posting the gate passed never proves the SDR condition')
+  // the gate checked exactly this condition's roles: its durable pass still covers it
+  const one = 'Companies hiring SDRs or AEs in the last 30 days', p1 = compileTargeting(one, null), [c1] = planConditions(p1.root).map(x => x.cond)
+  assert.equal(planProofs(p1, lead, [], { ...ctx, query: one, salesGatePassed: true })[c1.id].truth, 'pass')
+  // a request naming no specific title keeps main's rule
+  const broad = 'Companies hiring sales staff in the last 30 days', p2 = compileTargeting(broad, null), [c2] = planConditions(p2.root).map(x => x.cond)
+  assert.equal(planProofs(p2, lead, [], { ...ctx, query: broad, salesGatePassed: true })[c2.id].truth, 'pass')
+})
+
+// Qodo #1534 M3: a repeated hiring verb before a further role is counted in the condition's span
+test('Qodo #1534 M3: "or recruiting AEs" keeps the condition span whole; the list stays an OR', () => {
+  const q = 'Companies hiring SDRs or recruiting AEs, raised funding, or opened an office'
+  const p = compileTargeting(q, null); const conds = planConditions(p.root).map(x => x.cond)
+  assert.equal(conds[0].text, 'hiring SDRs or recruiting AEs')
+  assert.deepEqual(conds.map(c => c.kind), ['hiring', 'funding', 'event'])
+  assert.equal(p.root?.op, 'or')
+  // a conjunction never opens a further role
+  assert.deepEqual(alts('Companies hiring SDRs, and hiring AEs').map(r => r.filter(x => /^(?:and|or)\b/.test(x))), [[]])
+})
