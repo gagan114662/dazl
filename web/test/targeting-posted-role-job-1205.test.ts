@@ -148,12 +148,14 @@ test('#1205 a role that cannot be read is held with a plain reason, never search
   }
 })
 
-// council (Opus R13): a phrase that is not a role at all ("a press release about a job") is no condition; only a role the request names but
-// this reader cannot read is held (it ends in "of", joins titles with and/or, or has a job word in it)
-test('#1205 a non-hiring phrase before "job" is no condition; an unreadable named role is held', () => {
+// council (Opus R13, then Haiku R1 on 080e58a): words before "job" that are not a role this reader can read ("a press release about a job")
+// are held with the plain reason, never a searched any-role condition. Dropping them on a grammar word also dropped real roles ("a sales rep
+// for enterprise job") and searched more broadly than asked, so held is the fail-closed answer for both
+test('#1205 a non-hiring phrase before "job" is held, never searched; an unreadable named role is held', () => {
   const hiring = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
-  for (const q of ['Firms that posted a press release about a job in Toronto', 'Firms that posted a story about the jobs in Toronto', 'Firms that posted an article on jobs and the economy'])
-    assert.equal(hiring(q).length, 0, q)
+  for (const q of ['Firms that posted a press release about a job in Toronto', 'Firms that posted a story about the jobs in Toronto', 'Firms that posted an article on jobs and the economy']) {
+    const h = hiring(q); assert.equal(h.length, 1, q); assert.ok(h[0].role_unreadable, q); assert.notEqual(h[0].role, '', q)
+  }
   const held = hiring('Companies that posted a sales and marketing job in the past 90 days')
   assert.equal(held.length, 1); assert.ok(held[0].role_unreadable)
 })

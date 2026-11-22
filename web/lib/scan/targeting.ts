@@ -113,12 +113,11 @@ const STOP = /\s+(?:within|in\s+the|in|over|during|this|last|recently|and|or|but
 const MADE_HIRE = /\bmade\s+(?:(?:a|an|its|their|the|our)\s+)?((?:first|founding|inaugural|new)\s+)?([a-z][a-z-]*)\s+hires?\b/gi
 const HIRE_QUALIFIER = /^(?:first|founding|inaugural|new)$/i
 const FIRST_WORD = /^(?:first|founding|inaugural)$/i
-// #1205: the words before a job word. A preposition, article or possessive means they are a phrase, not a role ("a press release about a
-// job"): no condition. A role the request names that this reader cannot read (titles joined by and/or, a job word in it, or ending in "of":
-// "a range of job openings for a sales rep") is held (role_unreadable).
-// A hyphen joins the parts of a role ("in-house counsel", "on-call nurse"), so a grammar word inside one never counts.
-const NOT_A_ROLE = /(?<![\w-])(?:a|an|new|about|on|to|with|that|which|for|from|in|at|by|the|our|their|its)(?![\w-])/i
-const ROLE_UNREADABLE = /\b(?:and|or|jobs?|roles?|positions?|openings?|vacanc(?:y|ies))\b|\bof$/i
+// #1205: the words before a job word. When they are not a role this reader can read (a grammar word, an article or "new" inside them,
+// titles joined by and/or, a job word in them, or ending in "of": "a range of job openings for a sales rep", "a press release about a job"),
+// the posting condition is held (role_unreadable): never dropped, which would search more broadly than asked, and never any role.
+// A hyphen joins the parts of a role ("in-house counsel", "on-call nurse"), so a word inside one never counts.
+const ROLE_UNREADABLE = /(?<![\w-])(?:a|an|new|about|on|to|with|that|which|for|from|in|at|by|the|our|their|its|and|or|jobs?|roles?|positions?|openings?|vacanc(?:y|ies))(?![\w-])|\bof$/i
 // #876: a modal in front of the completed verb ("may have made", "will have hired", "might have just made") says the hire may not have happened.
 // That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
 const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
@@ -183,7 +182,6 @@ function findAtoms(q: string): Atom[] {
   const ROLE_JOB = String.raw`(?:jobs?|vacanc(?:y|ies))(?:\s+(?:openings?|postings?|listings?|ads?|adverts?))?\b(?=\s*(?:$|[,.;:!?)]|(?:for|in|at|on|near|across|within|over|during|this|last|past|since|from|with|via|through|using|that|which|and|or|to|based)\b))`
   for (const m of q.matchAll(new RegExp(String.raw`\b(?:posted|posting|advertis\w+(?=\s+(?:for\s+)?(?:a|an|new)\s))\s+(?:for\s+)?(?:(?:a|an|new)\s+)*([a-z][a-z&/-]*(?:\s+[a-z][a-z&/-]*){0,3}?)\s+${ROLE_JOB}`, 'gi'))) {
     const raw = m[1].trim()
-    if (NOT_A_ROLE.test(raw)) continue
     const unreadable = ROLE_UNREADABLE.test(raw)
     add({ kind: 'hiring', start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, role: unreadable ? raw : cleanRole(raw), ...(unreadable ? { unreadable: true } : {}) })
   }
