@@ -9,7 +9,7 @@
 // call returns the existing fixture job unchanged.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { fixtureAvailable, FixtureError } from '../outreach/test-fixture.ts'
+import { fixtureAvailable, FixtureError } from './test-fixture.ts'
 import { recordCompanyEvent, companyKey, type EventType } from '../events/store.ts'
 
 export const RANKING_FIXTURE_JOB = 'dazl ranking fixture (test only)'

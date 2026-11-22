@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { crawlTechFixture, deleteTechFixture, isTechFixturePage, techFixtureOn, TECH_FIXTURE_PAGES } from '@/lib/scan/tech-fixture'
-import { FixtureError } from '@/lib/outreach/test-fixture'
+import { crawlTechFixture, deleteTechFixture, isTechFixturePage, techFixtureOn, TECH_FIXTURE_PAGES } from '@/lib/staging-fixtures/tech-fixture'
+import { FixtureError } from '@/lib/staging-fixtures/test-fixture'
 import { denied } from '@/lib/workspace-access'
 
 // TEST-ONLY, staging only (#769): serve the fixture company's homepage as the named variant and crawl it once through the real site
-// crawl, so a technology adoption, a removal and an outage between readable pages can be watched live. See lib/scan/tech-fixture.ts.
+// crawl, so a technology adoption, a removal and an outage between readable pages can be watched live. See lib/staging-fixtures/tech-fixture.ts.
 // Outside staging a signed-in member with the operate role gets 404, before the request body is read or anything is written
 // (signed out is 401 and a viewer 403 everywhere, like every session route).
 const notFound = () => NextResponse.json({ error: 'Not found' }, { status: 404 })

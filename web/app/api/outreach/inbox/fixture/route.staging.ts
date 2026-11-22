@@ -6,9 +6,9 @@ import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 import { audit } from '@/lib/audit-route'
-import { cleanupInboxFixture, inboxFixtureRefusal, InboxFixtureError, seedInboxFixture } from '@/lib/outreach/inbox-fixture'
+import { cleanupInboxFixture, inboxFixtureRefusal, InboxFixtureError, seedInboxFixture } from '@/lib/staging-fixtures/inbox-fixture'
 
-// Test-only, NO-SEND Inbox fixture (#369, lib/outreach/inbox-fixture.ts). POST seeds the labelled synthetic set (more
+// Test-only, NO-SEND Inbox fixture (#369, lib/staging-fixtures/inbox-fixture.ts). POST seeds the labelled synthetic set (more
 // threads than one Inbox page, plus one bounce_review notice); DELETE removes exactly those rows. Off unless
 // OUTREACH_INBOX_FIXTURE=1, and then only for the tenant named by OUTREACH_TEST_TENANT_ID. Signed-in owners only; the
 // tenant is always the session's (the request body is never read). Every refusal past the role check is audited with

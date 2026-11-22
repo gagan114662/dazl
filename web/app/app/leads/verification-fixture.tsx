@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { fixtureFailureMessage, fixtureNextUrl } from '@/lib/scan/fixture-action-result'
+import { fixtureFailureMessage, fixtureNextUrl } from '@/lib/staging-fixtures/fixture-action-result'
 
 // Test-tenant-only controls for the labelled verification fixture. Renders nothing for
 // any other account. The fixture proves populated UI with synthetic rows; cleanup
