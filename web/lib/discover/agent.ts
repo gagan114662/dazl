@@ -25,6 +25,8 @@ export interface DiscoveredLead {
   title: string | null
   person_source_url: string | null  // the page that names the person
   linkedin_url: string | null
+  email: string | null              // only an address a public page prints for this company or person; never built from a pattern
+  email_source_url: string | null   // the page that prints it
   confidence: 'high' | 'medium' | 'low'
   why: string                       // one line: why this company fits the request
 }
@@ -47,6 +49,7 @@ How to work:
 - The proof page must be about this one company: a single job posting, one news item, a press release, the company's own page. A search-results page, a job-board listing or a directory that shows many companies is not proof, even when the company appears in it. When a listing page shows a promising company, open that company's own posting or careers page and use that as the proof; if you cannot reach one, leave the company out.
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
 - Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give a LinkedIn URL only when a page links it. If you cannot find a person, leave the person fields null and still return the lead.
+- Give an email address only when a page prints it for this company or this person, and give that page's URL. Never build an address from a name or a pattern.
 - The company's website domain should be its own site, not a directory or news site. If you are not sure, set it to null.
 - Never invent a company, a person, a date, a quote or a URL. Every URL you return must be one you saw in a search result or opened.
 - Different companies are worth more than several items about one company. Aim for the number of leads asked for, but return fewer good ones over more weak ones.
@@ -54,12 +57,16 @@ How to work:
 confidence: "high" when the proof page clearly shows the dated signal and the company clearly matches the request; "medium" when one of those is partly unclear; "low" when you are unsure but it is still worth a look.
 
 When you are done, reply with ONLY a JSON object inside <json></json> tags, in this shape:
-<json>{"leads":[{"company":"","domain":null,"signal":"","signal_date":null,"evidence_url":"","evidence_quote":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null,"confidence":"medium","why":""}],"note":null}</json>
+<json>{"leads":[{"company":"","domain":null,"signal":"","signal_date":null,"evidence_url":"","evidence_quote":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null,"email":null,"email_source_url":null,"confidence":"medium","why":""}],"note":null}</json>
 Use "note" for one sentence when you found fewer leads than asked for, saying why.`
 
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '')
 const httpUrl = (v: unknown): string | null => { const s = str(v, 500); try { const u = new URL(s); return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null } catch { return null } }
 const day = (v: unknown): string | null => { const s = str(v, 10); return /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s)) ? s : null }
+export const publishedEmail = (v: unknown, source: unknown): { email: string | null; email_source_url: string | null } => {
+  const e = str(v, 254).toLowerCase(), src = httpUrl(source)
+  return src && /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(e) ? { email: e, email_source_url: src } : { email: null, email_source_url: null }
+}
 const host = (v: unknown): string | null => {
   const s = str(v, 253).toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '')
   return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(s) ? s : null
@@ -86,6 +93,7 @@ export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]
       company, signal, evidence_url, domain: host(l.domain), signal_date: day(l.signal_date), evidence_quote: str(l.evidence_quote, 300) || null,
       person, title: person ? str(l.title, 150) || null : null, person_source_url: person ? httpUrl(l.person_source_url) : null,
       linkedin_url: linkedin && /(^|\.)linkedin\.com$/.test(new URL(linkedin).hostname) ? linkedin : null,
+      ...publishedEmail(l.email, l.email_source_url),
       confidence: l.confidence === 'high' || l.confidence === 'low' ? l.confidence : 'medium', why: str(l.why, 300),
     })
     if (out.length >= max) break

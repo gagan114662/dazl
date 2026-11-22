@@ -3,7 +3,7 @@
 // own people. It runs on the small model, in parallel, and only fills fields that are empty. It never changes the signal,
 // its date or its proof, and never replaces a person the first pass already found.
 import Anthropic from '@anthropic-ai/sdk'
-import type { DiscoveredLead, DiscoverUsage, SeenPage } from './agent.ts'
+import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage } from './agent.ts'
 
 export const ENRICH_MODEL = process.env.DAZL_DISCOVER_ENRICH_MODEL?.trim() || 'claude-haiku-5-5'
 // US$ per million tokens for the default small model, and per web search.
@@ -15,12 +15,14 @@ const SYSTEM = `You are given one company and what a seller wants to sell to it.
 1. the company's own website domain;
 2. the person at that company the seller should contact: the owner, founder or the leader of the team that would buy this. Give a name and title only when a page prints them, with that page's URL. Give a LinkedIn URL only when a page or a search result shows it for that person at that company.
 
+3. an email address for that person or the company, only if a page prints it, with that page's URL. Never build one from a name.
+
 The company's own website (team, about, leadership, contact pages), a press release or a news item that names the person are good sources. Make sure the person works at THIS company: the same name at another company is a wrong answer. If you cannot find a person, say so with nulls. Never guess a name, a title or a URL.
 
 Reply with ONLY a JSON object inside <json></json> tags:
-<json>{"domain":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null}</json>`
+<json>{"domain":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null,"email":null,"email_source_url":null}</json>`
 
-export interface Enriched { domain: string | null; person: string | null; title: string | null; person_source_url: string | null; linkedin_url: string | null }
+export interface Enriched { domain: string | null; person: string | null; title: string | null; person_source_url: string | null; linkedin_url: string | null; email: string | null; email_source_url: string | null }
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '')
 const httpUrl = (v: unknown): string | null => { const s = str(v, 500); try { const u = new URL(s); return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null } catch { return null } }
 const host = (v: unknown): string | null => {
@@ -28,22 +30,23 @@ const host = (v: unknown): string | null => {
   return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(s) ? s : null
 }
 export function parseEnriched(text: string): Enriched {
-  const none = { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null }
+  const none = { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null }
   const m = /<json>([\s\S]*?)<\/json>/.exec(text)
   let o: Record<string, unknown>
   try { const raw = JSON.parse(m ? m[1] : text) as unknown; o = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {} } catch { return none }
   const person = str(o.person, 120) || null, source = person ? httpUrl(o.person_source_url) : null
   const linkedin = httpUrl(o.linkedin_url)
   // a person with no page that names them is not kept: the name could not be shown with its source
-  if (person && !source) return { ...none, domain: host(o.domain) }
-  return { domain: host(o.domain), person, title: person ? str(o.title, 150) || null : null, person_source_url: source,
+  const mail = publishedEmail(o.email, o.email_source_url)
+  if (person && !source) return { ...none, ...mail, domain: host(o.domain) }
+  return { ...mail, domain: host(o.domain), person, title: person ? str(o.title, 150) || null : null, person_source_url: source,
     linkedin_url: person && linkedin && /(^|\.)linkedin\.com$/.test(new URL(linkedin).hostname) ? linkedin : null }
 }
 
-export const needsEnrichment = (l: DiscoveredLead): boolean => !l.person || !l.domain
+export const needsEnrichment = (l: DiscoveredLead): boolean => !l.person || !l.domain || !l.email
 export function mergeEnriched(l: DiscoveredLead, e: Enriched): DiscoveredLead {
   const person = l.person ? {} : { person: e.person, title: e.title, person_source_url: e.person_source_url, linkedin_url: l.linkedin_url ?? e.linkedin_url }
-  return { ...l, domain: l.domain ?? e.domain, ...person }
+  return { ...l, domain: l.domain ?? e.domain, ...person, ...(l.email ? {} : { email: e.email, email_source_url: e.email_source_url }) }
 }
 
 const usdOf = (u: Omit<DiscoverUsage, 'usd'>) => Math.round(((u.input_tokens * PRICE.input + u.output_tokens * PRICE.output + u.cache_read_tokens * PRICE.cacheRead + u.cache_write_tokens * PRICE.cacheWrite) / 1e6 + u.searches * PRICE.search) * 10000) / 10000

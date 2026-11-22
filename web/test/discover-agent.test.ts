@@ -6,7 +6,7 @@ import { parseLeads, usd } from '../lib/discover/agent.ts'
 import { checkLead, companyOnPage, dayOnPage, isShown, pageAgeDay } from '../lib/discover/check.ts'
 import { mergeEnriched, needsEnrichment, parseEnriched } from '../lib/discover/enrich.ts'
 
-const lead = (o: Record<string, unknown> = {}) => ({ company: 'Northwind Dental', domain: 'https://www.northwind-dental.example/about', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind-second-clinic', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://www.northwind-dental.example/team', linkedin_url: 'https://www.linkedin.com/in/dana-ruiz/', confidence: 'high', why: 'expanding', ...o })
+const lead = (o: Record<string, unknown> = {}) => ({ company: 'Northwind Dental', domain: 'https://www.northwind-dental.example/about', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind-second-clinic', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://www.northwind-dental.example/team', linkedin_url: 'https://www.linkedin.com/in/dana-ruiz/', email: null, email_source_url: null, confidence: 'high', why: 'expanding', ...o })
 
 test('parseLeads: reads the <json> answer, normalises the domain and keeps only records with a company, a signal and a proof URL', () => {
   const text = `Here you go.\n<json>${JSON.stringify({ leads: [lead(), lead({ company: 'No Proof Co', evidence_url: 'not a url' }), lead({ company: '', signal: 'x' }), lead({ company: 'northwind dental' })], note: 'only one fit' })}</json>`
@@ -70,8 +70,12 @@ test('second pass: only empty fields are filled, a person needs the page that na
   assert.equal(parseEnriched('{"person":"Dana Ruiz","title":"Owner","person_source_url":null,"domain":"northwind-dental.example"}').person, null, 'a name with no page that names them is not kept')
   const kept = mergeEnriched(parseLeads(JSON.stringify({ leads: [lead({ domain: null })] }), 1).leads[0], parseEnriched('{"domain":"other.example","person":"Someone Else","title":"CEO","person_source_url":"https://other.example/team"}'))
   assert.deepEqual([kept.person, kept.domain], ['Dana Ruiz', 'other.example'], 'the person the first pass found stays; only the empty website is filled')
-  assert.equal(needsEnrichment(kept), false)
-  assert.deepEqual(parseEnriched('no idea'), { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null })
+  assert.equal(needsEnrichment(kept), true, 'still no published email')
+  assert.equal(needsEnrichment({ ...kept, email: 'office@other.example', email_source_url: 'https://other.example/contact' }), false)
+  assert.deepEqual(parseEnriched('no idea'), { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null })
+  const mail = parseEnriched('{"email":"Office@Northwind-Dental.example","email_source_url":"https://northwind-dental.example/contact"}')
+  assert.deepEqual([mail.email, mail.email_source_url], ['office@northwind-dental.example', 'https://northwind-dental.example/contact'])
+  assert.equal(parseEnriched('{"email":"office@northwind-dental.example"}').email, null, 'an address with no page that prints it is not kept')
 })
 
 test('a proof page that prints no date takes the day the search index dates it, and says so', async () => {

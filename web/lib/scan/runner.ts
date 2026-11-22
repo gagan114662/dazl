@@ -4,6 +4,7 @@ import { reserveNativeSearch } from './native-search-reserve.ts'
 import { discoverLeads } from '../discover/agent.ts'
 import { checkLeads, isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads } from '../discover/enrich.ts'
+import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
 import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
@@ -1421,6 +1422,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
 export const DISCOVER_SOURCE_KIND = 'discover'
 const DISCOVER_RESERVE_USD = 1.5   // the worst case reserved before the call; the settled cost is what the run really used
 export const DISCOVER_TRIAL_MIN_USD = 0.75
+const DISCOVER_MAX_USD = 1   // the owner's ceiling for one request (launch brief)
 const DISCOVER_TRIAL_BUDGET = { maxSearches: 10, maxFetches: 8, enrichLeads: 6 } as const   // measured at about US$0.35 to US$0.60 a run
 export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'watch_id' | 'funded_by'>, vendor: string | null, env: Record<string, string | undefined> = process.env, trialReserveUsd: number | null = null): boolean {
   if (job.funded_by === 'trial' && !(trialReserveUsd !== null && trialReserveUsd >= DISCOVER_TRIAL_MIN_USD)) return false
@@ -1453,14 +1455,16 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   ledger.record(source, 'started')
   assertOwned(db, job)
   const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
-  let found: Awaited<ReturnType<typeof discoverLeads>>
-  let sells: { offer: string | null; seller: string | null } | undefined
+  // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
+  const sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
+  // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
+  const known = job.watch_id ? (db.prepare('SELECT DISTINCT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.watch_id = ? AND l.company <> ? ORDER BY l.created_at DESC LIMIT 80').all(job.user_id, job.watch_id, '') as { company: string }[]).map(r => r.company) : []
+  let run: DiscoveryRun
   try {
-    // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
-    sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
-    // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
-    const known = job.watch_id ? (db.prepare('SELECT DISTINCT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.watch_id = ? AND l.company <> ? ORDER BY l.created_at DESC LIMIT 80').all(job.user_id, job.watch_id, '') as { company: string }[]).map(r => r.company) : []
-    found = await discover({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(known.length ? { exclude: known } : {}), ...(small ? { maxSearches: DISCOVER_TRIAL_BUDGET.maxSearches, maxFetches: DISCOVER_TRIAL_BUDGET.maxFetches } : {}) }, { apiKey: key, fetch: fetchImpl })
+    // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
+    run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(known.length ? { exclude: known } : {}) },
+      { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? { maxSearches: DISCOVER_TRIAL_BUDGET.maxSearches, maxFetches: DISCOVER_TRIAL_BUDGET.maxFetches, enrichLeads: DISCOVER_TRIAL_BUDGET.enrichLeads } : {}) },
+      { apiKey: key, fetch: fetchImpl, discover, enrich })
   } catch (e) {
     await hold?.settle(null)   // the call may have been billed: keep the worst case
     ledger.record(source, 'error')
@@ -1468,15 +1472,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     finish(db, job, 'failed', status === 401 || status === 403 ? 'key_rejected' : status === 429 ? 'provider_rate_limited' : 'source_error', null, null, ledger)
     return 'failed'
   }
-  // Second pass: a small-model call for each lead that came back without a person or a website. It is paid for from the same
-  // reservation; if it fails the leads stay as the first pass left them.
-  let usd = found.usage.usd, leadsFound = found.leads
-  if (enrich && leadsFound.length) {
-    try { const e = await enrich(leadsFound, { offer: sells?.offer ?? sells?.seller ?? null, ...(small ? { maxLeads: DISCOVER_TRIAL_BUDGET.enrichLeads } : {}) }, { apiKey: key, fetch: fetchImpl }); leadsFound = e.leads; usd += e.usage.usd } catch { /* keep the first pass */ }
-  }
-  await hold?.settle(Math.round(usd * 10000) / 10000)
+  await hold?.settle(run.usd)
   assertOwned(db, job)
-  const checked = (await checkLeads(leadsFound, found.seen, fetchImpl)).filter(l => l.evidence_url.length <= 500)
+  const checked = run.leads.filter(l => l.evidence_url.length <= 500)
   const now = Math.floor(Date.now() / 1000)
   const shown = checked.filter(isShown), unconfirmed = checked.filter(l => !isShown(l))
   const out: VerifyOutcome = {
@@ -1495,6 +1493,8 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+    if (l.email && l.email_source_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'email', value: l.email.slice(0, 254), label: 'published on a public page', confidence: null,
+      source_url: l.email_source_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
     if (l.linkedin_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'linkedin', value: l.linkedin_url.slice(0, 254), label: 'linked from a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
   }
