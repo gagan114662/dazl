@@ -62,13 +62,16 @@ const exactKeys = (o: Record<string, unknown>, keys: readonly string[]) => Objec
 const str = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max
 const strOrNull = (v: unknown, max: number) => v === null || str(v, max)
 
-// The reply must be exactly one JSON object of the schema (one optional ```json fence around it is the only wrapper tolerated).
+// PM ruling 2026-11-22 (real Haiku reply, prod 87505c47): the reply holds exactly one JSON object of the schema, possibly inside a code fence
+// or prose; it is the text from the first '{' to the last '}' and must parse as one object (two objects do not). The schema stays strict;
+// the one tolerance is a 2-6 digit integer industry_code (621210), read as its digit string. No legacy fallback.
 export function parsePlan(reply: string): RequestPlan | null {
-  const t = reply.trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, '$1').trim()
-  if (!t.startsWith('{') || !t.endsWith('}')) return null
+  const a = reply.indexOf('{'), b = reply.lastIndexOf('}')
+  if (a < 0 || b <= a) return null
   let o: unknown
-  try { o = JSON.parse(t) } catch { return null }
+  try { o = JSON.parse(reply.slice(a, b + 1)) } catch { return null }
   if (!isObj(o) || !exactKeys(o, KEYS)) return null
+  if (typeof o.industry_code === 'number' && Number.isInteger(o.industry_code) && /^\d{2,6}$/.test(String(o.industry_code))) o.industry_code = String(o.industry_code)
   if (!strOrNull(o.offer, MAX_TEXT) || !strOrNull(o.buyer_type, MAX_TEXT)) return null
   if (!(o.industry_code === null || (typeof o.industry_code === 'string' && /^\d{2,6}$/.test(o.industry_code)))) return null
   if (typeof o.language !== 'string' || !/^[a-z]{2}$/.test(o.language)) return null

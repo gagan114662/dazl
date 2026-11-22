@@ -39,7 +39,9 @@ test('#1395 the schema is strict: wrong types, unknown keys, bad codes and overs
     { ...ok, signals: [{ kind: 'growth', text: 'x', negated: false }] }, { ...ok, signals: [{ kind: 'hiring', text: 'x', negated: 'no' }] },
     { ...ok, exclusions: Array(11).fill('x') }, Object.fromEntries(Object.entries(ok).filter(([k]) => k !== 'language')),
   ]) assert.equal(parsePlan(JSON.stringify(bad)), null, JSON.stringify(bad).slice(0, 120))
-  assert.equal(parsePlan(`Here is the plan: ${JSON.stringify(ok)}`), null, 'prose around the object is refused')
+  // PM ruling 2026-11-22 (changed from 'prose around the object is refused'): one object inside prose is extracted; two objects are not one
+  assert.ok(parsePlan(`Here is the plan: ${JSON.stringify(ok)}`), 'one object inside prose is read')
+  assert.equal(parsePlan(`${JSON.stringify(ok)} ${JSON.stringify(ok)}`), null, 'two objects are refused')
 })
 
 test('#1395 grounding: a place must be written in the request; a model country can never move the place the words name', () => {
