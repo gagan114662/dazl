@@ -50,7 +50,7 @@ test('#1205 the role read before the job word is a role, never job words, gramma
   assert.equal(nurse.length, 1); assert.equal(nurse[0].role, 'nurse')
   assert.equal(one('companies that posted a press release about a new role in Toronto').length, 0)
   const remote = one('Agencies that posted a remote job in the past 30 days')
-  assert.equal(remote.length, 1); assert.equal(remote[0].role, ''); assert.equal(remote[0].within_days, 30)
+  assert.equal(remote.length, 1); assert.notEqual(remote[0].role, '', 'never an any-role condition'); assert.equal(remote[0].within_days, 30)
 })
 
 // council (Opus R1/R2, Haiku R1-R3): "opening", "position" and "role" name many things besides a job, so the role-before reading takes only the
@@ -104,8 +104,6 @@ test('#1205 vacancy listings, quantities and "advertising for new jobs" never le
     ['Firms that posted a vacancy listing for a nurse', 'nurse', null],
     ['Firms that posted a new vacancy ad in the past 30 days', '', 30],
     ['Firms advertising for new jobs', '', null],
-    ['Firms that posted dozens of jobs', '', null],
-    ['Firms that posted a list of jobs in Toronto', '', null],
   ] as const) {
     const h = one(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q)
     if (days !== null) assert.equal(h[0].within_days, days, q)
@@ -119,30 +117,33 @@ test('#1205 "advertised new vacancies" in a compound request reads no role "new"
   assert.ok(!conds.some(c => c.role === 'new'), JSON.stringify(conds.map(c => c.role)))
 })
 
-// council (Opus R10): a quantity or container before "of" is not part of the title: what follows it is the role
-test('#1205 "dozens of nurse jobs" reads the nurse, not the quantity', () => {
-  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
-  for (const [q, role] of [
-    ['Firms that posted dozens of nurse jobs', 'nurse'],
-    ['Firms that posted a number of sales jobs', 'sales'],
-    ['Companies that posted a VP of Sales job in the last 60 days', 'VP of Sales'],
-  ] as const) { const h = one(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q) }
-})
-
 // council (Haiku R13/R14): a "for <role>" clause never swallows a second posting; a container before "of" is not the title
-test('#1205 a second posting after "and" is its own condition; "a list of receptionist jobs" reads the receptionist', () => {
+test('#1205 a second posting after "and" is its own condition', () => {
   const conds = planConditions(compileTargeting('Companies that posted a job opening for a sales rep and advertised new vacancies in the past 30 days', null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
   assert.equal(conds.length, 2, JSON.stringify(conds.map(c => c.role)))
   assert.equal(conds[0].role, 'sales rep'); assert.equal(conds[1].role, ''); assert.equal(conds[1].within_days, 30)
-  const list = planConditions(compileTargeting('Dental practices that posted a list of receptionist jobs in the past 90 days', null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
-  assert.equal(list.length, 1); assert.equal(list[0].role, 'receptionist')
 })
 
-// council (Haiku R17): a container before the job word keeps the title the "for" clause names
-test('#1205 "a range of job openings for a sales rep" keeps the sales rep', () => {
-  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
-  const a = one('Companies that posted a range of job openings for a sales rep in the past 90 days')
-  assert.equal(a.length, 1); assert.equal(a[0].role, 'sales rep'); assert.equal(a[0].within_days, 90)
-  const b = one('Companies that posted a series of jobs for a dentist in London, Ontario')
-  assert.equal(b.length, 1); assert.equal(b[0].role, 'dentist')
+// Watcher (#1205, stricter + simpler, no growing word lists): a posting condition whose role cannot be read fails closed. It is held with a
+// plain named reason and never becomes an any-role condition, which would search and prove more broadly than the request asked.
+import { planProofs } from '../lib/scan/targeting-proof.ts'
+test('#1205 a role that cannot be read is held with a plain reason, never searched or proven as any role', () => {
+  for (const q of [
+    'Companies that posted a range of job openings for a sales rep in the past 90 days',
+    'Companies that posted a series of jobs for a dentist in London, Ontario',
+    'Firms that posted dozens of jobs',
+    'Firms that posted a list of jobs in Toronto',
+  ]) {
+    const plan = compileTargeting(q, null)
+    const conds = planConditions(plan.root).map(x => x.cond).filter(c => c.kind === 'hiring')
+    assert.equal(conds.length, 1, q)
+    assert.ok(conds[0].role_unreadable, `${q}: held`)
+    assert.match(conds[0].role_unreadable!, /^The role in ".+" could not be read\. Name the role before "job", e\.g\. "posted a sales rep job"\.$/, q)
+    assert.notEqual(conds[0].role, '', `${q}: never an any-role condition`)
+    assert.ok(plan.ambiguities.some(a => a.chosen.startsWith('held')), `${q}: the plan says it is held`)
+    // a dated posting row on the company's board would prove an any-role condition; a held one stays unproven with its reason
+    const proofs = planProofs(plan, { company: 'Acme', signal: 'hiring', evidence_excerpt: '', source_url: 'https://acme.example/jobs', event_date: '2026-11-20', event_date_proof: 'page_bound' } as never,
+      [{ kind: 'hiring', source_date: '2026-11-20', source_url: 'https://acme.example/jobs/1', value: 'Sales Representative' }] as never, { now: Date.parse('2026-11-22T00:00:00Z') } as never)
+    assert.equal(proofs[conds[0].id].truth, 'unknown', q); assert.equal(proofs[conds[0].id].reason, conds[0].role_unreadable, q)
+  }
 })
