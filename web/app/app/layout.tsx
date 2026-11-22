@@ -8,6 +8,7 @@ import { checkSessionWithin } from '@/lib/auth-gate'
 import Nav from './nav'
 import { NAV_TOGGLE_ID } from './nav-toggle'
 import MainFocus from './main-focus'
+import StallWatch from './stall-watch'
 import { Icon } from './ui/icons'
 import { OPENING_ID, stallWatchScript } from '@/lib/stall-recovery'
 
@@ -57,6 +58,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </Suspense>
       </main>
       <MainFocus />
+      {/* #1463: client-side waits (a held soft navigation, a client-rendered fallback): same one-recovery-then-Reload rule */}
+      <StallWatch />
     </div>
   )
 }

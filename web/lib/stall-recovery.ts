@@ -16,6 +16,8 @@ export type StallWindow = {
 }
 export function installStallWatch(w: StallWindow, id: string, stallMs: number, windowMs: number): void {
   const key = 'dazl-stall-reload'
+  // the client watch (app/app/stall-watch.tsx) leaves a server-parsed fallback to this script
+  try { w.document.getElementById(id)?.setAttribute('data-watched', '1') } catch { /* never throws */ }
   w.setTimeout(() => {
     const d = w.document
     const el = d.getElementById(id)
