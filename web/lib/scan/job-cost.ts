@@ -12,6 +12,9 @@
 // Adding them counted every guarded call twice (#1517: $0.68 in each column, record $1.36). So the cost is the cap ledger's
 // total whenever it holds anything; only a job from before the cap ledger existed (nothing in it) falls back to the run
 // guard's amount, the one record such a job has.
+// One later case also lands on the run guard: a free trial whose only paid steps were TinyFish calls inside the free
+// allowance (the cap ledger prices them at $0; the trial guard charges them at the trial's prices). It shows that trial charge,
+// an overstatement, never "Nothing was charged" for a run that drew on its trial reserve.
 const amount = (v: unknown): number | null => {
   const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
   return Number.isFinite(n) && n >= 0 ? n : null
