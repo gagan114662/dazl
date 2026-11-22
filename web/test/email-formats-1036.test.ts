@@ -14,7 +14,7 @@ import { sqliteDb } from '../lib/db/client.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { findWorkEmail, workEmailPageRead, workEmailsFor } from '../lib/people/work-email.ts'
 import { confirmedAddressesAt, guessesForLead, guessFor, guessFromLearnedFormat, learnedFormat, rankConfirmed } from '../lib/people/email-formats.ts'
-import { reserveVerifySlot, VerifySlotRefused, splitName } from '../lib/people/email-pattern.ts'
+import { reserveVerifySlot, VerifySlotRefused } from '../lib/people/email-pattern.ts'
 import { mailboxCheckUsage } from '../lib/people/verify-usage.ts'
 import { guessCopy, type GuessShown } from '../lib/people/work-email-eligible.ts'
 import { PRIVACY } from '../lib/legal/policy.ts'
@@ -49,33 +49,68 @@ const twoConfirmed = (db: Database.Database, tenant = 'A') => {
   published(db, tenant, 'other-lead', 'Sue Ray, Partner', `sue.ray@${SITE}`, `https://${SITE}/about`)
 }
 const DANA = 'Dana Lee|Practice Manager'
-// #1037: the product never makes a guess (Find work email, the Leads page read and the per-lead GET return none). The learned-format
-// library below is exercised directly, as a library, with the same inputs the click used to pass it (the lead's listed people).
-const libGuess = (s: { db: Database.Database; lead: string }, name: string, title: string | null, extra: string[] = []) =>
-  guessFromLearnedFormat(s.db, 'A', s.lead, { name, title }, SITE, ['Dana Lee', 'Owen Park', ...extra].map(x => splitName(x)!), ON)
 
 // The click must use the existing shared mailbox budget for only its selected target.
-// #1037 (THE BAR): a buyer's email must be published on the company's own domain. With every guess setting on (flag, verifier key, caps
-// above 0), a learnable format, and a guess already stored, Find work email makes, checks, reserves and returns no guess: one click, a
-// repeat, two buyers, and concurrent clicks all spend nothing.
-test('#1036/#1037 Find work email never makes, checks or returns a learned-format guess, and never spends a mailbox check on one', async () => {
+test('#1036 learned-format click checks only its buyer, reserves once, and a second buyer stops at the shared daily cap', async () => {
   const s = seed(); twoConfirmed(s.db)
-  const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '2', EMAIL_VERIFY_MONTHLY_CAP: '2' }
-  assert.equal(learnedFormat(s.db, 'A', SITE)?.format, 'first.last', 'not vacuous: a first.last format is learnable')
-  assert.equal(libGuess(s, 'Owen Park', 'Owner')?.address, `owen.park@${SITE}`, 'not vacuous: a guess is stored for Owen')
+  const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '1', EMAIL_VERIFY_MONTHLY_CAP: '2' }
+  guessFromLearnedFormat(s.db, 'A', s.lead, { name: 'Owen Park', title: 'Owner' }, SITE, [], env)
   const calls: string[] = []
-  const fetchImpl = (async (u: RequestInfo | URL) => { calls.push(String(u)); return new Response(JSON.stringify({ status: 'valid', sub_status: '' })) }) as typeof fetch
-  const click = (target: string, now = NOW) => findWorkEmail(s.db, 'A', s.lead, target, { env, now, fetchImpl })
-  const results = [await click(DANA), await click(DANA, NOW + 5), await click('Owen Park|Owner'), ...await Promise.all([click(DANA), click(DANA)])]
-  for (const r of results) { assert.equal(r.status, 'no_key'); assert.equal(r.guess, undefined, JSON.stringify(r)) }
-  assert.deepEqual(calls, [], 'no mailbox check')
-  assert.deepEqual((await mailboxCheckUsage(sqliteDb(s.db), 'A', env, NOW)).day, { used: 0, cap: 2, remaining: 2 }, 'nothing reserved')
-  assert.equal(n(s.db, "SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed' AND verification != 'none'"), 0, 'the stored guess stays unchecked')
-  assert.equal(n(s.db, `SELECT count(*) AS n FROM email_candidates WHERE address = 'dana.lee@${SITE}'`), 0, 'no address was built for Dana')
-  assert.equal((s.db.prepare('SELECT contact FROM leads WHERE id = ?').get(s.lead) as { contact: string | null }).contact, null, 'no recipient')
+  const fetchImpl = (async (u: RequestInfo | URL) => { const url = new URL(String(u)); assert.equal(url.hostname, 'api.zerobounce.net'); calls.push(url.searchParams.get('email')!); return new Response(JSON.stringify({ status: 'valid', sub_status: '' })) }) as typeof fetch
+  const one = await findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+  assert.equal(one.guess?.label, 'guessed, verified'); assert.deepEqual(calls, [`dana.lee@${SITE}`])
+  assert.equal(guessFor(s.db, 'A', s.lead, 'Owen Park', env)?.state, 'not_checked', 'another stored unchecked guess was not checked by this click')
+  const two = await findWorkEmail(s.db, 'A', s.lead, 'Owen Park|Owner', { env, now: NOW, fetchImpl })
+  assert.equal(two.guess?.label, 'guessed, unverified'); assert.equal(calls.length, 1)
+  const usage = await mailboxCheckUsage(sqliteDb(s.db), 'A', env, NOW)
+  assert.deepEqual(usage.day, { used: 1, cap: 1, remaining: 0 }); assert.equal(usage.state, 'day_spent')
+  await findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
   assert.equal((await findWorkEmail(s.db, 'B', s.lead, DANA, { env, now: NOW, fetchImpl })).status, 'lead_not_found')
+  assert.equal(calls.length, 1, 'replay and another tenant make no call')
   s.db.close()
 })
+
+test('#1036 concurrent clicks for the same guessed address share the pending check without another provider call', async () => {
+  const s = seed(); twoConfirmed(s.db)
+  const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '2', EMAIL_VERIFY_MONTHLY_CAP: '2' }
+  let entered!: () => void, release!: () => void, calls = 0
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const fetchImpl = (async () => {
+    if (++calls === 1) { entered(); await hold }
+    return new Response(JSON.stringify({ status: 'valid', sub_status: '' }))
+  }) as typeof fetch
+  const lookup = () => findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+  const first = lookup()
+  try {
+    await Promise.race([started, first.then(() => { throw new Error('first lookup finished before entering the verifier') })])
+    const replay = await lookup()
+    assert.equal(replay.guess?.state, 'uncertain', 'the pending check is not verified yet')
+    assert.equal(replay.guess?.label, 'guessed, unverified')
+    assert.equal(calls, 1, 'deduplicated even with enough budget for a second call')
+    release()
+    assert.equal((await first).guess?.label, 'guessed, verified')
+    assert.equal((await lookup()).guess?.label, 'guessed, verified')
+    assert.equal(calls, 1)
+    assert.deepEqual((await mailboxCheckUsage(sqliteDb(s.db), 'A', env, NOW)).day, { used: 1, cap: 2, remaining: 1 })
+  } finally {
+    release()
+    await first.catch(() => {})
+    s.db.close()
+  }
+})
+
+for (const [status, shown] of [['catch-all', 'guessed, unverified'], ['invalid', undefined], ['do_not_mail', undefined]] as const) {
+  test(`#1036 learned-format click: verifier ${status} never shows a checked or sendable guess`, async () => {
+    const s = seed(); twoConfirmed(s.db)
+    const env = { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '1' }
+    const fetchImpl = (async () => new Response(JSON.stringify({ status, sub_status: status === 'do_not_mail' ? 'spam_trap' : '' }))) as typeof fetch
+    const result = await findWorkEmail(s.db, 'A', s.lead, DANA, { env, now: NOW, fetchImpl })
+    assert.equal(result.guess?.label, shown)
+    assert.equal((s.db.prepare('SELECT contact FROM leads WHERE id = ?').get(s.lead) as { contact: string | null }).contact, null)
+    s.db.close()
+  })
+}
 
 test('#1036 learned-format click obeys off, missing verifier, zero daily and monthly caps without any request', async () => {
   for (const env of [{}, ON, { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only' }, { ...ON, ZEROBOUNCE_API_KEY: 'fixture-only', EMAIL_VERIFY_DAILY_CAP: '1', EMAIL_VERIFY_MONTHLY_CAP: '0' }]) {
@@ -126,20 +161,27 @@ test("#1036 learned format: per tenant (another tenant's addresses teach nothing
   assert.equal(learnedFormat(role.db, 'A', SITE), null, "a shared inbox is no person's address")
 })
 
-test("#1036/#1037 find work email with nothing found: no guess comes back, none is stored, it is never a lookup row, and no read shows the library's stored guesses", async () => {
+test("#1036 find work email with nothing found: a learned-format guess comes back labelled guessed-unverified with what taught it; stored as a guessed candidate, never a lookup row; replays the same; a deleted confirmed address leaves no trace in what is shown", async () => {
   const s = seed(); twoConfirmed(s.db)
   const r = await findWorkEmail(s.db, 'A', s.lead, DANA, { env: ON, now: NOW })
-  assert.equal(r.status, 'no_key'); assert.equal(r.guess, undefined)
-  assert.equal(n(s.db, "SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed'"), 0, 'nothing guessed was stored')
-  assert.deepEqual(workEmailsFor(s.db, 'A', s.lead, NOW), [], 'and no lookup row')
-  // a guess the library (or an older run) stored is never shown: not by the Leads page read, not by the per-lead GET
-  assert.equal(libGuess(s, 'Dana Lee', 'Practice Manager')?.address, `dana.lee@${SITE}`)
-  assert.deepEqual(workEmailPageRead(s.db, 'A', [{ id: s.lead }], ON).guesses, {})
-  const route = readFileSync(new URL('../app/api/leads/[lead]/work-email/route.ts', import.meta.url), 'utf8')
-  assert.doesNotMatch(route, /guessesForLead|guessFor\b/, 'the GET reads no stored guess'); assert.match(route, /guesses: \[\] \}\) \/\/ #1037/)
-  // the library still learns the format from what the tenant holds (learned_from tracks deletions)
+  assert.equal(r.status, 'no_key')
+  assert.ok(r.guess, 'a guess is offered')
+  assert.deepEqual([r.guess!.address, r.guess!.label, r.guess!.state, r.guess!.format, r.guess!.confidence, r.guess!.verifier], [`dana.lee@${SITE}`, 'guessed, unverified', 'not_checked', 'first.last', 'high', null])
+  assert.deepEqual(r.guess!.learned_from.map(e => e.address).sort(), [`pat.kim@${SITE}`, `sue.ray@${SITE}`])
+  const row = s.db.prepare('SELECT tier, verification, confidence, country_basis, format, tenant_id, lead_id FROM email_candidates WHERE address = ?').get(`dana.lee@${SITE}`)
+  assert.deepEqual(row, { tier: 'guessed', verification: 'none', confidence: 'high', country_basis: BASIS, format: 'first.last', tenant_id: 'A', lead_id: s.lead })
+  assert.deepEqual(workEmailsFor(s.db, 'A', s.lead, NOW), [], 'a guess is not a work-email lookup')
+  const again = await findWorkEmail(s.db, 'A', s.lead, DANA, { env: ON, now: NOW + 5 })
+  assert.equal(again.guess?.address, `dana.lee@${SITE}`)
+  assert.equal(n(s.db, "SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed'"), 1, 'one row, however often it is clicked')
+  assert.deepEqual(guessesForLead(s.db, 'A', s.lead, ON).map(g => g.address), [`dana.lee@${SITE}`], 'the GET read after a reload')
+  // what taught the format is always what the tenant still holds: delete one confirmed address and it is gone from the evidence
   s.db.prepare('DELETE FROM email_candidates WHERE address = ?').run(`pat.kim@${SITE}`)
   assert.deepEqual(guessesForLead(s.db, 'A', s.lead, ON)[0].learned_from.map(e => e.address), [`sue.ray@${SITE}`])
+  published(s.db, 'A', 'other-lead', 'Pat Kim, Owner', `pat.kim@${SITE}`)
+  // a second buyer of the same lead gets the same format
+  const owen = await findWorkEmail(s.db, 'A', s.lead, 'Owen Park|Owner', { env: ON, now: NOW })
+  assert.equal(owen.guess?.address, `owen.park@${SITE}`)
 })
 
 test("#1036 off by default and tenant scoped: without EMAIL_GUESS_ENABLED nothing is guessed, stored or shown; another tenant's lead never sees this tenant's guess", async () => {
@@ -153,28 +195,29 @@ test("#1036 off by default and tenant scoped: without EMAIL_GUESS_ENABLED nothin
   assert.deepEqual(guessesForLead(s.db, 'B', s.lead, ON), [])
 })
 
-test("#1036 guess guards (the learned-format library): a person with a confirmed address is not guessed; no US basis, no guess; an address two named people could own, or someone else's confirmed address: no guess", async () => {
+test("#1036 guess guards: a person with a confirmed address is not guessed; no US basis, no guess; an address two named people could own, or someone else's confirmed address: no guess", async () => {
   // Dana's own confirmed address: that is the published tier
   const a = seed(); twoConfirmed(a.db); published(a.db, 'A', 'other-lead', 'Dana Lee, Practice Manager', `dana.lee@${SITE}`)
-  assert.equal(libGuess(a, 'Dana Lee', 'Practice Manager'), null)
+  assert.equal((await findWorkEmail(a.db, 'A', a.lead, DANA, { env: ON, now: NOW })).guess, undefined)
   // a format whose supporting rows carry no US basis
   const b = seed(); published(b.db, 'A', 'x', 'Pat Kim, Owner', `pat.kim@${SITE}`, undefined, null); published(b.db, 'A', 'x', 'Sue Ray, Partner', `sue.ray@${SITE}`, undefined, null)
-  assert.equal(libGuess(b, 'Dana Lee', 'Practice Manager'), null, 'unknown country counts as not US')
+  assert.equal((await findWorkEmail(b.db, 'A', b.lead, DANA, { env: ON, now: NOW })).guess, undefined, 'unknown country counts as not US')
   // two named people on the lead who could both own the guessed address (dlee for Dana Lee and Dean Lee)
   const d = seed(); published(d.db, 'A', 'x', 'Pat Kim, Owner', `pkim@${SITE}`); published(d.db, 'A', 'x', 'Sue Ray, Partner', `sray@${SITE}`)
   d.db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'sitecrawl', 'person', 'Dean Lee, Owner', 70, ?, '2026-11-01', ?)").run(randomBytes(12).toString('hex'), d.lead, `https://${SITE}/team`, NOW)
   assert.equal(learnedFormat(d.db, 'A', SITE)!.format, 'flast')
-  assert.equal(libGuess(d, 'Dana Lee', 'Practice Manager', ['Dean Lee']), null, "pkim-style dlee@ could be Dana's or Dean's: nobody's")
-  assert.equal(libGuess(d, 'Owen Park', 'Owner', ['Dean Lee'])?.address, `opark@${SITE}`, 'an unambiguous person still gets one')
+  assert.equal((await findWorkEmail(d.db, 'A', d.lead, DANA, { env: ON, now: NOW })).guess, undefined, "pkim-style dlee@ could be Dana's or Dean's: nobody's")
+  assert.equal((await findWorkEmail(d.db, 'A', d.lead, 'Owen Park|Owner', { env: ON, now: NOW })).guess?.address, `opark@${SITE}`, 'an unambiguous person still gets one')
   // an address someone else already has confirmed is never offered as another person's guess
   const e = seed(); twoConfirmed(e.db); published(e.db, 'A', 'x', 'Dan Elee, Partner', `dana.lee@${SITE}`)
-  assert.equal(libGuess(e, 'Dana Lee', 'Practice Manager'), null)
+  assert.equal((await findWorkEmail(e.db, 'A', e.lead, DANA, { env: ON, now: NOW })).guess, undefined)
   assert.equal(guessFromLearnedFormat(e.db, 'A', e.lead, { name: 'Dana Lee', title: null }, 'not a domain', [], ON), null)
 })
 
-test('#1036 labels (the learned-format library, never shown by the product since #1037): a guess is "guessed, unverified" until a mailbox check says valid, then "guessed, verified" with who and when; undeliverable and refused are never shown; catch-all and unfinished checks stay unverified and say why', async () => {
+test('#1036 labels: a guess is "guessed, unverified" until a mailbox check says valid, then "guessed, verified" with who and when; undeliverable and refused are never shown; catch-all and unfinished checks stay unverified and say why', async () => {
   const s = seed(); twoConfirmed(s.db)
-  const addr = libGuess(s, 'Dana Lee', 'Practice Manager')!.address
+  const first = await findWorkEmail(s.db, 'A', s.lead, DANA, { env: ON, now: NOW })
+  const addr = first.guess!.address
   const set = (verification: string, verifier: string | null = 'zerobounce', at: number | null = NOW) => s.db.prepare('UPDATE email_candidates SET verification = ?, verifier = ?, checked_at = ? WHERE address = ?').run(verification, verifier, at, addr)
   const view = () => guessFor(s.db, 'A', s.lead, 'Dana Lee', ON)
   assert.equal(view()!.label, 'guessed, unverified')
@@ -235,18 +278,18 @@ test("#1036 review fixes: a one-name format builds no guess; a stored guess disa
   // 'first' format learned from two people: john@ could be any John on the site, so nobody gets it
   const a = seed(); published(a.db, 'A', 'x', 'Pat Kim, Owner', `pat@${SITE}`); published(a.db, 'A', 'x', 'Sue Ray, Partner', `sue@${SITE}`)
   assert.equal(learnedFormat(a.db, 'A', SITE)!.format, 'first')
-  assert.equal(libGuess(a, 'Dana Lee', 'Practice Manager'), null)
+  assert.equal((await findWorkEmail(a.db, 'A', a.lead, DANA, { env: ON, now: NOW })).guess, undefined)
   assert.equal(n(a.db, "SELECT count(*) n FROM email_candidates WHERE tier = 'guessed'"), 0)
   // a guess exists; the person's own address is then published: the guess is no longer shown
   const b = seed(); twoConfirmed(b.db)
-  assert.equal(libGuess(b, 'Dana Lee', 'Practice Manager')?.address, `dana.lee@${SITE}`)
+  assert.equal((await findWorkEmail(b.db, 'A', b.lead, DANA, { env: ON, now: NOW })).guess?.address, `dana.lee@${SITE}`)
   assert.equal(guessesForLead(b.db, 'A', b.lead, ON).length, 1)
   published(b.db, 'A', b.lead, 'Dana Lee, Practice Manager', `dlee@${SITE}`)
   assert.equal(guessesForLead(b.db, 'A', b.lead, ON).length, 0)
   // tenant B's confirmed addresses teach tenant A nothing
   const c = seed(); twoConfirmed(c.db, 'B')
   assert.equal(learnedFormat(c.db, 'A', SITE), null)
-  assert.equal(libGuess(c, 'Dana Lee', 'Practice Manager'), null)
+  assert.equal((await findWorkEmail(c.db, 'A', c.lead, DANA, { env: ON, now: NOW })).guess, undefined)
 })
 
 test("#1036 review fixes 2: a crawl-written one-name guess and a guess a lookup flagged do-not-mail are never shown; the month figure is this workspace's own; only a missing table reads as zero; cap 0 and Off read honestly", async () => {
@@ -276,17 +319,16 @@ test('#1036 review fixes 3: a foreign-area play gets no guess even with no key; 
   ca.db.prepare('UPDATE scan_jobs SET icp = ? WHERE id = ?').run(JSON.stringify({ ...ICP, where: ['Toronto, Canada'] }), ca.job)
   assert.equal((await findWorkEmail(ca.db, 'A', ca.lead, DANA, { env: ON, now: NOW })).guess, undefined, 'outside the US: published addresses only, no guess')
   assert.equal(n(ca.db, "SELECT count(*) n FROM email_candidates WHERE tier = 'guessed'"), 0, 'and nothing was stored')
-  // the library still builds one for the US lead (control); the product never returns it (#1037)
+  // the US play still gets its guess (control)
   const us = seed(); twoConfirmed(us.db)
-  assert.equal(libGuess(us, 'Dana Lee', 'Practice Manager')?.address, `dana.lee@${SITE}`)
-  assert.equal((await findWorkEmail(us.db, 'A', us.lead, DANA, { env: ON, now: NOW })).guess, undefined)
+  assert.equal((await findWorkEmail(us.db, 'A', us.lead, DANA, { env: ON, now: NOW })).guess?.address, `dana.lee@${SITE}`)
   // the evidence that taught the format is deleted: the invented address is no longer shown
   us.db.prepare("DELETE FROM email_candidates WHERE tier = 'published'").run()
   assert.deepEqual(guessesForLead(us.db, 'A', us.lead, ON), [])
   assert.equal(guessFor(us.db, 'A', us.lead, 'Dana Lee', ON), null)
   // a rival format takes over (the tenant now confirms first-initial-last addresses): the stored first.last guess is hidden
   const rival = seed(); twoConfirmed(rival.db)
-  libGuess(rival, 'Dana Lee', 'Practice Manager')
+  await findWorkEmail(rival.db, 'A', rival.lead, DANA, { env: ON, now: NOW })
   rival.db.prepare("DELETE FROM email_candidates WHERE tier = 'published'").run()
   published(rival.db, 'A', 'other-lead', 'Pat Kim, Owner', `pkim@${SITE}`); published(rival.db, 'A', 'other-lead', 'Sue Ray, Partner', `sray@${SITE}`)
   assert.equal(guessFor(rival.db, 'A', rival.lead, 'Dana Lee', ON), null, 'the stored guess was built on a format the evidence no longer supports')
@@ -298,13 +340,16 @@ test('#1036 review fixes 3: a foreign-area play gets no guess even with no key; 
 
 // Review of c0a39f1d (BLOCKER 1): since #1182 the Leads page reads once with the list and the panel makes no per-lead GET on mount, so a stored
 // guess has to ride in that list read or it never shows after a reload.
-test('#1036/#1037 review c0a39f1d: the Leads page read carries no guess, even one stored beside a not-found row, in a fixed number of queries', async () => {
+test('#1036 review c0a39f1d: the Leads page read carries every lead\'s stored guess in a fixed number of queries (not-found row, flag off, other tenant, refused address)', async () => {
   const s = seed(); twoConfirmed(s.db)
   s.db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, detail, updated_at) VALUES ('A', ?, ?, 'not_found', 'pdl', NULL, 'no match', ?)").run(s.lead, DANA, NOW) // no Find button is left to click
-  assert.equal(libGuess(s, 'Dana Lee', 'Practice Manager')?.address, `dana.lee@${SITE}`, 'not vacuous: a guess is stored')
+  await findWorkEmail(s.db, 'A', s.lead, DANA, { env: ON, now: NOW })
   const page = (leads: { id: string }[], env: Record<string, string | undefined> = ON, tenant = 'A') => workEmailPageRead(s.db, tenant, leads, env)
-  assert.deepEqual(page([{ id: s.lead }]).guesses, {}, '#1037: a stored guess is never in the list read')
-  assert.deepEqual(page([{ id: s.lead }], {}).guesses, {}); assert.deepEqual(page([{ id: s.lead }], ON, 'B').guesses, {})
+  const got = page([{ id: s.lead }]).guesses
+  assert.deepEqual(got[s.lead]?.map(g => [g.person, g.address, g.label]), [['Dana Lee', `dana.lee@${SITE}`, 'guessed, unverified']], 'a stored guess is in the list read, beside a not_found row')
+  assert.deepEqual(got[s.lead], guessesForLead(s.db, 'A', s.lead, ON), 'identical to the per-lead read')
+  assert.deepEqual(page([{ id: s.lead }], {}).guesses, {}, 'flag off: nothing in the list read')
+  assert.deepEqual(page([{ id: s.lead }], ON, 'B').guesses, {}, "another tenant's page never carries it")
   // fixed number of reads however many leads the page has (no N+1 on a request path)
   const real = s.db.prepare.bind(s.db); const sqls: string[] = []
   s.db.prepare = ((q: string) => { sqls.push(q); return real(q) }) as typeof s.db.prepare
@@ -314,6 +359,9 @@ test('#1036/#1037 review c0a39f1d: the Leads page read carries no guess, even on
   assert.equal(sqls.length, oneQ, '31 leads cost the same number of queries as 1')
   assert.deepEqual(many.guesses, one.guesses)
   s.db.prepare = real
+  // a guess whose address a lookup flagged undeliverable is not carried
+  s.db.prepare("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, provider, address, detail, updated_at, mailbox_check) VALUES ('A', ?, 'Other Person|Owner', 'unverified', 'pdl', ?, 'x', ?, 'undeliverable')").run(s.lead, `dana.lee@${SITE}`, NOW)
+  assert.deepEqual(page([{ id: s.lead }]).guesses, {}, 'refused / undeliverable address is never shown')
   // the panel seeds from initial.guesses and resyncs when the list is re-read, with no mount-time request (source-shape assertion: no render harness here)
   const panel = readFileSync(new URL('../app/app/leads/work-email.tsx', import.meta.url), 'utf8')
   assert.match(panel, /useState<Record<string, GuessShown>>\(\(\) => guessMap\(initial\?\.guesses\)\)/)

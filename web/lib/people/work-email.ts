@@ -34,9 +34,9 @@ import { refundCredits, reserveCredits, settleCredits, CreditRefused, type Credi
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { OWNER_POOL_LIMIT_REASON } from '../llm/spend-pool.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import type { GuessView } from './email-formats.ts'
+import { guessFromLearnedFormat, guessFor, guessesForLeads, type GuessView } from './email-formats.ts'
 import { publishedDisplayCountry, publishedDisplayRows } from './published-display.ts'
-import { splitName, emailGuessEnabled, publishedCandidateFor, publishedCandidateRowsForLeads, publishedNameKey, selectPublishedCandidate, type PublishedCandidateRow, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
+import { splitName, emailGuessEnabled, publishedCandidateFor, publishedCandidateRowsForLeads, publishedNameKey, selectPublishedCandidate, type PublishedCandidateRow, verifyCandidates, reserveVerifySlot, verifierFromEnv, verifyDailyCap, verifyMonthlyCap, VerifySlotRefused } from './email-pattern.ts'
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -146,7 +146,7 @@ export function workEmailPageRead(db: Database.Database, tenantId: string, leads
   }
   const ordinary = ids.filter(id => !Object.hasOwn(strictLookups, id))
   const lookups = ordinary.length ? workEmailsForLeads(db, tenantId, ordinary) : {}
-  return { providers, providers_by_lead, lookups: { ...lookups, ...strictLookups }, guesses: {} } // #1037: no guessed address is ever shown
+  return { providers, providers_by_lead, lookups: { ...lookups, ...strictLookups }, guesses: guessesForLeads(db, tenantId, ordinary, env) }
 }
 
 // The same durable owner/job machine proof as ordinary Leads/Ready. Older
@@ -202,8 +202,9 @@ export function workEmailProviders(db: Database.Database, tenantId: string, env:
   return { apollo, pdl: pdlSaved && optIn, pdlNeedsOptIn: pdlSaved && !optIn, mailboxCheck }
 }
 
-// guess: never set (#1037: a buyer's email must be published on the company's own domain, so no address built from a learned
-// format is made, checked or returned). Kept optional in the type for older clients that read it.
+// guess (#1036): with EMAIL_GUESS_ENABLED, when nothing was found for this person ('not_found', or no key to look further), an address
+// built from the tenant's learned format at this company's domain, labelled guessed, unverified/verified (lib/people/email-formats.ts).
+// Never a lookup row, never copyable unless a mailbox check said valid, never a draft recipient.
 export type FindWorkEmailResult =
   | { status: 'lead_not_found' | 'not_eligible' | 'site_unsettled' | 'no_key' | 'busy'; detail: string; guess?: GuessView | null }
   | { status: WorkEmailStatus; row: WorkEmailRow; replayed: boolean; guess?: GuessView | null }
@@ -305,9 +306,22 @@ export async function findWorkEmail(db: Database.Database, tenantId: string, lea
 async function findWorkEmailCounted(db: Database.Database, tenantId: string, leadId: string, target: unknown, deps: FindDeps = {}): Promise<FindWorkEmailResult> {
   const derived: Derived = {}
   const r = await lookupWorkEmail(db, tenantId, leadId, target, deps, derived)
-  // #1037 (THE BAR): a buyer's email is one published on the company's own domain. An address built from a learned format is a
-  // guess, so the click never makes one, never spends a mailbox check on one and never returns one, whatever EMAIL_GUESS_ENABLED says.
-  return r
+  // Only where nothing was found: a found address (published, verified, found-not-checked) is never replaced or joined by a guess.
+  // US only (docs/DECISIONS.md 2026-10-26): a play that names another country gets published addresses only, so no guess either. The paid
+  // path refuses such a play AFTER its no-key return, so a keyless workspace must be stopped here, not by that check.
+  if (derived.publishedOnly || (r.status !== 'not_found' && r.status !== 'no_key') || !derived.person || !derived.site || derived.foreign !== false) return r
+  let guess: GuessView | null = null
+  try {
+    const env = deps.env ?? process.env
+    guess = guessFromLearnedFormat(db, tenantId, leadId, derived.person, derived.site, (derived.others ?? []).filter((n): n is NonNullable<typeof n> => !!n), env)
+    if (guess) {
+      // The click can create a guess after the scan's verifier pass. Check only this target's address,
+      // using the same reservation and caps; a replay never rechecks a finished candidate.
+      await verifyCandidates(db, tenantId, leadId, verifierFromEnv(env, deps.fetchImpl), { env, address: guess.address, ...(deps.now === undefined ? {} : { now: deps.now * 1000 }) })
+      guess = guessFor(db, tenantId, leadId, derived.person.name, env)
+    }
+  } catch (e) { console.error('[work-email] learned-format guess not made:', e instanceof Error ? e.message.slice(0, 120) : 'error') }
+  return guess ? { ...r, guess } : r
 }
 
 async function lookupWorkEmail(
