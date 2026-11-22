@@ -614,12 +614,12 @@ const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|propri
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
 // Qodo High #1532: words of site navigation and calls to action ("Contact Us", "Get Started", "Book a Demo") - a name made of any of
-// them is interface text, never a person, whatever title sits beside it and whatever the page's prose shows.
+// them only is interface text, never a person (a real name holding one word of it - "Maya A. Thornton", "Bill Read" - stays), whatever title sits beside it and whatever the page's prose shows.
 const UI_WORDS = new Set(['contact', 'us', 'get', 'started', 'start', 'book', 'demo', 'sign', 'up', 'in', 'log', 'login', 'learn', 'more', 'request', 'try', 'free',
   'read', 'about', 'our', 'team', 'join', 'careers', 'home', 'menu', 'apply', 'pricing', 'blog', 'watch', 'see', 'view', 'schedule', 'talk', 'to', 'sales', 'call',
   'now', 'here', 'today', 'a', 'the', 'download', 'subscribe', 'explore', 'discover', 'meet', 'reach', 'out', 'support', 'help', 'privacy', 'terms', 'policy', 'cookie',
   'cookies', 'accept', 'close', 'open', 'next', 'previous', 'back', 'submit', 'send', 'search', 'shop', 'buy', 'order', 'news', 'press', 'events', 'resources', 'docs'])
-export const isUiText = (name: string): boolean => name.toLowerCase().split(/[^a-z']+/).filter(Boolean).some(w => UI_WORDS.has(w))
+export const isUiText = (name: string): boolean => name.toLowerCase().split(/[^a-z']+/).filter(Boolean).every(w => UI_WORDS.has(w))
 const SHORT_SURNAME_LINE = /^[A-Z][a-z'\u2019-]{2,20}\s+[A-Z][a-z]$/
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.

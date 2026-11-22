@@ -62,3 +62,9 @@ test('Qodo High #1532: nav and button text is never a person, even beside a buye
   }
   assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Catheryn Li, CEO', label: 'x', url: 'https://acme.com/team' }], WHO)?.value, 'Catheryn Li, CEO')
 })
+
+test('Qodo #1540: a real name holding a UI word (middle initial "A.", surname Read) is still a person; only all-UI text is refused', async () => {
+  const { chooseSiteBuyer, isUiText } = await import('../lib/connectors/sitecrawl.ts')
+  assert.equal(isUiText('Maya A. Thornton'), false); assert.equal(isUiText('Bill Read'), false); assert.equal(isUiText('Contact Us'), true)
+  assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Maya A. Thornton, CEO', label: 'x', url: 'https://acme.com/team' }], WHO)?.value, 'Maya A. Thornton, CEO')
+})
