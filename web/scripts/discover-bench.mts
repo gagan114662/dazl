@@ -38,7 +38,7 @@ const rows: Row[] = [], priv: Record<string, unknown> = {}
 for (const c of cases) {
   const t0 = Date.now()
   try {
-    const run = await runDiscovery({ query: c.query, offer: c.offer, maxLeads }, { maxUsd: Number(opt('max-usd') ?? 1) }, { apiKey: key, signal: AbortSignal.timeout(900_000), ...(argv.includes('--no-enrich') ? { enrich: null } : {}) })
+    const run = await runDiscovery({ query: c.query, offer: c.offer, maxLeads }, { maxUsd: Number(opt('max-usd') ?? 1), ...(opt('enrich-leads') ? { enrichLeads: Number(opt('enrich-leads')) } : {}), ...(opt('searches') ? { maxSearches: Number(opt('searches')) } : {}), ...(opt('fetches') ? { maxFetches: Number(opt('fetches')) } : {}) }, { apiKey: key, signal: AbortSignal.timeout(900_000), ...(argv.includes('--no-enrich') ? { enrich: null } : {}) })
     const leads = run.leads
     const r = { stop: run.stop, model: run.model, note: run.note, usage: { usd: run.usd, searches: run.searches, requests: run.requests, passes: run.passes, enriched: run.enriched } }
     const s = leads.filter(isShown)

@@ -13,6 +13,8 @@ export interface DiscoveryRun { leads: CheckedLead[]; usd: number; searches: num
 export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; now?: Date }
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
+// What the people pass has cost at most on the benchmark; a second search pass must leave room for it under the run's ceiling.
+const PEOPLE_PASS_USD = 0.15
 
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
   const discover = deps.discover ?? discoverLeads, enrich = deps.enrich === undefined ? enrichLeads : deps.enrich
@@ -27,7 +29,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   let leads = await checkLeads(first.leads, first.seen, deps.fetch, 4)
   let passes = 1, stop = first.stop, model = first.model, note = first.note
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
-  if (leads.filter(isShown).length < want && first.stop !== 'refusal' && usage.usd + first.usage.usd <= budget.maxUsd) {
+  if (leads.filter(isShown).length < want && first.stop !== 'refusal' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
