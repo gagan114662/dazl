@@ -395,8 +395,8 @@ export const trialCapLine = (cap: number | null): string | null => cap === null 
 
 // After the run: what was actually recorded next to the estimate. Only recorded facts: the tokens the provider reported
 // (priced at the listed price) and the searches the run attempted. Unknown stays null; it is never shown as zero.
-export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
-export interface ActualVsEstimate { model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
+export interface ActualInput { inputTokens: number | null; outputTokens: number | null; tokensComplete: boolean; model?: string | null; searches: number | null; reservedUsd: number | null; requests?: number | null; requestsWithTokens?: number | null; /** model calls a spending limit refused before sending (scan_spend_calls) */ refusedBeforeSending?: number | null; capReservedUsd?: number | null; /** #1517: the job's one recorded cost (job-cost.ts), read once the run ended */ finalUsd?: number | null; /** paid calls in finalUsd that never reported a cost (counted at their reservation); null = unread */ finalHeldSteps?: number | null; servedModels?: string[] | null; cacheWriteTokens?: number | null; cacheReadTokens?: number | null }
+export interface ActualVsEstimate { final_usd: number | null; model_usd: number | null; model_usd_complete: boolean; searches: number | null; reserved_usd: number | null; cap_reserved_usd: number | null; estimate: Range; within: 'under' | 'within' | 'over' | 'unknown'; summary: string }
 // trialCapUsd (#1319): a free-trial run's per-scan cap; the model estimate it is compared against never reads above it.
 export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: ActualInput, trialCapUsd: number | null = null): ActualVsEstimate {
   // The canonical pricing truth is the settlement path's own (spend-guard.ts): priceOf normalizes dated served ids
@@ -433,8 +433,16 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   else summary = `Actual model cost was not recorded (model-request estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
   // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
   const capRes = a.capReservedUsd ?? null
-  if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
-  return { model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: clampToCap(est.total, trialCapUsd), within, summary }
+  // #1517: the run's final cost is the job's one recorded cost (the per-call ledger: each paid call at its reported cost, a
+  // call without one at the amount reserved for it) - the same number the job record carries. It leads the line; the
+  // token-priced model figure above stays as the breakdown.
+  // A paid call that never reported a cost is in it at the amount reserved for it (counted as billed, #1157); the line names
+  // how many. When that count cannot be read, no final cost is stated (the reservation sentence below stands instead).
+  const final = a.finalUsd ?? null, held = a.finalHeldSteps ?? null
+  const heldNote = held !== null && held > 0 ? `, including ${held === 1 ? 'one paid step' : `${held} paid steps`} counted as billed at the amount reserved for ${held === 1 ? 'it' : 'them'}` : ''
+  if (final !== null && held !== null) summary = `Final cost ${money(final)}${heldNote}. ${summary}`
+  else if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
+  return { final_usd: final !== null && held !== null ? final : null, model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: clampToCap(est.total, trialCapUsd), within, summary }
 }
 
 // The one line under the menu that states the limits and what is left. Unreadable budget is "remaining unknown" (never $0.00); the daily and monthly limits are labelled,

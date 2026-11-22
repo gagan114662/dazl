@@ -170,8 +170,8 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
       const parts = note.split(/[;|]|,(?!\d{3})|\s+but\s+/i).map(c => c.trim()).filter(Boolean)
       // Qodo #1519: a comma list of bare criterion names ("headcount, revenue not stated") shares the cue that ends it. A part with no cue,
       // no number and only a few words is a list item: joined to the next part, so the trailing cue binds to every name in the list.
-      const bareCriterion = (c: string) => !NOTE_UNKNOWN.test(c) && !/[\d:]/.test(c) && c.split(/\s+/).length <= 3
-        && c.split(/\s+/).every(w => /^(?:and|or|the|its|company|employee|count|annual)$/i.test(w) || CRITERIA.some(k => new RegExp(`^${CRITERION_WORDS[k].source}$`, 'i').test(w)))
+      const bareCriterion = (c: string) => !NOTE_UNKNOWN.test(c) && !/[\d:]/.test(c) && c.split(/\s+/).length <= 4
+        && c.split(/\s+/).every(w => /^(?:and|or|the|its|company|employee|count|annual|number|of|total|staff|full-time)$/i.test(w) || CRITERIA.some(k => new RegExp(`^${CRITERION_WORDS[k].source}$`, 'i').test(w)))
         && !/^(?:large|small|based|team)$/i.test(c.trim())
       const clauses: string[] = []
       for (let i = 0; i < parts.length; i++) {
