@@ -28,3 +28,16 @@ test('written relationships match whole long names and preserve word boundaries'
   assert.equal(cp(company, url, 'Linear news', `${company}c uses Linear.`), null)
   assert.equal(cp(company, url, 'Linear news', `${company.slice(0, 300)} uses Linear.`), null)
 })
+
+// Quest (#1237): fail closed. The rule reads at most the first 3,000 characters of the page, so a company name longer than that can never be
+// found in it, and the rule could never clear it. Such a lead is held for review, never passed as "no counterparty".
+test('a company name longer than the text the rule reads is held, not cleared (news page and customer page)', () => {
+  const huge = 'b'.repeat(50_000)
+  for (const [url, brand] of [['https://finsmes.com/2026/09/x.html', 'finsmes'], ['https://linear.app/customers/x', 'linear'], ['https://linear.app/blog/x', 'linear']]) {
+    assert.equal(cp(huge, url, 'Linear news', `${huge} uses Linear. Linear customers love it.`), `unchecked_name:${brand}`, url)
+    assert.equal(cp(huge, url, 'Linear news', 'Linear shipped a new release.'), `unchecked_name:${brand}`, url)
+  }
+  // a name that fits in the text the rule reads keeps today's answer
+  const fits = 'b'.repeat(3_000)
+  assert.equal(cp(fits, 'https://finsmes.com/2026/09/x.html', 'Linear news', 'Linear shipped a new release.'), null)
+})
