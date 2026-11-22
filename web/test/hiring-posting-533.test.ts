@@ -94,3 +94,28 @@ test('Qodo M6: "posted a job for a <role>" names the role, and an unrelated post
   assert.deepEqual(requestedHiringRoles('Shops that posted a job for staff').map(r => r.term), [])
   assert.deepEqual(hiringPostingVerdict({ source_url: 'https://a.example/jobs/2', signal: 'x' }, roles, { boardTitle: 'Hygienist' }), { ok: false, reason: 'job_role_mismatch' })
 })
+
+// Qodo review of #1512 (High 1, High 3, Mediums 4 and 6)
+test('Qodo #1512 H1: a prior-experience mention of the role is not the vacancy', () => {
+  const roles = requestedHiringRoles(Q), base = { source_url: 'https://acme.example/careers/42', signal: 'x' }
+  assert.deepEqual(hiringPostingVerdict({ ...base, excerpt: 'Join Acme Dental. Prior experience in a front desk receptionist position required.' }, roles, { pageTitle: 'Careers' }), { ok: false, reason: 'job_role_mismatch' })
+  assert.deepEqual(hiringPostingVerdict({ ...base, excerpt: 'Previous front desk receptionist job experience is an asset.' }, roles, { pageTitle: 'Job' }), { ok: false, reason: 'job_role_mismatch' })
+  assert.deepEqual(hiringPostingVerdict({ ...base, excerpt: 'Front desk receptionist position. Full time in London.' }, roles, { pageTitle: 'Job' }), { ok: true }, 'a vacancy heading still counts')
+})
+
+test('Qodo #1512 H3: a conflicting job title wins over a matching quote; a company-name title does not', () => {
+  const roles = requestedHiringRoles(Q), base = { source_url: 'https://acme.example/careers/42', signal: 'x', excerpt: 'Acme Dental is hiring a front desk receptionist.' }
+  assert.deepEqual(hiringPostingVerdict(base, roles, { pageTitle: 'Treatment Coordinator | Acme Dental' }), { ok: false, reason: 'job_role_mismatch' })
+  assert.deepEqual(hiringPostingVerdict(base, roles, { pageTitle: 'Dental Hygienist - Acme Dental' }), { ok: false, reason: 'job_role_mismatch' })
+  assert.deepEqual(hiringPostingVerdict(base, roles, { pageTitle: 'Acme Dental' }), { ok: true })
+  assert.deepEqual(hiringPostingVerdict(base, roles, { pageTitle: 'Careers | Acme Dental' }), { ok: true })
+})
+
+test('Qodo #1512 M4/M6: slash titles split in every form, and a shared rep noun leaves bare abbreviations', async () => {
+  const { matchedHiringRole } = await import('../lib/scan/hiring-role-match.ts')
+  const p = requestedHiringRoles('Startups that posted a job for a Head of Sales/VP Sales')
+  assert.ok(matchedHiringRole('Head of Sales', p), JSON.stringify(p)); assert.ok(matchedHiringRole('VP Sales', p))
+  const r = requestedHiringRoles('Agencies hiring SDR/BDR reps')
+  assert.deepEqual(r.map(x => x.normalized).sort(), ['bdr', 'sdr'])
+  assert.ok(matchedHiringRole('BDR', r)); assert.ok(matchedHiringRole('SDR', r))
+})

@@ -40,6 +40,9 @@ const ABBREV_TITLE = /^(?:sdr|bdr|ae|vp|cro|cmo|ceo|coo|cfo|cto)s?$/i
 function splitSlashTitles(phrase: string): string[] {
   if (!phrase.includes('/')) return [phrase]
   const parts = phrase.split(/\s*\/\s*/).map(p => p.trim().replace(LEAD_WORDS, '').trim())
+  // Qodo #1512 M6: "SDR/BDR reps" shares its noun: each abbreviation is its own title.
+  const last = parts[parts.length - 1].split(/\s+/)
+  if (parts.slice(0, -1).every(p => ABBREV_TITLE.test(p)) && ABBREV_TITLE.test(last[0]) && last.slice(1).every(w => /^rep(?:s|resentatives?)?$/i.test(w))) return [...parts.slice(0, -1), last[0]]
   return parts.every(p => p.split(/\s+/).length >= 2 || ABBREV_TITLE.test(p)) ? parts : [phrase]
 }
 export function requestedHiringRoles(query: string | null | undefined, icp?: string | null): RequestedHiringRole[] {
@@ -50,7 +53,7 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
   for (const text of texts) {
     // #533 live: "posted a front desk receptionist job in the past 90 days" names the posting title as plainly as "hiring a ..." does
     for (const m of text.matchAll(/\bpost(?:ed|s|ing)?\s+(?:(?:a|an|the|new|their|its|one|any)\s+)*([^.;!?\n]{2,80}?)\s+(?:job|role|position|opening|vacanc(?:y|ies)|posting|ad|listing)s?\b/gi)) {
-      for (const raw of m[1].split(/\s+or\s+|\s+and\s+|,/i)) {
+      for (const raw of m[1].split(/\s+or\s+|\s+and\s+|,/i).flatMap(splitSlashTitles)) {
         const term = raw.trim().replace(LEAD_WORDS, '').trim(), n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n) || LEAD_QUALIFIER.test(term)) continue
         if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions|job|new)$/.test(n)) continue
@@ -60,7 +63,7 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
     // Qodo #1510 M6: "posted a job for a front desk receptionist" names the title after "job for"
     for (const m of text.matchAll(/\bpost(?:ed|s|ing)?\s+(?:(?:a|an|the|new|their|its)\s+)*(?:job|role|position|opening|vacancy|ad|listing)s?\s+for\s+([^.;!?\n]{2,80})/gi)) {
       const phrase = m[1].split(/\s+(?:within|in|at|with|on|from|that|who|whose|during|over|across)\b|\(/i)[0].trim()
-      for (const raw of phrase.split(/\s+or\s+|\s+and\s+|,/i)) {
+      for (const raw of phrase.split(/\s+or\s+|\s+and\s+|,/i).flatMap(splitSlashTitles)) {
         const term = raw.trim().replace(LEAD_WORDS, '').trim(), n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n) || LEAD_QUALIFIER.test(term)) continue
         if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions|job|new)$/.test(n)) continue

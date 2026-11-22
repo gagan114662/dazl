@@ -34,9 +34,18 @@ export function namesRequestedRole(text: string, roles: RequestedHiringRole[]): 
   })
 }
 
+// A title that names no vacancy: empty, or only words like job / careers / apply / hiring / opportunities (plus a site or company after a separator).
+const GENERIC_WORDS = /^(?:jobs?|careers?|career|opportunit(?:y|ies)|employment|apply|apply now|now hiring|we(?:'re| are) hiring|hiring|join us|join our team|work with us|vacanc(?:y|ies)|openings?|positions?|job posting|job details|home)$/i
+const genericTitle = (t: string): boolean => { const head = t.split(/\s+[|\u2013\u2014-]\s+|\s*[|:]\s*/)[0].trim().replace(/[^a-z' ]/gi, ' ').replace(/\s+/g, ' ').trim(); return !head || GENERIC_WORDS.test(head) }
+// A title naming a vacancy: a level noun (coordinator, manager...) or a word shaped like a job title (-ist, -ian, -ant: hygienist, technician, assistant).
+// A company or site name ("Acme Dental") is neither, so its quote is still read.
+const vacancyTitle = (t: string): boolean => words(t).map(stem).some(w => LEVEL.has(w) || /(?:ist|ian|ant)$/.test(w) && w.length > 5)
 const hiringObjects = (q: string): string[] => [
   ...[...q.matchAll(/\b(?:hiring|recruiting|seeking|needs|wants|looking\s+for|now\s+hiring:?|wanted:?)\s+(?:for\s+)?(?:(?:an?|the|new|our|one|two|several)\s+)*([a-z][a-z /&-]{1,60})/gi)].map(m => m[1].split(/\s+(?:to|who|with|in|at|for|that|and|or)\b/i)[0]),
-  ...[...q.matchAll(/\b([a-z][a-z /&-]{1,40}?)\s+(?:job|position|opening|vacancy)\b/gi)].map(m => m[1].split(/\s+/).slice(-4).join(' ')),
+  // Qodo #1512 H1: a "<role> position" counts only as a heading-like statement opening the quote or a sentence, never a qualification
+  // ("prior experience in a front desk receptionist position").
+  ...[...q.matchAll(/(?:^|[.!?:]\s+)(?:(?:an?|the|new|open|full[- ]time|part[- ]time)\s+)*([a-z][a-z /&-]{1,40}?)\s+(?:job|position|opening|vacancy)\b(?!\s+(?:required|preferred|experience|background))/gi)]
+    .filter(m => !/\b(?:experience|prior|previous|former|past|worked|background)\b/i.test(m[1])).map(m => m[1].split(/\s+/).slice(-4).join(' ')),
 ]
 export type HiringPostingVerdict = { ok: true } | { ok: false; reason: 'posting_not_specific' | 'job_role_mismatch' }
 // Qodo #1510 H1: the posting's role is read from the POSTING (the board record's title, else the fetched page's title, with the candidate's
@@ -49,6 +58,8 @@ export function hiringPostingVerdict(c: { source_url: string; signal: string | n
   const names = (t: string) => namesRequestedRole(t, plain) || (sales.length > 0 && namesRequestedRole(t, sales))
   if (posting?.boardTitle) return names(posting.boardTitle) ? { ok: true } : { ok: false, reason: 'job_role_mismatch' }
   if (posting?.pageTitle && names(posting.pageTitle)) return { ok: true }
+  // Qodo #1512 H3: a page title naming another vacancy is the posting's role; the quote is read only when the title is generic or absent.
+  if (posting?.pageTitle && !genericTitle(posting.pageTitle) && vacancyTitle(posting.pageTitle)) return { ok: false, reason: 'job_role_mismatch' }
   // A generic page title ("Job"): the quote may still state the vacancy, but only as the OBJECT of hiring ("is hiring a payroll specialist",
   // "receptionist position"), never as a role merely mentioned in the description ("reports to the front desk receptionist").
   if (hiringObjects(c.excerpt ?? '').some(names)) return { ok: true }
