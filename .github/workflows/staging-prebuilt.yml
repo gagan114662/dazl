@@ -40,6 +40,8 @@ jobs:
         env:
           DAZL_ENV: staging
           PUBLIC_BASE_URL: https://staging.dazl.ai
+          # the Chrome Web Store ID of dazl Connect (public, not a secret); inlined into the staging build only
+          NEXT_PUBLIC_DAZL_CONNECT_EXTENSION_ID: cojjciabmdngkkpkdomgkjbfbfeagaaa
           NEXT_TELEMETRY_DISABLED: '1'
           SHA: ${{ github.sha }}
         run: |

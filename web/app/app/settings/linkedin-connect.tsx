@@ -3,7 +3,7 @@
 // reading hours) and hands it to the dazl Connect extension, which then reads the LinkedIn pages dazl asks for in this browser. dazl stores
 // no LinkedIn session and nothing is pasted. Without the extension installed, the page says how to get it.
 import { useState } from 'react'
-import { CONNECT_EXTENSION_ID, CONNECT_EXTENSION_URL } from '@/lib/advanced/connect-extension'
+import { CONNECT_EXTENSION_IDS, CONNECT_EXTENSION_URL } from '@/lib/advanced/connect-extension'
 
 export interface ConnectState { connected: boolean; name: string | null; synced_at: number | null; pairing_pending: boolean }
 type Runtime = { sendMessage: (id: string, msg: unknown, cb: (r: unknown) => void) => void; lastError?: { message?: string } }
@@ -11,14 +11,19 @@ const runtime = (): Runtime | null => {
   const c = (globalThis as { chrome?: { runtime?: Runtime } }).chrome
   return c?.runtime && typeof c.runtime.sendMessage === 'function' ? c.runtime : null
 }
-// Ask the extension; null when it is not installed (or this browser has no extension API).
-function ask(msg: unknown, timeoutMs = 30_000): Promise<Record<string, unknown> | null> {
+// Ask one installed build of the extension; null when that ID is not installed (or this browser has no extension API).
+function askOne(id: string, msg: unknown, timeoutMs: number): Promise<Record<string, unknown> | null> {
   const rt = runtime()
   if (!rt) return Promise.resolve(null)
   return new Promise(res => {
     const t = setTimeout(() => res(null), timeoutMs)
-    try { rt.sendMessage(CONNECT_EXTENSION_ID, msg, r => { clearTimeout(t); res(rt.lastError ? null : (r && typeof r === 'object' ? r as Record<string, unknown> : null)) }) } catch { clearTimeout(t); res(null) }
+    try { rt.sendMessage(id, msg, r => { clearTimeout(t); res(rt.lastError ? null : (r && typeof r === 'object' ? r as Record<string, unknown> : null)) }) } catch { clearTimeout(t); res(null) }
   })
+}
+// Ask the extension: the Web Store build first, then the developer build. null when neither is installed.
+async function ask(msg: unknown, timeoutMs = 30_000): Promise<Record<string, unknown> | null> {
+  for (const id of CONNECT_EXTENSION_IDS) { const r = await askOne(id, msg, timeoutMs); if (r) return r }
+  return null
 }
 
 export default function LinkedinConnect({ state, onChange }: { state: ConnectState | null; onChange: () => void }) {

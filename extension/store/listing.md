@@ -2,7 +2,7 @@
 
 Everything to paste into the developer dashboard. Nothing here is submitted yet.
 
-- Package: `extension/store/dist/dazl-connect-0.2.0.zip` (build with `node extension/store/build.mjs`)
+- Package: `extension/store/dist/dazl-connect-0.2.1.zip` (build with `node extension/store/build.mjs`)
 - Visibility: **Unlisted** until the owner says go
 - Language: English
 - Category: Workflow & Planning

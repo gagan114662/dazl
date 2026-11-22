@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "dazl Connect",
   "short_name": "dazl Connect",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Reads the LinkedIn pages your dazl workspace asks for, in this browser with your own LinkedIn sign-in, at a slow pace dazl sets.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAug1CQMAbMaru1iPmtjiYAFJWQMjSg4XSbknrwyODhtWtIuvN55X20+nV5pdQZAtxwne9gM8z4TE0D7HeDOdSuAJdGBUDJM/JhT/DT9sq4R+MEA75xivRj/XibQS/ASRl0JvSC6Y2YTjkmdpVtZrmZf6sIROMPRUTbm9vIXldUlvAuSAZe3DXq2BlhA/kcIRYqMLyQecIfgqoww+PgzfMNIf+16ku5HwtPr+QqVO509oauUdvKR20HivUs+N9muwCfnCLY1zba9BffwxVJGvkMvrk5qHpCHFo+c9ZPa3xFDXWuxFjpdUhIGY7jdJFvh3hiSVp72hJD+mpRGfzkgHgPwIDAQAB",
   "permissions": [
