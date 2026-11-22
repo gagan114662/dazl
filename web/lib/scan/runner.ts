@@ -74,6 +74,7 @@ import { regradeFromKeptContacts, enforceContactSource } from './contact-agreeme
 import { primarySignalKind } from './score.ts'
 import { HIRING_KINDS } from '../play-alerts.ts'
 import { isHiringTrigger } from './scoreboard.ts'
+import { scanEnded, scanStarted } from '../ops/loop-stall.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -2776,7 +2777,8 @@ function inFlightSet(): Map<Job, number | null> {
   const g = globalThis as unknown as Record<symbol, Map<Job, number | null> | undefined>
   return (g[IN_FLIGHT_KEY] ??= new Map<Job, number | null>())
 }
-export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); return () => { m.delete(job) } }
+// #1463 / Qodo #1529: each scan's span is noted for the event-loop stall line (lib/ops/loop-stall.ts)
+export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); scanStarted(job.id.slice(0, 8)); return () => { m.delete(job); scanEnded(job.id.slice(0, 8)) } }
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0
