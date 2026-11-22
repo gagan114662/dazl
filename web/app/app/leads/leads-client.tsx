@@ -244,7 +244,7 @@ export default function LeadsClient() {
   // keyed to the job it was read for: a previous run's note never shows under another job
   const [capacityNote, setCapacityNote] = useState<{ job: string; text: string } | null>(null)
   const [quality, setQuality] = useState<Quality | null>(null)
-  const [heldView, setHeldView] = useState<{ jobId: string; items: { id: string; company: string; source_url: string; signal: string | null; event_date: string | null; hold_reason: string }[] } | null>(null)
+  const [heldView, setHeldView] = useState<{ jobId: string; items: { id: string; company: string; source_url: string; signal: string | null; event_date: string | null; hold_reason: string; buyer?: { name: string; title: string } | null }[] } | null>(null)
   // a new scan never shows the previous scan's held candidates: the list is tied to the job it was read for
   const heldCandidates = heldView?.jobId === jobId ? heldView.items : []
   const [resultView, setResultView] = useState<{ jobId: string; counts: CompanyFirstResultCounts | null; marked: boolean } | null>(null)
@@ -1277,6 +1277,7 @@ export default function LeadsClient() {
                 <span className="font-medium">{h.company}</span>
                 {h.signal ? <span className="text-[var(--ink-2)]"> · {h.signal}</span> : null}
                 {h.event_date ? <span className="text-[var(--ink-2)]"> · {h.event_date}</span> : null}
+                {h.buyer ? <span data-testid="held-buyer"> · {h.buyer.name}, {h.buyer.title}</span> : null}
                 <span className="ml-1 rounded bg-[var(--bg-2,#f3f3f3)] px-1" data-testid="held-reason">{h.hold_reason.replace(/_/g, ' ')}</span>
                 {/^https:\/\//.test(h.source_url) ? <a className="ml-1 underline" href={h.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a> : null}
               </li>
