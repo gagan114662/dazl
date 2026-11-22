@@ -23,3 +23,14 @@ test('the named buyers on those pages are read', () => {
   // a screen-reader-only " on LinkedIn" between the name and the title does not hide the CEO
   assert.ok(p('usesimple.ai', 'usesimple.ai-about-us.html', '/about-us/').includes('Catheryn Li, Chief Executive Officer'))
 })
+
+test('the buyer is stored even with no route: one person is chosen from the own page, the request\'s role first, then seniority; no email is attached', async () => {
+  const { chooseSiteBuyer } = await import('../lib/connectors/sitecrawl.ts')
+  const people = (d: string, f: string, path: string) => extractPeople(F(f), `https://${d}${path}`, WHO)
+  assert.equal(chooseSiteBuyer(people('upguard.com', 'upguard.com-about.html', '/about'), WHO)?.value, 'Mike Baukes, Co-Founder & CEO')
+  assert.equal(chooseSiteBuyer(people('onboardmeetings.com', 'onboardmeetings.com-about-us.html', '/about-us/'), WHO)?.value, 'Marc Huffman, Chief Executive Officer')
+  assert.equal(chooseSiteBuyer(people('usesimple.ai', 'usesimple.ai-about-us.html', '/about-us/'), WHO)?.value, 'Catheryn Li, Chief Executive Officer')
+  // a page naming no one with a buyer title gives no buyer; two equally ranked people with different names are ambiguous: none
+  assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Robin Fleming, Chief Technology Officer', label: 'x', url: 'https://a.com/about' }], WHO), null)
+  assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Ann Lee, CEO', label: 'x', url: 'https://a.com/about' }, { kind: 'person', value: 'Bob Ray, CEO', label: 'x', url: 'https://a.com/about' }], WHO), null)
+})
