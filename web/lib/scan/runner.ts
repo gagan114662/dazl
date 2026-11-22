@@ -2011,7 +2011,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       assertOwned(db, job)
       const pm = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(HAIKU), c => ledger.model(c))
       const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
-      const r = await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl)
+      const r = await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl, (icpForSources?.where ?? []).filter((w): w is string => typeof w === 'string'))
       if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
       else { requestNamesPlace = r.plan.places.length > 0; const b = boardPlaceOf(r.plan.places); if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason }
     }

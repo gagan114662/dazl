@@ -19,8 +19,9 @@ const count = 1500
 const q = 'Find commercial roofers in London, UK'
 const url = 'https://public.example/official-company-page'
 // #1395 SYNTHETIC request plans: each request's places exactly as it writes them ([] when it writes none: the profile place is then used),
-// the country an honest model would give. "Faro", "Porto", "Nelson" and "Dunedin" carry a country the request does not write, so the plan
-// refuses them (place_not_in_request) and the board source is held for those requests: the profile place is never used for a place a request names.
+// the country an honest model would give. "Faro", "Porto", "Nelson" and "Dunedin" carry a country the request does not write: it is grounded only
+// when the job profile writes the SAME city with that country ("Faro, Portugal"); otherwise the plan is refused (place_not_in_request) and the
+// board source is held. The profile place is never used for a place a request names.
 const LONDON_UK: StubPlace = { text: 'London, UK', city: 'London', region: null, country: 'GB' }
 const city = (text: string, country: string): StubPlace => ({ text, city: text, region: null, country })
 const PLAN_PLACES: Record<string, StubPlace[]> = {

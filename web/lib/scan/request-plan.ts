@@ -98,7 +98,7 @@ function writtenCountries(text: string): Set<string> {
 // The countries data ties to the place without the request writing one: a region's country, a built-in city place (London, New York City: read in
 // any case, as the board source always has), and - only for a city the request writes as a name, in its own capitals ("mobile app teams" is not
 // Mobile, AL) - a listed world city's country or a US census city.
-function impliedCountries(request: string, p: PlanPlace): Set<string> {
+function impliedCountries(request: string, p: PlanPlace, profileWhere: readonly string[]): Set<string> {
   const out = new Set<string>()
   const r = p.region ? regionOf(p.region) : null
   if (r) out.add(countryOfRegion(r))
@@ -110,6 +110,13 @@ function impliedCountries(request: string, p: PlanPlace): Set<string> {
       const c = listed ? resolveSegment(listed, true) : null
       if (c) out.add(c)
       if (bareUsCity(city)) out.add('US')
+      // the user's own reviewed profile writing the SAME city with its country ("in Faro" + profile "Faro, Portugal"): never another city of the profile
+      for (const w of profileWhere) {
+        const [head, ...rest] = w.split(','), tail = rest.join(',')
+        if (!tail.trim() || fold(head) !== fold(city)) continue
+        for (const c of countriesIn(tail)) out.add(c)
+        for (const seg of tail.split(',')) { const r = regionOf(seg); if (r) out.add(countryOfRegion(r)) }
+      }
     }
   }
   return out
@@ -118,12 +125,12 @@ function impliedCountries(request: string, p: PlanPlace): Set<string> {
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const hasWords = (hay: string, needle: string): boolean => !!needle && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(needle)}(?![\\p{L}\\p{N}])`, 'u').test(hay)
 // A place is kept only when the request writes it: its text in the request, its city and region in its text, its country written or implied.
-export function groundedIn(request: string, p: PlanPlace): boolean {
+export function groundedIn(request: string, p: PlanPlace, profileWhere: readonly string[] = []): boolean {
   const req = fold(request), text = fold(p.text)
   if (!text || !hasWords(req, text)) return false
   if (p.city !== null && !hasWords(text, fold(p.city))) return false
   if (p.region !== null && !hasWords(text, fold(p.region))) return false
-  if (p.country !== null && !writtenCountries(p.text).has(p.country) && !impliedCountries(request, p).has(p.country)) return false
+  if (p.country !== null && !writtenCountries(p.text).has(p.country) && !impliedCountries(request, p, profileWhere).has(p.country)) return false
   return true
 }
 
@@ -132,11 +139,12 @@ export function groundedIn(request: string, p: PlanPlace): boolean {
 const CACHE_MAX = 500
 const cache = new Map<string, RequestPlan>()
 const PLAN_VERSION = 1   // bump with any change to the prompt or the schema: a cached plan of another version is never served
-const cacheKey = (tenantId: string, request: string) => `${PLAN_VERSION}\u0000${tenantId}\u0000${createHash('sha256').update(request.normalize('NFC').trim()).digest('hex')}`
+const cacheKey = (tenantId: string, request: string, profileWhere: readonly string[]) => `${PLAN_VERSION}\u0000${tenantId}\u0000${createHash('sha256').update(JSON.stringify([request.normalize('NFC').trim(), profileWhere])).digest('hex')}`
 export function clearRequestPlanCache(): void { cache.clear() }
 
-export async function readRequestPlan(provider: Provider, apiKey: string, request: string, tenantId: string, fetchImpl?: typeof fetch): Promise<PlanResult> {
-  const key = cacheKey(tenantId, request)
+// profileWhere: the job profile's place entries, used only to ground the country of the SAME city the request names (never a place of their own)
+export async function readRequestPlan(provider: Provider, apiKey: string, request: string, tenantId: string, fetchImpl?: typeof fetch, profileWhere: readonly string[] = []): Promise<PlanResult> {
+  const key = cacheKey(tenantId, request, profileWhere)
   const hit = cache.get(key)
   if (hit) return { ok: true, plan: hit, cached: true }
   let reply: string
@@ -152,7 +160,7 @@ export async function readRequestPlan(provider: Provider, apiKey: string, reques
   }
   const plan = parsePlan(reply)
   if (!plan) return { ok: false, reason: 'schema' }
-  if (!plan.places.every(p => groundedIn(request, p))) return { ok: false, reason: 'place_not_in_request' }
+  if (!plan.places.every(p => groundedIn(request, p, profileWhere))) return { ok: false, reason: 'place_not_in_request' }
   cache.set(key, plan)
   if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!)
   return { ok: true, plan, cached: false }
