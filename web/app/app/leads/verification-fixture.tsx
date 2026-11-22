@@ -6,7 +6,7 @@ import { fixtureFailureMessage, fixtureNextUrl } from '@/lib/scan/fixture-action
 // any other account. The fixture proves populated UI with synthetic rows; cleanup
 // removes exactly what it created.
 export default function VerificationFixture({ onChanged }: { onChanged?: () => void }) {
-  const [state, setState] = useState<{ available: boolean; exists: boolean; firstTouchExists?: boolean; workEmailAvailable?: boolean; workEmailExists?: boolean; realCheckAvailable?: boolean } | null>(null)
+  const [state, setState] = useState<{ available: boolean; exists: boolean; firstTouchExists?: boolean; workEmailExists?: boolean; realCheckAvailable?: boolean } | null>(null)
   const [real, setReal] = useState({ company: '', url: '', who: '' })
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
@@ -37,10 +37,10 @@ export default function VerificationFixture({ onChanged }: { onChanged?: () => v
         ? <button className="underline" disabled={busy} onClick={() => void act('DELETE', 'first_touch')}>remove the first-touch autopilot fixture</button>
         : <button className="underline" disabled={busy} onClick={() => void act('POST', 'first_touch')}>create the first-touch autopilot fixture</button>}
       {' '}(one test-only lead to your own test inbox; confirm it under Needs your review, then autopilot drafts it)
-      {(state.workEmailAvailable || state.workEmailExists) && <>
+      {state.workEmailExists && <>
         {' '}{state.workEmailExists
           ? <button className="underline" disabled={busy} onClick={() => void act('DELETE', 'work_email')}>remove the Find work email fixture</button>
-          : <button className="underline" disabled={busy} onClick={() => void act('POST', 'work_email')}>create the Find work email fixture</button>}
+          : null}
         {' '}(staging only: one test-only lead naming five test buyers; Find work email answers from the staging fake People Data Labs and fake ZeroBounce)
       </>}
       {state.realCheckAvailable && <span className="block mt-1" data-testid="real-company-check">

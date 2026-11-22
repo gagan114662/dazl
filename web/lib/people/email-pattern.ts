@@ -457,62 +457,16 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   let pubWritten = 0
   if (pubAll.length && us.us) {
     migrateEmailGuess(db)
-    const ins = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?) ON CONFLICT DO NOTHING")
+    // A guess an earlier release stored for the same address becomes the published row once the site prints it (the key is
+    // lead_id + address, so it would otherwise block the printed address for good); a published row is never overwritten.
+    const ins = db.prepare(`INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?)
+      ON CONFLICT (lead_id, address) DO UPDATE SET person = excluded.person, format = 'published', country_basis = excluded.country_basis, tier = 'published', source_url = excluded.source_url
+      WHERE email_candidates.tier = 'guessed' AND email_candidates.tenant_id = excluded.tenant_id`)
     for (const x of pubAll) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
   }
-  if (!emailGuessEnabled(ctx.env ?? process.env)) {
-    if (!pubWritten && !(pubAll.length && us.us)) return null
-    const n = pubWritten
-    const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
-    return { format: null, confidence: null, candidates: 0, published: n, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
-  }
-  if (!us.us) {
-    // This crawl no longer shows the company in the US: guesses recorded on earlier US evidence lose it, so none of them can be
-    // sent to the mailbox check (verification only selects rows with a country_basis). Checked rows keep their history.
-    try { db.prepare("UPDATE email_candidates SET country_basis = NULL WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none'").run(tenantId, leadId) }
-    catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
-    return null
-  }
-  // This crawl shows the company in the US again: guesses already recorded and still UNCHECKED take this basis back (a crawl that
-  // showed no US address cleared it), whatever this crawl's pattern turns out to be. A checked guess keeps its history.
-  // Only addresses on the site this crawl read: a basis from one site never vouches for guesses made on another.
-  try { db.prepare("UPDATE email_candidates SET country_basis = ? WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none' AND country_basis IS NULL AND lower(address) LIKE ?").run(us.basis, tenantId, leadId, `%@${site.toLowerCase()}`) }
-  catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
-  const seen = (ctx.seen ?? []).filter(x => x.address.includes('@') && sameSite(x.address.split('@')[1], site))
-  const names = people.map(p => ({ person: p, name: splitName(p.split(',')[0] ?? '') })).filter((x): x is { person: string; name: Name } => !!x.name)
-  const allNames = names.map(x => x.name)
-  const published = names.map(x => ({ ...x, pub: publishedFor(x.name, seen, allNames, titleOf(x.person)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
-  const ambiguousLocals = new Set([...locals, ...seen.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, allNames).length > 1))
-  const ambiguous = new Set(seen.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size
-  const pattern = rankPattern(locals, allNames)
-  if (!pattern && !published.length) return null
-  migrateEmailGuess(db)
-  const pub = pubWritten; let n = 0 // the published rows were written above, before the US check
-  if (!pattern) return { format: null, confidence: null, candidates: 0, published: pub, ambiguous }
-  const urlOf = (address: string) => seen.find(s => s.address === address)?.url ?? null
-  const evidence: { person: string; address: string; url: string | null }[] = []
-  for (const p of pattern.supporters) {
-    const address = candidateAddress(p, site, pattern.format)
-    const e = { person: `${p.first} ${p.last}`, address, url: urlOf(address) }
-    if (JSON.stringify([...evidence, e]).length > 2000) break
-    evidence.push(e)
-  }
-  db.prepare('INSERT OR REPLACE INTO email_patterns (tenant_id, lead_id, site, format, support, confidence, score, runner_up, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(tenantId, leadId, site, pattern.format, pattern.support, pattern.confidence, pattern.score, pattern.runnerUp, JSON.stringify(evidence))
-  const hasPub = new Set(published.map(x => nameKey(x.name)))
-  // Distinct people per guessed local part: a local two different people would both get is nobody's guess.
-  const guessOwners = new Map<string, Set<string>>()
-  for (const x of names) {
-    const l = localFor(pattern.format, x.name)
-    if (!guessOwners.has(l)) guessOwners.set(l, new Set())
-    guessOwners.get(l)!.add(nameKey(x.name))
-  }
-  const ins = db.prepare("INSERT OR IGNORE INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, ?, ?, 'guessed', ?)")
-  for (const x of names) {
-    if (hasPub.has(nameKey(x.name))) continue
-    const l = localFor(pattern.format, x.name)
-    if (guessOwners.get(l)!.size > 1 || ambiguousLocals.has(l)) continue
-    n += ins.run(tenantId, leadId, x.person.slice(0, 120), candidateAddress(x.name, site, pattern.format), pattern.format, us.basis, pattern.confidence).changes
-  }
-  return { format: pattern.format, confidence: pattern.confidence, candidates: n, published: pub, ambiguous }
+  // #1036 / #1250: the buyer's email is only an address the company itself printed. No format is learned and no address is built
+  // from a name, whatever EMAIL_GUESS_ENABLED says; addresses recorded by earlier releases stay at rest and are never shown.
+  if (!pubWritten && !(pubAll.length && us.us)) return null
+  const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
+  return { format: null, confidence: null, candidates: 0, published: pubWritten, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
 }

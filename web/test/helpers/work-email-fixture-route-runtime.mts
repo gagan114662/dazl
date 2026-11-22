@@ -1,6 +1,6 @@
-// #1036: POST / DELETE /api/leads/verification-fixture with action 'work_email', then the real Find work email route on the
-// fixture lead, through the real handlers. Only the designated test tenant with DAZL_ENV=staging and DAZL_STAGING_FAKE_PDL=1 gets
-// the lead; the lookup answers come from the staging fake People Data Labs and fake ZeroBounce. Synthetic data; fetch throws.
+// #1036: /api/leads/verification-fixture action 'work_email' through the real handlers. No fixture is created any more (Find work
+// email gives only an address published on the company's own site, #1036 / #1250); one an earlier release left is looked up by
+// nobody and DELETE removes it. Synthetic data; fetch throws.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -14,6 +14,7 @@ import { setTestAddresses } from '../../lib/outreach/sequences.ts'
 import { TEST_INBOX } from '../../lib/outreach/service.ts'
 import { saveCredential, setEnrichFallback } from '../../lib/connectors/store.ts'
 import { WORK_EMAIL_FIXTURE_COMPANY } from '../../lib/people/work-email-eligible.ts'
+import { insertLegacyWorkEmailFixture, LEGACY_FIXTURE_TARGET } from './legacy-work-email-fixture.ts'
 
 let fetches = 0
 globalThis.fetch = (async () => { fetches++; throw new Error('Unexpected network call') }) as typeof fetch
@@ -37,39 +38,31 @@ function build() {
   return db
 }
 
-test('work_email fixture: refused for other accounts and outside staging with the fake PDL; nothing written', async () => {
+test('work_email fixture: no longer created for anyone (unknown action, nothing written); GET offers no create', async () => {
   const db = build()
-  setEnv(true); setUser({ ...B })
-  const r = await call('POST', { action: 'work_email' })
-  assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: 'test_tenant_only' })
-  setEnv(false); setUser(A)
-  const p = await call('POST', { action: 'work_email' })
-  assert.equal(p.status, 403); assert.deepEqual(await p.json(), { error: 'staging_fakes_only' })
-  const g = await (await GET()).json() as { workEmailAvailable: boolean; workEmailExists: boolean }
-  assert.equal(g.workEmailAvailable, false); assert.equal(g.workEmailExists, false)
+  for (const [on, user] of [[true, A], [false, A], [true, B]] as const) {
+    setEnv(on); setUser({ ...user })
+    const r = await call('POST', { action: 'work_email' })
+    assert.equal(r.status, 400); assert.deepEqual(await r.json(), { error: 'unknown_action' })
+  }
+  setEnv(true); setUser(A)
+  const g = await (await GET()).json() as { workEmailAvailable?: boolean; workEmailExists: boolean }
+  assert.equal(g.workEmailAvailable, undefined); assert.equal(g.workEmailExists, false)
   assert.equal(leads(db).length, 0); assert.equal(fetches, 0)
+  setEnv(false)
 })
 
-test('work_email fixture on staging: one lead; the real Find work email route answers from the fakes; DELETE work_email removes it', async () => {
+test('a fixture an earlier release left: the real Find work email route looks nothing up and shows no stored fake answer; DELETE work_email removes it', async () => {
   const db = build(); setEnv(true); setUser(A)
-  const c = await call('POST', { action: 'work_email' })
-  assert.equal(c.status, 200)
-  const f = await c.json() as { leadId: string; created: boolean; people: { target: string; expect: string }[] }
-  assert.equal(f.created, true); assert.equal(f.people.length, 5); assert.deepEqual(leads(db).map(l => l.user_id), ['A'])
-  const g = await (await GET()).json() as { workEmailAvailable: boolean; workEmailExists: boolean }
-  assert.equal(g.workEmailAvailable, true); assert.equal(g.workEmailExists, true)
-
+  const f = insertLegacyWorkEmailFixture(db, 'A')
+  const g = await (await GET()).json() as { workEmailExists: boolean }
+  assert.equal(g.workEmailExists, true)
   const params = { params: Promise.resolve({ lead: f.leadId }) }
-  const before = await (await WE_GET(new NextRequest(`http://localhost/api/leads/${f.leadId}/work-email`), params)).json() as { providers: { apollo: boolean; pdl: boolean; mailboxCheck: boolean } }
-  assert.deepEqual([before.providers.apollo, before.providers.pdl, before.providers.mailboxCheck], [false, true, true])
-  const post = (target: string) => WE_POST(new NextRequest(`http://localhost/api/leads/${f.leadId}/work-email`, { method: 'POST', body: JSON.stringify({ target }), headers: hdr }), params)
-  const valid = await post(f.people[0].target)
-  assert.equal(valid.status, 200)
-  const v = await valid.json() as { status: string; lookup: { address: string | null; mailbox_check: string; mailbox_verifier: string } }
-  assert.equal(v.status, 'unverified'); assert.equal(v.lookup.mailbox_check, 'valid'); assert.equal(v.lookup.mailbox_verifier, 'zerobounce-staging-fake')
-  assert.match(v.lookup.address ?? '', /^staging-valid\.testbuyer@/)
-  const spam = await (await post(f.people[3].target)).json() as { lookup: { address: string | null; mailbox_check: string } }
-  assert.equal(spam.lookup.mailbox_check, 'refused'); assert.equal(spam.lookup.address, null, 'a do-not-mail address is never sent to the browser')
+  const before = await (await WE_GET(new NextRequest(`http://localhost/api/leads/${f.leadId}/work-email`), params)).json() as { providers: { apollo: boolean; pdl: boolean; mailboxCheck: boolean; publishedOnly?: boolean }; lookups: unknown[] }
+  assert.deepEqual([before.providers.apollo, before.providers.pdl, before.providers.mailboxCheck, before.providers.publishedOnly], [false, false, false, true])
+  assert.deepEqual(before.lookups, [], 'the stored fake People Data Labs answer is not shown')
+  const post = await WE_POST(new NextRequest(`http://localhost/api/leads/${f.leadId}/work-email`, { method: 'POST', body: JSON.stringify({ target: LEGACY_FIXTURE_TARGET }), headers: hdr }), params)
+  assert.equal(post.status, 422); assert.equal((await post.json() as { lookup?: unknown }).lookup, undefined)
 
   const d = await call('DELETE', { action: 'work_email' })
   assert.equal(d.status, 200); assert.deepEqual(await d.json(), { deleted: true })
