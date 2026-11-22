@@ -36,7 +36,9 @@ const str = (v: unknown, max: number): string | null => typeof v === 'string' &&
 function clean(rows: unknown): ContactEnrichment[] {
   if (!Array.isArray(rows)) return []
   const out: ContactEnrichment[] = []
-  for (const r of rows.slice(0, MAX_ROWS)) {
+  // the bound is on the PEOPLE rows read (a lead's other rows - signals, domains, tech scans - grow without a cap and never hide its buyer)
+  for (const r of rows) {
+    if (out.length >= MAX_ROWS) break
     if (!r || typeof r !== 'object' || Array.isArray(r)) continue
     const o = r as Record<string, unknown>
     const kind = str(o.kind, 40), value = str(o.value, 300)

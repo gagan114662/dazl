@@ -5,7 +5,7 @@
 // time-window hold (undated or older than the window), someone else's customer, a different place, a closed opening, a
 // required check that could not run - is "research": kept for reading, never counted as reviewable, and never offered a
 // "widen the window" fix unless a dated lead was only too old. Unknown reasons fail closed to research.
-import { heldReason, NO_OWN_BUYER, type PreviewLead } from './journey.ts'
+import { heldReason, NO_OWN_BUYER, reviewCanNameBuyer, type PreviewLead } from './journey.ts'
 
 export type HeldState = 'review' | 'research' | 'rejected'
 export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need'
@@ -77,8 +77,9 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
   const r = l.review_reason ?? ''
   const cause = researchCause(l)
   // A hold a look at the source can resolve is reviewable unless a time window holds the lead: confirming lifts the first, never the second.
-  if (reviewIsActionable(l)) return { state: 'review', cause: null }
-  if (!r && why === 'company website not confirmed') return { state: 'review', cause: null }
+  // #1037: and only when a review can still give the lead its buyer (reviewCanNameBuyer); otherwise no check can make it ready
+  if (reviewIsActionable(l) && reviewCanNameBuyer(l)) return { state: 'review', cause: null }
+  if (!r && why === 'company website not confirmed' && reviewCanNameBuyer(l)) return { state: 'review', cause: null }
   return { state: 'research', cause }
 }
 

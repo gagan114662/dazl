@@ -499,3 +499,14 @@ test('linked profile metadata preserves the independent company source and fails
   assert.equal(leadPerson([{ ...row, connector: 'import:other' }], 'Founder', now, identified), null)
   assert.equal(leadPerson([{ ...row, label: 'sitecrawl-profile-v1: https://www.linkedin.com.bad.test/in/wrong-url' }], 'Founder', now, identified), null)
 })
+
+// Qodo (PR 1528): a lead's rows grow without a per-lead cap (signals, tech scans, domains). The own-site buyer stored after 500 other rows
+// is still the lead's buyer; the bound applies to the people rows read, not to everything stored before them.
+test('#1037 the own-site buyer is found behind 600 non-person rows; the people bound still holds', () => {
+  const filler = Array.from({ length: 600 }, (_, i) => ({ kind: 'signal', value: `signal ${i}`, label: null, source_url: `https://news.example/${i}`, connector: 'news:gdelt' }))
+  const buyer = S('Jane Doe, Head of Sales', 'https://www.linkedin.com/in/jane-doe-example')
+  assert.equal(leadPerson([...filler, buyer], 'Head of Sales', NOW, SITE)?.name, 'Jane Doe')
+  // the bound is on people rows: 500 unqualified people first, then the buyer, still fails closed (no unbounded read)
+  const many = Array.from({ length: 500 }, (_, i) => ({ kind: 'person', value: `Pat Example${String.fromCharCode(97 + (i % 26))}, Head of Sales`, label: null, source_url: 'https://acme.example/team', connector: 'search:people' }))
+  assert.equal(leadPerson([...many, buyer], 'Head of Sales', NOW, SITE), null)
+})

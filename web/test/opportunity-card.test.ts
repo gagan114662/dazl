@@ -104,12 +104,14 @@ test('channel follows the contact evidence: phone only is not an email draft; a 
   assert.ok(press.missing.includes('an email or phone'))
 })
 
+// #1037: what clears the buyer hold, said as plain guidance; the same words whether nobody is listed or only people who don't qualify are
+const OWN_SITE_BUYER = 'a buyer named on the company\'s own site (a person it lists with a title and the LinkedIn its page links)'
 test('nobody found and ungraded/undated are said plainly', () => {
   const c = card({ enrichments: [], fit: null, icp_match: null, event_date: null, date_status: null }, '')
   assert.equal(c.who, null)
   assert.equal(c.whyThisBusiness, 'Not graded against your profile yet.')
   assert.equal(c.whyNow.dateNote, 'event date unknown')
-  assert.ok(c.missing.includes('event date') && c.missing.includes('a named person to approach') && c.missing.includes('buyer role (not shown in the evidence)'))
+  assert.ok(c.missing.includes('event date') && c.missing.includes(OWN_SITE_BUYER) && c.missing.includes('buyer role (not shown in the evidence)'))
   assert.equal(c.next, 'Identify the company\'s own website before reaching out.', '#1037: the website first - only a confirmed site can name the buyer')
 })
 

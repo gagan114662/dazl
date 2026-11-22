@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { heldState, researchCause } from '../lib/lead-state.ts'
-import { journey, previewSplit, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
+import { heldReason, journey, previewSplit, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
 import { widenActions } from '../lib/play-card.ts'
 import { readFileSync } from 'node:fs'
 import { reviewAction } from '../lib/scan/review-action.ts'
@@ -264,4 +264,22 @@ test('#1176 researchTip controls: each cause in the per-lead words, counted, mos
   assert.equal(researchTip(['need']), `1: Event day verified on the cited source; the rest of the lead is not confirmed yet.${tail}`)
   assert.equal(researchTip(['place', 'closed', 'unsupported']), `1: Evidence names a different place. 1: The opening is closed. 1: Evidence not verified.${tail}`)
   assert.equal(researchTip([]), tail.trim())
+})
+
+// Qodo (PR 1528): Home counts a lead as "review" only when a review can make it ready. Checking the source or confirming the website never
+// names a buyer, so a lead whose company site lists nobody with a title and a page-linked LinkedIn is research, not review (#1037).
+test('#1037 a reviewable hold with no buyer the company site could name is research, not review; a confirmable site that lists one stays review', () => {
+  const dated = { event_date: '2026-10-01', date_status: 'unverified' as const, day_verified: true }
+  for (const r of ['quote_unconfirmed', 'blocked_by_site', 'needs_javascript']) {
+    assert.equal(heldState(lead({ ...dated, review_reason: r, enrichments: [] }))?.state, 'research', `${r}: nobody on the company site`)
+    assert.equal(heldState(lead({ ...dated, review_reason: r }))?.state, 'review', `${r}: control, the buyer is named`)
+  }
+  // the website is not confirmed (only guessed by name): confirming it makes its listed buyer current, so review; with nobody listed, research
+  const probed = ownSiteBuyerRows('exampledental.example').map(e => e.kind === 'domain' ? { ...e, value: 'exampledental.example|name_probe', label: 'domain-basis-v1:name_probe' } : e)
+  // a crawled address on that guessed domain is what puts the website up for the user's confirmation (lib/outreach/domain-review.ts)
+  const rows = [...probed, { ...probed[0], kind: 'email', value: 'office@exampledental.example', label: 'x', source_url: 'https://exampledental.example/contact' }]
+  assert.equal(heldReason(lead({ ...dated, enrichments: rows })), 'company website not confirmed', 'not vacuous: the website review is the hold')
+  const unconfirmed = heldState(lead({ ...dated, enrichments: rows }))
+  assert.equal(unconfirmed?.state, 'review', JSON.stringify(unconfirmed))
+  assert.equal(heldState(lead({ ...dated, enrichments: rows.filter(e => e.kind !== 'person') }))?.state, 'research', 'unconfirmed site, nobody listed')
 })
