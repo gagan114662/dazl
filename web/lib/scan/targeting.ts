@@ -116,7 +116,8 @@ const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 // #1205: the words before a job word. A preposition, article or possessive means they are a phrase, not a role ("a press release about a
 // job"): no condition. A role the request names that this reader cannot read (titles joined by and/or, a job word in it, or ending in "of":
 // "a range of job openings for a sales rep") is held (role_unreadable).
-const NOT_A_ROLE = /\b(?:a|an|new|about|on|to|with|that|which|for|from|in|at|by|the|our|their|its)\b/i
+// A hyphen joins the parts of a role ("in-house counsel", "on-call nurse"), so a grammar word inside one never counts.
+const NOT_A_ROLE = /(?<![\w-])(?:a|an|new|about|on|to|with|that|which|for|from|in|at|by|the|our|their|its)(?![\w-])/i
 const ROLE_UNREADABLE = /\b(?:and|or|jobs?|roles?|positions?|openings?|vacanc(?:y|ies))\b|\bof$/i
 // #876: a modal in front of the completed verb ("may have made", "will have hired", "might have just made") says the hire may not have happened.
 // That is no completed-hire condition: the span is left unread (no hire_made, no open role) and compileTargeting records the ambiguity.
