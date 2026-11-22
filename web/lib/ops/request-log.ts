@@ -8,6 +8,7 @@
 // known route logs as /api/[unknown] or /app/[unknown]. Never headers, cookies, bodies, IPs or the query.
 import { randomUUID } from 'node:crypto'
 import { ROUTE_TEMPLATES } from './routes.ts'
+import { noteRecentRequest } from './loop-stall.ts'
 
 // A random UUIDv4 and nothing else: the shape is what makes it safe to log next to a tenant id.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -44,6 +45,7 @@ export function setRequestLogWriter(w: (line: string) => void): () => void {
 }
 export function logRequest(l: RequestLogLine): void {
   try { write(JSON.stringify(l)) } catch { /* logging never breaks a request */ }
+  try { noteRecentRequest(l.request_id, l.method, l.path) } catch { /* never breaks a request */ }
 }
 
 // The id proxy.ts gave this request, for a route's own error records; undefined when absent or not that shape.
