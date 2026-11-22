@@ -63,3 +63,45 @@ test('a run that is never offered the run-limit raise is not told that raise is 
   const raise = e.verdict.change.some(c => /^Raise the dollar limit/.test(c))
   assert.equal(e.verdict.change.some(c => /raising this run's limit/.test(c)), raise, e.verdict.change.join(' | '))
 })
+
+// Quest (#1319): max_usd is the limit for that one run (spend-cap.ts effectiveCapUsd, reserved on the job's own row), and every account has a
+// daily cap the transport enforces (runner.ts runWithScanSpend: accountLimits(owner), reserved on tenant_spend_pools). The screen shows both,
+// read from the same source, so every number on it matches what actually stops a run.
+import Database from 'better-sqlite3'
+import { asDb } from '../lib/db/client.ts'
+import { estimateForBody } from '../lib/scan/estimate-request.ts'
+import { accountLimits, migrateSpendPools, periodOf } from '../lib/llm/spend-pool.ts'
+
+async function serverEstimate(env: Record<string, string | undefined>, reservedToday: number) {
+  const saved: Record<string, string | undefined> = {}
+  for (const k of Object.keys(env)) { saved[k] = process.env[k]; if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k] }
+  try {
+    const raw = new Database(':memory:'); migrateSpendPools(raw)
+    const now = Math.floor(Date.now() / 1000)
+    if (reservedToday > 0) raw.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, calls, reported_usd, updated_at) VALUES (?, ?, ?, 0, 0, ?)').run('t-unnamed', periodOf('day', now), reservedToday, now)
+    const r = await estimateForBody({ query: 'B2B SaaS startups in Toronto hiring a first SDR', budget: { max_usd: 3.33 } }, { db: asDb(raw), tenantId: 't-unnamed', hasOwnKey: true, enrichmentVendors: [], model: 'claude-sonnet-4-5' })
+    assert.ok(r.ok, JSON.stringify(r))
+    return { est: r.ok ? r.estimate : null!, day: accountLimits('t-unnamed').day }
+  } finally { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k] } }
+}
+
+test('an account the operator did not name: the run limit and the enforced daily cap are both shown, each as itself', async () => {
+  const { est, day } = await serverEstimate({ DAZL_OWNER_DAY_MAX_USD: undefined, DAZL_RUN_MAX_USD_USERS: undefined }, 1)
+  assert.equal(est.cap.max_usd, day, 'the daily cap shown is the one the transport enforces')
+  const line = capLine(est.cap, est.cap.capped_total)!
+  assert.match(line, /^This run's limit: \$3\.33; Daily limit: \$\d+\.\d\d \(\$1\.00 already reserved today\);/)
+  assert.match(line, /\$3\.33 left \(this run's limit binds\)/)
+})
+
+test('the daily cap shown follows the deployment setting the transport reads, and binds when it is the tighter', async () => {
+  const { est, day } = await serverEstimate({ DAZL_OWNER_DAY_MAX_USD: '4', DAZL_RUN_MAX_USD_USERS: undefined }, 2)
+  assert.equal(day, 4); assert.equal(est.cap.max_usd, 4)
+  assert.match(capLine(est.cap, est.cap.capped_total)!, /^This run's limit: \$3\.33; Daily limit: \$4\.00 \(\$2\.00 already reserved today\);.*\$2\.00 left \(daily limit binds\)/)
+})
+
+test('with no daily cap known to the estimate, a run limit is never called a daily limit nor charged the day\'s reservations', () => {
+  const e = estimateRun({ budget: { max_usd: 1 }, payer: 'you', reservedUsd: 0.95 })
+  assert.ok(Math.abs((e.cap.remaining_usd ?? 0) - 1) < 1e-9); assert.equal(e.cap.binding, 'run')
+  const line = capLine(e.cap, e.cap.capped_total)!
+  assert.match(line, /^This run's limit: \$1\.00; \$1\.00 left \(this run's limit binds\)\./); assert.doesNotMatch(line, /[Dd]aily|reserved today/)
+})
