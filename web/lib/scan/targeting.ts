@@ -122,7 +122,7 @@ const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
 const cleanRole = (s: string) => s.trimStart().split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for|either|any|some|other)\s+)+/i, '').trim()
 // #1122: one open-role clause can name several roles ("hiring an SDR/BDR or sales rep"). Every one is kept, separated by "/" (the separator a
 // role's alternatives already use, "Head of Sales/VP Sales"), and each is judged on its own (roleAlternatives). A further role is read after
-// "or" or "/", or after a comma in a list of titles that an "or" closes ("SDRs, AEs, or sales reps"; a bare "SDRs, AEs" keeps main's reading), while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or
+// "or", "/" or a comma in a list of titles ("SDRs, AEs, or sales reps"; a bare "SDRs, AEs" is an OR of roles too, the #1509 comma rule), while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or
 // qualifier word, and it starts no other condition of the request ("hiring SDRs or raised a Series A" stays two conditions).
 const LIST_GAP = /^\s*,\s*$/
 const ALT_SEP = /^(?:\s*\/\s*|\s+or\s+|\s+and\s*\/\s*or\s+|\s*,\s*(?:or\s+)?)/i
@@ -139,8 +139,6 @@ const altRole = (s: string) => !!s && /^[A-Za-z][A-Za-z\s&\/-]*$/.test(s) && s.s
 function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { roles: string[]; end: number } {
   const roles = [role]
   let rest = text, end = self.end
-  // the chain read so far, and how far it is kept: a comma-joined title counts only once a later "or" closes the list
-  let kept = { n: 1, end }
   for (;;) {
     const sep = ALT_SEP.exec(rest); if (!sep) break
     // "SDR or sales rep roles": the trailing "roles" / "positions" belongs to the list, not to the title
@@ -150,9 +148,8 @@ function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { rol
     const nextEnd = end + sep[0].length + tail.indexOf(next) + next.length
     if (atoms.some(b => b !== self && end < b.end && b.start < nextEnd)) break
     roles.push(next); rest = tail.slice(tail.indexOf(next) + next.length); end = nextEnd
-    if (/\bor\b|\//i.test(sep[0])) kept = { n: roles.length, end }
   }
-  return { roles: roles.slice(0, kept.n), end: kept.end }
+  return { roles, end }
 }
 // #1122: every role a hiring condition names, each on its own: the clause's roles (stored as a list, never re-split on a "/" inside a title),
 // each split on its own "/" only between whole titles ("SDR/BDR" -> SDR, BDR; "full-stack/backend engineer" stays one).
