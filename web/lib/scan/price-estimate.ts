@@ -42,7 +42,7 @@ export const FREE_TRIAL_SCANS = 3
 export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null; trial_refusal?: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
-  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
+  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'run' | 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
   verdict: Verdict; ack: string
   // A trial account's remaining dollar allowance (lib/billing/trial-budget.ts trialAllowanceLeft). Display only: deliberately NOT part of `ack`, so the
   // confirmation of an estimate never goes stale because a read changed it, and POST /api/scan (which does not read it) never answers estimate_changed.
@@ -213,8 +213,10 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const runMax = typeof b?.max_usd === 'number' ? b.max_usd : Infinity, ownerDay = i.ownerCapUsd ?? null
   const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : Number.isFinite(limit) ? limit - reserved : Infinity, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
   const monthBinds = monthLeft < dayLeft
+  // #1319: the run's own limit binds when it, not the day's room, sets dayLeft; the label names it ("this run's limit"), never "daily"
+  const runBinds = ownerDay !== null && runMax < ownerDay - reserved
   const remaining = capped && !unknown ? Math.max(0, Math.min(dayLeft, monthLeft)) : null   // unknown reserved amounts -> unknown remaining, never 0
-  const binding: 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : 'daily'
+  const binding: 'run' | 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : runBinds ? 'run' : 'daily'
   const dayCapShown = ownerDay ?? limit, shownLimit = monthBinds ? (monthCap as number) : dayCapShown, shownReserved = monthBinds ? monthReserved : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
@@ -389,14 +391,14 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   if (usd !== null) {
     const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
     const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
-    summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against an estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
+    summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
   }
-  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   // #1168: nothing was sent, so nothing was charged: say so, never "unknown" and never "recorded"
-  else if ((a.refusedBeforeSending ?? 0) > 0) summary = `No model call was made: ${a.refusedBeforeSending} ${a.refusedBeforeSending === 1 ? 'was' : 'were'} refused by a spending limit before sending, so the model cost is $0. Estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
-  else summary = `Actual model cost was not recorded (estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
+  else if ((a.refusedBeforeSending ?? 0) > 0) summary = `No model call was made: ${a.refusedBeforeSending} ${a.refusedBeforeSending === 1 ? 'was' : 'were'} refused by a spending limit before sending, so the model cost is $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else summary = `Actual model cost was not recorded (model-request estimate ${money(modelEst.min)}-${money(modelEst.max)}).`
   // A reservation is a hold from what the code sent, named as itself - never folded into the cost and never an invoice.
   const capRes = a.capReservedUsd ?? null
   if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
@@ -411,7 +413,7 @@ export function capLine(cap: RunEstimate['cap'], capped: Range): string | null {
   const parts: string[] = []
   if (cap.max_usd != null) parts.push(`Daily limit: ${cur(cap.max_usd)}${cap.unknown ? '' : cap.reserved_usd > 0 ? ` (${cur(cap.reserved_usd)} already reserved today)` : ''}`)
   if (cap.month_cap_usd != null) parts.push(`Monthly limit: ${cur(cap.month_cap_usd)}${cap.unknown ? '' : cap.month_reserved_usd > 0 ? ` (${cur(cap.month_reserved_usd)} already reserved this month)` : ''}`)
-  const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding} limit binds)` : ''}`
+  const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding === 'run' ? "this run's" : cap.binding} limit binds)` : ''}`
   return `${parts.join('; ')}; ${left}. Model requests expected: ${capped.min === capped.max ? cur(capped.min) : `${cur(capped.min)} - ${cur(capped.max)}`}.`
 }
 

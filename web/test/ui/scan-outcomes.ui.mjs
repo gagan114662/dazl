@@ -201,7 +201,7 @@ try {
   await shot('deep-source-error-cost')
   if (!before) {
     assert.equal(await costEl.getAttribute('data-within'), 'unknown', 'cache usage is not stored: the component is never placed in the range')
-    assert.equal((await costEl.textContent()).trim(), "Estimated $0.00 - $0.01 at start. Actual model cost at least $0.0022 from the tokens the provider reported; cache token usage was not recorded, so this is the recorded-token component, not the full cost, against an estimate of $0.00-$0.01. Not an invoice. Reserved under this run's spend cap: $0.01 (a reservation, not a settled charge).", 'the QA cost truth, verbatim: priced dated model as at-least component, cache unknown, reservation named as itself')
+    assert.equal((await costEl.textContent()).trim(), "Estimated $0.00 - $0.01 at start. Actual model cost at least $0.0022 from the tokens the provider reported; cache token usage was not recorded, so this is the recorded-token component, not the full cost, against the model-request estimate of $0.00-$0.01. Not an invoice. Reserved under this run's spend cap: $0.01 (a reservation, not a settled charge).", 'the QA cost truth, verbatim: priced dated model as at-least component, cache unknown, reservation named as itself')
     await page.goto(`${base}/app/leads?job_id=${ALL.holdErr.id}`, { waitUntil: 'networkidle' })
     await page.getByText(/the broader paid research step has no price bound, so the run stopped instead of starting it/).waitFor({ timeout: 15000 })
     const holdCost = page.getByTestId('scan-cost')
