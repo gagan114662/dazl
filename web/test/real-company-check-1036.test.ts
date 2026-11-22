@@ -51,7 +51,7 @@ test('#1036 real-company check end to end: real crawl settles the site and names
   const w = await findWorkEmail(db, T, r.leadId, 'Maya Thornton|Real Estate Broker | Owner', { env: STAGING, now: 1_794_000_000, fetchImpl: (async (u: RequestInfo | URL) => { calls.push(String(u)); throw new Error('no provider call') }) as typeof fetch })
   assert.equal(w.status, 'published', JSON.stringify(w))
   const row = (w as { row: Parameters<typeof workEmailCopy>[0] }).row
-  assert.deepEqual([row.address, row.source_url], ['maya@bluebonnetrealty.com', 'https://bluebonnetrealty.com/team']); assert.equal(workEmailCopy(row).headline, 'Published work email')
+  assert.deepEqual([row.address, row.source_url], ['maya@bluebonnetrealty.com', 'https://bluebonnetrealty.com/team']); assert.equal(workEmailCopy(row).headline, 'Work email')
   assert.deepEqual(calls, [])
   assert.deepEqual(deleteRealCompanyChecks(db, T), { deleted: 1 })
   for (const t of ['leads', 'work_email_lookups', 'email_candidates']) assert.equal((db.prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n, 0, t)

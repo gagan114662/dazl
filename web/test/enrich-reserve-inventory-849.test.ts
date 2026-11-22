@@ -24,7 +24,7 @@ const PAID = new Set(Object.keys(VENDOR))
 // lib/scan/commenter-import.ts): no reservation needed.
 const FREE = new Set(['apolloPeopleSearch'])
 // The only modules allowed to call them.
-const CALLERS = ['lib/enrich/index.ts', 'lib/people/work-email.ts', 'lib/scan/commenter-import.ts']
+const CALLERS = ['lib/enrich/index.ts', 'lib/scan/commenter-import.ts'] // #1036 / #1250: Find work email calls no provider any more
 // The only modules allowed to hold a paid vendor's API origin.
 // lib/people/zerobounce.ts (#899): the free-tier mailbox verifier's adapter, wired through verifierFromEnv and reserved by
 // reserveVerifySlot (below) before every .verify call.
@@ -327,9 +327,9 @@ const VERIFIER_NAMES = /\b(MailboxVerifier|verifierFromEnv|verifyCandidates)\b/
 // Inventoried users (#899): the adapter (implements MailboxVerifier, makes no reservation-free call of its own: verifierFromEnv
 // is the only constructor), and the scan runner (calls verifyJobCandidates, which reserves inside the verifier module).
 // #1036: lib/people/verify-usage.ts only reads the configured verifier's NAME for Settings > Enrichment and never calls .verify.
-const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/scan/runner.ts', 'lib/people/work-email.ts', 'lib/people/verify-usage.ts']
+const VERIFIER_USERS = ['lib/people/zerobounce.ts', 'lib/scan/runner.ts', 'lib/people/verify-usage.ts']
 // Modules besides the verifier module that call .verify themselves: every such call must be reserved (the same guard rules).
-const VERIFY_CALLERS = ['lib/people/work-email.ts']
+const VERIFY_CALLERS: string[] = [] // #1036 / #1250: Find work email runs no mailbox check any more (it was lib/people/work-email.ts)
 function unreservedVerifyCalls(rel: string, text: string): string[] {
   const sf = parse(rel, text), rs = reservers(sf, rel)
   const calls = all(sf, n => ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'verify') as ts.CallExpression[]
@@ -376,6 +376,9 @@ test('#849 inventory: mailbox verification cannot run a provider call without a 
 })
 
 test('#1036 inventory: Find work email\'s mailbox check is reserved before its .verify call', () => {
+  const we = SOURCES.find(s => s.rel === 'lib/people/work-email.ts')?.text
+  assert.ok(we, 'lib/people/work-email.ts exists')
+  assert.doesNotMatch(we!.replace(/\/\/[^\n]*/g, ''), /\.verify\(|from '\.\.\/enrich\/|verifierFromEnv|reserveCredits|reserveVerifySlot|fetchImpl\s*\(/, 'lib/people/work-email.ts calls no verifier and no provider (#1036 / #1250)')
   for (const rel of VERIFY_CALLERS) {
     const src = SOURCES.find(s => s.rel === rel)?.text
     assert.ok(src && /\.verify\(/.test(src), `${rel} still calls .verify (else the list is stale)`)
