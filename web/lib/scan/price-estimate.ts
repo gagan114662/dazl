@@ -415,19 +415,26 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   const cost = !mixed && a.inputTokens !== null && a.outputTokens !== null
     ? completionCost(a.model ?? served[0] ?? null, { input_tokens: a.inputTokens, output_tokens: a.outputTokens, cache_creation_input_tokens: a.cacheWriteTokens ?? 0, cache_read_input_tokens: a.cacheReadTokens ?? 0 })
     : null
-  const usd = cost && 'usd' in cost ? cost.usd : null
+  // #1517 (run af02437c): calls of more than one model cannot be priced from the summed tokens (never at one model's rate), but each call
+  // settled its own cost in the per-call ledger. That sum is the actual model cost when the ledger is fully settled (no step held at its reservation).
+  const settled: number | null = null   // Qodo #1554: the job's final cost includes search/render/enrichment, so it is never the model cost; it leads the line below as the run's final cost
+  const usd = settled ?? (cost && 'usd' in cost ? cost.usd : null)
   // Cache token usage is NOT stored per scan (model-usage.ts): absent cache fields are UNKNOWN, not zero. Without them
   // the computed USD is the recorded-token component only - an at-least amount, never "complete" and never placed
   // inside/against the estimate range. Explicit zeros are a real record; provided values price at the shared factors.
   const cacheRecorded = a.cacheWriteTokens != null && a.cacheReadTokens != null
-  const complete = usd !== null && a.tokensComplete && cacheRecorded
+  const complete = settled !== null || (usd !== null && a.tokensComplete && cacheRecorded)
   const modelEst = clampToCap(est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 }), trialCapUsd)
-  const within = !complete ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
+  const within = !complete || usd === null ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
   const reqs = a.requests ?? null, reqsWithTokens = a.requestsWithTokens ?? null
   // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
   // what IS known (call count, reported tokens, why no USD) and that the actual cost is unknown - never $0 or free.
   let summary: string
-  if (usd !== null) {
+  if (settled !== null) {
+    const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
+    summary = `Actual model cost ${money(settled)}, the sum of each call's settled cost (${served.join(', ')}), against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
+  }
+  else if (usd !== null) {
     const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
     const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
     summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
@@ -447,7 +454,9 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   // how many. When that count cannot be read, no final cost is stated (the reservation sentence below stands instead).
   const final = a.finalUsd ?? null, held = a.finalHeldSteps ?? null
   const heldNote = held !== null && held > 0 ? `, including ${held === 1 ? 'one paid step' : `${held} paid steps`} counted as billed at the amount reserved for ${held === 1 ? 'it' : 'them'}` : ''
-  if (final !== null && held !== null) summary = `Final cost ${money(final)}${heldNote}. ${summary}`
+  // PM 2026-11-22: a mixed-model run whose ledger is fully settled shows the billed amount and nothing more
+  if (mixed && final !== null && held === 0) summary = `Final cost ${money(final)}.`
+  else if (final !== null && held !== null) summary = `Final cost ${money(final)}${heldNote}. ${summary}`
   else if (capRes !== null && capRes > 0) summary += ` Reserved under this run's spend cap: ${money(capRes)} (a reservation, not a settled charge).`
   return { final_usd: final !== null && held !== null ? final : null, model_usd: usd, model_usd_complete: complete, searches: a.searches, reserved_usd: a.reservedUsd, cap_reserved_usd: capRes, estimate: clampToCap(est.total, trialCapUsd), within, summary }
 }
