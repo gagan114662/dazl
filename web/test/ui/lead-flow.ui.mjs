@@ -126,7 +126,7 @@ try {
   const acts = await long.getByTestId('card-actions').boundingBox()
   assert.ok(text.width >= box.width - 60, `identity column uses the card width at 390px (${Math.round(text.width)} of ${Math.round(box.width)})`)
   assert.ok(acts.y >= text.y + text.height - 1, 'Approve/Reject sit below the identity and contact')
-  assert.match(await long.getByTestId('contact-status').innerText(), /current role not verified/, 'the role warning stays on screen')
+  assert.doesNotMatch(await long.getByTestId('contact-status').innerText(), /current role not verified|Role as listed/, 'PM #1540: no hedge copy on the card')
   for (const name of ['Approve', 'Reject']) { const btn = long.getByRole('button', { name }); assert.equal(await btn.isVisible(), true); const bb = await btn.boundingBox(); assert.ok(bb.x >= box.x && bb.x + bb.width <= box.x + box.width, `${name} fits inside the card`) }
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'no horizontal scroll')
   if (process.env.SHOTS) { await long.scrollIntoViewIfNeeded(); await long.screenshot({ path: path.join(process.env.SHOTS, 'after-390-long.png') }) }

@@ -61,7 +61,7 @@ const BASIS_TEXT: Record<DomainBasisKind, string> = {
   unrecorded: 'how this site was chosen was not recorded',
   cited_page: 'the cited page',
 }
-export type Identity = { text: string; state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null }
+export type Identity = { text: string; state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null; identityChecked?: boolean }
 // The lead facts identity needs: which websites the crawl recorded, how each was chosen, and any user review. Shared
 // with the contact route (outreach/contact-route.ts), which must agree with the card's identity line.
 export function identityOf(l: { id?: string; contact: string | null }, rows: { connector: string; kind: string; value: string; label?: string | null; source_url?: string | null }[]): Identity | null {
@@ -73,7 +73,8 @@ export function identityOf(l: { id?: string; contact: string | null }, rows: { c
   const reviewed = l.id ? domainReviewFor({ id: l.id, contact: l.contact }, rows).state === 'confirmed' : false
   if (b.kind === 'own_domain') return { text: `${site}: ${BASIS_TEXT.own_domain}`, state: 'fact', site }
   if (reviewed) return { text: `${site}: you confirmed this is their site (${BASIS_TEXT[b.kind]})`, state: 'user_confirmed', site }
-  return { text: `${site}: ${BASIS_TEXT[b.kind]}`, state: 'unconfirmed', site }
+  const identityChecked = rows.some(r => r.connector === 'sitecrawl' && r.kind === 'domain_check' && r.value.toLowerCase() === `${site}|identity_checked`)
+  return { text: `${site}: ${BASIS_TEXT[b.kind]}`, state: 'unconfirmed', site, ...(identityChecked ? { identityChecked } : {}) }
 }
 
 // How far the card's contact is established, for the compact lead card: the same identity facts the opportunity card
@@ -140,7 +141,6 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   if (l.fit != null) assumptions.push('Fit is the model\'s grade of the evidence, not something the company confirmed.')
   assumptions.push('The event is a reason to look closer, not proof they want to buy.')
   if (l.intent === 0) assumptions.push('No live buying trigger was confirmed.')
-  if (top) assumptions.push(`${top.name} is listed with this title; current role not verified.`)
   if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
   else if (l.timing === 'proof_backed') facts.push(`The cited source dates the event to ${l.event_date}.`)

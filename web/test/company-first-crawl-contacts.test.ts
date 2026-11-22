@@ -102,7 +102,10 @@ test('normal strict site crawl keeps exact visibly co-published buyer and mailbo
 })
 test('ordinary job still reads ordinary team and role inbox; strict mode holds linked-only authority',async()=>{
  assert.ok((await fixture(card(),{strict:false})).rows.some(r=>r.value===shared))
- assert.deepEqual((await fixture(card(),{own:false})).rows,[])
+ // PM ruling 2026-11-22: a link-only (confirmed, not established) domain still gives no email or route; at most the named person
+ const linked=await fixture(card(),{own:false})
+ assert.deepEqual(linked.rows.filter(r=>r.kind!=='person'),[])
+ assert.equal(linked.routed,null)
 })
 test('strict excludes foreign, hidden, former, split, shared and tagged addresses and does not widen non-US recipient eligibility',async()=>{
  for(const markup of [
@@ -234,7 +237,9 @@ test('an unauthorized hint does not reserve away the last ordinary company page'
  const state=await fixture(card(),{marker:true,own:false,citedBuyerPage:true,fullOrdinary:true})
  assert.ok(state.requests.some(r=>r.url===origin+'/leadership'))
  assert.ok(!state.requests.some(r=>r.url===origin+'/company/our-story'))
- assert.deepEqual(state.rows,[])
+ assert.deepEqual(state.rows.filter(r=>r.kind!=='person'),[])
+ assert.ok(state.rows.every(r=>r.source_url!==origin+'/company/our-story'))
+ assert.equal(state.routed,null)
 })
 
 test('hint-free cached results survive the read deadline without leaking cited buyer evidence',async()=>{

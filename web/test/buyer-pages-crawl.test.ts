@@ -48,3 +48,23 @@ test('Qodo #1532: hidden or former sections are cut in every class form; comment
   // a closing tag inside a script does not end a hidden section early
   assert.deepEqual(names(`<div class="hidden"><script>var s = "</div>"</script>${bob}</div>`), ['Ann Carter'])
 })
+
+test('Qodo High #1532: nav and button text is never a person, even beside a buyer title and on a page with no lower-case "us"', async () => {
+  const { chooseSiteBuyer } = await import('../lib/connectors/sitecrawl.ts')
+  const prose = '<p>' + 'We Build Software For Teams And Care About Customers Every Single Day Of The Year With Great Service Today '.repeat(1) + '</p><p>' + 'our platform helps revenue teams find accounts and write better emails each week for growth '.repeat(2) + '</p>'
+  for (const nav of ['Contact Us', 'Get Started', 'Book a Demo', 'Book Demo', 'Sign Up', 'Learn More', 'Request Demo', 'Talk To Sales']) {
+    const html = `<html><body>${prose}<ul><li><h3>${nav}</h3><p>Chief Executive Officer</p></li></ul></body></html>`
+    const found = extractPeople(html, 'https://acme.com/team', WHO)
+    assert.deepEqual(found.map(f => f.value), [], nav)
+    assert.equal(chooseSiteBuyer([{ kind: 'person', value: `${nav}, CEO`, label: 'x', url: 'https://acme.com/team' }], WHO), null, nav)
+    const ld = `<html><body>${prose}<script type="application/ld+json">{"@type":"Organization","name":"Acme","employee":[{"@type":"Person","name":"${nav}","jobTitle":"CEO"}]}</script></body></html>`
+    assert.deepEqual(extractPeople(ld, 'https://acme.com/team', WHO).map(f => f.value), [], 'json-ld ' + nav)
+  }
+  assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Catheryn Li, CEO', label: 'x', url: 'https://acme.com/team' }], WHO)?.value, 'Catheryn Li, CEO')
+})
+
+test('Qodo #1540: a real name holding a UI word (middle initial "A.", surname Read) is still a person; only all-UI text is refused', async () => {
+  const { chooseSiteBuyer, isPersonName } = await import('../lib/connectors/sitecrawl.ts')
+  assert.equal(isPersonName('Maya A. Thornton'), true); assert.equal(isPersonName('Bill Read'), true); assert.equal(isPersonName('Contact Us'), false)
+  assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Maya A. Thornton, CEO', label: 'x', url: 'https://acme.com/team' }], WHO)?.value, 'Maya A. Thornton, CEO')
+})

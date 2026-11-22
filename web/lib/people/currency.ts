@@ -23,7 +23,9 @@ export type VerifiedBasis = 'first_party_page' | 'provider_record'
 export interface ContactCurrency { currency: Currency; basis: VerifiedBasis | null; dated: string | null; reason?: string }
 // The lead's website identity, as scan/opportunity.ts identityOf returns it (passed in by the caller: currency stays pure
 // and free of the outreach/identity imports). null: no website recorded for the lead.
-export interface SiteIdentity { state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null; text: string }
+// identityChecked (PM #1540): the crawl's homepage identity check passed for this site (domain_check '<site>|identity_checked'). It lets a
+// person read on that site be shown as its listed buyer; it never establishes the site for an email or route.
+export interface SiteIdentity { state: 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict'; site: string | null; text: string; identityChecked?: boolean }
 
 export const FIRST_PARTY_DAYS = 180
 export const PROVIDER_DAYS = 90
@@ -73,6 +75,7 @@ const hostOf = (u: string | null | undefined) => { try { return u ? new URL(u).h
 function siteUnbound(sourceUrl: string | null | undefined, site: SiteIdentity | null): string | null {
   if (!site) return "listed on a website not recorded as the company's own"
   if (site.state === 'conflict' || !site.site) return `listed on a company-website candidate, but ${site.text}`
+  if (site.state === 'unconfirmed' && site.identityChecked) { const h = hostOf(sourceUrl), own = site.site.toLowerCase(); if (h && (h === own || h.endsWith(`.${own}`))) return null }
   if (site.state === 'unconfirmed') return `listed on ${site.text}; not confirmed as the company's own website`
   const host = hostOf(sourceUrl), own = site.site.toLowerCase()
   if (!host || !(host === own || host.endsWith(`.${own}`))) return `listed on ${host ?? 'an unrecorded page'}, not on the company's identified website ${own}`
