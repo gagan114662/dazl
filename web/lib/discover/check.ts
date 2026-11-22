@@ -44,10 +44,14 @@ export function pageAgeDay(age: string | null | undefined, now: Date = new Date(
   const t = Date.parse(a)
   return Number.isNaN(t) || t > now.getTime() + 86_400_000 ? null : new Date(t).toISOString().slice(0, 10)
 }
+export const INDEX_DATE_MAX_AGE_DAYS = 365
 const dated = (lead: DiscoveredLead, page_age: string | null, now: Date): Pick<CheckedLead, 'date' | 'date_source'> => {
   if (lead.signal_date) return { date: lead.signal_date, date_source: 'page' }
   const d = pageAgeDay(page_age, now)
-  return { date: d, date_source: d ? 'index' : null }
+  // #1571: a search index dates a page by when it first saw it. For a long-lived page (a company's own site) that day can be years before
+  // what the page says now, so an index day older than a year is not shown as the signal's date; the lead reads as missing a date instead.
+  const stale = !!d && now.getTime() - Date.parse(`${d}T00:00:00Z`) > INDEX_DATE_MAX_AGE_DAYS * 86_400_000
+  return d && !stale ? { date: d, date_source: 'index' } : { date: null, date_source: null }
 }
 
 // Public http(s) pages only: no credentials, no local or private hosts.
