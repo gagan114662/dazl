@@ -20,7 +20,7 @@ test('Reports-to reader holds: no name, a non-buyer title, or a title-shaped nam
   assert.equal(reportsToBuyer('Reports to: Sales Director, VP of Sales', 'Founder, CEO, Head of Sales'), null)
   assert.equal(reportsToBuyer('We partner directly with our CEO', 'Founder, CEO, Head of Sales'), null)
 })
-test('contact rule: a person from the lead\'s own posting counts beside a published own-domain route; a posting person on any other host does not', () => {
+test('contact rule: a person from the lead\'s own posting counts on the confirmed domain; a posting person on any other host does not', () => {
   const route = { connector: 'sitecrawl', kind: 'email', value: 'contact@howgood.com', source_url: 'https://howgood.com/contact', label: 'x' }
   const person = { connector: 'sitecrawl', kind: 'person', value: 'Rachel Calomeni, SVP of Sales', source_url: URL_, label: OWN_POSTING_PERSON_LABEL }
   const c = siteContactFromRows('howgood.com', true, 'Founder, CEO, Head of Sales', [route, person])
@@ -28,4 +28,16 @@ test('contact rule: a person from the lead\'s own posting counts beside a publis
   assert.equal(siteContactFromRows('howgood.com', true, 'Founder, CEO, Head of Sales', [route, { ...person, source_url: 'https://example.com/team' }]).person, null)
   assert.equal(siteContactFromRows('howgood.com', true, 'Founder, CEO, Head of Sales', [route, { ...person, label: 'listed' }]).person, null)
   assert.equal(siteContactFromRows('howgood.com', false, 'Founder, CEO, Head of Sales', [route, person]).person, null)
+})
+
+test('PM #1513: contact@howgood.com is stored only as a company route - never the buyer email, never an email row, never the email bar', async () => {
+  const { companyRouteRow } = await import('../lib/connectors/sitecrawl.ts')
+  const row = companyRouteRow([{ kind: 'email', value: 'contact@howgood.com', url: 'https://howgood.com/contact' }], 'howgood.com', 1, '2026-11-21')!
+  assert.equal(row.kind, 'company_route'); assert.equal(row.value, 'contact@howgood.com')
+  const person = { connector: 'sitecrawl', kind: 'person', value: 'Rachel Calomeni, SVP of Sales', source_url: URL_, label: OWN_POSTING_PERSON_LABEL }
+  const c = siteContactFromRows('howgood.com', true, 'Founder, CEO, Head of Sales', [person, { ...row, source_url: row.source_url ?? null }])
+  assert.equal(c.person?.value, 'Rachel Calomeni, SVP of Sales')
+  assert.equal(c.route, null, 'the role mailbox is not the buyer email and does not meet the email bar')
+  assert.equal(companyRouteRow([{ kind: 'email', value: 'privacy@howgood.com', url: 'https://howgood.com/privacy' }], 'howgood.com', 1, 'd'), null)
+  assert.equal(companyRouteRow([{ kind: 'email', value: 'contact@other.com', url: 'https://howgood.com/contact' }], 'howgood.com', 1, 'd'), null)
 })

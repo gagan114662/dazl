@@ -673,6 +673,11 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
 const titleNorm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 // Run 679a7354 (HowGood): the lead's own ATS posting is the employer's own record. "Reports to: <Name>, <Title>" there names a person the
 // company itself published; it counts as a buyer only when the name is a person's name (not a title) and the title is a requested buyer role.
+export const COMPANY_ROUTE_LABEL = "the company's own published role mailbox: a company contact route, not the buyer's email"
+export function companyRouteRow(found: { kind: string; value: string; url: string }[], site: string, at: number, today: string): Enrichment | null {
+  const f = found.find(f => f.kind === 'email' && isFounderRoute({ connector: 'sitecrawl', kind: 'email', value: f.value, source_url: f.url }) && sameSite(f.value.split('@')[1] ?? '', site) && (() => { try { return sameSite(new URL(f.url).hostname.replace(/^www\./, ''), site) } catch { return false } })())
+  return f ? { connector: 'sitecrawl', kind: 'company_route', value: f.value.toLowerCase().slice(0, 254), label: COMPANY_ROUTE_LABEL, confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: at } : null
+}
 export function reportsToBuyer(text: string, buyerRoles: string): { name: string; title: string } | null {
   // The title is read up to its role word (Sales / Revenue / Officer / CEO / Founder): plain-text records run straight on ("SVP of Sales US Benefits").
   const m = /\bReports?\s+to\s*:\s*([A-Z][A-Za-z'\u2019-]+(?:\s+[A-Z][A-Za-z'\u2019-]+){1,2})\s*,\s*((?:Senior\s+|Executive\s+)?(?:S?VP|EVP|Vice\s+President|Head|Chief\s+[A-Za-z]+\s+Officer|CEO|CRO|Co-?Founder|Founder)(?:\s+(?:of|&|and|[A-Z][a-z]+|CEO))*?\s*\b(?:Sales|Revenue|Officer|CEO|Founder))\b/.exec(text.replace(/&amp;/g, '&'))
@@ -2117,11 +2122,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (b) {
           const at = Math.floor((deps.now ?? Date.now()) / 1000)
           addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: `${b.name}, ${b.title}`.slice(0, 120), label: OWN_POSTING_PERSON_LABEL, confidence: null, source_url: l.source_url.slice(0, 500), source_date: today, retrieved_at: at }); n++; named++
-          // company-first stores only a card's own address; the site's own published role mailbox is the route beside a posting-named buyer
-          if (companyFirstContacts) for (const f of r.found) {
-            if (f.kind !== 'email' || !isFounderRoute({ connector: 'sitecrawl', kind: 'email', value: f.value, source_url: f.url }) || !sameSite(f.value.split('@')[1] ?? '', site) || !sameSite(new URL(f.url).hostname, site)) continue
-            addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: f.value.toLowerCase().slice(0, 254), label: f.label.slice(0, 200), confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: at }); n++
-            break
+          // PM (#1513 review): the site's own role mailbox is the COMPANY's contact route, never the buyer's email. It is stored under its own
+          // kind (company_route), which no recipient, email count or actionability route reads.
+          if (companyFirstContacts) {
+            const row = companyRouteRow(r.found, site, at, today)
+            if (row) { addEnrichment(db, tenantId, l.id, row); n++ }
           }
         }
       }
