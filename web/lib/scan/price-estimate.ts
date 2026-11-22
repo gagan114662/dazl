@@ -408,19 +408,26 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   const cost = !mixed && a.inputTokens !== null && a.outputTokens !== null
     ? completionCost(a.model ?? served[0] ?? null, { input_tokens: a.inputTokens, output_tokens: a.outputTokens, cache_creation_input_tokens: a.cacheWriteTokens ?? 0, cache_read_input_tokens: a.cacheReadTokens ?? 0 })
     : null
-  const usd = cost && 'usd' in cost ? cost.usd : null
+  // #1517 (run af02437c): calls of more than one model cannot be priced from the summed tokens (never at one model's rate), but each call
+  // settled its own cost in the per-call ledger. That sum is the actual model cost when the ledger is fully settled (no step held at its reservation).
+  const settled = mixed && a.finalUsd != null && Number.isFinite(a.finalUsd) && a.finalHeldSteps === 0 ? a.finalUsd : null
+  const usd = settled ?? (cost && 'usd' in cost ? cost.usd : null)
   // Cache token usage is NOT stored per scan (model-usage.ts): absent cache fields are UNKNOWN, not zero. Without them
   // the computed USD is the recorded-token component only - an at-least amount, never "complete" and never placed
   // inside/against the estimate range. Explicit zeros are a real record; provided values price at the shared factors.
   const cacheRecorded = a.cacheWriteTokens != null && a.cacheReadTokens != null
-  const complete = usd !== null && a.tokensComplete && cacheRecorded
+  const complete = settled !== null || (usd !== null && a.tokensComplete && cacheRecorded)
   const modelEst = clampToCap(est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 }), trialCapUsd)
   const within = !complete ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
   const reqs = a.requests ?? null, reqsWithTokens = a.requestsWithTokens ?? null
   // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
   // what IS known (call count, reported tokens, why no USD) and that the actual cost is unknown - never $0 or free.
   let summary: string
-  if (usd !== null) {
+  if (settled !== null) {
+    const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
+    summary = `Actual model cost ${money(settled)}, the sum of each call's settled cost (${served.join(', ')}), against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
+  }
+  else if (usd !== null) {
     const range = within === 'unknown' ? '' : ` (${within === 'within' ? 'inside the range' : within === 'under' ? 'below the range' : 'above the range'})`
     const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
     summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
