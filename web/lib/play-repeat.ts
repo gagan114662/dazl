@@ -95,6 +95,9 @@ function* createRepeat(t: Tx, c: Candidate, now: number, fence: Fence): TxBody<s
   return id
 }
 
+// Off unless the operator sets DAZL_FIRST_PLAY_REPEAT=1: nothing repeats unless the person asked for it (#1571).
+export const firstPlayRepeatEnabled = (env: Record<string, string | undefined> = process.env): boolean => env.DAZL_FIRST_PLAY_REPEAT === '1'
+
 // Returns the watches created. One account's failure is recorded and skipped; a lost lease stops the whole pass.
 export async function repeatFirstPlays(db: Db, o: { now?: number; fence?: Fence } = {}): Promise<string[]> {
   const now = o.now ?? nowS(), fence = o.fence ?? noFence

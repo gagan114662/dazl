@@ -9,6 +9,7 @@ import { addEnrichment } from '../lib/connectors/store.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
 import { createDraft, OutreachError } from '../lib/outreach/service.ts'
+import { firstPlayRepeatEnabled } from '../lib/play-repeat.ts'
 
 const person = { connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: 'named on a public page', source_url: 'https://northwind-dental.example/team' }
 const email = { connector: 'discover', kind: 'email', value: 'dana@northwind-dental.example', label: 'published on a public page', source_url: 'https://northwind-dental.example/contact' }
@@ -51,4 +52,10 @@ test('Approve creates a draft for the published address; autopilot and calibrati
   const draft = db.prepare("SELECT to_email, status FROM outreach_messages WHERE tenant_id = 'T' AND lead_id = ?").get(id) as { to_email: string; status: string }
   assert.equal(draft.to_email, 'dana@northwind-dental.example')
   assert.equal(code(() => createDraft(db, 'OTHER', id, 'x', { manual: true })), 'not_found', 'another workspace cannot draft to this lead')
+})
+
+test('a first search does not start repeating by itself unless the operator turns that on', () => {
+  assert.equal(firstPlayRepeatEnabled({}), false)
+  assert.equal(firstPlayRepeatEnabled({ DAZL_FIRST_PLAY_REPEAT: '0' }), false)
+  assert.equal(firstPlayRepeatEnabled({ DAZL_FIRST_PLAY_REPEAT: '1' }), true)
 })
