@@ -1195,7 +1195,7 @@ export default function LeadsClient() {
           Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start.{cost.estimate.trial_cap_line ? <> <span data-testid="scan-cost-trial-cap">{cost.estimate.trial_cap_line}</span></> : null} {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
         </p>
       )}
-      {cost?.per_verification_pass && perLead && (status === 'done' || status === 'failed') && (
+      {cost?.per_verification_pass && perLead && perLead.unavailable !== 'model cost not recorded' && (status === 'done' || status === 'failed') && (
         <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost-per-pass" data-unavailable={perLead.unavailable ?? ''}>
           {perLead.usd_per_lead !== null
             ? <>Model cost per lead: ${perLead.usd_per_lead < 0.01 ? perLead.usd_per_lead.toFixed(4) : perLead.usd_per_lead.toFixed(2)} across {perLead.shown} {perLead.shown === 1 ? 'lead' : 'leads'} shown. {cost.model_scope ?? COST_PER_PASS_SCOPE}</>

@@ -27,6 +27,14 @@ test('Qodo #1554: a mixed-model run with paid lookups shows its final cost as th
   const a = compareActual(est, { inputTokens: 120000, outputTokens: 9000, tokensComplete: true, model: 'claude-sonnet-4-5-20250929', servedModels: ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
     searches: 4, reservedUsd: null, requests: 14, requestsWithTokens: 14, finalUsd: 0.74, finalHeldSteps: 0 })
   assert.equal(a.model_usd, null); assert.equal(a.final_usd, 0.74)
-  assert.match(a.summary, /^Final cost \$0\.74/)
-  assert.doesNotMatch(a.summary, /Actual model cost \$0\.74|unknown|cannot be priced/i)
+  // PM 2026-11-22: the billed amount and nothing more - no split, "not recorded", "unknown" or "not $0" hedge
+  assert.equal(a.summary, 'Final cost $0.74.')
+  assert.doesNotMatch(a.summary, /Actual model cost|split|not recorded|unknown|not \$0|cannot be priced/i)
+})
+
+// PM 2026-11-22: when the per-lead model figure is not known, the leads page renders no per-lead line at all
+test('PM: the leads page leaves the per-lead line out when the model cost is not known', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.match(src, /perLead\.unavailable !== 'model cost not recorded'/)
 })
