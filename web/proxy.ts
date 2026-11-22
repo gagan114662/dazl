@@ -9,7 +9,8 @@ import { isServerActionProbe } from '@/lib/ops/server-action-probe'
 // as one JSON line, and keeps /app behind a signed-in session. The session is looked up here, before any HTML is sent:
 // the layout's own check (app/app/layout.tsx) streams behind a Suspense boundary, so on its own a cookie that is no
 // longer a session (expired, signed out elsewhere, malformed) got a 200 with the app shell and only a late in-page
-// redirect. If the lookup itself fails, the request goes on and the layout's check still decides.
+// redirect. If the lookup itself fails or stalls past its deadline, the request is never let through as signed in (#1463): the
+// answer is an immediate 503 with a Try again link, and the session cookie is left alone, so a brief store hiccup is not a sign-out.
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
   const t0 = performance.now()
@@ -26,10 +27,22 @@ export async function proxy(req: NextRequest) {
   // health probes run every few seconds: no log line for them, but they still get an id
   if (!pathname.startsWith('/api/health') && pathname !== '/api/ready') logRequest(requestLogLine(id, req.method, pathname))
 
-  if (pathname.startsWith('/app') && !(await signedIn(req.cookies.get('dazl_session')?.value))) {
-    const r = NextResponse.redirect(new URL('/sign-in', req.url))
-    r.headers.set('x-request-id', id)
-    return r
+  if (pathname.startsWith('/app')) {
+    const session = await signedIn(req.cookies.get('dazl_session')?.value)
+    if (session === 'no') {
+      const r = NextResponse.redirect(new URL('/sign-in', req.url))
+      r.headers.set('x-request-id', id)
+      return r
+    }
+    // #1463: the check could not answer. Not a pass and not a sign-out: an immediate 503 page (a plain document, so a client
+    // navigation that gets it loads it as a page; it answers at once, so #1546's stall watch has no wait to recover from), with a
+    // link to try the same page again. No refresh and no script: a person retries; nothing loops.
+    if (session === 'unknown') {
+      logLine({ level: 'error', type: 'app_request_unchecked', request_id: id, path: routeTemplate(pathname), proxy_ms: Math.round(performance.now() - t0) })
+      const again = escapeHtml(pathname + req.nextUrl.search)
+      return new NextResponse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>dazl</title></head><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1 style="font-size:1.25rem">We couldn't open your workspace just now</h1><p>You're still signed in. Please try again in a moment.</p><p><a href="${again}">Try again</a></p></body></html>`,
+        { status: 503, headers: { 'content-type': 'text/html; charset=utf-8', 'retry-after': '5', 'cache-control': 'no-store', 'x-request-id': id } })
+    }
   }
   // #1463: each /app page request's time in this proxy (store warm + session check), logged on every request
   if (pathname.startsWith('/app')) logLine({ level: 'info', type: 'app_request', request_id: id, path: routeTemplate(pathname), proxy_ms: Math.round(performance.now() - t0) })
@@ -40,12 +53,13 @@ export async function proxy(req: NextRequest) {
   return res
 }
 
-async function signedIn(token: string | undefined): Promise<boolean> {
-  if (!token) return false
-  // Bounded like the layout (lib/auth-gate.ts, #1463): a stalled lookup is logged and the request goes on, and the
-  // layout's own bounded check then shows the error boundary instead of a page that never arrives.
-  try { return await checkSessionWithin(token, { getDb, stage: 'proxy' }) } catch { return true }
+async function signedIn(token: string | undefined): Promise<'yes' | 'no' | 'unknown'> {
+  if (!token) return 'no'
+  // Bounded like the layout (lib/auth-gate.ts, #1463). A failed or stalled lookup is 'unknown': never a pass (fail closed), never 'no'
+  // (that would send a person with a good session to sign in over a store hiccup).
+  try { return (await checkSessionWithin(token, { getDb, stage: 'proxy' })) ? 'yes' : 'no' } catch { return 'unknown' }
 }
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string)
 
 // The third entry is lib/ops/server-action-probe.ts SERVER_ACTION_PROBE_MATCHER, written out: Next reads this object statically.
 const logLine = (l: Record<string, unknown>) => { try { console.log(JSON.stringify(l)) } catch { /* logging never breaks a request */ } }
