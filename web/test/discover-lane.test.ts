@@ -48,7 +48,9 @@ test('a scan through the lane: confirmed leads are ready, an undated one too, an
   }
   let asked: { query: string; offer?: string | null } | null = null
   const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch   // dazl's own read of the unseen proof fails
-  const result = await runJob(db, job!, { master, fetchImpl: blocked, discover: true, discoverImpl: async input => { asked = input; return canned } })
+  const result = await runJob(db, job!, { master, fetchImpl: blocked, discover: true, discoverImpl: async input => { asked = input; return canned },
+    // the second pass fills the website of the lead that had none, and costs a little more
+    enrichImpl: async leads => ({ leads: leads.map(l => l.company === 'Harbour Smiles' ? { ...l, domain: 'harboursmiles.example' } : l), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.011 }, seen: [], enriched: 1 }) })
   assert.equal(result, 'done')
   assert.deepEqual(asked, { query: 'Dental clinics in a city opening a new location', offer: 'Clinic fit-out contractor' }, 'the request and the offer go to the loop as written')
   const j = db.prepare('SELECT status, error, candidates, verified, needs_review, query, icp FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null; candidates: number; verified: number; needs_review: number; query: string; icp: string | null }
@@ -63,5 +65,6 @@ test('a scan through the lane: confirmed leads are ready, an undated one too, an
   assert.deepEqual([nw.source_kind, nw.company_domain, nw.event_date, nw.event_date_proof, nw.name], ['discover', 'northwind-dental.example', '2026-10-14', 'page_bound', 'Dana Ruiz'])
   assert.deepEqual(enr[nw.id].filter(e => e.kind === 'person').map(e => [e.value, e.source_url]), [['Dana Ruiz, Practice Owner', 'https://northwind-dental.example/team']])
   const spend = db.prepare("SELECT kind, status, actual_usd FROM scan_spend_calls WHERE scan_job_id = ?").all(id) as { kind: string; status: string; actual_usd: number | null }[]
-  assert.deepEqual(spend.map(s => [s.kind, s.actual_usd]), [['llm.anthropic.web_search', 0.044]], 'the run is reserved before the call and settled at what it cost')
+  assert.deepEqual(spend.map(s => [s.kind, s.actual_usd]), [['llm.anthropic.web_search', 0.055]], 'the run is reserved before the call and settled at what both passes cost')
+  assert.equal(leads.find(l => l.company === 'Harbour Smiles')!.company_domain, 'harboursmiles.example', 'the second pass filled the empty website')
 })

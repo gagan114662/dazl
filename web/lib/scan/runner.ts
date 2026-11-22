@@ -3,6 +3,7 @@ import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { discoverLeads } from '../discover/agent.ts'
 import { checkLeads, isShown, type CheckedLead } from '../discover/check.ts'
+import { enrichLeads } from '../discover/enrich.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
 import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
@@ -1336,6 +1337,7 @@ export interface RunDeps {
   // reaches the live API by accident). true forces it on whatever the environment says; false forces it off.
   discover?: boolean
   discoverImpl?: typeof discoverLeads   // the loop itself, replaceable in tests
+  enrichImpl?: typeof enrichLeads | null   // its second pass for people and websites; null switches it off
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
   // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
   trace?: import('../evals/trace.ts').TraceRecorder
@@ -1423,25 +1425,27 @@ export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'wat
 }
 const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
 function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
-  const dated = !!l.signal_date
+  const dated = !!l.date, printed = l.date_source === 'page'
   return {
     name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
     score: DISCOVER_SCORE[l.confidence], confidence: DISCOVER_SCORE[l.confidence], excerpt: (l.evidence_quote ?? l.signal).slice(0, 400),
-    event_date: l.signal_date, event_date_proof: dated && l.date_on_page && l.proof === 'confirmed' ? 'page_bound' : null,
-    event_date_proof_note: dated && l.date_on_page ? 'the date is printed on the proof page' : null,
-    date_status: dated ? (l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
+    event_date: l.date, event_date_proof: printed && l.date_on_page && l.proof === 'confirmed' ? 'page_bound' : null,
+    event_date_proof_note: printed && l.date_on_page ? 'the date is printed on the proof page' : null,
+    timing_note: l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
+    date_status: dated ? (printed && l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads): Promise<'done' | 'failed'> {
   const source = 'search:claude_discover'
   ledger.record(source, 'started')
   assertOwned(db, job)
   const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, DISCOVER_RESERVE_USD, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => DISCOVER_RESERVE_USD)
   let found: Awaited<ReturnType<typeof discoverLeads>>
+  let sells: { offer: string | null; seller: string | null } | undefined
   try {
     // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
-    const sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
+    sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
     found = await discover({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null }, { apiKey: key, fetch: fetchImpl })
   } catch (e) {
     await hold?.settle(null)   // the call may have been billed: keep the worst case
@@ -1450,9 +1454,15 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     finish(db, job, 'failed', status === 401 || status === 403 ? 'key_rejected' : status === 429 ? 'provider_rate_limited' : 'source_error', null, null, ledger)
     return 'failed'
   }
-  await hold?.settle(found.usage.usd)
+  // Second pass: a small-model call for each lead that came back without a person or a website. It is paid for from the same
+  // reservation; if it fails the leads stay as the first pass left them.
+  let usd = found.usage.usd, leadsFound = found.leads
+  if (enrich && leadsFound.length) {
+    try { const e = await enrich(leadsFound, { offer: sells?.offer ?? sells?.seller ?? null }, { apiKey: key, fetch: fetchImpl }); leadsFound = e.leads; usd += e.usage.usd } catch { /* keep the first pass */ }
+  }
+  await hold?.settle(Math.round(usd * 10000) / 10000)
   assertOwned(db, job)
-  const checked = (await checkLeads(found.leads, found.seen, fetchImpl)).filter(l => l.evidence_url.length <= 500)
+  const checked = (await checkLeads(leadsFound, found.seen, fetchImpl)).filter(l => l.evidence_url.length <= 500)
   const now = Math.floor(Date.now() / 1000)
   const shown = checked.filter(isShown), unconfirmed = checked.filter(l => !isShown(l))
   const out: VerifyOutcome = {
@@ -1564,7 +1574,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
-    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env)) return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl)
+    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env)) return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl)
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
     if (job.query) {

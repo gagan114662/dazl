@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseLeads, usd } from '../lib/discover/agent.ts'
-import { checkLead, companyOnPage, dayOnPage, isShown } from '../lib/discover/check.ts'
+import { checkLead, companyOnPage, dayOnPage, isShown, pageAgeDay } from '../lib/discover/check.ts'
 import { mergeEnriched, needsEnrichment, parseEnriched } from '../lib/discover/enrich.ts'
 
 const lead = (o: Record<string, unknown> = {}) => ({ company: 'Northwind Dental', domain: 'https://www.northwind-dental.example/about', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind-second-clinic', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://www.northwind-dental.example/team', linkedin_url: 'https://www.linkedin.com/in/dana-ruiz/', confidence: 'high', why: 'expanding', ...o })
@@ -72,4 +72,23 @@ test('second pass: only empty fields are filled, a person needs the page that na
   assert.deepEqual([kept.person, kept.domain], ['Dana Ruiz', 'other.example'], 'the person the first pass found stays; only the empty website is filled')
   assert.equal(needsEnrichment(kept), false)
   assert.deepEqual(parseEnriched('no idea'), { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null })
+})
+
+test('a proof page that prints no date takes the day the search index dates it, and says so', async () => {
+  const now = new Date('2026-11-22T12:00:00Z')
+  assert.equal(pageAgeDay('69 days ago', now), '2026-09-14')
+  assert.equal(pageAgeDay('3 hours ago', now), '2026-11-22')
+  assert.equal(pageAgeDay('October 14, 2026', now), '2026-10-14')
+  assert.equal(pageAgeDay('2 weeks ago', now), '2026-11-08')
+  assert.equal(pageAgeDay('soon', now), null)
+  assert.equal(pageAgeDay('January 1, 2031', now), null, 'a day in the future is not a date for something that happened')
+  const never = (() => { throw new Error('must not be fetched') }) as unknown as typeof fetch
+  const undated = parseLeads(JSON.stringify({ leads: [lead({ signal_date: null })] }), 1).leads[0]
+  const seen = [{ url: undated.evidence_url, title: 'Northwind Dental', page_age: '69 days ago', text: 'Northwind Dental will open its second clinic.' }]
+  const a = await checkLead(undated, seen, never, 1000, now)
+  assert.deepEqual([a.date, a.date_source, a.date_on_page], ['2026-09-14', 'index', false])
+  const b = await checkLead({ ...undated, signal_date: '2026-10-14' }, seen, never, 1000, now)
+  assert.deepEqual([b.date, b.date_source], ['2026-10-14', 'page'], 'a date read on the page always wins over the index')
+  const c = await checkLead(undated, [{ ...seen[0], page_age: null }], never, 1000, now)
+  assert.deepEqual([c.date, c.date_source], [null, null])
 })
