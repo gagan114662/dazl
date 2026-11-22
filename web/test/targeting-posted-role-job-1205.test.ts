@@ -137,3 +137,12 @@ test('#1205 a second posting after "and" is its own condition; "a list of recept
   const list = planConditions(compileTargeting('Dental practices that posted a list of receptionist jobs in the past 90 days', null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
   assert.equal(list.length, 1); assert.equal(list[0].role, 'receptionist')
 })
+
+// council (Haiku R17): a container before the job word keeps the title the "for" clause names
+test('#1205 "a range of job openings for a sales rep" keeps the sales rep', () => {
+  const one = (q: string) => planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+  const a = one('Companies that posted a range of job openings for a sales rep in the past 90 days')
+  assert.equal(a.length, 1); assert.equal(a[0].role, 'sales rep'); assert.equal(a[0].within_days, 90)
+  const b = one('Companies that posted a series of jobs for a dentist in London, Ontario')
+  assert.equal(b.length, 1); assert.equal(b[0].role, 'dentist')
+})
