@@ -466,7 +466,15 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   }
   // #1036 / #1250: the buyer's email is only an address the company itself printed. No format is learned and no address is built
   // from a name, whatever EMAIL_GUESS_ENABLED says; addresses recorded by earlier releases stay at rest and are never shown.
-  if (!pubWritten && !(pubAll.length && us.us)) return null
+  if (!us.us) {
+    // This crawl does not show the company in the US: guesses earlier releases recorded on US evidence lose it, so none of them can be
+    // sent to the mailbox check (verification only selects rows with a country_basis). Checked rows keep their history. Nothing ever
+    // gives a guess its basis back.
+    try { db.prepare("UPDATE email_candidates SET country_basis = NULL WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none'").run(tenantId, leadId) }
+    catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
+    return null
+  }
+  if (!pubWritten && !pubAll.length) return null
   const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
   return { format: null, confidence: null, candidates: 0, published: pubWritten, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
 }
