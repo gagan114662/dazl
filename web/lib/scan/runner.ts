@@ -1996,7 +1996,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // An entry placeIn already reads is appended as the profile wrote it; a bare US city is appended with its state. The place's NAME is only the de-dupe key.
     // #1395: the REQUEST's place is read once by the model into the request plan (lib/scan/request-plan.ts), never from the request's words by regex.
     // Only when the board source would run (a hiring request, or the user picked it). Fail closed: no plan (a model error, a reply off the schema,
-    // a place the request does not write, a tenant whose key is not Claude) holds the board source, named in its status; it never falls back to
+    // a place the request does not write) holds the board source, named in its status; it never falls back to
     // reading the words. A refused spend reservation for the plan holds the board source too; the rest of the scan goes on (Quest, #1395).
     const explicitSel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
     const wantsBoards = !!(job.query && icpForSources && complete && (explicitSel ? explicitSel.adapters.includes('jobboards') : hiringRequest))
@@ -2004,28 +2004,28 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     let planPlace: Place | null = null
     let planSkip: string | null = null
     let requestNamesPlace = false   // the plan read a place from the request: only that place is ever searched (Quest, #1395)
-    if (wantsBoards) {
-      if (vendor !== 'anthropic') planHold = 'skipped_request_plan:unavailable'
-      else {
-        assertOwned(db, job)
-        const pm = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(HAIKU), c => ledger.model(c))
-        const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
-        const r = await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl)
-        if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
-        else { requestNamesPlace = r.plan.places.length > 0; const b = boardPlaceOf(r.plan.places); if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason }
-      }
+    // Claude is the only paid API the plan may use: a tenant whose model key is not Claude keeps the board source exactly as before (Quest, #1395),
+    // the place read from the request's words as main read it, never a silent loss of the source.
+    const legacyBoards = vendor !== 'anthropic'
+    if (wantsBoards && !legacyBoards) {
+      assertOwned(db, job)
+      const pm = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(HAIKU), c => ledger.model(c))
+      const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
+      const r = await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl)
+      if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
+      else { requestNamesPlace = r.plan.places.length > 0; const b = boardPlaceOf(r.plan.places); if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason }
     }
     const named = new Map<string, string>()
     // the profile's place only when the request names NONE: a place the request names but the boards cannot place holds them, never another place
-    if (wantsBoards && !planHold && !requestNamesPlace) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
+    if (legacyBoards ? !!(job.query && !placeIn(job.query)) : wantsBoards && !planHold && !requestNamesPlace) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
     const profilePlaces = absorbStates([...named.keys()])
     const profilePlace = profilePlaces.length === 1 ? named.get(profilePlaces[0])! : null
     // the profile's place is read from the PROFILE entry alone ("in <entry>"), never from the request's words appended to it
     const boardPlace: Place | null = planPlace ?? (profilePlace ? placeIn(`in ${profilePlace}`) : null)
     const boardsQuery = job.query ? (!planPlace && profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
-    const autoBoards = !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
+    const autoBoards = legacyBoards ? !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery)) : !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
-    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', planHold ?? (job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : planSkip ?? placeSkipReason('', icpForSources?.where ?? [])))   // #1205: the reason names the place and what to change
+    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', planHold ?? (job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : planSkip ?? placeSkipReason(legacyBoards ? job.query : '', icpForSources?.where ?? [])))   // #1205: the reason names the place and what to change
     // a held plan also holds a board source the user picked: the other picked sources still run
     const sel = explicitSel ? (planHold ? { ...explicitSel, adapters: explicitSel.adapters.filter(a => a !== 'jobboards') } : explicitSel) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
@@ -2037,7 +2037,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job)
         // the board source reads the profile's place whether it was picked by the user or chosen automatically; only it gets the request with the
         // place appended, every other picked source keeps the user's own request (XHawk on #1155)
-        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [], boardsQuery && boardsQuery !== job.query ? { jobboards: boardsQuery } : {}, wantsBoards && !planHold ? { jobboards: boardPlace } : {})
+        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [], boardsQuery && boardsQuery !== job.query ? { jobboards: boardsQuery } : {}, wantsBoards && !planHold && !legacyBoards ? { jobboards: boardPlace } : {})
         const items = collected.items
         for (const it of items) if ((it.source === 'jobboards' || it.source === 'careers') && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
