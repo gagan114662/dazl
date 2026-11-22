@@ -37,6 +37,22 @@ try {
   })
   const leadsLink = () => page.locator('aside').getByRole('link', { name: 'Leads', exact: true })
 
+  // C (Qodo #1546): a plain same-origin anchor the router does not take over - a file download that leaves the URL unchanged -
+  // is never treated as a stalled navigation: no recovery, no notice, the recovery budget untouched.
+  await ctx.route('**/stall-test-download.csv', route => route.fulfill({ status: 200, headers: { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="x.csv"' }, body: 'a,b\n' }))
+  await page.goto(base + '/app/settings', { waitUntil: 'domcontentloaded' })
+  await leadsLink().waitFor()
+  await page.evaluate(() => { const a = document.createElement('a'); a.href = '/stall-test-download.csv'; a.textContent = 'Download CSV'; a.id = 'plain-download'; document.querySelector('main')?.prepend(a) })
+  docs.length = 0
+  await page.click('#plain-download').catch(() => {})
+  await page.waitForTimeout(15000)
+  const budget = await page.evaluate(() => sessionStorage.getItem('dazl-stall-reload'))
+  const falseNotice = await page.locator('[role="alert"]').filter({ hasText: 'This is taking too long' }).count()
+  console.log(`C: documents after the download click=[${docs.join(', ')}], notice=${falseNotice}, budget used=${budget !== null}`)
+  assert.equal(falseNotice, 0, 'C: no stall notice for a download')
+  assert.equal(budget, null, 'C: a download never spends the recovery')
+  assert.ok(!docs.includes('/app/settings'), 'C: no reload')
+
   // A
   await page.goto(base + '/app/settings', { waitUntil: 'domcontentloaded' })
   await leadsLink().waitFor()
@@ -49,6 +65,9 @@ try {
   assert.ok(held.length > 0, 'precondition: the Leads RSC request was held')
   assert.equal(urlA, '/app/leads', 'A: the stalled navigation recovered to Leads within the stall window')
   assert.deepEqual(docs, ['/app/leads'], 'A: exactly one recovery load')
+  // Qodo #1546: the recovered page actually rendered, the workspace fallback is gone
+  await page.getByText('Who do you want to reach?').first().waitFor({ timeout: 10000 })
+  assert.equal(await page.locator('#workspace-opening').count(), 0, 'A: no workspace fallback left on screen')
 
   // B
   await page.goto(base + '/app/settings', { waitUntil: 'domcontentloaded' })

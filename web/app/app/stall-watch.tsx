@@ -33,17 +33,23 @@ export default function StallWatch() {
     const timers = new Set<ReturnType<typeof setTimeout>>()
     const later = (f: () => void) => { const t = setTimeout(() => { timers.delete(t); f() }, STALL_MS); timers.add(t) }
     // the fallback on screen after a client render
-    // (one rendered by the server carries data-watched: the inline script already watches it)
-    let openingTimer = false
-    const opening = () => { openingTimer = false; const el = document.getElementById(OPENING_ID); if (el && !el.hasAttribute('data-stalled') && !el.hasAttribute('data-watched')) { el.setAttribute('data-stalled', '1'); recover(location.href, el) } }
-    const check = () => { const el = document.getElementById(OPENING_ID); if (el && !openingTimer && !el.hasAttribute('data-watched')) { openingTimer = true; later(opening) } }
+    // (one rendered by the server carries data-watched: the inline script already watches it). Each timer belongs to the element that
+    // started it: a fallback that resolved is never confused with a newer one (Qodo #1546).
+    const watched = new WeakSet<Element>()
+    const check = () => {
+      const el = document.getElementById(OPENING_ID)
+      if (!el || watched.has(el) || el.hasAttribute('data-watched')) return
+      watched.add(el)
+      later(() => { if (el.isConnected && !el.hasAttribute('data-stalled')) { el.setAttribute('data-stalled', '1'); recover(location.href, el as HTMLElement) } })
+    }
     check()
     const seen = new MutationObserver(check)
     seen.observe(document.body, { childList: true, subtree: true })
     // a same-origin link click whose navigation never commits: the URL is still the one the click started on
     const onClick = (e: MouseEvent) => {
-      // capture phase: Next's <Link> calls preventDefault in its own handler, which runs before a bubbling document listener
-      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      // Only a click the client router took over: Next's <Link> calls preventDefault in its handler, which runs (at the React root)
+      // before this bubbling document listener. A plain anchor - a file download, an API export - is not prevented and never watched.
+      if (!e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       const a = e.target instanceof Element ? e.target.closest('a[href]') as HTMLAnchorElement | null : null
       if (!a || (a.target && a.target !== '_self') || a.hasAttribute('download')) return
       let to: URL; try { to = new URL(a.href, location.href) } catch { return }
@@ -52,8 +58,8 @@ export default function StallWatch() {
       if (to.href === from) return
       later(() => { if (location.href === from) recover(to.href, null) })
     }
-    document.addEventListener('click', onClick, true)
-    return () => { seen.disconnect(); document.removeEventListener('click', onClick, true); for (const t of timers) clearTimeout(t) }
+    document.addEventListener('click', onClick)
+    return () => { seen.disconnect(); document.removeEventListener('click', onClick); for (const t of timers) clearTimeout(t) }
   }, [])
   return null
 }
