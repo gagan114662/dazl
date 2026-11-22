@@ -73,3 +73,27 @@ test('#1176 controls: a retired date_status verified with no proof, or a job-boa
  p=messageProvenance(db,'A','lead','hello@acme.example')!
  assert.equal(p.day_verified,false); assert.match(provenanceDateLine(p),/claimed event day/)
 })
+// Council on #1176: the screen must say what the lead card says for the same row, window included (the card's wording comes
+// from app/api/leads/route.ts: surfaceStoredIntent + timingUnconfirmedReason with the run's own window).
+test('#1176 the proven-day line matches the card: no window requested, inside the window, outside it',()=>{
+ const db=setup()
+ db.prepare("UPDATE leads SET company='Zayed Law',signal='Opened a new office in Chicago',event_date='2026-10-06',event_date_proof='page_bound',date_status='unverified',intent=3 WHERE id='lead'").run()
+ db.prepare("UPDATE scan_jobs SET query='Law firms in Chicago that opened a new office'").run()
+ let p=messageProvenance(db,'A','lead','hello@acme.example')!
+ assert.equal(provenanceDateLine(p),'2026-10-06 (event day verified on the cited source; current need unconfirmed)')   // no window was requested: none is "unresolved"
+ db.prepare("UPDATE scan_jobs SET query='Law firms in Chicago that opened a new office in the last 365 days'").run()
+ p=messageProvenance(db,'A','lead','hello@acme.example')!
+ assert.equal(provenanceDateLine(p),'2026-10-06 (event day verified on the cited source; current need unconfirmed)')   // inside the requested window
+ db.prepare("UPDATE scan_jobs SET query='Law firms in Chicago that opened a new office in the last 7 days'").run()
+ p=messageProvenance(db,'A','lead','hello@acme.example')!
+ assert.equal(provenanceDateLine(p),'2026-10-06 (event day verified on the cited source; outside the requested recency window - current need unconfirmed)')
+})
+test('#1176 controls: a proven day in the future is not verified; a job-board day on a hiring signal is',()=>{
+ const db=setup()
+ db.prepare("UPDATE leads SET event_date='2099-01-01',event_date_proof='page_bound',date_status='unverified' WHERE id='lead'").run()
+ let p=messageProvenance(db,'A','lead','hello@acme.example')!
+ assert.equal(p.day_verified,false); assert.match(provenanceDateLine(p),/claimed event day/)
+ db.prepare("UPDATE leads SET signal='Hiring SDRs',signal_kind='hiring',event_date='2026-10-01',event_date_proof='ats_structured' WHERE id='lead'").run()
+ p=messageProvenance(db,'A','lead','hello@acme.example')!
+ assert.equal(p.day_verified,true); assert.match(provenanceDateLine(p),/event day verified on the cited source/)
+})
