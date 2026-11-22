@@ -148,7 +148,8 @@ const cross = {
   confirm: await call(s1, () => confirm.POST(req(`/api/leads/${other.leads[0]}/confirm`, 'POST', {}), ctx(other.leads[0]))),
   signinOther: await call(new Map(), () => signin.POST(req('/api/auth/signin', 'POST', { email: other.email, password }))),
 }
-expect(cross.export.status === 200 && cross.export.text.trim().split('\n').length === 1, `export of the other's scan: ${cross.export.text}`)
+// #830: another workspace's scan is not found (it used to answer 200 with a header-only file)
+expect(cross.export.status === 404, `export of the other's scan: ${cross.export.status} ${cross.export.text}`)
 for (const k of ['cancel', 'quarantine', 'release', 'confirm'] as const) expect(cross[k].status === 404, `${k} on the other tenant: ${cross[k].status} ${cross[k].text}`)
 expect(cross.signinOther.status === 401, `sign in to the other's email with this password: ${cross.signinOther.status}`)
 for (const [k, r] of Object.entries(cross)) { const l = leaks(r.text, other); expect(l.length === 0, `cross ${k} returned ${l.join(', ')}`) }
