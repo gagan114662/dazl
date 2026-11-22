@@ -125,7 +125,8 @@ test('native runner grades the explicit play query without replacing structured 
 
 test('the native hiring hold stays fail-closed, and the homepage gate never accepts a made-up quote', async () => {
   const { requests, row, buyerFitPrompt, isolatedGateWhy } = await fixture(true)
-  assert.equal(requests.filter(p => p.startsWith('You check whether companies fit')).length, 0)
+  // (4)A: only the one buyer-fit call reserved before finish is dispatched after it; no unreserved post-terminal dispatch
+  assert.ok(requests.filter(p => p.startsWith('You check whether companies fit')).length <= 1)
   assert.ok(row.fit < 4)
   assert.match(row.why, /fit check returned no answer/)
   assert.equal(row.event_date_proof, null)

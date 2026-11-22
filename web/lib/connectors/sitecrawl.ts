@@ -10,7 +10,7 @@ import zlib from 'node:zlib'
 import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
-import { getDomain } from 'tldts'
+import { getDomain, getDomainWithoutSuffix } from 'tldts'
 import { parse, type DefaultTreeAdapterMap } from 'parse5'
 import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
@@ -122,6 +122,15 @@ function inflateEitherWay(): Transform {
   })
   return t
 }
+// The site fetch follows a redirect only within the site: https, the same host up to www, or a subdomain of it (af02437c: uare.ai -> www.uare.ai
+// -> app.uare.ai/site). Never to another domain, a look-alike suffix, or up from a subdomain to its parent.
+export function redirectStaysOnSite(from: string, to: string): boolean {
+  let a: URL, b: URL
+  try { a = new URL(from); b = new URL(to) } catch { return false }
+  if (b.protocol !== 'https:') return false
+  const base = a.hostname.toLowerCase().replace(/^www\./, ''), host = b.hostname.toLowerCase().replace(/^www\./, '')
+  return host === base || host.endsWith('.' + base)
+}
 export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal, noRedirect = false): Promise<GetResult | null> {
   return new Promise(resolveRaw => {
     // Absolute per-request timer (the socket timeout below is inactivity-only: a slow drip never trips it).
@@ -141,7 +150,7 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
         }
         let next: URL
         try { next = new URL(String(res.headers.location), u) } catch { return resolve(null) }
-        if (next.hostname.replace(/^www\./, '') !== u.hostname.replace(/^www\./, '')) return resolve(null) // stay on the same site
+        if (!redirectStaysOnSite(u.href, next.href)) return resolve(null) // stay on the same site (af02437c: its own subdomains included)
         return resolve(rawGet(next.toString(), hops + 1, timeoutMs, lookup, signal))
       }
       if (!/^text\/(html|plain)|application\/xhtml/i.test(String(res.headers['content-type'] ?? ''))) { res.destroy(); return resolve({ status, body: '', finalUrl: u.toString() }) }
@@ -204,8 +213,7 @@ export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostO
         if (typeof value !== 'string' || !value || value !== value.trim()) return false
         try {
           const target = new URL(value)
-          return target.protocol === 'https:' && !target.username && !target.password && !target.port &&
-            target.hostname.replace(/^www\./, '') === u.hostname.replace(/^www\./, '')
+          return !target.username && !target.password && !target.port && redirectStaysOnSite(u.href, target.href)
         } catch { return false }
       }
       if ((hasSource && !validRendererUrl(r.url)) || (hasRedirect && !validRendererUrl(r.redirected_url))) return null
@@ -309,6 +317,25 @@ function publisherNamesCitedSite(html: string, quote: string): boolean {
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
 // (3) a link whose visible text names the company. The crawl then checks the homepage really names the company.
 // Domains written out in an employer's own posting record whose name label is exactly the company's (no anchor needed: the record is plain text).
+// Run 679a7354 (n8n, Mintlify): an Ashby posting page carries the employer's own organization record ({"name", "publicWebsite"}). The website
+// the company set there is its own statement, bound like a link (evidence_link_domain_label); the homepage name check still decides. Only when
+// the record's name is this company and the site's label is its name; any length (n8n), since the setting is the employer's, not a guess.
+export function ashbyOrgWebsite(html: string, company: string): string | null {
+  const m = /"organization"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"\\]{1,120})"[^{}]*?"publicWebsite"\s*:\s*"(https?:\/\/[^"\\\s]{3,200})"/.exec(html)
+  const want = norm(company)
+  if (!m || want.length < 2 || norm(m[1]) !== want) return null
+  let host: string; try { host = registrable(new URL(m[2]).hostname.toLowerCase()) } catch { return null }
+  // Qodo #1515: the name is the registrable domain without its public suffix (acme.co.uk -> acme), never the suffix's labels joined in
+  if (!host || SOCIAL.test(host) || !siteHostOk(host)) return null
+  const label = norm(getDomainWithoutSuffix(host) ?? '')
+  if (label === want) return host
+  // d84a33a0 (Simple AI -> usesimple.ai): the employer's own setting may add a use/get/try/join prefix, and the suffix may carry the
+  // name's last word ("Simple AI" = "use" + "simple" + ".ai"). Compared without spaces; nothing else is accepted.
+  const compact = (s: string) => s.replace(/[^a-z0-9]/g, '')
+  const suffix = host.slice((getDomainWithoutSuffix(host) ?? '').length + 1).replace(/\./g, '')
+  const bare = compact(label).replace(/^(?:use|get|try|join)(?=.)/, '')
+  return [bare, bare + suffix].includes(compact(want)) ? host : null
+}
 // Uare.ai (Greenhouse, no website setting, no link in any posting): the employer's own ATS record names the company with a domain ("Uare.ai").
 // When that record name IS the lead's company and is itself a hostname, it is the employer's own statement of its site, bound like a link
 // (evidence_link_domain_label); the homepage identity check still decides. A plain name gives nothing (no guess).
@@ -918,6 +945,8 @@ function linkedBuyerAboutPath(html: string, home: URL): string | null {
 }
 // Search provides discovery URLs, never authority or a person record. Keep
 // these paths out of the runner's separate website-identity candidate list.
+// An app shell or sign-in page is never a company page (Qodo #1553).
+const LOGIN_PATH = /^\/(?:login|log-in|signin|sign-in|signup|sign-up|auth|account|dashboard|sso|oauth)(?:\/|$)/i
 export function buyerSourceCitation(raw: string): URL | null {
   try {
     const u = new URL(raw)
@@ -1222,7 +1251,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     const rob = await polite(`${origin}/robots.txt`, 0)
     if (!rob) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'robots_unreachable', pages: 0 }
     if (rob.status >= 500) return { found: [], reason: 'robots_error', pages: 0 }
-    const robots: Robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
+    let robots: Robots = rob.status >= 400 ? { allows: () => true, delayMs: 0 } : parseRobots(rob.body, site)
     if (!robots.allows('/')) return { found: [], reason: 'robots_disallow', pages: 0 }
     const home = await polite(`${origin}/`, robots.delayMs)
     if (!home || home.status >= 400) return timeStop ? { found: [], reason: 'time_budget', pages: 0, stoppedBy: 'time' } : (abortStop || stopped()) ? { found: [], reason: 'aborted', pages: 0, stoppedBy: 'aborted' } : { found: [], reason: 'site_unreachable', pages: 0 }
@@ -1232,6 +1261,18 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
     if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
+    // Qodo #1553: a home that lands on the site's own subdomain (uare.ai -> app.uare.ai/site) is crawled as that host: its own robots.txt
+    // decides every later read, a login/app-shell landing is no company page, and later paths are requested on the landing origin.
+    let crawlOrigin = origin
+    { const land = new URL(home.finalUrl), bare = site.replace(/^www\./, '')
+      if (land.hostname.replace(/^www\./, '') !== bare) {
+        if (LOGIN_PATH.test(land.pathname)) return { found: [], reason: 'site_unreachable', pages: 1 }
+        const rob2 = await polite(`${land.origin}/robots.txt`, 0)
+        if (!rob2 || rob2.status >= 500) return { found: [], reason: rob2 ? 'robots_error' : 'robots_unreachable', pages: 1 }
+        robots = rob2.status >= 400 ? { allows: () => true, delayMs: robots.delayMs } : parseRobots(rob2.body, land.hostname)
+        if (!robots.allows(land.pathname)) return { found: [], reason: 'robots_disallow', pages: 1 }
+        crawlOrigin = land.origin
+      } }
     const found = new Map<string, Found>(); let pages = 1, buyerPages = 0
     const locationPages: LocationPage[] = [subpageLocationFacts(home.finalUrl, home.body)]
     onPage?.(home.body, home.finalUrl, home.status)
@@ -1268,7 +1309,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       if (p === citedAbout && p !== linkedAbout && linkedBuyerProved) continue
       if (!robots.allows(p)) continue
       const exactBuyerRead = buyerPaths.includes(p)
-      let requested = exactBuyerRead ? new URL(p, homePage).href : origin + p
+      let requested = exactBuyerRead ? new URL(p, homePage).href : crawlOrigin + p
       // Do not spend another ordinary page slot on an exact target we already
       // parsed. A directory-bound bio retains its separate identity checks.
       if (!exactBuyerRead && !name && !expectedValue && requested === parsedLinkedTarget) continue
@@ -1281,7 +1322,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
           [301, 302, 307, 308].includes(r.status) && r.finalUrl === requested) {
         let target: URL | null
         try { target = new URL(r.redirect, requested) } catch { target = null }
-        if (!target || target.origin !== origin || target.href === requested || !buyerSourceCitation(target.href) || !robots.allows(target.pathname)) continue
+        if (!target || target.origin !== crawlOrigin || target.href === requested || !buyerSourceCitation(target.href) || !robots.allows(target.pathname)) continue
         requested = target.href
         followedLinkedRedirect = true
         r = await polite(requested, robots.delayMs, true)
@@ -1297,7 +1338,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       const citedOnly = p === citedAbout && p !== linkedAbout
       if (citedOnly) citedOnlyUrl = r.finalUrl
       onPage?.(r.body, r.finalUrl, r.status)
-      if (!citedOnly && r.finalUrl.length <= 500 && page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '')) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
+      if (!citedOnly && r.finalUrl.length <= 500 && (page.hostname.replace(/^www\./, '') === site.replace(/^www\./, '') || page.origin === crawlOrigin)) locationPages.push(subpageLocationFacts(r.finalUrl, r.body))
       if (buyerPage) buyerPages++
       // Require the exact directory name, and preserve extractPeople's role/anti-quote rules.
       const people = extractPeople(r.body, r.finalUrl, buyerRoles)
@@ -1737,8 +1778,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (status === 200 && !strictSeen.has(url)) {
             const page = new URL(url)
             if (page.protocol === 'https:' && !page.port && !page.username && !page.password && !page.search && !page.hash &&
-                page.href === url && page.hostname.replace(/^www\./, '') === cand) {
-              strictSeen.set(url, { cards: strictOwnContactCards(html, page.hostname.replace(/^www\./, '')), at })
+                page.href === url && (page.hostname.replace(/^www\./, '') === cand || page.hostname.endsWith(`.${cand}`))) {
+              // Qodo #1553: the crawl reaches an own subdomain only through the site's own redirect (app.uare.ai/site); its cards are the site's
+              strictSeen.set(url, { cards: strictOwnContactCards(html, cand), at })
             }
           }
           return // no reveal, inferred pattern, guessed or alternative display addresses
@@ -1960,7 +2002,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // Run 9697d013 (LiveKit): the lead's own ATS posting is the employer's own record. A domain its description writes out ("livekit.io"),
       // whose label IS the company's name, is bound by that record as a link would be (evidence_link_domain_label); the homepage name check
       // still decides. Never a guess: a record that names no such domain adds nothing (a company name written as a domain, "Uare.ai", is the record naming it).
-      const ownRef = !anchored ? atsPostingRef(l.source_url) : null
+      const ownPosting = atsPostingRef(l.source_url)
+      const ownRef = !anchored ? ownPosting : null
       if (ownRef && !deps.signal?.aborted) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
@@ -1969,6 +2012,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
+      }
+      // Qodo #1515: read whether or not the posting also links a site: a stale or dead company-labelled link must not hide the employer's
+      // own setting. With a link it is tried after the linked sites (as structured data is above); the homepage name check decides either way.
+      const orgSite = ownPosting?.kind === 'ashby' && ev?.body ? ashbyOrgWebsite(ev.body, l.company) : null
+      if (orgSite) {
+        if (!basisOf.has(orgSite)) { basisOf.set(orgSite, 'evidence_link_domain_label'); sourceOf.set(orgSite, l.source_url) }
+        if (anchored) { if (!sites.includes(orgSite)) sites.push(orgSite) }
+        else if (!structured.includes(orgSite) && !sites.includes(orgSite)) structured.push(orgSite)
       }
       const fromSlug = board.slug ? slugDomains(board.slug, where).filter(notBlockedHost) : []
       // ATS employer identity is the first source, even when the posting also links a website.

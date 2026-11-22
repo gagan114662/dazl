@@ -125,6 +125,13 @@ const modelCost = (p: { in: number; out: number } | null, calls: number, inK: nu
   return p ? calls * ((inK * 1000 + INPUT_MARGIN_TOKENS) * p.in + outK * 1000 * p.out) / 1e6 : null
 }
 
+// (4)A: the most one buyer-fit call may cost (the estimate's own buyer_fit row, worst case), reserved before finish for the post-finish call.
+export function buyerFitWorstCaseUsd(model: string): number {
+  const r = CALLS.find(c => c.id === 'buyer_fit')!
+  const p = priceOf(model)
+  if (!p) throw new Error('model_unpriced')
+  return ((r.inK.max * 1000 + INPUT_MARGIN_TOKENS) * p.in + r.outK.max * 1000 * p.out) / 1e6
+}
 export function estimateRun(i: EstimateInput): RunEstimate {
   // The model the run will really call (#851): never silently the default when the caller named one. A blank or non-string
   // id is unknown, and unknown prices nothing.

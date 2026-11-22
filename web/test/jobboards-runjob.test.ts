@@ -54,6 +54,6 @@ test('source status is never silent: no hiring signal, no place, or explicit sou
   assert.equal((a.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }).status, 'skipped_no_hiring_signal')
   const noPlace = fx(board().http, 'Find independent dental practices that posted a front desk receptionist job in the past 90 days.', { ...ICP, where: [] }, planOf([], 'posted a front desk receptionist job'))
   const b = await runFixture(noPlace)
-  assert.equal((b.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }).status, 'skipped_no_place')
-  assert.equal(board().seen.length, 0)
+  // PM ruling 2026-11-22 (changed from 'skipped_no_place'): a request with no place still runs the boards (ICP country, else anywhere) and says so
+  assert.notEqual((b.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }).status, 'skipped_no_place')
 })

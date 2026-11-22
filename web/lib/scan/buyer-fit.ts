@@ -17,6 +17,10 @@ import { HIRING } from '../search/direct-queries.ts'
 export const MAX_LEADS = 5
 export const FIT_CAP = 3
 const PAGE_CHARS = 2500
+// Qodo #1555: the whole prompt stays within the bytes the prepaid worst case prices (the estimate's buyer_fit row: 6K input tokens, priced
+// per prompt byte by the guard). Long home pages (Uare.ai: ~582KB) are cut to share what is left, never refused.
+export const BUYER_FIT_PROMPT_BYTES = 6000
+const clipBytes = (s: string, max: number) => { if (Buffer.byteLength(s) <= max) return s; let lo = 0, hi = Math.min(s.length, max); while (lo < hi) { const m = (lo + hi + 1) >> 1; if (Buffer.byteLength(s.slice(0, m)) <= max) lo = m; else hi = m - 1 } return s.slice(0, lo) }
 // Hiring by the signal wording, or by the source being an applicant-tracking or job-board page.
 const HIRING_WORDS = /\bhiring\b|\bwe'?re hiring\b|\bjob (posting|opening|ad)\b|\bopen(ing)? (role|position)s?\b|\bvacanc(y|ies)\b|\bis (recruiting|looking for an? )|\bposted an? .{0,40}\b(job|role|position)\b/i
 const ATS_HOST = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|bamboohr\.com|jobvite\.com|recruitee\.com|indeed\.com|glassdoor\.com|ziprecruiter\.com|naukri\.com|wellfound\.com)$/i
@@ -55,6 +59,12 @@ export function nativeBuyerFitTarget(icp: Icp | null, query: string, offer: stri
 
 export interface FitItem { n: number; company: string; homepage: string }
 export function buyerFitPrompt(target: BuyerFitTarget, items: FitItem[]): string {
+  const pages = items.map(i => i.homepage.replace(/<<<|>>>/g, ' ').slice(0, PAGE_CHARS))
+  const empty = buyerFitPromptWith(target, items, items.map(() => ''))
+  const each = Math.max(0, Math.floor((BUYER_FIT_PROMPT_BYTES - Buffer.byteLength(empty)) / Math.max(1, items.length)))
+  return buyerFitPromptWith(target, items, pages.map(p => clipBytes(p, each)))
+}
+function buyerFitPromptWith(target: BuyerFitTarget, items: FitItem[], pages: string[]): string {
   // Legacy callers still get exactly 1500 characters. A native target is never silently clipped.
   if (typeof target !== 'string' && target.text.length > NATIVE_TARGET_CHARS) throw new Error('buyer_fit_context_unavailable')
   const icpText = typeof target === 'string' ? target.slice(0, TARGET_CHARS) : target.text
@@ -67,7 +77,7 @@ For each company answer: does its OWN home page show it is the kind of company t
 Reply with one line per company and nothing else:
 COMPANY <n> | fit <yes|no|unknown> | quote <a verbatim sentence fragment of 20-200 characters copied exactly from that company's page that shows it, or none>
 
-${items.map(i => `COMPANY ${i.n}: ${JSON.stringify(i.company)}\nHOME PAGE:\n<<<\n${i.homepage.replace(/<<<|>>>/g, ' ').slice(0, PAGE_CHARS)}\n>>>`).join('\n\n')}`
+${items.map((i, k) => `COMPANY ${i.n}: ${JSON.stringify(i.company)}\nHOME PAGE:\n<<<\n${pages[k]}\n>>>`).join('\n\n')}`
 }
 
 export type FitAnswer = { fit: 'yes' | 'no' | 'unknown'; quote: string | null }
