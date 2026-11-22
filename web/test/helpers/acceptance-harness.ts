@@ -14,6 +14,7 @@ import { migrateAuth } from '../../lib/auth-db.ts'
 import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
 import { ProviderError, anthropicProvider as realAnthropic, type Provider } from '../../lib/llm/provider.ts'
 import { reserveScanSpend } from '../../lib/scan/spend-cap.ts'
+import { SpendRefused } from '../../lib/llm/spend-guard.ts'
 import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
 import { resetTinyfishState } from '../../lib/search/tinyfish.ts'
@@ -58,7 +59,7 @@ export interface Fixture {
   researchRealReserve?: boolean            // the stub research reserves through the REAL spend ledger before failing (durable production-model uncertainty, not a no-reserve stub)
   fundedBy?: 'trial'                       // the job is a free-trial scan (funded_by = 'trial'; the caller sets the DAZL_TRIAL_* env)
   model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
-  modelPlan?: object | string | 'provider_error'   // SYNTHETIC request-plan reply (#1395): an object is sent as JSON, a string as written; 'provider_error' fails the call. Unset: the plan prompt gets the extraction reply (off the schema, so the board source holds)
+  modelPlan?: object | string | 'provider_error' | 'spend_refused'   // SYNTHETIC request-plan reply (#1395): an object is sent as JSON, a string as written; 'provider_error' fails the call; 'spend_refused' refuses its reservation. Unset: the plan prompt gets the extraction reply (off the schema, so the board source holds)
 }
 export async function runFixture(f: Fixture) {
   resetTinyfishState(); clearRequestPlanCache()
@@ -103,6 +104,7 @@ export async function runFixture(f: Fixture) {
     calls.prompts.push(p)
     if (p.startsWith(PLAN_PROMPT_HEAD) && f.modelPlan !== undefined) {
       if (f.modelPlan === 'provider_error') throw new ProviderError('retry', 'http 529', 'none')
+      if (f.modelPlan === 'spend_refused') throw new SpendRefused('over_limit')
       return typeof f.modelPlan === 'string' ? f.modelPlan : JSON.stringify(f.modelPlan)
     }
     return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }

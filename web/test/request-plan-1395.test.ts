@@ -11,10 +11,8 @@ import { SpendRefused } from '../lib/llm/spend-guard.ts'
 const REAL = 'Dental clinics in Toronto, Ontario that opened a new location or are hiring front-desk staff in the last 90 days'
 const plan = (places: RequestPlan['places'], language = 'en'): RequestPlan => ({ offer: null, buyer_type: 'account executive', industry_code: null, places, signals: [{ kind: 'hiring', text: 'hiring', negated: false }], exclusions: [], language })
 
-test('#1395 a refused spend reservation is never swallowed as a missing plan: it stops the caller', async () => {
+test('#1395 a model error is a named failure, never a reading', async () => {
   clearRequestPlanCache()
-  const refusing = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => { throw new SpendRefused('over_limit') } } as unknown as Provider
-  await assert.rejects(readRequestPlan(refusing, 'k', REAL, 'T'), (e: unknown) => e instanceof SpendRefused)
   const failing = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => { throw new ProviderError('retry', 'http 500', 'uncertain') } } as unknown as Provider
   assert.deepEqual(await readRequestPlan(failing, 'k', REAL, 'T'), { ok: false, reason: 'error' })
 })
@@ -74,4 +72,32 @@ test('#1395 boardPlaceOf: the posting side is the existing one; several places, 
   assert.match((one({ text: 'Canada', city: null, region: null, country: 'CA' }) as { reason: string }).reason, /^skipped_no_place:country:Canada/)
   assert.match((one({ text: 'Bayern', city: null, region: 'Bayern', country: 'DE' }) as { reason: string }).reason, /^skipped_no_place:region:/)
   assert.match((one({ text: 'Springfield', city: 'Springfield', region: null, country: 'US' }) as { reason: string }).reason, /^skipped_no_place:ambiguous:/)
+})
+
+// Council review (sonnet R1): a place must be written in the request as whole words, never inside another word.
+test('#1395 grounding is by whole words: "OR" inside "for" and "Rome" inside "chrome" are not places the request writes', async () => {
+  assert.equal(groundedIn('companies hiring sales staff for software', { text: 'OR', city: null, region: 'OR', country: null }), false)
+  assert.equal(groundedIn('chrome extension startups hiring', { text: 'Rome', city: 'Rome', region: null, country: 'IT' }), false)
+  assert.equal(groundedIn('hiring in Portland, OR', { text: 'Portland, OR', city: 'Portland', region: 'OR', country: 'US' }), true, 'a whole-word state code still counts')
+  assert.equal(groundedIn('Startups in Toronto', { text: 'Toronto', city: 'Tor', region: null, country: 'CA' }), false, 'a city that is part of a word of the place text is refused')
+  clearRequestPlanCache()
+  const p = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => ({ text: JSON.stringify(plan([{ text: 'OR', city: null, region: 'OR', country: 'US' }])), model: 'm' }) } as unknown as Provider
+  assert.deepEqual(await readRequestPlan(p, 'k', 'companies hiring sales staff for software', 'T'), { ok: false, reason: 'place_not_in_request' })
+})
+
+// Council review (sonnet R2): two places are compared by the place they resolve to, never by name: two Cambridges are two places.
+test('#1395 boardPlaceOf: two same-named cities in different countries are several places, never one', () => {
+  const r = boardPlaceOf([{ text: 'Cambridge, UK', city: 'Cambridge', region: null, country: 'GB' }, { text: 'Cambridge, Canada', city: 'Cambridge', region: null, country: 'CA' }])
+  assert.match((r as { reason?: string }).reason ?? 'one place', /^skipped_no_place:several:/)
+  const same = boardPlaceOf([{ text: 'Toronto', city: 'Toronto', region: null, country: 'CA' }, { text: 'Toronto, Canada', city: 'Toronto', region: null, country: 'CA' }])
+  assert.ok('place' in same, 'the same place written twice is one place')
+})
+
+// Quest: a refused reservation is a named failure (the caller holds only what needed the plan); losing the job still stops the scan.
+test('#1395 readRequestPlan: a refused reservation is the reason spend_refused; a lost job still throws', async () => {
+  clearRequestPlanCache()
+  const refusing = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => { throw new SpendRefused('over_limit') } } as unknown as Provider
+  assert.deepEqual(await readRequestPlan(refusing, 'k', REAL, 'T'), { ok: false, reason: 'spend_refused' })
+  const lost = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => { throw new SpendRefused('ownership_lost') } } as unknown as Provider
+  await assert.rejects(readRequestPlan(lost, 'k', REAL, 'T'), (e: unknown) => e instanceof SpendRefused)
 })

@@ -76,3 +76,24 @@ for (const [name, modelPlan, status] of [
     assert.equal(boardsStatus(x), status)
   })
 }
+
+// Quest (#1395 review): never search a different place than the request named. A place the request writes but the board source cannot place
+// (a bare country) holds the board source; the profile's one place is NOT searched instead.
+test('#1395 runJob: a request place the boards cannot place ("Canada") holds them; the profile place (Toronto) is never searched instead', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, 'SaaS startups in Canada hiring account executives', ['Toronto'], 'CA',
+    plan([{ text: 'Canada', city: null, region: null, country: 'CA' }])))
+  assert.deepEqual(detailed(seen), [], 'no posting was detail-fetched')
+  assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
+  assert.match(boardsStatus(x) ?? '', /^skipped_no_place:country:Canada/)
+})
+
+// Quest: a refused reservation for the plan call holds ONLY the board source; the rest of the scan finishes, and nothing comes from the boards.
+test('#1395 runJob: a refused spend reservation for the plan holds only the job boards; the scan still finishes and no board item reaches extraction', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, REAL, ['Toronto, Ontario'], 'CA', 'spend_refused'))
+  assert.equal(x.job.status, 'done', `the scan finished: ${JSON.stringify(x.job)}`)
+  assert.equal(boardsStatus(x), 'held_request_plan:spend_refused')
+  assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
+  assert.ok(!x.calls.prompts.some(p => p.includes('"source":"jobboards"')), 'no board item reached extraction')
+})
