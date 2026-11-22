@@ -21,3 +21,17 @@ export function discoverLine(l: DiscoverCardLead): string {
   const missing = discoverMissing(l)
   return `Confidence: ${discoverConfidence(l)}. ${missing.length ? `Missing: ${missing.join('; ')}.` : 'Dated signal, proof page, person and website all found.'}`
 }
+
+// Where each fact on a discovery lead came from (#1401): the page that proves the signal, the page that names the person, the page
+// that prints the email. Only links the run stored; nothing is inferred.
+export interface FieldSource { field: 'signal' | 'person' | 'email' | 'linkedin'; label: string; url: string }
+export function discoverSources(l: { source_url?: string | null; enrichments?: { kind: string; connector?: string; value?: string; source_url?: string | null }[] }): FieldSource[] {
+  const out: FieldSource[] = []
+  if (l.source_url) out.push({ field: 'signal', label: 'Signal', url: l.source_url })
+  const from = (kind: string) => (l.enrichments ?? []).find(e => e.kind === kind && e.connector === 'discover' && e.source_url)
+  const person = from('person'), email = from('email'), linkedin = from('linkedin')
+  if (person) out.push({ field: 'person', label: 'Person', url: person.source_url! })
+  if (email) out.push({ field: 'email', label: 'Email', url: email.source_url! })
+  if (linkedin?.value) out.push({ field: 'linkedin', label: 'LinkedIn', url: linkedin.value })
+  return out
+}

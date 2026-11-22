@@ -18,6 +18,9 @@ async function guard(req: NextRequest, leadId: string, action: Action) {
   if (no) return { res: no }
   if (req.method !== 'GET' && !sameOriginJson(req)) return { res: NextResponse.json({ error: 'Bad origin' }, { status: 403 }) }
   if (!/^[a-f0-9]{24}$/.test(leadId)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
+  // #830: a lead id that is not this workspace's own is not found, the same as one that does not exist (never an empty 200)
+  const own = await (await getDb()).get('SELECT 1 AS x FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [leadId, user.tenantId])
+  if (!own) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
   return { user }
 }
 

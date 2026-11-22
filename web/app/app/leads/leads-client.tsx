@@ -1,5 +1,5 @@
 'use client'
-import { discoverLine, isDiscoverLead } from '@/lib/discover/card'
+import { discoverLine, discoverSources, isDiscoverLead } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
@@ -1496,6 +1496,7 @@ export default function LeadsClient() {
             {l.stored_why && <details className="text-xs my-2"><summary>Saved historical grade (not a currentness verdict; a saved grade may have been made without your offer text and is not rescored)</summary><p>Saved intent: {l.stored_intent ?? 'unknown'}. {l.stored_why}</p></details>}
             {!l.currentness_held && !l.window_held && l.human_confirmed_at === null && l.confidence !== null && l.timing_proof_gap === null && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-proof">Draftable without your review: the event day is proven on the cited source inside your window, and the company website, a named contact and a contact route the company published are confirmed. A current buying need is still not verified.</p>}
             {isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="discover-confidence">{discoverLine(l)}</p>}
+            {isDiscoverLead(l) && <p className="text-xs pl-3 my-2" data-testid="discover-sources">Sources: {discoverSources(l).map((x, i) => <span key={x.field}>{i > 0 ? ' · ' : ''}<a className="underline underline-offset-2" href={x.url} target="_blank" rel="noreferrer noopener">{x.label}</a></span>)}</p>}
             {l.window_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2">Outside the time window you asked for, or its date is unknown - research only. It cannot be drafted or sent, even after you review the source. Run a scan with a wider window to include it.</p>}
             {l.gate_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="gate-held">A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.</p>}
             {l.currentness_held && !l.window_held && !l.gate_held && !isDiscoverLead(l) && (l.timing === 'proof_backed'
