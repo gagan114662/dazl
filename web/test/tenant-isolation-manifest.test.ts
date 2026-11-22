@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { ROUTES, routeFile } from './tenant-isolation-manifest.ts'
+import { ID_ROUTES, ROUTES, routeFile } from './tenant-isolation-manifest.ts'
 import { ACTIONS, ROLES, can } from '../lib/workspaces.ts'
 
 const web = fileURLToPath(new URL('../', import.meta.url))
@@ -49,6 +49,22 @@ test('each cited two-tenant test names the route it covers; the pending list doe
   }
   const pending = ROUTES.filter(r => r.auth === 'session' && r.crossTenant === 'pending')
   assert.ok(pending.length <= PENDING_MAX, `pending grew to ${pending.length}: ${pending.map(r => `${r.method} /api/${r.path}`).join(', ')}`)
+})
+
+// #830: ID_ROUTES is the list the all-routes sweep (isolation-all-routes.test.ts) is held to. Each entry is a real
+// handler; none is classified as taking no id; and a handler with an id in its path cannot be left off it.
+test('the id-taking route list names real handlers, none of them session-scope, and every route with an id in its path', () => {
+  const known = new Map(ROUTES.map(r => [`${r.method} /api/${r.path}`, r]))
+  for (const { route, undriven } of ID_ROUTES) {
+    const r = known.get(route)
+    assert.ok(r, `${route}: not a route handler in the manifest`)
+    if (r.auth === 'session') assert.notEqual(r.crossTenant, 'session-scope', `${route}: takes an id, so it is not session-scope`)
+    if (undriven) assert.ok(r.auth === 'session' && typeof r.crossTenant === 'object' && undriven.includes(r.crossTenant.covered), `${route}: an undriven route names the test that covers it`)
+  }
+  const listed = new Set(ID_ROUTES.map(r => r.route))
+  assert.equal(listed.size, ID_ROUTES.length, 'no duplicates')
+  const missing = ROUTES.filter(r => r.auth === 'session' && r.path.includes('[')).map(r => `${r.method} /api/${r.path}`).filter(k => !listed.has(k))
+  assert.deepEqual(missing, [], 'routes with an id in the path that the sweep does not list')
 })
 
 test('every session handler that does more than read checks its role first, for the action the manifest names', () => {

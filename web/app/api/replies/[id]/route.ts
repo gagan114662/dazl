@@ -19,6 +19,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const body = await req.json().catch(() => null)
   const db = getScanDb()
   migrateThreadReplies(db)
+  // #830: a thread that is not this workspace's own is not found, whatever the action (the same as one that does not exist)
+  if (!db.prepare('SELECT 1 FROM reply_threads WHERE id = ? AND tenant_id = ?').get(id, user.tenantId)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   if (body?.action === 'draft') {
     const r = await draftReply(db, user.tenantId, id, await readSellerProfile(await getDb(), user.tenantId))

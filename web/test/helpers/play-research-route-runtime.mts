@@ -21,7 +21,7 @@ test('GET /api/leads/play-research and POST /api/leads/play-research persist/rel
  const before=JSON.stringify(db.prepare('SELECT * FROM scan_jobs').all())
  setUser(null);assert.equal((await read()).status,401);assert.equal((await POST(request(JSON.stringify(body)))).status,401)
  setUser('A','viewer');assert.equal((await POST(request(JSON.stringify(body)))).status,403);assert.equal(calls,0)
- setUser('B');assert.equal((await POST(request(JSON.stringify(body)))).status,400);assert.deepEqual((await (await read()).json()).research,[]);assert.equal(calls,0)
+ setUser('B');assert.equal((await POST(request(JSON.stringify(body)))).status,404);assert.equal((await read()).status,404);assert.equal(calls,0) // #830: another workspace's play is not found
  setUser('A')
  for(const [text,headers,status] of [['bad json',{},400],['{}',{},404],['x'.repeat(10001),{},400],['{}',{origin:'https://evil.test'},400],['{}',{origin:'bad-url'},400],['{}',{'content-type':'text/plain'},400]] as [string,Record<string,string>,number][]){assert.equal((await POST(request(text,headers))).status,status)}
  assert.equal(calls,0)
@@ -32,7 +32,7 @@ test('GET /api/leads/play-research and POST /api/leads/play-research persist/rel
  limiter.prepare("DELETE FROM rate_limits WHERE key='play-research:A'").run()
  // Missing shared store fails closed, not a process-local allowance.
  limiter.exec('ALTER TABLE rate_limits RENAME TO hidden_limits');const unavailable=await POST(request(JSON.stringify(body)));assert.equal(unavailable.status,503);assert.equal(calls,1);limiter.exec('ALTER TABLE hidden_limits RENAME TO rate_limits')
- setUser('B');assert.deepEqual((await (await read()).json()).research,[])
+ setUser('B');const foreign=await read();assert.equal(foreign.status,404);assert.equal((await foreign.json()).research,undefined)
  assert.equal(JSON.stringify(db.prepare('SELECT * FROM scan_jobs').all()),before);assert.equal((db.prepare('SELECT count(*) n FROM leads').get() as {n:number}).n,0);assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
  }finally{setUser('A');db.close()}
 })

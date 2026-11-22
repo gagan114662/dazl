@@ -16,6 +16,8 @@ export async function POST(req: NextRequest) {
   if (!(await rateLimit(`polish:${user.tenantId}`, 30, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   const body = await req.json().catch(() => null)
   if (typeof body?.message_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.message_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  // #830: a draft that is not this workspace's own is not found (never a 200)
+  if (!getScanDb().prepare('SELECT 1 FROM outreach_messages WHERE id = ? AND tenant_id = ?').get(body.message_id, user.tenantId)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
   const r = await polishDraft(getScanDb(), user.tenantId, body.message_id, user.business_name)
   if (!r.rewritten) {
     const note = {

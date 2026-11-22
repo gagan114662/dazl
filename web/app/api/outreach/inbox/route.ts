@@ -18,7 +18,10 @@ export async function GET(req: NextRequest) {
   const threadId = req.nextUrl.searchParams.get('thread_id')
   if (threadId) {
     // Owner-scoped: threadMessages returns empty for another tenant's thread.
-    return NextResponse.json({ messages: threadMessages(db, user.tenantId, threadId) })
+    const messages = threadMessages(db, user.tenantId, threadId)
+    // #830: a thread this workspace has no part of (another workspace's, or unknown) is not found, never an empty 200
+    if (!messages.length && !db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? UNION ALL SELECT 1 FROM followup_threads WHERE tenant_id = ? AND thread_id = ?').get(user.tenantId, threadId, user.tenantId, threadId)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
+    return NextResponse.json({ messages })
   }
   let page
   try { page = await inboxPage(db, user.tenantId, parseInboxQuery(req.nextUrl.searchParams)) } catch (e) {

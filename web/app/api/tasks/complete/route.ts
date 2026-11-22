@@ -16,7 +16,9 @@ export async function POST(req: NextRequest) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const db = await getDb()
   const r = await completeTask(db, a.tenantId, body.id, body)
-  if (r === 'not_leased') return NextResponse.json({ error: 'not_leased' }, { status: 409 })
+  // #830: a task that is not this workspace's own (or does not exist) is not found; the workspace's own stale task stays a 409
+  if (r === 'not_leased') return typeof body.id === 'string' && await db.get('SELECT 1 AS x FROM li_tasks WHERE id = ? AND tenant_id = ?', [body.id, a.tenantId])
+    ? NextResponse.json({ error: 'not_leased' }, { status: 409 }) : NextResponse.json({ error: 'not_found' }, { status: 404 })
   if (r === 'bad_result') return NextResponse.json({ error: 'bad_result' }, { status: 400 })
   if (r === 'stored') await onCompanyPeopleResult(db, a.tenantId, body.id as string)
   return NextResponse.json({ ok: true, result: r })
