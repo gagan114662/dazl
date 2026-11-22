@@ -408,8 +408,23 @@ export function publishedCandidateRowsForLeads(db: Database.Database, tenantId: 
   if (!leadIds.length) return out
   try {
     const rows = db.prepare(`SELECT lead_id, person, address, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')}) AND tier = 'published' AND source_url IS NOT NULL ORDER BY address`).all(tenantId, ...leadIds) as (PublishedCandidateRow & { lead_id: string })[]
-    for (const { lead_id, ...row } of rows) (out[lead_id] ??= []).push(row)
+    // #1036 / #1250: an address on this workspace's do-not-contact list (suppressions) is never offered as the buyer's email, here or
+    // anywhere reading this (Find work email, the Leads page, the crawl's published contact). Compared case-insensitively.
+    const blocked = suppressedOf(db, tenantId, rows.map(r => r.address))
+    for (const { lead_id, ...row } of rows) if (!blocked.has(row.address.toLowerCase())) (out[lead_id] ??= []).push(row)
   } catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
+  return out
+}
+// The addresses (lowercased) of `addresses` this workspace suppressed. No suppressions table yet means nothing is suppressed.
+function suppressedOf(db: Database.Database, tenantId: string, addresses: string[]): Set<string> {
+  const want = [...new Set(addresses.map(a => a.toLowerCase()))]
+  const out = new Set<string>()
+  for (let i = 0; i < want.length; i += 500) {
+    const part = want.slice(i, i + 500)
+    try {
+      for (const e of db.prepare(`SELECT lower(email) AS e FROM suppressions WHERE tenant_id = ? AND lower(email) IN (${part.map(() => '?').join(',')})`).pluck().all(tenantId, ...part) as string[]) out.add(e)
+    } catch (e) { if (!/no such table: suppressions/i.test(String((e as Error)?.message))) throw e }
+  }
   return out
 }
 export function publishedNameKey(fullName: string): string | null {

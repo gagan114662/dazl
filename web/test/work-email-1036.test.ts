@@ -14,7 +14,7 @@ import { deleteCommenterBatch, importCommenters, parseImport } from '../lib/scan
 import { eraseFirstParty, ingest, recordConfig, signBody } from '../lib/signals/first-party.ts'
 import { bothEngines } from './helpers/engines.ts'
 import { identityOf } from '../lib/scan/opportunity.ts'
-import { recordEmailGuesses } from '../lib/people/email-pattern.ts'
+import { publishedCandidateFor, recordEmailGuesses } from '../lib/people/email-pattern.ts'
 import { apolloPeopleSearch } from '../lib/enrich/apollo.ts'
 import { draftBlockReason } from '../lib/outreach/service.ts'
 import { publishedEmail } from '../lib/outreach/published-email.ts'
@@ -291,3 +291,20 @@ test('boundary (#899): a published work email grants no send authority - drafts 
   assert.equal(enrichments.some(e => /@/.test(e.value)), false, 'nothing was written into the lead contact rows')
 })
 
+
+// #1036 / #1250 (Quest): an address the workspace put on its do-not-contact list is never offered as the buyer's email: not by Find
+// work email, not by the Leads page read, not as a published contact the crawl attaches to the lead. Another workspace's list does
+// not hide it; a mixed-case entry still matches.
+test('a published address the workspace suppressed is not offered by Find work email, the page read or the crawl\'s contact', async () => {
+  const s = seed()
+  s.db.prepare('UPDATE leads SET human_confirmed_at = 1 WHERE id = ?').run(s.lead)
+  publish(s, 'Dana Lee, Practice Manager', `dana.lee@${SITE}`)
+  s.db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES ('B', ?, 'manual')").run(`dana.lee@${SITE}`)
+  assert.equal((await run(s, DANA, track([]))).status, 'published', "another workspace's list does not hide it")
+  s.db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES ('A', ?, 'unsubscribe')").run(`Dana.Lee@${SITE.toUpperCase()}`)
+  const r = await run(s, DANA, track([]))
+  assert.ok('row' in r); assert.deepEqual([r.status, r.row.address], ['not_found', null])
+  assert.deepEqual(workEmailPageRead(s.db, 'A', [{ id: s.lead }]).lookups[s.lead], [])
+  assert.equal(publishedCandidateFor(s.db, 'A', s.lead, 'Dana Lee'), null, 'the crawl attaches no suppressed address to the lead')
+  assert.equal(draftBlockReason(s.db, 'A', s.lead), 'no_email_contact')
+})
