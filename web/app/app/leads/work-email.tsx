@@ -1,10 +1,10 @@
 'use client'
-import { useCallback, useMemo, useState } from 'react'
-import { mergeLookups, workEmailCopy, type ShownLookup } from '@/lib/people/work-email-eligible'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { clicksFor, recordClick, shownWorkEmails, workEmailCopy, type PanelClicks } from '@/lib/people/work-email-eligible'
 
 // #1036 / #1250: "Find work email" for the buyer-role people on one lead gives the address the company prints for that person on its
 // own website, with the page (lib/people/work-email.ts). Nothing else is an answer: no guess, no broker lookup, no mailbox check.
-// Rows from the server are MERGED by updated_at (mergeLookups): a slow read never erases a newer result.
+// The latest page read is the whole answer; this panel's own clicks show only until the page read is refreshed (shownWorkEmails).
 export interface WorkEmailTarget { key: string; name: string; title: string | null }
 // initial (#1182): what the page read once with the lead list, so the block renders the answers at once with no request on mount.
 export interface WorkEmailInitial { providers: unknown; lookups: unknown; guesses?: unknown }
@@ -13,8 +13,11 @@ export default function WorkEmail(p: { leadId: string; targets: WorkEmailTarget[
 }
 
 function WorkEmailFor({ leadId, targets, initial }: { leadId: string; targets: WorkEmailTarget[]; initial?: WorkEmailInitial }) {
-  const [ownLookups, setLookups] = useState<Record<string, ShownLookup>>({})
-  const lookups = useMemo(() => initial ? mergeLookups(ownLookups, initial.lookups) : ownLookups, [ownLookups, initial])
+  const read = initial?.lookups
+  const current = useRef<unknown>(read)
+  useEffect(() => { current.current = read }, [read])
+  const [own, setOwn] = useState<PanelClicks>(() => clicksFor(read))
+  const lookups = useMemo(() => shownWorkEmails(read, own), [read, own])
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [msg, setMsg] = useState<Record<string, string>>({})
   const [copied, setCopied] = useState('')
@@ -23,10 +26,11 @@ function WorkEmailFor({ leadId, targets, initial }: { leadId: string; targets: W
     if (busy[key]) return
     setBusy(b => ({ ...b, [key]: true })); setMsg(m => ({ ...m, [key]: '' }))
     let text = 'Could not run the lookup. Try again.'
+    const startedOn = current.current
     try {
       const r = await fetch(`/api/leads/${leadId}/work-email`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target: key }) })
-      const j = await r.json().catch(() => ({})) as { lookup?: ShownLookup; error?: string }
-      if (r.ok && j.lookup) { const l = j.lookup; setLookups(ls => mergeLookups(ls, [l], true)); text = '' }
+      const j = await r.json().catch(() => ({})) as { lookup?: Parameters<typeof recordClick>[3]; error?: string }
+      if (r.ok && j.lookup) { const l = j.lookup; setOwn(o => recordClick(o, startedOn, current.current, l)); text = '' }
       else if (j.error) text = String(j.error)
     } catch { /* keep the generic message */ }
     setMsg(m => ({ ...m, [key]: text })); setBusy(b => ({ ...b, [key]: false }))

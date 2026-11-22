@@ -134,6 +134,21 @@ export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unkno
   return next ?? shown
 }
 
+// #1036 / #1250 (Qodo High on #1545): the Leads page read is the published-only answer rebuilt from the crawl on every read, so the
+// latest read is the whole truth for the panel. A click is kept only against the read it was made on: a refreshed read replaces
+// every clicked row (an address since suppressed, or no longer printed, is not shown or copyable), and a click that was still in
+// flight when the refresh landed is dropped. `base` is the page read object (identity) the clicks belong to.
+export interface PanelClicks { base: unknown; rows: Record<string, ShownLookup> }
+export const clicksFor = (base: unknown): PanelClicks => ({ base, rows: {} })
+export function recordClick(own: PanelClicks, startedOn: unknown, current: unknown, row: ShownLookup): PanelClicks {
+  if (startedOn !== current) return own // the page read changed while this click ran: the refreshed read wins
+  return { base: current, rows: { ...(own.base === current ? own.rows : {}), [row.target]: row } }
+}
+export function shownWorkEmails(initial: unknown, own: PanelClicks): Record<string, ShownLookup> {
+  const read = initial === undefined ? {} : mergeLookups({}, initial)
+  return own.base === initial ? { ...read, ...own.rows } : read
+}
+
 export const siteSettled = (id: { state: string; site: string | null } | null | undefined): id is { state: 'fact' | 'user_confirmed'; site: string } =>
   !!id && !!id.site && (id.state === 'fact' || id.state === 'user_confirmed')
 

@@ -9,7 +9,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { saveCredential, setEnrichFallback, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { findWorkEmail, workEmailPageRead, PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS } from '../lib/people/work-email.ts'
-import { workEmailTargets, targetKey, workEmailCopy, queryName, siteSettled, sameRole, linkedinHandle, mergeLookups, TARGET_KEY_MAX, type ShownLookup } from '../lib/people/work-email-eligible.ts'
+import { workEmailTargets, targetKey, workEmailCopy, queryName, siteSettled, sameRole, linkedinHandle, mergeLookups, clicksFor, recordClick, shownWorkEmails, TARGET_KEY_MAX, type ShownLookup } from '../lib/people/work-email-eligible.ts'
 import { deleteCommenterBatch, importCommenters, parseImport } from '../lib/scan/commenter-import.ts'
 import { eraseFirstParty, ingest, recordConfig, signBody } from '../lib/signals/first-party.ts'
 import { bothEngines } from './helpers/engines.ts'
@@ -307,4 +307,27 @@ test('a published address the workspace suppressed is not offered by Find work e
   assert.deepEqual(workEmailPageRead(s.db, 'A', [{ id: s.lead }]).lookups[s.lead], [])
   assert.equal(publishedCandidateFor(s.db, 'A', s.lead, 'Dana Lee'), null, 'the crawl attaches no suppressed address to the lead')
   assert.equal(draftBlockReason(s.db, 'A', s.lead), 'no_email_contact')
+})
+
+// Qodo High on #1545: the Leads page read is the published-only answer rebuilt from the crawl, so a refreshed read is the whole
+// truth. A clicked address the refreshed read no longer returns (the workspace suppressed it, or the site stopped printing it) is
+// no longer shown or copyable; a click that started before the refresh landed is dropped; a click after it is shown.
+test('panel: a refreshed page read replaces clicked rows; a click still in flight when the refresh lands is dropped', () => {
+  const pub = (address: string): ShownLookup => ({ target: DANA, status: 'published', provider: 'site', address, detail: null, source_url: `https://${SITE}/team`, checked_at: null, updated_at: 1 })
+  const first: unknown[] = []
+  let own = clicksFor(first)
+  own = recordClick(own, first, first, pub(`dana.lee@${SITE}`))
+  assert.equal(shownWorkEmails(first, own)[DANA]?.address, `dana.lee@${SITE}`, 'the click shows its address')
+  const refreshed: unknown[] = [] // the address is suppressed now: the page read returns nothing for Dana
+  assert.equal(shownWorkEmails(refreshed, own)[DANA], undefined, 'the refreshed read wins: no stale clicked address')
+  // a click that started against the old read and answered after the refresh is dropped
+  own = recordClick(own, first, refreshed, pub(`dana.lee@${SITE}`))
+  assert.equal(shownWorkEmails(refreshed, own)[DANA], undefined)
+  // a click made after the refresh is shown; rows the refreshed read returns are shown without a click
+  own = recordClick(own, refreshed, refreshed, pub(`dlee@${SITE}`))
+  assert.equal(shownWorkEmails(refreshed, own)[DANA]?.address, `dlee@${SITE}`)
+  assert.equal(shownWorkEmails([pub(`owner@${SITE}`)], clicksFor(undefined))[DANA]?.address, `owner@${SITE}`)
+  // with no page read at all (initial not given), the panel shows its own clicks
+  const none = recordClick(clicksFor(undefined), undefined, undefined, pub(`dana.lee@${SITE}`))
+  assert.equal(shownWorkEmails(undefined, none)[DANA]?.address, `dana.lee@${SITE}`)
 })

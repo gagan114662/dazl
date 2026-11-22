@@ -389,7 +389,10 @@ export default function LeadsClient() {
   const [hiddenCount, setHiddenCount] = useState(0)
   // The page's stored Find work email answers, read once with the leads (#1182): no per-lead GET on load.
   const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']>; guesses?: Record<string, unknown> } | null>(null)
-  const workEmailInitial = (leadId: string): WorkEmailInitial | undefined => workEmailPage ? { providers: workEmailPage.providers_by_lead?.[leadId] ?? workEmailPage.providers, lookups: workEmailPage.lookups[leadId] ?? [], guesses: workEmailPage.guesses?.[leadId] ?? NO_GUESSES } : undefined
+  // One empty list per page read: stable across re-renders, new on every refresh, so the panel keeps a click only until the next read
+  // (shownWorkEmails, #1036 / #1250).
+  const noLookups = useMemo<unknown[]>(() => (workEmailPage ? [] : []), [workEmailPage])
+  const workEmailInitial = (leadId: string): WorkEmailInitial | undefined => workEmailPage ? { providers: workEmailPage.providers_by_lead?.[leadId] ?? workEmailPage.providers, lookups: workEmailPage.lookups[leadId] ?? noLookups, guesses: workEmailPage.guesses?.[leadId] ?? NO_GUESSES } : undefined
   const [siteUrl, setSiteUrl] = useState('')
   const [siteBusy, setSiteBusy] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
