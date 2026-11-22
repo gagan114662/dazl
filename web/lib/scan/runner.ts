@@ -2023,7 +2023,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // the profile's place is read from the PROFILE entry alone ("in <entry>"), never from the request's words appended to it
     const boardPlace: Place | null = planPlace ?? (profilePlace ? placeIn(`in ${profilePlace}`) : null)
     const boardsQuery = job.query ? (!planPlace && profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
-    const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && boardPlace && !planHold)
+    const autoBoards = !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
     if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', planHold ?? (job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : planSkip ?? placeSkipReason('', icpForSources?.where ?? [])))   // #1205: the reason names the place and what to change
     // a held plan also holds a board source the user picked: the other picked sources still run

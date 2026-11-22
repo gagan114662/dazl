@@ -134,10 +134,11 @@ export function genericPlace(query: string): Place | null {
   }
   return null
 }
-// A city of a non-US country (ISO alpha-2), optionally in one Canadian province: a posting is in it when its location names the city as a whole word
-// and names no other country, no state or province of another country (or of another province), and is not a UK London location when the city is not.
+// A city of a non-US country (ISO alpha-2), optionally in one region of it (a Canadian province, a UK constituent country): a posting is in it when its
+// location names the city as a whole word and names no other country, no region of another country (or another region), and is not a UK London
+// location when the city is not.
 // genericPlace reads the city from the request's words; boardPlaceOf (#1395) gets it from the request plan.
-export function cityCountryPlace(city: string, country: string, province: string | null = null): Place | null {
+export function cityCountryPlace(city: string, country: string, region: string | null = null): Place | null {
   const key = norm(city); if (key.length < 3) return null
   const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`), namesake = namesakeOfBuiltIn(city)
   const ok = (...locs: (string | undefined)[]) => locs.some(l => {
@@ -148,7 +149,7 @@ export function cityCountryPlace(city: string, country: string, province: string
     // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK); a city read from
     // its province ("London, Alberta") is in that province, so a posting naming another one ("London, ON") is not it
     const regions = regionsIn(l)
-    if (!regions.every(r => countryOfRegion(r) === country && (!province || r === province))) return false
+    if (!regions.every(r => countryOfRegion(r) === country && (!region || r === region))) return false
     if (namesake && (/\bremote\b/i.test(l) || (named.length === 0 && regions.length === 0))) return false
     return true
   })
@@ -308,13 +309,13 @@ function boardPlaceOne(p: { text: string; city: string | null; region: string | 
   }
   if (country === 'GB') {
     if (city && norm(city) === 'london' && (!region || region === 'GB-eng')) return { place: builtIn('London'), key: key('', 'london') }
-    if (city) { const pl = cityCountryPlace(city, 'GB'); return pl ? { place: pl, key: key(region ?? '', city) } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
+    // a constituent country written with the city is kept: Manchester, Wales is never the English Manchester
+    if (city) { const pl = cityCountryPlace(city, 'GB', region); return pl ? { place: pl, key: key(region ?? '', city) } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
     if (!region) return { place: builtIn('United Kingdom'), key: key('', '') }
     return { reason: `skipped_no_place:region:${clean(p.text)}` }
   }
-  const province = region?.startsWith('CA-') ? region : null
-  if (city) { const pl = cityCountryPlace(city, country, province); return pl ? { place: pl, key: key(province ?? '', city) } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
-  return { reason: `skipped_no_place:${province ? 'province' : 'country'}:${clean(p.text)}` }
+  if (city) { const pl = cityCountryPlace(city, country, region); return pl ? { place: pl, key: key(region ?? '', city) } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
+  return { reason: `skipped_no_place:${region?.startsWith('CA-') ? 'province' : 'country'}:${clean(p.text)}` }
 }
 // #1205: a bounded list of large non-US cities that name one place on their own ("in Toronto", a profile place "Mumbai"): each resolves as "<City>, <Country>"
 // would. A data list, no network call. Cities sharing their name with a sizeable US / UK place (Paris, Dublin, Melbourne, Manchester, Birmingham,
