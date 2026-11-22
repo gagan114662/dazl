@@ -147,7 +147,7 @@ test('(a) history list: an empty or zero column claims it; a recorded spend or a
   assert.match(await label(setup(0)), /Nothing was charged\./)
   assert.doesNotMatch(await label(setup(0.12)), /charged/)
   assert.doesNotMatch(await label(setup(0, 0.05)), /charged/, 'cap ledger positive: no claim')
-  assert.doesNotMatch(await label(failing(setup(null), /spend_cap_reserved_usd, 0\) AS s FROM scan_jobs WHERE user_id/)), /charged/, 'the spend read FAILED: no claim, list intact')
+  assert.doesNotMatch(await label(failing(setup(null), /spend_cap_reserved_usd AS cap FROM scan_jobs WHERE user_id/)), /charged/, 'the spend read FAILED: no claim, list intact')
 })
 test('(a) campaign page job: an empty or zero column reads as 0; a recorded spend stays', async () => {
   assert.equal((await campaignDetail(setup(null), 'U', ID))!.job.spend_usd, 0)

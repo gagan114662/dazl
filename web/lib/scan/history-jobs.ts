@@ -2,6 +2,7 @@ import type { Db } from '../db/client.ts'
 import { listJobs } from './store-db.ts'
 import { effectiveStatus } from './enrichment.ts'
 import { recordedEmptyReason, recordedStopRefusalReason } from './outcome-detail.ts'
+import { recordedJobCostUsd } from './job-cost.ts'
 
 // The Leads history list (GET /api/scan/jobs): the tenant's own past scans with what their outcome needs. Read-only.
 // funded_by is reported only when it is positive evidence: 'trial' (the shared free-search key; set explicitly when the
@@ -12,11 +13,11 @@ import { recordedEmptyReason, recordedStopRefusalReason } from './outcome-detail
 export async function historyJobs(db: Db, userId: string) {
   const trial = new Set((await db.all<{ id: string }>("SELECT id FROM scan_jobs WHERE user_id = ? AND funded_by = 'trial'", [userId])).map(r => r.id))
   // A failed read leaves the map empty: no job then claims anything about charges (scan-outcome.ts), and the list still loads.
-  const spend = new Map((await db.all<{ id: string; s: number | string | null }>('SELECT id, coalesce(spend_reserved_usd, 0) + coalesce(spend_cap_reserved_usd, 0) AS s FROM scan_jobs WHERE user_id = ?', [userId]).catch(() => [])).map(r => [r.id, r.s]))
+  const spend = new Map((await db.all<{ id: string; run: number | string | null; cap: number | string | null }>('SELECT id, spend_reserved_usd AS run, spend_cap_reserved_usd AS cap FROM scan_jobs WHERE user_id = ?', [userId]).catch(() => [])).map(r => [r.id, recordedJobCostUsd(r.run, r.cap)]))
   return Promise.all((await listJobs(db, userId)).map(async j => ({
     ...j,
-    // Recorded spend (max_usd reservation + per-job cap ledger: a positive amount in either is a paid call), only when it was read (an empty column on a read row = 0; a failed read = omitted): a free scan that stopped at its limit says whether anything was charged (scan-outcome.ts).
-    ...(spend.has(j.id) ? { spend_usd: spend.get(j.id) ?? 0 } : {}),
+    // Recorded spend (the job's one cost, job-cost.ts: a positive amount is a paid call), only when it was read (an empty column on a read row = 0; a failed read = omitted): a free scan that stopped at its limit says whether anything was charged (scan-outcome.ts).
+    ...(spend.get(j.id) != null ? { spend_usd: spend.get(j.id) } : {}),   // unread or unreadable: left out, never 0
     funded_by: trial.has(j.id) ? 'trial' as const : null,
     status: effectiveStatus(j),
     // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.
