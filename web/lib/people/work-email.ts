@@ -49,7 +49,8 @@ import { stagingFakePdl } from '../enrich/pdl.ts'
 import { runWithTenantSpend } from '../scan/spend-cap.ts'
 import { currentnessHeld } from '../outreach/currentness.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
-import { companyFirstPublishedDisplayRowsSync } from './company-first-published-display.ts'
+import { companyFirstDisplayQueries, companyFirstDisplayRow, missingDisplayTable, type CompanyFirstDisplayStored, type CompanyFirstPublishedDisplayRow } from './company-first-published-display.ts'
+import { domainRelationship } from '../signals/domain-basis.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
@@ -172,6 +173,21 @@ const usPlace = (w: string) => {
   return !!last && ((last.length === 2 && Object.hasOwn(US_STATES, last.toUpperCase())) || Object.values(US_STATES).includes(last.toLowerCase()))
 }
 const usScope = (where: string[]) => where.length > 0 && where.every(usPlace)
+
+/** The company-first display rows with the same query and binding as companyFirstPublishedDisplayRows, read synchronously. */
+export function companyFirstPublishedDisplayRowsSync(db: Database.Database, tenantId: string, leadIds: readonly string[], nowSeconds = Math.floor(Date.now() / 1000)): Record<string, CompanyFirstPublishedDisplayRow> {
+  const out: Record<string, CompanyFirstPublishedDisplayRow> = {}
+  try {
+    for (const q of companyFirstDisplayQueries(tenantId, leadIds, nowSeconds)) {
+      for (const row of db.prepare(q.sql).all(...q.params) as CompanyFirstDisplayStored[]) {
+        const shown = companyFirstDisplayRow(row)
+        if (!shown || domainRelationship(db, tenantId, row.lead_id, row.domain) !== 'established') continue
+        out[row.lead_id] = shown
+      }
+    }
+  } catch (e) { if (!missingDisplayTable(e)) throw e }
+  return out
+}
 
 // A company-first crawl files the buyer's own address from their own card on the company page (company_first_published_email_display),
 // not as a published candidate. On a US lead the same strict step also wrote the sender route for that exact address and page; only
