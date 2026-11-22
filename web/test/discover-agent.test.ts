@@ -3,7 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseLeads, usd } from '../lib/discover/agent.ts'
-import { checkLead, companyOnPage, dayOnPage } from '../lib/discover/check.ts'
+import { checkLead, companyOnPage, dayOnPage, isShown } from '../lib/discover/check.ts'
 
 const lead = (o: Record<string, unknown> = {}) => ({ company: 'Northwind Dental', domain: 'https://www.northwind-dental.example/about', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind-second-clinic', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://www.northwind-dental.example/team', linkedin_url: 'https://www.linkedin.com/in/dana-ruiz/', confidence: 'high', why: 'expanding', ...o })
 
@@ -43,14 +43,18 @@ test('companyOnPage and dayOnPage label the proof; they tolerate case, accents a
   assert.equal(dayOnPage(null, 'anything 2026'), false)
 })
 
-test('checkLead: confirmed when the page names the company; a page that does not, or cannot be read, is labelled and still returned', async () => {
+test('checkLead: the text Claude read decides first, then the read by dazl, then the search results; a URL the run never saw is unseen', async () => {
   const page = (body: string, status = 200) => (async () => new Response(body, { status })) as unknown as typeof fetch
-  const ok = await checkLead(parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0], page('<html><body><p>14 October 2026</p><p>Northwind Dental will open its second clinic in the spring.</p></body></html>'))
-  assert.deepEqual([ok.proof, ok.quote_on_page, ok.date_on_page], ['confirmed', true, true])
-  const other = await checkLead(parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0], page('<p>Unrelated story</p>'))
-  assert.equal(other.proof, 'company_not_on_page')
-  const gone = await checkLead(parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0], page('nope', 404))
-  assert.equal(gone.proof, 'unreadable')
-  const local = await checkLead({ ...ok, evidence_url: 'http://127.0.0.1/admin' }, (() => { throw new Error('must not be fetched') }) as unknown as typeof fetch)
-  assert.equal(local.proof, 'unreadable', 'a private address is never fetched')
+  const never = (() => { throw new Error('must not be fetched') }) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0]
+  const read = await checkLead(l, [{ url: 'https://www.news.example/northwind-second-clinic/', title: 't', page_age: 'October 14, 2026', text: 'On 14 October 2026 Northwind Dental will open its second clinic.' }], never)
+  assert.deepEqual([read.proof, read.proof_read_by, read.quote_on_page, read.date_on_page, read.page_age], ['confirmed', 'reader', true, true, 'October 14, 2026'], 'www. and a trailing slash are the same page')
+  const ours = await checkLead(l, [], page('<html><body><p>14 October 2026</p><p>Northwind Dental will open its second clinic in the spring.</p></body></html>'))
+  assert.deepEqual([ours.proof, ours.proof_read_by], ['confirmed', 'dazl'])
+  assert.equal((await checkLead(l, [], page('<p>Unrelated story</p>'))).proof, 'company_not_on_page')
+  const listed = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('blocked', 403))
+  assert.deepEqual([listed.proof, isShown(listed)], ['listed', true])
+  const unseen = await checkLead(l, [{ url: 'https://news.example/other', title: 'Northwind Dental', page_age: null, text: null }], page('blocked', 403))
+  assert.deepEqual([unseen.proof, isShown(unseen)], ['unseen', false], 'a proof URL the run never saw and nobody can read is not shown')
+  assert.equal((await checkLead({ ...l, evidence_url: 'http://127.0.0.1/admin' }, [], never)).proof, 'unseen', 'a private address is never fetched')
 })

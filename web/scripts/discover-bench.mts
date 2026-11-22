@@ -11,7 +11,7 @@ import { execSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { discoverLeads, DISCOVER_MODEL } from '../lib/discover/agent.ts'
-import { checkLeads, type CheckedLead } from '../lib/discover/check.ts'
+import { checkLeads, isShown } from '../lib/discover/check.ts'
 
 const argv = process.argv.slice(2)
 const opt = (n: string): string | undefined => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
@@ -27,16 +27,14 @@ const maxLeads = Number(opt('max-leads') ?? 10)
 const commit = (() => { try { return execSync('git rev-parse --short HEAD', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() } catch { return process.env.BENCH_COMMIT || 'unknown' } })()
 const pct = (n: number, d: number) => (d === 0 ? 0 : Math.round((n / d) * 100))
 
-// "Shown" is the launch brief's rule: a real company with a dated signal whose proof page we read ourselves and found the company on.
-const shown = (l: CheckedLead) => l.proof === 'confirmed' && !!l.signal_date
 interface Row { id: string; status: string; leads: number; shown: number; domain: number; named: number; dated: number; usd: number; secs: number; model: string; note: string }
 const rows: Row[] = [], priv: Record<string, unknown> = {}
 for (const c of cases) {
   const t0 = Date.now()
   try {
     const r = await discoverLeads({ query: c.query, offer: c.offer, maxLeads }, { apiKey: key, signal: AbortSignal.timeout(600_000) })
-    const leads = await checkLeads(r.leads)
-    const s = leads.filter(shown)
+    const leads = await checkLeads(r.leads, r.seen)
+    const s = leads.filter(isShown)
     rows.push({ id: c.id, status: r.stop, leads: leads.length, shown: s.length, domain: pct(s.filter(l => l.domain).length, s.length), named: pct(s.filter(l => l.person).length, s.length), dated: pct(s.filter(l => l.signal_date).length, s.length), usd: r.usage.usd, secs: Math.round((Date.now() - t0) / 1000), model: r.model, note: r.note ?? '' })
     priv[c.id] = { usage: r.usage, note: r.note, leads }
   } catch (e) {
@@ -57,7 +55,7 @@ const table = [
   line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '',
   'definitions:',
   '  leads: records the loop returned with a company, a signal and a proof URL',
-  '  shown: of those, the ones with a signal date whose proof page dazl fetched itself and found the company named on',
+  '  shown: of those, the ones whose proof page names the company (read by Claude\'s reader or by dazl), or came back in the search results with the company in its title',
   '  domain% / named% / dated%: of the shown leads, those with a company website, a named person, a signal date',
   '  usd: model tokens at list price plus web searches; secs: wall clock, search and page reads included',
 ].join('\n')

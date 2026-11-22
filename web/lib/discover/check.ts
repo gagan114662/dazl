@@ -1,12 +1,17 @@
 // Reads a lead's proof page ourselves and labels the lead. It never hides one (launch brief, Step 3): a page we could not
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
-import type { DiscoveredLead } from './agent.ts'
+import type { DiscoveredLead, SeenPage } from './agent.ts'
 
-export type ProofState = 'confirmed' | 'company_not_on_page' | 'unreadable'
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; quote_on_page: boolean; date_on_page: boolean }
+// confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
+// listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
+// company_not_on_page: the text was read and does not name the company. unseen: the run never saw this URL and dazl could not read it.
+export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen'
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; date_on_page: boolean; page_age: string | null }
+// A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
+export const isShown = (l: CheckedLead): boolean => l.proof === 'confirmed' || l.proof === 'listed'
 
 const text = (html: string) => html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')
-const fold = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+const fold = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 
 // The company is on the page when its name appears, or when the words of its name (ignoring very short ones) all do.
 export function companyOnPage(company: string, page: string): boolean {
@@ -35,30 +40,38 @@ function publicUrl(raw: string): URL | null {
   } catch { return null }
 }
 
-export async function checkLead(lead: DiscoveredLead, fetchImpl: typeof fetch = fetch, timeoutMs = 12_000): Promise<CheckedLead> {
-  const none = { ...lead, proof: 'unreadable' as const, quote_on_page: false, date_on_page: false }
-  const u = publicUrl(lead.evidence_url)
-  if (!u) return none
-  let body: string
-  try {
-    const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
-    if (!r.ok) return none
-    body = text((await r.text()).slice(0, 1_500_000))
-  } catch { return none }
+// Two URLs are the same page when host (without www.), path (without a trailing slash) and query match.
+const pageKey = (raw: string): string => { try { const u = new URL(raw); return `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}${u.search}` } catch { return raw } }
+
+function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_age: string | null): CheckedLead {
   const quote = lead.evidence_quote ? fold(lead.evidence_quote) : ''
-  return {
-    ...lead,
-    proof: companyOnPage(lead.company, body) ? 'confirmed' : 'company_not_on_page',
-    quote_on_page: quote.length >= 12 && fold(body).includes(quote),
-    date_on_page: dayOnPage(lead.signal_date, body),
-  }
+  return { ...lead, proof: companyOnPage(lead.company, body) ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
+    quote_on_page: quote.length >= 12 && fold(body).includes(quote), date_on_page: dayOnPage(lead.signal_date, body) }
 }
 
-export async function checkLeads(leads: DiscoveredLead[], fetchImpl: typeof fetch = fetch, concurrency = 4): Promise<CheckedLead[]> {
+export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000): Promise<CheckedLead> {
+  const key = pageKey(lead.evidence_url)
+  const hit = seen.find(p => pageKey(p.url) === key) ?? null
+  // 1. the text Claude's reader returned for this very page
+  if (hit?.text) return judge(lead, hit.text, 'reader', hit.page_age)
+  // 2. dazl's own read of the page
+  const u = publicUrl(lead.evidence_url)
+  if (u) {
+    try {
+      const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
+      if (r.ok) return judge(lead, text((await r.text()).slice(0, 1_500_000)), 'dazl', hit?.page_age ?? null)
+    } catch { /* fall through to what the search results say */ }
+  }
+  // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
+  const base = { ...lead, proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
+  return { ...base, proof: hit && companyOnPage(lead.company, hit.title ?? '') ? 'listed' : 'unseen' }
+}
+
+export async function checkLeads(leads: DiscoveredLead[], seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, concurrency = 4): Promise<CheckedLead[]> {
   const out: CheckedLead[] = new Array(leads.length)
   let next = 0
   await Promise.all(Array.from({ length: Math.min(concurrency, leads.length) }, async () => {
-    for (let i = next++; i < leads.length; i = next++) out[i] = await checkLead(leads[i], fetchImpl)
+    for (let i = next++; i < leads.length; i = next++) out[i] = await checkLead(leads[i], seen, fetchImpl)
   }))
   return out
 }

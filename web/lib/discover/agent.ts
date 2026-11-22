@@ -9,8 +9,8 @@ import Anthropic from '@anthropic-ai/sdk'
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || 'claude-opus-5-5'
 // US$ per million tokens for the default model, and per web search. Used only to report what a run cost.
 const PRICE = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, search: 0.01 }
-const MAX_SEARCHES = 8
-const MAX_FETCHES = 8
+const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_SEARCHES || 14)
+const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
 export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number }
@@ -29,15 +29,20 @@ export interface DiscoveredLead {
   why: string                       // one line: why this company fits the request
 }
 export interface DiscoverUsage { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; searches: number; requests: number; usd: number }
-export interface DiscoverResult { leads: DiscoveredLead[]; usage: DiscoverUsage; stop: string; model: string; note: string | null }
+// A page Claude's own tools returned during the run: a search result (title, and the page's age when the index knows it) or a page it
+// opened (its text). check.ts uses these to tell a proof URL the run really saw from one the model made up.
+export interface SeenPage { url: string; title: string | null; page_age: string | null; text: string | null }
+export interface DiscoverResult { leads: DiscoveredLead[]; usage: DiscoverUsage; stop: string; model: string; note: string | null; seen: SeenPage[] }
 
 const SYSTEM = `You find sales leads for a seller. You are given what the seller sells and who they want to find.
 
 A lead is a real company (or a named person at one) that matches the request AND shows a recent, dated sign that it may need what the seller sells. The sign is whatever the request asks for: hiring, funding, a new leader, an expansion or new location, a public post, and so on.
 
 How to work:
-- Search for the signal first, in the place and industry the request names. News items, press releases, the company's own announcements and job postings are good proof pages. Search in the local language too when the place calls for it.
-- For each candidate, open the page that proves the signal. Use the date printed on that page for the event. If the page prints no date, set signal_date to null; never estimate one.
+- You have a limited number of searches and page reads. Spend roughly the first half finding companies with the signal and the rest finding the person and website for the best ones. Stop searching and answer before you run out.
+- Search for the signal first, in the place and industry the request names. Dated pages make the best proof: news items, press releases, dated blog or social posts, job postings, permit and registry records. Search in the local language too when the place calls for it.
+- For each candidate, open the page that proves the signal. Use the date printed on that page for the event. A company's own page often announces something without a date: then look for a dated page about the same event and use that as the proof. If no page prints a date, set signal_date to null; never estimate one.
+- evidence_url must be a page you opened or one that appeared in your search results, and the company's name must be on it.
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
 - Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give a LinkedIn URL only when a page links it. If you cannot find a person, leave the person fields null and still return the lead.
 - The company's website domain should be its own site, not a directory or news site. If you are not sure, set it to null.
@@ -98,6 +103,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   let text = '', stop = 'unknown', model = DISCOVER_MODEL
+  const seen = new Map<string, SeenPage>()
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
     const res = await client.beta.messages.stream({
       model: DISCOVER_MODEL, max_tokens: 16000,
@@ -118,11 +124,18 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
     usage.searches += res.usage.server_tool_use?.web_search_requests ?? 0
     stop = res.stop_reason ?? 'unknown'
     model = res.model
+    for (const b of res.content) {
+      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) for (const r of b.content) if (r.type === 'web_search_result' && !seen.has(r.url)) seen.set(r.url, { url: r.url, title: r.title ?? null, page_age: r.page_age ?? null, text: null })
+      if (b.type === 'web_fetch_tool_result' && b.content.type === 'web_fetch_result') {
+        const src = b.content.content?.source
+        seen.set(b.content.url, { url: b.content.url, title: b.content.content?.title ?? seen.get(b.content.url)?.title ?? null, page_age: seen.get(b.content.url)?.page_age ?? null, text: src && src.type === 'text' ? src.data.slice(0, 400_000) : null })
+      }
+    }
     text = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text').map(b => b.text).join('')
     // The server-side tool loop paused: send the turn back unchanged and it resumes where it stopped.
     if (stop !== 'pause_turn') break
     messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.BetaContentBlockParam[] })
   }
   const parsed = stop === 'refusal' ? { leads: [], note: 'the model declined this request' } : parseLeads(text, max)
-  return { ...parsed, usage: { ...usage, usd: usd(usage) }, stop, model }
+  return { ...parsed, usage: { ...usage, usd: usd(usage) }, stop, model, seen: [...seen.values()] }
 }
