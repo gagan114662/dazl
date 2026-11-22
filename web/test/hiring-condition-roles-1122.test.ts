@@ -223,3 +223,14 @@ test('#1122 a lead\'s own quote proves the condition only through a role the req
   // a request naming no specific title keeps main's rule: any affirmative sales-hiring quote
   assert.equal(truth('Companies hiring sales staff in the last 30 days', ae), 'pass')
 })
+
+test('#1122 a bare role list with no "or" ("SDRs, AEs") is an OR of roles too (the #1509 comma rule)', () => {
+  assert.deepEqual(alts('Companies hiring SDRs, AEs'), [['sdrs', 'aes']])
+  assert.deepEqual(alts('Companies hiring SDRs, AEs, sales reps in the last 30 days'), [['sdrs', 'aes', 'sales reps']])
+  const p = compileTargeting('Companies hiring SDRs, AEs in the last 30 days', null)
+  const [c] = planConditions(p.root).map(x => x.cond)
+  assert.equal(planConditions(p.root).length, 1)
+  assert.equal(planProofs(p, lead, [{ ...posting('Account Executive'), kind: 'hiring-role' }], ctx)[c.id].truth, 'pass', 'the AE alternative proves it')
+  // a comma before another condition still separates conditions
+  assert.deepEqual(alts('Companies hiring SDRs, raised funding'), [['sdrs']])
+})
