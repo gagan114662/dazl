@@ -53,11 +53,26 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   } else if ((l.name ?? '').trim()) person = { name: l.name!.trim(), title: null, linkedin: li?.value ?? null, source: null }
   return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null }
 }
-// Whether a discovery lead can be approved (a draft email for the user to review; nothing is sent), and if not, the one thing to do.
-export function discoverApprove(l: { quarantined_at?: number | null; review_reason?: string | null; source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { ok: true } | { ok: false; reason: string } {
+// The address belongs to the company: its own domain is the lead's website, or the page that prints it is on the lead's website.
+const bare = (h: string) => h.toLowerCase().replace(/^www\./, '')
+export function emailOnCompanySite(email: string, sourceUrl: string | null | undefined, companyDomain: string | null | undefined): boolean {
+  const site = bare((companyDomain ?? '').trim())
+  if (!site) return false
+  const under = (h: string) => h === site || h.endsWith(`.${site}`)
+  if (under(bare(email.slice(email.lastIndexOf('@') + 1)))) return true
+  try { return under(bare(new URL(sourceUrl ?? '').hostname)) } catch { return false }
+}
+// Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
+// Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
+// (lib/scan/lead-card.ts), which already has them.
+export function discoverApprove(l: { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; company_domain?: string | null; fit?: number | null; intent?: number | null; source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { ok: true } | { ok: false; reason: string } {
   if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
+  if (l.gate_held) return { ok: false, reason: 'A required check has not passed. Research only.' }
   if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.' }
+  if (!l.event_date) return { ok: false, reason: 'The signal has no date, so its timing is unknown. Open the proof to check it.' }
+  if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
   const c = discoverContact(l)
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
+  if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The published address is not on the company\'s own website. Confirm the company website in Details first.' }
   return { ok: true }
 }
