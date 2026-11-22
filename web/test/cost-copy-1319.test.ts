@@ -200,3 +200,22 @@ test('the confirmation covers the run limit and what binds, not only the windows
   assert.equal(a.cap.binding, 'daily'); assert.equal(b.cap.binding, 'daily'); assert.notEqual(a.cap.run_max_usd, b.cap.run_max_usd)
   assert.notEqual(a.ack, b.ack, 'a different run limit on screen needs a new confirmation')
 })
+
+// Council: the change list only offers what can unblock the run. The free trial's per-scan stop and the operator's per-scan cap cannot be
+// raised by the person, and a max_usd above the per-scan cap still resolves to that cap (spend-cap.ts effectiveCapUsd).
+test('the change list never offers a raise that cannot unblock the run, and never cites a limit that is not the one stopping it', () => {
+  const noRaise = (e: ReturnType<typeof estimateRun>) => !e.verdict.change.some(c => /^Raise the|raising this run's limit/.test(c))
+  for (const budget of [null, { max_usd: 3.33 }]) {
+    const t = estimateRun({ budget, payer: 'trial', trialReserveUsd: 0.05, ownerCapUsd: 10, reservedUsd: 0, scanCapUsd: 3.33 })
+    assert.equal(t.verdict.ok, false); assert.match(t.verdict.message, /free trial stops each scan at \$0\.05/)
+    assert.ok(noRaise(t), t.verdict.change.join(' | '))
+    assert.ok(!t.verdict.change.some(c => /\$3\.33|Each scan is capped/.test(c)), t.verdict.change.join(' | '))
+  }
+  const under = estimateRun({ budget: { max_usd: 0.03 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 0, scanCapUsd: 0.05 })
+  assert.equal(under.verdict.ok, false); assert.equal(under.cap.run_max_usd, 0.03)
+  assert.ok(noRaise(under), under.verdict.change.join(' | '))
+  assert.ok(under.verdict.change.some(c => c === 'Each scan is capped at $0.05.'), under.verdict.change.join(' | '))
+  // a raise that does unblock the run is still offered
+  const raisable = estimateRun({ budget: { max_usd: 0.02 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 0, scanCapUsd: 3.33 })
+  assert.ok(raisable.verdict.change.some(c => /^Raise the dollar limit to at least \$0\.\d\d /.test(c)), raisable.verdict.change.join(' | '))
+})
