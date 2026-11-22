@@ -19,10 +19,10 @@ test('one URL cited for 2+ different companies is a roundup: every one of them i
   assert.ok(v.every(x => x.reason === 'multi_company_roundup'))
 })
 
-test('the same roundup cited for a single company in this pass is still rejected when undated', () => {
+test('a tracker page cited for a single company in this pass is still a roundup (judged by the page; Qodo #1530 b)', () => {
   const v = fundingSourceVerdicts([{ company: 'Autobound', website: 'autobound.ai', source_url: tracker, event_date: null }])
   assert.equal(v[0].verdict, 'reject')
-  assert.equal(v[0].reason, 'undated_third_party')
+  assert.equal(v[0].reason, 'multi_company_roundup')
 })
 
 test("the company's own dated announcement page is accepted (host equals or is a subdomain of its own website)", () => {
@@ -51,7 +51,7 @@ test('a job posting is never a funding source', () => {
   }
 })
 
-test('an own-site page with no date is rejected (the reader may not invent one)', () => {
+test('an own-site page with no date goes to the reader, which dates it from the page or holds it (Qodo #1530 a)', () => {
   const v = fundingSourceVerdicts([{ company: 'Acme', website: 'acme.io', source_url: 'https://acme.io/news/raise', event_date: null }])
-  assert.deepEqual([v[0].verdict, v[0].reason], ['reject', 'undated_own_site'])
+  assert.deepEqual([v[0].verdict, v[0].reason], ['read', 'undated_own_site'])
 })

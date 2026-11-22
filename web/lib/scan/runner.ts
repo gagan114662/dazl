@@ -1910,14 +1910,19 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           // Refs #1122 (run aa193734): the funding pass's candidates must cite the company's own dated announcement or a dated article about
           // that one company (lib/company-first/funding-source.ts). Rejects are counted in the internal run report only - never shown in the
           // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website
-          // hint below is only a hint; without one an own page is judged like any single-company page (dated -> read, undated -> rejected).
+          // hint below is only a hint. Undated candidates go on to the reader, which dates them from the page or the window rule holds them.
           if (fundingOr && angle === CF_FUNDING_ANGLE && extra.length) {
             // the model's website hint for this company (company-first text candidates): it only lets own_site / undated_own_site be told
             // apart here. It never confirms a domain - the normal domain proof still decides that later.
             const hints = textSitesByJob.get(job) ?? []
-            const v = fundingSourceVerdicts(extra.map(l => ({ company: l.company, website: hints.find(h => norm(h.company) === norm(l.company))?.website ?? null, source_url: l.source_url, event_date: l.event_date })))
-            for (const x of v) if (x.verdict === 'reject') fundingSourceRejects[x.reason] = (fundingSourceRejects[x.reason] ?? 0) + 1
-            const keep = extra.filter((_, i) => v[i].verdict !== 'reject')
+            // Judged over EVERY parsed candidate (before the excerpt/name check), so a page cited for two companies is a roundup even when
+            // one of them was dropped first, and with the cited page's own title and text, so a roundup is known by the page (Qodo #1530 b).
+            const pageOf = (u: string) => pages.find(x => x.url === u)
+            const all = fundingSourceVerdicts(parsed.map(l => ({ company: l.company, website: hints.find(h => norm(h.company) === norm(l.company))?.website ?? null,
+              source_url: l.source_url, event_date: l.event_date, page: pageOf(l.source_url) ? { title: pageOf(l.source_url)!.title, text: pageOf(l.source_url)!.text } : null })))
+            const verdictOf = new Map(parsed.map((l, i) => [l, all[i]]))
+            for (const x of all) if (x.verdict === 'reject') fundingSourceRejects[x.reason] = (fundingSourceRejects[x.reason] ?? 0) + 1
+            const keep = extra.filter(l => { const src = parsed.find(p => p.company === l.company && p.source_url === l.source_url && p.excerpt === l.excerpt); return (src ? verdictOf.get(src)?.verdict : 'reject') !== 'reject' })
             extra.splice(0, extra.length, ...keep)
             if (Object.keys(fundingSourceRejects).length) ledger.report({ funding_source_rejects: { ...fundingSourceRejects } })
           }
