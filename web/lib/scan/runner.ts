@@ -2545,12 +2545,6 @@ export function postFinishAliveStrict(db: Database.Database, job: { id: string; 
 export function postFinishAlive(db: Database.Database, job: { id: string; attempts: number }): boolean {
   try { const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined; return !!r && r.attempts === job.attempts && (r.status === 'done' || r.status === 'running') } catch { return true }
 }
-// #899: the mailbox check's own time budget (EMAIL_VERIFY_BUDGET_MS, default 20 s, between 1 s and 60 s): it runs after the
-// post-finish budget's steps, so this is the most it can add to a scan's wall time.
-export function emailVerifyBudgetMs(env: Record<string, string | undefined> = process.env): number {
-  const n = Number(env.EMAIL_VERIFY_BUDGET_MS)
-  return Number.isFinite(n) && n > 0 ? Math.min(60_000, Math.max(1_000, Math.floor(n))) : 20_000
-}
 export function postFinishBudgetMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SCAN_POST_FINISH_BUDGET_MS
   if (raw === undefined) return 90_000

@@ -10,17 +10,12 @@ import type { CardLead } from './scan/opportunity.ts'
 import { heldState, type ResearchCause } from './lead-state.ts'
 import { leadPerson } from './people/lead-person.ts'
 import { identityOf } from './scan/opportunity.ts'
-import { profileFromListedLabel } from './people/site-profile.ts'
 
 // #1037: a ready lead names its buyer - a person the company's own website lists, with a title and the LinkedIn profile that page links
 // (lib/people/lead-person.ts). The row applies the same rule with the play's buyer roles; here no roles are passed, so a ready lead's row
 // always names that person (the roles only widen an assistant title the play itself asks for). Without one the lead is held.
 export const NO_OWN_BUYER = 'no buyer named on the company\'s own site'
 const ownSiteBuyer = (l: PreviewLead) => leadPerson(l.enrichments ?? [], '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
-// Can a person's review still give this lead its buyer? Checking the source never names one; confirming the website makes a person that site
-// lists with a page-linked LinkedIn current. So: the buyer is already named, or the crawl stored such a person on a site still to be confirmed.
-export const reviewCanNameBuyer = (l: PreviewLead): boolean => !!ownSiteBuyer(l) ||
-  (l.enrichments ?? []).some(e => e?.connector === 'sitecrawl' && e.kind === 'person' && !!profileFromListedLabel(e.label))
 
 export type PreviewLead = CardLead & { id: string; seen_before?: number | boolean | null }
 

@@ -54,6 +54,8 @@ async function seed(db: Db) {
   await lead(db, 'js', 'report'); await gateMark(db, 'A', 'report', 'gate_passed')  // held only by the run report below
   await lead(db, 'js', 'from', { machine: false, confirmedFrom: 'sales_hiring_check_failed' })  // confirmed OUT of the failed check
   await lead(db, 'js', 'review', { machine: false, review: 'quote_unconfirmed' })     // ordinary review: not a gate hold
+  // #1037: its company site names its buyer (the rows the real crawl stores), so a review can make it ready - the control stays a control
+  for (const [i, r] of ownSiteBuyerRows('coreview.example').entries()) await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, 'review', 'A', ?, ?, ?, ?, NULL, ?, ?, ?)", [`review-buyer-${i}`, r.connector, r.kind, r.value, r.label, r.source_url, r.source_date, r.retrieved_at])
   await lead(db, 'js', 'reviewheld', { machine: false, review: 'quote_unconfirmed' }); await gateMark(db, 'A', 'reviewheld', 'gate_failed')  // reviewable reason, but the gate failed
   await lead(db, 'js', 'oldreport'); await gateMark(db, 'A', 'oldreport', 'gate_passed')  // held only by an OLDER run attempt: not held
   await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', ['js', JSON.stringify({ held_lead_ids: ['oldreport'] })])

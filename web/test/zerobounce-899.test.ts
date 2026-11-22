@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { zeroBounceVerifier, VerifierError, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_URL, ZEROBOUNCE_STAGING_FAKE } from '../lib/people/zerobounce.ts'
 import { recordEmailGuesses, verifyCandidates, verifierFromEnv, verifyMonthlyCap, migrateEmailGuess, verifyJobCandidates } from '../lib/people/email-pattern.ts'
-import { runPostFinishBounded, emailVerifyBudgetMs } from '../lib/scan/runner.ts'
+import { runPostFinishBounded } from '../lib/scan/runner.ts'
 import { EnrichmentTrace } from '../lib/scan/enrichment-trace.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -209,13 +209,6 @@ test('#899 an address another run already took is skipped, not reported as a cap
   assert.ok(run.checked >= 2, `the remaining addresses were still checked (${run.checked})`)
 })
 
-
-test('#899 the check\'s own budget: default 20 s, clamped to 1-60 s', () => {
-  assert.equal(emailVerifyBudgetMs({}), 20_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '500' }), 1_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '900000' }), 60_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: 'x' }), 20_000)
-})
 
 test('#899 a later crawl that no longer shows a US address clears the unchecked guesses\' US basis: nothing of them is checked', async () => {
   const { db, on } = seeded('A', 'L1')
