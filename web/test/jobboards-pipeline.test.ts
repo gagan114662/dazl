@@ -42,7 +42,7 @@ async function run(research: unknown[], completeOut: (url?: string) => unknown[]
   const icp = JSON.stringify({ summary: 'x', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] })
   const id = createQueryJob(db, 'A', { query: 'ohio companies hiring payroll', icp, sources: JSON.stringify({ adapters: ['jobboards'], feeds }) } as never)
   const prov = {
-    anthropic: { research: async () => ({ text: JSON.stringify(research), citedUrls: research.map((r: any) => r.source_url) }), complete: async (_k: string, p: string) => isPlanPrompt(p) ? PLAN : p.startsWith('You check one claim') ? 'supports' : JSON.stringify(completeOut()) },
+    anthropic: { research: async () => ({ text: JSON.stringify(research), citedUrls: research.map(r => (r as { source_url: string }).source_url) }), complete: async (_k: string, p: string) => isPlanPrompt(p) ? PLAN : p.startsWith('You check one claim') ? 'supports' : JSON.stringify(completeOut()) },
     openai: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async () => '[]' },
   }
   const res = await runJob(db, claimKeyedJob(db, id)!, { providers: prov as never, master, fetchPage: page as never, sourceHttp: http, score: false, now: new Date() })
