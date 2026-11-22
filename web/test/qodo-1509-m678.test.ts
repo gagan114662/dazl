@@ -110,3 +110,40 @@ test('Qodo #1522 M3: a requested new-role posting found by the board lookup keep
   assert.equal(await gate(Q, lead, [], board('Head of Sales', 120)), 'no_sales_hiring_evidence', 'older than its own clock')
   assert.equal(await gate(Q, lead, [], board('Sales Development Representative', 60)), 'no_sales_hiring_evidence', 'an SDR posting keeps the 30-day clock')
 })
+
+test('Qodo #1522 (2nd pass) 1: an expansion by the lead and a launch by another company in one excerpt never prove the launch branch', async () => {
+  const Q = 'Find B2B companies that raised seed funding, launched a product, or are hiring an SDR, in the last 45 days.'
+  const mixed = { company: 'Acme', url: 'https://acme.example/news/1', signal: 'Acme expanded', excerpt: 'Acme expanded into Paris. RivalCo launched a product for finance teams.', date: day(10), proof: 'page_bound' }
+  assert.equal(await gate(Q, mixed), 'no_sales_hiring_evidence')
+  assert.equal(await gate(Q, { ...mixed, excerpt: 'Acme expanded into Paris. Acme today launched its new product for finance teams.' }), null, 'the lead launching in its own clause still proves it')
+})
+
+test('Qodo #1522 (2nd pass) 2: a title matching overlapping requested roles is fresh on the longest of their clocks', async () => {
+  const Q = 'companies hiring a new Account Executive within 30 days or a new Enterprise Account Executive within 90 days or new funding within 30 days'
+  const GH = 'https://boards-api.greenhouse.io/v1/boards/brightloop'
+  const board = (title: string, ageDays: number) => (async (u: RequestInfo | URL) => {
+    const m: Record<string, unknown> = {
+      [`${GH}/jobs`]: { jobs: [{ id: 1, title }] },
+      [`${GH}/jobs/1`]: { id: 1, title, first_published: new Date(NOW - ageDays * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', location: { name: 'Remote' }, content: '&lt;p&gt;Brightloop is hiring. Write to jobs@brightloop.io&lt;/p&gt;' },
+    }
+    return m[String(u)] ? new Response(JSON.stringify(m[String(u)]), { status: 200 }) : new Response('nope', { status: 404 })
+  }) as never
+  const lead = { company: 'Brightloop', domain: 'brightloop.io', url: 'https://brightloop.io/about', signal: 'Brightloop is growing its sales team', excerpt: 'Brightloop is a B2B platform for finance teams.', date: null, proof: null }
+  assert.equal(await gate(Q, lead, [], board('Enterprise Account Executive', 45)), null, '45 days: inside the Enterprise AE branch\'s 90 days')
+  assert.equal(await gate(Q, lead, [], board('Account Executive', 45)), 'no_sales_hiring_evidence', 'a plain AE posting keeps the 30-day clock')
+})
+
+test('Qodo #1522 (2nd pass) 3: a stage-free funding branch never inherits another branch\'s stage', async () => {
+  const Q = 'Find B2B companies that raised funding within 45 days, raised a Series A, or are hiring an SDR.'
+  const raise = { company: 'Synthco', url: 'https://synthco.example/news/3', signal: 'Synthco raised a seed round', excerpt: 'Synthco raised a $4M seed round led by Example Ventures.', date: day(10), proof: 'page_bound' }
+  assert.equal(await gate(Q, raise), null, 'a dated seed raise meets the generic funding branch')
+})
+
+test('Qodo #1522 (2nd pass) 4: a stale title is audited on the clock it was judged on, never the wider board window', async () => {
+  const { checkedAuditRows, checkedCoverageRow } = await import('../lib/signals/ats-gtm.ts')
+  const c = { board: 'ashby', boardUrl: 'https://jobs.ashbyhq.com/x', allTitles: ['Account Executive'], listedCount: 1, titleFilter: 'roles', via: 'domain', domain: 'x.io', rawTotal: 1, rawDatedStale: 1, rawUnread: 0, rawFreshExcluded: 0, datedStale: ['account executive'], staleDays: { 'account executive': 30 } } as never
+  const [row] = checkedAuditRows(c, 90, 1, '2026-11-21', null)
+  assert.match(row.label, /older than the last 30 days/); assert.doesNotMatch(row.label, /90 days/)
+  const cov = checkedCoverageRow(c, 90, 1, '2026-11-21')
+  assert.doesNotMatch(cov.label + cov.value, /last 90 days/)
+})
