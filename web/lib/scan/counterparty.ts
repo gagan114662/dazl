@@ -94,6 +94,9 @@ function writtenRelationship(company: string, brand: string, title: string, text
   return sentences.some((k, i) => list.test(k) && hasCo.test(k) && (hasBrand.test(k) || (i > 0 && hasBrand.test(sentences[i - 1]))))
 }
 
+// The rule reads at most this much of the page. A company name longer than it can never be found there, so the rule cannot clear it:
+// such a lead is held, never passed as "no counterparty" (#1237, fail closed).
+const READ_MAX = 3000
 const ATS_ORG_SUFFIX = new Set(['hq', 'inc', 'labs', 'io', 'app', 'team', 'careers', 'jobs'])
 export function counterpartySignal(c: Candidate, page: Page, passage: string): string | null {
   const src = sourceBrand(c.source_url)
@@ -108,9 +111,10 @@ export function counterpartySignal(c: Candidate, page: Page, passage: string): s
     const suffixed = (long: string, short: string) => short.length >= 3 && long.startsWith(short) && ATS_ORG_SUFFIX.has(long.slice(short.length))
     if (whole === brand || suffixed(brand, whole) || suffixed(whole, brand)) return null
   } else if (company.includes(brand) || brand.includes(company.split(' ')[0])) return null // source belongs to the lead itself
+  if (company.length > READ_MAX) return `unchecked_name:${brand}`
   if (CUSTOMER_PATH.test(pathOf(c.source_url))) {
     // The brand's own customer pages: the rule as it always was (the brand in the text, a customer word, the company beside the brand).
-    const hay = norm(passage || `${page.title} ${page.text.slice(0, 3000)}`)
+    const hay = norm(passage || `${page.title} ${page.text.slice(0, READ_MAX)}`)
     if (!hay.includes(brand)) return null
     if (!CUSTOMER_PHRASE.test(hay)) return null
     // The lead's company must appear near the brand mention (same 200-char window).
@@ -118,5 +122,5 @@ export function counterpartySignal(c: Candidate, page: Page, passage: string): s
     const window = hay.slice(Math.max(0, at - 200), at + 200)
     return window.includes(company) ? `source_owner:${brand}` : null
   }
-  return writtenRelationship(company, brand, passage ? '' : page.title, passage || page.text.slice(0, 3000)) ? `source_owner:${brand}` : null
+  return writtenRelationship(company, brand, passage ? '' : page.title, passage || page.text.slice(0, READ_MAX)) ? `source_owner:${brand}` : null
 }
