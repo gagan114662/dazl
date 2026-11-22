@@ -117,6 +117,8 @@ const FIRST_WORD = /^(?:first|founding|inaugural)$/i
 const MODAL_HAVE = /\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*$/i
 const MODAL_WORD = /\b(?:will|would|could|can|may|might|should|must)\b/i
 const cleanRole = (s: string) => s.split(STOP)[0].replace(/^(?:(?:a|an|the|its|their|our|first|new|founding|inaugural|for)\s+)+/i, '').trim()
+  // Qodo #1509 M6: a trailing "hire" noun ("a new VP of Sales hire") is the event, not part of the title the evidence must name.
+  .replace(/\s+(?:hires?|appointments?|appointees?)$/i, '').trim()
 
 function findAtoms(q: string): Atom[] {
   const atoms: Atom[] = []

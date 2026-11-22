@@ -70,7 +70,9 @@ export function personalAddresses(html: string, site: string, trackCase = false)
       const left = html.slice(Math.max(0, start - 1), start)
       const right = html.slice(end, end + 3)
       const parenthesized = left === '(' && /^\)(?:[\s<]|[.,;!?](?:[\s<]|$)|$)/u.test(right)
-      if (!parenthesized && ((left && !/[\s>]/u.test(left)) || (right && !/^(?:[\s<]|[.,;!?](?:[\s<]|$))/u.test(right)))) continue
+      // #1208: a plain mailto href ("mailto:maya@site.com" closed by its quote, no query) is the literal address too.
+      const mailtoHref = /mailto:$/i.test(html.slice(Math.max(0, start - 7), start)) && /^["']/u.test(right)
+      if (!parenthesized && !mailtoHref && ((left && !/[\s>]/u.test(left)) || (right && !/^(?:[\s<]|[.,;!?](?:[\s<]|$))/u.test(right)))) continue
     }
     const local = m[1].toLowerCase(), domain = m[2].toLowerCase()
     if (!sameSite(domain, site) || ROLE.test(local.replace(/[._-]/g, ''))) continue
@@ -186,6 +188,10 @@ function cardPairs(card: NonNullable<AddressContext['card']>, n: Name, title: st
   // ... and an address in it is the link's own (another address shown as the link, "maya.ortiz@...", names someone else)
   if ((card.link.match(EMAIL_RE) ?? []).some(a => a.toLowerCase() !== card.to)) return false
   return (card.link.replace(EMAIL_RE, ' ').toLowerCase().match(/[\p{L}]+/gu) ?? []).every(w => LINK_WORDS.has(w))
+}
+// #1208: the same card pairing, as a named publication for the CA / GB display path (published-display.ts): only with the title the crawl recorded.
+export function cardNamedPublication(n: Name, ctx: AddressContext[] | undefined, title: string | undefined): boolean {
+  return !!title && plainName(n) && !!ctx?.some(c => !!c.card && cardPairs(c.card, n, title))
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined, title?: string): boolean {
   if (!plainName(n) || !ctx?.length) return false

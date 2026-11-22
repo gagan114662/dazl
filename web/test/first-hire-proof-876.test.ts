@@ -73,11 +73,11 @@ test('P4 "may / will / might / must have made" and "may have hired" compile to N
 })
 
 // ---- finding 2: the OR gate ----
-function setup(excerpt: string, company = 'Hireco', query = OR_B) {
+function setup(excerpt: string, company = 'Hireco', query = OR_B, proof: string | null = 'page_bound') {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(query, ICP_B, jobId)
-  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, date_status) VALUES ('L1', ?, '', ?, NULL, 'signal', 'https://news.example/1', ?, 80, 80, '', ?, 'verified')").run(jobId, company, excerpt, ago(20))
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', ?, NULL, 'signal', 'https://news.example/1', ?, 80, 80, '', ?, ?, 'verified')").run(jobId, company, excerpt, ago(20), proof)
   db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
   return { db, job: { id: jobId, user_id: 'u1', query, icp: ICP_B } }
 }
@@ -133,4 +133,22 @@ test('R3 fetch rank: a completed-hire OR keeps job pages behind the event pages 
   assert.equal(jobPagesBehindEvents(['raised seed funding in the last 90 days', 'hiring sales staff'], AND_B, ICP_B), true)
   for (const icp of ['not json', '[1]', 'null']) assert.equal(jobPagesBehindEvents(sig, OR_B, icp), true, 'an unreadable profile is the AND rule')
   assert.equal(jobPagesBehindEvents(undefined, null, '{}'), false)
+})
+
+// Qodo #1512 M5: the completed-hire branch needs a hire date bound on its source; a posting's board day or an unproven date never dates the hire.
+test('G5 the OR gate: a completed-hire quote dated only by a board posting day, or with no date proof, is demoted', async () => {
+  for (const p of ['ats_structured', null]) {
+    const s = setup('Pastco, a London B2B SaaS company, hired its first sales rep, Jane Doe, in October.', 'Pastco', OR_B, p)
+    const r = await applySalesHiringGate(s.db, s.job, noNet, { now: NOW })
+    assert.deepEqual([r.passed, r.demoted], [0, 1], String(p))
+  }
+})
+// Qodo #1512 H2: with funding, a first sales hire and a new Head of Sales as alternatives, a proven new Head of Sales is not demoted by the first-hire branch.
+test('G6 the OR gate: a source-bound new Head of Sales hire passes although funding and the first hire are unproven', async () => {
+  const Q3 = 'London B2B SaaS startups that raised seed funding or made their first sales hire or a new Head of Sales in the last 90 days'
+  const or = salesGateOr(Q3, ICP_B)
+  assert.ok(or && or.hiring.kind === 'hire_made' && or.newRoles?.length === 1, JSON.stringify(or))
+  const s = setup('Pastco, a London B2B SaaS company, hired Dana Lee as its new Head of Sales.', 'Pastco', Q3)
+  const r = await applySalesHiringGate(s.db, s.job, noNet, { now: NOW })
+  assert.deepEqual([r.passed, r.demoted], [1, 0])
 })

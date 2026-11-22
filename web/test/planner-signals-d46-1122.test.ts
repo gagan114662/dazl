@@ -59,7 +59,7 @@ test('a dated Head of Sales posting meets "a new Head of Sales/VP Sales" and say
 })
 
 test('a source saying the person joined meets it and says "joined"; no dated source, an undated board title or another role does not', () => {
-  const j = planProofs(compileTargeting(Q, ICP), lead({ evidence_excerpt: 'Uare.ai hired Dana Lee as its new Head of Sales.', signal: 'Uare.ai hired a Head of Sales', event_date: '2026-11-10', event_date_proof: 'published_date', source_url: 'https://uare.ai/news/dana' }), [], ctx)[c3()]
+  const j = planProofs(compileTargeting(Q, ICP), lead({ evidence_excerpt: 'Uare.ai hired Dana Lee as its new Head of Sales.', signal: 'Uare.ai hired a Head of Sales', event_date: '2026-11-10', event_date_proof: 'page_bound', source_url: 'https://uare.ai/news/dana' }), [], ctx)[c3()]
   assert.equal(j.truth, 'pass'); assert.match(j.reason, /^new Head of Sales\/VP Sales joined 2026-11-10/)
   assert.notEqual(planProofs(compileTargeting(Q, ICP), lead({ event_date: null, event_date_proof: null }), [], ctx)[c3()].truth, 'pass', 'no dated source')
   assert.notEqual(planProofs(compileTargeting(Q, ICP), lead({ event_date: null, event_date_proof: null, signal: null, evidence_excerpt: '' }), [{ connector: 'signals:greenhouse', kind: 'hiring-role', value: 'Head of Sales', source_url: 'https://x/1', source_date: '2026-11-20', label: 'Board listing audit (all listed titles): title listed on the board; its posting date was not read' }], ctx)[c3()].truth, 'pass', 'a listed title without its posting date')

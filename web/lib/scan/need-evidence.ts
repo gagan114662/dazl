@@ -34,6 +34,7 @@ import { loadPlayDemandRubric } from './demand-rubric-play.ts'
 import type { ComplaintItem } from '../signals/competitor-reddit.ts'
 import { domainConfirmedDb } from '../signals/domain-basis.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
+import { requestedHiringRoles, roleNeedsSourceProof } from './hiring-role-match.ts'
 
 export const NEED_CONNECTOR = 'scan:need'
 export const NEED_TABLE = 'lead_need_evidence'
@@ -104,9 +105,11 @@ export type PlanNeedSupport =
   | { support: 'hiring'; conditions: string[] }
   | { support: 'none'; reason: 'no_plan_conditions' | 'plan_ambiguous' | 'hiring_negated' | 'hiring_one_of_choices' | 'completed_hire_not_open_need' | 'no_open_hiring_condition' }
 
+const RESOLVED_EITHER = /^either one, each on its own dated source\b/
 export function planNeedSupport(plan: QueryPlan): PlanNeedSupport {
   if (!plan.root) return { support: 'none', reason: 'no_plan_conditions' }
-  if (plan.ambiguities.length > 0) return { support: 'none', reason: 'plan_ambiguous' }
+  // A choice that proves each reading on its own dated source (the bare-role atom) is resolved, not unknown (run 679a7354).
+  if (plan.ambiguities.some(a => !RESOLVED_EITHER.test(a.chosen))) return { support: 'none', reason: 'plan_ambiguous' }
   const positiveHiring: string[] = []
   let negatedHiring = false
   let choiceHiring = false
@@ -212,6 +215,11 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
     [jobId, tenantId])
 
   const rows: VerdictRow[] = []
+  const gatePassed = new Set(support.support === 'none' && support.reason === 'hiring_one_of_choices' && hiringRequired
+    ? (await db.all<{ lead_id: string }>("SELECT e.lead_id FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id WHERE l.scan_job_id = ? AND e.tenant_id = ? AND e.connector = 'scan:gate' AND e.kind = 'gate_passed' AND e.value = ?", [jobId, tenantId,
+        // Qodo #1514: only the pass the job's CURRENT gate requires (same rule as held-state's canonical reader), never a pass for another gate.
+        requestedHiringRoles(job.query, job.icp).some(roleNeedsSourceProof) ? 'requested_role_v1' : 'sales_hiring'])).map(r => r.lead_id)
+    : [])
   for (const lead of leads) {
     const heldReason = input.held?.get(lead.id) ?? null
     const artifact = artifacts.get(lead.source_url) ?? null
@@ -278,6 +286,9 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
     if (support.support === 'hiring' && hiringRequired && leadVerified) {
       // The trigger gate already ran and this lead still stands. Trigger-only: never "verified buying need".
       rows.push({ lead, basis: 'hiring_trigger', verdict: 'trigger_only', reason: 'trigger_only', demand: null, artifact: null })
+    } else if (support.support === 'none' && support.reason === 'hiring_one_of_choices' && hiringRequired && leadVerified && gatePassed.has(lead.id)) {
+      // Run 679a7354: an OR plan's lead stands on the dated trigger the required gate PASSED for it (its own gate_passed row). Trigger-only.
+      rows.push({ lead, basis: 'hiring_trigger', verdict: 'trigger_only', reason: 'or_trigger_only', demand: null, artifact: null })
     } else {
       const why = support.support === 'none' ? support.reason : !hiringRequired ? 'hiring_not_proven' : 'lead_not_verified'
       rows.push({ lead, basis: support.support === 'hiring' ? 'hiring_trigger' : 'none', verdict: 'unproven', reason: `buying_need_unproven:${why}`.slice(0, 200), demand: null, artifact: null })
@@ -339,7 +350,8 @@ function cardText(r: VerdictRow): string {
   switch (r.verdict) {
     case 'verified_buying_need': return 'Verified buying need: a dated post by a decision-maker at this company states the need, source-bound and domain-confirmed'
     case 'needs_evidence': return `Buying need not fully proven: ${r.reason === 'needs_evidence' ? 'the post states a need but evidence is missing' : NEED_REASON_TEXT[r.reason ?? ''] ?? r.reason}`
-    case 'trigger_only': return 'Hiring trigger only: the sales-hiring proof stands, but a hiring signal is not verified buying need'
+    case 'trigger_only': if (r.reason === 'or_trigger_only') return 'Trigger only: the required check passed for one of the triggers the request accepts, but a trigger is not verified buying need'
+      return 'Hiring trigger only: the sales-hiring proof stands, but a hiring signal is not verified buying need'
     case 'excluded': return `Not a qualified buyer: ${r.reason}`
     case 'unqualifiable': return 'Buying need cannot be qualified for this play: no effective rubric'
     default: return `Buying need unproven: ${r.reason ?? 'no supported evidence'}`
