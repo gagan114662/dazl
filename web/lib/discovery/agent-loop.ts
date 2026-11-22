@@ -9,10 +9,11 @@
 //    (a search result, a fetched page or a citation): nothing the model only typed counts as evidence;
 //  - a person, a domain or a LinkedIn profile that no returned URL backs is not shown as found: it becomes null, is named in `missing`,
 //    and lowers the confidence label; it never hides the lead.
-// Raw HTTP on an injected fetch, like dazl's other Claude calls (lib/llm/claude-web-search.ts). Not wired into any scan path yet.
+// The paid send is injected (AgentOptions.send: one Messages API request body in, its Response out): this module names no endpoint and
+// holds no key, so every paid call stays in an inventoried transport that reserves on the scan's spend cap first
+// (test/scan-spend-cap-paths.test.ts). Not wired into any scan path yet.
 import { CF_BOARD_PREFERENCE, CF_RUNNER_RULES } from './cf-runner-prompts.ts'
 
-const MESSAGES_URL = 'https://api.anthropic.com/v1/messages'
 // Per-1M-token prices (input, output, cache read) of the models this loop may run; cache writes are 1.25x input. Search: $10 per 1,000.
 const PRICES: Record<string, { input: number; output: number; cacheRead: number }> = {
   'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1 },
@@ -38,9 +39,12 @@ export class DiscoveryAgentError extends Error {
   constructor(code: DiscoveryAgentErrorCode, detail?: string) { super(detail ? `${code}: ${detail}` : code); this.code = code }
 }
 
+// One Messages API request (the body this loop builds) -> the API's Response. The transport owns the key, the endpoint and the spend
+// reservation; a thrown error is a transport failure.
+export type AgentSend = (body: Record<string, unknown>) => Promise<Response>
 export interface AgentOptions {
-  apiKey: string; request: string; fetchImpl?: typeof fetch; now?: number
-  model?: string; maxTurns?: number; budgetUsd?: number; maxSearches?: number; maxFetches?: number; maxLeads?: number; timeoutMs?: number
+  send: AgentSend; request: string; now?: number
+  model?: string; maxTurns?: number; budgetUsd?: number; maxSearches?: number; maxFetches?: number; maxLeads?: number
 }
 
 const nullable = (type: string) => ({ type: [type, 'null'] })
@@ -193,8 +197,8 @@ const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0
 
 export async function runDiscoveryAgent(o: AgentOptions): Promise<AgentResult> {
   const model = o.model ?? DISCOVERY_AGENT_MODEL, price = PRICES[model]
-  if (!o.apiKey?.trim() || !o.request?.trim() || o.request.length > 4000 || !price) throw new DiscoveryAgentError('invalid_input')
-  const fetchImpl = o.fetchImpl ?? fetch, now = o.now ?? Date.now()
+  if (typeof o.send !== 'function' || !o.request?.trim() || o.request.length > 4000 || !price) throw new DiscoveryAgentError('invalid_input')
+  const now = o.now ?? Date.now()
   const maxTurns = o.maxTurns ?? 8, budget = o.budgetUsd ?? 1, maxLeads = o.maxLeads ?? 15
   const tools = [
     { type: 'web_search_20260209', name: 'web_search', max_uses: o.maxSearches ?? 8 },
@@ -210,11 +214,7 @@ export async function runDiscoveryAgent(o: AgentOptions): Promise<AgentResult> {
   for (let turn = 0; turn < maxTurns; turn++) {
     let res: Response
     try {
-      res = await fetchImpl(MESSAGES_URL, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(o.timeoutMs ?? 300_000),
-        headers: { 'content-type': 'application/json', 'x-api-key': o.apiKey, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model, max_tokens: 16_000, system, messages, tools, tool_choice: { type: 'auto' } }),
-      })
+      res = await o.send({ model, max_tokens: 16_000, system, messages, tools, tool_choice: { type: 'auto' } })
     } catch (e) { throw new DiscoveryAgentError('transport', e instanceof Error ? e.message : undefined) }
     if (res.status === 401 || res.status === 403) throw new DiscoveryAgentError('key_rejected')
     if (res.status === 429) throw new DiscoveryAgentError('rate_limited')

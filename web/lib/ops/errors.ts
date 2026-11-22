@@ -152,6 +152,8 @@ export const APP_ERROR_CLASSES: ReadonlySet<string> = new Set(['AdmissionRefused
   'WorldError', 'CaseError', 'JudgeCorpusError',
   // lib/benchmark/runner.ts (#397): a batch that cannot run as asked (no preset budget, mixed origins). Offline benchmark tooling only.
   'BenchmarkRunError',
+  // lib/discovery/agent-loop.ts (launch brief Step 2): the discovery agent loop's refused input or failed Messages API call.
+  'DiscoveryAgentError',
   // lib/benchmark/superiority.ts (#398): an analysis refused (plan changed after registration, stop rule, mixed origins).
   'PreregError',
   // lib/ops/client-errors.ts (#312): the wrapper for a browser report. Its runtime name is always replaced by an
