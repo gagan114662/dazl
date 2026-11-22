@@ -235,3 +235,21 @@ test('#1037 a reviewable lead with no own-site buyer is research on Home, Campai
   const home = (id: string) => heldState({ id, company: `Co ${id}`, contact: null, review_reason: 'quote_unconfirmed', event_date: recent, quarantined_at: null, enrichments: enr(id) } as never)?.state
   assert.deepEqual([home('named'), home('nobody')], ['review', 'research'], 'Home')
 })
+
+// Qodo (PR 1528, second review): the buyer-reach read is bounded. It reads only the rows that can ever name a buyer (the crawl's people and
+// website-identity rows, the user's website review) - a lead's search and provider history is never loaded - and it has an overall row cap
+// that fails closed (a read that would exceed it counts its review leads as research, never as review).
+test('#1037 the buyer-reach read loads only buyer-capable rows, under a cap that fails closed', async () => {
+  const { buyerReachSql, buyerUnreachable } = await import('../lib/people/buyer-reach.ts')
+  const db = setup()
+  job(db, 'A', 'jcap', 'Dental practices in New York', 90)
+  lead(db, 'jcap', 'big', { review: 'quote_unconfirmed', date: recent }); buyer(db, 'A', 'big')
+  const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, 'big', 'A', ?, ?, ?, 'x', NULL, ?, '2026-11-01', 1)")
+  db.transaction(() => { for (let i = 0; i < 3000; i++) ins.run(`s${i}`, i % 2 ? 'search:people' : 'enrich:pdl', i % 2 ? 'person' : 'contact', `Person ${i}, Head of Sales`, `https://www.linkedin.com/in/p-${i}`) })()
+  finish(db, 'jcap')
+  const read = db.prepare(buyerReachSql(1)).all('A', 'A', 'jcap') as unknown[]
+  assert.equal(read.length, 3, `only the crawl's buyer and identity rows are read, not the 3000 search/provider rows (read ${read.length})`)
+  assert.deepEqual([...await buyerUnreachable(sqliteDb(db), 'A', ['jcap'], [{ id: 'big', contact: null }])], [], 'the own-site buyer is still found')
+  // over the cap: fail closed - every review lead of the read counts as research
+  assert.deepEqual([...await buyerUnreachable(sqliteDb(db), 'A', ['jcap'], [{ id: 'big', contact: null }], 2)], ['big'], 'a read over its cap names no buyer')
+})

@@ -283,3 +283,24 @@ test('#1037 a reviewable hold with no buyer the company site could name is resea
   assert.equal(unconfirmed?.state, 'review', JSON.stringify(unconfirmed))
   assert.equal(heldState(lead({ ...dated, enrichments: rows.filter(e => e.kind !== 'person') }))?.state, 'research', 'unconfirmed site, nobody listed')
 })
+
+// Qodo (PR 1528, second review): "a review can name the buyer" is exactly what confirming the website would produce - the real buyer rule
+// on that site once confirmed - not merely "a crawled person has a page-linked LinkedIn". A stale bio, an incomplete name or a past title
+// stays unqualified after confirmation, so the lead is research; a current, complete bio is review.
+test('#1037 confirming the website names the buyer only if the real buyer rule then accepts the listed person', () => {
+  const dated = { event_date: '2026-10-01', date_status: 'unverified' as const, day_verified: true }
+  const unconfirmed = (o: Parameters<typeof ownSiteBuyerRows>[1] = {}) => {
+    const probed = ownSiteBuyerRows('exampledental.example', o).map(e => e.kind === 'domain' ? { ...e, value: 'exampledental.example|name_probe', label: 'domain-basis-v1:name_probe' } : e)
+    return [...probed, { ...probed[0], kind: 'email', value: 'office@exampledental.example', label: 'x', source_url: 'https://exampledental.example/contact' }]
+  }
+  const state = (rows: unknown[]) => heldState(lead({ ...dated, enrichments: rows as never }))?.state
+  assert.equal(heldReason(lead({ ...dated, enrichments: unconfirmed() as never })), 'company website not confirmed', 'not vacuous: the website review is the hold')
+  assert.equal(state(unconfirmed()), 'review', 'control: a current, complete bio becomes the buyer once the site is confirmed')
+  assert.equal(state(unconfirmed({ at: Math.floor(Date.now() / 1000) - 200 * 86_400 })), 'research', 'a bio read 200 days ago is not current after confirmation either')
+  assert.equal(state(unconfirmed({ name: 'Dana' })), 'research', 'a one-word name is not a named buyer after confirmation either')
+  assert.equal(state(unconfirmed({ title: 'Former Head of Sales' })), 'research', 'a past title is not the buyer after confirmation either')
+  // a confirmed site already: confirming changes nothing, so a person the rule rejects there gives no review either
+  const rq = (o: Parameters<typeof ownSiteBuyerRows>[1]) => heldState(lead({ ...dated, review_reason: 'quote_unconfirmed', enrichments: ownSiteBuyerRows('exampledental.example', o) as never }))?.state
+  assert.equal(rq({ at: Math.floor(Date.now() / 1000) - 200 * 86_400 }), 'research', 'confirmed site, stale bio: no review can name the buyer')
+  assert.equal(rq({}), 'review', 'control: confirmed site, current bio')
+})
