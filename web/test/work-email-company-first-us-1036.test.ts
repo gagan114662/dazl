@@ -14,5 +14,5 @@ test('#1036 company-first US buyer: Find work email returns the address printed 
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 90000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /(?:#|ℹ) pass 3\b/); assert.match(r.stdout, /(?:#|ℹ) fail 0/)
+  assert.match(r.stdout, /(?:#|ℹ) pass 5\b/); assert.match(r.stdout, /(?:#|ℹ) fail 0/)
 })

@@ -40,6 +40,7 @@ import { splitName, emailGuessEnabled, publishedCandidateFor, publishedCandidate
 import { roleContradicted } from './rank.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
+import { US_STATES } from '../scan/place-agreement.ts'
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
 import { isWorkEmailFixtureLead, linkedinHandle, nameKey, queryName, sameRole, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
 import { fixtureAvailable } from '../outreach/test-fixture.ts'
@@ -157,9 +158,20 @@ function markedWorkEmailHeld(db:Database.Database,tenantId:string,lead:LeadRow,n
   try { return currentnessHeld(db,tenantId,lead.id,new Date(now*1000)) } catch { return true }
 }
 
+// The scan's places name the United States: each one either names it as its country or ends in a US state (name or postal code)
+// and names no other country. "London", "Toronto, ON", "Remote" or no place at all is not a US scope.
+const usPlace = (w: string) => {
+  const codes = countriesIn(w)
+  if (codes.length) return codes.length === 1 && codes[0] === 'US'
+  const last = (w.split(',').pop() ?? '').trim()
+  return !!last && ((last.length === 2 && Object.hasOwn(US_STATES, last.toUpperCase())) || Object.values(US_STATES).includes(last.toLowerCase()))
+}
+const usScope = (where: string[]) => where.length > 0 && where.every(usPlace)
+
 // A company-first crawl files the buyer's own address from their own card on the company page (company_first_published_email_display),
 // not as a published candidate. On a US lead the same strict step also wrote the sender route for that exact address and page; only
-// then is the pair this buyer's published candidate here, so Find work email gives what the scan already found. Never outside the US.
+// then is the pair this buyer's published candidate here, so Find work email gives what the scan already found. Callers pass only leads
+// whose scan is scoped to the US (usScope).
 function withUsCompanyFirst(db: Database.Database, tenantId: string, base: Record<string, PublishedCandidateRow[]>, leadIds: string[], now: number, known?: Record<string, Enrichment[]>): Record<string, PublishedCandidateRow[]> {
   if (!leadIds.length) return base
   const pairs = companyFirstPublishedDisplayRowsSync(db, tenantId, leadIds, now)
@@ -190,8 +202,9 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
     const enriched = enrichmentsForLeads(db, tenantId, strictIds)
     const projected = readable.map(l => ({ l, ctx: workEmailTargetContext(l, enriched[l.id] ?? [], now) }))
     const companyFirstIds = new Set(readable.filter(l => hasCompanyFirstBudget(l.run_budget)).map(l => l.id))
+    const usScoped = (id: string) => projected.some(r => r.l.id === id && r.ctx && usScope(r.ctx.where))
     const idsFor = (country: 'CA' | 'GB' | null) => projected.filter(r => r.ctx && publishedDisplayCountry(r.ctx.where) === country).map(r => r.l.id)
-    const candidates = { ...withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, idsFor(null)), idsFor(null).filter(id => companyFirstIds.has(id)), now, enriched),
+    const candidates = { ...withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, idsFor(null)), idsFor(null).filter(id => companyFirstIds.has(id) && usScoped(id)), now, enriched),
       ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
     for (const { l, ctx } of projected) {
       if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
@@ -373,7 +386,7 @@ async function lookupWorkEmail(
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
   if (derived.publishedOnly) {
     const country = publishedDisplayCountry(ctx.where)
-    const candidates = country ? publishedDisplayRows(db, tenantId, country, [lead.id]) : withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, [lead.id]), hasCompanyFirstBudget(lead.run_budget) ? [lead.id] : [], now, { [lead.id]: rows })
+    const candidates = country ? publishedDisplayRows(db, tenantId, country, [lead.id]) : withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, [lead.id]), hasCompanyFirstBudget(lead.run_budget) && usScope(ctx.where) ? [lead.id] : [], now, { [lead.id]: rows })
     const row = strictPublishedRow(target, person.name, ctx, candidates[lead.id] ?? [], now)
     return { status: row.status, row, replayed: false }
   }

@@ -20,6 +20,7 @@ import { recordActionability } from '../../lib/scan/actionable.ts'
 import { recordTimingProof } from '../../lib/scan/timing-proof.ts'
 import { currentnessHeld } from '../../lib/outreach/currentness.ts'
 import { workEmailPageRead } from '../../lib/people/work-email.ts'
+import { companyFirstPublishedDisplayRows, companyFirstPublishedDisplayRowsSync } from '../../lib/people/company-first-published-display.ts'
 import { qaClaudeOnlyBudget } from '../../lib/scan/qa-provider-policy.ts'
 import { timingProofGap } from '../../lib/scan/timing-proof.ts'
 import { requiredGateHeld } from '../../lib/scan/held-state.ts'
@@ -112,6 +113,7 @@ test('the US pair needs its own sender route for that address and page, a curren
       s.db.prepare('UPDATE company_first_published_email_display SET observed_at=observed_at-46*86400').run()
       s.db.prepare("UPDATE lead_enrichments SET retrieved_at=retrieved_at-46*86400 WHERE lead_id=? AND kind='person'").run(s.lead)
     }],
+    ['a lead still under review', s => { s.phone(); s.db.prepare("UPDATE leads SET review_reason='quote_unconfirmed' WHERE id=?").run(s.lead) }],
     // published-only, but not company-first: the pair is never read
     ['a published-only QA job that is not company-first', s => { s.db.prepare('UPDATE scan_jobs SET run_budget=?').run(qaClaudeOnlyBudget(null)) }],
   ]
@@ -125,4 +127,30 @@ test('the US pair needs its own sender route for that address and page, a curren
     assert.ok(!(await (await s.get()).json() as { lookups: { address: string | null }[] }).lookups.some(l => l.address === s.email), why)
     s.db.close()
   }
+})
+
+test('a scan scoped to a place outside the US never gets the pair, even when the homepage prints a US address', async () => {
+  for (const where of ['London', 'Toronto, ON', 'Remote']) {
+    const s = await companyFirstLead(where, '200 Example Ave, Chicago, IL 60606')
+    assert.ok(s.rows.some(r => r.kind === 'email'), where + ': the crawl wrote a US sender route from the homepage address')
+    assert.equal(currentnessHeld(s.db, 'A', s.lead, s.now), false, where + ': the lead is current, so only the scope can refuse')
+    const body = await (await s.post(s.target)).json() as { lookup?: { address: string | null } }
+    assert.notEqual(body.lookup?.address ?? null, s.email, where)
+    assert.ok(!(await (await s.get()).json() as { lookups: { address: string | null }[] }).lookups.some(l => l.address === s.email), where)
+    s.db.close()
+  }
+  for (const where of ['Austin, TX', 'Portland, Oregon, United States']) {
+    const s = await companyFirstLead(where, '200 Example Ave, Chicago, IL 60606')
+    assert.equal(((await (await s.post(s.target)).json()) as { lookup: { address: string | null } }).lookup.address, s.email, where)
+    s.db.close()
+  }
+})
+
+test('the sync reader the button uses returns exactly the rows the async display reader returns', async () => {
+  const s = await companyFirstLead('Chicago, IL', '200 Example Ave, Chicago, IL 60606')
+  const at = Math.floor(s.now.getTime() / 1000)
+  const sync = companyFirstPublishedDisplayRowsSync(s.db, 'A', [s.lead], at)
+  assert.equal(sync[s.lead]?.address, s.email)
+  assert.deepEqual(sync, await companyFirstPublishedDisplayRows(sqliteDb(s.db), 'A', [s.lead], at))
+  s.db.close()
 })

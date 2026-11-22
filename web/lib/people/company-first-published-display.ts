@@ -1,6 +1,6 @@
 // Worldwide means no jurisdiction assertion. This repository is display-only;
 // no sender, mailbox verifier, candidate learner, or draft path reads it. Find work email reads a pair only where the same strict
-// crawl step also wrote the US sender route for that exact address and page (lib/people/work-email.ts usCompanyFirstCandidates).
+// crawl step also wrote the US sender route for that exact address and page (lib/people/work-email.ts withUsCompanyFirst, US-scoped scans only).
 import type Database from 'better-sqlite3'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { asDb, type DbLike } from '../db/client.ts'
