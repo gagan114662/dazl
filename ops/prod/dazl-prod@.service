@@ -1,0 +1,27 @@
+# dazl.ai production release on one port (issue #1083). A TEMPLATE unit: dazl-prod@3104 and dazl-prod@3105 are the two
+# blue/green instances ops/prod/deploy-prod.sh starts, stops, enables at boot and disables; nobody starts them by hand.
+# Install once, as root (ops/prod/README.md "Supervised process (#1083)"):
+#   install -o root -g root -m 644 'ops/prod/dazl-prod@.service' /etc/systemd/system/ && systemctl daemon-reload
+# The deploy enables the live port's instance at boot (set_boot) and disables the other, so a reboot brings back exactly
+# the release Caddy points at.
+[Unit]
+Description=dazl production release on port %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# the app user, never root: must be deploy-prod.sh's PROD_APP_USER (it owns the release directories and the database)
+User=ubuntu
+# DAZL_RELEASE=<release dir>, written by deploy-prod.sh (root) before every start; without it the unit refuses to start
+EnvironmentFile=/etc/dazl-prod/ports/%i.conf
+# loads the release's own env and exec's `next start -p %i` (one process: systemd's MainPID is the listener)
+ExecStart=/usr/local/lib/dazl-prod/run-release.sh %i
+Restart=on-failure
+RestartSec=3
+# the box has 1.8 GB: a runaway release is killed (and restarted) before it takes the box down
+MemoryMax=1536M
+NoNewPrivileges=yes
+# stdout and stderr go to the journal: journalctl -u 'dazl-prod@*'
+
+[Install]
+WantedBy=multi-user.target
