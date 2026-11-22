@@ -3,14 +3,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import { currentnessHeld, leadWindowHeld } from '../lib/outreach/currentness.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 const REQUEST = 'Find independent dental practices in New York City that opened a new location or posted a front desk receptionist job in the past 90 days.'
 const ICP = { summary: 'Independent dental practices in NYC', who: ['Practice manager'], industries: ['dental'], sizes: [], where: ['New York City'], signals: ['opened a new location', 'posted a front desk receptionist job'], exclude: [], country: 'US', language: 'en' }
+// #1395 SYNTHETIC request plan: the request writes one place, "New York City".
+const PLAN = planObject([PLACE.nyc], { signals: [{ kind: 'event', text: 'opened a new location', negated: false }, { kind: 'hiring', text: 'posted a front desk receptionist job', negated: false }] })
 const filler = ' The practice serves families across Manhattan and welcomes new patients every week.'.repeat(6)
 function fx(quote: string, text: string, published: string | null, eventDate: string | null = null, url = 'https://news.example/s'): { f: Fixture; c: Cand } {
   const c: Cand = { company: 'Smile Studio', signal: 'dental office event', source_url: url, excerpt: quote, event_date: eventDate }
   return { c, f: { request: REQUEST, modelIcp: ICP, modelQueries: ['dental office opens Manhattan'], hits: [{ url, title: 'Smile Studio', snippet: quote, date: null }], tfPages: {},
-    own: { [url]: { title: 'Smile Studio - Manhattan', text: text + filler, ...(published ? { published } : {}) } }, extraction: [c] } }
+    own: { [url]: { title: 'Smile Studio - Manhattan', text: text + filler, ...(published ? { published } : {}) } }, extraction: [c], modelPlan: PLAN } }
 }
 async function held(f: Fixture) {
   const x = await runFixture(f)

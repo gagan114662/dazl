@@ -15,6 +15,7 @@ import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { withGeography, QUERY_CAP } from '../lib/search/tinyfish.ts'
+import { isPlanPrompt, OHIO_PAYROLL_PLAN } from './helpers/request-plan-stub.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -43,7 +44,8 @@ function run(modelQueries: string[]) {
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async () => ({ text: '', citedUrls: [] }),
-      complete: async (_k: string, _p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300 ? JSON.stringify(modelQueries) : JSON.stringify([lead]),
+      // #1395: the plan reply is SYNTHETIC (REQUEST writes one place, "Ohio")
+      complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => isPlanPrompt(p) ? OHIO_PAYROLL_PLAN : maxTokens === 300 ? JSON.stringify(modelQueries) : JSON.stringify([lead]),
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }

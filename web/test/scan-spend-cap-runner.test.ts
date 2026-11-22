@@ -17,6 +17,7 @@ import type { Provider } from '../lib/llm/provider.ts'
 import { reserveScanSpend } from '../lib/scan/spend-cap.ts'
 import { poolRows } from '../lib/llm/spend-pool.ts'
 import { scanSpendCalls, scanSpendRow, HARD_CAP_USD } from '../lib/scan/spend-cap.ts'
+import { isPlanPrompt, planReply, PLACE } from './helpers/request-plan-stub.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -27,6 +28,7 @@ const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industri
 const PAID = ['https://api.anthropic.com/v1/messages', 'https://api.search.tinyfish.ai', 'https://api.fetch.tinyfish.ai']
 const isPaid = (u: string) => PAID.some(p => u === p || u.startsWith(`${p}?`) || (p !== PAID[0] && u.startsWith(p)))
 
+const OHIO_PLAN = planReply([PLACE.ohio], { buyer_type: 'companies with 10 to 100 employees', signals: [{ kind: 'hiring', text: 'posted a payroll job', negated: false }] })   // SYNTHETIC (#1395)
 async function run(env: Record<string, string | undefined>, usage: boolean | Record<string, unknown>, x: { tfFetchAnswer?: (u: string) => Response; tfAnswer?: (u: string) => Response; served?: string; setup?: (db: Database.Database) => void; beforeClaim?: (db: Database.Database) => void; runBudget?: string; modelAnswer?: () => Response; providers?: Record<'anthropic' | 'openai', Provider> } = {}) {
   resetTinyfishState()
   const db = new Database(':memory:')
@@ -50,8 +52,10 @@ async function run(env: Record<string, string | undefined>, usage: boolean | Rec
     if (u === 'https://api.anthropic.com/v1/messages/count_tokens') return new Response(JSON.stringify({ input_tokens: 400 }), { status: 200 }) // free token counter used by guarded runs
     if (u === 'https://api.anthropic.com/v1/messages' && x.modelAnswer) return x.modelAnswer()
     if (u === 'https://api.anthropic.com/v1/messages') {
-      const b = JSON.parse(String(init?.body ?? '{}')) as { max_tokens: number }
-      const text = b.max_tokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead])
+      const b = JSON.parse(String(init?.body ?? '{}')) as { max_tokens: number; messages?: { content: unknown }[] }
+      // #1395: the request plan reply is SYNTHETIC (the request writes one place, "Ohio")
+      const prompt = b.messages?.[0]?.content
+      const text = typeof prompt === 'string' && isPlanPrompt(prompt) ? OHIO_PLAN : b.max_tokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead])
       return new Response(JSON.stringify({ id: 'msg', model: x.served ?? 'claude-sonnet-4-5-20250929', content: [{ type: 'text', text }], ...(usage ? { usage: typeof usage === 'object' ? usage : { input_tokens: 400, output_tokens: 60 } } : {}) }), { status: 200 })
     }
     return new Response('{}', { status: 404 })

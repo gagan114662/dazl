@@ -12,6 +12,7 @@ import { migrateConnectors, enrichmentsForLeads } from '../lib/connectors/store.
 import { domainReviewFor } from '../lib/outreach/domain-review.ts'
 import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 // CI runs with SITECRAWL_ENABLED=0 (npm test). The runJob fixtures below need their STUBBED crawl (an injected crawlGet, no network) to establish the lead's domain,
 // so the crawl is switched on for the duration of one fixture run only and restored; the domain gate itself is unchanged.
@@ -31,6 +32,8 @@ const board = (over: Record<string, unknown> = {}) => ({
 })
 const serve = (m: Record<string, unknown>, seen: string[] = []) => (async (u: RequestInfo | URL) => { seen.push(String(u)); return m[String(u)] ? ok(m[String(u)]) : no() }) as never
 
+// #1395 SYNTHETIC request plan for REQUEST (defined below): its one place as written ("London UK") and its two signals.
+const PLAN = planObject([PLACE.londonUK], { buyer_type: 'B2B SaaS startups', signals: [{ kind: 'funding', text: 'announced seed funding', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] })
 const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days and are hiring sales staff.'
 const ICP = JSON.stringify({ summary: 's', where: ['London, UK'], who: ['Founder'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [] })
 const QUOTE = 'Brightloop, a London B2B SaaS startup, raised a 3m GBP seed round this month'
@@ -201,7 +204,7 @@ function london(boardJson: Record<string, unknown>, quote = QUOTE): Fixture {
     return null
   }
   return {
-    request: REQUEST, modelIcp: { summary: 's', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [], country: 'GB', language: 'en', window_days: 90 },
+    request: REQUEST, modelPlan: PLAN, modelIcp: { summary: 's', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: [], country: 'GB', language: 'en', window_days: 90 },
     modelQueries: ['London SaaS startup seed round'], hits: [{ url: NEWS, title: page.title, snippet: quote, date: daysAgo(12) }], tfPages: { [NEWS]: page }, own: { [NEWS]: page },
     extraction: [{ company: 'Brightloop', signal: 'raised a seed round', source_url: NEWS, excerpt: quote, event_date: daysAgo(12) }],
     deps: {

@@ -13,7 +13,7 @@ import { icpPrompt } from '../lib/scan/icp.ts'
 import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { guardProvider, SpendGuard, SpendRefused } from '../lib/llm/spend-guard.ts'
 import { PLAN_MAX_TOKENS } from '../lib/scan/request-plan.ts'
-import { isPlanPrompt, planReply } from './helpers/request-plan-stub.ts'
+import { isPlanPrompt, planReply, PLACE } from './helpers/request-plan-stub.ts'
 
 // Model usage tracking for the ordinary route (live acceptance run, Oct 26). Stubs only: no network, no key, no price.
 const stub = (over: Partial<Provider> = {}): Provider => ({
@@ -124,10 +124,12 @@ test('successful scan: buyer-fit (after finish) is recorded with tenant and atte
   const icp = { summary: 'Independent dental practices in Toronto', who: ['Practice manager'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['hiring'], exclude: [] }
   const id = createQueryJob(db, 'A', { query: 'Toronto dental practices hiring front desk staff', icp: JSON.stringify(icp) } as never)
   const lead = { name: '', company: 'Acme Dental', contact: null, signal: 'Hiring a front desk coordinator', source_url: 'https://jobs.example/a', score: 80, excerpt: QUOTE, event_date: recent }
+  const torontoPlan = planReply([PLACE.toronto], { buyer_type: 'dental practices', signals: [{ kind: 'hiring', text: 'hiring front desk staff', negated: false }] })
   let buyerFitCalls = 0
   const completeDetailed = async (_k: string, p: string) => {
     let text = '[]'
-    if (p.includes('Reply with one line per lead')) text = 'LEAD 1 | fit 5 | intent 3 | action 3 | match yyy? | signals hiring | why Hiring front desk staff at a Toronto dental practice.'
+    if (isPlanPrompt(p)) text = torontoPlan   // #1395 SYNTHETIC: the request writes one place, "Toronto"
+    else if (p.includes('Reply with one line per lead')) text = 'LEAD 1 | fit 5 | intent 3 | action 3 | match yyy? | signals hiring | why Hiring front desk staff at a Toronto dental practice.'
     else if (p.startsWith('You check whether companies fit')) { buyerFitCalls++; text = 'COMPANY 1 | fit yes | quote "independent dental practice in Toronto"' }
     return { text, model: 'served-model-x', usage: { input_tokens: 200, output_tokens: 20 } }
   }

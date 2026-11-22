@@ -7,14 +7,20 @@ process.env.TINYFISH_PER_MINUTE = '1000' // the stub answers instantly; the per-
 process.env.TINYFISH_FETCHES_PER_SCAN = '6' // the search stub returns at most 10 results per query, so the fetch budget is scaled down to keep the shortage real
 import { isJobPage, needsEventBeyondHiring } from '../lib/search/page-class.ts'
 import { extractionNote, emptyExtractionReason, type ExtractionNote } from '../lib/scan/extraction-note.ts'
+import { isPlanPrompt, planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 const LONDON = 'Find London UK B2B SaaS startups with 10-50 employees that announced seed funding within the past 90 days and are hiring sales staff. Exclude agencies and recruiters. Include founder contacts and dated evidence.'
 const ICP = { summary: 'London seed-funded B2B SaaS hiring sales', who: ['Founder'], industries: ['SaaS'], sizes: ['10-50'], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
 const HIRING_ONLY = 'Find London UK companies hiring sales account executives in the past 90 days.'
 const ICP_H = { ...ICP, signals: ['hiring sales account executives'] }
+// #1395 SYNTHETIC request plans: each request writes one place, "London UK".
+const PLANS: Record<string, object> = {
+  [LONDON]: planObject([PLACE.londonUK], { buyer_type: 'B2B SaaS startups', exclusions: ['agencies', 'recruiters'], signals: [{ kind: 'funding', text: 'announced seed funding', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] }),
+  [HIRING_ONLY]: planObject([PLACE.londonUK], { buyer_type: 'companies', signals: [{ kind: 'hiring', text: 'hiring sales account executives', negated: false }] }),
+}
 const jobHits = (n: number): Hit[] => Array.from({ length: n }, (_, i) => ({ url: `https://boards.greenhouse.io/bigco${i}/jobs/${100 + i}`, title: `Sales Executive - BigCo ${i}`, snippet: `BigCo ${i} is hiring a Sales Executive in London`, date: daysAgo(3 + (i % 5)) }))
 const newsHits = (n: number): Hit[] => Array.from({ length: n }, (_, i) => ({ url: `https://news${i}.example/seed-round-${i}`, title: `Startup ${i} raises seed round`, snippet: `Startup ${i} has raised a seed round`, date: null }))
-const fx = (request: string, icp: object, hits: Hit[]): Fixture => ({ request, modelIcp: icp, modelQueries: ['London SaaS startup seed round'], hits, tfPages: Object.fromEntries(hits.map(h => [h.url, { title: h.title, text: `${h.snippet}. ${'Filler text about the page. '.repeat(30)}` }])), own: {}, extraction: [] })
+const fx = (request: string, icp: object, hits: Hit[]): Fixture => ({ request, modelPlan: PLANS[request], modelIcp: icp, modelQueries: ['London SaaS startup seed round'], hits, tfPages: Object.fromEntries(hits.map(h => [h.url, { title: h.title, text: `${h.snippet}. ${'Filler text about the page. '.repeat(30)}` }])), own: {}, extraction: [] })
 const fetched = (r: Awaited<ReturnType<typeof runFixture>>) => r.calls.tfFetchBatches.flat()
 
 test('isJobPage / needsEventBeyondHiring', () => {
@@ -63,6 +69,7 @@ const NEWS = 'https://sifted.example/brightloop-raises-seed'
 const stubProviders = (promptsSeen: string[]) => {
   const reply = (p: string, maxTokens?: number) => {
     promptsSeen.push(p)
+    if (isPlanPrompt(p)) return JSON.stringify(PLANS[LONDON])   // SYNTHETIC: londonFixture's request is LONDON
     if (maxTokens === 300) return JSON.stringify(['London B2B SaaS startup raises seed round', 'London SaaS startup hiring account executive sales'])
     // The stub model only finds the target when the funding article's TEXT is in what it was given (a search snippet alone does not carry it).
     return p.includes(TARGET_SENTENCE) ? JSON.stringify([{ name: '', company: 'Brightloop', contact: null, signal: 'raised a seed round and is hiring account executives', source_url: NEWS, score: 80, excerpt: TARGET_SENTENCE, event_date: daysAgo(12) }]) : '[]'

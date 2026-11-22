@@ -12,11 +12,33 @@ import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
+import { isPlanPrompt, planReply, planRequestOf, PLACE, type StubPlace } from './helpers/request-plan-stub.ts'
 
 const master = randomBytes(32)
 const count = 1500
 const q = 'Find commercial roofers in London, UK'
 const url = 'https://public.example/official-company-page'
+// #1395 SYNTHETIC request plans: each request's places exactly as it writes them ([] when it writes none: the profile place is then used),
+// the country an honest model would give. "Faro", "Porto", "Nelson" and "Dunedin" carry a country the request does not write, so the plan
+// refuses them (place_not_in_request) and the board source is held for those requests: the profile place is never used for a place a request names.
+const LONDON_UK: StubPlace = { text: 'London, UK', city: 'London', region: null, country: 'GB' }
+const city = (text: string, country: string): StubPlace => ({ text, city: text, region: null, country })
+const PLAN_PLACES: Record<string, StubPlace[]> = {
+  [q]: [LONDON_UK], [q + ' in the past 10 days']: [LONDON_UK], 'Find distributors': [],
+  'Commercial roofing companies in London hiring sales representatives': [PLACE.london],
+  'Commercial roofing companies in London that opened a new office': [PLACE.london],
+  'Workshops posting roles within the last 60 days': [], 'Local studios hiring': [],
+  'Find employers hiring refrigeration technicians in Faro': [city('Faro', 'PT')],
+  'Find employers seeking refrigeration technicians in Nelson': [city('Nelson', 'NZ')],
+  'Find workshops opening a new location and growing their market position in Porto': [city('Porto', 'PT')],
+  'Find cold storage companies expanding in Dunedin, not hiring': [city('Dunedin', 'NZ')],
+  'Find B2B companies (5-200 employees) doing outbound sales that show a dated buying signal in the last 45 days: hiring their first SDR/BDR or sales rep, new funding, a new Head of Sales/VP Sales, or a founder still doing sales.': [],
+}
+const planFor = (prompt: string): string => {
+  const places = PLAN_PLACES[planRequestOf(prompt)]
+  assert.ok(places, `no SYNTHETIC plan for request: ${planRequestOf(prompt)}`)
+  return planReply(places, { signals: [] })
+}
 const netNewUrl = 'https://second-publisher.example/new-company'
 const netNewName = 'Independent Sheet Metals'
 const netNewQuote = netNewName + ' opened its new London office to serve commercial roofers.'
@@ -71,6 +93,7 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
       if (target.endsWith('/count_tokens')) assert.equal('tools' in body, false, 'Anthropic count_tokens rejects server tools')
       sequence.push(native ? target.endsWith('/count_tokens') ? 'native-count' : 'native-send' : 'model')
       if (target.endsWith('/count_tokens')) return Response.json({ input_tokens: count })
+      if (!native && isPlanPrompt(String(body.messages?.[0]?.content ?? ''))) return Response.json({ model: CLAUDE_SEARCH_MODEL, content: [{ type: 'text', text: planFor(String(body.messages[0].content)) }], usage: { input_tokens: 100, output_tokens: 15 } })
       if (!native) {
         const excerpt='Regional Document Services opened its new London office to serve commercial roofers.'
         const netNew = suppliedOnlyFirstWave && sequence.filter(x=>x==='native-send').length===2

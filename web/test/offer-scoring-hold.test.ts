@@ -13,17 +13,20 @@ import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { OFFER_UNRESOLVED_WHY } from '../lib/scan/score.ts'
 import { createDraft, saveSettings } from '../lib/outreach/service.ts'
 import type { Provider } from '../lib/llm/provider.ts'
+import { isPlanPrompt, planReply, PLACE } from './helpers/request-plan-stub.ts'
 
 const DENTAL = 'We sell appointment booking and reminder software to independent dental practices in New York City.'
 const CRM = 'CRM setup and outbound consulting'
 const QUERY = `Find London SaaS startups hiring their first sales rep. We sell ${CRM}.`
+// #1395 SYNTHETIC request plan for QUERY: its one place as written ("London") and the offer it states.
+const PLAN = planReply([PLACE.london], { offer: CRM, buyer_type: 'London SaaS startups', signals: [{ kind: 'hiring', text: 'hiring their first sales rep', negated: false }] })
 const URL_ = 'https://news.example/synthetic-hiring'
 const DAY = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10)
 const PAGE = { text: 'Synthetic SaaS Ltd is hiring its first account executive in London. The London-based SaaS startup is building its first sales team and is hiring its first account executive. Contact hello@syntheticsaas.example.', title: 'Synthetic SaaS Ltd careers', retrievedAt: Math.floor(Date.now() / 1000), published: DAY }
 
 function fake() {
   const prompts: string[] = []
-  const answer = (p: string) => p.startsWith('You check one claim') ? 'supports'
+  const answer = (p: string) => isPlanPrompt(p) ? PLAN : p.startsWith('You check one claim') ? 'supports'
     : p.startsWith('You are grading sales leads') ? 'LEAD 1 | fit 4 | intent 4 | action 4 | match ?y?y | signals none | why Synthetic SaaS Ltd is hiring its first account executive in London.' : '[]'
   const provider: Provider = {
     async research(_k, prompt) {
