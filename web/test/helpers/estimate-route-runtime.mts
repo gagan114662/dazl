@@ -14,7 +14,7 @@ import { POST as SCAN } from '../../app/api/scan/route.ts'
 import { GET as STATUS } from '../../app/api/scan/status/route.ts'
 import { migrateModelUsage, writeModelCalls } from '../../lib/scan/model-usage.ts'
 import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
-import { periodOf } from '../../lib/llm/spend-pool.ts'
+import { accountLimits, periodOf } from '../../lib/llm/spend-pool.ts'
 import { claimKeyedJob } from '../../lib/scan/runner.ts'
 import { migrateTinyfish } from '../../lib/search/tinyfish.ts'
 
@@ -154,10 +154,11 @@ test('estimate: invalid budget and unknown mode are refused the way /api/scan re
 
 test('over the limit: estimate says blocked with what to change, and POST /api/scan refuses with 402 and creates nothing', async () => {
   const db = setup(); as(db)
-  const e = await (await est({ query: Q, budget: { max_usd: 0.02 } })).json() as { estimate: { verdict: { ok: boolean; reason: string; message: string; change: string[] }; cap: { max_usd: number; remaining_usd: number } } }
+  const e = await (await est({ query: Q, budget: { max_usd: 0.02 } })).json() as { estimate: { verdict: { ok: boolean; reason: string; message: string; change: string[] }; cap: { max_usd: number; run_max_usd: number; remaining_usd: number } } }
   assert.equal(e.estimate.verdict.ok, false); assert.equal(e.estimate.verdict.reason, 'over_budget')
   assert.match(e.estimate.verdict.message, /Blocked/); assert.ok(e.estimate.verdict.change.some(c => /Raise the dollar limit/.test(c)))
-  assert.deepEqual([e.estimate.cap.max_usd, e.estimate.cap.remaining_usd], [0.02, 0.02])
+  // #1319: the run's own limit binds; the daily cap shown is the one the transport enforces for this account
+  assert.deepEqual([e.estimate.cap.run_max_usd, e.estimate.cap.remaining_usd, e.estimate.cap.max_usd], [0.02, 0.02, accountLimits(`E${n}`).day])
   as(db); const r = await scan({ query: Q, budget: { max_usd: 0.02 } }); const j = await r.json() as { error: string; change: string[] }
   assert.equal(r.status, 402); assert.equal(j.error, 'over_budget'); assert.ok(j.change.length > 0)
   assert.equal(jobs(db).length, 0, 'a blocked run creates no job')
@@ -256,15 +257,17 @@ test('payer change: a trial confirmation is not accepted after the account adds 
   })
 })
 
-test('reduced remaining room: reserving $1.50 of a $2 limit after the confirmation changes it (409, new warning, no job); the fresh confirmation runs', async () => {
+// #1319: the day's reservations come off the account's daily cap (what the transport enforces), never off one run's max_usd
+test('reduced remaining room: reserving all but $0.50 of the daily cap after the confirmation changes it (409, new warning, no job); the fresh confirmation runs', async () => {
   const db = setup(); as(db)
   const tenant = `E${n}`
   const body = { query: Q, budget: { max_usd: 2, judge: false } }
   const e = await (await est(body)).json() as { estimate: { ack: string; verdict: { warning: string | null }; cap: { reserved_usd: number } } }
   assert.equal(e.estimate.verdict.warning, null); assert.equal(e.estimate.cap.reserved_usd, 0)
-  db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 1.5, 0, 1, ?)').run(tenant, periodOf('day', Math.floor(Date.now() / 1000)), Math.floor(Date.now() / 1000))
+  const dayReserved = accountLimits(tenant).day - 0.5
+  db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, ?, 0, 1, ?)').run(tenant, periodOf('day', Math.floor(Date.now() / 1000)), dayReserved, Math.floor(Date.now() / 1000))
   const r = await scan({ ...body, estimate_ack: e.estimate.ack }); const j = await r.json() as { error: string; estimate: { ack: string; verdict: { warning: string | null }; cap: { reserved_usd: number; remaining_usd: number } } }
-  assert.equal(r.status, 409); assert.equal(j.error, 'estimate_changed'); assert.equal(j.estimate.cap.reserved_usd, 1.5); assert.equal(j.estimate.cap.remaining_usd, 0.5)
+  assert.equal(r.status, 409); assert.equal(j.error, 'estimate_changed'); assert.equal(j.estimate.cap.reserved_usd, dayReserved); assert.ok(Math.abs(j.estimate.cap.remaining_usd - 0.5) < 1e-9)
   assert.ok(j.estimate.verdict.warning, 'the reduced room raised a warning the person has not seen'); assert.equal(jobs(db).length, 0)
   assert.equal((await scan({ ...body, estimate_ack: j.estimate.ack })).status, 202)
 })

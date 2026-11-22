@@ -42,7 +42,7 @@ export const FREE_TRIAL_SCANS = 3
 export interface Verdict { ok: boolean; reason: 'over_budget' | 'budget_unknown' | 'accounting_unsettled' | 'model_unpriced' | 'trial_unavailable' | null; message: string; change: string[]; warning: string | null; trial_refusal?: string | null }
 export interface RunEstimate {
   rows: EstimateRow[]; total: Range; unpriced: string[]; assumptions: string[]
-  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'run' | 'daily' | 'monthly' | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
+  payer: 'you' | 'trial'; cap: { max_usd: number | null; reserved_usd: number; remaining_usd: number | null; binding: 'run' | 'daily' | 'monthly' | null; run_max_usd?: number | null; capped_total: Range; month_cap_usd: number | null; month_reserved_usd: number; unknown: boolean }
   verdict: Verdict; ack: string
   // A trial account's remaining dollar allowance (lib/billing/trial-budget.ts trialAllowanceLeft). Display only: deliberately NOT part of `ack`, so the
   // confirmation of an estimate never goes stale because a read changed it, and POST /api/scan (which does not read it) never answers estimate_changed.
@@ -211,13 +211,15 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   // reservations come off the owner's day cap only, never off max_usd (case-1 runs were blocked once the day's earlier
   // runs exceeded one run's max_usd while the day cap still had room).
   const runMax = typeof b?.max_usd === 'number' ? b.max_usd : Infinity, ownerDay = i.ownerCapUsd ?? null
-  const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : Number.isFinite(limit) ? limit - reserved : Infinity, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
+  // #1319: with no day cap known here, the run's limit is its own room: the day's reservations never come off it
+  const dayLeft = ownerDay !== null ? Math.min(runMax, ownerDay - reserved) : runMax, monthLeft = monthCap === null ? Infinity : monthCap - monthReserved
   const monthBinds = monthLeft < dayLeft
-  // #1319: the run's own limit binds when it, not the day's room, sets dayLeft; the label names it ("this run's limit"), never "daily"
-  const runBinds = !monthBinds && ownerDay !== null && runMax < ownerDay - reserved
+  // #1319: the run's own limit binds when it, not the day's room, sets dayLeft (or there is no day cap); the label names it
+  // ("this run's limit"), never "daily"
+  const runBinds = !monthBinds && Number.isFinite(runMax) && (ownerDay === null || runMax < ownerDay - reserved)
   const remaining = capped && !unknown ? Math.max(0, Math.min(dayLeft, monthLeft)) : null   // unknown reserved amounts -> unknown remaining, never 0
   const binding: 'run' | 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : runBinds ? 'run' : 'daily'
-  const dayCapShown = ownerDay ?? limit, shownLimit = monthBinds ? (monthCap as number) : runBinds ? runMax : dayCapShown
+  const dayCapShown = ownerDay ?? Infinity, shownLimit = monthBinds ? (monthCap as number) : runBinds ? runMax : dayCapShown
   // a run limit under a day cap is never charged the day's reservations (dayLeft above)
   const shownReserved = monthBinds ? monthReserved : runBinds ? 0 : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
@@ -308,7 +310,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
-  const cap = { max_usd: Number.isFinite(dayCapShown) ? dayCapShown : null, reserved_usd: reserved, remaining_usd: remaining, binding, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
+  const cap = { max_usd: Number.isFinite(dayCapShown) ? dayCapShown : null, reserved_usd: reserved, remaining_usd: remaining, binding, run_max_usd: Number.isFinite(runMax) ? runMax : null, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
   const verdict = { ok, reason, message, change, warning, ...(trialRefusalWhy ? { trial_refusal: trialRefusalWhy } : {}) }
   // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
   // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
@@ -413,8 +415,9 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
 // each with its own reserved amount, and the amount left says which of them binds.
 const cur = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
 export function capLine(cap: RunEstimate['cap'], capped: Range): string | null {
-  if (cap.max_usd == null && cap.month_cap_usd == null) return null
+  if (cap.max_usd == null && cap.month_cap_usd == null && cap.run_max_usd == null) return null
   const parts: string[] = []
+  if (cap.run_max_usd != null) parts.push(`This run's limit: ${cur(cap.run_max_usd)}`)
   if (cap.max_usd != null) parts.push(`Daily limit: ${cur(cap.max_usd)}${cap.unknown ? '' : cap.reserved_usd > 0 ? ` (${cur(cap.reserved_usd)} already reserved today)` : ''}`)
   if (cap.month_cap_usd != null) parts.push(`Monthly limit: ${cur(cap.month_cap_usd)}${cap.unknown ? '' : cap.month_reserved_usd > 0 ? ` (${cur(cap.month_reserved_usd)} already reserved this month)` : ''}`)
   const left = cap.unknown || cap.remaining_usd === null ? 'Remaining: unknown (your shared spend could not be read)' : `${cur(cap.remaining_usd)} left${cap.binding ? ` (${cap.binding === 'run' ? "this run's" : cap.binding} limit binds)` : ''}`

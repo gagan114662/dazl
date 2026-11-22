@@ -9,7 +9,7 @@ import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_SPEND_MAX_USD, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
-import { ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
+import { accountLimits, ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
@@ -72,8 +72,10 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   // Every model call of a run under a limit goes through a guard that prices it: the run's max_usd, the owner's day/month
   // pool, and ALWAYS for a trial run (runner.ts: the trial's reserve is the job guard's limit).
   // An account the operator named has its own day/month pool guard (and the other window at the deployment default, #847).
-  // Every other account's default caps (#846/#847) are reserved at the transport and are not shown here yet.
-  const named = ownerLimits(ctx.tenantId)
+  // Every other account's caps (#846/#847) are reserved at the transport (runner.ts runWithScanSpend: accountLimits(owner)). #1319: the
+  // estimate shows the SAME day/month caps for every account, read from the same source (accountLimits), so the screen's numbers are
+  // the ones that stop a run.
+  const named = ownerLimits(ctx.tenantId), caps = accountLimits(ctx.tenantId)
   const limited = !ctx.hasOwnKey || budget?.max_usd != null || named !== null
   const estimate = estimateRun({
     budget, qaClaudeOnly, qaNativeWebSearch, companyFirst, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
@@ -87,7 +89,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,
-    ownerCapUsd: named?.day ?? null, ownerMonthCapUsd: named?.month ?? null,
+    ownerCapUsd: caps.day, ownerMonthCapUsd: caps.month,
   })
   // model_unpriced (a limited run whose model its guard cannot price) is decided inside estimateRun, so the confirmation covers it.
   return { ok: true, estimate }
