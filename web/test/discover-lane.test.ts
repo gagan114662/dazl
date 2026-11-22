@@ -24,7 +24,7 @@ test('the lane runs for an ordinary request on the workspace\'s own Anthropic ke
   assert.equal(discoverLaneEnabled({ ...job, funded_by: 'trial' }, 'anthropic', {}, 0.3), false, 'a trial reserve too small for one run keeps the older path')
   assert.equal(discoverLaneEnabled({ ...job, funded_by: 'trial' }, 'anthropic', {}, 0.75), true, 'a trial reserve that covers one run uses the lane')
   assert.equal(discoverLaneEnabled({ ...job, csv_domain: 'acme.example' }, 'anthropic', {}), false)
-  assert.equal(discoverLaneEnabled({ ...job, watch_id: 'w1' }, 'anthropic', {}), false)
+  assert.equal(discoverLaneEnabled({ ...job, watch_id: 'w1' }, 'anthropic', {}), true, 'a play that runs again uses the lane too')
 })
 
 test('a scan through the lane: confirmed leads are ready, an undated one too, an unconfirmed proof goes to review; the person and website are kept', async () => {

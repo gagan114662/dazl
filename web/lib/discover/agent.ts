@@ -13,7 +13,7 @@ const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_SEARCHES || 14)
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
-export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number }
+export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[] }
 export interface DiscoveredLead {
   company: string
   domain: string | null
@@ -100,7 +100,10 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const max = Math.min(Math.max(input.maxLeads ?? 10, 1), 20)
   const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 2 })
   const today = (input.today ?? new Date()).toISOString().slice(0, 10)
-  const user = [`Today is ${today}.`, input.offer ? `The seller sells: ${str(input.offer, 600)}` : '', `Find: ${str(input.query, 1000)}`, `Return up to ${max} leads.`].filter(Boolean).join('\n')
+  const user = [`Today is ${today}.`, input.offer ? `The seller sells: ${str(input.offer, 600)}` : '', `Find: ${str(input.query, 1000)}`,
+    // a play that runs again: the companies it already found are not leads this time
+    input.exclude?.length ? `Already found, do not return these companies again: ${input.exclude.slice(0, 80).map(c => str(c, 80)).filter(Boolean).join('; ')}` : '',
+    `Return up to ${max} leads.`].filter(Boolean).join('\n')
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   let text = '', stop = 'unknown', model = DISCOVER_MODEL

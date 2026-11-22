@@ -1424,7 +1424,7 @@ export const DISCOVER_TRIAL_MIN_USD = 0.75
 const DISCOVER_TRIAL_BUDGET = { maxSearches: 10, maxFetches: 8, enrichLeads: 6 } as const   // measured at about US$0.35 to US$0.60 a run
 export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'watch_id' | 'funded_by'>, vendor: string | null, env: Record<string, string | undefined> = process.env, trialReserveUsd: number | null = null): boolean {
   if (job.funded_by === 'trial' && !(trialReserveUsd !== null && trialReserveUsd >= DISCOVER_TRIAL_MIN_USD)) return false
-  return env.DAZL_DISCOVER_LANE !== '0' && vendor === 'anthropic' && !!job.query && job.query.trim().length >= 3 && !job.csv_domain && !job.watch_id
+  return env.DAZL_DISCOVER_LANE !== '0' && vendor === 'anthropic' && !!job.query && job.query.trim().length >= 3 && !job.csv_domain
 }
 const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
 function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
@@ -1458,7 +1458,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   try {
     // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
     sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
-    found = await discover({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(small ? { maxSearches: DISCOVER_TRIAL_BUDGET.maxSearches, maxFetches: DISCOVER_TRIAL_BUDGET.maxFetches } : {}) }, { apiKey: key, fetch: fetchImpl })
+    // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
+    const known = job.watch_id ? (db.prepare('SELECT DISTINCT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.watch_id = ? AND l.company <> ? ORDER BY l.created_at DESC LIMIT 80').all(job.user_id, job.watch_id, '') as { company: string }[]).map(r => r.company) : []
+    found = await discover({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(known.length ? { exclude: known } : {}), ...(small ? { maxSearches: DISCOVER_TRIAL_BUDGET.maxSearches, maxFetches: DISCOVER_TRIAL_BUDGET.maxFetches } : {}) }, { apiKey: key, fetch: fetchImpl })
   } catch (e) {
     await hold?.settle(null)   // the call may have been billed: keep the worst case
     ledger.record(source, 'error')
