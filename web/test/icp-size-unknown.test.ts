@@ -34,3 +34,20 @@ test('Qodo #1519: coordinated criterion names share the trailing unknown cue; a 
     assert.equal(s.match.size, 'mismatch', note); assert.ok(s.fit <= 1, note)
   }
 })
+test('Qodo on #1519: a part stating a mismatch or a value is never joined into a trailing unknown cue', () => {
+  const icpRole = { summary: 'x', who: ['Founder', 'CEO', 'Head of Sales'], industries: [], sizes: ['5-200 employees'], where: ['United States'], signals: [], exclude: [], window_days: 45 } as never
+  const ln = (m: string, mm: string) => `LEAD 1 | fit 5 | intent 4 | action 4 | match ${mm} | signals none | why Founding SDR posting. | mism ${m}`
+  for (const [note, mm, key] of [['wrong role: CFO, size unknown', 'n???', 'role'], ['role mismatch, headcount unknown', 'n???', 'role'], ['outside region, revenue not stated', '???n', 'location'], ['too large: 9000 staff, revenue unknown', '??n?', 'size']] as const) {
+    const s = applyIcpGate(parseScores(ln(note, mm), 1)!, icpRole)[0]
+    assert.equal(s.match[key], 'mismatch', note); assert.ok(s.fit <= 1, note)
+  }
+})
+test('Qodo on #1523: "number of employees" is a bare size criterion and shares the trailing unknown cue', () => {
+  const icp = { summary: 'x', who: ['Head of Sales'], industries: [], sizes: ['5-200 employees'], where: ['United States'], signals: [], exclude: [], window_days: 45 } as never
+  for (const note of ['number of employees, revenue not stated', 'total number of employees, revenue unknown']) {
+    const s = applyIcpGate(parseScores(`LEAD 1 | fit 5 | intent 4 | action 4 | match ??n? | signals none | why Founding SDR posting. | mism ${note}`, 1)!, icp)[0]
+    assert.equal(s.match.size, 'unknown', note); assert.ok(s.fit > 1, note)
+  }
+  const held = applyIcpGate(parseScores('LEAD 1 | fit 5 | intent 4 | action 4 | match ??n? | signals none | why x. | mism number of employees: 9000, revenue unknown', 1)!, icp)[0]
+  assert.equal(held.match.size, 'mismatch'); assert.ok(held.fit <= 1)
+})

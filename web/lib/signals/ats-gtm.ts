@@ -94,12 +94,15 @@ export interface CheckedListing { board: GtmHiring['board']; boardUrl: string; a
   // detail cap, or no date in the payload); rawFreshExcluded = fresh entries excluded for another reason (closed / unusable) - outside any
   // 0-fresh claim. datedStale = the stored (capped) titles known stale, for per-title row labels. "0 fresh" may only be claimed when
   // rawUnread = rawFreshExcluded = 0 and rawDatedStale = rawTotal. }
-  rawTotal: number; rawDatedStale: number; rawUnread: number; rawFreshExcluded: number; datedStale: string[] }
-export async function atsGtmBoard(company: string, domain: string | null, fetchImpl: typeof fetch = fetch, opts: { now?: number; windowDays?: number; roleMatch?: (title: string) => boolean } = {}): Promise<{ hiring: GtmHiring | null; contradictory: boolean; checked?: CheckedListing | null; probeErrors: string[]; fetchAborted: boolean }> {
+  rawTotal: number; rawDatedStale: number; rawUnread: number; rawFreshExcluded: number; datedStale: string[]
+  // Qodo on #1522 (4): the clock each stale title was judged on, when a title has its own (windowFor); absent = the board's window.
+  staleDays?: Record<string, number> }
+export async function atsGtmBoard(company: string, domain: string | null, fetchImpl: typeof fetch = fetch, opts: { now?: number; windowDays?: number; roleMatch?: (title: string) => boolean; windowFor?: (title: string) => number } = {}): Promise<{ hiring: GtmHiring | null; contradictory: boolean; checked?: CheckedListing | null; probeErrors: string[]; fetchAborted: boolean }> {
   const roleOk = opts.roleMatch ?? isGtmRole
   const titleFilter: GtmHiring['titleFilter'] = opts.roleMatch ? 'role-match' : 'gtm'
   const now = opts.now ?? Date.now(), win = (opts.windowDays ?? WINDOW_DAYS) * 86_400_000
-  const fresh = (d: string | null) => !!d && now - Date.parse(d) <= win && Date.parse(d) <= now + 86_400_000
+  // Qodo #1522: a title may carry its own clock (a requested "new <role>" branch); windowFor never widens past windowDays.
+  const fresh = (d: string | null, title?: string) => { const w = title && opts.windowFor ? Math.min(win, opts.windowFor(title) * 86_400_000) : win; return !!d && now - Date.parse(d) <= w && Date.parse(d) <= now + 86_400_000 }
   const slug = domainSlug(domain)
   const bareName = company.toLowerCase().replace(/[^a-z0-9]/g, '')
   const slugs = [...new Set([slug, bareName.length >= 3 ? bareName : null].filter((x): x is string => !!x))].slice(0, 2)
@@ -132,7 +135,7 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
           const date = day(det?.first_published), url = typeof det?.absolute_url === 'string' ? det.absolute_url : ''
           const title = String(det?.title ?? j.title).slice(0, 120)
           if (!det || !date) { rawUnread++; continue }                                          // date never read: freshness unknown, no claim
-          if (!fresh(date)) { rawDatedStale++; datedStaleTitles.add(title.trim().toLowerCase()); continue } // date read: older than the window
+          if (!fresh(date, title)) { rawDatedStale++; datedStaleTitles.add(title.trim().toLowerCase()); continue } // date read: older than the window
           if (!url.startsWith('https://') || !roleOk(title) || postingClosed(det?.content)) { rawFreshExcluded++; continue } // fresh but unusable: outside any 0-fresh claim
           for (const d of fieldDomains([det.content, det.description], token)) seen.add(d)   // every included posting is examined, and every domain in it
           postings.push({ title, date: date!, url, location: typeof det?.location?.name === 'string' ? det.location.name : null, updated: day(det?.updated_at) })
@@ -154,8 +157,8 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
       const listTitles = dedupeTitles(leverTitles)
       // Lever carries createdAt in the LISTING, so every entry's date is read - but a fresh entry excluded as closed/unusable is still outside any 0-fresh claim.
       let lvDatedStale = 0, lvUnread = 0, lvFreshExcluded = 0; const lvStaleTitles = new Set<string>()
-      for (const j of lever.filter((x: LeverPosting) => typeof x?.text === 'string' && roleOk(x.text))) { const dt = day(j.createdAt); if (!dt) lvUnread++; else if (!fresh(dt)) { lvDatedStale++; lvStaleTitles.add(j.text.slice(0, 120).trim().toLowerCase()) } else if (!(typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://')) || postingClosed(j.descriptionPlain ?? j.description)) lvFreshExcluded++ }
-      const lvUsable = lever.filter((j: LeverPosting): j is LeverPosting & { text: string; hostedUrl: string } => typeof j?.text === 'string' && roleOk(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt)) && !postingClosed(j.descriptionPlain ?? j.description))
+      for (const j of lever.filter((x: LeverPosting) => typeof x?.text === 'string' && roleOk(x.text))) { const dt = day(j.createdAt); if (!dt) lvUnread++; else if (!fresh(dt, j.text)) { lvDatedStale++; lvStaleTitles.add(j.text.slice(0, 120).trim().toLowerCase()) } else if (!(typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://')) || postingClosed(j.descriptionPlain ?? j.description)) lvFreshExcluded++ }
+      const lvUsable = lever.filter((j: LeverPosting): j is LeverPosting & { text: string; hostedUrl: string } => typeof j?.text === 'string' && roleOk(j.text) && typeof j.hostedUrl === 'string' && j.hostedUrl.startsWith('https://') && fresh(day(j.createdAt), j.text) && !postingClosed(j.descriptionPlain ?? j.description))
       const postings = dedupe(lvUsable.slice(0, MAX_DETAIL).map((j: LeverPosting & { text: string; hostedUrl: string }) => { for (const d of fieldDomains([j.descriptionPlain, j.description, j.additionalPlain, j.additional, ...(Array.isArray(j.lists) ? (j.lists as { text?: unknown; content?: unknown }[]).flatMap((l) => [l?.text, l?.content]) : [])], token)) seen.add(d); return { title: j.text.slice(0, 120), date: day(j.createdAt)!, url: j.hostedUrl, location: typeof j?.categories?.location === 'string' ? j.categories.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true, probeErrors: [...fetchBox.probeErrors], fetchAborted: fetchBox.aborted }
       if (postings.length) return { hiring: build('lever', postings, `https://jobs.lever.co/${token}`, found, 'domain', listTitles, new Set(leverTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, lvAll, lvAllCount, lvUsable.length > MAX_DETAIL), contradictory: false, checked: null, probeErrors: [...fetchBox.probeErrors], fetchAborted: fetchBox.aborted }
@@ -170,14 +173,15 @@ export async function atsGtmBoard(company: string, domain: string | null, fetchI
       const ashbyTitles = ashby.jobs.filter((j: AshbyPosting) => j?.isListed === true && typeof j.title === 'string' && roleOk(j.title)).map((j) => j.title as string)
       const listTitles = dedupeTitles(ashbyTitles)
       let abDatedStale = 0, abUnread = 0, abFreshExcluded = 0; const abStaleTitles = new Set<string>()
-      for (const j of ashby.jobs.filter((x: AshbyPosting) => x?.isListed === true && typeof x.title === 'string' && roleOk(x.title))) { const dt = day(j.publishedAt); if (!dt) abUnread++; else if (!fresh(dt)) { abDatedStale++; abStaleTitles.add((j.title as string).slice(0, 120).trim().toLowerCase()) } else if (!(typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://')) || postingClosed(j.descriptionPlain ?? j.descriptionHtml)) abFreshExcluded++ }
-      const abUsable = ashby.jobs.filter((j: AshbyPosting): j is AshbyPosting & { title: string; jobUrl: string } => j?.isListed === true && typeof j.title === 'string' && roleOk(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt)) && !postingClosed(j.descriptionPlain ?? j.descriptionHtml))
+      for (const j of ashby.jobs.filter((x: AshbyPosting) => x?.isListed === true && typeof x.title === 'string' && roleOk(x.title))) { const dt = day(j.publishedAt); if (!dt) abUnread++; else if (!fresh(dt, j.title as string)) { abDatedStale++; abStaleTitles.add((j.title as string).slice(0, 120).trim().toLowerCase()) } else if (!(typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://')) || postingClosed(j.descriptionPlain ?? j.descriptionHtml)) abFreshExcluded++ }
+      const abUsable = ashby.jobs.filter((j: AshbyPosting): j is AshbyPosting & { title: string; jobUrl: string } => j?.isListed === true && typeof j.title === 'string' && roleOk(j.title) && typeof j.jobUrl === 'string' && j.jobUrl.startsWith('https://') && fresh(day(j.publishedAt), j.title) && !postingClosed(j.descriptionPlain ?? j.descriptionHtml))
       const postings = dedupe(abUsable.slice(0, MAX_DETAIL).map((j: AshbyPosting & { title: string; jobUrl: string }) => { for (const d of fieldDomains([j.descriptionPlain, j.descriptionHtml, j.description], token)) seen.add(d); return { title: j.title.slice(0, 120), date: day(j.publishedAt)!, url: j.jobUrl, location: typeof j.location === 'string' ? j.location : null, updated: day(j.updatedAt) } }))
       const found = settle(seen, domain); if (found === false) return { hiring: null, contradictory: true, probeErrors: [...fetchBox.probeErrors], fetchAborted: fetchBox.aborted }
       if (postings.length) return { hiring: build('ashby', postings, `https://jobs.ashbyhq.com/${token}`, found, 'domain', listTitles, new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, abAll, abAllCount, abUsable.length > MAX_DETAIL), contradictory: false, checked: null, probeErrors: [...fetchBox.probeErrors], fetchAborted: fetchBox.aborted }
       if (!checked) checked = { board: 'ashby', boardUrl: `https://jobs.ashbyhq.com/${token}`, allTitles: listTitles, listedCount: new Set(ashbyTitles.map((t: string) => t.trim().toLowerCase())).size, titleFilter, via: 'domain', domain: found, rawTotal: ashbyTitles.length, rawDatedStale: abDatedStale, rawUnread: abUnread, rawFreshExcluded: abFreshExcluded, datedStale: listTitles.filter(t => abStaleTitles.has(t.trim().toLowerCase())), allListed: abAll, listedCountAll: abAllCount }
     }
   }
+  if (checked && opts.windowFor) checked.staleDays = Object.fromEntries(checked.datedStale.map(t => [t.trim().toLowerCase(), Math.min(Math.round(win / 86_400_000), opts.windowFor!(t))]))
   return { hiring: null, contradictory: false, checked, probeErrors: [...fetchBox.probeErrors], fetchAborted: fetchBox.aborted }
 }
 
@@ -234,7 +238,7 @@ export function checkedAuditRows(c: CheckedListing, windowDays: number, retrieve
     connector: `signals:${c.board}-gtm`, kind: 'hiring-role',
     value: `${unconfirmedNote ? 'Unconfirmed: ' : ''}${t}`.slice(0, 254),
     label: [unconfirmedNote, stale.has(t.trim().toLowerCase())
-      ? `Board listing audit (${filterText}): posting date read as older than the last ${windowDays} days (long-open; repost history unknown); no dated evidence row was stored`
+      ? `Board listing audit (${filterText}): posting date read as older than the last ${c.staleDays?.[t.trim().toLowerCase()] ?? windowDays} days (long-open; repost history unknown); no dated evidence row was stored`
       : `Board listing audit (${filterText}): title listed on the board when checked; its posting date was not read - freshness unknown`].filter(Boolean).join('; ').slice(0, 200),
     confidence: null, source_url: c.boardUrl.slice(0, 500), source_date: checkedDate, retrieved_at: retrievedAt,
   }))
@@ -242,11 +246,14 @@ export function checkedAuditRows(c: CheckedListing, windowDays: number, retrieve
 export function checkedCoverageRow(c: CheckedListing, windowDays: number, retrievedAt: number, checkedDate: string): { connector: string; kind: string; value: string; label: string; confidence: number | null; source_url: string; source_date: string; retrieved_at: number } {
   const truncated = c.listedCount > c.allTitles.length
   const filterText = c.titleFilter === 'gtm' ? 'sales/GTM-role titles only' : 'requested-role-matching titles only'
+  // Qodo on #1522 (4): with per-title clocks, the count is against each posting's own clock, never one window.
+  const mixed = !!c.staleDays && Object.values(c.staleDays).some(d => d !== windowDays)
+  const within = mixed ? 'within their requested role\'s clock' : `in the last ${windowDays} days`, older = mixed ? 'older than their requested role\'s clock' : `older than the last ${windowDays} days`
   const core = c.listedCount === 0
     ? `0 fresh postings in the last ${windowDays} days; 0 ${filterText} listed on an empty board listing`
     : c.rawUnread === 0 && c.rawFreshExcluded === 0 && c.rawDatedStale === c.rawTotal
-      ? `0 fresh postings in the last ${windowDays} days across the full listing (${c.listedCount} ${filterText}, all posting dates read)`
-      : `posting dates read for ${c.rawDatedStale + c.rawFreshExcluded} of ${c.rawTotal} listed postings${c.rawDatedStale || c.rawFreshExcluded ? ` (${[c.rawDatedStale ? `${c.rawDatedStale} older than the last ${windowDays} days` : '', c.rawFreshExcluded ? `${c.rawFreshExcluded} fresh but closed or unusable` : ''].filter(Boolean).join(', ')})` : ''}; the other ${c.rawTotal - c.rawDatedStale - c.rawFreshExcluded} were never date-read, so absence is not proven`
+      ? `0 fresh postings ${within} across the full listing (${c.listedCount} ${filterText}, all posting dates read)`
+      : `posting dates read for ${c.rawDatedStale + c.rawFreshExcluded} of ${c.rawTotal} listed postings${c.rawDatedStale || c.rawFreshExcluded ? ` (${[c.rawDatedStale ? `${c.rawDatedStale} ${older}` : '', c.rawFreshExcluded ? `${c.rawFreshExcluded} fresh but closed or unusable` : ''].filter(Boolean).join(', ')})` : ''}; the other ${c.rawTotal - c.rawDatedStale - c.rawFreshExcluded} were never date-read, so absence is not proven`
   return {
     connector: `signals:${c.board}-gtm`, kind: 'hiring-board-coverage',
     value: `Board checked: ${core}; ${c.allTitles.length} stored as audit rows${truncated ? '; sample TRUNCATED at 50 - a title beyond the sample is not disproved' : ''}`.slice(0, 254),

@@ -74,6 +74,7 @@ import { regradeFromKeptContacts, enforceContactSource } from './contact-agreeme
 import { primarySignalKind } from './score.ts'
 import { HIRING_KINDS } from '../play-alerts.ts'
 import { isHiringTrigger } from './scoreboard.ts'
+import { scanEnded, scanStarted } from '../ops/loop-stall.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -106,6 +107,7 @@ import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } f
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 import { freshBoardPostings } from '../company-first/board-postings.ts'
+import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
 import { boardOf } from '../research/sources/ats-boards.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -1349,6 +1351,14 @@ function holdTrialBudget(db: Database.Database, job: Job): void {
 
 // Production trace capture (lib/evals/capture.ts) is OFF unless DAZL_TRACE_CAPTURE=1: then this attempt is recorded and,
 // once it ends, its redacted trace is stored. Off, the run is exactly runJobUntraced.
+// Qodo High on #1511 (+ #1521 follow-up): enough raw candidates stops further company-first passes, except that an OR request's only
+// funding-announcement pass is always reached: board passes after the target are skipped, the funding pass runs. Board hits are
+// unverified, so stopping first would mean no funding prospect is ever searched for. Spend, deadline and cap stops still apply.
+export function companyFirstTargetStep(distinct: number, target: number, isFundingPass: boolean, fundingPassAhead: boolean): 'run' | 'skip' | 'stop' {
+  if (distinct < target || isFundingPass) return 'run'
+  return fundingPassAhead ? 'skip' : 'stop'
+}
+
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const capture = beginScanTrace(job, deps)
   if (!capture) return runJobUntraced(db, job, deps)
@@ -1715,7 +1725,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // Runs 9697d013 / b9a34d2d: an OR request with a funding branch searched boards only, so every funding claim came from a job posting's
       // "we raised..." line, undated and held. Its funding branch takes the third pass: a dated announcement on the company's own newsroom /
       // press / blog page (or a dated news article about it), cited as the source - never a job posting. Same call count.
-      const fundingOr = companyFirst && reviewedOffer && hiringAsked && salesGateOr(job.query, JSON.stringify(icpForSources ?? {}))?.event.kind === 'funding'
+      const fundingOr = companyFirst && reviewedOffer && hiringAsked && (() => { const o = salesGateOr(job.query, JSON.stringify(icpForSources ?? {})); return !!o && (o.events ?? [o.event]).some(e => e.kind === 'funding') })()   // Qodo #1522: any funding branch, not only the first
       const CF_FUNDING_ANGLE = 'Search for the requested funding: a dated announcement of the round on the company\'s own newsroom, press or blog page (or a dated news article about that round). Cite that announcement page as source_url with its published date as event_date; never cite a job posting, careers page or list for funding.'
       const CF_FUNDING_RETURN = 'Return up to 15 companies as JSON inside <json></json>: a list of objects with keys company, website (the company\'s own official domain), source_url (the funding announcement page), event_date (YYYY-MM-DD published date, or null if the page shows none), why (one sentence).'
       const angles = fundingOr ? [CF_HIRING_ANGLES[1], CF_HIRING_ANGLES[2], CF_FUNDING_ANGLE]
@@ -1729,6 +1739,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       let totalBoardsCited=0,totalBoardPostings=0,totalItems=0,totalNativeCandidates=0,totalPublisherReads=0,totalPublisherReturned=0,totalPublisherUsable=0,totalLookahead=0
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
       const phaseDeadline=jobDeadlines.get(job)
+      const fundingSourceRejects: Partial<Record<FundingSourceReason, number>> = {}
       for (const [angleIndex, angle] of angles.slice(0,CLAUDE_COMPANY_FIRST_MAX_CALLS).entries()) {
       if (angleIndex > 0) {
         // Protect any candidate that can reach the verifier. A readable set containing only supplied
@@ -1739,7 +1750,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           (phaseDeadline && phaseDeadline.at - phaseDeadline.now() < 45_000)) break
         // Keep searching while too few candidates survive the supplied-account drop; each one found still goes to the verifier.
         const kept = leads?.length ? (cohort ? dropKnown(cohort, leads).kept : leads) : []
-        if (new Set(kept.map(dedupKey)).size >= COMPANY_FIRST_TARGET_CANDIDATES) break
+        const step = companyFirstTargetStep(new Set(kept.map(dedupKey)).size, COMPANY_FIRST_TARGET_CANDIDATES, !!fundingOr && angle === CF_FUNDING_ANGLE,
+          !!fundingOr && angles.slice(angleIndex, CLAUDE_COMPANY_FIRST_MAX_CALLS).includes(CF_FUNDING_ANGLE))
+        if (step === 'stop') break
+        if (step === 'skip') continue
       }
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days
@@ -1894,6 +1908,25 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
             return !!l.company.trim()&&excerpt.length>=20&&text.includes(excerpt)&&
               hasPhrase(norm((p?.title??'')+' '+(p?.text??'')),norm(l.company))
           }).map(l => ({ ...l, name: '', contact: null })) : parsed
+          // Refs #1122 (run aa193734): the funding pass's candidates must cite the company's own dated announcement or a dated article about
+          // that one company (lib/company-first/funding-source.ts). Rejects are counted in the internal run report only - never shown in the
+          // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website
+          // hint below is only a hint. Undated candidates go on to the reader, which dates them from the page or the window rule holds them.
+          if (fundingOr && angle === CF_FUNDING_ANGLE && extra.length) {
+            // the model's website hint for this company (company-first text candidates): it only lets own_site / undated_own_site be told
+            // apart here. It never confirms a domain - the normal domain proof still decides that later.
+            const hints = textSitesByJob.get(job) ?? []
+            // Judged over EVERY parsed candidate (before the excerpt/name check), so a page cited for two companies is a roundup even when
+            // one of them was dropped first, and with the cited page's own title and text, so a roundup is known by the page (Qodo #1530 b).
+            const pageOf = (u: string) => pages.find(x => x.url === u)
+            const all = fundingSourceVerdicts(parsed.map(l => ({ company: l.company, website: hints.find(h => norm(h.company) === norm(l.company))?.website ?? null,
+              source_url: l.source_url, event_date: l.event_date, page: pageOf(l.source_url) ? { title: pageOf(l.source_url)!.title, text: pageOf(l.source_url)!.text } : null })))
+            const verdictOf = new Map(parsed.map((l, i) => [l, all[i]]))
+            for (const x of all) if (x.verdict === 'reject') fundingSourceRejects[x.reason] = (fundingSourceRejects[x.reason] ?? 0) + 1
+            const keep = extra.filter(l => { const src = parsed.find(p => p.company === l.company && p.source_url === l.source_url && p.excerpt === l.excerpt); return (src ? verdictOf.get(src)?.verdict : 'reject') !== 'reject' })
+            extra.splice(0, extra.length, ...keep)
+            if (Object.keys(fundingSourceRejects).length) ledger.report({ funding_source_rejects: { ...fundingSourceRejects } })
+          }
           ledger.evidenceCandidates(items.map(e => ({ ...e, source })), extra)
           nativeCandidates = extra.length
           if (extra.length) leads = [...(leads ?? []), ...extra]
@@ -2744,7 +2777,8 @@ function inFlightSet(): Map<Job, number | null> {
   const g = globalThis as unknown as Record<symbol, Map<Job, number | null> | undefined>
   return (g[IN_FLIGHT_KEY] ??= new Map<Job, number | null>())
 }
-export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); return () => { m.delete(job) } }
+// #1463 / Qodo #1529: each scan's span is noted for the event-loop stall line (lib/ops/loop-stall.ts)
+export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); scanStarted(job.id.slice(0, 8)); return () => { m.delete(job); scanEnded(job.id.slice(0, 8)) } }
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0

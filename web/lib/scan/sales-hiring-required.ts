@@ -25,7 +25,7 @@ export function salesHiringRequired(query: string | null | undefined, icp: strin
 // Returns the two branches only when the plan holds ONE OR (not under a NOT) of exactly two plain conditions: a funding / event condition and a
 // sales / GTM hiring condition (an open role, or a completed hire: hire_made, #876) ("raised seed funding or made their first sales hire"). Anything else - the AND wording, an ambiguous and/or
 // (compiled as AND), a third branch, a negation, an unreadable profile or plan - returns null: the gate keeps requiring both halves.
-export interface SalesGateOr { event: Condition; hiring: Condition; newRoles?: Condition[] }
+export interface SalesGateOr { event: Condition; hiring: Condition; newRoles?: Condition[]; events?: Condition[] }
 export function salesGateOr(query: string | null | undefined, icp: string | null | undefined): SalesGateOr | null {
   try {
     if (icp) { const j = JSON.parse(icp) as unknown; if (!j || typeof j !== 'object' || Array.isArray(j)) return null }
@@ -41,9 +41,10 @@ export function salesGateOr(query: string | null | undefined, icp: string | null
     if (cs.length > 2) {
       const ev = cs.filter(c => c.kind === 'funding' || c.kind === 'event'), hi = cs.filter(c => (c.kind === 'hiring' || (c.kind === 'hire_made' && !c.new_role)) && (!c.role || isGtmRole(c.role))) // a first / completed sales hire is the hiring branch too (Qodo #1509 M4)
       const nr = cs.filter(c => c.kind === 'hire_made' && c.new_role && isGtmRole(c.role ?? ''))
-      if (ev.length !== 1 || hi.length !== 1 || ev.length + hi.length + nr.length !== cs.length) return null
+      // Qodo #1509 M8: several event branches each stay an alternative (events), each proven on its own evidence and clock at the gate.
+      if (ev.length < 1 || hi.length !== 1 || ev.length + hi.length + nr.length !== cs.length) return null
       if ([...ev, ...hi, ...nr].some(c => c.relative_to || c.clock_conflict)) return null
-      return { event: ev[0], hiring: hi[0], newRoles: nr }
+      return { event: ev[0], hiring: hi[0], newRoles: nr, events: ev }
     }
     // #876: "made their first sales hire" compiles to hire_made (a completed hire), still the sales-hiring branch of the OR. The plan's own clause
     // proof (targeting-proof.ts) then needs a source showing the completed hire; an open posting does not prove it.
