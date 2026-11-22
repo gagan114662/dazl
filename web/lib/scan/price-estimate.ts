@@ -410,7 +410,7 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
     : null
   // #1517 (run af02437c): calls of more than one model cannot be priced from the summed tokens (never at one model's rate), but each call
   // settled its own cost in the per-call ledger. That sum is the actual model cost when the ledger is fully settled (no step held at its reservation).
-  const settled = mixed && a.finalUsd != null && Number.isFinite(a.finalUsd) && a.finalHeldSteps === 0 ? a.finalUsd : null
+  const settled: number | null = null   // Qodo #1554: the job's final cost includes search/render/enrichment, so it is never the model cost; it leads the line below as the run's final cost
   const usd = settled ?? (cost && 'usd' in cost ? cost.usd : null)
   // Cache token usage is NOT stored per scan (model-usage.ts): absent cache fields are UNKNOWN, not zero. Without them
   // the computed USD is the recorded-token component only - an at-least amount, never "complete" and never placed
@@ -432,7 +432,7 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
     const cacheNote = cacheRecorded ? '' : '; cache token usage was not recorded, so this is the recorded-token component, not the full cost'
     summary = `Actual model cost ${complete ? '' : 'at least '}${money(usd)} from the tokens the provider reported${cacheNote}, against the model-request estimate of ${money(modelEst.min)}-${money(modelEst.max)}${range}. Not an invoice.`
   }
-  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
+  else if (mixed && reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${a.inputTokens} input / ${a.outputTokens} output tokens) across more than one served model (${served.join(', ')}); ${a.finalUsd != null && a.finalHeldSteps === 0 ? 'the split by model was not recorded; the final cost above covers every call' : 'the stored sums cannot be priced as one total - the per-call settled costs are in the spend ledger. The actual cost here is unknown, not $0'}. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   else if (reqs !== null && reqs > 0 && a.inputTokens !== null && a.outputTokens !== null) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded (${reqsWithTokens !== null && reqsWithTokens < reqs ? `tokens reported for ${reqsWithTokens}: ` : ''}${a.inputTokens} input / ${a.outputTokens} output tokens), but no USD cost could be settled (${a.model || served.length ? 'the served model has no listed price' : 'no model id was recorded'}) - the actual cost is unknown, not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   else if (reqs !== null && reqs > 0) summary = `${reqs} model call${reqs === 1 ? '' : 's'} recorded, but the provider reported no token usage for them, so the actual cost is unknown - not $0. The model-request estimate was ${money(modelEst.min)}-${money(modelEst.max)}.`
   // #1168: nothing was sent, so nothing was charged: say so, never "unknown" and never "recorded"
