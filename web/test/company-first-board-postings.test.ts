@@ -46,3 +46,19 @@ test('recruiter, intern and non-sales roles sharing a request word are not picke
   ])
   assert.deepEqual(await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sdr', 'sales'], windowDays: 45, now, http }), ['https://job-boards.greenhouse.io/acme/jobs/3'])
 })
+
+test('#1122 discovery volume: the board posting date filters BEFORE the 5-slot cap; in-window postings first, newest first', async () => {
+  const { orderByBoardDate, postingKey } = await import('../lib/company-first/board-postings.ts')
+  const dates = new Map<string, string>()
+  await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sales'], windowDays: 45, now, dates, http: gh([
+    { id: 1, title: 'Account Executive', first_published: '2023-08-01T00:00:00Z' },
+    { id: 2, title: 'Engineer', first_published: '2026-11-10T00:00:00Z' },
+    { id: 3, title: 'SDR', first_published: '2026-10-20T00:00:00Z' },
+  ]) })
+  assert.equal(dates.get(postingKey('https://boards.greenhouse.io/acme/jobs/1')!), '2023-08-01')
+  const stale = 'https://boards.greenhouse.io/acme/jobs/1', older = 'https://job-boards.greenhouse.io/acme/jobs/3', newer = 'https://job-boards.greenhouse.io/acme/jobs/2'
+  const out = orderByBoardDate(['https://news.example/a', stale, older, newer, 'https://news.example/b'], dates, { windowDays: 45, now })
+  assert.deepEqual(out, [newer, older, 'https://news.example/a', 'https://news.example/b'])
+  // no window: nothing dropped for age
+  assert.ok(orderByBoardDate([stale], dates, { windowDays: null, now }).includes(stale))
+})

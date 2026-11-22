@@ -19,6 +19,8 @@ const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boo
 
 export async function freshBoardPostings(admittedUrls: string[], o: {
   terms: string[]; windowDays: number | null; now: Date; http: SafeGet; deadlineMs?: number; clock?: () => number
+  // filled with every role's board first-published day (key: postingKey), for orderByBoardDate
+  dates?: Map<string, string>
 }): Promise<string[]> {
   const clock = o.clock ?? Date.now, deadline = clock() + Math.max(0, o.deadlineMs ?? 15_000)
   const terms = new Set(o.terms.map(t => t.toLowerCase()))
@@ -42,6 +44,7 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
     // the next in-window role for the requested job on the same board.
     const ranked: { url: string; hits: number; posted: string }[] = []
     for (const r of roles) {
+      if (o.dates) { const k = postingKey(r.url); if (k && r.posted) o.dates.set(k, r.posted) }
       if (r.posted > today || (since && r.posted < since) || !atsPostingRef(r.url)) continue
       if (!isGtmRole(r.title) || NOT_A_SALES_HIRE.test(r.title)) continue
       const hits = words(r.title).filter(w => terms.has(w)).length
@@ -50,4 +53,25 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
     picks.push(...ranked.sort((a, b) => b.hits - a.hits || (a.posted < b.posted ? 1 : -1)).slice(0, PER_BOARD))
   }
   return picks.sort((a, b) => b.hits - a.hits || (a.posted < b.posted ? 1 : -1)).slice(0, MAX_POSTINGS_PER_ANGLE).map(p => p.url)
+}
+
+// One key for a posting across its URL shapes (boards. / job-boards., /application, /apply).
+export function postingKey(url: string): string | null {
+  const r = atsPostingRef(url)
+  return r ? `${r.kind}:${r.org.toLowerCase()}:${r.id}` : null
+}
+// #1122 discovery volume: the read slots are capped (5 per angle). A posting whose board record dates it outside the window (or in the
+// future) is dropped BEFORE the cap, and dated in-window postings take the first slots, newest first. Anything the board did not date
+// keeps its order after them and is dated by the verifier as before. The window is never widened.
+export function orderByBoardDate(urls: string[], dates: ReadonlyMap<string, string>, o: { windowDays: number | null; now: Date }): string[] {
+  const since = o.windowDays && o.windowDays > 0 ? new Date(o.now.getTime() - o.windowDays * 86_400_000).toISOString().slice(0, 10) : null
+  const today = o.now.toISOString().slice(0, 10)
+  const dated: { url: string; posted: string; i: number }[] = [], rest: string[] = []
+  urls.forEach((url, i) => {
+    const k = postingKey(url), posted = k ? dates.get(k) : undefined
+    if (!posted) { rest.push(url); return }
+    if (posted > today || (since && posted < since)) return
+    dated.push({ url, posted, i })
+  })
+  return [...dated.sort((a, b) => (a.posted < b.posted ? 1 : a.posted > b.posted ? -1 : a.i - b.i)).map(d => d.url), ...rest]
 }
