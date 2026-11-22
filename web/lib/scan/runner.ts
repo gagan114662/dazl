@@ -2005,13 +2005,13 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     let planSkip: string | null = null
     let requestNamesPlace = false   // the plan read a place from the request: only that place is ever searched (Quest, #1395)
     if (wantsBoards) {
-      if (vendor !== 'anthropic') planHold = 'held_request_plan:unavailable'
+      if (vendor !== 'anthropic') planHold = 'skipped_request_plan:unavailable'
       else {
         assertOwned(db, job)
         const pm = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(HAIKU), c => ledger.model(c))
         const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
         const r = await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl)
-        if (!r.ok) planHold = `held_request_plan:${r.reason}`
+        if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
         else { requestNamesPlace = r.plan.places.length > 0; const b = boardPlaceOf(r.plan.places); if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason }
       }
     }

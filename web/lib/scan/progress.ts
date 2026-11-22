@@ -28,6 +28,8 @@ export const stateOf = (raw: string, status: SourceStatus): SourceState => (/^(?
 // #1205: why the job-board source could not use a place, in plain words that name the place and what to change (runner: placeSkipReason).
 // "skipped_no_place:<kind>:<text>"; a bare "skipped_no_place" (no place anywhere) still gets a reason.
 export function skipNote(raw: string): string | null {
+  // #1395: the job boards were not searched because the place in the search could not be read for certain (never another place instead)
+  if (/^skipped_request_plan(?::|$)/i.test(raw)) return 'Job postings were not searched: the place in your search could not be read for certain. Try again, or write the city and its country.'
   const m = /^skipped_no_place(?::([a-z]+)(?::(.*))?)?$/i.exec(raw); if (!m) return null
   const t = (m[2] ?? '').trim()
   switch (m[1]) {

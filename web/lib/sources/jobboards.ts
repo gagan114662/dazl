@@ -274,6 +274,12 @@ export function placeIn(query: string): Place | null {
 export type BoardPlace = { place: Place } | { reason: string }
 type Resolved = { place: Place; key: string } | { reason: string }
 const NYC_NAMES = new Set(['new york', 'new york city', 'nyc', 'manhattan', 'brooklyn', 'queens', 'bronx', 'the bronx', 'staten island'])
+// The country of a built-in city place written bare: "London" is the UK's London and "NYC" / a borough is New York City, as the board source has always
+// read them (a London elsewhere is written with its province, state or country). null for any other name.
+export function builtInCountryOf(city: string): string | null {
+  const k = norm(city)
+  return k === 'london' ? 'GB' : NYC_NAMES.has(k) ? 'US' : null
+}
 // the built-in places by name, never by position in their lists
 const builtIn = (name: string) => placeOf([...CITY_PLACES, ...COUNTRY_PLACES].find(c => c.name === name)!)
 export function boardPlaceOf(places: readonly { text: string; city: string | null; region: string | null; country: string | null }[]): BoardPlace {
@@ -291,7 +297,7 @@ export function boardPlaceOf(places: readonly { text: string; city: string | nul
 function boardPlaceOne(p: { text: string; city: string | null; region: string | null; country: string | null }): Resolved {
   const region = p.region ? regionOf(p.region) : null
   if (p.region && !region) return { reason: `skipped_no_place:region:${clean(p.region)}` }   // a region the board source cannot read is never dropped (that would widen)
-  const country = p.country ?? (region ? countryOfRegion(region) : null)
+  const country = p.country ?? (region ? countryOfRegion(region) : p.city ? builtInCountryOf(p.city) : null)
   if (!country) return { reason: `skipped_no_place:${p.city ? 'city' : 'country'}:${clean(p.text)}` }
   if (region && countryOfRegion(region) !== country) return { reason: `skipped_no_place:ambiguous:${clean(p.text)}` }
   const city = p.city?.trim() || null

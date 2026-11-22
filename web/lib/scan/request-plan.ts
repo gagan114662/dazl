@@ -12,7 +12,7 @@ import type { Provider } from '../llm/provider.ts'
 import { ProviderError } from '../llm/provider.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 import { countriesIn, countryFromField, countryOfRegion, regionOf, resolveSegment } from './countries.ts'
-import { WORLD_CITIES, bareUsCity } from '../sources/jobboards.ts'
+import { WORLD_CITIES, bareUsCity, builtInCountryOf } from '../sources/jobboards.ts'
 
 export interface PlanPlace { text: string; city: string | null; region: string | null; country: string | null }
 export type SignalKind = 'hiring' | 'funding' | 'event' | 'tech' | 'other'
@@ -95,16 +95,22 @@ function writtenCountries(text: string): Set<string> {
   for (let i = 0; i < words.length; i++) for (let n = 1; n <= 3 && i + n <= words.length; n++) { const c = resolveSegment(words.slice(i, i + n).join(' '), true); if (c) out.add(c) }
   return out
 }
-// The countries data ties to the place without the request writing one: a region's country, a listed world city's country, a US census city.
-function impliedCountries(p: PlanPlace): Set<string> {
+// The countries data ties to the place without the request writing one: a region's country, a built-in city place (London, New York City: read in
+// any case, as the board source always has), and - only for a city the request writes as a name, in its own capitals ("mobile app teams" is not
+// Mobile, AL) - a listed world city's country or a US census city.
+function impliedCountries(request: string, p: PlanPlace): Set<string> {
   const out = new Set<string>()
   const r = p.region ? regionOf(p.region) : null
   if (r) out.add(countryOfRegion(r))
   if (p.city) {
-    const listed = Object.prototype.hasOwnProperty.call(WORLD_CITIES, p.city.trim()) ? WORLD_CITIES[p.city.trim()] : null
-    const c = listed ? resolveSegment(listed, true) : null
-    if (c) out.add(c)
-    if (bareUsCity(p.city)) out.add('US')
+    const b = builtInCountryOf(p.city); if (b) out.add(b)
+    const city = p.city.trim()
+    if (/^\p{Lu}/u.test(city) && hasWords(request.normalize('NFC'), city.normalize('NFC'))) {
+      const listed = Object.prototype.hasOwnProperty.call(WORLD_CITIES, city) ? WORLD_CITIES[city] : null
+      const c = listed ? resolveSegment(listed, true) : null
+      if (c) out.add(c)
+      if (bareUsCity(city)) out.add('US')
+    }
   }
   return out
 }
@@ -117,7 +123,7 @@ export function groundedIn(request: string, p: PlanPlace): boolean {
   if (!text || !hasWords(req, text)) return false
   if (p.city !== null && !hasWords(text, fold(p.city))) return false
   if (p.region !== null && !hasWords(text, fold(p.region))) return false
-  if (p.country !== null && !writtenCountries(p.text).has(p.country) && !impliedCountries(p).has(p.country)) return false
+  if (p.country !== null && !writtenCountries(p.text).has(p.country) && !impliedCountries(request, p).has(p.country)) return false
   return true
 }
 
@@ -125,7 +131,8 @@ export function groundedIn(request: string, p: PlanPlace): boolean {
 // plan is kept; a failure is asked again next time. Bounded, oldest out first.
 const CACHE_MAX = 500
 const cache = new Map<string, RequestPlan>()
-const cacheKey = (tenantId: string, request: string) => `${tenantId}\u0000${createHash('sha256').update(request.normalize('NFC').trim()).digest('hex')}`
+const PLAN_VERSION = 1   // bump with any change to the prompt or the schema: a cached plan of another version is never served
+const cacheKey = (tenantId: string, request: string) => `${PLAN_VERSION}\u0000${tenantId}\u0000${createHash('sha256').update(request.normalize('NFC').trim()).digest('hex')}`
 export function clearRequestPlanCache(): void { cache.clear() }
 
 export async function readRequestPlan(provider: Provider, apiKey: string, request: string, tenantId: string, fetchImpl?: typeof fetch): Promise<PlanResult> {
@@ -138,7 +145,7 @@ export async function readRequestPlan(provider: Provider, apiKey: string, reques
     else if (provider.complete) reply = await provider.complete(apiKey, planPrompt(request), fetchImpl, PLAN_MAX_TOKENS)
     else return { ok: false, reason: 'error' }
   } catch (e) {
-    if (e instanceof ProviderError) return { ok: false, reason: 'error' }
+    if (e instanceof ProviderError && e.kind !== 'auth') return { ok: false, reason: 'error' }   // a rejected key stops the scan like every other step's
     // A refused reservation is a named failure: the caller holds only what needed the plan (Quest, #1395). The call was never sent.
     if (e instanceof SpendRefused && e.reason !== 'ownership_lost') return { ok: false, reason: 'spend_refused' }
     throw e   // a lost job or anything unexpected stops the scan: never a silent reading
