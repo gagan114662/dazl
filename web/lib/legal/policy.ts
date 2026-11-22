@@ -44,7 +44,6 @@ export const FACTS = {
   auditRetentionFlag: 'AUDIT_RETENTION_DAYS', // lib/audit.ts auditRetention: off (nothing purged) until set
   auditRetentionMinDays: 30,
   auditRetentionDays: 365,               // the period the published policy states; production sets AUDIT_RETENTION_DAYS to this
-  backupRetainWeeks: 8,                  // ops/backup/INSTALL.md retention: 48 hourly + 14 daily + 8 weekly             // lib/audit.ts AUDIT_RETENTION_MIN_DAYS
   traceCaptureFlag: 'DAZL_TRACE_CAPTURE', // lib/evals/capture.ts traceCaptureConfig: off unless '1'
   // lib/tenant/lifecycle.ts ALWAYS_RETAINED: kept after account deletion whatever the deletion policy
   retainedAfterDeletion: ['audit_events', 'evidence_purge_audit', 'onboarding_audit'],
@@ -114,7 +113,7 @@ export const NON_REQUEST_HOSTS: Record<string, string> = {
   'platform.claude.com': 'documentation link',
   'www.gdeltproject.org': 'citation link GDELT terms require; the API host is api.gdeltproject.org',
   'blog.gdeltproject.org': 'documentation link in a comment',
-  'www.linkedin.com': 'constructed profile/company links; the optional advanced connector reads LinkedIn through the customer\'s own signed-in session, not this server',
+  'www.linkedin.com': 'constructed profile/company links; LinkedIn pages are read only in the customer\'s own browser by the dazl Connect extension, never by this server',
   'www.youtube.com': 'evidence links to videos; data comes from the YouTube Data API (www.googleapis.com)',
   'news.ycombinator.com': 'evidence and directory links; search goes through hn.algolia.com',
   'boards.greenhouse.io': 'board URLs are parsed and translated to boards-api.greenhouse.io, never fetched',
@@ -214,12 +213,12 @@ export const PRIVACY: Section[] = [
   { heading: 'What we collect about you (customers)', paragraphs: [
     'Account details: your name, email address, optional business name, and a salted scrypt hash of your password (never the password itself). If you sign in with Google, the email address and account identifier Google returns.',
     'Session records: a hash of each sign-in token, a coarse device label such as "Chrome on macOS" (the raw browser header is not stored), and when the session was last used.',
-    `Credentials you give us: AI provider keys, enrichment and CRM keys, and your Gmail authorization. These are stored encrypted (AES-256-GCM, with a key held only in the server environment); the secrets themselves are never included in a data export.`,
+    `Credentials you give us: AI provider keys, enrichment and CRM keys, your Gmail authorization, and any social-site session you save for the optional advanced connector. These are stored encrypted (AES-256-GCM, with a key held only in the server environment); the secrets themselves are never included in a data export.`,
     'Your business profile, the prospects your searches find, the drafts and messages you send, and replies dazl reads (see Gmail below).',
   ] },
   { heading: 'What we hold about prospects', paragraphs: [
     'dazl finds businesses and business contacts from public sources: company websites, job boards, SEC filings, official business registers, GitHub, news and community sites. Each lead keeps the link to the page it came from.',
-    `Where you connect your own ${enrich} account, contact details those providers return under your key are added to your leads. With the optional advanced connector, results from LinkedIn and social sites (X, Reddit, Instagram, Facebook, Xiaohongshu, Bilibili) come through your own signed-in session.`,
+    `Where you connect your own ${enrich} account, contact details those providers return under your key are added to your leads. With the optional advanced connector you can save your own signed-in session for X, Reddit, Instagram, Facebook, Xiaohongshu or Bilibili; dazl stores it encrypted, and a dazl worker uses it to read those sites as you, only for the searches you run. LinkedIn is handled differently: it is read only in your own browser by the dazl Connect extension (below), and dazl's servers hold no LinkedIn session.`,
     `When ${FACTS.emailGuessFlag} is turned on, dazl works out a company's address format from personal addresses it publishes on its own site and prepares candidate addresses for people listed there. Those candidates are stored apart from your leads, marked unverified, and are never emailed or used as a recipient. A format is also learned from addresses your own workspace already holds as confirmed (published on a company's own site, or found on your own key), and only for a buyer whose own address the company's site does not print is an address built from it shown to you, labelled "guessed, unverified" (or "guessed, verified" after a successful mailbox check), with the confirmed addresses it was learned from. When a ZeroBounce key is configured, a candidate for a company whose own site states a US address may be sent to ZeroBounce to check whether the mailbox accepts mail (no email is sent to it); only an explicit "valid" answer is recorded as verified, and a catch-all domain never is. The same check may run on a work address that Apollo or People Data Labs found for a US person on your own key but did not verify, when you click Find work email; it is then shown as checked only on an explicit "valid". An address dazl worked out from the pattern in addresses your workspace already holds has not been checked: we never send to it, and we do not offer it for copying until a mailbox check has verified it. Guessed addresses are for US companies only.`,
     'When dazl could not read a page itself and verified a lead against a copy of its text, that copy is kept with the lead and expires after ' + `${FACTS.evidenceCopyRetainDays} days.`,
     'Prospect records your searches find - leads, enrichments, drafts and scans - belong to the customer whose search found them: tenant scoping, pinned by the isolation tests, serves them only to that workspace, and no route serves one customer\'s leads to another. Separately, when an email address becomes a verified dazl signup, activation or payment, dazl processes that exact address across workspaces: it drops the address from every customer\'s autopilot candidates, stops that address\'s pending automated sequences, follow-ups and held first touches in every customer\'s workspace, starts the contacting customer\'s own onboarding path for it where that customer has opted in, and refuses automated sends to it. The contacting customer sees only a generic policy stop: the conversion kind (signup, activation or payment) does not appear in their stop reasons, lists or data exports. Proof previews emailed to a prospect are bound to the recipient address until claimed. No prospect names, companies or leads cross workspaces.',
@@ -251,7 +250,7 @@ export const PRIVACY: Section[] = [
     `Signed-out and expired sessions are kept for ${FACTS.revokedSessionRetainDays} days (to show who signed a device out, and when), then deleted. Undelivered account emails held while email sending is not configured are deleted after ${FACTS.systemMailOutboxRetainHours} hours.`,
     `Your workspace's audit trail (security, billing, sending and consent actions) is kept for ${FACTS.auditRetentionDays} days, then deleted.`,
     'dazl does not keep debug copies of scan inputs and outputs in production.',
-    `Other account and lead data, including your leads and messages, is kept while your account exists. Backups are kept for up to ${FACTS.backupRetainWeeks} weeks and then deleted.`,
+    `Other account and lead data, including your leads and messages, is kept while your account exists.`,
   ] },
   { heading: 'Deleting your account', paragraphs: [
     `You can download an export of your workspace data in Settings (it asks you to confirm it is you). To delete your data, ask us at ${P.privacyContact}: self-service deletion is not switched on in the current service configuration. The Settings page shows whether deletion is available, and where it is switched on it offers the control, which asks for the workspace id as confirmation and a decision on the opt-out list. A deletion removes credentials and sign-in state first, then queued work, then the rest of your workspace data, except what the deletion request names to keep (never credentials) and the records listed below. It deletes dazl's stored Gmail tokens; the grant in your Google account is separate, and you can remove dazl's access there at any time.`,
@@ -259,7 +258,7 @@ export const PRIVACY: Section[] = [
     'Opt-out (unsubscribe) lists are kept after deletion, so that people who asked not to be emailed stay protected. Billing records are kept for as long as tax and accounting law requires. Deletion starts when we confirm your request; there is no waiting period.',
   ] },
   { heading: 'Your rights', paragraphs: [
-    `You can ask to access, correct or delete your data at ${P.privacyContact}. Depending on where you live, you may also have the right to restrict or object to how we use your data, to receive a copy in a portable format, and to complain to your data protection authority. We answer requests within 30 days.`,
+    `You can ask to access, correct or delete your data at ${P.privacyContact}. Depending on where you live, you may also have the right to restrict or object to how we use your data, to receive a copy in a portable format, and to complain to your data protection authority.`,
   ] },
   { heading: 'Outbound email and opting out', paragraphs: [
     'Every outreach message dazl sends to a prospect (first touch, sequence step, follow-up or re-open) ends with the sender\'s name, a mailing address and an unsubscribe link, and carries a one-click List-Unsubscribe header. dazl refuses to send to a prospect until the sender has saved a name and a mailing address.',
