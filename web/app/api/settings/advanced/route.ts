@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { setTimezone } from '@/lib/linkedin-tasks/store'
+import { validZone } from '@/lib/linkedin-tasks/limits'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { writeCredential, removeCredential, connectorStatus, setEnabled } from '@/lib/connectors/store'
@@ -7,7 +9,7 @@ import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, pl
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { audit } from '@/lib/audit-route'
-import { connectionStatus, createPairing, disconnect, guardedAccountCheck, recordAccountForTenant } from '@/lib/advanced/linkedin-connect'
+import { connectionStatus, createPairing, disconnect } from '@/lib/advanced/linkedin-connect'
 import { denied, stale } from '@/lib/workspace-access'
 
 // Status never includes a credential. When the operator has not enabled the tier, it reports available: false.
@@ -77,18 +79,16 @@ export async function POST(req: NextRequest) {
     if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })
     if (!(await readConsent(db, user.tenantId, scopeFor(p)))) return NextResponse.json({ error: 'Accept the risk notice first' }, { status: 403 })
     if (!process.env.DAZL_MASTER_KEY) return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
+    // The workspace's time zone for the extension's reading hours comes from this browser (never from the extension).
+    const tz = validZone(body.timezone)
+    if (!tz) return NextResponse.json({ error: 'Your browser did not report a time zone' }, { status: 400 })
+    await setTimezone(db, user.tenantId, tz)
     const pairing = await createPairing(db, user.tenantId, user.actorId)
     await audit(user, req, { action: 'credential.pairing_started', resource: 'social', id: p, summary: { platform: p } })
     return NextResponse.json({ code: pairing.code, expires_at: pairing.expires_at })
   }
-  // "Test connection": ONE read of the saved session's own profile, behind every LinkedIn guard; names the account (at most 3 per workspace per hour; each uses one of the day's LinkedIn reads).
-  if (body.action === 'test' && p === 'linkedin') {
-    const rl = await rateLimit(`adv-me:${user.tenantId}`, 3, 60 * 60 * 1000)
-    if (!rl.ok) return NextResponse.json({ error: 'Too many checks. Try again later.' }, { status: 429 })
-    const me = await guardedAccountCheck(db, user.tenantId)
-    if (me.ok) await recordAccountForTenant(db, user.tenantId, me)
-    return NextResponse.json(me.ok ? { ok: true, name: me.name } : { ok: false, outcome: me.outcome })
-  }
+  // #1122: dazl's server never signs in to LinkedIn, so there is no server-side check and no pasted LinkedIn session.
+  if ((body.action === 'test' || body.action === 'save') && p === 'linkedin') return NextResponse.json({ error: 'LinkedIn is read in your own browser by the dazl Connect extension. Click Connect LinkedIn.' }, { status: 410 })
   if (body.action === 'save') {
     const rl = (await rateLimit(`adv:${user.tenantId}`, 10, 60 * 60 * 1000))
     if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429 })

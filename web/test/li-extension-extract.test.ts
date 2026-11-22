@@ -6,11 +6,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
-const dir = fileURLToPath(new URL('../../linkedin-extension/', import.meta.url))
-const ctx: { dazlExtract?: any; URL: typeof URL } = { URL }
+const dir = fileURLToPath(new URL('../../extension/', import.meta.url))
+type Extract = { people: (r: unknown[]) => unknown[]; blockedReason: (h: string) => string | null }
+const ctx: { dazlExtract?: Extract; URL: typeof URL } = { URL }
 vm.createContext(ctx)
 vm.runInContext(readFileSync(dir + 'extract.js', 'utf8'), ctx)
-const X = ctx.dazlExtract
+const X = ctx.dazlExtract as Extract
 
 test('people: name, title and own profile URL; badges, screen-reader repeats, hidden members and duplicates dropped', () => {
   const got = X.people([

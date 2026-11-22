@@ -13,7 +13,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
-import { LIMITS, MAX_PEOPLE, inWorkingHours, isTaskKind, nextGapS, personOk, taskUrlOk, validZone, type ReadPerson, type TaskKind } from './limits.ts'
+import { LIMITS, MAX_PEOPLE, endOfLocalDay, inWorkingHours, isTaskKind, nextGapS, personOk, taskUrlOk, validZone, type ReadPerson, type TaskKind } from './limits.ts'
 
 export function migrateLiTasks(db: Database.Database): void {
   db.exec(`
@@ -24,7 +24,11 @@ export function migrateLiTasks(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS li_results (task_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT NOT NULL, source_url TEXT NOT NULL, fetched_at INTEGER NOT NULL, payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS li_results_tenant ON li_results (tenant_id, fetched_at);
     CREATE TABLE IF NOT EXISTS li_ext_tokens (tenant_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
-    CREATE TABLE IF NOT EXISTS li_task_gate (tenant_id TEXT PRIMARY KEY, tz TEXT, next_allowed_at INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0);`)
+    CREATE TABLE IF NOT EXISTS li_task_gate (tenant_id TEXT PRIMARY KEY, tz TEXT, next_allowed_at INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
+      open_min INTEGER NOT NULL DEFAULT 540, close_min INTEGER NOT NULL DEFAULT 1020, override_close_min INTEGER, override_until INTEGER);`)
+  // Owner brief 2026-11-22 (#1122): LinkedIn is read only in the user's browser; the server keeps no LinkedIn session. The saved
+  // li_at/JSESSIONID session credentials ('adv:linkedin' rows, and only those) are deleted; nothing writes them any more.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tenant_connectors'").get()) db.exec("DELETE FROM tenant_connectors WHERE connector = 'adv:linkedin'")
 }
 
 const nowS = () => Math.floor(Date.now() / 1000)
@@ -57,12 +61,14 @@ export async function authExtensionToken(db: Db, token: unknown, now = nowS()): 
   await db.run('UPDATE li_ext_tokens SET last_used_at = ? WHERE tenant_id = ?', [now, m[1]])
   return m[1]
 }
-export async function extensionStatus(db: Db, tenantId: string): Promise<{ token: boolean; created_at: number | null; last_used_at: number | null; tz: string | null; paused: boolean; queued: number; read_today: number }> {
+export async function extensionStatus(db: Db, tenantId: string): Promise<{ token: boolean; created_at: number | null; last_used_at: number | null; tz: string | null; paused: boolean; queued: number; read_today: number; open_min: number; close_min: number; today_close_min: number | null; stopped_until: number | null }> {
   const t = await db.get<{ created_at: number; last_used_at: number | null }>('SELECT created_at, last_used_at FROM li_ext_tokens WHERE tenant_id = ?', [tenantId])
-  const g = await db.get<{ tz: string | null; paused: number }>('SELECT tz, paused FROM li_task_gate WHERE tenant_id = ?', [tenantId])
+  const g = await db.get<{ tz: string | null; paused: number; open_min: number; close_min: number; override_close_min: number | null; override_until: number | null; next_allowed_at: number }>('SELECT tz, paused, open_min, close_min, override_close_min, override_until, next_allowed_at FROM li_task_gate WHERE tenant_id = ?', [tenantId])
   const q = await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM li_tasks WHERE tenant_id = ? AND status = 'queued'", [tenantId])
   const d = await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM li_tasks WHERE tenant_id = ? AND served_at IS NOT NULL AND served_at > ?', [tenantId, nowS() - 86_400])
-  return { token: !!t, created_at: t ? Number(t.created_at) : null, last_used_at: t?.last_used_at == null ? null : Number(t.last_used_at), tz: g?.tz ?? null, paused: Number(g?.paused ?? 0) === 1, queued: Number(q?.n ?? 0), read_today: Number(d?.n ?? 0) }
+  return { token: !!t, created_at: t ? Number(t.created_at) : null, last_used_at: t?.last_used_at == null ? null : Number(t.last_used_at), tz: g?.tz ?? null, paused: Number(g?.paused ?? 0) === 1, open_min: Number(g?.open_min ?? LIMITS.openMin), close_min: Number(g?.close_min ?? LIMITS.closeMin),
+    today_close_min: g?.override_until != null && Number(g.override_until) >= nowS() ? Number(g.override_close_min) : null,
+    stopped_until: Number(g?.next_allowed_at ?? 0) - nowS() > LIMITS.maxGapS ? Number(g!.next_allowed_at) : null, queued: Number(q?.n ?? 0), read_today: Number(d?.n ?? 0) }
 }
 
 export async function setTimezone(db: Db, tenantId: string, tz: unknown): Promise<boolean> {
@@ -70,6 +76,21 @@ export async function setTimezone(db: Db, tenantId: string, tz: unknown): Promis
   if (!z) return false
   await db.run('INSERT INTO li_task_gate (tenant_id, tz) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET tz = excluded.tz', [tenantId, z])
   return true
+}
+// The workspace's reading window (minutes of the local day). close must be after open.
+export async function setWindow(db: Db, tenantId: string, openMin: number, closeMin: number): Promise<boolean> {
+  if (!Number.isInteger(openMin) || !Number.isInteger(closeMin) || openMin < 0 || closeMin > 1440 || closeMin <= openMin) return false
+  await db.run('INSERT INTO li_task_gate (tenant_id, open_min, close_min) VALUES (?, ?, ?) ON CONFLICT (tenant_id) DO UPDATE SET open_min = excluded.open_min, close_min = excluded.close_min', [tenantId, openMin, closeMin])
+  return true
+}
+// A later close for TODAY only (local day of the workspace's zone); the normal window comes back by itself after midnight.
+export async function extendToday(db: Db, tenantId: string, closeMin: number, now = nowS()): Promise<number | null> {
+  const g = await db.get<{ tz: string | null }>('SELECT tz FROM li_task_gate WHERE tenant_id = ?', [tenantId])
+  const tz = validZone(g?.tz)
+  if (!tz || !Number.isInteger(closeMin) || closeMin < 0 || closeMin > 1440) return null
+  const until = endOfLocalDay(now, tz)
+  await db.run('UPDATE li_task_gate SET override_close_min = ?, override_until = ? WHERE tenant_id = ?', [closeMin, until, tenantId])
+  return until
 }
 export async function setPaused(db: Db, tenantId: string, paused: boolean): Promise<void> {
   await db.run('INSERT INTO li_task_gate (tenant_id, paused) VALUES (?, ?) ON CONFLICT (tenant_id) DO UPDATE SET paused = excluded.paused', [tenantId, paused ? 1 : 0])
@@ -95,7 +116,7 @@ export async function nextTask(db: Db, tenantId: string, now = nowS(), rand: () 
   return db.tx(function* (t: Tx): TxBody<NextResult> {
     // The gate row is the per-workspace lock: every serve updates it, so two concurrent asks are serialized (row lock on Postgres; one writer on SQLite).
     yield* t.run('INSERT INTO li_task_gate (tenant_id) VALUES (?) ON CONFLICT (tenant_id) DO UPDATE SET next_allowed_at = li_task_gate.next_allowed_at', [tenantId])
-    const g = yield* t.get<{ tz: string | null; next_allowed_at: number; paused: number }>('SELECT tz, next_allowed_at, paused FROM li_task_gate WHERE tenant_id = ?', [tenantId])
+    const g = yield* t.get<{ tz: string | null; next_allowed_at: number; paused: number; open_min: number; close_min: number; override_close_min: number | null; override_until: number | null }>('SELECT tz, next_allowed_at, paused, open_min, close_min, override_close_min, override_until FROM li_task_gate WHERE tenant_id = ?', [tenantId])
     const tz = validZone(g?.tz)
     if (!tz) return { wait: 'no_timezone', retry_after_s: 3600 }
     if (Number(g?.paused ?? 0) === 1) return { wait: 'paused', retry_after_s: 600 }
@@ -106,7 +127,8 @@ export async function nextTask(db: Db, tenantId: string, now = nowS(), rand: () 
     if (out) return { wait: 'one_at_a_time', retry_after_s: Math.max(1, Number(out.lease_until) - now) }
     const next = Number(g?.next_allowed_at ?? 0)
     if (now < next) return { wait: next - now > LIMITS.maxGapS ? 'cooldown' : 'pause_between_tasks', retry_after_s: next - now }
-    if (!inWorkingHours(now, tz)) return { wait: 'outside_hours', retry_after_s: 900 }
+    const win = { openMin: Number(g?.open_min ?? LIMITS.openMin), closeMin: Number(g?.close_min ?? LIMITS.closeMin), overrideCloseMin: g?.override_close_min == null ? null : Number(g.override_close_min), overrideUntil: g?.override_until == null ? null : Number(g.override_until) }
+    if (!inWorkingHours(now, tz, win)) return { wait: 'outside_hours', retry_after_s: 900 }
     const served = yield* t.get<{ n: number }>('SELECT COUNT(*) AS n FROM li_tasks WHERE tenant_id = ? AND served_at IS NOT NULL AND served_at > ?', [tenantId, now - 86_400])
     if (Number(served?.n ?? 0) >= LIMITS.viewsPerDay) return { wait: 'daily_cap', retry_after_s: 3600 }
     const q = yield* t.get<{ id: string; kind: string; url: string }>("SELECT id, kind, url FROM li_tasks WHERE tenant_id = ? AND status = 'queued' ORDER BY created_at, id LIMIT 1", [tenantId])
@@ -120,7 +142,7 @@ export async function nextTask(db: Db, tenantId: string, now = nowS(), rand: () 
 
 // What the extension may report. A read: the people it saw (company People page, post reactors/commenters) or the one person
 // (profile). A failure: one of the named reasons; "blocked" and "challenge" stop every read for this workspace for a day.
-export const FAILURES = ['login_required', 'not_found', 'blocked', 'challenge', 'extract_failed'] as const
+export const FAILURES = ['login_required', 'not_found', 'blocked', 'challenge', 'throttled', 'extract_failed'] as const
 type Failure = typeof FAILURES[number]
 export type CompleteBody = { people?: unknown; person?: unknown; error?: unknown }
 export type Parsed = { ok: true; people: ReadPerson[] } | { ok: false; error: Failure } | null
@@ -146,7 +168,7 @@ export async function completeTask(db: Db, tenantId: string, taskId: unknown, bo
     if (!r) return 'bad_result'
     if (!r.ok) {
       yield* t.run("UPDATE li_tasks SET status = 'failed', outcome = ?, done_at = ?, lease_until = NULL WHERE id = ? AND tenant_id = ?", [r.error, now, taskId, tenantId])
-      if (r.error === 'blocked' || r.error === 'challenge') yield* t.run('UPDATE li_task_gate SET next_allowed_at = ? WHERE tenant_id = ?', [now + COOLDOWN_S, tenantId])
+      if (r.error === 'blocked' || r.error === 'challenge' || r.error === 'throttled') yield* t.run('UPDATE li_task_gate SET next_allowed_at = ? WHERE tenant_id = ?', [now + COOLDOWN_S, tenantId])
       return 'failed_recorded'
     }
     yield* t.run('INSERT INTO li_results (task_id, tenant_id, kind, source_url, fetched_at, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (task_id) DO NOTHING', [taskId, tenantId, task.kind, task.url, now, JSON.stringify({ people: r.people })])

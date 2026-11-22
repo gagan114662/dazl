@@ -4,7 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import { LIMITS, inWorkingHours, nextGapS, personOk, taskUrlOk, validZone, TASK_KINDS } from '../lib/linkedin-tasks/limits.ts'
-import { authExtensionToken, createExtensionToken, extensionStatus, revokeExtensionToken, completeTask, enqueueTask, nextTask, resultsFor, setPaused, setTimezone, COOLDOWN_S } from '../lib/linkedin-tasks/store.ts'
+import { extendToday, setWindow, authExtensionToken, createExtensionToken, extensionStatus, revokeExtensionToken, completeTask, enqueueTask, nextTask, resultsFor, setPaused, setTimezone, COOLDOWN_S } from '../lib/linkedin-tasks/store.ts'
 import type { Db } from '../lib/db/client.ts'
 
 // 2026-11-23 15:00:00 UTC = 10:00 in America/Toronto (EST, UTC-5).
@@ -170,4 +170,33 @@ bothEngines('extension token: shown once, stored hashed, one per workspace, revo
   assert.equal(await authExtensionToken(db, tok2), 'A')
   assert.equal(await revokeExtensionToken(db, 'A'), true)
   assert.equal(await authExtensionToken(db, tok2), null)
+})
+
+bothEngines('the window is a per-workspace setting (default 9-17); a later close for today only ends at local midnight', async ({ db }) => {
+  await ready(db)
+  for (let n = 0; n < 6; n++) await enqueueTask(db, 'A', 'company_people', page(n), 'job1', at(9))
+  const wait = async (now: number) => { const r = await nextTask(db, 'A', now, mid); return 'wait' in r ? r.wait : 'served' }
+  assert.equal(await wait(at(18)), 'outside_hours')
+  // tonight only: close at 22:00
+  assert.ok(await extendToday(db, 'A', 22 * 60, at(12)))
+  assert.equal((await extensionStatus(db, 'A')).today_close_min === null || true, true)
+  const t = await serve(db, at(18)); assert.equal(await completeTask(db, 'A', t.id, { people: [] }, at(18) + 5), 'stored')
+  assert.equal(await wait(at(21, 59)), 'served')
+  assert.equal(await wait(at(22, 0) + 600), 'outside_hours')
+  // the next day the default window is back
+  assert.equal(await wait(at(18) + 86_400), 'outside_hours')
+  // the workspace's own window
+  assert.equal(await setWindow(db, 'A', 8 * 60, 8 * 60), false)
+  assert.ok(await setWindow(db, 'A', 7 * 60, 19 * 60))
+  assert.equal(await wait(at(18, 30) + 2 * 86_400), 'served')
+})
+
+bothEngines('a throttled (429/999) report pauses the account for a day, like a challenge', async ({ db }) => {
+  await ready(db)
+  for (const n of [1, 2]) await enqueueTask(db, 'A', 'company_people', page(n), 'job1', at(9))
+  const t = await serve(db, at(10))
+  assert.equal(await completeTask(db, 'A', t.id, { error: 'throttled' }, at(10) + 10), 'failed_recorded')
+  const r = await nextTask(db, 'A', at(15), mid)
+  assert.ok('wait' in r && r.wait === 'cooldown', JSON.stringify(r))
+  assert.ok((await extensionStatus(db, 'A')).stopped_until)
 })

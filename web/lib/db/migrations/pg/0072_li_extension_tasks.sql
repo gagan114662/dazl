@@ -4,7 +4,8 @@ CREATE TABLE li_ext_tokens (tenant_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL
 
 CREATE TABLE li_results (task_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT NOT NULL, source_url TEXT NOT NULL, fetched_at BIGINT NOT NULL, payload TEXT NOT NULL);
 
-CREATE TABLE li_task_gate (tenant_id TEXT PRIMARY KEY, tz TEXT, next_allowed_at BIGINT NOT NULL DEFAULT 0, paused BIGINT NOT NULL DEFAULT 0);
+CREATE TABLE li_task_gate (tenant_id TEXT PRIMARY KEY, tz TEXT, next_allowed_at BIGINT NOT NULL DEFAULT 0, paused BIGINT NOT NULL DEFAULT 0,
+      open_min BIGINT NOT NULL DEFAULT 540, close_min BIGINT NOT NULL DEFAULT 1020, override_close_min BIGINT, override_until BIGINT);
 
 CREATE TABLE li_tasks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL, status TEXT NOT NULL,
       requested_by TEXT, attempts BIGINT NOT NULL DEFAULT 0, lease_until BIGINT, created_at BIGINT NOT NULL, served_at BIGINT, done_at BIGINT, outcome TEXT);
@@ -90,3 +91,7 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_li_tasks ON li_tasks;
 CREATE TRIGGER tomb_upd_li_tasks BEFORE UPDATE OF tenant_id ON li_tasks FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_li_tasks();
+
+-- Owner brief 2026-11-22 (#1122): LinkedIn is read only in the user's browser; the server keeps no LinkedIn session. Delete the saved
+-- li_at/JSESSIONID session credentials, and only those rows (connector 'adv:linkedin').
+DELETE FROM tenant_connectors WHERE connector = 'adv:linkedin';

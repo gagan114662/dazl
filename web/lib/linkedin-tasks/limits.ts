@@ -11,8 +11,8 @@ export const LIMITS = {
   connectionsPerDay: 15,    // reserved for a later, separately approved write kind; no write kind exists today
   minGapS: 45,              // a random 45-180 s pause between two tasks
   maxGapS: 180,
-  openHour: 9,              // tasks are served 09:00-16:59 in the workspace's own time zone
-  closeHour: 17,
+  openMin: 9 * 60,          // default window: tasks are served 09:00-16:59 in the workspace's own time zone (a per-workspace setting)
+  closeMin: 17 * 60,
   leaseS: 5 * 60,           // a served task must be completed within 5 minutes, or it is handed out again once
   maxAttempts: 2,
 } as const
@@ -23,14 +23,28 @@ export function validZone(tz: unknown): string | null {
   try { new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(0); return tz } catch { return null }
 }
 
-// The local hour (0-23) and calendar day (YYYY-MM-DD) of an instant in a zone.
-export function localClock(nowS: number, tz: string): { hour: number; day: string } {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(nowS * 1000))
+// The local time of an instant in a zone: hour (0-23), minute, second and calendar day (YYYY-MM-DD).
+export function localClock(nowS: number, tz: string): { hour: number; minute: number; second: number; day: string } {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(nowS * 1000))
   const get = (t: string) => parts.find(p => p.type === t)?.value ?? ''
-  return { hour: Number(get('hour')) % 24, day: `${get('year')}-${get('month')}-${get('day')}` }
+  return { hour: Number(get('hour')) % 24, minute: Number(get('minute')), second: Number(get('second')), day: `${get('year')}-${get('month')}-${get('day')}` }
 }
+const minuteOfDay = (nowS: number, tz: string) => { const c = localClock(nowS, tz); return c.hour * 60 + c.minute }
+// The last second of the local calendar day that contains nowS (for "tonight only" overrides).
+export function endOfLocalDay(nowS: number, tz: string): number { const c = localClock(nowS, tz); return nowS + (86_400 - (c.hour * 3600 + c.minute * 60 + c.second)) - 1 }
 
-export const inWorkingHours = (nowS: number, tz: string): boolean => { const h = localClock(nowS, tz).hour; return h >= LIMITS.openHour && h < LIMITS.closeHour }
+// The window that applies now: the workspace's own (default 09:00-17:00), or a later close that the workspace set for today only.
+export interface Window { openMin: number; closeMin: number; overrideCloseMin?: number | null; overrideUntil?: number | null }
+export function inWorkingHours(nowS: number, tz: string, w: Window = { openMin: LIMITS.openMin, closeMin: LIMITS.closeMin }): boolean {
+  const m = minuteOfDay(nowS, tz)
+  const close = w.overrideCloseMin != null && w.overrideUntil != null && nowS <= w.overrideUntil ? Math.max(w.closeMin, w.overrideCloseMin) : w.closeMin
+  return m >= w.openMin && m < close
+}
+// "HH:MM" -> minutes of the day, or null.
+export function parseHm(v: unknown): number | null {
+  const m = typeof v === 'string' ? /^([01]\d|2[0-3]):([0-5]\d)$/.exec(v) : null
+  return m ? Number(m[1]) * 60 + Number(m[2]) : (v === '24:00' ? 1440 : null)
+}
 
 // The next pause, drawn uniformly from [minGapS, maxGapS]. rand is injectable for tests.
 export const nextGapS = (rand: () => number = Math.random): number => LIMITS.minGapS + Math.floor(Math.min(0.999999, Math.max(0, rand())) * (LIMITS.maxGapS - LIMITS.minGapS + 1))

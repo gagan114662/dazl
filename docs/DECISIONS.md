@@ -124,3 +124,12 @@ community sites). Paid enrichment stays bring-your-own-key only.
 
 Every change goes on a branch. Instinct reviews the diff, runs the tests and live scans, and approves
 before anything merges to main or is deployed.
+
+## 2026-11-22: LinkedIn is read only in the user's own browser (#1122, owner brief Step 4)
+
+dazl's server makes no LinkedIn request and stores no LinkedIn session. The dazl Connect extension (no `cookies` permission) pairs with
+the workspace and reads the pages the server queues (`/api/tasks/*`), at a server-set pace: the workspace's reading hours (default
+09:00-17:00 local, editable, with a "tonight only" later close that expires at local midnight), one page at a time, 45-180 s apart,
+40 a day per account, and a 24 h stop after a security check / 429 / 999. The one gate is: LinkedIn connected + the notice accepted.
+`LINKEDIN_SESSION_TENANTS` / `LINKEDIN_SESSION_ACCOUNT` and the server session transport are retired (the transport is always off;
+its code goes in a later PR). Saved `adv:linkedin` session rows are deleted by migration 0072 / the SQLite startup migration.

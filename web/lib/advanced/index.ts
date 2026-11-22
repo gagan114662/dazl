@@ -4,7 +4,6 @@ import { readEnabledCredential, writeAudit } from '../connectors/store.ts'
 import type { Evidence } from '../sources/types.ts'
 import { advFlags, CONSENT_VERSION, connectorId, maxCallsPerHour, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform, type ConsentScope } from './config.ts'
 import { tfSearch, tinyfishEnabled } from '../search/tinyfish.ts'
-import { sessionCookieReserved } from '../signals/linkedin-session-transport.ts'
 import { migrateAdvBudget, reserveRequest, coolingDown } from './request-budget.ts'
 
 export function migrateAdvanced(db: Database.Database): void {
@@ -169,7 +168,8 @@ export async function collectAdvanced(store: DbLike, tenantId: string, jobId: st
     if (!PLATFORM_SUPPORT[p].supported) { await skip('unsupported'); continue }
     if (!(await readConsent(db, tenantId, scopeFor(p)))) { await skip('no_consent'); continue }
     // The designated throwaway LinkedIn session has one reader with a human pace, a daily cap and a challenge stop (linkedin-people.ts); this un-paced one must not also spend it.
-    if (p === 'linkedin' && sessionCookieReserved(tenantId, env)) { await skip('session_transport_owns_cookie'); continue }
+    // #1122: LinkedIn is read only in the user's own browser (the extension's task queue); the server never sends a LinkedIn session.
+    if (p === 'linkedin') { await skip('read_in_extension'); continue }
     // A LinkedIn stop (throttled/challenge/unauthorised) by any consumer is a 24 h tenant cooldown: this post search must not spend the shared budget inside it.
     if (p === 'linkedin' && (await coolingDown(db, tenantId, id, deps.now ?? Math.floor(Date.now() / 1000)))) { await skip('cooldown'); continue }
     const publicIndex = p === 'x' && xViaOperatorIndex(env)

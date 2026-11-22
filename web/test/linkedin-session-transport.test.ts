@@ -23,22 +23,10 @@ const audits = async (db: Db) => (await db.all<{ connector: string; status: stri
 function sessionFake(answer: (r: TransportRequest) => TransportResult) { const seen: TransportRequest[] = []; const t: LinkedInTransport = { session: true, fetch: async r => { seen.push(r); return answer(r) } }; return { t, seen } }
 const answers = (r: TransportRequest): TransportResult => r.kind === 'posts' ? { status: 'ok', items: [{ url: POST, title: 'post', quote: 'Rippling announces a new payroll product line', date: null }] } : { status: 'ok', items: [person(`${r.kind}-1`), person('both-2')] }
 
-test('the session transport is OFF unless its flag, ONE allowlisted tenant, a named throwaway account and the worker settings are all set', () => {
-  assert.equal(sessionTransportProblem('A', {}), 'off', 'off by default: no env, no transport')
-  assert.equal(sessionTransportEnabled('A', { ...T_ENV, LINKEDIN_SESSION_TRANSPORT: '0' }), false)
-  assert.equal(sessionTransportEnabled('A', { ...T_ENV, LINKEDIN_SESSION_TRANSPORT: 'true' }), false, 'only the exact value 1 turns it on')
-  assert.equal(sessionTransportProblem('B', T_ENV), 'not_allowlisted', 'a tenant that is not allowlisted never uses the session')
-  assert.equal(sessionTransportProblem('A', { ...T_ENV, ADVANCED_WORKER_TOKEN: '' }), 'no_worker')
-  assert.equal(sessionTransportEnabled('A', T_ENV), true)
-  assert.equal(sessionTransportEnabled('A', { ...T_ENV, LINKEDIN_SESSION_TENANTS: ' A , A ' }), true, 'the same tenant twice is one tenant')
-  // #949 review: the caps are per tenant, so two tenants holding the one throwaway session would double its hourly and daily volume. Two or more = off for everyone.
-  assert.equal(sessionTransportProblem('A', { ...T_ENV, LINKEDIN_SESSION_TENANTS: ' X, A ' }), 'multiple_tenants')
-  assert.equal(sessionTransportProblem('X', { ...T_ENV, LINKEDIN_SESSION_TENANTS: 'X,A' }), 'multiple_tenants')
-  assert.equal(sessionTransportProblem('A', { ...T_ENV, LINKEDIN_SESSION_TENANTS: '' }), 'not_allowlisted')
-  // the dedicated throwaway account must be named (the operator's attestation); a cookie pasted there is refused, never echoed
-  for (const account of [undefined, '', '  ', 'ab', 'x'.repeat(201), 'li_at=AQEDsecret', 'JSESSIONID="ajax:1"', 'a; b', 'two words']) {
-    assert.equal(sessionTransportProblem('A', { ...T_ENV, LINKEDIN_SESSION_ACCOUNT: account }), 'no_account', String(account))
-  }
+test('#1122: the server-side session transport is always OFF (reads run in the user\'s browser), whatever the old settings say', () => {
+  assert.equal(sessionTransportProblem('A', {}), 'off')
+  assert.equal(sessionTransportProblem('A', T_ENV), 'off')
+  assert.equal(sessionTransportEnabled('A', T_ENV), false)
 })
 
 test('worker failures map to named stops; an unsupported, error or malformed reply is an error, never zero results', () => {

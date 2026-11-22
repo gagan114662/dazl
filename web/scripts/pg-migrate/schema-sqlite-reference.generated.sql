@@ -450,7 +450,8 @@ CREATE TABLE li_ext_tokens (tenant_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL
 
 CREATE TABLE li_results (task_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT NOT NULL, source_url TEXT NOT NULL, fetched_at INTEGER NOT NULL, payload TEXT NOT NULL);
 
-CREATE TABLE li_task_gate (tenant_id TEXT PRIMARY KEY, tz TEXT, next_allowed_at INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE li_task_gate (tenant_id TEXT PRIMARY KEY, tz TEXT, next_allowed_at INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
+      open_min INTEGER NOT NULL DEFAULT 540, close_min INTEGER NOT NULL DEFAULT 1020, override_close_min INTEGER, override_until INTEGER);
 
 CREATE TABLE li_tasks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL, status TEXT NOT NULL,
       requested_by TEXT, attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER, created_at INTEGER NOT NULL, served_at INTEGER, done_at INTEGER, outcome TEXT);

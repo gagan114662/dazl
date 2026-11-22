@@ -3,35 +3,20 @@
 // and the commenters / reactors of one post at a time, using the LinkedIn session cookie stored (encrypted) as the tenant's own `adv:linkedin` connector credential. Operationally
 // that session belongs to ONE designated throwaway account; never a person's own account.
 //
-// OFF unless ALL of: LINKEDIN_SESSION_TRANSPORT=1; LINKEDIN_SESSION_TENANTS names EXACTLY ONE tenant (the operator's dedicated tenant that holds the throwaway session; a
-// list of two or more turns the transport off, because the hourly/daily caps are per tenant and two tenants would multiply them for one account); LINKEDIN_SESSION_ACCOUNT
-// names the dedicated throwaway account (a non-secret label such as its sign-in email: the operator's attestation that the stored session is that account and nobody's own;
-// a value that looks like a cookie is refused); and the session worker settings. Every gate, cap, deadline, stop and cooldown of linkedin-people.ts applies on top. Read-only: the worker only issues GETs; nothing is posted, liked, messaged or connected. One call = one worker request = one upstream GET.
+// OFF: see sessionTransportProblem below (server cookie replay removed, #1122).
 // The cookie is never logged and is sent only to the session worker, over its bearer-token API.
 import type { Db } from '../db/client.ts'
 import { readEnabledCredential } from '../connectors/store.ts'
 import { connectorId } from '../advanced/config.ts'
 import type { LinkedInTransport, TransportRequest, TransportResult } from './linkedin-people.ts'
 
-// Why the session transport is not usable for this tenant, or null when it is. 'off' (the flag is not set) is the default and is not recorded.
-export type SessionProblem = 'off' | 'no_worker' | 'no_account' | 'multiple_tenants' | 'not_allowlisted'
-export function sessionTransportProblem(tenantId: string, env: Record<string, string | undefined> = process.env): SessionProblem | null {
-  if (env.LINKEDIN_SESSION_TRANSPORT !== '1') return 'off'
-  if (!env.ADVANCED_WORKER_URL || !env.ADVANCED_WORKER_TOKEN) return 'no_worker'
-  const account = (env.LINKEDIN_SESSION_ACCOUNT ?? '').trim()
-  if (account.length < 3 || account.length > 200 || /li_at|jsessionid|[;=\s]/i.test(account)) return 'no_account'
-  const tenants = [...new Set((env.LINKEDIN_SESSION_TENANTS ?? '').split(',').map(s => s.trim()).filter(Boolean))]
-  if (tenants.length > 1) return 'multiple_tenants'
-  return tenants[0] === tenantId ? null : 'not_allowlisted'
-}
-// The designated throwaway session is spent ONLY through the paced, capped, challenge-stopping transport: when the flag is on and this tenant is named in the allowlist (even a
-// misconfigured multi-tenant list, which fails closed), the older un-paced `adv:linkedin` /fetch reader must not use the same cookie (#949 review).
-export function sessionCookieReserved(tenantId: string, env: Record<string, string | undefined> = process.env): boolean {
-  return env.LINKEDIN_SESSION_TRANSPORT === '1' && (env.LINKEDIN_SESSION_TENANTS ?? '').split(',').map(s => s.trim()).includes(tenantId)
-}
-export function sessionTransportEnabled(tenantId: string, env: Record<string, string | undefined> = process.env): boolean {
-  return sessionTransportProblem(tenantId, env) === null
-}
+// Owner brief 2026-11-22 (docs/launch-brief.md Step 4, #1122): LinkedIn reads run ONLY in the user's own browser (the dazl Connect extension,
+// lib/linkedin-tasks). The server never replays a LinkedIn session cookie: this transport is always off, and the operator allowlist / throwaway-account
+// settings it used are gone. Kept as a type-stable stub until the session worker code is removed in a later PR.
+export type SessionProblem = 'off'
+export function sessionTransportProblem(_tenantId: string, _env: Record<string, string | undefined> = process.env): SessionProblem { return 'off' }
+export function sessionCookieReserved(_tenantId: string, _env: Record<string, string | undefined> = process.env): boolean { return false }
+export function sessionTransportEnabled(_tenantId: string, _env: Record<string, string | undefined> = process.env): boolean { return false }
 
 // A worker reply, streamed with a byte cap: an oversized body is never buffered whole (#949 review). null = over the cap.
 export const MAX_REPLY_BYTES = 1_000_000

@@ -241,15 +241,12 @@ bothEngines('review: a transport error is reported as an incomplete read (onInco
   assert.ok(incomplete >= 1, 'error -> incomplete'); assert.equal(stopped, 0, 'an error is not a stop')
 })
 
-bothEngines('review: while the designated session is reserved for the transport, the older un-paced /fetch LinkedIn reader does not use the same cookie', async ({ db }) => {
+bothEngines('#1122: the older /fetch LinkedIn reader never sends a stored session from the server, whatever the env', async ({ db }) => {
   await ready(db); const seen: string[] = []
   await writeCredential(db, 'A', 'adv:linkedin', 'session-for-tenant-A', master)
-  const reserved = { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'A' }
-  assert.deepEqual(await collectAdvanced(db, 'A', 'j', ['linkedin'], 'payroll help', { worker: advWorker(seen), master, env: reserved, now: NOW }), [])
-  assert.deepEqual(seen, [], 'no worker call with the designated cookie')
-  assert.ok((await audits(db)).includes('linkedin:session_transport_owns_cookie'))
-  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'payroll help', { worker: advWorker(seen), master, env: { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'B' }, now: NOW })
-  assert.equal(seen.length, 1, 'another tenant is not affected')
+  for (const env of [ADV_ENV, { ...ADV_ENV, LINKEDIN_SESSION_TRANSPORT: '1', LINKEDIN_SESSION_TENANTS: 'A' }]) assert.deepEqual(await collectAdvanced(db, 'A', 'j', ['linkedin'], 'payroll help', { worker: advWorker(seen), master, env, now: NOW }), [])
+  assert.deepEqual(seen, [], 'no worker call with the cookie')
+  assert.ok((await audits(db)).includes('linkedin:read_in_extension'))
 })
 
 // ---- #192 review: the cooldown is checked before EVERY reservation, in both consumers ----
@@ -262,14 +259,11 @@ bothEngines('COOLDOWN MID-RUN: a run in flight when another run is throttled sen
   assert.ok((await audits(db)).includes('linkedin-people:cooldown')); assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin'), 1, 'only the one reservation made before the stop')
 })
 
-bothEngines('COOLDOWN: the advanced post search (collectAdvanced) also refuses LinkedIn inside a people-reader cooldown, with no reservation and no worker call', async ({ db }) => {
+bothEngines('COOLDOWN: the advanced post search (collectAdvanced) never calls the worker for LinkedIn and spends no budget', async ({ db }) => {
   await ready(db); await db.run("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status, results, created_at) VALUES ('stop-1', 'A', 'adv:linkedin', 'x', 'stopped_challenge', 0, ?)", [Math.floor(Date.now() / 1000)])
   for (const tenant of ['A', 'B']) await writeCredential(db, tenant, 'adv:linkedin', `session-for-tenant-${tenant}`, master)
   let worker = 0
   const out = await collectAdvanced(db, 'A', 'j', ['linkedin'], 'q', { master, env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } })
   assert.deepEqual(out, []); assert.equal(worker, 0, 'the worker is not called'); assert.equal(await requestsInWindow(db, 'A', 'adv:linkedin'), 0, 'no budget spent')
-  assert.ok((await audits(db)).includes('linkedin:cooldown'))
-  // Control: another tenant, or this tenant after the cooldown, is not blocked.
-  await ready(db, 'B'); await collectAdvanced(db, 'B', 'j', ['linkedin'], 'q', { master, env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 1, 'control: an unaffected tenant reaches the worker')
-  await collectAdvanced(db, 'A', 'j2', ['linkedin'], 'q', { master, env: ADV_ENV, now: Math.floor(Date.now() / 1000) + COOLDOWN_S + 60, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 2, 'control: after the cooldown it runs again')
+  await ready(db, 'B'); await collectAdvanced(db, 'B', 'j', ['linkedin'], 'q', { master, env: ADV_ENV, worker: async () => { worker++; return { items: [], unsupported: false } as never } }); assert.equal(worker, 0, '#1122: no tenant reaches the worker for LinkedIn')
 })
