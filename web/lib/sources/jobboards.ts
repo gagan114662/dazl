@@ -289,8 +289,18 @@ type Resolved = { place: Place; input: string } | { reason: string }
 export function countryPlace(code: string): Place | null {
   const c = countryFromField(code)
   if (!c) return null
-  const inIt = (loc: string) => loc.split(/[,;/|()]+/).map(s => s.trim()).filter(Boolean).some(seg => resolveSegment(seg, true) === c || countriesIn(seg).includes(c) || (() => { const r = regionOf(seg); return !!r && countryOfRegion(r) === c })())
-  return { name: c, ok: (...locs) => locs.some(l => !!l && inIt(l)) }
+  // Qodo #1556: "Remote, United States or Austin, Texas HQ" and "Virtual - California (Bay Area)" are split on "or" and " - ", and work-mode
+  // / HQ words are dropped; Australian states (no AU in regionOf) are read here: full names, or an abbreviation with its 4-digit postcode.
+  const AU = /^(?:new south wales|victoria|queensland|western australia|south australia|tasmania|northern territory|australian capital territory|(?:nsw|vic|qld|wa|sa|tas|nt|act)\s+\d{4})$/i
+  const segOk = (raw: string) => {
+    const seg = raw.replace(/\b(?:hq|headquarters|remote|virtual|hybrid|on-?site|office|bay area)\b/gi, ' ').replace(/\s+/g, ' ').trim()
+    if (!seg) return false
+    if (c === 'AU' && AU.test(seg)) return true
+    const r = regionOf(seg)
+    return resolveSegment(seg, true) === c || countriesIn(seg).includes(c) || (!!r && countryOfRegion(r) === c)
+  }
+  const inIt = (loc: string) => loc.split(/[,;/|()]+|\s+or\s+|\s+[-–]\s+/i).map(s => s.trim()).filter(Boolean).some(segOk)
+  return { name: c, ok: (...locs) => locs.some(l => typeof l === 'string' && !!l && inIt(l)) }
 }
 export const ANYWHERE: Place = { name: '', ok: () => true }
 export function boardPlaceOf(places: readonly PlanPlaceIn[], ctx: BoardContext = {}): BoardPlace {

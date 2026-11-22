@@ -177,3 +177,13 @@ test('PM ruling: case 1 with ICP country US reads only US postings', async () =>
   assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `the job boards ran: ${boardsStatus(x)}`)
   assert.ok(detailed(seen).every(i => i <= 2), `US postings only (got ${JSON.stringify(detailed(seen))})`)
 })
+
+// Qodo #1556: a profile place the boards cannot resolve ("Europe") is a place, not none: still held, never run worldwide or narrowed to the country.
+test('Qodo #1556: a place-free request with profile where ["Europe"] keeps the skip reason', async () => {
+  for (const country of ['', 'DE']) {
+    const { http, seen } = board()
+    const x = await runFixture(fx(http, CASE1, ['Europe'], country, plan([])))
+    assert.match(boardsStatus(x) ?? '', /^skipped_no_place/, `country=${country}`)
+    assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
+  }
+})

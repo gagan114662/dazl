@@ -2080,7 +2080,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // the profile's place is read from the PROFILE entry alone ("in <entry>"), never from the request's words appended to it
     // PM ruling 2026-11-22 (over #1205/#1395 for this case only): a request that names NO place, with no profile place, still reads the boards -
     // on the ICP's country when one is set, else with no place filter. A place the request names but the boards cannot place still holds them.
-    const noPlaceAnywhere = !legacyBoards && wantsBoards && !planHold && !requestNamesPlace && !planPlace && named.size === 0   // several profile places are a place, not none: still held (#1095)
+    const noPlaceAnywhere = !legacyBoards && wantsBoards && !planHold && !requestNamesPlace && !planPlace && !(icpForSources?.where ?? []).some(w => typeof w === 'string' && w.trim())   // any profile place, even one the boards cannot resolve ('Europe', Qodo #1556) or several (#1095), still holds
     const boardPlace: Place | null = planPlace ?? (profilePlace ? placeIn(`in ${profilePlace}`) : noPlaceAnywhere ? (icpForSources?.country ? countryPlace(icpForSources.country) : null) ?? ANYWHERE : null)
     const boardsQuery = job.query ? (!planPlace && profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = legacyBoards ? !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery)) : !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
