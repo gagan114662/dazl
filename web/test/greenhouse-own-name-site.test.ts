@@ -18,3 +18,9 @@ test('holds: a plain name, another company, a different lead name, a social host
   assert.equal(recordCompanyDomain('Uare.ai', 'Uare'), null)
   assert.equal(recordCompanyDomain('linkedin.com', 'linkedin.com'), null)
 })
+test('Qodo #1549: the record name must equal the lead company exactly (case aside) - a stripped suffix never matches (Acme.co is not Acme)', () => {
+  assert.equal(recordCompanyDomain('Acme.co', 'Acme'), null)
+  assert.equal(recordCompanyDomain('Acme.company', 'Acme'), null)
+  assert.equal(recordCompanyDomain('Acme Inc.com', 'Acme'), null)
+  assert.equal(recordCompanyDomain('UARE.AI', 'uare.ai'), 'uare.ai')
+})

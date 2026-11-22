@@ -314,7 +314,7 @@ function publisherNamesCitedSite(html: string, quote: string): boolean {
 // (evidence_link_domain_label); the homepage identity check still decides. A plain name gives nothing (no guess).
 export function recordCompanyDomain(recordCompany: string, company: string): string | null {
   const n = recordCompany.trim().toLowerCase()
-  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(n) || norm(n) !== norm(company)) return null
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(n) || n !== company.trim().toLowerCase()) return null // Qodo #1549: the whole hostname IS the company name (case aside); never norm(), which strips co/company
   const host = registrable(n)
   if (!host || SOCIAL.test(host) || !siteHostOk(host)) return null
   return host
