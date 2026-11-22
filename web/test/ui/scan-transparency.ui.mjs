@@ -49,6 +49,7 @@ const serve = async (statusBody, leadsBody = fixture.leads_a.body) => {
     if (u.pathname === '/api/scan/status') return json(route, statusBody)
     if (u.pathname === '/api/leads') return leadsBody === null ? json(route, { error: 'boom' }, 500) : json(route, leadsBody)
     if (u.pathname === '/api/scan/jobs') return json(route, { jobs: [] })
+    if (u.pathname === '/api/leads/play-research') return json(route, { job_id: JOB, research: [] })   // the real route's shape for a job with no saved research
     return json(route, {}, 404)
   })
   await page.goto(`http://dazl.test/app/leads?job_id=${JOB}`)
@@ -111,7 +112,9 @@ const serve = async (statusBody, leadsBody = fixture.leads_a.body) => {
   await page.waitForTimeout(1500)
   assert.equal(await page.getByTestId('scan-cost-per-pass').count(), 0, 'no per-lead line without a read leads list')
   const bodyText = await page.locator('body').innerText()
-  assert.ok(!/no leads shown|across 0 leads/.test(bodyText), 'an unread list is never "no leads shown"')
+  assert.ok(!/no leads shown/i.test(bodyText), 'an unread list is never "no leads shown"')
+  assert.ok(!/not read/i.test(bodyText), 'no "not read" hedge anywhere on the page')
+  assert.ok(!/across 0 leads/.test(bodyText))
   await browser.close()
 }
 

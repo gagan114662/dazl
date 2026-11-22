@@ -853,7 +853,7 @@ export default function LeadsClient() {
   const currentView = resultView?.jobId === jobId ? resultView : null
   const visibleLeads = visibleReadyLeads(leads, showSeen)
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
-  // currentView is set only by a successful GET /api/leads for this job: until then the count is unknown, never 0
+  // currentView is set only by a successful GET /api/leads for this job: until then there is no per-lead line at all
   const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads, showSeen, leadsRead: currentView !== null })
   const repeats = readyRepeats(leads)
 
@@ -1192,7 +1192,7 @@ export default function LeadsClient() {
           Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start.{cost.estimate.trial_cap_line ? <> <span data-testid="scan-cost-trial-cap">{cost.estimate.trial_cap_line}</span></> : null} {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
         </p>
       )}
-      {cost?.per_verification_pass && currentView && (status === 'done' || status === 'failed') && (
+      {cost?.per_verification_pass && perLead && (status === 'done' || status === 'failed') && (
         <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost-per-pass" data-unavailable={perLead.unavailable ?? ''}>
           {perLead.usd_per_lead !== null
             ? <>Model cost per lead: ${perLead.usd_per_lead < 0.01 ? perLead.usd_per_lead.toFixed(4) : perLead.usd_per_lead.toFixed(2)} across {perLead.shown} {perLead.shown === 1 ? 'lead' : 'leads'} shown. {cost.model_scope ?? COST_PER_PASS_SCOPE}</>

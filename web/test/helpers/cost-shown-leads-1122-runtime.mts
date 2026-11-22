@@ -57,7 +57,7 @@ test('company-first: verified=1 but the final checks hold it - 0 leads shown, so
   db.prepare("UPDATE scan_jobs SET status='done',enrich_finished_at=1,candidates=1,verified=1,needs_review=0,dropped=0,run_budget=? WHERE id=?").run(markCompanyFirstBudget(null), job)
   const leads = await pageLeads(job)
   assert.equal(leads.length, 0)
-  const c = costPerShownLead({ model_usd: 0.12, scanEnded: true, leads, showSeen: false, leadsRead: true })
+  const c = costPerShownLead({ model_usd: 0.12, scanEnded: true, leads, showSeen: false, leadsRead: true })!
   assert.equal(c.shown, 0); assert.equal(c.usd_per_lead, null); assert.equal(c.unavailable, 'no leads shown'); assert.equal(c.model_usd, 0.12)
 })
 
@@ -72,11 +72,11 @@ test('legacy scan: 3 ready leads (one a repeat behind the toggle) and 1 held - 2
   ins.run(randomBytes(12).toString('hex'), job, 'Held Co', 'https://held.example/jobs', 'no_sales_hiring_evidence', 0)
   db.prepare("UPDATE scan_jobs SET status='done',enrich_finished_at=1,candidates=5,verified=5,needs_review=1,dropped=0 WHERE id=?").run(job)
   const leads = await pageLeads(job)
-  const c = costPerShownLead({ model_usd: 0.3, scanEnded: true, leads, showSeen: false, leadsRead: true })
+  const c = costPerShownLead({ model_usd: 0.3, scanEnded: true, leads, showSeen: false, leadsRead: true })!
   assert.equal(c.shown, 2)
   assert.ok(c.usd_per_lead !== null && Math.abs(c.usd_per_lead - 0.15) < 1e-12)
   assert.equal(c.unavailable, null)
-  const open = costPerShownLead({ model_usd: 0.3, scanEnded: true, leads, showSeen: true, leadsRead: true })
+  const open = costPerShownLead({ model_usd: 0.3, scanEnded: true, leads, showSeen: true, leadsRead: true })!
   assert.equal(open.shown, 3)
   assert.ok(open.usd_per_lead !== null && Math.abs(open.usd_per_lead - 0.1) < 1e-12)
 })
