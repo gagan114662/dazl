@@ -39,7 +39,13 @@ export interface ScanRecord {
   // What the scan recorded as spent (scan_jobs.spend_reserved_usd), read successfully. Omitted (or null) when it could not be read: then no
   // claim about charges is made. Only a trial stop reads it (trialStopped).
   spend_usd?: number | string | null
+  // #1157: the worst case still reserved for this scan's paid calls that never got an answer (scan_spend_calls 'reserved'), read
+  // successfully. An accounting_uncertain stop counts that step as billed at this amount. Omitted (or null) when not read.
+  uncertain_usd?: number | null
 }
+// #1157: a definite answer for an interrupted paid step - counted as billed at the most it could cost - never "may have been billed".
+const usd = (v: number) => `$${v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`
+const countedAmount = (j: ScanRecord) => typeof j.uncertain_usd === 'number' && Number.isFinite(j.uncertain_usd) && j.uncertain_usd > 0 ? usd(j.uncertain_usd) : null
 const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
 // Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
 // extracted no candidates, and none was unavailable / not run (those are unknown, not zero).
@@ -138,9 +144,11 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
       case 'native_search_accounting_pending': return { kind: 'stopped', label: 'Claude Web Search did not start', detail: 'A previous search for this workspace has not settled. Dazl did not send another search that could add charges.', next: null }
       case 'native_search_provider_limit': return { kind: 'stopped', label: 'Stopped after an unexpected Claude Web Search response', detail: 'Claude reported more searches or output than requested. Dazl recorded the usage and did not start any more paid steps.', next: null }
       case 'native_search_estimate_exceeded': return { kind: 'stopped', label: 'Stopped after Claude Web Search exceeded its estimate', detail: 'Dazl did not start any more paid steps after the search. Anthropic bills for actual usage. We did not determine whether matching leads exist.', next: null }
-      case 'accounting_uncertain': { const o: ScanOutcome = { kind: 'stopped', label: 'Stopped after an interruption - a paid step may already have been billed', detail: `The scan was interrupted while a paid step was in flight, so dazl did not run it again automatically: that could bill the same step twice. The only thing dazl cannot tell is whether the provider charged for that one step. The step stays counted against your limits. Nothing was concluded about whether leads exist. Starting a new scan runs paid steps again and may be charged again.${j.funded_by === 'trial' ? ' This free scan does not count toward your free scans.' : ''}`, next: { text: 'Start a new scan', href: NEW_SCAN } }
-        // An outage that names its source keeps that naming (never a bare interruption) and still says a paid step may have been billed.
-        return sourcesFailed(j) ? { ...o, kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error; a paid step may already have been billed` } : o }
+      case 'accounting_uncertain': {
+        const amount = countedAmount(j), counted = `one paid step counted as billed${amount ? ` (${amount})` : ''}`
+        const o: ScanOutcome = { kind: 'stopped', label: `Stopped after an interruption - ${counted}`, detail: `A paid step was interrupted before its answer came back, so it is counted as billed at the most it could cost${amount ? ` (${amount})` : ''}, and it stays counted against your limits. dazl did not run it again automatically: that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.${j.funded_by === 'trial' ? ' This free scan does not count toward your free scans.' : ''}`, next: { text: 'Start a new scan', href: NEW_SCAN } }
+        // An outage that names its source keeps that naming (never a bare interruption) and the same definite count.
+        return sourcesFailed(j) ? { ...o, kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error; ${counted}` } : o }
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }
       case 'cancelled': return { kind: 'stopped', label: 'Cancelled', next: { text: 'Start a new scan', href: NEW_SCAN } }
       case 'key_unreadable': case 'no_api_key': return { kind: 'failed', label: 'Failed - your AI key could not be used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
