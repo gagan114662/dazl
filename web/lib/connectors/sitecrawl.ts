@@ -28,7 +28,7 @@ import { decodeEntities } from '../verifier/text.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
-import { atsPostingRef } from '../sources/ats-posting.ts'
+import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, ownProbePlace, US_STATES } from '../scan/place-agreement.ts'
@@ -306,6 +306,17 @@ function publisherNamesCitedSite(html: string, quote: string): boolean {
 // Candidate company websites, strongest first. All come from evidence we already hold, never from guessing:
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
 // (3) a link whose visible text names the company. The crawl then checks the homepage really names the company.
+// Domains written out in an employer's own posting record whose name label is exactly the company's (no anchor needed: the record is plain text).
+export function recordNamedSites(text: string, company: string): string[] {
+  const want = norm(company); if (want.length < 4) return []
+  const out: string[] = []
+  for (const m of text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/<[^>]+>/g, ' ').replace(/https?:\/\//gi, ' ').matchAll(/(?<![\w.@-])((?:www\.)?[a-z0-9-]+\.[a-z]{2,}(?:\.[a-z]{2})?)(?![\w-])/gi)) {
+    const host = registrable(m[1].toLowerCase())
+    if (!host || SOCIAL.test(host) || !siteHostOk(host) || NOT_OWN_SITE.has(nameLabel(host))) continue
+    if (nameLabel(host) === want && !out.includes(host)) out.push(host)
+  }
+  return out
+}
 export type DomainBasis = 'evidence_own_domain' | 'evidence_link_domain_label' | 'evidence_link_text' | 'name_probe'
 export function findCompanySitesWithBasis(company: string, evidenceHtml: string, evidenceUrl: string): { site: string; basis: DomainBasis; structured?: boolean }[] {
   const want = norm(company); if (want.length < 4) return []
@@ -1811,6 +1822,18 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (o.basis === 'evidence_own_domain') continue   // the ATS's own host is never the company's
           if (!basisOf.has(o.site)) { basisOf.set(o.site, o.basis); sourceOf.set(o.site, page.finalUrl ?? a) }   // 1328-F1: the ATS page is this site's evidence
           if (!structured.includes(o.site)) structured.push(o.site)
+        }
+      }
+      // Run 9697d013 (LiveKit): the lead's own ATS posting is the employer's own record. A domain its description writes out ("livekit.io"),
+      // whose label IS the company's name, is bound by that record as a link would be (evidence_link_domain_label); the homepage name check
+      // still decides. Never a guess: a record that names no such domain adds nothing (Uare.ai stays unresolved).
+      const ownRef = !anchored ? atsPostingRef(l.source_url) : null
+      if (ownRef && !deps.signal?.aborted) {
+        let rec: ReturnType<typeof atsRecord> = null
+        try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
+        if (rec && rec !== 'missing') for (const site of recordNamedSites(`${rec.header} ${rec.description}`, l.company)) {
+          if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
+          if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
       }
       const fromSlug = board.slug ? slugDomains(board.slug, where).filter(notBlockedHost) : []
