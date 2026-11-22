@@ -44,3 +44,15 @@ test('when the run limit binds under a day cap, the verdict names the run limit,
   assert.doesNotMatch(e.verdict.message, /\$10\.00|already reserved/)
   assert.ok(e.verdict.change.some(c => /^Raise the dollar limit to at least \$0\.0\d /.test(c)), e.verdict.change.join(' | '))
 })
+
+test('when the run limit binds and the day room is also short, the change list names the day room too', () => {
+  const e = estimateRun({ budget: { max_usd: 0.05 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 9.93 })
+  assert.equal(e.verdict.ok, false); assert.equal(e.cap.binding, 'run')
+  const min = e.cap.capped_total.min
+  assert.ok(min > 0.07, 'the model minimum is above the day room')
+  assert.ok(e.verdict.change.some(c => /daily limit has only \$0\.07 left today/.test(c)), e.verdict.change.join(' | '))
+  // following the run-limit advice alone is not enough here, and the list says so
+  assert.equal(estimateRun({ budget: { max_usd: min }, payer: 'you', ownerCapUsd: 10, reservedUsd: 9.93 }).verdict.ok, false)
+  // with day room to spare the extra line is absent
+  assert.ok(!estimateRun({ budget: { max_usd: 0.01 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 1 }).verdict.change.some(c => /daily limit has only/.test(c)))
+})
