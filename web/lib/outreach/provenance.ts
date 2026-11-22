@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { tableExists } from './send-budget.ts'
 import { PUBLISHED_EMAIL_RE } from './published-email.ts'
 import { eventDateCopy } from '../scan/date-copy.ts'
+import { eventDayVerified } from '../scan/scoreboard.ts'
 
 export interface OutreachProvenance {
   company: string
@@ -10,6 +11,8 @@ export interface OutreachProvenance {
   source_url: string | null
   event_date: string | null
   date_status: string | null
+  /** #1176: the event day is proven by the cited source - the rule the lead's own card uses (eventDayVerified), never date_status */
+  day_verified: boolean
   contact_origin: 'lead_record' | 'sitecrawl_record' | 'unknown'
   contact_source_url: string | null
 }
@@ -21,9 +24,9 @@ export function publicSourceUrl(raw: string | null): string | null {
 // Current linked records, not a snapshot of what was checked when words were
 // generated. Never infer ownership, publication, named buyer identity or consent.
 export function messageProvenance(db: Database.Database, tenantId: string, leadId: string, recipient: string): OutreachProvenance | null {
-  const lead = db.prepare('SELECT l.company,l.signal,l.evidence_excerpt,l.source_url,l.event_date,l.date_status,l.contact FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(leadId,tenantId) as {company:string;signal:string;evidence_excerpt:string|null;source_url:string|null;event_date:string|null;date_status:string|null;contact:string|null}|undefined
+  const lead = db.prepare('SELECT l.company,l.signal,l.evidence_excerpt,l.source_url,l.event_date,l.date_status,l.event_date_proof,l.signal_kind,l.contact FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(leadId,tenantId) as {company:string;signal:string;evidence_excerpt:string|null;source_url:string|null;event_date:string|null;date_status:string|null;event_date_proof:string|null;signal_kind:string|null;contact:string|null}|undefined
   if (!lead) return null
-  const out: OutreachProvenance = {company:lead.company,signal:lead.signal,excerpt:lead.evidence_excerpt,source_url:publicSourceUrl(lead.source_url),event_date:lead.event_date,date_status:lead.date_status,contact_origin:'unknown',contact_source_url:null}
+  const out: OutreachProvenance = {company:lead.company,signal:lead.signal,excerpt:lead.evidence_excerpt,source_url:publicSourceUrl(lead.source_url),event_date:lead.event_date,date_status:lead.date_status,day_verified:eventDayVerified(lead),contact_origin:'unknown',contact_source_url:null}
   if (!PUBLISHED_EMAIL_RE.test(email(recipient))) return out
   if (email(lead.contact) === email(recipient)) {
     out.contact_origin='lead_record'
@@ -37,4 +40,4 @@ export function messageProvenance(db: Database.Database, tenantId: string, leadI
   return out
 }
 // The event-date line the provenance screen shows (app/app/outreach/provenance.tsx).
-export const provenanceDateLine = (p: OutreachProvenance): string => eventDateCopy(p.event_date, p.date_status)
+export const provenanceDateLine = (p: OutreachProvenance): string => eventDateCopy(p.event_date, p.date_status, undefined, { dayVerified: p.day_verified })
