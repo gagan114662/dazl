@@ -164,6 +164,16 @@ test('over the limit: estimate says blocked with what to change, and POST /api/s
   assert.equal(jobs(db).length, 0, 'a blocked run creates no job')
 })
 
+// #1319 council: an unreadable per-scan cap refuses every paid call of a run, so neither the estimate nor POST /api/scan starts one
+test('unreadable per-scan cap: the estimate and POST /api/scan both answer 503 spend_config_invalid and create nothing', async () => {
+  const db = setup(); const saved = process.env.DAZL_SCAN_CAP_CAD; process.env.DAZL_SCAN_CAP_CAD = 'abc'
+  try {
+    as(db); const e = await est({ query: Q }); assert.equal(e.status, 503); assert.equal((await e.json() as { error: string }).error, 'spend_config_invalid')
+    as(db); const r = await scan({ query: Q }); assert.equal(r.status, 503); assert.equal((await r.json() as { error: string }).error, 'spend_config_invalid')
+    assert.equal(jobs(db).length, 0, 'nothing started')
+  } finally { if (saved === undefined) delete process.env.DAZL_SCAN_CAP_CAD; else process.env.DAZL_SCAN_CAP_CAD = saved }
+})
+
 test('confirmed run: the matching ack starts the scan and keeps the estimate with the job; a stale ack is returned for re-confirmation and starts nothing', async () => {
   const db = setup(); as(db)
   const body = { query: Q, budget: { max_usd: 2, judge: false } }

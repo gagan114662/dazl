@@ -159,3 +159,44 @@ test('when the daily or monthly cap binds, the change list names that window and
   assert.ok(!month.verdict.change.some(c => /^Raise the/.test(c)), month.verdict.change.join(' | '))
   assert.ok(month.verdict.change.some(c => /^Your monthly limit .* resets on the 1st at 00:00 UTC\.$/.test(c)), month.verdict.change.join(' | '))
 })
+
+// Council: a max_usd can only lower the per-scan cap (spend-cap.ts effectiveCapUsd), so when the operator's per-scan cap is what binds the
+// person is never told to raise a dollar limit: the cap is named instead.
+test('when the per-scan cap binds, the change list names it and offers no raise', async () => {
+  for (const budget of [undefined, { max_usd: 3 }]) {
+    const e = (await serverEstimate({ ...ALL_OFF, DAZL_SCAN_CAP_CAD: '0.05' }, 0, { budget })).est
+    assert.equal(e.verdict.ok, false); assert.equal(e.cap.binding, 'run')
+    assert.ok(!e.verdict.change.some(c => /^Raise the|raising this run's limit/.test(c)), e.verdict.change.join(' | '))
+    assert.ok(e.verdict.change.some(c => /^Each scan is capped at \$0\.03\d*\.$/.test(c)), e.verdict.change.join(' | '))
+  }
+})
+
+test('an unreadable per-scan cap prices nothing: the estimate refuses with spend_config_invalid', async () => {
+  const raw = new Database(':memory:'); migrateSpendPools(raw)
+  const saved = process.env.DAZL_SCAN_CAP_CAD; process.env.DAZL_SCAN_CAP_CAD = 'abc'
+  try {
+    const r = await estimateForBody({ query: 'B2B SaaS startups in Toronto hiring a first SDR' }, { db: asDb(raw), tenantId: 't-unnamed', hasOwnKey: true, enrichmentVendors: [], model: 'claude-sonnet-4-5' })
+    assert.equal(r.ok, false); assert.equal(!r.ok && r.status, 503); assert.equal(!r.ok && r.error, 'spend_config_invalid')
+  } finally { if (saved === undefined) delete process.env.DAZL_SCAN_CAP_CAD; else process.env.DAZL_SCAN_CAP_CAD = saved }
+})
+
+// Council: a trial run's guard stops each scan at the trial reserve (runner.ts guardMax = min(trial reserve, max_usd)): that is its run limit.
+test('a trial run shows the trial reserve as its run limit when that is tighter', () => {
+  const e = estimateRun({ budget: { max_usd: 3.33 }, payer: 'trial', trialReserveUsd: 0.5, ownerCapUsd: 10, reservedUsd: 0, scanCapUsd: 3.33 })
+  assert.equal(e.cap.run_max_usd, 0.5)
+  assert.ok(capLine(e.cap, e.cap.capped_total)!.startsWith("This run's limit: $0.50;"), capLine(e.cap, e.cap.capped_total)!)
+  assert.doesNotMatch(capLine(e.cap, e.cap.capped_total)!, /\$3\.33/)
+})
+
+// Council: a run limit under a daily cap that the day's reservations have nearly used is still bound by the day
+test('a run limit above the day room: the daily cap binds and the reservations count', () => {
+  const e = estimateRun({ budget: { max_usd: 1 }, payer: 'you', ownerCapUsd: 1, reservedUsd: 0.95 })
+  assert.ok(Math.abs((e.cap.remaining_usd ?? 0) - 0.05) < 1e-9); assert.equal(e.cap.binding, 'daily')
+})
+
+test('the confirmation covers the run limit and what binds, not only the windows', () => {
+  const base = { budget: null, payer: 'you' as const, ownerCapUsd: 1, reservedUsd: 0.95 }
+  const a = estimateRun({ ...base, scanCapUsd: 3 }), b = estimateRun({ ...base, scanCapUsd: 2 })
+  assert.equal(a.cap.binding, 'daily'); assert.equal(b.cap.binding, 'daily'); assert.notEqual(a.cap.run_max_usd, b.cap.run_max_usd)
+  assert.notEqual(a.ack, b.ack, 'a different run limit on screen needs a new confirmation')
+})

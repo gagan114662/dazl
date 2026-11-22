@@ -10,6 +10,7 @@ import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
 import { migratePlatform } from '../../lib/db/platform-tables.ts'
 import { POST } from '../../app/api/scan/route.ts'
+import { HARD_CAP_USD } from '../../lib/scan/spend-cap.ts'
 import { POST as WATCH_POST } from '../../app/api/watch/route.ts'
 import { migrateWatch } from '../../lib/watch.ts'
 
