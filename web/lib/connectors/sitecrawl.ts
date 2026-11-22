@@ -10,7 +10,7 @@ import zlib from 'node:zlib'
 import { Transform, type Readable } from 'node:stream'
 import type Database from 'better-sqlite3'
 import robotsParser from 'robots-parser'
-import { getDomain } from 'tldts'
+import { getDomain, getDomainWithoutSuffix } from 'tldts'
 import { parse, type DefaultTreeAdapterMap } from 'parse5'
 import { social } from '@crawlee/utils'
 import { lookup as dnsLookup } from 'node:dns/promises'
@@ -317,6 +317,25 @@ function publisherNamesCitedSite(html: string, quote: string): boolean {
 // (1) the evidence page is itself on the company's domain; (2) a link on it whose domain name matches the company;
 // (3) a link whose visible text names the company. The crawl then checks the homepage really names the company.
 // Domains written out in an employer's own posting record whose name label is exactly the company's (no anchor needed: the record is plain text).
+// Run 679a7354 (n8n, Mintlify): an Ashby posting page carries the employer's own organization record ({"name", "publicWebsite"}). The website
+// the company set there is its own statement, bound like a link (evidence_link_domain_label); the homepage name check still decides. Only when
+// the record's name is this company and the site's label is its name; any length (n8n), since the setting is the employer's, not a guess.
+export function ashbyOrgWebsite(html: string, company: string): string | null {
+  const m = /"organization"\s*:\s*\{[^{}]*?"name"\s*:\s*"([^"\\]{1,120})"[^{}]*?"publicWebsite"\s*:\s*"(https?:\/\/[^"\\\s]{3,200})"/.exec(html)
+  const want = norm(company)
+  if (!m || want.length < 2 || norm(m[1]) !== want) return null
+  let host: string; try { host = registrable(new URL(m[2]).hostname.toLowerCase()) } catch { return null }
+  // Qodo #1515: the name is the registrable domain without its public suffix (acme.co.uk -> acme), never the suffix's labels joined in
+  if (!host || SOCIAL.test(host) || !siteHostOk(host)) return null
+  const label = norm(getDomainWithoutSuffix(host) ?? '')
+  if (label === want) return host
+  // d84a33a0 (Simple AI -> usesimple.ai): the employer's own setting may add a use/get/try/join prefix, and the suffix may carry the
+  // name's last word ("Simple AI" = "use" + "simple" + ".ai"). Compared without spaces; nothing else is accepted.
+  const compact = (s: string) => s.replace(/[^a-z0-9]/g, '')
+  const suffix = host.slice((getDomainWithoutSuffix(host) ?? '').length + 1).replace(/\./g, '')
+  const bare = compact(label).replace(/^(?:use|get|try|join)(?=.)/, '')
+  return [bare, bare + suffix].includes(compact(want)) ? host : null
+}
 // Uare.ai (Greenhouse, no website setting, no link in any posting): the employer's own ATS record names the company with a domain ("Uare.ai").
 // When that record name IS the lead's company and is itself a hostname, it is the employer's own statement of its site, bound like a link
 // (evidence_link_domain_label); the homepage identity check still decides. A plain name gives nothing (no guess).
@@ -1983,7 +2002,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // Run 9697d013 (LiveKit): the lead's own ATS posting is the employer's own record. A domain its description writes out ("livekit.io"),
       // whose label IS the company's name, is bound by that record as a link would be (evidence_link_domain_label); the homepage name check
       // still decides. Never a guess: a record that names no such domain adds nothing (a company name written as a domain, "Uare.ai", is the record naming it).
-      const ownRef = !anchored ? atsPostingRef(l.source_url) : null
+      const ownPosting = atsPostingRef(l.source_url)
+      const ownRef = !anchored ? ownPosting : null
       if (ownRef && !deps.signal?.aborted) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
@@ -1992,6 +2012,14 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
+      }
+      // Qodo #1515: read whether or not the posting also links a site: a stale or dead company-labelled link must not hide the employer's
+      // own setting. With a link it is tried after the linked sites (as structured data is above); the homepage name check decides either way.
+      const orgSite = ownPosting?.kind === 'ashby' && ev?.body ? ashbyOrgWebsite(ev.body, l.company) : null
+      if (orgSite) {
+        if (!basisOf.has(orgSite)) { basisOf.set(orgSite, 'evidence_link_domain_label'); sourceOf.set(orgSite, l.source_url) }
+        if (anchored) { if (!sites.includes(orgSite)) sites.push(orgSite) }
+        else if (!structured.includes(orgSite) && !sites.includes(orgSite)) structured.push(orgSite)
       }
       const fromSlug = board.slug ? slugDomains(board.slug, where).filter(notBlockedHost) : []
       // ATS employer identity is the first source, even when the posting also links a website.
