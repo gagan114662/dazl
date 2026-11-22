@@ -72,16 +72,18 @@ import { asDb } from '../lib/db/client.ts'
 import { estimateForBody } from '../lib/scan/estimate-request.ts'
 import { accountLimits, migrateSpendPools, periodOf } from '../lib/llm/spend-pool.ts'
 
-async function serverEstimate(env: Record<string, string | undefined>, reservedToday: number) {
+async function serverEstimate(env: Record<string, string | undefined>, reservedToday: number, opts: { budget?: unknown; vendors?: string[]; reservedMonth?: number } = {}) {
   const saved: Record<string, string | undefined> = {}
   for (const k of Object.keys(env)) { saved[k] = process.env[k]; if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k] }
   try {
     const raw = new Database(':memory:'); migrateSpendPools(raw)
     const now = Math.floor(Date.now() / 1000)
     if (reservedToday > 0) raw.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, calls, reported_usd, updated_at) VALUES (?, ?, ?, 0, 0, ?)').run('t-unnamed', periodOf('day', now), reservedToday, now)
-    const r = await estimateForBody({ query: 'B2B SaaS startups in Toronto hiring a first SDR', budget: { max_usd: 3.33 } }, { db: asDb(raw), tenantId: 't-unnamed', hasOwnKey: true, enrichmentVendors: [], model: 'claude-sonnet-4-5' })
+    if (opts.reservedMonth) raw.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, calls, reported_usd, updated_at) VALUES (?, ?, ?, 0, 0, ?)').run('t-unnamed', periodOf('month', now), opts.reservedMonth, now)
+    const body = { query: 'B2B SaaS startups in Toronto hiring a first SDR', ...('budget' in opts ? (opts.budget === undefined ? {} : { budget: opts.budget }) : { budget: { max_usd: 3.33 } }) }
+    const r = await estimateForBody(body, { db: asDb(raw), tenantId: 't-unnamed', hasOwnKey: true, enrichmentVendors: opts.vendors ?? [], model: 'claude-sonnet-4-5' })
     assert.ok(r.ok, JSON.stringify(r))
-    return { est: r.ok ? r.estimate : null!, day: accountLimits('t-unnamed').day }
+    return { est: r.ok ? r.estimate : null!, day: accountLimits('t-unnamed').day, month: accountLimits('t-unnamed').month }
   } finally { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k] } }
 }
 
@@ -104,4 +106,30 @@ test('with no daily cap known to the estimate, a run limit is never called a dai
   assert.ok(Math.abs((e.cap.remaining_usd ?? 0) - 1) < 1e-9); assert.equal(e.cap.binding, 'run')
   const line = capLine(e.cap, e.cap.capped_total)!
   assert.match(line, /^This run's limit: \$1\.00; \$1\.00 left \(this run's limit binds\)\./); assert.doesNotMatch(line, /[Dd]aily|reserved today/)
+})
+
+// Council: the caps shown never change what the run does. Bring-your-own enrichment is switched off only by what switches it off in the
+// runner (runner.ts: a run limit, a named account or a trial), so an unnamed account's unlimited run still shows it on.
+const ALL_OFF = { DAZL_OWNER_DAY_MAX_USD: undefined, DAZL_OWNER_MONTH_MAX_USD: undefined, DAZL_RUN_MAX_USD_USERS: undefined, DAZL_OWNER_MONTH_MAX_USD_USERS: undefined }
+test('an unnamed account with no run limit: its own enrichment row stays on, as the run does it', async () => {
+  const { est } = await serverEstimate({ ...ALL_OFF, DAZL_PAID_VENDORS: 'apollo' }, 0, { budget: undefined, vendors: ['apollo'] })
+  const row = est.rows.find(r => r.id === 'apollo_credits')
+  assert.ok(row, 'the apollo row is listed'); assert.ok(row!.units.max > 0, JSON.stringify(row)); assert.doesNotMatch(row!.note, /^Off/)
+  // a run limit switches it off, as in the runner
+  const limited = (await serverEstimate({ ...ALL_OFF, DAZL_PAID_VENDORS: 'apollo' }, 0, { vendors: ['apollo'] })).est.rows.find(r => r.id === 'apollo_credits')
+  assert.equal(limited!.units.max, 0)
+})
+
+test('the month window shown is the one the transport enforces, and binds when tighter', async () => {
+  const { est, month } = await serverEstimate({ ...ALL_OFF, DAZL_OWNER_MONTH_MAX_USD: '5' }, 0, { reservedMonth: 4 })
+  assert.equal(month, 5); assert.equal(est.cap.month_cap_usd, 5); assert.equal(est.cap.binding, 'monthly')
+  assert.match(capLine(est.cap, est.cap.capped_total)!, /Monthly limit: \$5\.00 \(\$4\.00 already reserved this month\); \$1\.00 left \(monthly limit binds\)/)
+})
+
+test('a run with no limit of its own is blocked when the enforced daily cap has too little room', async () => {
+  const { est, day } = await serverEstimate(ALL_OFF, 0, { budget: undefined })
+  const tight = await serverEstimate(ALL_OFF, day - 0.01, { budget: undefined })
+  assert.equal(est.verdict.ok, true)
+  assert.equal(tight.est.verdict.ok, false); assert.equal(tight.est.cap.binding, 'daily')
+  assert.match(tight.est.verdict.message, /only \$0\.01\d* of your \$\d+\.\d\d limit is left/)
 })
