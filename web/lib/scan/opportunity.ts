@@ -10,6 +10,7 @@
 // own website review, several websites = conflict), so the card never claims more than the send gate accepts.
 import { companyTied } from '../people/company-tie.ts'
 import { onlyNameOnly, recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
+import { leadPerson } from '../people/lead-person.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -109,8 +110,12 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     const sep = r.kind === 'person' ? ', ' : ' - '; const i = r.value.indexOf(sep)
     return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector, ...(HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}), ...(r.connector === 'search:people' && !companyTied(r.label) ? { nameOnly: true } : {}) }
   })
-  const top = recommendedPerson(people, buyerRoles) ?? undefined
   const ident = identityOf(l, rows)
+  // #1037: when the company's own website names the buyer (lib/people/lead-person.ts: listed with a title and the LinkedIn that page links),
+  // the card names THAT person, as the lead row does - every READY lead has one, so its card, preview and contact line agree with its row.
+  // Otherwise (a held lead) the card's research suggestion is unchanged.
+  const own = leadPerson(rows, buyerRoles, now.getTime(), ident)
+  const top = own ? { name: own.name, title: own.title, linkedin: own.linkedin } : recommendedPerson(people, buyerRoles) ?? undefined
   // The SAME two rules createDraft enforces, not email syntax: publishedContact picks the address and classifies its
   // purpose from its own context label (support/privacy usage is rejected even when the local part is "hello");
   // domainReviewFor says whether the address's origin needs the user's website review. A contact that equals the address

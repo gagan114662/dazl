@@ -86,3 +86,16 @@ test('profile edit: untouched constraints go back exactly; comma-bearing entries
   const unchangedOthers = editedBuyer(orig, { ...form, industries: 'SaaS; Fintech' })
   for (const k of ['who', 'where', 'sizes', 'signals', 'exclude'] as const) assert.equal(unchangedOthers[k], orig[k], `${k} is the stored array itself`)
 })
+
+test('#1037 a ready lead\'s card names the buyer its own site names, never a better-titled search or provider person', async () => {
+  const { opportunityCard } = await import('../lib/scan/opportunity.ts')
+  const at = Math.floor(Date.now() / 1000), day = new Date().toISOString().slice(0, 10)
+  const others = [
+    { connector: 'search:people', kind: 'person', value: 'Vic Park, VP Sales', label: 'public search result', source_url: 'https://www.linkedin.com/in/vic-park-example', confidence: null, source_date: day, retrieved_at: at },
+    { connector: 'enrich:pdl', kind: 'contact', value: 'Pat Moe - VP Sales', label: 'People Data Labs, record dated ' + day, source_url: 'https://www.linkedin.com/in/pat-moe-example', confidence: null, source_date: day, retrieved_at: at },
+  ]
+  const l = lead({ enrichments: [...ownSiteBuyerRows('brightdental.example', { title: 'Sales Manager' }), ...others] })
+  assert.equal(heldReason(l), null)
+  const card = opportunityCard(l, 'VP Sales; Sales Manager')
+  assert.deepEqual([card.who?.name, card.who?.title, card.who?.link], ['Dana Reyes', 'Sales Manager', 'https://www.linkedin.com/in/dana-reyes-example'])
+})
