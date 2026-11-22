@@ -1910,9 +1910,12 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           // Refs #1122 (run aa193734): the funding pass's candidates must cite the company's own dated announcement or a dated article about
           // that one company (lib/company-first/funding-source.ts). Rejects are counted in the internal run report only - never shown in the
           // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website is not
-          // known yet at this stage, so an own page is judged like any single-company page (dated -> read, undated -> rejected).
+          // hint below is only a hint; without one an own page is judged like any single-company page (dated -> read, undated -> rejected).
           if (fundingOr && angle === CF_FUNDING_ANGLE && extra.length) {
-            const v = fundingSourceVerdicts(extra.map(l => ({ company: l.company, website: null, source_url: l.source_url, event_date: l.event_date })))
+            // the model's website hint for this company (company-first text candidates): it only lets own_site / undated_own_site be told
+            // apart here. It never confirms a domain - the normal domain proof still decides that later.
+            const hints = textSitesByJob.get(job) ?? []
+            const v = fundingSourceVerdicts(extra.map(l => ({ company: l.company, website: hints.find(h => norm(h.company) === norm(l.company))?.website ?? null, source_url: l.source_url, event_date: l.event_date })))
             for (const x of v) if (x.verdict === 'reject') fundingSourceRejects[x.reason] = (fundingSourceRejects[x.reason] ?? 0) + 1
             const keep = extra.filter((_, i) => v[i].verdict !== 'reject')
             extra.splice(0, extra.length, ...keep)
