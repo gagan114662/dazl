@@ -1,7 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { estimateRun, compareActual } from '../lib/scan/price-estimate.ts'
-import { costPerShownLead } from '../lib/scan/cost-per-verification-pass.ts'
 
 // Run af02437c (Refs #1517): sonnet-4-5 + haiku-4-5. The per-call ledger settled $0.74 ("Final cost" had it), yet the page said the
 // stored sums "cannot be priced as one total ... unknown, not $0" and the per-lead line "model cost not recorded".

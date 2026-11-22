@@ -418,7 +418,7 @@ export function compareActual(est: Pick<RunEstimate, 'total' | 'rows'>, a: Actua
   const cacheRecorded = a.cacheWriteTokens != null && a.cacheReadTokens != null
   const complete = settled !== null || (usd !== null && a.tokensComplete && cacheRecorded)
   const modelEst = clampToCap(est.rows.filter(r => r.kind === 'model').reduce((x, r) => ({ min: x.min + (r.usd?.min ?? 0), max: x.max + (r.usd?.max ?? 0) }), { min: 0, max: 0 }), trialCapUsd)
-  const within = !complete ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
+  const within = !complete || usd === null ? 'unknown' : usd < modelEst.min ? 'under' : usd > modelEst.max ? 'over' : 'within'
   const reqs = a.requests ?? null, reqsWithTokens = a.requestsWithTokens ?? null
   // Recorded usage is never "not recorded": when calls were made and only the USD could not be settled, the summary says
   // what IS known (call count, reported tokens, why no USD) and that the actual cost is unknown - never $0 or free.
