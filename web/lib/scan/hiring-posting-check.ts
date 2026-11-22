@@ -21,21 +21,50 @@ const stem = (w: string) => w.replace(/(?:ies)$/, 'y').replace(/(?<!s)s$/, '')
 // A requested role is named when its head noun (the last word: "receptionist" of "front desk receptionist") is in the text. Lenient on
 // qualifiers ("dental receptionist" is a receptionist posting), strict on the role itself.
 const GENERIC_TAIL = new Set(['role', 'position', 'job', 'opening', 'vacancy', 'staff', 'team', 'people', 'hire', 'worker', 'employee'])
+// Qodo #1510 M4: a level noun alone does not name a role ("office manager" is not "sales manager"): the word before it must match too.
+const LEVEL = new Set(['manager', 'director', 'coordinator', 'assistant', 'specialist', 'lead', 'officer', 'associate', 'representative', 'executive', 'administrator', 'head', 'supervisor', 'analyst', 'consultant', 'technician', 'engineer', 'clerk', 'agent'])
 export function namesRequestedRole(text: string, roles: RequestedHiringRole[]): boolean {
   if (matchedHiringRole(text, roles)) return true // the bounded synonyms (SDR = sales development representative)
   const have = new Set(words(text).map(stem))
   return roles.some(r => {
     const w = words(r.term).map(stem)
     while (w.length > 1 && GENERIC_TAIL.has(w[w.length - 1])) w.pop() // "payroll roles" names payroll
-    return w.length > 0 && have.has(w[w.length - 1])
+    if (!w.length || !have.has(w[w.length - 1])) return false
+    return !(LEVEL.has(w[w.length - 1]) && w.length > 1) || have.has(w[w.length - 2])
   })
 }
 
+// A title that names no vacancy: empty, or only words like job / careers / apply / hiring / opportunities (plus a site or company after a separator).
+const GENERIC_WORDS = /^(?:jobs?|careers?|career|opportunit(?:y|ies)|employment|apply|apply now|now hiring|we(?:'re| are) hiring|hiring|join us|join our team|work with us|vacanc(?:y|ies)|openings?|positions?|job posting|job details|home)$/i
+// Qodo #1512 (new): any heading segment that is generic ("Family Dental Associates | Careers") makes the whole title an employer/site heading.
+const titleSegments = (t: string) => t.split(/\s+[|\u2013\u2014-]\s+|\s*[|:]\s*/).map(x => x.trim().replace(/[^a-z' ]/gi, ' ').replace(/\s+/g, ' ').trim())
+const genericTitle = (t: string): boolean => titleSegments(t).every(x => !x) || titleSegments(t).some(x => !!x && GENERIC_WORDS.test(x))
+// A title naming a vacancy: a level noun (coordinator, manager...) or a word shaped like a job title (-ist, -ian, -ant: hygienist, technician, assistant).
+// A company or site name ("Acme Dental") is neither, so its quote is still read.
+// The employer's own name is never the vacancy ("Family Dental Associates").
+const vacancyTitle = (t: string, company?: string | null): boolean => { const own = new Set(words(company ?? '').map(stem)); return words(t).map(stem).filter(w => !own.has(w)).some(w => LEVEL.has(w) || (/(?:ist|ian|ant)$/.test(w) && w.length > 5)) }
+const hiringObjects = (q: string): string[] => [
+  ...[...q.matchAll(/\b(?:hiring|recruiting|seeking|needs|wants|looking\s+for|now\s+hiring:?|wanted:?)\s+(?:for\s+)?(?:(?:an?|the|new|our|one|two|several)\s+)*([a-z][a-z /&-]{1,60})/gi)].map(m => m[1].split(/\s+(?:to|who|with|in|at|for|that|and|or)\b/i)[0]),
+  // Qodo #1512 H1: a "<role> position" counts only as a heading-like statement opening the quote or a sentence, never a qualification
+  // ("prior experience in a front desk receptionist position").
+  ...[...q.matchAll(/(?:^|[.!?:]\s+)(?:(?:an?|the|new|open|full[- ]time|part[- ]time)\s+)*([a-z][a-z /&-]{1,40}?)\s+(?:job|position|opening|vacancy)\b(?!\s+(?:required|preferred|experience|background))/gi)]
+    .filter(m => !/\b(?:experience|prior|previous|former|past|worked|background)\b/i.test(m[1])).map(m => m[1].split(/\s+/).slice(-4).join(' ')),
+]
 export type HiringPostingVerdict = { ok: true } | { ok: false; reason: 'posting_not_specific' | 'job_role_mismatch' }
-export function hiringPostingVerdict(c: { source_url: string; signal: string | null; excerpt?: string | null }, roles: RequestedHiringRole[]): HiringPostingVerdict {
+// Qodo #1510 H1: the posting's role is read from the POSTING (the board record's title, else the fetched page's title, with the candidate's
+// quote only where it names the role as what is being hired); never from the model-written signal.
+// Qodo #1510 M2: in a request mixing sales and other titles, a posting that names none of them is off-role; a sales title stays the sales gate's to prove.
+export function hiringPostingVerdict(c: { source_url: string; signal: string | null; excerpt?: string | null; company?: string | null }, roles: RequestedHiringRole[], posting?: { boardTitle?: string | null; pageTitle?: string | null }): HiringPostingVerdict {
   if (isAggregateJobPage(c.source_url)) return { ok: false, reason: 'posting_not_specific' }
-  // Sales / GTM titles are judged by the sales-hiring gate (sales-hiring-gate.ts, its own bounded title rules); this gate covers every other requested title.
-  const plain = roles.filter(r => !roleNeedsSourceProof(r))
-  if (plain.length && plain.length === roles.length && !namesRequestedRole(`${c.signal ?? ''} ${c.excerpt ?? ''}`, plain)) return { ok: false, reason: 'job_role_mismatch' }
-  return { ok: true }
+  const plain = roles.filter(r => !roleNeedsSourceProof(r)), sales = roles.filter(roleNeedsSourceProof)
+  if (!plain.length) return { ok: true }
+  const names = (t: string) => namesRequestedRole(t, plain) || (sales.length > 0 && namesRequestedRole(t, sales))
+  if (posting?.boardTitle) return names(posting.boardTitle) ? { ok: true } : { ok: false, reason: 'job_role_mismatch' }
+  if (posting?.pageTitle && names(posting.pageTitle)) return { ok: true }
+  // Qodo #1512 H3: a page title naming another vacancy is the posting's role; the quote is read only when the title is generic or absent.
+  if (posting?.pageTitle && !genericTitle(posting.pageTitle) && vacancyTitle(posting.pageTitle, c.company)) return { ok: false, reason: 'job_role_mismatch' }
+  // A generic page title ("Job"): the quote may still state the vacancy, but only as the OBJECT of hiring ("is hiring a payroll specialist",
+  // "receptionist position"), never as a role merely mentioned in the description ("reports to the front desk receptionist").
+  if (hiringObjects(c.excerpt ?? '').some(names)) return { ok: true }
+  return { ok: false, reason: 'job_role_mismatch' }
 }
