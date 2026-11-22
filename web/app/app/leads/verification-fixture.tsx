@@ -38,10 +38,8 @@ export default function VerificationFixture({ onChanged }: { onChanged?: () => v
         : <button className="underline" disabled={busy} onClick={() => void act('POST', 'first_touch')}>create the first-touch autopilot fixture</button>}
       {' '}(one test-only lead to your own test inbox; confirm it under Needs your review, then autopilot drafts it)
       {state.workEmailExists && <>
-        {' '}{state.workEmailExists
-          ? <button className="underline" disabled={busy} onClick={() => void act('DELETE', 'work_email')}>remove the Find work email fixture</button>
-          : null}
-        {' '}(staging only: one test-only lead naming five test buyers; Find work email answers from the staging fake People Data Labs and fake ZeroBounce)
+        {' '}<button className="underline" disabled={busy} onClick={() => void act('DELETE', 'work_email')}>remove the Find work email fixture</button>
+        {' '}(the test-only lead an earlier release created; it is no longer used)
       </>}
       {state.realCheckAvailable && <span className="block mt-1" data-testid="real-company-check">
         Staging: check a real company for Find work email{' '}

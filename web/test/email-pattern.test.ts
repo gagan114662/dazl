@@ -332,6 +332,7 @@ test('#1036 #1250 a stored guess at the address the site now prints becomes the 
   assert.equal(rec('https://acme.com/team')?.published, 1)
   const row = () => db.prepare("SELECT tenant_id, person, tier, format, source_url FROM email_candidates WHERE lead_id = 'L1' AND address = 'dana.lee@acme.com'").get()
   assert.deepEqual(row(), { tenant_id: 'A', person: 'Dana Lee, CEO', tier: 'published', format: 'published', source_url: 'https://acme.com/team' })
+  assert.equal(db.prepare("SELECT confidence FROM email_candidates WHERE lead_id = 'L1'").pluck().get(), null, 'no guess confidence is carried onto the published row')
   assert.deepEqual(publishedCandidateRowsForLeads(db, 'A', ['L1']).L1?.map(r => [r.address, r.source_url]), [['dana.lee@acme.com', 'https://acme.com/team']])
   // a later crawl printing it on another page never overwrites the published row
   assert.equal(rec('https://acme.com/about')?.published, 0)

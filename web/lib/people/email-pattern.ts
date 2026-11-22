@@ -463,7 +463,7 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
     // A guess an earlier release stored for the same address becomes the published row once the site prints it (the key is
     // lead_id + address, so it would otherwise block the printed address for good); a published row is never overwritten.
     const ins = db.prepare(`INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?)
-      ON CONFLICT (lead_id, address) DO UPDATE SET person = excluded.person, format = 'published', country_basis = excluded.country_basis, tier = 'published', source_url = excluded.source_url
+      ON CONFLICT (lead_id, address) DO UPDATE SET person = excluded.person, format = 'published', country_basis = excluded.country_basis, tier = 'published', source_url = excluded.source_url, confidence = NULL
       WHERE email_candidates.tier = 'guessed' AND email_candidates.tenant_id = excluded.tenant_id`)
     for (const x of pubAll) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
   }

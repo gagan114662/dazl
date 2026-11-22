@@ -283,7 +283,7 @@ test('guessed addresses are off by default, never leave the unverified state and
   }
   walk('lib/outreach'); walk('app')
   assert.deepEqual(readers, [])
-  assert.match(privacy, /never emailed or used as a recipient/) // #1036: shown only where Find work email found nothing, labelled guessed, unverified (test/email-formats-1036.test.ts)
+  assert.match(privacy, /never emailed or used as a recipient/) // #1036 / #1250: Find work email no longer shows guesses; the privacy text change waits on owner sign-off
 })
 
 test('outbound mail carries the sender name, mailing address and an unsubscribe link and header', () => {
