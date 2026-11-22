@@ -137,3 +137,19 @@ test('#1395 runJob: a model reply naming "Fintech" as the city of California hol
   assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed for a city that is no place')
   assert.match(boardsStatus(x) ?? '', /^skipped_no_place:city:/)
 })
+
+// Qodo Low (#1527): a job-board source the user PICKED, whose request names a place the boards cannot place ("Canada") or no place at all, is held
+// with the named reason, never run with no place (which recorded "empty" over the reason). The other picked source still runs.
+test('#1395 runJob: picked job boards with an unplaceable or absent request place record the reason, not "empty"', async () => {
+  for (const [req, places, want] of [
+    ['SaaS startups in Canada hiring account executives', [{ text: 'Canada', city: null, region: null, country: 'CA' }], /^skipped_no_place:country:Canada/],
+    ['SaaS startups hiring account executives', [], /^skipped_no_place/],
+  ] as const) {
+    const { http, seen } = board()
+    const x = await runFixture({ ...fx(http, req, [], 'CA', plan([...places])), sources: JSON.stringify({ adapters: ['jobboards', 'careers'] }) })
+    assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), `${req}: no board was listed`)
+    assert.match(boardsStatus(x) ?? '', want, req)
+    const careers = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:careers'").get() as { status: string } | undefined
+    assert.ok(careers, `${req}: the careers source the user picked still ran`)
+  }
+})

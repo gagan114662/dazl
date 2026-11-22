@@ -173,3 +173,30 @@ test('#1395 cachedRequestPlan: a play read once is available without a call; ano
   assert.ok(cachedRequestPlan('T', REAL))
   assert.equal(cachedRequestPlan('T2', REAL), null)
 })
+
+// Qodo High (#1527, b2742c2): a lowercase written state is still a written qualifier. "Austin, texas" with the plan's region omitted is refused
+// (never left for a resolver to infer), and a plan that writes the region is read as the CITY of Austin, never as all of Texas.
+// SYNTHETIC request. A two-letter lowercase word ("in", "or", "me") is still never read as a state code.
+test('#1395 grounding and board place: "Austin, texas" (lowercase state) is never all of Texas', () => {
+  const req = 'B2B SaaS companies hiring account executives in Austin, texas'
+  assert.equal(groundedIn(req, { text: 'Austin, texas', city: 'Austin', region: null, country: null }), false, 'an omitted lowercase state is refused')
+  assert.equal(groundedIn(req, { text: 'Austin, texas', city: 'Austin', region: 'texas', country: 'US' }), true)
+  assert.equal(groundedIn('teams in or near Austin', { text: 'in or near Austin', city: 'Austin', region: null, country: null }), true, 'two-letter words are not state codes')
+  const b = boardPlaceOf([{ text: 'Austin, texas', city: 'Austin', region: 'texas', country: 'US' }], { country: 'US' })
+  assert.ok('place' in b, `Austin, texas is a place: ${JSON.stringify(b)}`)
+  assert.ok(b.place.ok('Austin, TX'), 'an Austin posting is in Austin')
+  assert.ok(!b.place.ok('Houston, TX') && !b.place.ok('Dallas, Texas'), 'another Texas city is not Austin')
+})
+
+// Qodo High (#1527, b2742c2): a bare request city read through the profile is read only when every profile entry naming that city names ONE place.
+// A profile listing Cambridge, Ontario and Cambridge, UK holds the boards, in either order (never the first entry). SYNTHETIC profile.
+test('#1395 board place: a bare city matching two different profile places holds, in either order', () => {
+  const cam = { text: 'Cambridge', city: 'Cambridge', region: null, country: null }
+  for (const where of [['Cambridge, Ontario', 'Cambridge, UK'], ['Cambridge, UK', 'Cambridge, Ontario']]) {
+    const r = boardPlaceOf([cam], { where })
+    assert.ok('reason' in r && /^skipped_no_place:/.test(r.reason), `${where.join(' | ')}: ${JSON.stringify(r)}`)
+  }
+  // two entries naming the SAME place are one place
+  const one = boardPlaceOf([cam], { where: ['Cambridge, UK', 'Cambridge, United Kingdom'] })
+  assert.ok('place' in one && one.place.ok('Cambridge, UK') && !one.place.ok('Cambridge, ON, Canada'), JSON.stringify(one))
+})

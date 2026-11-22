@@ -10,3 +10,13 @@ test('#1395 progress: skipped_request_plan:<reason> is skipped with a note, for 
     assert.ok(skipNote(`skipped_request_plan:${r}`), `${r} has a note`)
   }
 })
+
+// Qodo Low (#1527): the note names the real cause. A spend refusal or a model failure never tells the user to rewrite their place.
+test('#1395 progress: each skipped_request_plan reason has its own note', () => {
+  const notes = ['error', 'schema', 'place_not_in_request', 'spend_refused'].map(r => skipNote(`skipped_request_plan:${r}`)!)
+  assert.equal(new Set(notes).size, 4, JSON.stringify(notes))
+  assert.match(notes[3], /spend limit/i)
+  assert.doesNotMatch(notes[3], /city|country|place/i)
+  assert.doesNotMatch(notes[0], /city and its country/i)
+  assert.match(notes[2], /city and its country/i)
+})
