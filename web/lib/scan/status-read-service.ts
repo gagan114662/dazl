@@ -4,7 +4,7 @@ import { readProviderIssues } from './provider-issues.ts'
 import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verification-pass.ts'
 import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
-import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readRefusedModelCalls, readLastActivity, readTrialScanCap } from './status-reads.ts'
+import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readHeldPaidSteps, readRefusedModelCalls, readLastActivity, readTrialScanCap } from './status-reads.ts'
 import { trialCaps } from '../billing/trial-budget.ts'
 import { clampToCap, compareActual, trialCapLine, trialScanCap, type RunEstimate } from './price-estimate.ts'
 import { readRunReportRows } from './run-report.ts'
@@ -69,7 +69,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
       }
       const capUnknown = trial && trialCap === null
       const ended = job.status === 'done' || job.status === 'failed'
-      const compared = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, finalUsd: saved.read ? recordedJobCostUsd(saved.reserved_usd, saved.cap_reserved_usd) : null, servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }, trialCap) : null
+      const compared = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, finalUsd: saved.read ? recordedJobCostUsd(saved.reserved_usd, saved.cap_reserved_usd) : null, finalHeldSteps: await readHeldPaidSteps(db, tenantId, job.id), servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }, trialCap) : null
       const actual = compared
       // Cost per verification pass: the scan's own verified counter as denominator, model cost as
       // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead

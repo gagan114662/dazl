@@ -38,6 +38,16 @@ export async function readRefusedModelCalls(db: Db, tenantId: string, jobId: str
     return Number(r.sent ?? 0) > 0 ? null : Number(r.n ?? 0)
   } catch { return null }
 }
+// #1517: how many of this job's paid calls never reported a cost (still 'reserved', or 'kept' at their reservation after a
+// failed or unreadable answer), owner-scoped. They are in the job's recorded cost at the amount reserved for them, and the
+// final-cost line says so. null when unreadable.
+export async function readHeldPaidSteps(db: Db, tenantId: string, jobId: string): Promise<number | null> {
+  try {
+    const row = await db.get<{ n: number | string | null }>("SELECT COUNT(*) AS n FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ? AND c.status IN ('reserved', 'kept') AND c.reserve_usd > 0", [tenantId, jobId])
+    const n = Number(row?.n)
+    return Number.isSafeInteger(n) && n >= 0 ? n : null
+  } catch { return null }
+}
 export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null; /** the row was read: reserved_usd null then means the column is empty, not that the read failed */ read: boolean }> {
   try {
     // Both reservation columns: spend_reserved_usd (a max_usd run's reservation) AND spend_cap_reserved_usd (the per-job

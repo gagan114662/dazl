@@ -51,6 +51,6 @@ export async function campaignDetail(db: Db, tenantId: string, jobId: string): P
   // The row was read: an empty spend column means no paid call was recorded (0), the same as the status read and the history list.
   const { spend_run_usd, spend_cap_usd, ...row } = job
   // the job's one recorded cost (job-cost.ts, #1517): never the two guards' columns added
-  return { job: { ...row, spend_usd: recordedJobCostUsd(spend_run_usd, spend_cap_usd) ?? 0 }, leads, messages: marked ? messages.filter(m => hasSentHistory(m) || proof?.readyIds.has(m.lead_id)) : messages,
+  return { job: { ...row, spend_usd: recordedJobCostUsd(spend_run_usd, spend_cap_usd) }, leads, messages: marked ? messages.filter(m => hasSentHistory(m) || proof?.readyIds.has(m.lead_id)) : messages,
     ...(marked ? { company_first_counts: proof?.counts ?? null } : {}) }
 }

@@ -1,4 +1,4 @@
-// #1517: the cost a finished scan's page shows and the cost its job record carries are one number. Found on prod run 679a7354:
+// #1517: the cost a finished scan's page shows and the cost its job record carries are one number. Found on a prod run (#1517):
 // the page said "at least $0.56 ... reserved $0.68" while the job record said $1.36 - exactly twice the reservation, because the
 // record added the run-budget guard's column (spend_reserved_usd) to the per-scan cap ledger's column (spend_cap_reserved_usd),
 // and both hold THE SAME paid calls, each settled to the cost the provider reported (spend-guard.ts settleAll, spend-cap.ts
@@ -19,6 +19,7 @@ import { readScanStatus } from '../lib/scan/status-read-service.ts'
 import { historyJobs } from '../lib/scan/history-jobs.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
 import { bothEngines } from './helpers/engines.ts'
+import { recordedJobCostUsd } from '../lib/scan/job-cost.ts'
 
 const JOB = 'a1517b000000000000000001'
 const api = 'https://api.anthropic.com/v1/messages'
@@ -100,4 +101,72 @@ bothEngines('#1517: the prod shape (0.68 in both columns) reads as $0.68 on the 
   assert.equal(Number(((await historyJobs(db, 'T')).find(j => j.id === JOB) as { spend_usd?: number }).spend_usd), 0.41)
   // owner-scoped: another tenant's job is never read
   assert.equal((await historyJobs(db, 'T')).some(j => j.id === 'a1517b000000000000000009'), false)
+})
+
+// Council: the page's final-cost line on both engines (Postgres returns the columns as strings). A paid call that never reported
+// a cost is in the final cost at the amount reserved for it, and the line says how many such steps there are.
+bothEngines('#1517: the page states the same final cost as the record, naming a step counted at its reservation', async ({ db }) => {
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, estimate, spend_reserved_usd, spend_cap_reserved_usd, created_at, finished_at) VALUES (?, 'T', 'x', 'i', 'l', 'q', 'done', ?, 0.68, 0.68, 1795300000, 1795300100)", [JOB, estimate])
+  const ins = "INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, 'T', ?, 1, 'llm.anthropic', ?, ?, ?, NULL, 1795300010, ?)"
+  await db.run(ins, ['c1', JOB, 0.5, 0.48, 'settled', 1795300020])
+  await db.run(ins, ['c2', JOB, 0.2, null, 'kept', 1795300030])
+  await db.run(ins, ['c3', JOB, 0.05, null, 'refused', null])   // refused before sending: never in the cost
+  const s = await readScanStatus(db, 'T', JOB) as unknown as { cost: { actual: { final_usd: number | null; summary: string } } }
+  const h = (await historyJobs(db, 'T')).find(j => j.id === JOB) as { spend_usd?: number | string }
+  assert.equal(Number(s.cost.actual.final_usd), Number(h.spend_usd))
+  assert.equal(Number(h.spend_usd), 0.68)
+  assert.match(s.cost.actual.summary, /^Final cost \$0\.68, including one paid step counted as billed at the amount reserved for it\. /)
+  assert.doesNotMatch(s.cost.actual.summary, /a reservation, not a settled charge|may have been/)
+})
+
+test('#1517: a spend column that is not an amount makes the cost unknown, never $0', () => {
+  assert.equal(recordedJobCostUsd('abc', null), null)
+  assert.equal(recordedJobCostUsd(null, 'NaN'), null)
+  assert.equal(recordedJobCostUsd(null, null), 0)
+  assert.equal(recordedJobCostUsd('0.68', '0.68'), 0.68)
+  assert.equal(recordedJobCostUsd(0.41, 0), 0.41)
+  assert.equal(recordedJobCostUsd('1e+0', 0), 1)
+  assert.equal(recordedJobCostUsd(-0.2, null), null)
+})
+
+// Council: a free trial's run guard keeps each call's worst case (it never settles down) and an unknown-cost call exhausts a
+// guard to its full limit; neither is a cost. The cap ledger, settled to what the provider reported, is.
+bothEngines('#1517: when the run guard holds a worst case above the settled ledger (trial / exhausted guard), the cost is the ledger', async ({ db }) => {
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, estimate, spend_reserved_usd, spend_cap_reserved_usd, created_at, finished_at) VALUES (?, 'T', 'x', 'i', 'l', 'q', 'done', ?, 0.3, 0.0412, 1795300000, 1795300100)", [JOB, estimate])
+  await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES ('t1', 'T', ?, 1, 'llm.anthropic', 0.2, 0.0412, 'settled', NULL, 1795300010, 1795300020)", [JOB])
+  const s = await readScanStatus(db, 'T', JOB) as unknown as { cost: { actual: { final_usd: number | null; summary: string } } }
+  assert.equal(Number(s.cost.actual.final_usd), 0.0412)
+  assert.equal(Number(((await historyJobs(db, 'T')).find(j => j.id === JOB) as { spend_usd?: number | string }).spend_usd), 0.0412)
+  assert.equal(Number((await campaignDetail(db, 'T', JOB))?.job.spend_usd), 0.0412)
+  assert.match(s.cost.actual.summary, /^Final cost \$0\.04\. /)
+})
+
+// Council: a call stranded 'reserved' (a crash before its settle) is in the final cost at the amount reserved for it and the
+// line says so - counted as billed (#1157), never re-run, never a hedge. When the spend row cannot be read, no final cost.
+bothEngines('#1517: a stranded reserved call is named in the final cost; an unread spend row states no final cost', async ({ db }) => {
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, error, estimate, spend_reserved_usd, spend_cap_reserved_usd, created_at, finished_at) VALUES (?, 'T', 'x', 'i', 'l', 'q', 'failed', 'accounting_uncertain', ?, 0, 0.35, 1795300000, 1795300100)", [JOB, estimate])
+  const ins = "INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES (?, 'T', ?, 1, 'llm.anthropic', ?, ?, ?, NULL, 1795300010, ?)"
+  await db.run(ins, ['r1', JOB, 0.1, 0.05, 'settled', 1795300020])
+  await db.run(ins, ['r2', JOB, 0.15, null, 'reserved', null])
+  await db.run(ins, ['r3', JOB, 0.15, null, 'reserved', null])
+  const s = await readScanStatus(db, 'T', JOB) as unknown as { cost: { actual: { final_usd: number | null; summary: string } } }
+  assert.equal(Number(s.cost.actual.final_usd), 0.35)
+  assert.match(s.cost.actual.summary, /^Final cost \$0\.35, including 2 paid steps counted as billed at the amount reserved for them\. /)
+  const unread = { ...db, get: (async (sql: string, p?: unknown[]) => { if (/spend_reserved_usd, spend_cap_reserved_usd FROM scan_jobs/.test(sql)) throw new Error('db down'); return db.get(sql, p as never) }) as never } as typeof db
+  const u = await readScanStatus(unread, 'T', JOB) as unknown as { cost: unknown; outcome: unknown }
+  assert.equal(u.cost, null)   // nothing read: no cost line at all, never a stated final cost
+  assert.doesNotMatch(JSON.stringify(u), /Final cost|Nothing was charged/)
+})
+
+// Council: an unreadable spend column is unknown on every surface - never $0, so never "Nothing was charged".
+test('#1517: an unreadable spend column makes no charge claim on the history list, the campaign record or the page', async () => {
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, error, funded_by, spend_reserved_usd, spend_cap_reserved_usd, created_at, finished_at) VALUES (?, 'T', 'x', 'i', 'l', 'q', 'failed', 'budget_stopped', 'trial', 'abc', 0, 1795300000, 1795300100)").run(JOB)
+  const h = (await historyJobs(sqliteDb(db), 'T')).find(j => j.id === JOB) as Record<string, unknown>
+  assert.equal('spend_usd' in h, false)
+  assert.equal((await campaignDetail(sqliteDb(db), 'T', JOB))?.job.spend_usd, null)
+  const s = await readScanStatus(sqliteDb(db), 'T', JOB) as unknown as { outcome: { label: string } }
+  assert.doesNotMatch(s.outcome.label, /Nothing was charged/)
+  db.close()
 })

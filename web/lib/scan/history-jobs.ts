@@ -17,7 +17,7 @@ export async function historyJobs(db: Db, userId: string) {
   return Promise.all((await listJobs(db, userId)).map(async j => ({
     ...j,
     // Recorded spend (the job's one cost, job-cost.ts: a positive amount is a paid call), only when it was read (an empty column on a read row = 0; a failed read = omitted): a free scan that stopped at its limit says whether anything was charged (scan-outcome.ts).
-    ...(spend.has(j.id) ? { spend_usd: spend.get(j.id) ?? 0 } : {}),
+    ...(spend.get(j.id) != null ? { spend_usd: spend.get(j.id) } : {}),   // unread or unreadable: left out, never 0
     funded_by: trial.has(j.id) ? 'trial' as const : null,
     status: effectiveStatus(j),
     // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.
