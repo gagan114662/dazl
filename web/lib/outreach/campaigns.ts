@@ -8,7 +8,7 @@ import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
 import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
-import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, type ReachRow } from '../people/buyer-reach.ts'
+import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
 
@@ -123,7 +123,9 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const byChecks = heldByChecksOf(j, shown)
     const gateHeld = (r: Row) => requiredGateHeld(db, tenantId, r.id) !== null
     // #1037: a review that cannot give the lead its buyer cannot make it ready (lib/people/buyer-reach.ts, Home's own answer)
-    const noBuyer = buyerUnreachableFrom(rows.filter(r => r.review_reason), db.prepare(buyerReachSql(1)).all(tenantId, tenantId, j.id) as ReachRow[])
+    let reach: ReachRow[]
+    try { reach = db.prepare(buyerReachSql(1)).all(tenantId, tenantId, j.id) as ReachRow[] } catch (e) { reach = noTable(e) }
+    const noBuyer = buyerUnreachableFrom(rows.filter(r => r.review_reason), reach)
     const alreadyResearch = (r: Row) => evidenceStateOf(r) === 'unverified'
       ? (r.review_reason ? !reviewIsActionable({ review_reason: r.review_reason, window_held: leadWindowHeld(db, tenantId, r.id), gate_held: gateHeld(r), buyer_unreachable: noBuyer.has(r.id) }) : gateHeld(r))
       : currentnessHeld(db, tenantId, r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || gateHeld(r))

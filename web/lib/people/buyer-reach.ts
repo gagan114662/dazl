@@ -32,9 +32,14 @@ export function buyerUnreachableFrom(leads: readonly { id: string; contact: stri
   for (const r of rows) { const a = by.get(r.lead_id) ?? []; a.push(r); by.set(r.lead_id, a) }
   return new Set(leads.filter(l => !reviewCanNameBuyer(l, by.get(l.id) ?? [])).map(l => l.id))
 }
+// An older schema with no enrichment table has no stored rows: no review lead can name its buyer (fails closed to research, as on Home).
+export function noTable(e: unknown): ReachRow[] {
+  if (/no such table|does not exist/i.test(String((e as Error)?.message))) return []
+  throw e
+}
 // On the Db layer (SQLite or Postgres): the review-list leads of these scans a review cannot give a buyer.
 export async function buyerUnreachable(db: Db, tenantId: string, jobIds: readonly string[], leads: readonly { id: string; contact: string | null }[]): Promise<Set<string>> {
   const ids = [...new Set(jobIds)]
   if (!ids.length) return new Set()   // one read per call whatever the leads, so a list's query count never depends on its lead count
-  return buyerUnreachableFrom(leads, await db.all<ReachRow>(buyerReachSql(ids.length), [tenantId, tenantId, ...ids]))
+  return buyerUnreachableFrom(leads, await db.all<ReachRow>(buyerReachSql(ids.length), [tenantId, tenantId, ...ids]).catch(e => noTable(e)))
 }
