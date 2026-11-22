@@ -5,6 +5,8 @@
 //      then seniority; a tie between two people is no buyer) is stored on the lead: name, title, and their LinkedIn profile as the source.
 //      The person is a candidate like any other: siteContactFromRows still applies the request's buyer bar before it is shown.
 // No company, title or place is hard-coded: the page is the company's own link, the role is the scan's own ICP.
+import { DEVICE_CONNECTOR } from '../advanced/linkedin-connect.ts'
+import { readConsent } from '../advanced/index.ts'
 import type { Db, Tx, TxBody } from '../db/client.ts'
 import { chooseSiteBuyer } from '../connectors/sitecrawl.ts'
 import { addEnrichmentTx } from '../connectors/store.ts'
@@ -21,8 +23,13 @@ export function companyPeopleUrl(homeHtml: string): string | null {
   return /^[a-z0-9_.-]{1,100}$/.test(slug) ? `https://www.linkedin.com/company/${slug}/people/` : null
 }
 
+// The workspace has connected LinkedIn: a paired dazl Connect device (the row Settings' pairing writes, lib/advanced/linkedin-connect.ts
+// redeemPairing, and Disconnect removes) AND the accepted LinkedIn notice. The same two facts the task routes require of the extension
+// (app/api/tasks/_auth.ts), so a read is queued exactly when the extension could come and take it. (It used to read li_ext_tokens,
+// which the pairing flow never writes: a freshly paired workspace queued nothing. Review of #1574.)
 export async function hasExtension(db: Db, tenantId: string): Promise<boolean> {
-  return !!(await db.get('SELECT 1 AS x FROM li_ext_tokens WHERE tenant_id = ?', [tenantId]))
+  if (!(await db.get('SELECT 1 AS x FROM tenant_connectors WHERE tenant_id = ? AND connector = ?', [tenantId, DEVICE_CONNECTOR]))) return false
+  return readConsent(db, tenantId, 'linkedin')
 }
 const ref = (jobId: string, leadId: string) => `lead:${jobId}:${leadId}`
 export async function enqueueCompanyPeople(db: Db, tenantId: string, jobId: string, leadId: string, peopleUrl: string, now?: number): Promise<string | null> {

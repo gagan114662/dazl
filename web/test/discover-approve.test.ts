@@ -35,11 +35,15 @@ test('the card shows the person and the email, and Approve is on when a public p
   // the safety rules stay: an undated signal, an address off the company's site, a support inbox, a failed required check
   const why = (e: unknown[], o: Record<string, unknown> = {}) => { const a = leadCardSummary(lead(e, o) as never).approve; return a.ok ? 'ok' : a.reason }
   assert.match(why([person, email], { event_date: null }), /no date/)
-  assert.match(why([person, { ...email, value: 'dana@other-company.example', source_url: 'https://directory.example/northwind' }]), /not on the company's own website/)
+  assert.match(why([person, { ...email, value: 'dana@other-company.example', source_url: 'https://directory.example/northwind' }]), /only on another site/)
+  // review of #1574: the company's own mailbox domain is not publication by the company. The SAME address, found only on a directory, is refused
+  assert.match(why([person, { ...email, source_url: 'https://directory.example/northwind' }]), /only on another site/)
+  assert.equal(why([person, { ...email, source_url: 'https://team.northwind-dental.example/people' }]), 'ok', 'a subdomain of the company site is its own site')
+  assert.match(why([person, { ...email, source_url: 'https://northwind-dental.example.evil.example/contact' }]), /only on another site/)
   assert.equal(why([person, { ...email, value: 'dana@other-mail.example', source_url: 'https://www.northwind-dental.example/contact' }]), 'ok', 'an address printed on the company\'s own site')
   assert.match(why([person, { ...email, value: 'privacy@northwind-dental.example' }]), /not a sales contact/)
   assert.match(why([person, email], { gate_held: true }), /required check/)
-  assert.match(why([person, email], { company_domain: null }), /not on the company's own website/)
+  assert.match(why([person, email], { company_domain: null }), /only on another site/)
 })
 
 test('Approve creates a draft for the published address; autopilot and calibration still get every older check', () => {
@@ -62,14 +66,18 @@ test('Approve creates a draft for the published address; autopilot and calibrati
   assert.equal(code(() => createDraft(db, 'OTHER', id, 'x', { manual: true })), 'not_found', 'another workspace cannot draft to this lead')
   // the same rules at the server, whatever the page shows
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j2', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
-  const cases = [{ date: null }, { domain: 'someone-else.example' }, { to: 'privacy@northwind-dental.example' }].map((o: { date?: string | null; domain?: string | null; to?: string }) => {
+  const cases = [{ date: null }, { domain: 'someone-else.example' }, { to: 'privacy@northwind-dental.example' }, { src: 'https://directory.example/northwind' }, { to: 'sam@northwind-dental.example', src: 'https://northwind-dental.example/team' }].map((o: { date?: string | null; domain?: string | null; to?: string; src?: string }) => {
     const lid = randomBytes(12).toString('hex')
     db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j2', 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', ?, 85, 'Northwind Dental will open its second clinic', ?, 'verified', 85, 4, 4, 'expanding', 'discover', ?)").run(lid, `https://news.example/${lid}`, o.date === undefined ? '2026-10-14' : o.date, o.domain === undefined ? 'northwind-dental.example' : o.domain)
-    return { lid, to: o.to ?? email.value }
+    return { lid, to: o.to ?? email.value, src: o.src ?? email.source_url }
   })
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j2'").run()
-  const [undated, offSite, privacy] = cases.map(c => { addEnrichment(db, 'T', c.lid, { ...email, value: c.to, confidence: null, source_date: '2026-11-22', retrieved_at: now }); return code(() => createDraft(db, 'T', c.lid, 'Fit-out Co', { manual: true })) })
+  const [undated, offSite, privacy, directoryOnly, ownSite] = cases.map(c => { addEnrichment(db, 'T', c.lid, { ...email, value: c.to, source_url: c.src, confidence: null, source_date: '2026-11-22', retrieved_at: now }); return code(() => createDraft(db, 'T', c.lid, 'Fit-out Co', { manual: true })) })
   assert.deepEqual([undated, offSite, privacy], ['lead_currentness_unconfirmed', 'domain_unconfirmed', 'not_sales_contact'])
+  // review of #1574: dana@<company domain> sourced only from a directory is refused and NO draft row exists; an address the company's own page prints is drafted
+  const drafts = (lid: string) => (db.prepare("SELECT COUNT(*) AS n FROM outreach_messages WHERE tenant_id = 'T' AND lead_id = ?").get(lid) as { n: number }).n
+  assert.deepEqual([directoryOnly, drafts(cases[3].lid)], ['domain_unconfirmed', 0])
+  assert.deepEqual([ownSite, drafts(cases[4].lid)], ['created', 1])
 })
 
 test('the scheduler enrols a first search into a repeat only when the operator switch is on', () => {

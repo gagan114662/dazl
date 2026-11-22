@@ -53,14 +53,16 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   } else if ((l.name ?? '').trim()) person = { name: l.name!.trim(), title: null, linkedin: li?.value ?? null, source: null }
   return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null }
 }
-// The address belongs to the company: its own domain is the lead's website, or the page that prints it is on the lead's website.
+// The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
+// A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's
+// publication, and nothing shows the company put it there (review of #1574).
 const bare = (h: string) => h.toLowerCase().replace(/^www\./, '')
 export function emailOnCompanySite(email: string, sourceUrl: string | null | undefined, companyDomain: string | null | undefined): boolean {
   const site = bare((companyDomain ?? '').trim())
   if (!site) return false
   const under = (h: string) => h === site || h.endsWith(`.${site}`)
-  if (under(bare(email.slice(email.lastIndexOf('@') + 1)))) return true
-  try { return under(bare(new URL(sourceUrl ?? '').hostname)) } catch { return false }
+  if (!email.includes('@')) return false
+  try { const u = new URL(sourceUrl ?? ''); return (u.protocol === 'https:' || u.protocol === 'http:') && under(bare(u.hostname)) } catch { return false }
 }
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
 // Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
@@ -73,6 +75,6 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
   const c = discoverContact(l)
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
-  if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The published address is not on the company\'s own website. Confirm the company website in Details first.' }
+  if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address was not found on the company\'s own website, only on another site.' }
   return { ok: true }
 }
