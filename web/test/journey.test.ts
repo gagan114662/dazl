@@ -30,6 +30,12 @@ test('wrong-company, undated, out-of-window, unverified, rejected and in-review 
     ['no verified date', { day_verified: undefined, date_status: 'verified' }],   // the retired verdict (pre 2026-10-23 rows, no proof) never counts, #1176
     ['not a fit', { fit: 0, intent: null }],
     [NO_OWN_BUYER, { enrichments: [] }],   // #1037: nobody named on the company's own site
+    [NO_OWN_BUYER, { enrichments: ownSiteBuyerRows('brightdental.example', { at: Math.floor(Date.now() / 1000) - 200 * 86_400 }) }],   // read on the site over 180 days ago: not current
+    [NO_OWN_BUYER, { enrichments: ownSiteBuyerRows('brightdental.example').filter(r => r.kind === 'person') }],   // the site is not confirmed as the company's (no domain rows)
+    [NO_OWN_BUYER, { enrichments: ownSiteBuyerRows('brightdental.example').map(r => r.kind === 'person' ? { ...r, label: 'listed with this title on this company page' } : r) }],   // listed, but the page links no LinkedIn
+    [NO_OWN_BUYER, { enrichments: [...ownSiteBuyerRows('brightdental.example').filter(r => r.kind !== 'person'), { connector: 'search:people', kind: 'person', value: 'Dana Reyes, Head of Sales', label: 'public search result', source_url: 'https://www.linkedin.com/in/dana-reyes-example', confidence: null, source_date: '2026-11-20', retrieved_at: Math.floor(Date.now() / 1000) }] }],   // found by search, not on the company's site
+    [NO_OWN_BUYER, { enrichments: [...ownSiteBuyerRows('brightdental.example').filter(r => r.kind !== 'person'), ...ownSiteBuyerRows('elsewhere.example').filter(r => r.kind === 'person')] }],   // a person read on ANOTHER site
+    [NO_OWN_BUYER, { enrichments: ownSiteBuyerRows('brightdental.example').filter(r => r.kind !== 'domain_check').map(r => r.kind === 'domain' ? { ...r, value: 'brightdental.example|name_probe', label: 'domain-basis-v1:name_probe' } : r) }],   // the site was only GUESSED by name: its page cannot name the buyer
   ]
   for (const [why, o] of bad) assert.equal(heldReason(lead(o)), why, why)
   const s = previewSplit(bad.map(([, o], i) => lead({ ...o, id: `b${i}` })))

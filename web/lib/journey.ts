@@ -12,7 +12,8 @@ import { leadPerson } from './people/lead-person.ts'
 import { identityOf } from './scan/opportunity.ts'
 
 // #1037: a ready lead names its buyer - a person the company's own website lists, with a title and the LinkedIn profile that page links
-// (lib/people/lead-person.ts, the same rule the lead row shows). Without one the lead is held, whatever else it proves.
+// (lib/people/lead-person.ts). The row applies the same rule with the play's buyer roles; here no roles are passed, so a ready lead's row
+// always names that person (the roles only widen an assistant title the play itself asks for). Without one the lead is held.
 export const NO_OWN_BUYER = 'no buyer named on the company\'s own site'
 const ownSiteBuyer = (l: PreviewLead) => leadPerson(l.enrichments ?? [], '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
 

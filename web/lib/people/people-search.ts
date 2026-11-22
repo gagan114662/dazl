@@ -163,7 +163,7 @@ export function peopleTraceMessage(stored: number, stopped: string | null, stats
 // A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play
 // search: a titled, role-matching, non-historical person with a checkable link is already stored (e.g. its own site).
 // all of the lead's rows: its people AND the site rows that say whether its website is confirmed (identityOf), as the lead row reads them (#1037)
-const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? ORDER BY insert_seq LIMIT 500"
+const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind IN ('person','contact','domain','domain_check','domain_review','email') ORDER BY insert_seq LIMIT 500"
 // Runs after a scan finishes. Never throws; returns how many people were stored (also when it stopped on an error).
 export async function findPeople(db: Database.Database, tenantId: string, jobId: string, deps: PeopleOpts = {}): Promise<number> {
   let stored = 0

@@ -1,4 +1,5 @@
 // Synthetic transport regression through runJob; NOT live yield evidence. No seeded domain/person/email rows.
+import { contactsFromEnrichments } from '../lib/people/rank.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, master, type Fixture } from './helpers/acceptance-harness.ts'
@@ -78,7 +79,10 @@ async function pipeline(mode: 'board' | 'own' | 'people_error' | 'empty' | 'no_d
     if (!(mode === 'empty' || mode === 'people_error' || mode === 'no_domain')) assert.ok(rows.some(x => x.connector === 'search:people' && x.value === 'Jane Doe, Founder' && x.source_url === PROFILE), 'the search found and stored Jane Doe')
     // Exercise the existing user-clicked lookup on exactly the buyer produced by THIS scan, not another seeded lead.
     saveCredential(r.db, 'A', 'enrich:apollo', 'synthetic-apollo-key', master)
-    const email = await findWorkEmail(r.db, 'A', lead.id, 'Jane Doe|Founder', { fetchImpl, master, env: ON })   // the person the buyer-role search found
+    // the user-clicked lookup targets the person THIS scan's buyer-role search stored (its row in the lead's details), not a typed name
+    const found = contactsFromEnrichments(rows.filter(x => x.connector === 'search:people'), 'Founder')[0]
+    const email = await findWorkEmail(r.db, 'A', lead.id, found ? found.name + '|' + found.title : 'Jane Doe|Founder', { fetchImpl, master, env: ON })
+    if (!(mode === 'empty' || mode === 'people_error' || mode === 'no_domain')) assert.deepEqual([found?.name, found?.title, found?.linkedin], ['Jane Doe', 'Founder', PROFILE], 'the lookup is tied to the person the search found')
     return { r, lead, person, email, events }
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
