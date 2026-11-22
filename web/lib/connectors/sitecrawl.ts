@@ -621,8 +621,8 @@ const GRAMMAR_WORD = /^(?:us|we|me|you|your|our|my|it|its|them|they|a|an|the|thi
 function properNameTokens(name: string): boolean {
   const toks = name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/)
   // Qodo #1542: the given name is a name slot ("An Nguyen"), and a capital initial is an initial ("Maya A. Thornton"); a lower-case
-  // single letter ("Book a Demo") is still a grammar word.
-  if (toks.slice(1).some(t => !/^[A-Z]\.?$/.test(t) && GRAMMAR_WORD.test(t.replace(/\.$/, '')))) return false
+  // single letter ("Book a Demo") is still a grammar word. Only a DOTTED initial in a middle slot is exempt: "Book A Demo" stays a phrase.
+  if (toks.slice(1).some((t, i) => !(/^[A-Z]\.$/.test(t) && i < toks.length - 2) && GRAMMAR_WORD.test(t.replace(/\.$/, '')))) return false
   return !/[a-z]{2,}ted$/.test(toks[toks.length - 1])
 }
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
@@ -760,12 +760,18 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   // or a destination, never a person, wherever else the same words appear (a "Contact Us" button beside the CEO's title).
   const norm = (t: string) => t.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
   const linkText = new Set<string>()
-  for (const m of visible.matchAll(/<(a|button|label|summary|option|nav)\b[^>]*>([\s\S]*?)<\/\1>/gi)) {
-    if (m[1].toLowerCase() === 'nav') for (const part of m[2].split(/<[^>]+>/)) { const t = norm(part); if (t) linkText.add(t) }
-    else linkText.add(norm(m[2]))
+  // Every control is matched on the whole page, nested in a nav or not; a nav's own entries split only at block/list boundaries, so
+  // "Meet <b>Jane</b>" stays one label (Qodo #1542).
+  for (const m of visible.matchAll(/<(a|button|label|summary|option)\b[^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
+  for (const m of visible.matchAll(/<nav\b[^>]*>([\s\S]*?)<\/nav>/gi)) {
+    for (const part of m[1].split(/<\/?(?:li|ul|ol|div|p|br|section|header|footer|h[1-6])\b[^>]*>/i)) { const t = norm(part); if (t) linkText.add(t) }
   }
   for (const m of visible.matchAll(/<([a-z]+)\b[^>]*\brole\s*=\s*["'](?:button|link|menuitem|tab)["'][^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
-  for (const m of visible.matchAll(/<input\b[^>]*\b(?:value|placeholder)\s*=\s*["']([^"']+)["']/gi)) linkText.add(norm(m[1]))
+  // a hidden input is form data, not a shown control (Qodo #1542): it never removes a person named on the page
+  for (const m of visible.matchAll(/<input\b[^>]*>/gi)) {
+    if (/\btype\s*=\s*["']?hidden\b/i.test(m[0])) continue
+    for (const v of m[0].matchAll(/\b(?:value|placeholder)\s*=\s*["']([^"']+)["']/gi)) linkText.add(norm(v[1]))
+  }
   // Headings are kept as marked lines so a person can be judged against the section they sit in (alumni, former staff).
   const marked = visible.replace(/<(h[1-6])\b[^>]*>([\s\S]*?)<\/\1>/gi, (_m, t: string, inner: string) => `\n${HEAD_MARK}${t.slice(1)} ${inner.replace(/<[^>]+>/g, ' ')}\n`)
   const text = marked.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
