@@ -614,6 +614,15 @@ const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|propri
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
 const SHORT_SURNAME_LINE = /^[A-Z][a-z'\u2019-]{2,20}\s+[A-Z][a-z]$/
+// Qodo High #1532: a person's name is made of name tokens. A grammar word (pronoun, determiner, preposition, particle) is never a name
+// token, and a token shaped like a past participle ("Started", "Connected") in the surname slot is a verb phrase. This is closed-class
+// grammar, not a vocabulary of companies or people: it is what makes "Contact Us" / "Sign In" / "Learn More" a phrase on any page.
+const GRAMMAR_WORD = /^(?:us|we|me|you|your|our|my|it|its|them|they|a|an|the|this|that|these|those|more|less|all|any|some|in|on|out|up|down|to|at|by|for|of|from|with|off|over|now|here|there|today)$/i
+function properNameTokens(name: string): boolean {
+  const toks = name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/).map(t => t.replace(/\.$/, ''))
+  if (toks.some(t => GRAMMAR_WORD.test(t))) return false
+  return !/[a-z]{2,}ted$/.test(toks[toks.length - 1])
+}
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -745,7 +754,16 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   if (clean === null) return [] // a quoted/testimonial region that never closes cannot be separated from the page: fail closed
   // screen-reader-only text (" on LinkedIn" beside a name) is not shown on the page and must not split a name from its title
   const visible = clean.replace(/<span\b[^>]*\bclass\s*=\s*["'][^"']*\b(?:sr-only|visually-hidden|screen-reader-text)\b[^"']*["'][^>]*>[^<]*<\/span>/gi, ' ').replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
-  const linkText = new Set([...visible.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gi)].map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()))
+  // Qodo High #1532: the label of any control on the page (link, button, nav entry, form label, menu item, input value) is an action
+  // or a destination, never a person, wherever else the same words appear (a "Contact Us" button beside the CEO's title).
+  const norm = (t: string) => t.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+  const linkText = new Set<string>()
+  for (const m of visible.matchAll(/<(a|button|label|summary|option|nav)\b[^>]*>([\s\S]*?)<\/\1>/gi)) {
+    if (m[1].toLowerCase() === 'nav') for (const part of m[2].split(/<[^>]+>/)) { const t = norm(part); if (t) linkText.add(t) }
+    else linkText.add(norm(m[2]))
+  }
+  for (const m of visible.matchAll(/<([a-z]+)\b[^>]*\brole\s*=\s*["'](?:button|link|menuitem|tab)["'][^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
+  for (const m of visible.matchAll(/<input\b[^>]*\b(?:value|placeholder)\s*=\s*["']([^"']+)["']/gi)) linkText.add(norm(m[1]))
   // Headings are kept as marked lines so a person can be judged against the section they sit in (alumni, former staff).
   const marked = visible.replace(/<(h[1-6])\b[^>]*>([\s\S]*?)<\/\1>/gi, (_m, t: string, inner: string) => `\n${HEAD_MARK}${t.slice(1)} ${inner.replace(/<[^>]+>/g, ' ')}\n`)
   const text = marked.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
@@ -780,6 +798,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     // A two-letter surname (Li, Ng, Wu) is kept only beside a buyer-level title; the prose check below still drops any word the page writes in lower case
     // ("us"), so "Contact Us" stays out (Simple AI's CEO Catheryn Li, 2026-11-22).
     const shortSurname = SHORT_SURNAME_LINE.test(name) && (buyerTitle(title, buyerRoles) || /\b(?:co-?founder|founder|ceo|chief executive)\b/i.test(title))
+    if (!properNameTokens(name)) return false // Qodo High #1532: "Contact Us", "Sign In", "Learn More", "Get Started" are phrases, not names
     if (!(NAME_LINE.test(name) || shortSurname) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return false
