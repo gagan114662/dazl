@@ -391,7 +391,9 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
         continue
       }
       // #1122: a "new <role>" branch is also met by a dated quote saying the person joined (the same completed-hire reader as above).
-      { const nr = (or?.newRoles ?? []).find(c => (c.role ?? '').split('/').some(alt => hireQuotes.some(q => quoteShowsCompletedHire(q.excerpt, l.company, alt.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w)), false))))
+      // Qodo #1509 H3: only a quote whose day is bound to it on its own source (page_bound) dates a joined hire; a structured posting day never does.
+      const joinedQuotes = hireQuotes.filter(q => (q === quotes[0] ? l.event_date_proof : q.dateProof) === 'page_bound')
+      { const nr = (or?.newRoles ?? []).find(c => (c.role ?? '').split('/').some(alt => joinedQuotes.some(q => quoteShowsCompletedHire(q.excerpt, l.company, alt.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 2 && !['of', 'the', 'and', 'for', 'an'].includes(w)), false))))
         if (nr) { setWhy.run((`New ${nr.role} joined: a dated source says the hire was made. ${l.why ?? ''}`).trim().slice(0, WHY_MAX), l.id); passed++; passedIds.push(l.id); continue } }
       if (!roles.length && !or && jobAdQuoteRole(l.evidence_excerpt, l.company, [])) { passed++; passedIds.push(l.id); continue } // #1121: its own job ad names a sales vacancy
       if (!roles.length && hireQuotes.some(q => quoteNamesSalesHiring(q.excerpt, l.signal, l.company))) {
