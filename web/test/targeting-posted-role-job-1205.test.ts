@@ -180,3 +180,12 @@ test('#1205 an article or "new" inside the role words holds the condition, never
     assert.equal(h.length, 1, q); assert.ok(h[0].role_unreadable, q)
   }
 })
+
+// council (Haiku R1-R3 on 080e58a): a named role with a grammar word in it is held, never dropped. Dropping it on a grammar word would
+// search more broadly than asked (Watcher: fail closed, no word lists that decide a request means nothing)
+test('#1205 a role with a grammar word or a slash in it is held, never dropped', () => {
+  for (const q of ['Companies that posted a sales rep for enterprise job', 'Companies that posted a senior new business manager job', 'Companies that posted an A/B tester job', 'Companies that posted a sales rep at Acme job']) {
+    const h = planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+    assert.equal(h.length, 1, q); assert.ok(h[0].role_unreadable, q)
+  }
+})
