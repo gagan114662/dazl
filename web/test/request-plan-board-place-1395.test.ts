@@ -97,3 +97,13 @@ test('#1395 runJob: a refused spend reservation for the plan holds only the job 
   assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
   assert.ok(!x.calls.prompts.some(p => p.includes('"source":"jobboards"')), 'no board item reached extraction')
 })
+
+// Council review (haiku R6): a board source the USER picked is held by a bad plan too; the other picked source still runs.
+test('#1395 runJob: explicit sources (jobboards + careers) with a bad plan: the job boards are held, the careers source still runs', async () => {
+  const { http, seen } = board()
+  const x = await runFixture({ ...fx(http, REAL, ['Toronto, Ontario'], 'CA', 'Toronto, Ontario is the place.'), sources: JSON.stringify({ adapters: ['jobboards', 'careers'] }) })
+  assert.equal(boardsStatus(x), 'held_request_plan:schema')
+  assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
+  const careers = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:careers'").get() as { status: string } | undefined
+  assert.ok(careers, 'the careers source the user picked still ran')
+})

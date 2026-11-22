@@ -101,3 +101,12 @@ test('#1395 readRequestPlan: a refused reservation is the reason spend_refused; 
   const lost = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => { throw new SpendRefused('ownership_lost') } } as unknown as Provider
   await assert.rejects(readRequestPlan(lost, 'k', REAL, 'T'), (e: unknown) => e instanceof SpendRefused)
 })
+
+// Council review (haiku R4/R5): a written region is never dropped (that widens), and a two-letter region inside a city word is not written.
+test('#1395 a UK city with its constituent country keeps that region: Manchester, Wales refuses a Manchester, England posting', () => {
+  const r = boardPlaceOf([{ text: 'Manchester, Wales', city: 'Manchester', region: 'Wales', country: 'GB' }])
+  assert.ok(!('place' in r) || !r.place.ok('Manchester, England, United Kingdom'), 'never the English Manchester')
+  const eng = boardPlaceOf([{ text: 'Manchester, England', city: 'Manchester', region: 'England', country: 'GB' }])
+  assert.ok('place' in eng && eng.place.ok('Manchester, England, United Kingdom') && eng.place.ok('Manchester, UK'))
+  assert.equal(groundedIn('Companies in Berlin hiring sales staff', { text: 'Berlin', city: 'Berlin', region: 'IN', country: null }), false, '"in" inside "Berlin" is not a region')
+})
