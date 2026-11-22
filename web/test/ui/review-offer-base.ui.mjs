@@ -126,9 +126,20 @@ try {
       assert.equal(await page.getByTestId('offer-chooser').count(), 1, `${w}: the profile-offer tenant is asked too`)
       assert.ok(await run(page).isDisabled())
       await ctx.close() }
+    // 5. #1122: a request naming the workspace itself, against a different saved offer, shows "Use: <workspace>" on review too
+    //    (the direct run and the website review already offered it); Run stays disabled until the choice
+    { const { ctx, page } = await context('p1', w)
+      await review(page, 'Find leads for Synthetic Profile Co')
+      const chooser = page.getByTestId('offer-chooser')
+      assert.equal(await chooser.count(), 1, `${w}: the review step asks which offer this play is for`)
+      assert.equal(await page.getByTestId('offer-use-stated').innerText(), 'Use: Synthetic Profile Co')
+      assert.ok(await run(page).isDisabled(), `${w}: Run is disabled until the offer is chosen`)
+      assert.ok(await noScroll(page), `${w}: no horizontal scroll`)
+      await chooser.scrollIntoViewIfNeeded(); await shot(page, `review-5-workspace-name-${w}`)
+      await ctx.close() }
   }
   assert.deepEqual(read(), s0, 'reviewing wrote nothing and queued no scan')
-  console.log('review offer base passed: a Memory-only tenant is asked to choose for the original London request (as the direct run is refused), the dental control asks nothing, a request without an offer starts from the Memory positioning, an unreadable saved offer blocks Run until rechecked, a profile-offer tenant is still asked; 1280 and 390; nothing written')
+  console.log('review offer base passed: a Memory-only tenant is asked to choose for the original London request (as the direct run is refused), the dental control asks nothing, a request without an offer starts from the Memory positioning, an unreadable saved offer blocks Run until rechecked, a profile-offer tenant is still asked, a request naming the workspace offers "Use: <workspace>"; 1280 and 390; nothing written')
 } finally {
   await b.close()
   const exited = new Promise(r => srv.once('exit', r)); srv.kill(); await exited

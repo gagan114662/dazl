@@ -30,9 +30,9 @@ test('#1122 (1) costPerShownLead: running, unrecorded cost and zero shown stay n
 })
 
 test('#1122 (1) the page renders the shown-lead count, not the verified counter', () => {
-  assert.match(page, /costPerShownLead\(\{ model_usd: cost\.actual\?\.model_usd \?\? null, scanEnded: status === 'done' \|\| status === 'failed', leads \}\)/)
+  assert.match(page, /costPerShownLead\(\{ model_usd: cost\?\.actual\?\.model_usd \?\? null, scanEnded: status === 'done' \|\| status === 'failed', leads \}\)/)
   assert.doesNotMatch(page, /across \{cost\.per_verification_pass\.verified\}/)
-  assert.match(page, /leads? shown/)
+  assert.match(page, /across \{perLead\.shown\} \{perLead\.shown === 1 \? 'lead' : 'leads'\} shown\./)
 })
 
 const saved = { offer: 'Appointment scheduling for dental clinics', business: 'dazl', seller: 'Appointment scheduling for dental clinics' }

@@ -88,5 +88,9 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()
   setUser({ id: 'A', business_name: 'Acme' })
   const lr = await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${JOB_A}`))
   const leads_a = { status: lr.status, body: await lr.json() }
-  process.stdout.write(JSON.stringify({ a, b, leads_a }))
+  // #1122: tenant B's own leads list (none), so the zero-lead cost line is checked against what B's page shows
+  setUser({ id: 'B', business_name: 'Beta' })
+  const lb = await leadsGET(new NextRequest(`http://localhost/api/leads?job_id=${JOB_B}`))
+  const leads_b = { status: lb.status, body: await lb.json() }
+  process.stdout.write(JSON.stringify({ a, b, leads_a, leads_b }))
 }
