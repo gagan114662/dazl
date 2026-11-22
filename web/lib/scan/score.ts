@@ -167,7 +167,15 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
     // Qodo #1516: each unknown cue is read per clause and bound to the criterion that clause names; an unknown cue about another criterion
     // ("founder not stated") never erases a stated mismatch ("12000 staff"), and a clause stating a number keeps its mismatch.
     if (note && NOTE_UNKNOWN.test(note)) {
-      const clauses = note.split(/[;|]|,(?!\d{3})|\s+but\s+/i).map(c => c.trim()).filter(Boolean)
+      const parts = note.split(/[;|]|,(?!\d{3})|\s+but\s+/i).map(c => c.trim()).filter(Boolean)
+      // Qodo #1519: a comma list of bare criterion names ("headcount, revenue not stated") shares the cue that ends it. A part with no cue,
+      // no number and only a few words is a list item: joined to the next part, so the trailing cue binds to every name in the list.
+      const clauses: string[] = []
+      for (let i = 0; i < parts.length; i++) {
+        let c = parts[i]
+        while (i + 1 < parts.length && !NOTE_UNKNOWN.test(c) && !/\d/.test(c) && c.split(/\s+/).length <= 3) c = `${c} ${parts[++i]}`
+        clauses.push(c)
+      }
       const names = (c: string) => CRITERIA.filter(k => CRITERION_WORDS[k].test(c))
       const unknownClause = (c: string) => NOTE_UNKNOWN.test(c) && !/\d/.test(c)
       for (const k of CRITERIA) {

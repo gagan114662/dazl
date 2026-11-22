@@ -24,3 +24,13 @@ test('an unknown cue about another criterion never erases a stated mismatch (Qod
     assert.equal(s.match.size, 'mismatch', note); assert.ok(s.fit <= 1, note)
   }
 })
+test('Qodo #1519: coordinated criterion names share the trailing unknown cue; a stated value in the list still holds', () => {
+  for (const note of ['headcount and revenue not stated', 'headcount, revenue not stated', 'headcount, revenue, and employee count unknown', 'revenue or headcount unknown', 'employee count and funding unknown']) {
+    const s = applyIcpGate(parseScores(line(note), 1)!, icp)[0]
+    assert.equal(s.match.size, 'unknown', note); assert.equal(s.fit, 5, note)
+  }
+  for (const note of ['headcount 5000, wanted 5-200', 'headcount, revenue not stated; 12000 staff', 'team, 5,000+ employees']) {
+    const s = applyIcpGate(parseScores(line(note), 1)!, icp)[0]
+    assert.equal(s.match.size, 'mismatch', note); assert.ok(s.fit <= 1, note)
+  }
+})
