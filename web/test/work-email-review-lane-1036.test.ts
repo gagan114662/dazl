@@ -34,16 +34,18 @@ test('#1036 the Leads page renders that block on every "Needs your review" row, 
   const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
   const lane = src.slice(src.indexOf('{leads.filter(l => l.review_reason).map(l => ('), src.indexOf('data-testid="review-actions"'))
   assert.match(lane, /reviewLaneWorkEmailTargets\(l, icp && icp\.icp\.who\.length > 0 \? icp\.icp\.who\.join\('; '\) : ''\)/)
-  assert.match(lane, /data-testid="review-work-email"><WorkEmail leadId=\{l\.id\} initial=\{workEmailInitial\(l\.id\)\} targets=\{t\} lazy \/>/)
+  assert.match(lane, /data-testid="review-work-email"><WorkEmail leadId=\{l\.id\} initial=\{workEmailInitial\(l\.id\)\} targets=\{t\} \/>/)
 })
 
-// The server side (independent review): the real lookup on a lead still in review, with a stubbed provider. No network.
+// The server side (independent review): the real lookup on a lead still in review. #1036 / #1250: published addresses only, so no
+// provider is called even with an Apollo key saved. No network.
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { saveCredential } from '../lib/connectors/store.ts'
 import { findWorkEmail } from '../lib/people/work-email.ts'
+import { recordEmailGuesses } from '../lib/people/email-pattern.ts'
 
 function seeded(reviewReason: string) {
   const db = new Database(':memory:'); migrateAllSqlite(db); const master = randomBytes(32)
@@ -61,9 +63,12 @@ const apollo = (calls: string[]) => (async (u: RequestInfo | URL) => { calls.pus
 
 test('#1036 server: Find work email runs on a lead still under review, and the lead stays in review (nothing confirms or drafts it)', async () => {
   const s = seeded('outside_window_undated'); const calls: string[] = []
+  // the firm prints the buyer's own address on its contact page; the crawl filed it under her
+  recordEmailGuesses(s.db, 'A', s.id, 'beneschlaw.example', [], ['Jordan Hammond, Chief Marketing Officer'], { env: {}, homeText: '71 S Wacker Dr, Chicago, IL 60606', seen: [{ address: 'jhammond@beneschlaw.example', url: 'https://www.beneschlaw.example/contact-us/' }] })
   const before = s.db.prepare('SELECT review_reason, human_confirmed_at, human_confirmed_from, contact FROM leads WHERE id = ?').get(s.id)
   const r = await findWorkEmail(s.db, 'A', s.id, 'Jordan Hammond|Chief Marketing Officer', { fetchImpl: apollo(calls), master: s.master, now: Math.floor(NOW / 1000) })
-  assert.equal(r.status, 'verified', JSON.stringify(r)); assert.equal(calls.length, 1)
+  assert.equal(r.status, 'published', JSON.stringify(r)); assert.deepEqual(calls, [], 'no provider call, Apollo key or not')
+  assert.ok('row' in r); assert.equal(r.row.address, 'jhammond@beneschlaw.example')
   assert.deepEqual(s.db.prepare('SELECT review_reason, human_confirmed_at, human_confirmed_from, contact FROM leads WHERE id = ?').get(s.id), before, 'still in review, no contact stored')
   assert.deepEqual(before, { review_reason: 'outside_window_undated', human_confirmed_at: null, human_confirmed_from: null, contact: null })
 })

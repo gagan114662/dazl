@@ -43,7 +43,7 @@ test('the control uses both: it navigates after a successful action and renders 
 
 test('#1036 a successful work-email fixture create opens its play (the lead with Find work email); remove and failures stay', () => {
   const id = 'a'.repeat(24)
-  assert.equal(fixtureNextUrl('POST', 'work_email', true, { jobId: id }), `/app/leads?job_id=${id}`)
+  assert.equal(fixtureNextUrl('POST', 'work_email', true, { jobId: id }), null, '#1036 / #1250: the work-email fixture is no longer created, so nothing to open')
   assert.equal(fixtureNextUrl('DELETE', 'work_email', true, { jobId: id }), null)
   assert.equal(fixtureNextUrl('POST', 'work_email', false, { jobId: id }), null)
   assert.equal(fixtureNextUrl('POST', 'work_email', true, { jobId: '../x' }), null)
