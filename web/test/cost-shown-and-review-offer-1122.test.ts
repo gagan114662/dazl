@@ -23,14 +23,18 @@ test('#1122 (1) through the real GET /api/leads: the cost line counts the leads 
 
 test('#1122 (1) costPerShownLead: running, unrecorded cost and zero shown stay named, never 0 or a made-up ratio', () => {
   const ready = [{ review_reason: null }, { review_reason: null }]
-  assert.equal(costPerShownLead({ model_usd: 0.2, scanEnded: false, leads: ready }).unavailable, 'scan still running')
-  assert.equal(costPerShownLead({ model_usd: null, scanEnded: true, leads: ready }).unavailable, 'model cost not recorded')
-  const ok = costPerShownLead({ model_usd: 0.2, scanEnded: true, leads: [...ready, { review_reason: 'no_sales_hiring_evidence' }] })
+  assert.equal(costPerShownLead({ model_usd: 0.2, scanEnded: false, leads: ready, showSeen: false, leadsRead: true }).unavailable, 'scan still running')
+  assert.equal(costPerShownLead({ model_usd: null, scanEnded: true, leads: ready, showSeen: false, leadsRead: true }).unavailable, 'model cost not recorded')
+  const ok = costPerShownLead({ model_usd: 0.2, scanEnded: true, leads: [...ready, { review_reason: 'no_sales_hiring_evidence' }], showSeen: false, leadsRead: true })
   assert.equal(ok.shown, 2); assert.equal(ok.usd_per_lead, 0.1)
+  // a list the page could not read is never "no leads shown" (fail closed)
+  const unread = costPerShownLead({ model_usd: 0.2, scanEnded: true, leads: [], showSeen: false, leadsRead: false })
+  assert.equal(unread.unavailable, 'lead count not read'); assert.equal(unread.usd_per_lead, null); assert.equal(unread.shown, 0)
 })
 
 test('#1122 (1) the page renders the shown-lead count, not the verified counter', () => {
-  assert.match(page, /costPerShownLead\(\{ model_usd: cost\?\.actual\?\.model_usd \?\? null, scanEnded: status === 'done' \|\| status === 'failed', leads \}\)/)
+  assert.match(page, /costPerShownLead\(\{ model_usd: cost\?\.actual\?\.model_usd \?\? null, scanEnded: status === 'done' \|\| status === 'failed', leads, showSeen, leadsRead: currentView !== null \}\)/)
+  assert.match(page, /\{cost\?\.per_verification_pass && currentView && \(status === 'done' \|\| status === 'failed'\) && \(/)
   assert.doesNotMatch(page, /across \{cost\.per_verification_pass\.verified\}/)
   assert.match(page, /across \{perLead\.shown\} \{perLead\.shown === 1 \? 'lead' : 'leads'\} shown\./)
 })
@@ -48,6 +52,11 @@ test('#1122 (2) controls: no workspace name, another business name, a stated off
   assert.equal(reviewOffer('Find leads for Other Business', saved).conflict, null)
   assert.equal(reviewOffer('Find operations leaders; Seller: Fixture Systems, reviewed outreach', saved).conflict?.stated, 'Fixture Systems, reviewed outreach')
   assert.equal(reviewOffer('Find leads for dazl', { ...saved, offer: null }).conflict, null)   // nothing saved: nothing to carry
+})
+
+test('#1122 (2) the review chooser asks what the play sells; only a direct run offers the targeting choice', () => {
+  assert.match(page, /const targeting = c\.freshTarget && !onWrite/)
+  assert.match(page, /\{targeting \? 'Keep saved targeting' : `Use: \$\{c\.saved\}`\}/)
 })
 
 test('#1122 (2) the plain "Review profile first" path uses the shared review choice', () => {

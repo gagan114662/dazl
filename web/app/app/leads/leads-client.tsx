@@ -853,7 +853,8 @@ export default function LeadsClient() {
   const currentView = resultView?.jobId === jobId ? resultView : null
   const visibleLeads = visibleReadyLeads(leads, showSeen)
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
-  const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads })
+  // currentView is set only by a successful GET /api/leads for this job: until then the count is unknown, never 0
+  const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads, showSeen, leadsRead: currentView !== null })
   const repeats = readyRepeats(leads)
 
   return (
@@ -1191,7 +1192,7 @@ export default function LeadsClient() {
           Estimated ${cost.estimate.total.min.toFixed(2)} - ${cost.estimate.total.max.toFixed(2)} at start.{cost.estimate.trial_cap_line ? <> <span data-testid="scan-cost-trial-cap">{cost.estimate.trial_cap_line}</span></> : null} {cost.actual ? cost.actual.summary : 'Actual cost not recorded.'}
         </p>
       )}
-      {cost?.per_verification_pass && (status === 'done' || status === 'failed') && (
+      {cost?.per_verification_pass && currentView && (status === 'done' || status === 'failed') && (
         <p className="text-xs text-[var(--ink-2)] mb-3" data-testid="scan-cost-per-pass" data-unavailable={perLead.unavailable ?? ''}>
           {perLead.usd_per_lead !== null
             ? <>Model cost per lead: ${perLead.usd_per_lead < 0.01 ? perLead.usd_per_lead.toFixed(4) : perLead.usd_per_lead.toFixed(2)} across {perLead.shown} {perLead.shown === 1 ? 'lead' : 'leads'} shown. {cost.model_scope ?? COST_PER_PASS_SCOPE}</>
@@ -1644,17 +1645,21 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
   const manualOnly = c.incomplete || (c.ambiguous && !c.saved)
   const explicitOffer = completeOffer(writtenOffer)
   const namesWorkspace = c.freshTarget && c.stated && c.stated.trim().toLowerCase() !== c.saved.trim().toLowerCase()
+  // The targeting choice is the direct run's only (#1122): on the review screen the targeting is the editor below, built from
+  // this request, so the choice there is only what this play sells.
+  const targeting = c.freshTarget && !onWrite
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
     {c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
-      : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
+      : targeting && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
+      : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-names-workspace">This request names <strong>{c.stated}</strong>; your saved offer is <strong>{c.saved.replace(/\.$/, "")}</strong>. Choose what this play sells. Neither choice changes Settings.</p>
       : c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
       : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request may name more than one offer because a parenthesis is unfinished. Choose or write this play’s offer before it runs.</p>
       : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => namesWorkspace ? setWriting(true) : onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}
-      {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved, 'saved')} data-testid="offer-use-saved">{c.freshTarget ? 'Keep saved targeting' : `Use: ${c.saved}`}</button>}
+      {c.saved && <button type="button" className="btn-ghost btn-sm" onClick={() => onChoose(c.saved, 'saved')} data-testid="offer-use-saved">{targeting ? 'Keep saved targeting' : `Use: ${c.saved}`}</button>}
       {!c.stated && (onWrite || manualOnly) && <button type="button" className="btn-primary btn-sm" onClick={onWrite ?? (() => setWriting(true))} data-testid="offer-write">Write what this play sells</button>}
     </div>
     {writing && <div className="mt-3 flex flex-wrap items-end gap-2">

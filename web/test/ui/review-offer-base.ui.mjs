@@ -133,6 +133,9 @@ try {
       const chooser = page.getByTestId('offer-chooser')
       assert.equal(await chooser.count(), 1, `${w}: the review step asks which offer this play is for`)
       assert.equal(await page.getByTestId('offer-use-stated').innerText(), 'Use: Synthetic Profile Co')
+      // on review the targeting is the editor below, so the other choice is the saved offer, never "Keep saved targeting"
+      assert.equal(await page.getByTestId('offer-use-saved').innerText(), `Use: ${SAVED}`)
+      assert.match(await page.getByTestId('offer-names-workspace').innerText(), /Choose what this play sells/)
       assert.ok(await run(page).isDisabled(), `${w}: Run is disabled until the offer is chosen`)
       assert.ok(await noScroll(page), `${w}: no horizontal scroll`)
       await chooser.scrollIntoViewIfNeeded(); await shot(page, `review-5-workspace-name-${w}`)

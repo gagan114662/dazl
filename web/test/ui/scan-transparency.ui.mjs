@@ -47,7 +47,7 @@ const serve = async (statusBody, leadsBody = fixture.leads_a.body) => {
     if (u.pathname === '/bundle.js') return route.fulfill({ contentType: 'text/javascript', body: js })
     if (!u.pathname.startsWith('/api/')) return route.fulfill({ status: 204, body: '' })
     if (u.pathname === '/api/scan/status') return json(route, statusBody)
-    if (u.pathname === '/api/leads') return json(route, leadsBody)
+    if (u.pathname === '/api/leads') return leadsBody === null ? json(route, { error: 'boom' }, 500) : json(route, leadsBody)
     if (u.pathname === '/api/scan/jobs') return json(route, { jobs: [] })
     return json(route, {}, 404)
   })
@@ -69,6 +69,7 @@ const serve = async (statusBody, leadsBody = fixture.leads_a.body) => {
 
   // Cost per lead shown (#1122): the real route's model cost over the 4 leads this page shows, model-only scope beside it.
   const perPass = page.getByTestId('scan-cost-per-pass')
+  await page.getByText('Northwind Dental').first().waitFor({ timeout: 10000 })   // the leads list is read before the line counts it
   await perPass.waitFor()
   const passText = await perPass.innerText()
   assert.match(passText, /Model cost per lead: \$0\.11/)
@@ -99,6 +100,18 @@ const serve = async (statusBody, leadsBody = fixture.leads_a.body) => {
   assert.match(await issues.innerText(), /Apollo could not be used in this scan/)
   await perPass.screenshot({ path: (process.env.SHOT_B || '/tmp/scan-transparency-zero-pass.png').replace('.png', '-perpass.png') })
   await issues.screenshot({ path: (process.env.SHOT_B || '/tmp/scan-transparency-zero-pass.png').replace('.png', '-issues.png') })
+  await browser.close()
+}
+
+// 2b) #1122: the leads list could not be read (500) on a done scan with model cost: the per-lead line never says
+//     "no leads shown" or divides by 0 - it is not shown at all until the list is read.
+{
+  const { browser, page } = await serve(fixture.a.body, null)
+  await page.getByTestId('scan-cost').waitFor({ timeout: 10000 })
+  await page.waitForTimeout(1500)
+  assert.equal(await page.getByTestId('scan-cost-per-pass').count(), 0, 'no per-lead line without a read leads list')
+  const bodyText = await page.locator('body').innerText()
+  assert.ok(!/no leads shown|across 0 leads/.test(bodyText), 'an unread list is never "no leads shown"')
   await browser.close()
 }
 
