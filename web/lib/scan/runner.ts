@@ -1909,7 +1909,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           }).map(l => ({ ...l, name: '', contact: null })) : parsed
           // Refs #1122 (run aa193734): the funding pass's candidates must cite the company's own dated announcement or a dated article about
           // that one company (lib/company-first/funding-source.ts). Rejects are counted in the internal run report only - never shown in the
-          // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website is not
+          // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website
           // hint below is only a hint; without one an own page is judged like any single-company page (dated -> read, undated -> rejected).
           if (fundingOr && angle === CF_FUNDING_ANGLE && extra.length) {
             // the model's website hint for this company (company-first text candidates): it only lets own_site / undated_own_site be told
