@@ -41,3 +41,14 @@ test('PM #1513: contact@howgood.com is stored only as a company route - never th
   assert.equal(companyRouteRow([{ kind: 'email', value: 'privacy@howgood.com', url: 'https://howgood.com/privacy' }], 'howgood.com', 1, 'd'), null)
   assert.equal(companyRouteRow([{ kind: 'email', value: 'contact@other.com', url: 'https://howgood.com/contact' }], 'howgood.com', 1, 'd'), null)
 })
+
+test('Qodo #1513: standalone executive titles parse, and a posting-named CRO reaches the contact rule for a Head of Sales request', () => {
+  const who = 'Founder, CEO, Head of Sales'
+  assert.deepEqual(reportsToBuyer('Reports to: Jane Smith, CEO', who), { name: 'Jane Smith', title: 'CEO' })
+  assert.deepEqual(reportsToBuyer('Reports to: Jane Smith, Chief Revenue Officer. Benefits', who), { name: 'Jane Smith', title: 'Chief Revenue Officer' })
+  assert.deepEqual(reportsToBuyer('Reports to: Jane Smith, CRO', who), { name: 'Jane Smith', title: 'CRO' })
+  const cro = { connector: 'sitecrawl', kind: 'person', value: 'Jane Smith, Chief Revenue Officer', source_url: URL_, label: OWN_POSTING_PERSON_LABEL }
+  assert.equal(siteContactFromRows('howgood.com', true, who, [cro]).person?.value, 'Jane Smith, Chief Revenue Officer')
+  // the top-sales reading is the posting reader's only: a site-listed CRO keeps the existing rule, and a request without Head of Sales never takes it
+  assert.equal(siteContactFromRows('howgood.com', true, 'Founder', [cro]).person, null)
+})
