@@ -318,8 +318,15 @@ export function ashbyOrgWebsite(html: string, company: string): string | null {
   if (!m || want.length < 2 || norm(m[1]) !== want) return null
   let host: string; try { host = registrable(new URL(m[2]).hostname.toLowerCase()) } catch { return null }
   // Qodo #1515: the name is the registrable domain without its public suffix (acme.co.uk -> acme), never the suffix's labels joined in
-  if (!host || SOCIAL.test(host) || !siteHostOk(host) || norm(getDomainWithoutSuffix(host) ?? '') !== want) return null
-  return host
+  if (!host || SOCIAL.test(host) || !siteHostOk(host)) return null
+  const label = norm(getDomainWithoutSuffix(host) ?? '')
+  if (label === want) return host
+  // d84a33a0 (Simple AI -> usesimple.ai): the employer's own setting may add a use/get/try/join prefix, and the suffix may carry the
+  // name's last word ("Simple AI" = "use" + "simple" + ".ai"). Compared without spaces; nothing else is accepted.
+  const compact = (s: string) => s.replace(/[^a-z0-9]/g, '')
+  const suffix = host.slice((getDomainWithoutSuffix(host) ?? '').length + 1).replace(/\./g, '')
+  const bare = compact(label).replace(/^(?:use|get|try|join)(?=.)/, '')
+  return [bare, bare + suffix].includes(compact(want)) ? host : null
 }
 // Uare.ai (Greenhouse, no website setting, no link in any posting): the employer's own ATS record names the company with a domain ("Uare.ai").
 // When that record name IS the lead's company and is itself a hostname, it is the employer's own statement of its site, bound like a link
