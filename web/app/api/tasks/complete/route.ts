@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { completeTask } from '@/lib/linkedin-tasks/store'
 import { onCompanyPeopleResult } from '@/lib/linkedin-tasks/buyers'
+import { onPostEngagementResult } from '@/lib/linkedin-tasks/engagers'
 import { extTenant } from '@/app/api/tasks/_auth'
 
 export async function POST(req: NextRequest) {
@@ -20,6 +21,6 @@ export async function POST(req: NextRequest) {
   if (r === 'not_leased') return typeof body.id === 'string' && await db.get('SELECT 1 AS x FROM li_tasks WHERE id = ? AND tenant_id = ?', [body.id, a.tenantId])
     ? NextResponse.json({ error: 'not_leased' }, { status: 409 }) : NextResponse.json({ error: 'not_found' }, { status: 404 })
   if (r === 'bad_result') return NextResponse.json({ error: 'bad_result' }, { status: 400 })
-  if (r === 'stored') await onCompanyPeopleResult(db, a.tenantId, body.id as string)
+  if (r === 'stored') { await onCompanyPeopleResult(db, a.tenantId, body.id as string); await onPostEngagementResult(db, a.tenantId, body.id as string) }
   return NextResponse.json({ ok: true, result: r })
 }

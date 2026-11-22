@@ -5,6 +5,7 @@ import { discoverLeads } from '../discover/agent.ts'
 import { isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
+import { enqueuePostEngagement } from '../linkedin-tasks/engagers.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
 import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
@@ -1500,6 +1501,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     if (l.linkedin_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'linkedin', value: l.linkedin_url.slice(0, 254), label: 'linked from a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
   }
+  // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
+  // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.
+  try { await enqueuePostEngagement(sqliteDb(db), job.user_id, job.id, [...checked.map(l => l.evidence_url), ...run.pages]) } catch { /* the scan's own leads stand */ }
   return 'done'
 }
 
