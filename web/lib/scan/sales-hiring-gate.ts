@@ -15,6 +15,8 @@ import { placeAgreement, eventPlaceOk } from './place-agreement.ts'
 import { isCountryOrRegion } from './countries.ts'
 import { releaseHeld } from './held-state.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
+import { eventMatches, type Condition } from './targeting.ts'
+const stageOf = (s: string | undefined): Stage => !s ? null : s === 'pre-seed' || s === 'seed' ? 'seed' : s as Stage
 export { salesHiringRequired, salesGateOr }
 import { norm, boardNamesCompany, companyKey, type Candidate } from './evidence.ts'
 import type { Get } from '../connectors/sitecrawl.ts'
@@ -349,6 +351,11 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
   const inClock = (dt: string | null | undefined, days: number) => { const t = dt ? Date.parse(dt) : NaN; return Number.isFinite(t) && t <= (now + 86_400) * 1000 && now * 1000 - t <= days * 86_400_000 }
   // Qodo #1509 M8: every event branch of the OR, each on its own clock.
   const eventBranches = or ? (or.events?.length ? or.events : [or.event]) : []
+  // Qodo #1522: each branch is read as itself. A funding branch is a completed raise (its own stage, else the request's); an event branch must show
+  // its own event and object (eventMatches), never any event, and is never read as a raise because another branch names funding.
+  const branchShown = (e: Condition, excerpt: string, signal: string, company: string) => e.kind === 'funding'
+    ? quoteShowsEvent(excerpt, signal, true, company, stageOf(e.stage) ?? stage)
+    : quoteShowsEvent(excerpt, signal, false, company) && eventMatches(e.event, e.object, excerpt)
   const fundingAsked = requestAsksFunding(job.query, job.icp)
   const where = whereOf(job.icp)
   const now = Math.floor((opts.now ?? Date.now()) / 1000)
@@ -384,7 +391,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       const demoteFor = (reason: string, why: string) => { if (demote.run(reason, (why + (l.why ?? '')).trim().slice(0, WHY_MAX), l.id).changes) { counts.run(job.id); demoted++; demotions.push({ company: l.company, url: l.source_url, reason }) } }
       // The event half first: a hiring page alone (a job ad) does not show seed funding / an opening, whatever it says about the company.
       const eventShown = or
-        ? eventBranches.some(e => quotes.some((q, i) => eventQuoteUsable(q, i === 0 ? l.event_date : q.date, l.company, where, e.within_days ?? windowDays, now, false) && quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage)))
+        ? eventBranches.some(e => quotes.some((q, i) => eventQuoteUsable(q, i === 0 ? l.event_date : q.date, l.company, where, e.within_days ?? windowDays, now, false) && branchShown(e, q.excerpt, l.signal, l.company)))
         : eventQuotes.some(q => quoteShowsEvent(q.excerpt, l.signal, fundingAsked, l.company, stage))
       if (or && eventShown) { passed++; passedIds.push(l.id); continue }   // the OR's event branch is proven: the hiring branch is not needed (no board lookup)
       // Under an OR, a hiring quote is proof only with its own date inside the hiring branch's clock (the lead's row date for its own quote).
@@ -476,7 +483,7 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
       }
       if (l.company_domain) lookups++
       let boardFetchThrew = false
-      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays: hireDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}) }).catch(() => { boardFetchThrew = true; return null }) : null
+      const gbz = l.company_domain ? await atsGtmBoard(l.company, l.company_domain, fetchImpl, { windowDays: widestHireDays, now: (opts.now ?? Date.now()), ...(roles.length ? { roleMatch: (title: string) => !!matchedHiringRole(title, roles) } : {}), ...(roleDays.size ? { windowFor: (title: string) => { const m = matchedHiringRole(title, roles); return m ? clockFor(m) : hireDays } } : {}) }).catch(() => { boardFetchThrew = true; return null }) : null
       if (l.company_domain && !owned()) { stopped = true; break } // reclaimed DURING this lead's async fetch: the resolved result is this attempt's observation but must not be WRITTEN by it - the new owner re-runs
       const g = gbz?.hiring ?? null
       // The board must be the lead's OWN: under a domain the cited page is hosted on (or the user confirmed). A board found through a domain matched only
@@ -568,7 +575,8 @@ export async function applySalesHiringGate(db: Database.Database, job: JobLike, 
             // hiring (the lead is held, as a stale board posting is). No date supplied -> unchanged: date unknown, the retrieval day is only 'checked'.
             const posted = v.posted ?? null
             const pt = posted ? Date.parse(`${posted}T00:00:00Z`) : NaN
-            const longOpen = !!posted && !(Number.isFinite(pt) && pt <= (now + 86_400) * 1000 && now * 1000 - pt <= hireDays * 86_400_000)
+            const vDays = roleMatch ? clockFor(roleMatch) : hireDays   // Qodo #1522: a requested new-role title keeps its own clock
+            const longOpen = !!posted && !(Number.isFinite(pt) && pt <= (now + 86_400) * 1000 && now * 1000 - pt <= vDays * 86_400_000)
             const dated = posted ? ` - posted ${posted}` : ''
             const dateLabel = posted ? `${BOARD_LABEL[v.postedBoard ?? 'greenhouse']} first-published date read from the linked posting; ` : ''
             const existingC = db.prepare("SELECT kind, connector, value, source_date, retrieved_at, source_url FROM lead_enrichments WHERE lead_id = ? AND kind IN ('hiring', 'hiring-role')").all(l.id) as import('../signals/ats-gtm.ts').ExistingEvidenceRow[]

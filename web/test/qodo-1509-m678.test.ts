@@ -3,6 +3,7 @@
 // rows are case-1 rows from b9a34d2d (Uare.ai's Greenhouse Head of Sales posting, first published 2026-10-20). No network (boards 404).
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { compileTargeting, planConditions } from '../lib/scan/targeting.ts'
 import { planProofs } from '../lib/scan/targeting-proof.ts'
@@ -16,15 +17,16 @@ const day = (n: number) => new Date(NOW - n * 86_400_000).toISOString().slice(0,
 const UARE = 'https://job-boards.greenhouse.io/uareai/jobs/4459513009'
 const noFetch = (async () => new Response('nope', { status: 404 })) as never
 
-interface Lead { company: string; url: string; signal: string; excerpt: string; date: string | null; proof: string | null }
-async function gate(query: string, l: Lead, titles: [string, string][] = []) {
+interface Lead { company: string; url: string; signal: string; excerpt: string; date: string | null; proof: string | null; domain?: string }
+async function gate(query: string, l: Lead, titles: [string, string][] = [], fetchImpl: typeof fetch = noFetch) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobId = createJob(db, 'u1', { business_name: 'B', industry: 'I', location: 'L' })
   db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = NULL WHERE id = ?").run(query, jobId)
-  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', ?, NULL, ?, ?, ?, 80, 80, '', ?, ?, 'verified')")
-    .run(jobId, l.company, l.signal, l.url, l.excerpt, l.date, l.proof)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt, confidence, score, why, event_date, event_date_proof, date_status) VALUES ('L1', ?, '', ?, ?, ?, ?, ?, 80, 80, '', ?, ?, 'verified')")
+    .run(jobId, l.company, l.domain ?? null, l.signal, l.url, l.excerpt, l.date, l.proof)
+  if (l.domain) db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES ('D1', 'L1', 'u1', 'sitecrawl', 'domain', ?, 'x', NULL, ?, '2026-11-01', 1)").run(`${l.domain}|evidence_own_domain`, `https://${l.domain}/`)
   db.prepare("UPDATE scan_jobs SET status = 'done', verified = 1, needs_review = 0 WHERE id = ?").run(jobId)
-  await applySalesHiringGate(db, { id: jobId, user_id: 'u1', query, icp: null }, noFetch, { now: NOW, postingTitles: new Map(titles.map(([u, t]) => [postingKey(u)!, t])) })
+  await applySalesHiringGate(db, { id: jobId, user_id: 'u1', query, icp: null }, fetchImpl, { now: NOW, postingTitles: new Map(titles.map(([u, t]) => [postingKey(u)!, t])) })
   const r = (db.prepare("SELECT review_reason FROM leads WHERE id = 'L1'").get() as { review_reason: string | null }).review_reason
   db.close(); return r
 }
@@ -72,4 +74,39 @@ test('M8: an OR with two event branches and a hiring branch keeps its OR; a lead
   // strict: the same event outside its clock or with no date, with no hiring proof, is held
   assert.equal(await gate(Q, { ...seed, date: day(80) }), 'no_sales_hiring_evidence')
   assert.equal(await gate(Q, { ...seed, date: null, proof: null }), 'no_sales_hiring_evidence')
+})
+
+test('Qodo #1522 H1/H2: each event branch is read as itself: a dated launch proves the launch branch; an unrequested event proves nothing', async () => {
+  const Q = 'Find B2B companies that raised seed funding, launched a product, or are hiring an SDR, in the last 45 days.'
+  const launch = { company: 'Synthco', url: 'https://synthco.example/news/1', signal: 'Synthco launched a product', excerpt: 'Synthco today launched its new product, an analytics suite for finance teams.', date: day(20), proof: 'page_bound' }
+  assert.equal(await gate(Q, launch), null, 'only the non-funding branch has dated proof')
+  const Q2 = 'Find B2B companies that opened an office within 7 days, launched a product within 90 days, or are hiring an SDR.'
+  const office = { company: 'Synthco', url: 'https://synthco.example/news/2', signal: 'Synthco opened an office', excerpt: 'Synthco opened a new office in Austin.', date: day(30), proof: 'page_bound' }
+  assert.equal(await gate(Q2, office), 'no_sales_hiring_evidence', 'an office opening 30 days ago is outside its 7 days and is not a product launch')
+  assert.equal(await gate(Q2, { ...office, date: day(3) }), null, 'inside its own 7 days it proves its own branch')
+})
+
+test('Qodo #1522 M4: company-first discovery takes the funding pass when any event branch is funding', () => {
+  const or = salesGateOr('Find B2B companies that launched a product, raised seed funding, or are hiring an SDR, in the last 45 days.', null)
+  assert.ok(or); assert.equal(or!.event.kind, 'event', 'the launch is listed first')
+  assert.ok((or!.events ?? [or!.event]).some(e => e.kind === 'funding'))
+  const src = readFileSync(new URL('../lib/scan/runner.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(src, /salesGateOr\([^)]*\)\)?\?\.event\.kind === 'funding'/, 'the funding pass is not chosen from the first event alone')
+})
+
+test('Qodo #1522 M3: a requested new-role posting found by the board lookup keeps its own clock; another title keeps the hiring clock', async () => {
+  const Q = 'companies hiring their first SDR within 30 days or a new Head of Sales within 90 days or new funding within 30 days'
+  const GH = 'https://boards-api.greenhouse.io/v1/boards/brightloop'
+  const board = (title: string, ageDays: number) => (async (u: RequestInfo | URL) => {
+    const m: Record<string, unknown> = {
+      [`${GH}/jobs`]: { jobs: [{ id: 1, title }] },
+      [`${GH}/jobs/1`]: { id: 1, title, first_published: new Date(NOW - ageDays * 86_400_000).toISOString(), absolute_url: 'https://boards.greenhouse.io/brightloop/jobs/1', location: { name: 'Remote' }, content: '&lt;p&gt;Brightloop is hiring. Write to jobs@brightloop.io&lt;/p&gt;' },
+    }
+    return m[String(u)] ? new Response(JSON.stringify(m[String(u)]), { status: 200 }) : new Response('nope', { status: 404 })
+  }) as never
+  // the lead cites its own site, not the posting
+  const lead = { company: 'Brightloop', domain: 'brightloop.io', url: 'https://brightloop.io/about', signal: 'Brightloop is growing its sales team', excerpt: 'Brightloop is a B2B platform for finance teams.', date: null, proof: null }
+  assert.equal(await gate(Q, lead, [], board('Head of Sales', 60)), null, 'a 60-day-old Head of Sales posting: inside its own 90 days')
+  assert.equal(await gate(Q, lead, [], board('Head of Sales', 120)), 'no_sales_hiring_evidence', 'older than its own clock')
+  assert.equal(await gate(Q, lead, [], board('Sales Development Representative', 60)), 'no_sales_hiring_evidence', 'an SDR posting keeps the 30-day clock')
 })
