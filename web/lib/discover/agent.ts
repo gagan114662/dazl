@@ -13,7 +13,7 @@ const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_SEARCHES || 14)
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
-export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number }
+export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number }
 export interface DiscoveredLead {
   company: string
   domain: string | null
@@ -115,8 +115,8 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       cache_control: { type: 'ephemeral' },
       system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
       tools: [
-        { type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES },
-        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: MAX_FETCHES, max_content_tokens: 6000 },
+        { type: 'web_search_20260209', name: 'web_search', max_uses: Math.max(1, input.maxSearches ?? MAX_SEARCHES) },
+        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
       ],
       messages,
     }, { signal: deps.signal }).finalMessage()

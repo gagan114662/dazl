@@ -1408,7 +1408,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
   // PooledGuard (runJobCapped); every other scan's model calls reserve the owner's caps at the transport, with this cap.
   // CSV jobs included (XHawk on #1154): a named account's CSV scan takes the same PooledGuard, so its unsettled-accounting marker stops it too
   const pooledByRunner = ownerLimits(job.user_id) !== null
-  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, nativeSearch: !claudeOnly && deps.discover !== false && discoverLaneEnabled(job, 'anthropic', deps.discover ? {} : process.env), accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, nativeSearch: !claudeOnly && deps.discover !== false && discoverLaneEnabled(job, 'anthropic', deps.discover ? {} : process.env, job.funded_by === 'trial' ? trialCaps()?.reserveUsd ?? null : null), accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
 }
 
 // The Claude discovery lane (launch brief, Steps 2 and 3; lib/discover). One Claude loop with its own web search and page reads finds
@@ -1416,12 +1416,16 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
 // missing (a date, a person, a website) lowers the lead's confidence and is said on the card; it never hides the lead. A lead whose
 // proof page nobody could confirm goes to review. Nothing here reads the request with rules: the request and the play's offer go to
 // Claude as written.
-// On for an ordinary request on the workspace's own Anthropic key. DAZL_DISCOVER_LANE=0 switches it off. A free-trial scan keeps the
-// older path for now: one run costs more than the trial's per-scan reserve, and raising that is the owner's decision.
+// On for an ordinary request on the workspace's own Anthropic key. DAZL_DISCOVER_LANE=0 switches it off.
+// A free-trial scan (dazl's own key) uses it only when the trial's per-scan reserve (DAZL_TRIAL_SCAN_RESERVE_USD) is at least
+// DISCOVER_TRIAL_MIN_USD, and then with a smaller search budget so a run fits that reserve. Below that it keeps the older path.
 export const DISCOVER_SOURCE_KIND = 'discover'
 const DISCOVER_RESERVE_USD = 1.5   // the worst case reserved before the call; the settled cost is what the run really used
-export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'watch_id' | 'funded_by'>, vendor: string | null, env: Record<string, string | undefined> = process.env): boolean {
-  return env.DAZL_DISCOVER_LANE !== '0' && vendor === 'anthropic' && !!job.query && job.query.trim().length >= 3 && !job.csv_domain && !job.watch_id && job.funded_by !== 'trial'
+export const DISCOVER_TRIAL_MIN_USD = 0.75
+const DISCOVER_TRIAL_BUDGET = { maxSearches: 10, maxFetches: 8, enrichLeads: 6 } as const   // measured at about US$0.35 to US$0.60 a run
+export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'watch_id' | 'funded_by'>, vendor: string | null, env: Record<string, string | undefined> = process.env, trialReserveUsd: number | null = null): boolean {
+  if (job.funded_by === 'trial' && !(trialReserveUsd !== null && trialReserveUsd >= DISCOVER_TRIAL_MIN_USD)) return false
+  return env.DAZL_DISCOVER_LANE !== '0' && vendor === 'anthropic' && !!job.query && job.query.trim().length >= 3 && !job.csv_domain && !job.watch_id
 }
 const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
 function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
@@ -1436,17 +1440,19 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+  const small = trialReserveUsd !== null   // a free-trial run: dazl's own money, a smaller budget
+  const reserveUsd = small ? Math.min(DISCOVER_RESERVE_USD, trialReserveUsd) : DISCOVER_RESERVE_USD
   const source = 'search:claude_discover'
   ledger.record(source, 'started')
   assertOwned(db, job)
-  const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, DISCOVER_RESERVE_USD, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => DISCOVER_RESERVE_USD)
+  const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
   let found: Awaited<ReturnType<typeof discoverLeads>>
   let sells: { offer: string | null; seller: string | null } | undefined
   try {
     // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
     sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
-    found = await discover({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null }, { apiKey: key, fetch: fetchImpl })
+    found = await discover({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(small ? { maxSearches: DISCOVER_TRIAL_BUDGET.maxSearches, maxFetches: DISCOVER_TRIAL_BUDGET.maxFetches } : {}) }, { apiKey: key, fetch: fetchImpl })
   } catch (e) {
     await hold?.settle(null)   // the call may have been billed: keep the worst case
     ledger.record(source, 'error')
@@ -1458,7 +1464,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   // reservation; if it fails the leads stay as the first pass left them.
   let usd = found.usage.usd, leadsFound = found.leads
   if (enrich && leadsFound.length) {
-    try { const e = await enrich(leadsFound, { offer: sells?.offer ?? sells?.seller ?? null }, { apiKey: key, fetch: fetchImpl }); leadsFound = e.leads; usd += e.usage.usd } catch { /* keep the first pass */ }
+    try { const e = await enrich(leadsFound, { offer: sells?.offer ?? sells?.seller ?? null, ...(small ? { maxLeads: DISCOVER_TRIAL_BUDGET.enrichLeads } : {}) }, { apiKey: key, fetch: fetchImpl }); leadsFound = e.leads; usd += e.usage.usd } catch { /* keep the first pass */ }
   }
   await hold?.settle(Math.round(usd * 10000) / 10000)
   assertOwned(db, job)
@@ -1574,7 +1580,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
-    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env)) return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl)
+    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env, trial?.reserveUsd ?? null)) return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
     if (job.query) {
