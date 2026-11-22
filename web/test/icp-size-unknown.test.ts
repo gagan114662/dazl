@@ -39,6 +39,6 @@ test('Qodo on #1519: a part stating a mismatch or a value is never joined into a
   const ln = (m: string, mm: string) => `LEAD 1 | fit 5 | intent 4 | action 4 | match ${mm} | signals none | why Founding SDR posting. | mism ${m}`
   for (const [note, mm, key] of [['wrong role: CFO, size unknown', 'n???', 'role'], ['role mismatch, headcount unknown', 'n???', 'role'], ['outside region, revenue not stated', '???n', 'location'], ['too large: 9000 staff, revenue unknown', '??n?', 'size']] as const) {
     const s = applyIcpGate(parseScores(ln(note, mm), 1)!, icpRole)[0]
-    assert.equal((s.match as Record<string, string>)[key], 'mismatch', note); assert.ok(s.fit <= 1, note)
+    assert.equal(s.match[key], 'mismatch', note); assert.ok(s.fit <= 1, note)
   }
 })
