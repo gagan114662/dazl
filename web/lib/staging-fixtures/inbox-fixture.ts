@@ -20,9 +20,9 @@
 // owning play), and nothing else. On the Db layer: SQLite and Postgres.
 import { createHash } from 'node:crypto'
 import { asDb, type DbLike, type Param } from '../db/client.ts'
-import { PAGE_MAX } from './inbox.ts'
-import { judgeDeliveryNotice, NOTICE_INSERT, NOTICE_SEND_SQL, noticeParams, type NoticeMsg, type NoticeSend } from './replies.ts'
-import { INBOX_FIXTURE_DOMAIN } from './service.ts'
+import { PAGE_MAX } from '../outreach/inbox.ts'
+import { judgeDeliveryNotice, NOTICE_INSERT, NOTICE_SEND_SQL, noticeParams, type NoticeMsg, type NoticeSend } from '../outreach/replies.ts'
+import { INBOX_FIXTURE_DOMAIN } from '../outreach/service.ts'
 
 export const INBOX_FIXTURE_FLAG = 'OUTREACH_INBOX_FIXTURE'
 export const INBOX_FIXTURE_PLAY = 'dazl inbox pagination fixture (test only)'

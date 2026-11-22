@@ -3,7 +3,7 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
-import { createReplyStopTestFixture, createSequenceTestFixture, fixtureAvailable, FixtureError } from '@/lib/outreach/test-fixture'
+import { createReplyStopTestFixture, createSequenceTestFixture, fixtureAvailable, FixtureError } from '@/lib/staging-fixtures/test-fixture'
 
 const notFound = () => NextResponse.json({ error: 'Not found' }, { status: 404 })
 

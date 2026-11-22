@@ -251,7 +251,7 @@ function dsnFromNotice(g: GMsg): DsnReport {
 
 // One delivery notice, judged by Message-ID + recipient correlation alone (no authenticated DSN provenance) and
 // turned into the inbound_messages row it is stored as. Pure: the caller looks up the exact recorded send
-// (NOTICE_SEND_SQL) and writes the row. Used only by the test-only inbox fixture (lib/outreach/inbox-fixture.ts,
+// (NOTICE_SEND_SQL) and writes the row. Used only by the test-only inbox fixture (lib/staging-fixtures/inbox-fixture.ts,
 // #369) to seed a bounce_review row for pagination/UI tests; the real reply sync below (#415) no longer calls this
 // directly — it correlates by the notice's own structured fields (noticeFields) and additionally requires
 // authenticated DSN provenance (dsnProvenance) before a correlated 5.x.x can suppress or stop anything, so a

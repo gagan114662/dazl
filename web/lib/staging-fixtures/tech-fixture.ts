@@ -20,7 +20,7 @@ import type Database from 'better-sqlite3'
 import { isStaging } from '../staging.ts'
 import { crawlJob, sitecrawlEnabled, techScanEnabled, TECH_AUDIT, type Get } from '../connectors/sitecrawl.ts'
 import { audit } from '../connectors/store.ts'
-import { FixtureError } from '../outreach/test-fixture.ts'
+import { FixtureError } from './test-fixture.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, decodeScan, day } from '../signals/tech-observations.ts'
 
 export const TECH_FIXTURE_JOB = 'dazl tech fixture (test only)'

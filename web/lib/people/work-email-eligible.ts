@@ -15,7 +15,7 @@ import type { SiteIdentity } from './currency.ts'
 import { companySearchEligible } from '../scan/find-contact-eligible.ts'
 
 // #1036 live check: the ONE test-only lead that may show Find work email although it is a fixture row (source_kind 'test',
-// which companySearchEligible refuses). Only the work-email fixture (lib/scan/work-email-fixture.ts) creates a 'test' lead with
+// which companySearchEligible refuses). Only the work-email fixture (lib/staging-fixtures/work-email-fixture.ts) creates a 'test' lead with
 // this company; the server also requires the test tenant AND the staging fake PDL before any lookup on it (work-email.ts).
 export const WORK_EMAIL_FIXTURE_COMPANY = 'dazl work-email fixture company (test only)'
 export const isWorkEmailFixtureLead = (l: { source_kind?: string | null; company?: string | null }): boolean =>

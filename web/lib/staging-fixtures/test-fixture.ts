@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { TEST_INBOX } from './service.ts'
-import { testAddresses } from './sequences.ts'
+import { TEST_INBOX } from '../outreach/service.ts'
+import { testAddresses } from '../outreach/sequences.ts'
 
 // Test-only fixture for the operator-designated own-inbox sequence test.
 //

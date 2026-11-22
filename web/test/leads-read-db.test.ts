@@ -9,7 +9,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { migrateSequences, sequenceStatusByLead } from '../lib/outreach/sequences.ts'
-import { createRankingFixture } from '../lib/scan/ranking-fixture.ts'
+import { createRankingFixture } from '../lib/staging-fixtures/ranking-fixture.ts'
 import { lookalikeSignals } from '../lib/scan/lookalike.ts'
 import { TEST_INBOX } from '../lib/outreach/service.ts'
 

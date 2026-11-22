@@ -1,10 +1,10 @@
-// #769 live-check fixture (lib/scan/tech-fixture.ts): the switchable staging homepage, crawled through the REAL site crawl
+// #769 live-check fixture (lib/staging-fixtures/tech-fixture.ts): the switchable staging homepage, crawled through the REAL site crawl
 // (crawlJob -> crawlSite -> recordTechObservation -> techChanges). Only the fetch is local; no network (net-fence).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { crawlTechFixture, deleteTechFixture, techFixtureGet, techFixtureHtml, techFixtureFalseChange, TECH_FIXTURE_SITE, TECH_FIXTURE_COMPANY, TECH_FIXTURE_PAGES, type TechFixturePage } from '../lib/scan/tech-fixture.ts'
+import { crawlTechFixture, deleteTechFixture, techFixtureGet, techFixtureHtml, techFixtureFalseChange, TECH_FIXTURE_SITE, TECH_FIXTURE_COMPANY, TECH_FIXTURE_PAGES, type TechFixturePage } from '../lib/staging-fixtures/tech-fixture.ts'
 import { decodeScan, techChanges, type TechScan } from '../lib/signals/tech-observations.ts'
 import { detectTech, observability } from '../lib/connectors/techstack.ts'
 import { listLeads } from '../lib/scan/store.ts'

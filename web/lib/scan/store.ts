@@ -374,7 +374,7 @@ export function parkPendingReservedJobs(db: Database.Database): void {
   ).run()
 }
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
-// #1036: a staging real-company check (lib/scan/real-company-check.ts) is inserted 'running' with no claim and finishes within its
+// #1036: a staging real-company check (lib/staging-fixtures/real-company-check.ts) is inserted 'running' with no claim and finishes within its
 // 60 s crawl deadline. One still 'running' after STAGING_CHECK_DEAD_S lost its process (a restart mid-crawl): it is failed here, so
 // it stops counting as an active scan and can be removed. Never re-queued (it is not a scan a worker may run).
 export const STAGING_CHECK_DEAD_S = 180

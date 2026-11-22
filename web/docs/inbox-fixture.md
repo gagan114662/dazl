@@ -6,7 +6,7 @@ consent-gated Gmail reply scan; sending mail or editing the database by hand is 
 clearly labelled synthetic set instead, for the designated test tenant only. It sends nothing and calls no
 provider, model or network.
 
-Code: `lib/outreach/inbox-fixture.ts`, route `app/api/outreach/inbox/fixture/route.ts`, tests
+Code: `lib/staging-fixtures/inbox-fixture.ts`, route `app/api/outreach/inbox/fixture/route.ts`, tests
 `test/inbox-fixture.test.ts` (both engines) and `test/inbox-fixture-route.test.ts`.
 
 ## Switches (both required; default OFF)
