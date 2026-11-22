@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { eventDateCopy, reviewCheckDateLine } from '../lib/scan/date-copy.ts'
+import { eventDateCopy, leadCardDateLine } from '../lib/scan/date-copy.ts'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason } from '../lib/scan/scoreboard.ts'
 import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
@@ -27,7 +27,10 @@ test('export read preserves raw event date status with tenant isolation and no i
 })
 test('lead UI and CSV both expose date context alongside raw date fields', () => {
   const read = (p:string) => readFileSync(new URL(`../${p}`,import.meta.url),'utf8')
-  assert.match(read('app/app/leads/leads-client.tsx'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
+  // #1176: every date line on the lead card reads through leadCardDateLine (proof, timing and window), never a bare eventDateCopy
+  const client = read('app/app/leads/leads-client.tsx')
+  assert.match(client, /leadCardDateLine\(l\)/); assert.doesNotMatch(client, /eventDateCopy\(/)
+  assert.match(read('lib/scan/date-copy.ts'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
   const route = read('app/api/leads/export/route.ts')
   assert.match(route, /key: 'date_status'/); assert.match(route, /key: 'date_context'/)
   assert.match(route, /date_context: \(\(\) => .*eventDateCopy\(lead\.event_date/); assert.match(route, /windowMissed: timingUnconfirmedReason\(lead, o\) === 'out_of_window'/)
@@ -63,10 +66,10 @@ test('#1176 the review card check line reads a proven event day as the card does
   const card = (l: ReturnType<typeof asCard>) => eventDateCopy(l.event_date, l.date_status, l.timing, { dayVerified: l.day_verified, windowMissed: l.window_missed })
   for (const w of [null, 365, 7]) {
     const l = asCard(w)
-    assert.equal(reviewCheckDateLine(l), card(l), `window ${w}`)
-    assert.doesNotMatch(reviewCheckDateLine(l), /claimed event day|event association/)
+    assert.equal(leadCardDateLine(l), card(l), `window ${w}`)
+    assert.doesNotMatch(leadCardDateLine(l), /claimed event day|event association/)
   }
   // control: no proof (a retired date_status 'verified' row) stays a claimed day
   const legacy = { ...asCard(null), event_date_proof: null, date_status: 'verified', day_verified: false, timing: 'unconfirmed' as const }
-  assert.match(reviewCheckDateLine(legacy), /claimed event day/)
+  assert.match(leadCardDateLine(legacy), /claimed event day/)
 })
