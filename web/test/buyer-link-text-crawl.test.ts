@@ -44,3 +44,12 @@ test('the person-only fallback never reads a page that redirected off the confir
   const { rows } = await run({ foreignTeam: true })
   assert.ok(!rows.some(r => r.kind === 'person' && !r.source_url?.startsWith('https://usesimple.ai/')))
 })
+test('Qodo #1540: a fallback buyer keeps its source warning - never shown as verified; a name-searched site says so too', async () => {
+  const { fallbackBuyerLabel } = await import('../lib/connectors/sitecrawl.ts')
+  const { rows } = await run()
+  const label = rows.find(r => r.kind === 'person')?.label ?? ''
+  assert.match(label, /not verified as current staff/); assert.match(label, /linked from the source, not the page the source is on/)
+  const probe = fallbackBuyerLabel('listed with this title on this company page, not verified as current staff', 'name_probe')
+  assert.match(probe, /site found by name search and location match, not linked from the source/)
+  assert.match(fallbackBuyerLabel('anything', 'evidence_own_domain'), /not verified as current staff/)
+})
