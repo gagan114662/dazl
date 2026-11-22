@@ -75,3 +75,21 @@ test('#1122 discovery volume, Ashby shape (run a94417536: Complete 2023-08-22): 
   // the listed URL in its /application shape is the same posting
   assert.deepEqual(orderByBoardDate([stale + '/application', 'https://news.example/a', fresh], dates, { windowDays: 45, now }), [fresh, 'https://news.example/a'])
 })
+
+test('Qodo #1548: within in-window board postings, requested-role titles first (newest first), then other roles, then undated', async () => {
+  const { orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
+  const { requestedGateRoles } = await import('../lib/scan/sales-hiring-gate.ts')
+  const { matchedHiringRole } = await import('../lib/scan/hiring-role-match.ts')
+  const roles = requestedGateRoles('Find B2B companies hiring their first SDR/BDR or sales rep', null)
+  assert.ok(roles.length > 0)
+  const dates = new Map<string, string>(), titles = new Map<string, string>()
+  await freshBoardPostings(['https://boards.greenhouse.io/acme'], { terms: ['sales'], windowDays: 45, now, dates, titles, http: gh([
+    { id: 1, title: 'Customer Success Manager', first_published: '2026-11-20T00:00:00Z' },
+    { id: 2, title: 'Sales Development Representative', first_published: '2026-10-20T00:00:00Z' },
+    { id: 3, title: 'BDR', first_published: '2026-11-01T00:00:00Z' },
+    { id: 4, title: 'Marketing Manager', first_published: '2026-11-10T00:00:00Z' },
+  ]) })
+  const u = (id: number) => `https://job-boards.greenhouse.io/acme/jobs/${id}`
+  const out = orderByBoardDate(['https://news.example/a', u(1), u(2), u(3), u(4)], dates, { windowDays: 45, now, titles, roleMatch: t => !!matchedHiringRole(t, roles) })
+  assert.deepEqual(out, [u(3), u(2), u(1), u(4), 'https://news.example/a'])
+})

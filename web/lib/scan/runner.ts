@@ -27,7 +27,7 @@ import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { getDomain } from 'tldts'
 import { hiringPostingVerdict } from './hiring-posting-check.ts'
-import { requestedHiringRoles, type RequestedHiringRole } from './hiring-role-match.ts'
+import { requestedHiringRoles, matchedHiringRole, type RequestedHiringRole } from './hiring-role-match.ts'
 import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
@@ -68,7 +68,7 @@ import { applyRejections, readRejections, stripRejectedPeople, type Rejections }
 import { enrichJobSignals } from '../signals/index.ts'
 import { techQueries } from '../signals/tech-observations.ts'
 import { compileTargeting, planConditions } from './targeting.ts'
-import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, postingKey, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, requestedGateRoles, failClosedSalesHiring, persistHeldState, postingKey, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
@@ -1835,10 +1835,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const textCands = companyFirst ? (found.textCandidates ?? []) : []
         if (textCands.length) textSitesByJob.set(job, [...(textSitesByJob.get(job) ?? []), ...textCands.filter(c => c.website).map(c => ({ company: c.company, website: c.website! }))].slice(0, 90))
         // cf_runner board_jobs(job_url): a posting URL the model listed is read only through its board's own public API (dated by the board record)
-        const boardDates = new Map<string, string>()
+        const boardDates = new Map<string, string>(), boardTitles = new Map<string, string>()
         const boardPosts = companyFirst && hiringAsked ? await freshBoardPostings([...found.citedUrls, ...textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) ? [c.jobUrl] : [])], {
           terms: focusTerms([job.query ?? '', ...(Array.isArray(icpForSources.signals) ? icpForSources.signals : [])].join(' ')),
-          windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), http: deps.sourceHttp ?? safeGet, dates: boardDates,
+          windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), http: deps.sourceHttp ?? safeGet, dates: boardDates, titles: boardTitles,
           deadlineMs: phaseDeadline ? Math.min(15_000, phaseDeadline.at - phaseDeadline.now() - 45_000) : 15_000,
         }).catch(() => [] as string[]) : []
         if (hiringAsked) { totalBoardsCited += new Set(found.citedUrls.map(u => { const b = boardOf(u); return b ? `${b.ats}:${b.token}` : '' }).filter(Boolean)).size; totalBoardPostings += boardPosts.length }
@@ -1851,7 +1851,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const listedPosts = textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) && atsPostingRef(c.jobUrl) ? [c.jobUrl] : [])
         // #1122: a posting its board dates outside the window never takes one of the 5 read slots; dated in-window postings go first, newest first
         const ordered = orderByBoardDate([...new Set([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url)),
-          boardDates, { windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date() })
+          boardDates, { windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), titles: boardTitles, roleMatch: (() => { const rs = requestedGateRoles(job.query, job.icp); return (t: string) => !!matchedHiringRole(t, rs) })() })
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
           return board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(url.hostname, { allowPrivateDomains: true }) ?? url.hostname
