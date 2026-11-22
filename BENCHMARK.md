@@ -10,18 +10,19 @@ The one measure of progress: how many good leads a real request returns. Updated
 
 | Measure | Bar | Latest |
 |---|---|---|
-| Prompts with at least 5 ready leads | 13 of 16 | 0 of 16 (baseline) |
-| Shown leads with a named person | 70% | no leads shown (40% of the 84 listed) |
-| Shown leads with a dated proof link | 100% | no leads shown (17% of the 84 listed) |
-| Cost per prompt | under US$1 | US$0.07 average (baseline) |
+| Prompts with at least 5 leads shown | 13 of 16 | 8 of 16 (new loop); 0 of 16 (baseline) |
+| Shown leads with a named person | 70% | 49% (35 of 71) |
+| Shown leads with a dated proof link | 100% | 69% (49 of 71) |
+| Cost per prompt | under US$1 | US$0.39 average (new loop) |
 | Owner hand-check of 20 random leads | 16 real | not done |
-| Ahead of Gojiberry on the same prompts | yes | behind: 0 of 16 against Gojiberry's 10 of 16 |
+| Ahead of Gojiberry on the same prompts | yes | ahead on dated proof (7 prompts with 5+ dated leads against 1); behind on prompts with 5+ leads (8 against 10) and on named people |
 
 ## Runs
 
 | Date | Commit | What changed | Prompts at 5+ ready | Ready (total) | Leads listed | Named % | Dated % | Cost (US$) |
 |---|---|---|---|---|---|---|---|---|
 | 2026-11-22 | `751eb629` (main) | Baseline: the product as it is, default scan path, on staging. [table](bench/results/2026-11-22-751eb629-baseline.txt) | 0 of 16 | 0 | 84 | 40 | 17 | 1.10 |
+| 2026-11-22 | `456196c4` | New Claude discovery loop alone (`web/lib/discover`), 14 searches per prompt, on staging. "Ready" here is the loop's shown rule: the proof page names the company. [table](bench/results/2026-11-22-456196c4-discover-14-searches.txt) | 8 of 16 | 71 | 87 | 49 | 69 | 6.30 |
 
 ## The bar to beat: Gojiberry
 
@@ -46,26 +47,36 @@ Where it is weak, which is where dazl can win:
 - **Filters ignored:** two prompts turned into directory filters with large counts (111 and 545) and no proof link; one ignored the funding stage, one ignored the 90-day window.
 - **No results at all** for one prompt (roofing contractors in Pune).
 
-### Per prompt
+### Per prompt: leads with a dated proof link
 
-| Prompt | Gojiberry leads | With dated proof | dazl baseline shown |
-|---|---|---|---|
-| toronto-dental-expanding | 4 | 0 | 0 |
-| austin-saas-sales-hiring | 10 | 0 | 0 |
-| pune-roofing-expanding | 0 | 0 | 0 |
-| dubai-law-new-partner | 5 | 4 | 0 |
-| london-fintech-funding | 111 (25 checked) | 0 | 0 |
-| us-seed-first-sales | 1 | 0 | 0 |
-| ohio-payroll-hiring | 3 | 2 | 0 |
-| sydney-logistics-new-leader | 4 | 4 | 0 |
-| berlin-ecommerce-marketing-hiring | 11 (4 companies) | 0 | 0 |
-| bengaluru-hospitals-new-branch | 18 (about 10 organisations) | 7 | 0 |
-| illinois-manufacturing-new-plant | 14 (6 companies) | 1 | 0 |
-| singapore-restaurants-new-outlets | 7 | 4 | 0 |
-| linkedin-competitor-post-engagers | 2 | 0 | 0 |
-| linkedin-new-heads-of-sales | 545 (25 checked) | 0 | 0 |
-| linkedin-first-marketer-hiring-posts | 6 (3 companies) | 0 | 0 |
-| linkedin-crm-evaluating-posts | 8 | 0 | 0 |
+"Dated proof" means the lead is shown, carries the date of the signal, and links to the page that proves it.
+
+| Prompt | Gojiberry leads | Gojiberry dated proof | New loop shown | New loop dated proof | dazl baseline shown |
+|---|---|---|---|---|---|
+| toronto-dental-expanding | 4 | 0 | 4 | 1 | 0 |
+| austin-saas-sales-hiring | 10 | 0 | 4 | 3 | 0 |
+| pune-roofing-expanding | 0 | 0 | 2 | 0 | 0 |
+| dubai-law-new-partner | 5 | 4 | 7 | 5 | 0 |
+| london-fintech-funding | 111 (25 checked) | 0 | 8 | 8 | 0 |
+| us-seed-first-sales | 1 | 0 | 8 | 7 | 0 |
+| ohio-payroll-hiring | 3 | 2 | 1 | 0 | 0 |
+| sydney-logistics-new-leader | 4 | 4 | 2 | 1 | 0 |
+| berlin-ecommerce-marketing-hiring | 11 (4 companies) | 0 | 1 | 0 | 0 |
+| bengaluru-hospitals-new-branch | 18 (about 10 organisations) | 7 | 7 | 2 | 0 |
+| illinois-manufacturing-new-plant | 14 (6 companies) | 1 | 6 | 6 | 0 |
+| singapore-restaurants-new-outlets | 7 | 4 | 6 | 5 | 0 |
+| linkedin-competitor-post-engagers | 2 | 0 | 0 | 0 | 0 |
+| linkedin-new-heads-of-sales | 545 (25 checked) | 0 | 7 | 5 | 0 |
+| linkedin-first-marketer-hiring-posts | 6 (3 companies) | 0 | 8 | 6 | 0 |
+| linkedin-crm-evaluating-posts | 8 | 0 | 0 | 0 | 0 |
+| **Total** | | **22** | **71** | **49** | **0** |
+| **Prompts with 5 or more** | 10 | 1 | 8 | 7 | 0 |
+
+What the first full run of the new loop shows:
+- It beats Gojiberry on dated proof on 9 prompts, ties on 4 (both zero) and loses on 3 (Ohio payroll, Sydney logistics, Bengaluru hospitals).
+- It ran out of searches on every prompt. Claude said so each time. Cost averaged US$0.39, so there is room under the US$1 cap to search more.
+- Named people are the weak column: 35 of 71. Gojiberry names someone on almost every lead.
+- The two LinkedIn post prompts returned nothing, because LinkedIn posts cannot be read from the open web. They need the customer's own LinkedIn through dazl Connect.
 
 ## What the baseline shows
 
