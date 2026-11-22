@@ -83,6 +83,10 @@ export interface EstimateInput {
   hiringRequest?: boolean            // the buyer-fit company-page check runs for hiring requests
   reservedUsd?: number               // already reserved against the same owner pool
   ownerCapUsd?: number | null        // the operator's cap for this owner (DAZL_RUN_MAX_USD_USERS); the tighter of it and budget.max_usd applies
+  // #1319: whether the operator named this account (ownerLimits). Every account's day/month caps are shown (ownerCapUsd /
+  // ownerMonthCapUsd), but only a run limit, a named account or a trial switches its own paid enrichment off (runner.ts creditEnrichment).
+  // Omitted (direct callers): any cap passed counts as named, as before.
+  ownerNamed?: boolean
   ownerMonthCapUsd?: number | null   // the operator's monthly cap for this owner (DAZL_OWNER_MONTH_MAX_USD_USERS); the room left is the tighter of the day's and the month's
   reservedMonthUsd?: number          // already reserved against the owner's monthly pool
   poolUnknown?: boolean              // the shared pool could not be read: the reserved amounts above are NOT known (never treated as zero)
@@ -194,7 +198,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     rows.push({ id: 'tinyfish_search', label: 'Web search', provider: 'TinyFish', kind: 'search', unit: 'search', unit_usd: tfSearch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_SEARCH_USD if you pay per search)' : money(tfSearch), units: { min: 1, max: searches + people + site }, usd: { min: 0, max: searchMax }, capped: false, note: `At most ${DEFAULT_TINYFISH.searchesPerScan} searches plus ${people} people searches per scan (a count cap, not a dollar cap)${extra}${site ? `; plus at most ${site} company-website searches, one for each lead whose source page links no website` : ''}${trialPeoplePrice !== null ? `; the people searches are paid from the free-trial reserve at ${money(trialPeoplePrice)} each` : ''}` })
     rows.push({ id: 'tinyfish_fetch', label: 'Page fetch', provider: 'TinyFish', kind: 'fetch', unit: 'page', unit_usd: tfFetch === null ? 'free allowance (set DAZL_PRICE_TINYFISH_FETCH_USD if you pay per page)' : money(tfFetch), units: { min: 1, max: fetches }, usd: price(tfFetch, fetches), capped: false, note: `At most ${DEFAULT_TINYFISH.fetchesPerScan} pages per scan (a count cap, not a dollar cap)${extra}` })
   }
-  const enrichOff = capped || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
+  const runLimited = i.ownerNamed === undefined ? capped : typeof b?.max_usd === 'number' || i.ownerNamed
+  const enrichOff = runLimited || i.payer === 'trial' || b?.credit_enrichment === false || b?.first5
   for (const v of ['apollo', 'pdl']) {
     // Refs #1099: a saved key the paid-vendor policy keeps off makes no call, so it has no row in the estimate
     const have = (i.enrichmentVendors ?? []).includes(v) && paidVendorOn(v as 'apollo' | 'pdl', env)

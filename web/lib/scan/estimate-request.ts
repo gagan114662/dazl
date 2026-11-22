@@ -89,7 +89,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,
-    ownerCapUsd: caps.day, ownerMonthCapUsd: caps.month,
+    ownerCapUsd: caps.day, ownerMonthCapUsd: caps.month, ownerNamed: named !== null,
   })
   // model_unpriced (a limited run whose model its guard cannot price) is decided inside estimateRun, so the confirmation covers it.
   return { ok: true, estimate }
