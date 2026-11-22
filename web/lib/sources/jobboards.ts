@@ -317,6 +317,8 @@ export function boardPlaceOf(places: readonly PlanPlaceIn[], ctx: BoardContext =
   return 'place' in b ? { place: b.place } : b
 }
 function boardPlaceOne(p: PlanPlaceIn, ctx: BoardContext): Resolved {
+  // PM 2026-11-22: a bare country ("Canada", any country name; no city, no region) reads the boards on that country
+  if (!p.city?.trim() && !p.region?.trim() && p.country && resolveSegment(p.text.trim(), true) === p.country) { const cp = countryPlace(p.country); if (cp) return { place: cp, input: p.text } }
   const region = p.region ? regionOf(p.region) : null
   if (p.region && !region) return { reason: `skipped_no_place:region:${clean(p.region)}` }   // a region the board source cannot read is never dropped (that would widen)
   const city = p.city?.trim() || null
