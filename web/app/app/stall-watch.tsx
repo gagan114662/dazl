@@ -42,7 +42,8 @@ export default function StallWatch() {
     seen.observe(document.body, { childList: true, subtree: true })
     // a same-origin link click whose navigation never commits: the URL is still the one the click started on
     const onClick = (e: MouseEvent) => {
-      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      // capture phase: Next's <Link> calls preventDefault in its own handler, which runs before a bubbling document listener
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       const a = e.target instanceof Element ? e.target.closest('a[href]') as HTMLAnchorElement | null : null
       if (!a || (a.target && a.target !== '_self') || a.hasAttribute('download')) return
       let to: URL; try { to = new URL(a.href, location.href) } catch { return }
@@ -51,8 +52,8 @@ export default function StallWatch() {
       if (to.href === from) return
       later(() => { if (location.href === from) recover(to.href, null) })
     }
-    document.addEventListener('click', onClick)
-    return () => { seen.disconnect(); document.removeEventListener('click', onClick); for (const t of timers) clearTimeout(t) }
+    document.addEventListener('click', onClick, true)
+    return () => { seen.disconnect(); document.removeEventListener('click', onClick, true); for (const t of timers) clearTimeout(t) }
   }, [])
   return null
 }
