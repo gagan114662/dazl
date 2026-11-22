@@ -167,7 +167,7 @@ export function parseScores(text: string, count: number): LeadScore[] | null {
     // Qodo #1516: each unknown cue is read per clause and bound to the criterion that clause names; an unknown cue about another criterion
     // ("founder not stated") never erases a stated mismatch ("12000 staff"), and a clause stating a number keeps its mismatch.
     if (note && NOTE_UNKNOWN.test(note)) {
-      const clauses = note.split(/[;,|]|\s+(?:and|but)\s+/i).map(c => c.trim()).filter(Boolean)
+      const clauses = note.split(/[;|]|,(?!\d{3})|\s+but\s+/i).map(c => c.trim()).filter(Boolean)
       const names = (c: string) => CRITERIA.filter(k => CRITERION_WORDS[k].test(c))
       const unknownClause = (c: string) => NOTE_UNKNOWN.test(c) && !/\d/.test(c)
       for (const k of CRITERIA) {

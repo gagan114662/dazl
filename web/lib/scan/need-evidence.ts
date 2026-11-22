@@ -350,7 +350,7 @@ function cardText(r: VerdictRow): string {
   switch (r.verdict) {
     case 'verified_buying_need': return 'Verified buying need: a dated post by a decision-maker at this company states the need, source-bound and domain-confirmed'
     case 'needs_evidence': return `Buying need not fully proven: ${r.reason === 'needs_evidence' ? 'the post states a need but evidence is missing' : NEED_REASON_TEXT[r.reason ?? ''] ?? r.reason}`
-    case 'trigger_only': if (r.reason === 'or_trigger_only') return 'Trigger only: one of the triggers the request accepts is proven on a dated source, but a trigger is not verified buying need'
+    case 'trigger_only': if (r.reason === 'or_trigger_only') return 'Trigger only: the required check passed for one of the triggers the request accepts, but a trigger is not verified buying need'
       return 'Hiring trigger only: the sales-hiring proof stands, but a hiring signal is not verified buying need'
     case 'excluded': return `Not a qualified buyer: ${r.reason}`
     case 'unqualifiable': return 'Buying need cannot be qualified for this play: no effective rubric'

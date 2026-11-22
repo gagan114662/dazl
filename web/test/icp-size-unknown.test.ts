@@ -7,7 +7,7 @@ import { parseScores, applyIcpGate } from '../lib/scan/score.ts'
 const icp = { summary: 'x', who: ['Founder', 'CEO', 'Head of Sales'], industries: [], sizes: ['5-200 employees'], where: [], signals: [], exclude: [], window_days: 45 } as never
 const line = (mism: string) => `LEAD 1 | fit 5 | intent 4 | action 4 | match ??n? | signals none | why Founding SDR posting; this is an exact ICP match. | mism ${mism}`
 test('a size "mismatch" whose own note says the size is unknown is unknown, and does not cap fit', () => {
-  for (const note of ['size unknown', 'company size not stated', 'headcount unclear', 'size not provided', 'not stated']) {
+  for (const note of ['size unknown', 'company size not stated', 'headcount unclear', 'size not provided', 'not stated', 'headcount and revenue not stated']) {
     const s = applyIcpGate(parseScores(line(note), 1)!, icp)[0]
     assert.equal(s.match.size, 'unknown', note); assert.equal(s.fit, 5, note); assert.doesNotMatch(s.why, /ICP mismatch/, note)
   }
