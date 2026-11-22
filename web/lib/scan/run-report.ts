@@ -14,6 +14,8 @@ export interface UrlRecord { url: string; hit_date: string | null; walled: boole
 export type JudgeReplyClass = 'supports' | 'contradicts' | 'explicit_unclear' | 'prefixed_unclear' | 'blank' | 'unrecognized' | 'unavailable'
 export type JudgeReplyCounts = Partial<Record<JudgeReplyClass, number>>
 export interface ReportParts {
+  // Refs #1122: company-first funding-pass candidates dropped for their source (internal only; never shown in the product)
+  funding_source_rejects?: Partial<Record<import('../company-first/funding-source.ts').FundingSourceReason, number>>
   // #1082: units the platform's fair share of the operator search budget left out (the run's results are thinner)
   capacity?: { searches: number; fetches: number }
   queries?: string[]; query_source?: string | null
@@ -95,6 +97,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     ...(p.native_web_search ? { native_web_search: p.native_web_search } : {}),
     source_skips: (p.source_skips ?? []).slice(0, 20).map(x => ({ source: cut(x.source, 80), status: cut(x.status, 120), reason: cut(x.reason, 300) })),
     capacity: p.capacity ?? null,
+    ...(p.funding_source_rejects ? { funding_source_rejects: p.funding_source_rejects } : {}),
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
   }
 }
