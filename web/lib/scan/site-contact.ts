@@ -14,6 +14,10 @@ import { isRecruitingInbox } from '../recruiting-inbox.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
 import { registrable } from '../verifier/text.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
+// #1122: a person on the company's LinkedIn People page, read in the user's own browser. Written only for a lead whose CONFIRMED site
+// links that one LinkedIn company page (lib/linkedin-tasks/buyers.ts); the source is the person's own LinkedIn profile.
+export const LINKEDIN_PEOPLE_LABEL = "listed on the company's LinkedIn page"
+const LINKEDIN_PROFILE = /^https:\/\/www\.linkedin\.com\/in\/[A-Za-z0-9%_-]{2,100}\/$/
 export const OWN_POSTING_PERSON_LABEL = "named in this company's own job posting (\"Reports to\"), not verified as current staff"
 
 // Mailboxes that are not a way to reach a founder: support, privacy, legal, careers, recruiting, press, abuse, no-reply, billing.
@@ -42,6 +46,7 @@ export function onCompanySite(r: SiteRow, ld: string | null): boolean {
   if (!ld || r.connector !== 'sitecrawl') return false
   // Run 679a7354: a person named in the lead's own ATS posting (written only by sitecrawl, from the lead's own source record) beside the confirmed domain
   // ...and only when that posting is THIS company's own board: its org token is the confirmed domain's name (Qodo #1513 a)
+  if (r.kind === 'person' && r.label === LINKEDIN_PEOPLE_LABEL) return LINKEDIN_PROFILE.test(r.source_url ?? '')
   if (r.kind === 'person' && r.label === OWN_POSTING_PERSON_LABEL) { const ref = atsPostingRef(r.source_url ?? ''); return !!ref && postingOrgIs(ref.org, ld) }
   if (urlIdentity(r.source_url) !== ld) return false
   return r.kind !== 'email' || emailIdentity(r.value) === ld

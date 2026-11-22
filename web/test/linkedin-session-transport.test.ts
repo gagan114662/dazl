@@ -23,22 +23,10 @@ const audits = async (db: Db) => (await db.all<{ connector: string; status: stri
 function sessionFake(answer: (r: TransportRequest) => TransportResult) { const seen: TransportRequest[] = []; const t: LinkedInTransport = { session: true, fetch: async r => { seen.push(r); return answer(r) } }; return { t, seen } }
 const answers = (r: TransportRequest): TransportResult => r.kind === 'posts' ? { status: 'ok', items: [{ url: POST, title: 'post', quote: 'Rippling announces a new payroll product line', date: null }] } : { status: 'ok', items: [person(`${r.kind}-1`), person('both-2')] }
 
-test('the session transport is OFF unless its flag, ONE allowlisted tenant, a named throwaway account and the worker settings are all set', () => {
-  assert.equal(sessionTransportProblem('A', {}), 'off', 'off by default: no env, no transport')
-  assert.equal(sessionTransportEnabled('A', { ...T_ENV, LINKEDIN_SESSION_TRANSPORT: '0' }), false)
-  assert.equal(sessionTransportEnabled('A', { ...T_ENV, LINKEDIN_SESSION_TRANSPORT: 'true' }), false, 'only the exact value 1 turns it on')
-  assert.equal(sessionTransportProblem('B', T_ENV), 'not_allowlisted', 'a tenant that is not allowlisted never uses the session')
-  assert.equal(sessionTransportProblem('A', { ...T_ENV, ADVANCED_WORKER_TOKEN: '' }), 'no_worker')
-  assert.equal(sessionTransportEnabled('A', T_ENV), true)
-  assert.equal(sessionTransportEnabled('A', { ...T_ENV, LINKEDIN_SESSION_TENANTS: ' A , A ' }), true, 'the same tenant twice is one tenant')
-  // #949 review: the caps are per tenant, so two tenants holding the one throwaway session would double its hourly and daily volume. Two or more = off for everyone.
-  assert.equal(sessionTransportProblem('A', { ...T_ENV, LINKEDIN_SESSION_TENANTS: ' X, A ' }), 'multiple_tenants')
-  assert.equal(sessionTransportProblem('X', { ...T_ENV, LINKEDIN_SESSION_TENANTS: 'X,A' }), 'multiple_tenants')
-  assert.equal(sessionTransportProblem('A', { ...T_ENV, LINKEDIN_SESSION_TENANTS: '' }), 'not_allowlisted')
-  // the dedicated throwaway account must be named (the operator's attestation); a cookie pasted there is refused, never echoed
-  for (const account of [undefined, '', '  ', 'ab', 'x'.repeat(201), 'li_at=AQEDsecret', 'JSESSIONID="ajax:1"', 'a; b', 'two words']) {
-    assert.equal(sessionTransportProblem('A', { ...T_ENV, LINKEDIN_SESSION_ACCOUNT: account }), 'no_account', String(account))
-  }
+test('#1122: the server-side session transport is always OFF (reads run in the user\'s browser), whatever the old settings say', () => {
+  assert.equal(sessionTransportProblem('A', {}), 'off')
+  assert.equal(sessionTransportProblem('A', T_ENV), 'off')
+  assert.equal(sessionTransportEnabled('A', T_ENV), false)
 })
 
 test('worker failures map to named stops; an unsupported, error or malformed reply is an error, never zero results', () => {
@@ -49,24 +37,6 @@ test('worker failures map to named stops; an unsupported, error or malformed rep
   assert.equal((parseReply({ items: [], upstream_requests: 2 }, 25) as { upstream_requests: number }).upstream_requests, 2, 'a worker that reports two upstream requests is passed through, so the reader stops on the contract')
 })
 
-bothEngines('transport: reads the stored session, one worker request per call, posts via /linkedin/posts, engagers via /linkedin/engagers; no session = no request', async ({ db }) => {
-  const calls: { url: string; body: Record<string, unknown> }[] = []
-  let reply: { status: number; body: unknown } = { status: 200, body: { items: [person('x-1')], upstream_requests: 1 } }
-  const fetchImpl = (async (url: string, init: RequestInit) => { calls.push({ url, body: JSON.parse(String(init.body)) }); return new Response(JSON.stringify(reply.body), { status: reply.status }) }) as typeof fetch
-  const t = linkedinSessionTransport(db, { env: T_ENV, master: MASTER, fetchImpl })
-  const req = (kind: TransportRequest['kind'], query: string): TransportRequest => ({ kind, query, tenantId: 'A', maxItems: 25, signal: new AbortController().signal })
-  assert.deepEqual(await t.fetch(req('commenters', POST)), { status: 'unauthorized' }); assert.equal(calls.length, 0, 'no stored session: nothing is requested')
-  await writeCredential(db, 'A', 'adv:linkedin', 'li_at=THROWAWAY; JSESSIONID="ajax:1"', MASTER)
-  const r = await t.fetch(req('commenters', POST))
-  assert.equal(r.status, 'ok'); assert.equal(calls.length, 1)
-  assert.equal(calls[0].url, 'http://worker/linkedin/engagers'); assert.deepEqual(calls[0].body, { kind: 'commenters', post: POST, session: 'li_at=THROWAWAY; JSESSIONID="ajax:1"' })
-  await t.fetch(req('posts', 'Rippling'))
-  assert.equal(calls[1].url, 'http://worker/linkedin/posts', 'the post search uses the classifying session route, not the generic /fetch adapter'); assert.deepEqual({ ...calls[1].body, session: '-' }, { query: 'Rippling', session: '-' })
-  reply = { status: 502, body: { error: 'fetch_failed', outcome: 'challenge' } }
-  assert.deepEqual(await t.fetch(req('reactors', POST)), { status: 'challenge' })
-  assert.deepEqual(await t.fetch(req('people', 'HR manager')), { status: 'error' }, 'the session transport only reads posts and engagers'); assert.equal(calls.length, 3)
-  assert.deepEqual(await t.fetch({ ...req('commenters', POST), tenantId: 'B' }), { status: 'unauthorized' }, 'a non-allowlisted tenant'); assert.equal(calls.length, 3)
-})
 
 bothEngines('session plan: competitor post search, then that post\'s commenters and reactors, paced, deduplicated profiles only', async ({ db }) => {
   await ready(db)
@@ -175,13 +145,3 @@ test('worker replies are streamed with a byte cap: an oversized reply is an erro
   assert.equal(await readReply(new Response('x'.repeat(11)), 10), null)
 })
 
-bothEngines('transport: an oversized, malformed, non-object or wrong-typed worker reply is an error, never results', async ({ db }) => {
-  await writeCredential(db, 'A', 'adv:linkedin', 'li_at=T; JSESSIONID="ajax:1"', MASTER)
-  const req: TransportRequest = { kind: 'commenters', query: POST, tenantId: 'A', maxItems: 25, signal: new AbortController().signal }
-  for (const body of ['x'.repeat(1_000_001), '', 'null', '[]', '7', '"s"', '{"items":"x"}', '{"items":null}', '{}', '\u0000\uffff']) {
-    const t = linkedinSessionTransport(db, { env: T_ENV, master: MASTER, fetchImpl: (async () => new Response(body)) as typeof fetch })
-    assert.deepEqual(await t.fetch(req), { status: 'error' }, body.slice(0, 20))
-  }
-  const typed = linkedinSessionTransport(db, { env: T_ENV, master: MASTER, fetchImpl: (async () => new Response(JSON.stringify({ items: [null, 1, 'x', { url: 'javascript:alert(1)', title: 't', quote: 'q' }, { url: 'https://www.linkedin.com/in/ok-1', title: 7, quote: 'q' }, { url: 'https://www.linkedin.com/in/ok-2', title: 't', quote: 'q', date: '20-10-2026' }] }))) as typeof fetch })
-  assert.deepEqual(await typed.fetch(req), { status: 'ok', items: [{ url: 'https://www.linkedin.com/in/ok-2', title: 't', quote: 'q', date: null }], upstream_requests: 1 })
-})

@@ -83,7 +83,6 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
-import { linkedinSessionTransport, sessionTransportProblem } from '../signals/linkedin-session-transport.ts'
 import { audit, writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
@@ -2186,9 +2185,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       try {
         assertOwned(db, job)
         // The session transport: only with its own flag, ONE allowlisted tenant and a named throwaway account. A flag that is on but misconfigured is recorded, not silent.
-        const why = deps.linkedinTransport ? 'off' : sessionTransportProblem(job.user_id)
-        if (why === 'no_worker' || why === 'no_account' || why === 'multiple_tenants') await writeAudit(sqliteDb(db), { tenantId: job.user_id, connector: PEOPLE_CONNECTOR, jobId: job.id, lookup: 'linkedin session', status: `session_${why}`, results: 0 })
-        const transport = deps.linkedinTransport ?? (why === null ? linkedinSessionTransport(sqliteDb(db), { master: deps.master }) : undefined)
+        const transport = deps.linkedinTransport   // #1122: no server-side session transport; LinkedIn is read in the user's browser
         const stop: { status: string | null; incomplete: boolean } = { status: null, incomplete: false }
         const li = await collectLinkedInPeople(sqliteDb(db), job.user_id, job.id, icpForSources, { transport, onStop: s => { stop.status = s }, onIncomplete: () => { stop.incomplete = true }, beforeRequest: () => assertOwned(db, job) })
         if ((stop.status || stop.incomplete) && li.length === 0) ledger.record(PEOPLE_CONNECTOR, 'unavailable', 0)   // the reason is the stopped_* / daily_cap audit row

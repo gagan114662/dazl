@@ -1,6 +1,6 @@
-// One-click Connect LinkedIn (#1037, F-go step 2), end to end in a real browser: the production build of dazl, the UNPACKED dazl Connect
-// extension loaded in Chromium, a synthetic LinkedIn session in the browser's own cookie jar (no LinkedIn request is made), and a stub
-// session worker on loopback that names the account. Three states, desktop and 390px: extension not installed, connected, disconnected.
+// One-click Connect LinkedIn (#1037, #1122), end to end in a real browser: the production build of dazl and the UNPACKED dazl Connect
+// extension loaded in Chromium. The extension pairs and then asks dazl for LinkedIn pages to read; dazl stores no LinkedIn session and
+// makes no outbound request (the stub worker must see nothing). Three states, desktop and 390px: not installed, connected, disconnected.
 // The test copy of the extension adds this run's loopback origin to the pages allowed to message it; extension/ itself is unchanged.
 import assert from 'node:assert/strict'
 import http from 'node:http'
@@ -38,7 +38,6 @@ const manifest = JSON.parse(readFileSync(path.join(ext, 'manifest.json'), 'utf8'
 manifest.externally_connectable.matches.push(`${srv.base}/*`); manifest.host_permissions.push(`${srv.base}/*`)
 writeFileSync(path.join(ext, 'manifest.json'), JSON.stringify(manifest))
 const profile = mkdtempSync(path.join(tmpdir(), 'dazl-connect-profile-'))
-const LI_AT = `AQEDAR${'u'.repeat(60)}`, JSID = '"ajax:5551234567890123456"'
 
 async function shot(page, name) {
   for (const [label, width] of [['desktop', 1280], ['mobile', 390]]) {
@@ -67,39 +66,29 @@ try {
   await shot(p1, '1-extension-not-installed')
   await plain.close(); plain = null
 
-  // 2. The extension loaded; the user is signed in to LinkedIn in this browser (synthetic cookies in its jar).
+  // 2. The extension loaded (it has no cookie permission). Connect pairs it; the device token then reads tasks.
   ctx = await chromium.launchPersistentContext(profile, { channel: 'chromium', args: [`--disable-extensions-except=${ext}`, `--load-extension=${ext}`] })
-  await ctx.addCookies([{ name: 'dazl_session', value: srv.token, url: srv.base },
-    { name: 'li_at', value: LI_AT, domain: '.www.linkedin.com', path: '/', secure: true, httpOnly: true, sameSite: 'None' },
-    { name: 'JSESSIONID', value: JSID, domain: '.www.linkedin.com', path: '/', secure: true, sameSite: 'None' }])
+  await ctx.addCookies([{ name: 'dazl_session', value: srv.token, url: srv.base }])
   if (!ctx.serviceWorkers().length) await ctx.waitForEvent('serviceworker', { timeout: 15000 })
-  const extId = new URL(ctx.serviceWorkers()[0].url()).host
+  const sw = ctx.serviceWorkers()[0]
+  const extId = new URL(sw.url()).host
   assert.equal(extId, 'epkdepdanldkocmedakfdgnoofgjknfk', 'the unpacked build has the ID the Settings page talks to')
   const page = ctx.pages()[0] ?? await ctx.newPage()
   await settings(page)
   await page.getByRole('button', { name: 'Connect LinkedIn' }).click()
-  await page.getByText('Connected as').waitFor({ timeout: 30000 })
-  await page.getByText('Dana Okoye').waitFor()
+  await page.getByText('Connected. dazl Connect reads LinkedIn in this browser').waitFor({ timeout: 30000 })
+  await settings(page); await page.locator('[data-testid="linkedin-reading"]').waitFor({ timeout: 30000 })
   await shot(page, '2-connected')
-  // the session dazl stored is exactly the browser's own, encrypted; the worker saw one account read with it and nothing else
   const db = new Database(srv.dbPath, { readonly: true })
-  const row = db.prepare("SELECT ciphertext, last4 FROM tenant_connectors WHERE connector = 'adv:linkedin'").get()
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM tenant_connectors WHERE connector = 'adv:linkedin'").get().n, 0, 'no LinkedIn session stored')
+  assert.ok(db.prepare("SELECT tz FROM li_task_gate").get()?.tz, 'the time zone came from the Settings browser')
   db.close()
-  assert.ok(row && row.ciphertext && !row.ciphertext.includes(LI_AT), 'stored, and only encrypted')
-  assert.equal(seen.length, 1); assert.equal(seen[0].url, '/linkedin/me'); assert.deepEqual(JSON.parse(seen[0].body), { session: `li_at=${LI_AT}; JSESSIONID="ajax:5551234567890123456"` })
-
-  // LinkedIn rotates JSESSIONID: the extension re-sends by itself (no click), without another account read.
-  await ctx.addCookies([{ name: 'JSESSIONID', value: '"ajax:5559999999999999999"', domain: '.www.linkedin.com', path: '/', secure: true, sameSite: 'None' }])
-  const saves = () => { const d = new Database(srv.dbPath, { readonly: true }); const n = d.prepare("SELECT COUNT(*) n FROM audit_events WHERE action = 'credential.saved' AND resource_id = 'linkedin'").get().n; d.close(); return n }
-  let rotated = false
-  for (let i = 0; i < 60 && !rotated; i++) { await page.waitForTimeout(250); rotated = saves() >= 2 }
-  assert.equal(seen.length, 1, 'a rotation re-saves without another account read')
-  assert.ok(rotated, 'the rotated cookie was saved again without a click')
-
-  // "Test connection" names the account again (one more read).
-  await page.getByRole('button', { name: 'Test connection' }).click()
-  await page.getByText('Working: signed in as Dana Okoye').waitFor()
-  assert.equal(seen.length, 2)
+  // the extension's stored device token reads the task queue
+  const st = await sw.evaluate(async () => (await chrome.storage.local.get('dazl')).dazl)
+  assert.ok(st && st.token && st.origin === srv.base)
+  const r = await sw.evaluate(async s => { const x = await fetch(`${s.origin}/api/tasks/next`, { headers: { authorization: `Bearer ${s.token}` }, credentials: 'omit' }); return { status: x.status, body: await x.json() } }, st)
+  assert.equal(r.status, 200, JSON.stringify(r)); assert.ok('wait' in r.body || 'task' in r.body)
+  assert.equal(seen.length, 0, 'no worker or LinkedIn request from the server')
 
   // 3. Disconnect: the session is gone, the extension's token is dead, the page offers Connect again.
   await page.getByRole('button', { name: 'Disconnect' }).click()
@@ -107,8 +96,9 @@ try {
   await shot(page, '3-disconnected')
   const d3 = new Database(srv.dbPath, { readonly: true })
   assert.equal(d3.prepare("SELECT COUNT(*) n FROM tenant_connectors WHERE connector LIKE 'adv:linkedin%'").get().n, 0)
+  assert.equal(seen.length, 0)
   d3.close()
-  console.log(`ok linkedin-connect UI: not installed / connected as Dana Okoye / rotation re-sync / test / disconnected; screenshots in ${shots}`)
+  console.log(`ok linkedin-connect UI: not installed / connected, task queue reachable, no session stored / disconnected; screenshots in ${shots}`)
 } catch (e) {
   console.error(e, srv.log().split('\n').filter(l => !l.includes('"type":"request"')).join('\n').slice(-3000)); process.exitCode = 1
   for (const pg of [globalThis.__p1, ctx?.pages()[0]]) if (pg) await pg.screenshot({ path: path.join(shots, `failure-${pg === globalThis.__p1 ? 'plain' : 'ext'}.png`), fullPage: true }).catch(() => {})

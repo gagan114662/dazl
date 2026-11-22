@@ -1,6 +1,7 @@
 import LlmKeyPanel from './llm-key-panel'
 import PlanPanel from './plan-panel'
 import AdvancedPanel from './advanced-panel'
+import LinkedInExtensionPanel from './linkedin-extension-panel'
 import GmailPanel from './gmail-panel'
 import AutopilotPanel from './autopilot-panel'
 import RepliesPanel from './replies-panel'
@@ -51,6 +52,7 @@ async function SettingsBody() {
       <UsagePanel />
       <LifecyclePanel />
       <CompetitorsPanel />
+      <LinkedInExtensionPanel />
       <div id="social" className="scroll-mt-6"><AdvancedPanel /></div>
       <div id="gmail" className="scroll-mt-6"><GmailPanel /></div>
       <div id="autopilot" className="scroll-mt-6"><AutopilotPanel /></div>
