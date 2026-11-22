@@ -49,7 +49,7 @@ test('Approve is offered only when every existing draft condition holds', () => 
   assert.match(blocked({ quarantined_at: 1 })!, /Rejected/)
   assert.match(blocked({ review_reason: 'quote_unconfirmed' })!, /could not confirm/)
   assert.match(blocked({ window_held: true })!, /time window/)
-  assert.match(blocked({ confidence: null, human_confirmed_at: null })!, /Not verified/)
+  assert.match(blocked({ confidence: null, human_confirmed_at: null })!, /Open the source to check the quote first/)
   assert.match(blocked({ fit: 0, intent: null })!, /not a fit/)
   assert.match(blocked({ contact: null })!, /No published email/)
   assert.match(blocked({ contact: 'privacy@brightdental.example' })!, /No published email/)
@@ -109,7 +109,7 @@ test('address printed on the cited page reads as confirmed, with its basis', () 
 test('a legacy lead with a confidence but no stored excerpt is not approvable (same evidence state as the gate)', () => {
   const a = approveState({ ...base, evidence_excerpt: null })
   assert.equal(a.ok, false)
-  assert.match(a.ok ? '' : a.reason, /Not verified/)
+  assert.match(a.ok ? '' : a.reason, /Open the source to check the quote first/)
 })
 
 test('#1037: contactNoPerson never carries a person the card synthesized (Leads shows it when leadPerson rejects that person)', () => {
