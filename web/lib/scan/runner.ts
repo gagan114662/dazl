@@ -12,6 +12,7 @@ import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
 import { runResearchScan, HAIKU } from '../research/scan-job.ts'
+import { buyerFitWorstCaseUsd } from './price-estimate.ts'
 import { readRequestPlan, cachedRequestPlan, planPrompt, PLAN_MAX_TOKENS } from './request-plan.ts'
 import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
@@ -2451,6 +2452,11 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       if (k > 0 && price > 0) {
         try { await trialCharges.get(job)!('search', k); trialPeoplePrepaid = k } catch (e) { if (!(e instanceof SpendRefused)) throw e; console.error('trial people-search reservation refused', e.reason) }
       } else trialPeoplePrepaid = k
+    }
+    // (4)A, run af02437c: buyer-fit runs after finish (it needs the crawl's confirmed sites), when nothing new may be reserved. Its one call is
+    // reserved now, while the run owns its job: the estimate's buyer_fit row at its worst case. Refused or unpriced: the gate fails closed as before.
+    if (jobGuard && complete && deps.score !== false && leads.length) {
+      try { jobGuard.prepay(buyerFitWorstCaseUsd(baseProviders[vendor].configuredModel?.() ?? '')) } catch (e) { console.error('buyer-fit reservation refused', e instanceof Error ? e.message.slice(0, 80) : 'error') }
     }
     const owned = finish(db, job, 'done', null, outcome, leads.length + walledLeads.length + selfDescribedLeads.length, ledger)
     // Stale attempt: finish() wrote nothing, so every post-finish side effect
