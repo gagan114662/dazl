@@ -8,6 +8,9 @@
 // email_candidates), which no page and no outreach path reads. The one wired verifier is ZeroBounce's FREE tier (#899 decision,
 // lib/people/zerobounce.ts), used only when ZEROBOUNCE_API_KEY is set and capped at its free monthly allowance. Off unless
 // EMAIL_GUESS_ENABLED=1.
+// #1036 / #1250: the crawl (recordEmailGuesses) now records only addresses the company PRINTS on its own site (tier 'published');
+// no format is learned and no address is built from a name, flag on or off. The verifier reads only guessed rows earlier releases
+// left at rest.
 import type Database from 'better-sqlite3'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { US_STATES } from '../scan/place-agreement.ts'

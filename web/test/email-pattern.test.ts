@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { crawlJob, type Get } from '../lib/connectors/sitecrawl.ts'
-import { splitName, localFor, inferPattern, rankPattern, ownersOf, publishedFor, personalLocals, candidateAddress, usEvidence, verifyCandidates, candidateLabel, verifierFromEnv, recordEmailGuesses, migrateEmailGuess, type MailboxVerifier, type VerifyAnswer } from '../lib/people/email-pattern.ts'
+import { publishedCandidateRowsForLeads, splitName, localFor, inferPattern, rankPattern, ownersOf, publishedFor, personalLocals, candidateAddress, usEvidence, verifyCandidates, candidateLabel, verifierFromEnv, recordEmailGuesses, migrateEmailGuess, type MailboxVerifier, type VerifyAnswer } from '../lib/people/email-pattern.ts'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -322,3 +322,24 @@ test('published is never eligible for the mailbox check, even with confidence hi
   assert.equal(r.checked, 0)
   assert.equal((db.prepare('SELECT verification FROM email_candidates').get() as { verification: string }).verification, 'none')
 })
+
+// #1036 / #1250: a guessed row an earlier release stored is upgraded to the published row once the site prints that exact address
+// (the key is lead_id + address); a published row is never overwritten; another tenant's row under the same key is never touched.
+test('#1036 #1250 a stored guess at the address the site now prints becomes the published row; published and other-tenant rows stay', () => {
+  const db = new Database(':memory:'); const home = '120 Main St, Austin, TX 78701'
+  legacyGuesses(db, 'L1', ['dana.lee@acme.com'])
+  const rec = (url: string, tenant = 'A', lead = 'L1') => recordEmailGuesses(db, tenant, lead, 'acme.com', [], ['Dana Lee, CEO'], { env: {}, homeText: home, seen: [{ address: 'dana.lee@acme.com', url }] })
+  assert.equal(rec('https://acme.com/team')?.published, 1)
+  const row = () => db.prepare("SELECT tenant_id, person, tier, format, source_url FROM email_candidates WHERE lead_id = 'L1' AND address = 'dana.lee@acme.com'").get()
+  assert.deepEqual(row(), { tenant_id: 'A', person: 'Dana Lee, CEO', tier: 'published', format: 'published', source_url: 'https://acme.com/team' })
+  assert.deepEqual(publishedCandidateRowsForLeads(db, 'A', ['L1']).L1?.map(r => [r.address, r.source_url]), [['dana.lee@acme.com', 'https://acme.com/team']])
+  // a later crawl printing it on another page never overwrites the published row
+  assert.equal(rec('https://acme.com/about')?.published, 0)
+  assert.deepEqual(row(), { tenant_id: 'A', person: 'Dana Lee, CEO', tier: 'published', format: 'published', source_url: 'https://acme.com/team' })
+  // tenant B's guessed row under the same key is never rewritten by tenant A's crawl
+  db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES ('B', 'L9', 'Dana Lee', 'dana.lee@acme.com', 'first.last', 'x', 'guessed', 'high')").run()
+  assert.equal(rec('https://acme.com/team', 'A', 'L9')?.published, 0)
+  assert.deepEqual(db.prepare("SELECT tenant_id, tier, source_url FROM email_candidates WHERE lead_id = 'L9'").get(), { tenant_id: 'B', tier: 'guessed', source_url: null })
+  assert.deepEqual(publishedCandidateRowsForLeads(db, 'A', ['L9']), {})
+})
+
