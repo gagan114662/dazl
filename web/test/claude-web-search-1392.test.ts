@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CLAUDE_SEARCH_MODEL, claudeSearchEstimate, parseClaudeSearchUsage, runClaudeWebSearch } from '../lib/llm/claude-web-search.ts'
+import { asStreaming } from './helpers/claude-sse.ts'
+// #1157: the search call streams; each fixture's final Message is served as the documented SSE event sequence.
+const runStreaming = (...[k, p, reserve, f, policy]: Parameters<typeof runClaudeWebSearch>) => runClaudeWebSearch(k, p, reserve, f ? asStreaming(f) : f, policy)
 
 const usage = {
   input_tokens: 55_000, output_tokens: 2_500, cache_read_input_tokens: 500, cache_creation_input_tokens: 1500,
@@ -54,7 +57,7 @@ test('count request includes the fixed prompt, not server tools; reserve before 
   for (const stop of ['end_turn', 'pause_turn', 'max_tokens']) {
     const log: string[] = []
     const calls: { url: string; body: unknown }[] = []
-    const result = await runClaudeWebSearch(key, prompt, e => {
+    const result = await runStreaming(key, prompt, e => {
       log.push('reserve:' + e.estimatedUsd)
       return hold(log)
     }, async (url, init) => {
@@ -69,7 +72,7 @@ test('count request includes the fixed prompt, not server tools; reserve before 
     assert.deepEqual(log, ['count', 'reserve:0.2234', 'send', 'settle:0.229400'])
     assert.deepEqual(calls.map(c => c.url), ['https://api.anthropic.com/v1/messages/count_tokens', 'https://api.anthropic.com/v1/messages'])
     const sizing = calls[0].body as object
-    assert.deepEqual(calls[1].body, { ...sizing, max_tokens: 3000, service_tier: 'standard_only', tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
+    assert.deepEqual(calls[1].body, { ...sizing, max_tokens: 3000, service_tier: 'standard_only', stream: true, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] })
     assert.deepEqual(sizing, { model: CLAUDE_SEARCH_MODEL, messages: [{ role: 'user', content: prompt }] })
     assert.deepEqual(result.citedUrls, ['https://court.example/proof/'])
     assert.equal(result.outcome, stop === 'end_turn' ? 'ok' : 'partial')
@@ -79,9 +82,9 @@ test('count request includes the fixed prompt, not server tools; reserve before 
 test('invalid count and smaller caller budget stop before paid transport; no reserve if count failed', async () => {
   let n = 0
   const rejected = Error('owner_pool_limit')
-  await assert.rejects(runClaudeWebSearch(key, prompt, () => { throw rejected }, async () => { n++; return Response.json({ input_tokens: counted }) }), e => e === rejected)
+  await assert.rejects(runStreaming(key, prompt, () => { throw rejected }, async () => { n++; return Response.json({ input_tokens: counted }) }), e => e === rejected)
   assert.equal(n, 1)
-  await assert.rejects(runClaudeWebSearch(key, prompt, () => assert.fail('must not reserve'), async () => {
+  await assert.rejects(runStreaming(key, prompt, () => assert.fail('must not reserve'), async () => {
     n++; return Response.json({ input_tokens: '100' })
   }), code('count_failed'))
   assert.equal(n, 2)
@@ -96,7 +99,7 @@ test('network/status/usage uncertainty retains reservation, no retry or candidat
   ]) {
     let n = 0
     const log: string[] = []
-    await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(log), async () => {
+    await assert.rejects(runStreaming(key, prompt, () => hold(log), async () => {
       if (++n === 1) return Response.json({ input_tokens: counted })
       if (scenario === 'network') throw Error('timeout')
       if (scenario === 'status') return new Response(null, { status: 401 })
@@ -117,7 +120,7 @@ test('an Anthropic request-limit rejection releases via the typed 429 callback; 
   ] as const) {
     const log: string[] = []
     let n = 0
-    await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(log), async () => {
+    await assert.rejects(runStreaming(key, prompt, () => hold(log), async () => {
       if (++n === 1) return Response.json({ input_tokens: counted })
       return Response.json(body, { status: 429, headers: { 'request-id': requestId } })
     }), code(expected === 'uncertain' ? 'request_uncertain' : 'rate_limited'))
@@ -151,7 +154,7 @@ const fullStandardResponse = {
 test('supported standard-only request settles a full documented-shape web-search response', async () => {
   const marks: string[] = []
   let calls = 0
-  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (url, init) => {
+  const result = await runStreaming(key, prompt, () => hold(marks), async (url, init) => {
     const body = JSON.parse(String(init?.body))
     calls++
     if (String(url).endsWith('/count_tokens')) {
@@ -176,7 +179,7 @@ test('unexpected returned model, tier or nullable critical counters stay held de
   ]) {
     let calls = 0
     const marks: string[] = []
-    await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(marks), async () => {
+    await assert.rejects(runStreaming(key, prompt, () => hold(marks), async () => {
       return Response.json(++calls === 1 ? { input_tokens: counted } : body)
     }), code('usage_uncertain'))
     assert.equal(calls, 2)
@@ -193,12 +196,12 @@ test('native paid transport abort leaves the reservation held and does not retry
   })
   const marks: string[] = []
   let calls = 0
-  await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+  await assert.rejects(runStreaming(key, prompt, () => hold(marks), async (_url, init) => {
     if (++calls === 1) return Response.json({ input_tokens: counted })
     return new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal
       assert.ok(signal)
-      assert.equal(signal, timedOut.signal)
+      // #1157: the call's signal combines the per-call deadline with the stall timer; the deadline still aborts it
       signal.addEventListener('abort', () => reject(signal.reason), { once: true })
       timedOut.abort(new DOMException('offline timeout', 'TimeoutError'))
     })
@@ -207,6 +210,7 @@ test('native paid transport abort leaves the reservation held and does not retry
   assert.equal(calls, 2)
   assert.equal(deadlines[0], 20_000)
   assert.ok(deadlines[1] > 0 && deadlines[1] <= 150_000)
+  assert.equal(deadlines.length, 2, 'one count deadline and one per-call deadline, no retry')
   assert.deepEqual(marks, ['uncertain'])
 })
 
@@ -217,7 +221,7 @@ test('fixed no-cache Messages request settles the official sparse Web Search usa
   assert.equal(parseClaudeSearchUsage(response), null, 'the general parser cannot assume what the request sent')
   const marks: string[] = []
   let calls = 0
-  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+  const result = await runStreaming(key, prompt, () => hold(marks), async (_url, init) => {
     if (++calls === 1) return Response.json({ input_tokens: counted })
     const sent = JSON.parse(String(init?.body))
     assert.equal('cache_control' in sent, false)
@@ -253,7 +257,7 @@ test('unsafe 2xx usage retains the full hold and exposes only the exact closed d
   ] as const) {
     let requests = 0
     const marks: string[] = []
-    await assert.rejects(runClaudeWebSearch(key, prompt, () => hold(marks), async () =>
+    await assert.rejects(runStreaming(key, prompt, () => hold(marks), async () =>
       Response.json(++requests === 1 ? { input_tokens: counted } : body)
     ), e => {
       const err = e as { code?: string; diagnostic?: string; message?: string }
@@ -278,7 +282,7 @@ test('the pinned pre-4.6 uncached Messages request prices documented nullable/ze
     for (const geo of ['us', 'global']) {
       const marks: string[] = []
       let sent = 0
-      const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+      const result = await runStreaming(key, prompt, () => hold(marks), async (_url, init) => {
         if (++sent === 1) return Response.json({ input_tokens: counted })
         assert.equal('inference_geo' in JSON.parse(String(init?.body)), false)
         return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant', usage: { ...usage, ...cache, inference_geo: geo } })
@@ -293,7 +297,7 @@ test('the pinned pre-4.6 uncached Messages request prices documented nullable/ze
 test('explicitly zero searches with nullable cache counters settles only tokens and produces no sources', async () => {
   const marks: string[] = []
   let sent = 0
-  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async () => {
+  const result = await runStreaming(key, prompt, () => hold(marks), async () => {
     if (++sent === 1) return Response.json({ input_tokens: counted })
     return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant',
       content: [{ type: 'text', text: 'No search was needed.' }],
@@ -309,7 +313,7 @@ test('explicitly zero searches with nullable cache counters settles only tokens 
 test('pinned pre-4.6 request settles Toronto-shaped counters despite an unrecognized geo string', async () => {
   const marks: string[] = []
   let sent = 0
-  const result = await runClaudeWebSearch(key, prompt, () => hold(marks), async (_url, init) => {
+  const result = await runStreaming(key, prompt, () => hold(marks), async (_url, init) => {
     assert.equal(Object.hasOwn(JSON.parse(String(init?.body)), 'inference_geo'), false)
     if (++sent === 1) return Response.json({ input_tokens: counted })
     return Response.json({ ...fullStandardResponse, type: 'message', role: 'assistant',
@@ -330,7 +334,7 @@ test('optional company-first buyer designation reuses one reserved search and mu
   const neverReturned = 'https://business.example/team'
   const marks: string[] = []
   let sends = 0
-  const r = await runClaudeWebSearch(key, prompt, () => hold(marks), async (url, init) => {
+  const r = await runStreaming(key, prompt, () => hold(marks), async (url, init) => {
     if (String(url).endsWith('/count_tokens')) return Response.json({ input_tokens: counted })
     sends++
     assert.equal(JSON.parse(String(init?.body)).tools.length, 1)
