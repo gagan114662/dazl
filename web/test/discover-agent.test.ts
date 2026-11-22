@@ -53,8 +53,15 @@ test('checkLead: the text Claude read decides first, then the read by dazl, then
   const ours = await checkLead(l, [], page('<html><body><p>14 October 2026</p><p>Northwind Dental will open its second clinic in the spring.</p></body></html>'))
   assert.deepEqual([ours.proof, ours.proof_read_by], ['confirmed', 'dazl'])
   assert.equal((await checkLead(l, [], page('<p>Unrelated story</p>'))).proof, 'company_not_on_page')
-  const listed = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('blocked', 403))
-  assert.deepEqual([listed.proof, isShown(listed)], ['listed', true])
+  // a page nobody could read: shown only when the search index dates it recently; a bare listing with the company in its title is not proof of the signal
+  const listed = await checkLead({ ...l, signal_date: null }, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: '3 days ago', text: null }], page('blocked', 403))
+  assert.deepEqual([listed.proof, listed.date_source, isShown(listed)], ['listed', 'index', true])
+  const bare = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental - reviews and opening hours', page_age: null, text: null }], page('blocked', 403))
+  assert.deepEqual([bare.proof, isShown(bare)], ['listed', false])
+  // a page that was read and names the company, but shows neither the quoted words nor the day (a directory profile): to review
+  const profile = await checkLead(l, [], page('<h1>Northwind Dental</h1><p>Family dentist. 212 reviews. Open Monday to Friday.</p>'))
+  assert.deepEqual([profile.proof, profile.quote_on_page, profile.date_on_page, isShown(profile)], ['confirmed', false, false, false])
+  assert.equal(isShown(read), true)
   const unseen = await checkLead(l, [{ url: 'https://news.example/other', title: 'Northwind Dental', page_age: null, text: null }], page('blocked', 403))
   assert.deepEqual([unseen.proof, isShown(unseen)], ['unseen', false], 'a proof URL the run never saw and nobody can read is not shown')
   assert.equal((await checkLead({ ...l, evidence_url: 'http://127.0.0.1/admin' }, [], never)).proof, 'unseen', 'a private address is never fetched')

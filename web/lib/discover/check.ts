@@ -10,7 +10,11 @@ export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unsee
 // dazl also found it in the page text); 'index' = the proof page prints no date, so this is the day the search index dates the page itself.
 export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
-export const isShown = (l: CheckedLead): boolean => l.proof === 'confirmed' || l.proof === 'listed'
+// ...and the page shows something of the SIGNAL, not just the company: the quoted words or the signal's day are in the page text, or the
+// search index dates the page inside the last year (a recent page about the company). A directory or profile page that only names
+// the company (#1571: a review-site listing accepted as proof of an expansion) shows none of these and goes to the user's review.
+export const signalSeen = (l: CheckedLead): boolean => l.quote_on_page || l.date_on_page || l.date_source === 'index'
+export const isShown = (l: CheckedLead): boolean => (l.proof === 'confirmed' || l.proof === 'listed') && signalSeen(l)
 
 const text = (html: string) => html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')
 const fold = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
