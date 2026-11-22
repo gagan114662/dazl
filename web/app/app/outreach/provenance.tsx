@@ -1,10 +1,9 @@
-import type { OutreachProvenance } from '@/lib/outreach/provenance'
-import { eventDateCopy } from '@/lib/scan/date-copy'
+import { provenanceDateLine, type OutreachProvenance } from '@/lib/outreach/provenance'
 
 export default function Provenance({ value }: { value: OutreachProvenance | null | undefined }) {
   if (!value) return <p className="text-xs text-[#555] mb-3">Linked source context unavailable. Contact publication, date and current need are not confirmed here.</p>
   return <div className="border-l-2 border-black/30 pl-3 mb-3 text-xs text-[#555]">
-    <p>{eventDateCopy(value.event_date,value.date_status)}</p>
+    <p>{provenanceDateLine(value)}</p>
     <p className="mt-1">Public contact is not a named buyer or consent. Workload fit is not buying intent.</p>
     <details className="mt-2">
       <summary className="cursor-pointer underline">Source and contact context</summary>

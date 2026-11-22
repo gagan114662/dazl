@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { tableExists } from './send-budget.ts'
 import { PUBLISHED_EMAIL_RE } from './published-email.ts'
+import { eventDateCopy } from '../scan/date-copy.ts'
 
 export interface OutreachProvenance {
   company: string
@@ -35,3 +36,5 @@ export function messageProvenance(db: Database.Database, tenantId: string, leadI
   }
   return out
 }
+// The event-date line the provenance screen shows (app/app/outreach/provenance.tsx).
+export const provenanceDateLine = (p: OutreachProvenance): string => eventDateCopy(p.event_date, p.date_status)
