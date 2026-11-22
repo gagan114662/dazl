@@ -76,7 +76,7 @@ test('#1037 a result is kept only when it names the lead\'s CONFIRMED website', 
   const results = { ...RESULTS, Garage: [{ ...RESULTS.Garage[0], snippet: 'Co-Founder & CEO at Garage · withgarage.com · New York' }, RESULTS.Garage[1]] }
   assert.equal(await findPeople(db, 'A', job, { env, fetchImpl: stub(results) }), 1)
   assert.deepEqual(stored(db).map(r => [r.company, r.value, r.label.split(': ').pop()]), [['Garage', 'Casey Flynn, Co-Founder & CEO', 'the result names its website']])
-  assert.equal(leadPerson(rowsOf(db, 'L-garage'), WHO.join('; '))?.name, 'Casey Flynn')
+  assert.equal(leadPerson(rowsOf(db, 'L-garage'), WHO.join('; ')), null, 'stored for the details, but a search result never names the row: only the company\'s own site does (#1037)')
   // A domain that is set but NEVER confirmed (a name guess) ties nothing, even when the result names it.
   { const g = setup(ICP, { Garage: 'withgarage.com' }); const stats = newPeopleStats()
     await findPeople(g.db, 'A', g.job, { env, fetchImpl: stub(results), stats }); assert.deepEqual(stored(g.db), []); assert.equal(stats.refused.company_unconfirmed, 6) }
@@ -104,7 +104,7 @@ test('#1037 rows already stored by the name alone are no longer the lead\'s pers
   for (const p of listed) { assert.equal(p.nameOnly, true); assert.equal(peopleSourceText(p), NAME_ONLY_SOURCE); assert.equal(isWorkEmailTarget(p, WHO.join('; ')), false) }
   assert.match(NAME_ONLY_REASON, /^No buyer named: .*nothing confirms it is this company/)
   const tied = [{ kind: 'person', value: 'Casey Flynn, Co-Founder & CEO', label: tiedLabel(LABEL, 'domain'), source_url: 'https://www.linkedin.com/in/person-c-test', connector: 'search:people' }]
-  assert.equal(leadPerson(tied, WHO.join('; '))?.name, 'Casey Flynn'); assert.equal(contactsFromEnrichments(tied, WHO.join('; '))[0].nameOnly, undefined)
+  assert.equal(leadPerson(tied, WHO.join('; ')), null, 'tied to the company, still a search result: never the row\'s buyer (#1037)'); assert.equal(contactsFromEnrichments(tied, WHO.join('; '))[0].nameOnly, undefined)
   for (const l of [LABEL, `${LABEL}; company confirmed beyond its name: trust me`, 'company confirmed beyond its name: the result names its website x', '', null, 5]) assert.equal(companyTied(l), false, String(l))
   // The old labels of the dropped ties no longer count as tied.
   for (const old of ['the result gives its Y Combinator batch', 'the result names the requested city', 'the result names the organisation the lead was found through']) assert.equal(companyTied(`${LABEL}; company confirmed beyond its name: ${old}`), false, old)

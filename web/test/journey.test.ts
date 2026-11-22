@@ -1,12 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { heldReason, journey, previewSplit, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
+import { heldReason, journey, previewSplit, NO_OWN_BUYER, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 const lead = (o: Partial<PreviewLead> = {}): PreviewLead => ({
   id: 'l1', company: 'Bright Dental', signal: 'Opened a second office', source_url: 'https://news.example/a', evidence_excerpt: 'Bright Dental opened a second office',
   event_date: '2026-10-01', date_status: 'unverified', day_verified: true, review_reason: null, fit: 4, intent: 4, why: 'fits', icp_match: null,
   company_domain: 'brightdental.example', contact: 'hello@brightdental.example', quarantined_at: null, confidence: 90, human_confirmed_at: null,
-  currentness_held: false, window_held: false, enrichments: [], ...o,
+  currentness_held: false, window_held: false, enrichments: ownSiteBuyerRows('brightdental.example'), ...o,   // #1037: names its buyer on its own site
 })
 const job = (o: Partial<JourneyJob> = {}): JourneyJob => ({ id: 'a'.repeat(24), status: 'done', error: null, query: 'Dental owners in Ohio', csv_domain: null, created_at: 100, candidates: 3, verified: 1, needs_review: 1, dropped: 1, lead_count: 2, test_only: false, ...o })
 const profile = { sells: 'Booking software', website: 'brightsmile.example' }
@@ -28,6 +29,7 @@ test('wrong-company, undated, out-of-window, unverified, rejected and in-review 
     ['no verified date', { day_verified: false }],   // a dated lead whose day no cited source proves
     ['no verified date', { day_verified: undefined, date_status: 'verified' }],   // the retired verdict (pre 2026-10-23 rows, no proof) never counts, #1176
     ['not a fit', { fit: 0, intent: null }],
+    [NO_OWN_BUYER, { enrichments: [] }],   // #1037: nobody named on the company's own site
   ]
   for (const [why, o] of bad) assert.equal(heldReason(lead(o)), why, why)
   const s = previewSplit(bad.map(([, o], i) => lead({ ...o, id: `b${i}` })))

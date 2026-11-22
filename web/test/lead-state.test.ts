@@ -8,6 +8,7 @@ import { reviewAction } from '../lib/scan/review-action.ts'
 import { REVIEWABLE, RESEARCH_REASONS, uncheckableCause } from '../lib/lead-state.ts'
 import { RESEARCH_HELD } from '../lib/research/scan-job.ts'
 import { peopleSearchable } from '../lib/people/searchable-holds.ts'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 // Synthetic leads shaped like the two reported failures: an undated customer-mention and a blocked, undated page.
 // No real company, run id or URL.
@@ -15,7 +16,7 @@ const lead = (o: Partial<PreviewLead> = {}): PreviewLead => ({
   id: 'l1', company: 'Example Dental', signal: 'Opened a second office', source_url: 'https://news.example/a', evidence_excerpt: 'Example Dental opened a second office',
   event_date: null, date_status: 'undated', review_reason: null, fit: 4, intent: 4, why: 'fits', icp_match: null,
   company_domain: 'exampledental.example', contact: null, quarantined_at: null, confidence: 90, human_confirmed_at: null,
-  currentness_held: false, window_held: false, enrichments: [], ...o,
+  currentness_held: false, window_held: false, enrichments: ownSiteBuyerRows('exampledental.example'), ...o,   // #1037: names its buyer on its own site
 })
 const nyc = [lead({ id: 'a', review_reason: 'counterparty_signal', window_held: true }), lead({ id: 'b', review_reason: 'outside_window_undated', window_held: true })]
 const london = [lead({ id: 'c', review_reason: 'counterparty_signal' }), lead({ id: 'd', review_reason: 'blocked_by_site', window_held: true })]

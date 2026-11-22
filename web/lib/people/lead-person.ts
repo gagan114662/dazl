@@ -2,18 +2,22 @@
 // rule decides whether the first-play people search spends a search on a lead (people-search.ts skipNamed), so a row
 // reads "No buyer named yet" exactly when no search result or stored person qualifies.
 //
-// Nothing is invented: the person is a stored 'person' / 'contact' enrichment (company-site crawl, public profile search,
-// the tenant's own enrichment provider). Fail closed: anything malformed is skipped, never repaired into a person.
+// Nothing is invented, and only the company's OWN website names a buyer: the person is a stored company-site crawl 'person' row
+// (connector 'sitecrawl') read on a first-party page of the lead's confirmed site, current (lib/people/currency.ts verified_current:
+// the site identity is fact or user-confirmed, the page is on that site and was read within 180 days). Its LinkedIn is the profile
+// that company page itself links for that person (lib/people/site-profile.ts), never one found by search. A public profile search
+// result, a provider record, a filing or a research page never names the lead's buyer, and never adds a LinkedIn link to one.
+// The same rule makes a lead READY (lib/journey.ts heldReason): no such buyer, no ready lead.
+// Fail closed: anything malformed is skipped, never repaired into a person.
 // A row qualifies only with ALL of:
 //   - a plausible human name (letters, spaces, . ' - only; no address, URL or digits) and a non-empty title;
 //   - not historical (an SEC Form D names officers as of the filing) and a title that does not contradict the role
 //     (former, retired, assistant-to: rank.ts roleContradicted);
-//   - provenance a user can open: a public LinkedIn profile URL, or an http(s) source page.
+//   - the company page it was read on (an http(s) source page) AND the LinkedIn profile URL that page links for this person.
 // Collection already keeps only buyer-role titles (the crawl and the profile search filter on rank.ts titleMatches; a
 // provider is searched by role), so no extra role match is required here (a 'Co-founder' for a 'Founder' search is kept):
 // the best title match is simply ranked first, as the opportunity card's recommendedPerson does.
-// Order: verified current first (lib/people/currency.ts: dated first-party page / provider record), then search-result
-// only, each in rank order. `current` says which, so the row never presents a search result as a verified employee.
+// Order: rank order among the qualifying company-site people (the best title match first).
 import { contactsFromEnrichments, peopleSourceText, roleContradicted, type ContactEnrichment } from './rank.ts'
 import type { SiteIdentity } from './currency.ts'
 
@@ -51,17 +55,16 @@ export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date
   try {
     const icp = typeof icpText === 'string' ? icpText.slice(0, 2000) : ''
     const people = contactsFromEnrichments(clean(rows), icp, Number.isFinite(nowMs) ? nowMs : Date.now(), site)
-    const ordered = [...people.filter(p => p.currency === 'verified_current'), ...people.filter(p => p.currency !== 'verified_current')]
-    for (const p of ordered) {
-      if (p.historical || p.nameOnly) continue // a name-only search match may be another business with the same name: never the lead's person
+    for (const p of people) {
+      // only a person the company's own website lists, read on its confirmed site and current (#1037)
+      if (p.connector !== 'sitecrawl' || p.currency !== 'verified_current' || p.historical || p.nameOnly) continue
       const name = tidy(p.name), title = tidy(p.title ?? '')
       if (!NAME.test(name) || (name.split(' ').filter(Boolean).length < 2 && !NO_SPACE_NAME.test(name))) continue // a full name, never a bare first name or a handle
       if (!title || title.length > 120 || roleContradicted(title, icp)) continue
-      const linkedin = p.linkedin && PROFILE.test(p.linkedin) ? p.linkedin : null
-      const src = p.source ?? (p.linkedin && !linkedin ? p.linkedin : null)
-      const source = src && SOURCE.test(src) ? src : null
-      if (!linkedin && !source) continue // no link the user can check: not shown as the lead's person
-      return { name, title, linkedin, source, via: peopleSourceText(p), current: p.currency === 'verified_current' }
+      const linkedin = p.linkedin && PROFILE.test(p.linkedin) ? p.linkedin : null   // for a sitecrawl row: only the profile its own page links (rank.ts)
+      const source = p.source && SOURCE.test(p.source) ? p.source : null
+      if (!linkedin || !source) continue // the company page and the LinkedIn it links: both, or not the lead's buyer
+      return { name, title, linkedin, source, via: peopleSourceText(p), current: true }
     }
     return null
   } catch { return null }

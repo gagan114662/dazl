@@ -14,6 +14,7 @@ import { SpendRefused } from '../llm/spend-guard.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { titleMatches } from './rank.ts'
 import { leadPerson } from './lead-person.ts'
+import { identityOf } from '../scan/opportunity.ts'
 import { companyTie, companyTied, tiedLabel, type CompanyTie } from './company-tie.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
 import { placeAgreement } from '../scan/place-agreement.ts'
@@ -105,9 +106,9 @@ export function peopleStatsDetail(s: PeopleStats): Record<string, number> {
   return out
 }
 
-type Lead = { id: string; company: string; review_reason: string | null; company_domain: string | null }
+type Lead = { id: string; company: string; contact: string | null; review_reason: string | null; company_domain: string | null }
 // First-play options (#1037). maxCompanies: searches allowed in this pass (one per company), replacing MAX_COMPANIES.
-// skipNamed: leads that already have a titled person stored (e.g. listed on their own site) get no search.
+// skipNamed: leads that already name their buyer on their own site (lib/people/lead-person.ts, the row's rule) get no search.
 // charge: the free-trial scan's per-search charge (runner trialCharges); canSearch: checked before every search, false
 // stops the pass (a trial scan keeps budget for the checks that run after it). onStop records why the pass stopped early.
 // alive: the job attempt still owns the run (runner postFinishAlive); checked before every search and before writing its result.
@@ -161,7 +162,8 @@ export function peopleTraceMessage(stored: number, stopped: string | null, stats
 }
 // A lead that already names its person (lead-person.ts leadPerson: the SAME rule the lead row uses) gets no first-play
 // search: a titled, role-matching, non-historical person with a checkable link is already stored (e.g. its own site).
-const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND kind IN ('person','contact') ORDER BY insert_seq LIMIT 500"
+// all of the lead's rows: its people AND the site rows that say whether its website is confirmed (identityOf), as the lead row reads them (#1037)
+const ROWS_SQL = "SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? ORDER BY insert_seq LIMIT 500"
 // Runs after a scan finishes. Never throws; returns how many people were stored (also when it stopped on an error).
 export async function findPeople(db: Database.Database, tenantId: string, jobId: string, deps: PeopleOpts = {}): Promise<number> {
   let stored = 0
@@ -183,7 +185,7 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     const geo = { ...(typeof who?.country === 'string' ? { location: who.country } : {}), ...(typeof who?.language === 'string' ? { language: who.language } : {}) }
     // Ready leads first (best fit first), then the held leads a search still makes sense for (SEARCHABLE_HOLDS), all inside the
     // one cap, and never a lead graded out of the list: a held lead never takes a search from a ready one. The job id is the tenant's own (checked above).
-    const leads = db.prepare(`SELECT id, company, review_reason, company_domain FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC, id LIMIT 200`).all(jobId) as Lead[]
+    const leads = db.prepare(`SELECT id, company, contact, review_reason, company_domain FROM leads WHERE scan_job_id = ? AND ${SEARCHABLE_SQL} AND quarantined_at IS NULL AND company <> '' ${NOT_GRADED_OUT} ${deps.skipNamed ? NOT_GATE_HELD : ''} ORDER BY (review_reason IS NULL) DESC, COALESCE(fit, 0) DESC, score DESC, id LIMIT 200`).all(jobId) as Lead[]
     const stats = deps.stats
     if (stats) { stats.eligible = leads.length; stats.held = leads.filter(l => l.review_reason !== null).length }
     const refuse = (why: string) => { if (stats) stats.refused[why] = (stats.refused[why] ?? 0) + 1 }
@@ -199,7 +201,10 @@ export async function findPeople(db: Database.Database, tenantId: string, jobId:
     for (const l of leads) {
       if (Date.now() >= deadline) { deps.onStop?.('deadline'); break }
       if (searched >= cap) break
-      if (rowsOf && leadPerson(rowsOf.all(l.id, tenantId), roleText, now * 1000)) { if (stats) stats.already_named++; continue } // already names its person: no search spent on it
+      if (rowsOf) {   // already names its buyer on its own site (the row's rule, with the lead's own site identity): no search spent on it
+        const rows = rowsOf.all(l.id, tenantId) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null }[]
+        if (leadPerson(rows, roleText, now * 1000, identityOf({ id: l.id, contact: l.contact ?? null }, rows))) { if (stats) stats.already_named++; continue }
+      }
       const ck = companyKey(l.company); if (seenCompany.has(ck)) continue; seenCompany.add(ck)
       const q = peopleQuery(l.company, roles); if (!q) continue
       if (deps.alive && !deps.alive()) { deps.onStop?.('ownership_lost'); break }

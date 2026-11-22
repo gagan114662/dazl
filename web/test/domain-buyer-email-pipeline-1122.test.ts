@@ -72,11 +72,13 @@ async function pipeline(mode: 'board' | 'own' | 'people_error' | 'empty' | 'no_d
     assert.ok(lead, JSON.stringify(r.leads))
     const rows = enrichmentsForLeads(r.db, 'A', [lead.id])[lead.id] ?? []
     const person = leadPerson(rows, 'Founder')
-    if (mode === 'empty' || mode === 'people_error' || mode === 'no_domain') assert.equal(person, null)
-    else assert.deepEqual([person?.name, person?.title, person?.linkedin], ['Jane Doe', 'Founder', PROFILE])
+    // #1037: the buyer-role search's result is stored for the details, but a public profile search result never names the row:
+    // only the company's own website names a lead's buyer. So no mode names a person here.
+    assert.equal(person, null)
+    if (!(mode === 'empty' || mode === 'people_error' || mode === 'no_domain')) assert.ok(rows.some(x => x.connector === 'search:people' && x.value === 'Jane Doe, Founder' && x.source_url === PROFILE), 'the search found and stored Jane Doe')
     // Exercise the existing user-clicked lookup on exactly the buyer produced by THIS scan, not another seeded lead.
     saveCredential(r.db, 'A', 'enrich:apollo', 'synthetic-apollo-key', master)
-    const email = await findWorkEmail(r.db, 'A', lead.id, person ? person.name + '|' + person.title : 'Jane Doe|Founder', { fetchImpl, master, env: ON })
+    const email = await findWorkEmail(r.db, 'A', lead.id, 'Jane Doe|Founder', { fetchImpl, master, env: ON })   // the person the buyer-role search found
     return { r, lead, person, email, events }
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]

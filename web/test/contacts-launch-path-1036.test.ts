@@ -28,8 +28,10 @@ export async function launchFixture() {
   const pages: Record<string,string> = {
     '/robots.txt': 'User-agent: *\nAllow: /',
     '/': `<html><title>Brightloop</title><p>${TEXT}</p><p>Brightloop, 100 Example Avenue, Chicago, IL 60601</p><a href="/team">Our team</a><a href="/contact">Contact</a></html>`,
-    '/team': `<html><p>${TEXT}</p><h3>Dana Lee</h3><p>Founder</p><div data-search-string="Pat Kim pat.kim@${SITE}"><h3>Pat Kim</h3><p>Founder</p></div><div data-search-string="Sue Ray sue.ray@${SITE}"><h3>Sue Ray</h3><p>Founder</p></div></html>`,
+    // #1037: Dana Lee's team entry links her bio, and her bio links her LinkedIn: the company's own page names its buyer with title and LinkedIn
+    '/team': `<html><p>${TEXT}</p><h3><a href="/team/dana-lee">Dana Lee</a></h3><p>Founder</p><div data-search-string="Pat Kim pat.kim@${SITE}"><h3>Pat Kim</h3><p>Founder</p></div><div data-search-string="Sue Ray sue.ray@${SITE}"><h3>Sue Ray</h3><p>Founder</p></div></html>`,
     '/contact': `<html><p>${TEXT}</p><p>Brightloop, 100 Example Avenue, Chicago, IL 60601</p></html>`,
+    '/team/dana-lee': `<html><article><p>${TEXT}</p><h1>Dana Lee</h1><p>Founder</p><a href="https://www.linkedin.com/in/dana-lee-brightloop">Dana Lee on LinkedIn</a></article></html>`,
     '/news/seed': `<html><p>${TEXT}</p></html>`,
   }
   const crawlReads: string[] = [], providerCalls: string[] = []
