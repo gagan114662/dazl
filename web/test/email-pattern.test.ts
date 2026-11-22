@@ -52,17 +52,15 @@ async function crawlFixture(env: Record<string, string>, address = '120 Main St,
   return db
 }
 
-test('flag on: pattern and unverified candidates go to their own tables; lead_enrichments (shown and used by outreach) gets no guess, only the published addresses', async () => {
+test('flag on (#1036 / #1250): no format is learned and no address is built; only the addresses the people PRINTED are recorded, as published', async () => {
   const db = await crawlFixture({ EMAIL_GUESS_ENABLED: '1' })
-  assert.deepEqual(db.prepare('SELECT site, format, support FROM email_patterns').all(), [{ site: 'acmelogistics.com', format: 'first.last', support: 2 }])
-  const cands = db.prepare('SELECT address, status FROM email_candidates ORDER BY address').all() as { address: string; status: string }[]
-  assert.deepEqual(cands.map(c => c.address), ['ben.ortiz@acmelogistics.com', 'cara.diaz@acmelogistics.com', 'dana.lee@acmelogistics.com'])
-  assert.ok(cands.every(c => c.status === 'unverified'))
-  const prov = db.prepare('SELECT DISTINCT verification, country_basis FROM email_candidates').all()
-  assert.deepEqual(prov, [{ verification: 'none', country_basis: 'homepage address: Austin, TX 78701' }])
+  assert.equal(db.prepare('SELECT count(*) FROM email_patterns').pluck().get(), 0)
+  const cands = db.prepare('SELECT address, tier, country_basis FROM email_candidates ORDER BY address').all()
+  assert.deepEqual(cands, [
+    { address: 'ben.ortiz@acmelogistics.com', tier: 'published', country_basis: 'homepage address: Austin, TX 78701' },
+    { address: 'dana.lee@acmelogistics.com', tier: 'published', country_basis: 'homepage address: Austin, TX 78701' },
+  ], 'Cara Diaz printed nothing: no address is built for her')
   const enr = db.prepare("SELECT value FROM lead_enrichments WHERE kind NOT IN ('domain', 'domain_check', 'tech_scan')").all() as { value: string }[]
-  // the GUESS (Cara Diaz printed nothing) never reaches lead_enrichments; the two addresses the people PRINTED are shown during the
-  // scan as published contacts naming the person (#1036, Hermes 23:37: labelled addresses on scanned leads), never as guesses
   assert.ok(enr.every(e => !e.value.includes('cara.diaz')), JSON.stringify(enr))
   assert.deepEqual(enr.filter(e => /ben\.ortiz@|dana\.lee@/.test(e.value)).map(e => e.value).sort(), ['ben.ortiz@acmelogistics.com', 'dana.lee@acmelogistics.com'])
 })
@@ -103,10 +101,17 @@ test('recordEmailGuesses writes nothing with the flag off, even when called dire
 })
 
 // ---- part 3: mailbox verification, fail closed, capped. Fake verifiers only: no network, no paid call. ----
+function legacyGuesses(db: Database.Database, lead: string, addresses: string[], confidence = 'high', format = 'first.last') {
+  migrateEmailGuess(db)
+  const ins = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES ('A', ?, ?, ?, ?, 'homepage address: Austin, TX 78701', 'guessed', ?)")
+  for (const a of addresses) ins.run(lead, a.split('@')[0], a, format, confidence)
+}
 function seeded() {
   const db = new Database(':memory:')
   const on = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '10' }
-  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP'], { env: on, homeText: '120 Main St, Austin, TX 78701' })
+  // #1036 / #1250: the crawl no longer writes guesses; these are guessed rows an earlier release left at rest (the scan runner's
+  // after-run mailbox check still reads them, #1037)
+  legacyGuesses(db, 'L1', ['dana.lee', 'ben.ortiz', 'cara.diaz', 'eve.ng', 'finn.roe'].map(l => `${l}@acme.com`))
   return { db, on }
 }
 const fake = (answers: Record<string, VerifyAnswer | Error>, calls: string[] = []): MailboxVerifier => ({
@@ -196,39 +201,32 @@ test('boundary: only the email finder module reads or writes the candidate table
   }
   walk('lib'); walk('app')
   // #1036: the lead-deletion paths (and the staging real-company check's cleanup) also DELETE these rows with their leads (delete-only; they never read or write a candidate).
-  // #1036: the finder's own two modules beside email-pattern.ts: email-formats.ts (learns a tenant's address format from its confirmed
-  // addresses and builds the one labelled guess) and verify-usage.ts (counts the mailbox checks the caps count). Neither is a contact
+  // #1036: the finder's own module beside email-pattern.ts: verify-usage.ts (counts the mailbox checks the caps count). Neither is a contact
   // consumer: nothing under lib/outreach or app/ reads the table (legal-policy.test.ts), and a guess is never a draft recipient.
-  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')).sort(), ['lib/people/email-formats.ts', 'lib/people/email-pattern.ts', 'lib/people/verify-usage.ts', 'lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts'])
+  assert.deepEqual(hits.filter(h => !h.startsWith('lib/db/')).sort(), ['lib/people/email-pattern.ts', 'lib/people/verify-usage.ts', 'lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts'])
   for (const f of ['lib/scan/commenter-import.ts', 'lib/scan/real-company-check.ts', 'lib/signals/first-party.ts']) for (const m of readFileSync(join(root, f), 'utf8').matchAll(/[^\n]*(?:email_candidates|email_patterns)[^\n]*/g)) assert.match(m[0], /DELETE FROM|'email_candidates', 'email_patterns'|no such table|\/\//, `${f}: delete-only: ${m[0].trim()}`)
 })
 
 // ---- free-first finder: published tier with provenance, pattern confidence, only high-confidence guesses checked ----
-test('crawl: addresses printed on the confirmed site are stored as published, exactly, with the page they were on', async () => {
+test('crawl: addresses printed on the confirmed site are stored as published, exactly, with the page they were on; nothing else', async () => {
   const db = await crawlFixture({ EMAIL_GUESS_ENABLED: '1' })
-  const r = db.prepare('SELECT address, tier, source_url, confidence, verification FROM email_candidates ORDER BY address').all() as { address: string; tier: string; source_url: string | null; confidence: string | null; verification: string }[]
+  const r = db.prepare('SELECT address, tier, source_url, confidence FROM email_candidates ORDER BY address').all() as { address: string; tier: string; source_url: string | null; confidence: string | null }[]
   assert.deepEqual(r.map(x => [x.address, x.tier, x.source_url, x.confidence]), [
     ['ben.ortiz@acmelogistics.com', 'published', 'https://acmelogistics.com/team', null],
-    ['cara.diaz@acmelogistics.com', 'guessed', null, 'high'],
     ['dana.lee@acmelogistics.com', 'published', 'https://acmelogistics.com/team', null],
   ])
-  const p = db.prepare('SELECT format, support, confidence, score, runner_up, evidence FROM email_patterns').get() as { format: string; support: number; confidence: string; score: number; runner_up: number; evidence: string }
-  assert.deepEqual({ ...p, evidence: JSON.parse(p.evidence) }, { format: 'first.last', support: 2, confidence: 'high', score: 90, runner_up: 0, evidence: [
-    { person: 'dana lee', address: 'dana.lee@acmelogistics.com', url: 'https://acmelogistics.com/team' },
-    { person: 'ben ortiz', address: 'ben.ortiz@acmelogistics.com', url: 'https://acmelogistics.com/team' },
-  ] })
+  assert.equal(db.prepare('SELECT count(*) FROM email_patterns').pluck().get(), 0, 'no learned format is kept')
   const label = (a: string) => candidateLabel(db.prepare('SELECT * FROM email_candidates WHERE address = ?').get(a) as Parameters<typeof candidateLabel>[0])
   assert.equal(label('dana.lee@acmelogistics.com'), 'published')
-  assert.equal(label('cara.diaz@acmelogistics.com'), 'guessed')
 })
 
 test('a published address keeps its printed domain; a guess never claims published; no page URL means not published', () => {
   const db = new Database(':memory:'); const env = { EMAIL_GUESS_ENABLED: '1' }
   const r = recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['pat.kim'], ['Pat Kim, CEO', 'Lou Fay, CTO'], { env, homeText: 'Austin, TX 78701', seen: [{ address: 'pat.kim@uk.acme.com', url: 'https://acme.com/team' }, { address: 'lou.fay@gmail.com', url: 'https://acme.com/team' }] })
-  assert.deepEqual(r, { format: 'first.last', confidence: 'low', candidates: 1, published: 1, ambiguous: 0 })
+  assert.deepEqual(r, { format: null, confidence: null, candidates: 0, published: 1, ambiguous: 0 })
   const rows2 = db.prepare('SELECT address, tier, source_url, confidence FROM email_candidates ORDER BY address').all()
   assert.deepEqual(rows2, [
-    { address: 'lou.fay@acme.com', tier: 'guessed', source_url: null, confidence: 'low' }, // another domain is never "published" for this company
+    // lou.fay printed only a gmail address: another domain is never "published" for this company, and nothing is built for him
     { address: 'pat.kim@uk.acme.com', tier: 'published', source_url: 'https://acme.com/team', confidence: null },
   ])
   assert.equal(candidateLabel({ verification: 'none', checked_at: null, verifier: null, country_basis: 'b', tier: 'published', source_url: null }), 'guessed')
@@ -251,9 +249,11 @@ const pick = (r: ReturnType<typeof rankPattern>) => r && { format: r.format, sup
 
 test('only high-confidence guesses are eligible for the mailbox check; published and medium/low never are', async () => {
   const db = new Database(':memory:'); const on = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '50' }
-  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dlee'], ['Dana Lee, CEO', 'Ben Ortiz, CFO'], { env: on, homeText: 'Austin, TX 78701', seen: [{ address: 'dlee@acme.com', url: 'https://acme.com/team' }] }) // low
-  recordEmailGuesses(db, 'A', 'L2', 'beta.com', ['dana.lee', 'ben.ortiz', 'eng'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Eve Ng, CTO', 'Kai Su, VP'], { env: on, homeText: 'Austin, TX 78701' }) // medium
-  recordEmailGuesses(db, 'A', 'L3', 'gamma.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Kai Su, VP'], { env: on, homeText: 'Austin, TX 78701', seen: [{ address: 'dana.lee@gamma.com', url: 'https://gamma.com/about' }, { address: 'ben.ortiz@gamma.com', url: 'https://gamma.com/about' }] }) // high
+  // guessed rows an earlier release left at rest (the crawl writes none now), and a published one
+  legacyGuesses(db, 'L1', ['bortiz@acme.com'], 'low', 'flast')
+  legacyGuesses(db, 'L2', ['eve.ng@beta.com', 'kai.su@beta.com'], 'medium')
+  legacyGuesses(db, 'L3', ['kai.su@gamma.com'], 'high')
+  recordEmailGuesses(db, 'A', 'L3', 'gamma.com', [], ['Dana Lee, CEO'], { env: on, homeText: 'Austin, TX 78701', seen: [{ address: 'dana.lee@gamma.com', url: 'https://gamma.com/about' }] })
   const calls: string[] = []
   for (const lead of ['L1', 'L2', 'L3']) await verifyCandidates(db, 'A', lead, fake({}, calls), { env: on })
   assert.deepEqual(calls, ['kai.su@gamma.com'])
@@ -268,7 +268,7 @@ test('free-first still US-only and fail-closed: a non-US site records neither pu
 })
 
 // ---- ambiguity (Instinct review 2026-11-06): a printed address two named people could own is nobody's ----
-test('two named people fit one printed address: attributed to neither, no guess for either, no pattern support', () => {
+test('two named people fit one printed address: attributed to neither; nothing is built for anyone', () => {
   const db = new Database(':memory:'); const env = { EMAIL_GUESS_ENABLED: '1' }
   const anna = { first: 'anna', last: 'smith' }, alex = { first: 'alex', last: 'smith' }
   assert.deepEqual(ownersOf('asmith', [anna, alex]).map(n => n.first).sort(), ['alex', 'anna'])
@@ -282,16 +282,13 @@ test('two named people fit one printed address: attributed to neither, no guess 
   assert.equal((db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'email_candidates'").get() as { n: number }).n, 0)
   // With a real pattern from other people, the ambiguous pair still gets no published row and no colliding guess.
   const r2 = recordEmailGuesses(db, 'A', 'L2', 'acme.com', ['asmith', 'dlee', 'bortiz'], ['Anna Smith, CEO', 'Alex Smith, CFO', 'Dana Lee, COO', 'Ben Ortiz, VP', 'Cara Diaz, VP'], { env, homeText: 'Austin, TX 78701', seen: [...seen, { address: 'dlee@acme.com', url: 'https://acme.com/team' }, { address: 'bortiz@acme.com', url: 'https://acme.com/team' }] })
-  assert.deepEqual(r2, { format: 'flast', confidence: 'high', candidates: 1, published: 2, ambiguous: 1 })
+  assert.deepEqual(r2, { format: null, confidence: null, candidates: 0, published: 2, ambiguous: 1 })
   const rows = db.prepare("SELECT person, address, tier FROM email_candidates WHERE lead_id = 'L2' ORDER BY address").all()
   assert.deepEqual(rows, [
     { person: 'Ben Ortiz, VP', address: 'bortiz@acme.com', tier: 'published' },
-    { person: 'Cara Diaz, VP', address: 'cdiaz@acme.com', tier: 'guessed' },
     { person: 'Dana Lee, COO', address: 'dlee@acme.com', tier: 'published' },
-  ])
-  const p = db.prepare("SELECT support, evidence FROM email_patterns WHERE lead_id = 'L2'").get() as { support: number; evidence: string }
-  assert.equal(p.support, 2)
-  assert.ok(!p.evidence.includes('smith'))
+  ], 'the Smiths get nothing; Cara Diaz printed nothing, so no address is built for her')
+  assert.equal(db.prepare('SELECT count(*) FROM email_patterns').pluck().get(), 0)
 })
 
 test('one clear match: the printed address is attributed to the only named person it fits', () => {
@@ -301,21 +298,19 @@ test('one clear match: the printed address is attributed to the only named perso
   assert.deepEqual(publishedFor(anna, seen, [anna, ben]), seen[0])
   assert.equal(publishedFor(ben, seen, [anna, ben]), null)
   const r = recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['asmith'], ['Anna Smith, CEO', 'Ben Ortiz, CFO'], { env, homeText: 'Austin, TX 78701', seen })
-  assert.deepEqual(r, { format: 'flast', confidence: 'low', candidates: 1, published: 1, ambiguous: 0 })
+  assert.deepEqual(r, { format: null, confidence: null, candidates: 0, published: 1, ambiguous: 0 })
   assert.deepEqual(db.prepare('SELECT person, address, tier, source_url FROM email_candidates ORDER BY address').all(), [
     { person: 'Anna Smith, CEO', address: 'asmith@acme.com', tier: 'published', source_url: 'https://acme.com/team' },
-    { person: 'Ben Ortiz, CFO', address: 'bortiz@acme.com', tier: 'guessed', source_url: null },
-  ])
+  ], 'Ben Ortiz printed nothing: no address is built for him')
   // The same person listed twice (two titles) is still one owner, not an ambiguity.
   assert.deepEqual(publishedFor(anna, seen, [anna, { ...anna }, ben]), seen[0])
 })
 
-test('two people whose guesses collide under the pattern get no guess; a guess never reuses an ambiguous printed address', () => {
+test('#1036 / #1250: a learned format builds no address at all, even with guessing on and two supporting people', () => {
   const db = new Database(':memory:'); const env = { EMAIL_GUESS_ENABLED: '1' }
   const r = recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dlee', 'bortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Jon Park, VP', 'Jen Park, VP'], { env, homeText: 'Austin, TX 78701' })
-  assert.deepEqual(r, { format: 'flast', confidence: 'high', candidates: 2, published: 0, ambiguous: 0 })
-  const addrs = (db.prepare('SELECT address FROM email_candidates ORDER BY address').all() as { address: string }[]).map(x => x.address)
-  assert.deepEqual(addrs, ['bortiz@acme.com', 'dlee@acme.com']) // no jpark@ filed under either Park
+  assert.equal(r, null)
+  assert.equal((db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'email_candidates'").get() as { n: number }).n, 0)
 })
 
 test('published is never eligible for the mailbox check, even with confidence high from an inconsistent write', async () => {
