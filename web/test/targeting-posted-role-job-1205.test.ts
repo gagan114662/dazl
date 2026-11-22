@@ -22,8 +22,11 @@ test('#1205 the live request compiles to an open-role condition for its role, wi
 test('#1205 other "posted a <role> job" shapes read the same; the existing "posted a job for <role>" reading is unchanged', () => {
   for (const [q, role] of [
     ['B2B SaaS startups that posted a sales development representative job in the last 30 days', 'sales development representative'],
-    ['Agencies in Toronto that posted an account executive role this month', 'account executive'],
-    ['Clinics advertising a dental hygienist position', 'dental hygienist'],
+    ['Agencies in Toronto that posted an account executive job this month', 'account executive'],
+    ['Clinics advertising a dental hygienist vacancy', 'dental hygienist'],
+    ['Dental practices that posted a receptionist job through Indeed', 'receptionist'],
+    ['Dental clinics that posted a receptionist job posting in the last 30 days', 'receptionist'],
+    ['Companies that posted a job opening for a sales rep last month', 'sales rep'],
     ['Dental practices that posted a job for a receptionist in the past 60 days', 'receptionist'],
   ] as const) {
     const conds = planConditions(compileTargeting(q, null).root).map(x => x.cond)
@@ -48,4 +51,21 @@ test('#1205 the role read before the job word is a role, never job words, gramma
   assert.equal(one('companies that posted a press release about a new role in Toronto').length, 0)
   const remote = one('Agencies that posted a remote job in the past 30 days')
   assert.equal(remote.length, 1); assert.equal(remote[0].role, ''); assert.equal(remote[0].within_days, 30)
+})
+
+// council (Opus R1/R2, Haiku R1-R3): "opening", "position" and "role" name many things besides a job, so the role-before reading takes only the
+// unambiguous job words; ordinary business wording is never a hiring condition, and a negated request stays negated
+test('#1205 business wording with opening / position / role is never a hiring condition; the role is never a job word', () => {
+  const hiring = (q: string) => planConditions(compileTargeting(q, null).root).filter(x => x.cond.kind === 'hiring')
+  for (const q of [
+    'Restaurants that posted a grand opening in the past 30 days',
+    'Retailers that posted a new office opening this year',
+    'Companies that posted a net cash position this quarter',
+    'Think tanks that posted a public position on AI',
+    'Firms that posted a statement on their role in the merger',
+  ]) assert.equal(hiring(q).length, 0, q)
+  for (const q of ['Advertising agencies posting senior designer roles in the past 30 days', 'Dental practices advertising their job openings in London, Ontario', 'Advertising firms with an account executive opening'])
+    for (const h of hiring(q)) assert.ok(!/^(?:jobs?|agencies|firms)\b/.test(h.cond.role ?? ''), `${q}: role ${h.cond.role}`)
+  const neg = planConditions(compileTargeting('Dental practices that have not posted a receptionist job in the past 90 days', null).root)
+  assert.equal(neg.length, 1); assert.equal(neg[0].cond.kind, 'hiring'); assert.equal(neg[0].negated, true)
 })
