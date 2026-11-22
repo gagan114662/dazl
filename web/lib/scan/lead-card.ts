@@ -46,7 +46,7 @@ export function approveState(l: CardLead): ApproveState {
   if (l.gate_held) return { ok: false, reason: 'A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.' }
   if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead. Check the source under Needs your review first.' }
   if (l.window_held) return { ok: false, reason: 'Outside the time window you asked for, or its date is unknown. Research only.' }
-  if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return { ok: false, reason: 'Not verified. Check the source first.' }
+  if (evidenceStateOf({ evidence_excerpt: l.evidence_excerpt, confidence: l.confidence ?? null, human_confirmed_at: l.human_confirmed_at ?? null }) === 'unverified') return { ok: false, reason: 'Open the source to check the quote first.' }
   if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
   const email = publishedEmail(l)
   if (!email) return { ok: false, reason: 'No published email address to draft to yet. See Details to look for one.' }
