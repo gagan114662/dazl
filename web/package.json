@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "matrix:local": "node --experimental-strip-types --no-warnings scripts/matrix-local.mts",
+    "bench": "node --experimental-strip-types --no-warnings scripts/matrix-local.mts --matrix ../bench/prompts.json --out ../bench/results",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

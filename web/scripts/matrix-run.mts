@@ -30,7 +30,7 @@ export function spentUsd(db: Database.Database, jobId: string): number {
 //    job the moment its recorded spend reaches the cap.
 export async function runCase(db: Database.Database, c: MatrixCase, o: { tenant: string; cap: number; timeoutS: number; thresholds: MatrixThresholds; deps?: RunDeps; now?: Date; contacts?: boolean; env?: Record<string, string | undefined>; run?: typeof runJob }): Promise<CaseResult> {
   const t0 = Date.now()
-  const never = (error: string): CaseResult => ({ id: c.id, label: c.label, status: 'INCOMPLETE', error, candidates: 0, leads: 0, ready: 0, named_pct: 0, email_pct: 0, email_guess_pct: 0, email_role_pct: 0, dated_pct: 0, match_pct: 0, held: {}, seconds: 0, usd: null, pass: false, why: [] })
+  const never = (error: string): CaseResult => ({ id: c.id, label: c.label, status: 'INCOMPLETE', error, candidates: 0, leads: 0, ready: 0, domain_pct: 0, named_pct: 0, email_pct: 0, email_guess_pct: 0, email_role_pct: 0, dated_pct: 0, match_pct: 0, held: {}, seconds: 0, usd: null, pass: false, why: [] })
   if (o.contacts) {
     const cfg = scanCapConfig(o.env ?? process.env)
     if (!cfg.ok || cfg.capUsd > o.cap + 1e-9) return never('cap_not_enforced')   // nothing is created, nothing is sent

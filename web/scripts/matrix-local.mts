@@ -23,7 +23,7 @@
 // contacts. Without --contacts every case carries a run budget, which switches that pass OFF (the table says which mode ran).
 // In --contacts mode the cap is the scan spend ledger's per-scan cap (DAZL_SCAN_CAP_CAD, set by this script to the case cap and
 // checked before every paid call), and the runner also stops the job when its recorded spend reaches the cap.
-// Cost cap: US$0.50 per case (--cap lowers it, never raises it): the case's own run budget (max_usd), enforced by the scan spend
+// Cost cap: US$1.00 per case (--cap lowers it, never raises it): the case's own run budget (max_usd), enforced by the scan spend
 // ledger before every paid call; the table prints what each case cost. TinyFish calls are priced at US$0 while dazl's own daily
 // counters stay inside TinyFish's free allowance, so the US$ column leaves TinyFish out (the table says so).
 // Exit 0 prints the table; exit 2 = not run (missing keys, bad flags or matrix); exit 1 = a case crashed the runner itself.
@@ -60,7 +60,7 @@ const only = opt('cases')?.split(',').map(s => s.trim()).filter(Boolean)
 const cases = matrix.cases.filter(c => !only || only.includes(c.id))
 if (only) for (const id of only) if (!matrix.cases.some(c => c.id === id)) refuse(`unknown case "${id}"; the matrix has: ${matrix.cases.map(c => c.id).join(', ')}`)
 if (cases.length === 0) refuse('no cases to run. Not running.')
-const HARD_CAP = 0.5   // the lane's cap per case; --cap and the matrix file can only lower it
+const HARD_CAP = 1   // the owner's cap per prompt (launch brief, 2026-11-22); --cap and the matrix file can only lower it
 const capReq = opt('cap') === undefined ? HARD_CAP : Number(opt('cap'))
 const fileCap = Number(matrix.thresholds?.per_case_confirm_cap_usd ?? HARD_CAP)
 const cap = Math.min(capReq, fileCap, HARD_CAP)
