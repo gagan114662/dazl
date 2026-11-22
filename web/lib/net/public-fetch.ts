@@ -1,4 +1,4 @@
-import { lookup as dnsLookup } from 'node:dns/promises'
+import { scanLookupAll } from './scan-dns.ts' // #1463: c-ares, never a libuv pool thread
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { isIP } from 'node:net'
@@ -15,7 +15,7 @@ const MAX_REDIRECTS = 3
 const TIMEOUT_MS = 8_000
 
 export type Lookup = (hostname: string) => Promise<{ address: string; family: number }[]>
-export const defaultLookup: Lookup = (hostname) => dnsLookup(hostname, { all: true, verbatim: true })
+export const defaultLookup: Lookup = (hostname) => scanLookupAll(hostname)
 
 // Loopback, private, link-local (cloud metadata), CGNAT, multicast, documentation and
 // other non-public ranges. Anything we do not recognize as plainly public is rejected.

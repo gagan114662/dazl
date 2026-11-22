@@ -1,5 +1,5 @@
 import { reserveScanSpend, unitCostUsd } from './spend-cap.ts'
-import { lookup as dnsLookup } from 'node:dns'
+import { scanLookupAll, scanLookupCb } from '../net/scan-dns.ts' // #1463: c-ares, never a libuv pool thread
 import https from 'node:https'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
@@ -40,7 +40,7 @@ export function isPublicIp(ip: string): boolean {
 
 // Checked at connect time on the address actually used, so DNS rebinding cannot swap in a private IP.
 export function guardedLookup(hostname: string, options: { all?: boolean }, cb: (...args: unknown[]) => void) {
-  dnsLookup(hostname, { all: true }, (err, addrs) => {
+  scanLookupCb(hostname, (err, addrs) => {
     if (err) return cb(err)
     if (addrs.length === 0 || addrs.some(a => !isPublicIp(a.address))) return cb(new Error('blocked_address'))
     if (options?.all) return cb(null, addrs)
@@ -233,7 +233,7 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
     const u = new URL(rawUrl)
     if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return null
     const host = u.hostname.replace(/^\[|\]$/g, '')
-    const addrs = isIP(host) ? [host] : (await new Promise<string[]>((res, rej) => dnsLookup(host, { all: true }, (e, a) => (e ? rej(e) : res(a.map(x => x.address))))))
+    const addrs = isIP(host) ? [host] : (await scanLookupAll(host)).map(x => x.address)
     if (addrs.length === 0 || addrs.some(a => !isPublicIp(a))) return null
     const token = process.env.SCAN_RENDER_TOKEN
     // Inside a scan: one render reserved on the scan's spend cap first (lib/scan/spend-cap.ts); a refusal is caught
