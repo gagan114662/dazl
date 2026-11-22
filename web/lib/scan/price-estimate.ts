@@ -229,7 +229,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const binding: 'run' | 'daily' | 'monthly' | null = remaining === null ? null : monthBinds ? 'monthly' : runBinds ? 'run' : 'daily'
   const dayCapShown = ownerDay ?? Infinity, shownLimit = monthBinds ? (monthCap as number) : runBinds ? runMax : dayCapShown
   // a run limit under a day cap is never charged the day's reservations (dayLeft above)
-  const shownReserved = monthBinds ? monthReserved : runBinds ? 0 : reserved, limitWord = monthBinds ? 'monthly limit' : 'limit'
+  // #1319: a max_usd can only lower the per-scan cap; when the per-scan cap itself binds the person has no limit to raise
+  const personBinds = runBinds && typeof b?.max_usd === 'number' && b.max_usd <= runMax
+  const shownReserved = monthBinds ? monthReserved : runBinds ? 0 : reserved, limitWord = monthBinds ? 'monthly limit' : runBinds && !personBinds ? 'per-scan limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null, trialRefusalWhy: string | null = null
@@ -262,9 +264,10 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       // #1319: only this run's limit is the person's to raise; a binding account window is named with when it resets
       if (monthBinds) change.push(`Your monthly limit (${money(monthCap as number)}) has ${money(Math.max(0, monthLeft))} left this month; it resets on the 1st at 00:00 UTC.`)
       else if (!runBinds && ownerDay !== null) change.push(`Your daily limit (${money(ownerDay)}) has ${money(Math.max(0, ownerDay - reserved))} left today; it resets at 00:00 UTC.`)
+      else if (runBinds && !personBinds) change.push(`Each scan is capped at ${money(runMax)}.`)
       else if (!native) change.push(`Raise the dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       // #1319: raising this run's limit alone cannot unblock a run whose day room is short too: name that room
-      if (!native && runBinds && ownerDay !== null && cappedTotal.min > ownerDay - reserved) change.push(`Your daily limit has only ${money(Math.max(0, ownerDay - reserved))} left today (${money(ownerDay)} limit, ${money(reserved)} already reserved), so raising this run's limit alone is not enough.`)
+      if (!native && personBinds && ownerDay !== null && cappedTotal.min > ownerDay - reserved) change.push(`Your daily limit has only ${money(Math.max(0, ownerDay - reserved))} left today (${money(ownerDay)} limit, ${money(reserved)} already reserved), so raising this run's limit alone is not enough.`)
       const judge = rows.find(r => r.id === 'judge')
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
@@ -321,7 +324,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
-  const cap = { max_usd: Number.isFinite(dayCapShown) ? dayCapShown : null, reserved_usd: reserved, remaining_usd: remaining, binding, run_max_usd: Number.isFinite(runMax) ? runMax : null, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
+  // #1319: a trial's guard stops each scan at the trial reserve (runner.ts guardMax): that is the run's limit on screen
+  const runShown = Math.min(runMax, trialCeil ?? Infinity), trialRun = trialCeil !== null && remaining !== null && trialCeil < remaining
+  const cap = { max_usd: Number.isFinite(dayCapShown) ? dayCapShown : null, reserved_usd: reserved, remaining_usd: trialRun ? trialCeil : remaining, binding: trialRun ? 'run' as const : binding, run_max_usd: Number.isFinite(runShown) ? runShown : null, capped_total: cappedTotal, month_cap_usd: monthCap, month_reserved_usd: monthReserved, unknown }
   const verdict = { ok, reason, message, change, warning, ...(trialRefusalWhy ? { trial_refusal: trialRefusalWhy } : {}) }
   // The confirmation covers everything the person was shown and agreed to: WHO PAYS (own key vs the shared trial), every row (what it is, its units, price, whether the cap bounds it, and its
   // note: on/off), the totals, the unpriced list, and the cap with the reserved and remaining room, plus the verdict with its warning and what to change. If any of it differs when the run is
@@ -331,7 +336,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     payer: i.payer, model,
     rows: rows.map(r => [r.id, r.kind, r.capped, r.units, r.unit_usd, r.usd && { min: r4(r.usd.min), max: r4(r.usd.max) }, r.note]),
     total: { min: r4(total.min), max: r4(total.max) }, unpriced,
-    cap: { max: cap.max_usd, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) }, ...(trialCeil !== null ? { trial: r4(trialCeil) } : {}) },
+    cap: { max: cap.max_usd, run: r4(cap.run_max_usd), binding: cap.binding, reserved: r4(cap.reserved_usd), remaining: r4(cap.remaining_usd), month: cap.month_cap_usd, month_reserved: r4(cap.month_reserved_usd), unknown: cap.unknown, capped_total: { min: r4(cappedTotal.min), max: r4(cappedTotal.max) }, ...(trialCeil !== null ? { trial: r4(trialCeil) } : {}) },
     verdict,
   })).digest('hex').slice(0, 16)
   // Never beside a trial refusal: "$1.00 left" next to "your company already had its free trial" (or "$0.40 left" next to "all 3 free scans used") contradicts the block.
