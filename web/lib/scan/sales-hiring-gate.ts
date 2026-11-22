@@ -237,7 +237,7 @@ const JOIN_OUR_SALES = /\b(?:to\s+)?join(?:ing)?\s+our\s+(?:sales(?:\s+developme
 const clauses = (t: string) => t.split(/[.;!?\n]+|\s(?:but|however|while|although|though|yet)\s/i).map(x => x.trim()).filter(Boolean)
 // Qodo on #1522 (1): an OR event branch is shown only when ONE clause shows the lead's own event with the requested event and object
 // (affirmative, the lead as its subject): an expansion by the lead and a launch by another company in the same excerpt prove nothing.
-export function eventBranchShown(event: string | undefined, object: string | undefined, excerpt: string, signal: string, company: string): boolean {
+export function eventBranchShown(event: string | undefined, object: string | undefined, excerpt: string, signal: string | null, company: string): boolean {
   return clauses(excerpt).some(k => { const i = eventMatchIndex(event, object, k); return i >= 0 && !subjectIsOther(k.slice(0, i), company) && quoteShowsEvent(k, signal, false, company) })
 }
 // The subject in front of a hiring / raising verb must be the lead (case-insensitive: "othercorp is hiring" is another company just like "Othercorp").
