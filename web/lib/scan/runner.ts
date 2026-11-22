@@ -2756,6 +2756,7 @@ function inFlightSet(): Map<Job, number | null> {
   return (g[IN_FLIGHT_KEY] ??= new Map<Job, number | null>())
 }
 export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); return () => { m.delete(job) } }
+export function inFlightJobIds(): string[] { return [...inFlightSet().keys()].map(j => String((j as { id?: unknown }).id ?? '').slice(0, 8)) }
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0

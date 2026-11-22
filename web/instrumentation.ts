@@ -8,6 +8,10 @@ export async function register() {
   // Uncaught exceptions and unhandled rejections go through the scrubbed error monitor (lib/ops/process-errors.ts).
   const { recordProcessErrors } = await import('./lib/ops/process-errors.ts')
   recordProcessErrors()
+  // #1463: a blocked event loop (a long synchronous scan step) holds every page; say so in the journal with the scans running
+  const { installLoopStallWatch } = await import('./lib/ops/loop-stall.ts')
+  const { inFlightJobIds } = await import('./lib/scan/runner.ts')
+  installLoopStallWatch(inFlightJobIds)
 }
 
 // Every uncaught error from a route handler, page or server action (lib/ops/request-error.ts).
