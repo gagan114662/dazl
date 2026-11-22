@@ -303,12 +303,24 @@ function boardPlaceOne(p: PlanPlaceIn, ctx: BoardContext): Resolved {
   // a "city" of a US state must be a place the census data lists in that state, or one a built-in place reads alone ("Brooklyn")
   const state = region ? Object.keys(STATES).find(a => regionOf(a) === region) ?? null : null
   if (state && city && !isUsCensusPlace(city, state) && !CITY_PLACES.some(c => c.ask.test(`in ${city}`))) return { reason: `skipped_no_place:city:${clean(p.text)}` }
-  // with no city, only the region is read ("Fintech, California" with no city is California)
-  const input = city ? p.text : p.region ?? p.text
-  const same = city ? (ctx.where ?? []).find(w => w.includes(',') && norm(w.split(',')[0]) === norm(city)) : undefined
-  const read = profilePlace(input, ctx.country) ?? (same ? profilePlace(same, ctx.country) : null)
+  // with no city, only the region is read ("Fintech, California" with no city is California). A city of a US state is read as the census place
+  // "<City>, <ST>", however the state was written ("Austin, texas" is the city of Austin: Qodo High on #1527).
+  const input = city ? (state ? `${city}, ${state}` : p.text) : p.region ?? p.text
+  // a bare request city is read from the profile only when every profile entry naming that city names ONE place (Qodo High on #1527:
+  // "Cambridge, Ontario" and "Cambridge, UK" in one profile hold the boards, whichever comes first)
+  const direct = profilePlace(input, ctx.country)
+  let read = direct
+  if (!direct && city) {
+    const sames = (ctx.where ?? []).filter(w => w.includes(',') && norm(w.split(',')[0]) === norm(city))
+      .map(w => profilePlace(w, ctx.country)).filter((x): x is { text: string; name: string } => !!x)
+      .map(x => ({ x, at: placeIn(`in ${x.text}`) })).filter((y): y is { x: { text: string; name: string }; at: Place } => !!y.at)
+    if (sames.some(a => !(a.at.name === sames[0].at.name && a.at.ok(sames[0].x.text) && sames[0].at.ok(a.x.text)))) return { reason: `skipped_no_place:ambiguous:${clean(city)}` }
+    read = sames[0]?.x ?? null
+  }
   const resolved = read ? placeIn(`in ${read.text}`) : null
   if (!read || !resolved) return { reason: placeSkipReason('', [input]) }
+  // a city is never widened to its state: a city read that resolves only to the whole state holds (an unread city is not the state)
+  if (city && Object.values(STATES).includes(resolved.name) && !CITY_PLACES.some(c => c.name === resolved.name)) return { reason: `skipped_no_place:city:${clean(p.text)}` }
   // a written region is kept: a location naming another region of it is not this place ("Manchester, Wales" is never the English Manchester)
   const place: Place = region ? { name: resolved.name, ok: (...l) => l.some(x => !!x && resolved.ok(x) && regionsIn(x).every(r => r === region)) } : resolved
   return { place, input: read.text }

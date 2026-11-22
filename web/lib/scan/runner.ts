@@ -2058,9 +2058,12 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const boardsQuery = job.query ? (!planPlace && profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
     const autoBoards = legacyBoards ? !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery)) : !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
-    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', planHold ?? (job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : planSkip ?? placeSkipReason(legacyBoards ? job.query : '', icpForSources?.where ?? [])))   // #1205: the reason names the place and what to change
+    // a board source the user picked with no place to read (the request names one the boards cannot place, or none and the profile gives none)
+    // is held with that reason, never run with no place (Qodo, #1527)
+    const pickedNoPlace = !!explicitSel && wantsBoards && !legacyBoards && !planHold && !boardPlace
+    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', planHold ?? (pickedNoPlace ? planSkip ?? placeSkipReason('', icpForSources?.where ?? []) : job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : planSkip ?? placeSkipReason(legacyBoards ? job.query : '', icpForSources?.where ?? [])))   // #1205: the reason names the place and what to change
     // a held plan also holds a board source the user picked: the other picked sources still run
-    const sel = explicitSel ? (planHold ? { ...explicitSel, adapters: explicitSel.adapters.filter(a => a !== 'jobboards') } : explicitSel) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
+    const sel = explicitSel ? (planHold || pickedNoPlace ? { ...explicitSel, adapters: explicitSel.adapters.filter(a => a !== 'jobboards') } : explicitSel) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
     const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (job-board source, and careers-page ATS postings: the board's own publish date, null for an own-domain page)
     const selfDescribedLeads: LeadDraft[] = []

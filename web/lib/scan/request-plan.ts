@@ -119,13 +119,14 @@ export function groundedIn(request: string, p: PlanPlace): boolean {
 // The place text without the city's own words: "New York City" writes no state and "Mexico City" no country beyond the city itself.
 const withoutCity = (text: string, city: string | null): string =>
   city ? text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(city.trim())}(?![\\p{L}\\p{N}])`, 'giu'), ' ') : text
-// Every region (a US state, Canadian province or UK constituent country, name or code) the text writes as a capitalised word run.
+// Every region (a US state, Canadian province or UK constituent country, name or code) the text writes. A spelled-out name counts in any case
+// ("Austin, texas": Qodo High on #1527); a two-letter code only capitalised, so an ordinary word ("in", "or", "me") is never read as a state.
 function writtenRegions(text: string): Set<string> {
   const out = new Set<string>()
   const words = text.split(/[\s,;()/|]+/).filter(Boolean)
   for (let i = 0; i < words.length; i++) for (let n = 1; n <= 3 && i + n <= words.length; n++) {
     const seg = words.slice(i, i + n).join(' ')
-    if (!/^\p{Lu}/u.test(seg)) continue
+    if (!/^\p{Lu}/u.test(seg) && seg.replace(/[^\p{L}]/gu, '').length < 3) continue
     const r = regionOf(seg); if (r) out.add(r)
   }
   return out
@@ -135,7 +136,7 @@ function writtenRegions(text: string): Set<string> {
 // plan is kept; a failure is asked again next time. Bounded, oldest out first.
 const CACHE_MAX = 500
 const cache = new Map<string, RequestPlan>()
-const PLAN_VERSION = 2   // bump with any change to the prompt, schema or grounding: a cached plan of another version is never served
+const PLAN_VERSION = 3   // bump with any change to the prompt, schema or grounding: a cached plan of another version is never served
 // the refusals that mean "no budget for this optional call" (a guard's limit, the owner's pool, the trial budget)
 const BUDGET_REFUSALS = new Set(['over_limit', OWNER_POOL_LIMIT_REASON, TRIAL_BUDGET_REASON])
 const cacheKey = (tenantId: string, request: string) => `${PLAN_VERSION}\u0000${tenantId}\u0000${createHash('sha256').update(request.normalize('NFC').trim()).digest('hex')}`
