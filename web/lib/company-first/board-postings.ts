@@ -6,7 +6,7 @@
 // reads it from the board record, dates it by that record, and every existing identity, place and hiring hold applies).
 import type { SafeGet } from '../sources/types.ts'
 import { looksLikeHtml } from '../sources/types.ts'
-import { boardApi, boardOf, boardRoles, type Board } from '../research/sources/ats-boards.ts'
+import { boardApi, boardOf, boardRoles, type Board } from '../sources/ats-board-api.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
 

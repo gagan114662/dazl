@@ -6,7 +6,6 @@ import { widenActions } from '../lib/play-card.ts'
 import { readFileSync } from 'node:fs'
 import { reviewAction } from '../lib/scan/review-action.ts'
 import { REVIEWABLE, RESEARCH_REASONS, uncheckableCause } from '../lib/lead-state.ts'
-import { RESEARCH_HELD } from '../lib/research/scan-job.ts'
 import { peopleSearchable } from '../lib/people/searchable-holds.ts'
 import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
@@ -106,7 +105,7 @@ test('#352 inventory: every reason the Leads view labels is classified exactly o
 // #1267 review (Hermes-PC): the inventory above iterates the Leads view's LABELS, so a reason the code writes that has no label is invisible to it
 // (research_unverified shipped that way: "Not verified" on the card, never reviewable on Home, no person line). This one starts from the reasons
 // the code can WRITE. Add a new engine's reason here, and it must have a label, exactly one class, and a decision on the people pass.
-const WRITTEN_REASONS: Record<string, string> = { research_unverified: RESEARCH_HELD }
+const WRITTEN_REASONS: Record<string, string> = { research_unverified: 'research_unverified' }   // written by the deleted research engine (#1393); old rows can still carry it
 test('#1267 every review reason the code writes has a Leads label, exactly one class, and a decision on the people pass', () => {
   for (const [what, r] of Object.entries(WRITTEN_REASONS)) {
     assert.ok(REVIEW_LABEL_KEYS.includes(r), `${what}: "${r}" has no label in the Leads view (the card would say only "Not verified")`)
@@ -116,11 +115,11 @@ test('#1267 every review reason the code writes has a Leads label, exactly one c
 })
 
 test('#1267 a held research lead is reviewable: Home counts it as review, the card offers the confirm, a window hold still wins', () => {
-  const held = lead({ review_reason: RESEARCH_HELD, event_date: '2026-11-02', date_status: 'verified', day_verified: true })
+  const held = lead({ review_reason: 'research_unverified', event_date: '2026-11-02', date_status: 'verified', day_verified: true })
   assert.equal(heldState(held)?.state, 'review', 'Home: review, not research')
   assert.notEqual(reviewAction(held, new Date('2026-11-10T12:00:00Z')).label, 'Keep as research', 'the card offers a confirm')
   // the user's time window is a hard gate on top: undated, or older than the window, stays research whatever the reason
-  const windowed = lead({ review_reason: RESEARCH_HELD, event_date: null, date_status: 'undated', window_held: true })
+  const windowed = lead({ review_reason: 'research_unverified', event_date: null, date_status: 'undated', window_held: true })
   assert.equal(heldState(windowed)?.state, 'research')
   assert.equal(previewSplit([held]).review.length, 1)
   // and the label is the plain one, with its next step

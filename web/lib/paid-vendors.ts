@@ -2,7 +2,7 @@
 // These vendors cost money per call (on the operator's key or on a tenant's own key) and are OFF unless the operator names them in
 // DAZL_PAID_VENDORS (comma-separated, e.g. "apollo,pdl"). Every call site checks paidVendorOn() BEFORE it reads a key or builds a
 // request, and records why it did not call (paidVendorOffNote) instead of failing silently. Free replacements:
-//   apollo / pdl   -> names from the company's own team / about / contact / press pages (lib/research/company.ts, Claude Haiku);
+//   apollo / pdl   -> names from the company's own team / about / contact / press pages (the research engine's company.ts did this; deleted in #1393);
 //   zerobounce     -> no mailbox check: a pattern-derived address stays "unverified", with a free MX lookup of its domain;
 //   openai         -> scans run on Claude (an OpenAI key is not used for scans);
 //   jina           -> our own fetch of the page (lib/scan/fetch-page.ts).

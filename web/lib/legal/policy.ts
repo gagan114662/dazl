@@ -71,7 +71,7 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
   'api.github.com': { name: 'GitHub', role: 'public_source' },
   'boards-api.greenhouse.io': { name: 'Greenhouse job boards', role: 'public_source' },
   'api.lever.co': { name: 'Lever job boards', role: 'public_source' },
-  'api.eu.lever.co': { name: 'Lever job boards', role: 'public_source' }, // EU-hosted Lever boards (lib/research/sources/ats-boards.ts)
+  'api.eu.lever.co': { name: 'Lever job boards', role: 'public_source' }, // EU-hosted Lever boards (lib/sources/ats-board-api.ts)
   'api.ashbyhq.com': { name: 'Ashby job boards', role: 'public_source' },
   'api.gdeltproject.org': { name: 'GDELT news index', role: 'public_source' },
   'data.brreg.no': { name: 'Brønnøysundregistrene (Norway business register API)', role: 'public_source' },
