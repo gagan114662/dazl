@@ -106,6 +106,7 @@ import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } f
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 import { freshBoardPostings } from '../company-first/board-postings.ts'
+import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
 import { boardOf } from '../research/sources/ats-boards.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -1737,6 +1738,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       let totalBoardsCited=0,totalBoardPostings=0,totalItems=0,totalNativeCandidates=0,totalPublisherReads=0,totalPublisherReturned=0,totalPublisherUsable=0,totalLookahead=0
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
       const phaseDeadline=jobDeadlines.get(job)
+      const fundingSourceRejects: Partial<Record<FundingSourceReason, number>> = {}
       for (const [angleIndex, angle] of angles.slice(0,CLAUDE_COMPANY_FIRST_MAX_CALLS).entries()) {
       if (angleIndex > 0) {
         // Protect any candidate that can reach the verifier. A readable set containing only supplied
@@ -1905,6 +1907,17 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
             return !!l.company.trim()&&excerpt.length>=20&&text.includes(excerpt)&&
               hasPhrase(norm((p?.title??'')+' '+(p?.text??'')),norm(l.company))
           }).map(l => ({ ...l, name: '', contact: null })) : parsed
+          // Refs #1122 (run aa193734): the funding pass's candidates must cite the company's own dated announcement or a dated article about
+          // that one company (lib/company-first/funding-source.ts). Rejects are counted in the internal run report only - never shown in the
+          // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website is not
+          // known yet at this stage, so an own page is judged like any single-company page (dated -> read, undated -> rejected).
+          if (fundingOr && angle === CF_FUNDING_ANGLE && extra.length) {
+            const v = fundingSourceVerdicts(extra.map(l => ({ company: l.company, website: null, source_url: l.source_url, event_date: l.event_date })))
+            for (const x of v) if (x.verdict === 'reject') fundingSourceRejects[x.reason] = (fundingSourceRejects[x.reason] ?? 0) + 1
+            const keep = extra.filter((_, i) => v[i].verdict !== 'reject')
+            extra.splice(0, extra.length, ...keep)
+            if (Object.keys(fundingSourceRejects).length) ledger.report({ funding_source_rejects: { ...fundingSourceRejects } })
+          }
           ledger.evidenceCandidates(items.map(e => ({ ...e, source })), extra)
           nativeCandidates = extra.length
           if (extra.length) leads = [...(leads ?? []), ...extra]
