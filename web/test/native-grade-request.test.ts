@@ -11,6 +11,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { runJob } from '../lib/scan/runner.ts'
 import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
+import { asStreaming } from './helpers/claude-sse.ts'
 
 const query = 'Find commercial roofers expanding in Utrecht, Netherlands'
 const savedSummary = 'Independent opticians in Zaragoza, Spain'
@@ -46,7 +47,7 @@ async function fixture(hiring = false) {
       WHEN NEW.scan_job_id='job' BEGIN
         UPDATE leads SET company_domain='northsideroofsystems.example' WHERE id=NEW.id;
       END`) // independently supplied verified company domain for the post-crawl fixture
-    const io: typeof fetch = async (input, init) => {
+    const io: typeof fetch = asStreaming(async (input, init) => {
       const target = String(input)
       assert.ok(target === api || target === api + '/count_tokens', 'fixture rejects off-provider requests')
       const body = JSON.parse(String(init?.body ?? '{}'))
@@ -65,7 +66,7 @@ async function fixture(hiring = false) {
         content: [{ type: 'web_search_tool_result', content: [{ type: 'web_search_result', url }] }],
         usage: { input_tokens: 8000, output_tokens: 200, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 } } })
       return Response.json({ model: CLAUDE_SEARCH_MODEL, content: [{ type: 'text', text: plain }], usage: { input_tokens: 100, output_tokens: 15 } })
-    }
+    })
     globalThis.fetch = io
     await runJob(db, job, { master, fetchImpl: io, ground: false, crawlGet: async () => null, now: new Date('2026-10-20T12:00:00Z'),
       fetchPage: async (u) => {
