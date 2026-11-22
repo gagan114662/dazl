@@ -52,7 +52,7 @@ test('#1036 real brokerage page, prod settings (guessing off, no keys): one clic
   assert.equal(r.status, 'published', JSON.stringify(r))
   const row = (r as { row: Parameters<typeof workEmailCopy>[0] }).row
   assert.deepEqual([row.address, row.source_url, row.provider], ['maya@bluebonnetrealty.com', 'https://bluebonnetrealty.com/team', 'site'])
-  const c = workEmailCopy(row); assert.equal(c.headline, 'Published work email'); assert.equal(c.checked, true); assert.equal(c.showAddress, true)
+  assert.deepEqual(workEmailCopy(row), { headline: 'Work email', note: 'Printed on the company website.', showAddress: true })
   assert.deepEqual(calls, [], 'free: no provider was called')
 })
 
