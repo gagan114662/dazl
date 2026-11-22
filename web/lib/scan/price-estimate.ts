@@ -262,12 +262,15 @@ export function estimateRun(i: EstimateInput): RunEstimate {
         ? `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but the free trial stops each scan at ${money(eff)}.`
         : `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
       // #1319: only this run's limit is the person's to raise; a binding account window is named with when it resets
-      if (monthBinds) change.push(`Your monthly limit (${money(monthCap as number)}) has ${money(Math.max(0, monthLeft))} left this month; it resets on the 1st at 00:00 UTC.`)
+      // the person's raise must stay within the per-scan cap a max_usd can only lower (spend-cap.ts effectiveCapUsd)
+      const scanCeil = typeof i.scanCapUsd === 'number' ? i.scanCapUsd : Infinity, raisable = personBinds && cappedTotal.min + shownReserved <= scanCeil
+      if (trialBinds) { /* the free trial's own per-scan stop: nothing the person can raise (the message names it) */ }
+      else if (monthBinds) change.push(`Your monthly limit (${money(monthCap as number)}) has ${money(Math.max(0, monthLeft))} left this month; it resets on the 1st at 00:00 UTC.`)
       else if (!runBinds && ownerDay !== null) change.push(`Your daily limit (${money(ownerDay)}) has ${money(Math.max(0, ownerDay - reserved))} left today; it resets at 00:00 UTC.`)
-      else if (runBinds && !personBinds) change.push(`Each scan is capped at ${money(runMax)}.`)
+      else if (runBinds && !raisable) change.push(`Each scan is capped at ${money(Number.isFinite(scanCeil) ? scanCeil : runMax)}.`)
       else if (!native) change.push(`Raise the dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       // #1319: raising this run's limit alone cannot unblock a run whose day room is short too: name that room
-      if (!native && personBinds && ownerDay !== null && cappedTotal.min > ownerDay - reserved) change.push(`Your daily limit has only ${money(Math.max(0, ownerDay - reserved))} left today (${money(ownerDay)} limit, ${money(reserved)} already reserved), so raising this run's limit alone is not enough.`)
+      if (!native && !trialBinds && raisable && ownerDay !== null && cappedTotal.min > ownerDay - reserved) change.push(`Your daily limit has only ${money(Math.max(0, ownerDay - reserved))} left today (${money(ownerDay)} limit, ${money(reserved)} already reserved), so raising this run's limit alone is not enough.`)
       const judge = rows.find(r => r.id === 'judge')
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
