@@ -87,7 +87,8 @@ test('#1205 the progress row words the reason (names the place and what to chang
   ] as const) assert.match(skipNote(raw)!, words, raw)
   // a status that is not about the place never gets place wording; since Quest's live check (prod 37d46761) it has its own reason
   // (test/jobboards-skip-reasons-1205.test.ts) instead of none
-  assert.doesNotMatch(skipNote('skipped_no_hiring_signal')!, /place|city|region|country|province/)
+  assert.equal(skipNote('skipped_no_hiring_signal'), "Job postings are searched only when your search asks for companies that are hiring, e.g. add 'hiring a sales rep'.")
+  assert.equal(skipNote('skipped_hold'), null); assert.equal(skipNote('ok'), null)
   const [row] = progressOf([{ collector: 'adapter:jobboards', status: 'skipped_no_place:region:Europe' }], 'done')
   assert.equal(row.status, 'skipped')
   assert.match(row.note ?? '', /'Europe' is a region/)

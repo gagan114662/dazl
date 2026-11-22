@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { progressOf, skipNote } from '../lib/scan/progress.ts'
-import { boardSkipStatus } from '../lib/sources/jobboards.ts'
+import { boardSkipStatus } from '../lib/sources/board-skip.ts'
 
 // the status the runner records for adapter:jobboards when it does not select it comes from one function (runner.ts calls it)
 const RUNNER = readFileSync(new URL('../lib/scan/runner.ts', import.meta.url), 'utf8')
@@ -42,7 +42,7 @@ test('#1205 a request not read as hiring says the job boards need a hiring reque
   // the row as the status route reads it from scan_source_runs for the prod run
   const [row] = progressOf([{ collector: 'adapter:jobboards', status: 'skipped_no_hiring_signal', evidence_count: 0, candidate_count: null, verified_count: null, review_count: null }], 'done')
   assert.equal(row.status, 'skipped')
-  assert.equal(row.note, "Job postings are searched only for companies that are hiring. Add the role to your search, e.g. 'hiring a sales rep'.")
+  assert.equal(row.note, "Job postings are searched only when your search asks for companies that are hiring, e.g. add 'hiring a sales rep'.")
 })
 
 test('#1205 a search limited to chosen sources says the job boards were not among them', () => {

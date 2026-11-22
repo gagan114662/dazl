@@ -283,6 +283,22 @@ test('#1205 review F1: a US profile\'s bare "Vancouver" runs the board source on
   assert.ok(!detailIds(ca.seen).includes(WA_ID), `CA profile: the Vancouver, WA posting is not: ${detailIds(ca.seen)}`)
 })
 
+// #1205 (Quest live check, prod 37d46761): a request that is not read as hiring skips the boards and the SAVED run report says why and what to add
+test('#1205: a request with no hiring in it: runner -> SourceRunLedger.write -> readRunReport: the saved report says job postings need a hiring request', async () => {
+  const { http, seen } = boards()
+  const f = fx(http); f.request = 'Independent dental practices in Toronto, Ontario'; f.modelIcp = { ...ICP, where: ['Toronto, Ontario'], signals: [] }
+  const x = await runFixture(f)
+  assert.ok(!seen.some(u => u.includes('greenhouse')), 'no board was read')
+  const { id: jobId } = x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }
+  const { readRunReport } = await import('../lib/scan/run-report.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const saved = (await readRunReport(sqliteDb(x.db), 'A', jobId)) as { source_skips?: { source: string; status: string; reason: string }[] }[] | null
+  const skip = saved?.at(-1)?.source_skips?.find(s => s.source === 'adapter:jobboards')
+  assert.ok(skip, `the saved run report has the board skip: ${JSON.stringify(saved?.at(-1)?.source_skips)}`)
+  assert.equal(skip!.status, 'skipped_no_hiring_signal')
+  assert.equal(skip!.reason, "Job postings are searched only when your search asks for companies that are hiring, e.g. add 'hiring a sales rep'.")
+})
+
 // #1205 review (Ziggy, F2): the named skip explanation must reach the SAVED run report, not only the progress row.
 test('#1205 review F2: "in Europe": runner -> SourceRunLedger.write -> readRunReport / readScanStatus: the saved report names Europe, why the board source was skipped and the city to give', async () => {
   const { http, seen } = boards()
