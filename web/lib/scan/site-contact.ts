@@ -13,6 +13,8 @@ import { titleMatches } from '../people/rank.ts'
 import { isRecruitingInbox } from '../recruiting-inbox.ts'
 import { domainConfirmed } from '../signals/domain-basis.ts'
 import { registrable } from '../verifier/text.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
+export const OWN_POSTING_PERSON_LABEL = "named in this company's own job posting (\"Reports to\"), not verified as current staff"
 
 // Mailboxes that are not a way to reach a founder: support, privacy, legal, careers, recruiting, press, abuse, no-reply, billing.
 export const NOT_A_FOUNDER_ROUTE = /^(?:support|help|privacy|legal|dpo|security|abuse|careers?|jobs?|recruit\w*|hiring|talent|hr|people|press|media|pr|billing|accounts?|invoices?|noreply|no-reply|donotreply|webmaster|postmaster|compliance|gdpr)$/i
@@ -38,6 +40,8 @@ export interface SiteRow { connector: string; kind: string; value: string; sourc
 // Is this sitecrawl contact row from the company's own (confirmed) site? ld = siteIdentity of the confirmed company domain.
 export function onCompanySite(r: SiteRow, ld: string | null): boolean {
   if (!ld || r.connector !== 'sitecrawl') return false
+  // Run 679a7354: a person named in the lead's own ATS posting (written only by sitecrawl, from the lead's own source record) beside the confirmed domain
+  if (r.kind === 'person' && r.label === OWN_POSTING_PERSON_LABEL && atsPostingRef(r.source_url ?? '') !== null) return true
   if (urlIdentity(r.source_url) !== ld) return false
   return r.kind !== 'email' || emailIdentity(r.value) === ld
 }
