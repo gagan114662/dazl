@@ -19,6 +19,11 @@ export const MIN_EVIDENCE = 80   // characters of the comment besides the PASS l
 export const EXEMPT_REASONS = new Set(['not_planned', 'duplicate'])
 export const EXEMPT_LABELS = new Set(['wontfix', 'duplicate', 'not-planned', 'not planned'])
 export const TRUSTED = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
+// An issue whose deliverable is not part of the deployed product (a benchmark, a report, repository tooling) carries the label
+// `no-deploy` (owner rule change, 2026-11-22). There is nothing on dazl.ai to check, so it closes on a "Repo check (commit <sha>):
+// PASS" line instead: the commit on main that holds the deliverable, with the same evidence, maintainer and after-reopen rules.
+export const NO_DEPLOY_LABEL = 'no-deploy'
+export const REPO_PASS_RE = /^ {0,3}(?:#{1,6}[ \t]+|[-*+][ \t]+)?(?:\*\*|__)?Repo check \(commit ([0-9a-f]{8,40})\): PASS(?:\*\*|__)?[ \t]*$/m
 
 // The comment's own text: everything GitHub shows as a quote, as code, or not at all is removed first.
 // - HTML comments (never shown), <pre>, <code> and <blockquote> blocks (closed or running to the end);
@@ -46,14 +51,14 @@ const ownText = body => {
 }
 
 // null, or why the comment is not a prod live check PASS. Exported for the tests and the dry run.
-export function passProblem(c, after = null) {
+export function passProblem(c, after = null, re = PASS_RE) {
   if (typeof c?.body !== 'string') return 'no text'
   if (!TRUSTED.has(c.author_association)) return 'not from a maintainer'
   const text = ownText(c.body)
-  const m = PASS_RE.exec(text)
-  if (!m) return 'no line "Live check (prod <8-40 hex commit>): PASS"'
+  const m = re.exec(text)
+  if (!m) return re === PASS_RE ? 'no line "Live check (prod <8-40 hex commit>): PASS"' : 'no line "Repo check (commit <8-40 hex commit>): PASS"'
   if (m[1] === EXAMPLE_SHA) return `the commit is the example from the instructions (${EXAMPLE_SHA}), not a deployed commit`
-  const rest = text.replace(PASS_RE, '').replace(/\s+/g, ' ').trim()
+  const rest = text.replace(re, '').replace(/\s+/g, ' ').trim()
   if (rest.length < MIN_EVIDENCE) return `no evidence beside the PASS line (${rest.length} of ${MIN_EVIDENCE} characters)`
   if (after !== null && !(Date.parse(c.created_at) > Date.parse(after))) return `posted before the issue was last reopened (${after})`
   return null
@@ -72,6 +77,11 @@ export function decide(issue, comments, lastReopenedAt = null) {
   const list = Array.isArray(comments) ? comments : []
   const pass = list.find(c => passProblem(c, lastReopenedAt) === null)
   if (pass) return { reopen: false, reason: `live check comment ${pass.html_url || pass.id}` }
+  if (labels.includes(NO_DEPLOY_LABEL)) {
+    const repo = list.find(c => passProblem(c, lastReopenedAt, REPO_PASS_RE) === null)
+    if (repo) return { reopen: false, reason: `repo check comment ${repo.html_url || repo.id} (labelled ${NO_DEPLOY_LABEL})` }
+    return { reopen: true, reason: `labelled ${NO_DEPLOY_LABEL}, but no valid "Repo check (commit <commit>): PASS" comment from a maintainer` }
+  }
   // the nearest miss, so the reopen says what was wrong with it
   const near = list.map(c => ({ c, why: passProblem(c, lastReopenedAt) })).filter(x => /Live check/i.test(String(x.c?.body ?? '')) && TRUSTED.has(x.c?.author_association)).pop()
   return { reopen: true, reason: `no valid "Live check (prod <commit>): PASS" comment from a maintainer${near ? ` (latest live-check comment: ${near.why})` : ''}` }
@@ -86,6 +96,8 @@ export const REOPEN_BODY = [
   'refused - and says what was checked on dazl.ai and what it showed. Then close it again.',
   'A check posted before the issue was last reopened does not count. Closing as "not planned" or "duplicate" (or',
   'labelling it wontfix / duplicate / not-planned) is exempt.',
+  'An issue whose deliverable is not part of the deployed product (a benchmark, a report, repository tooling) is labelled',
+  '`no-deploy` and closes on a line `Repo check (commit <commit>): PASS` naming the commit on main that holds it, with the evidence.',
 ].join('\n')
 
 async function gh(token, method, url, body) {
