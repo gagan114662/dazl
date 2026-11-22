@@ -1,4 +1,5 @@
 import {migratePlayResearch} from '../db/play-research-schema.ts'
+import { migrateAtsIndex } from '../sources/ats-index.ts'
 import { migrateSourceReview } from './source-review.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
 import { migrateTenantLifecycle } from '../db/tenant-guard.ts'
@@ -40,6 +41,7 @@ export function getScanDb() {
   if (!ready) {
     migrateSchedulerRuns(db)
     migrateScan(db)
+    migrateAtsIndex(db)
     migratePreviewClaim(db)
     migrateSourceReview(db)
     migratePlayResearch(db)

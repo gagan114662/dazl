@@ -1,0 +1,10 @@
+[Unit]
+Description=dazl ATS board index - slug discovery every 6 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

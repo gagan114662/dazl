@@ -1,0 +1,14 @@
+# ATS board index: Common Crawl slug discovery (web/scripts/ats-index.mts discover). Its own process - never inside a scan or the web
+# server. A TEMPLATE: copy with the .timer to /etc/systemd/system/, replace CHANGE-ME, then
+# systemctl daemon-reload && systemctl enable --now dazl-ats-index-discover.timer
+[Unit]
+Description=dazl ATS board index - slug discovery
+
+[Service]
+Type=oneshot
+User=CHANGE-ME-app-user
+WorkingDirectory=CHANGE-ME-release/web
+EnvironmentFile=-CHANGE-ME-app-env
+Nice=10
+TimeoutStartSec=3600
+ExecStart=/usr/bin/env node --experimental-strip-types --no-warnings scripts/ats-index.mts discover --max-blocks 40

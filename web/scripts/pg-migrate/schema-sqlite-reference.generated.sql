@@ -14,6 +14,28 @@ CREATE TABLE app_leases (
       expires_at INTEGER NOT NULL
     , generation INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE ats_boards (
+      kind TEXT NOT NULL CHECK (kind IN ('ashby','greenhouse','lever')),
+      slug TEXT NOT NULL,
+      source TEXT NOT NULL,
+      first_seen INTEGER NOT NULL,
+      last_polled INTEGER,
+      next_poll INTEGER NOT NULL DEFAULT 0,
+      poll_status TEXT,
+      company TEXT,
+      website TEXT,
+      PRIMARY KEY (kind, slug)
+    );
+
+CREATE TABLE ats_index_cursor (
+      crawl TEXT NOT NULL,
+      pattern TEXT NOT NULL,
+      pages INTEGER,
+      next_page INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (crawl, pattern)
+    );
+
 CREATE TABLE audit_closing_gate (tenant TEXT PRIMARY KEY);
 
 CREATE TABLE audit_events (
@@ -1254,6 +1276,8 @@ CREATE TABLE worker_runs (
   );
 
 CREATE INDEX adv_requests_window ON adv_requests (tenant_id, connector, at);
+
+CREATE INDEX ats_boards_next_poll ON ats_boards(next_poll);
 
 CREATE INDEX audit_events_at ON audit_events (at);
 

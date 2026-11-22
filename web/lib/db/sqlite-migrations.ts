@@ -6,6 +6,7 @@ import { migrateInsertionOrder } from './insertion-order.ts'
 import { migrateAuth } from './sqlite-store.ts'
 import { migratePlatform } from './platform-tables.ts'
 import { migrateScan } from '../scan/store.ts'
+import { migrateAtsIndex } from '../sources/ats-index.ts'
 import { migrateSourceRuns } from '../scan/source-runs.ts'
 import { migrateCsv } from '../scan/csv-import.ts'
 import { migrateCommenterImport } from '../scan/commenter-import.ts'
@@ -60,7 +61,7 @@ export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
   migratePlatform(db)
   const migrates = [
-    migrateScan, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
+    migrateScan, migrateAtsIndex, migrateSourceRuns, migrateCsv, migrateCommenterImport, migrateTrial,
     migrateOutreach, migrateSequences, migrateReplies, migrateBounceLedger, migrateBounceScan, migrateLedger, migrateReopen,
     migrateAutopilot, migrateCalcom, migrateIndexing, migrateBriefs, migrateSeo,
     migrateNewsjacks, migrateMonitors, migratePlans, migrateMemory, migrateFeedback, migrateKeys,
