@@ -2,11 +2,12 @@ import { migrateCompanyFirstPublishedDisplay } from './company-first-published-d
 import type Database from 'better-sqlite3'
 import { sameSite } from '../connectors/sitecrawl.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
-import { countriesIn } from '../scan/countries.ts'
-import { publishedFor, sameNamedPublication, splitName, type AddressContext, type PublishedCandidateRow } from './email-pattern.ts'
+import { countriesIn, regionsIn, countryOfRegion } from '../scan/countries.ts'
+import { publishedFor, sameNamedPublication, cardNamedPublication, splitName, type AddressContext, type PublishedCandidateRow } from './email-pattern.ts'
 
 export function publishedDisplayCountry(where: string[]): 'CA' | 'GB' | null {
-  const codes = [...new Set(where.flatMap(w => countriesIn(w)))]
+  // #1208: "Toronto, ON" names Canada by its province (a CA / GB region implies its country); a US state counts as the US, so it is never CA / GB.
+  const codes = [...new Set(where.flatMap(w => [...countriesIn(w), ...regionsIn(w).map(countryOfRegion)]))]
   return codes.length === 1 && (codes[0] === 'CA' || codes[0] === 'GB') ? codes[0] : null
 }
 
@@ -65,8 +66,10 @@ export function recordPublishedDisplay(db: Database.Database, tenantId: string, 
         const sameAddress = clean.filter(other => other.address.toLowerCase() === s.address.toLowerCase())
         const literalLocals = new Set(sameAddress.flatMap(other => [...(other.literalLocals ?? new Set([other.address.split('@')[0]]))]))
         if (literalLocals.size !== 1) continue
-        if (s.url !== p.url || !sameNamedPublication(p.name, s.ctx) ||
-            sameAddress.some(other => named.some(n => n !== p && sameNamedPublication(n.name, other.ctx))) || !publishedFor(p.name, [s], named.map(n => n.name))) continue
+        // #1208: her own team card (heading = her name, only her recorded title between, a bare mailto naming nobody) names her as well as her name in the text does.
+        const title = p.value.split(',').slice(1).join(',').trim() || undefined
+        if (s.url !== p.url || !(sameNamedPublication(p.name, s.ctx) || cardNamedPublication(p.name, s.ctx, title)) ||
+            sameAddress.some(other => named.some(n => n !== p && (sameNamedPublication(n.name, other.ctx) || cardNamedPublication(n.name, other.ctx, n.value.split(',').slice(1).join(',').trim() || undefined)))) || !publishedFor(p.name, [s], named.map(n => n.name), title)) continue
         const address = `${[...literalLocals][0]}@${s.address.split('@')[1].toLowerCase()}`
         insert.run(tenantId, leadId, country, p.value, address, s.url, leadId, tenantId, tenantId, address.toLowerCase())
       }
