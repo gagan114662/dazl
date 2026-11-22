@@ -43,7 +43,7 @@ test('hiring signals in other languages from non-ATS sources are gated too (Inst
 test('a hiring lead keeps its fit only with a "yes" whose quote is really on the home page', async () => {
   const db = setup([{ id: 'a', company: 'Acme Logistics', signal: 'Acme is hiring a payroll manager', source_url: 'https://boards.greenhouse.io/acme/jobs/1', fit: 5, domain: 'acme.com' }])
   const r = await applyBuyerFitGate(db, 'j', prov('COMPANY 1 | fit yes | quote runs a fleet of 40 refrigerated trucks serving grocery chains'), 'k', 'Trucking firms in Ohio', { fetchPage: page })
-  assert.deepEqual(r, { checked: 1, confirmed: 1, capped: 0 })
+  assert.deepEqual(r, { checked: 1, confirmed: 1, capped: 0, noAnswer: 0 })
   assert.equal(fitOf(db, 'a').fit, 5); assert.ok(fitOf(db, 'a').why.startsWith('Company site confirms fit: "runs a fleet'))
 })
 
@@ -71,7 +71,7 @@ test('non-hiring and already-low-fit leads are untouched, and nothing is called 
     { id: 'l', company: 'Gamma', signal: 'Gamma is hiring', source_url: 'https://gamma.com/jobs', fit: 2, domain: null },
   ])
   const r = await applyBuyerFitGate(db, 'j', prov('x', seen), 'k', 'icp', { fetchPage: page })
-  assert.deepEqual(r, { checked: 0, confirmed: 0, capped: 0 }); assert.equal(seen.length, 0)
+  assert.deepEqual(r, { checked: 0, confirmed: 0, capped: 0, noAnswer: 0 }); assert.equal(seen.length, 0)
   assert.equal(fitOf(db, 'f').fit, 5); assert.equal(fitOf(db, 'l').fit, 2)
 })
 

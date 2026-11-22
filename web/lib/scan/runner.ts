@@ -2466,7 +2466,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const icpText = nativeJudgeContext && job.query
           ? nativeBuyerFitTarget(icpForSources, job.query, playDraftOffer(db, job.user_id, job.id)?.offer ?? null)
           : gradingTarget + offerBlockFor(db, job.user_id, job.id)
-        await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
+        const bf = await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', bf.noAnswer ? 'failed' : 'ok', bf.noAnswer ? `no answer for ${bf.noAnswer} lead(s) (${bf.noAnswerCause}) - capped below the qualified bar` : null)
       } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
