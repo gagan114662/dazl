@@ -46,8 +46,8 @@ export interface QueryPlan {
   filters: PlanFilter[]
   ambiguities: Ambiguity[]
   explicit: boolean                  // the plan says more than one flat signal: two or more conditions, a NOT, an exclusion, a completed hire or separate clocks
-  // #1122 follow-up (case 1, job d46c65cb): a signal the request asked for that is NOT a condition in this plan. It is held in view with its
-  // reason and is never counted as met: no gate proves it, so a lead can only qualify through the plan's own dated, sourced conditions.
+  // #1122 follow-up (case 1, job d46c65cb): a signal the request asked for that is NOT a condition in this plan, with the reason. Internal only
+  // (logs, tests): never shown in the product (planView omits it) and never counted as met, since no gate proves it.
   unproven: UnprovenSignal[]
 }
 export interface UnprovenSignal { text: string; reason: string }
@@ -438,7 +438,7 @@ export type PlanViewNode =
   | { op: 'cond'; id: string; text: string; means: string; window: string | null; kind: CondKind }
   | { op: 'and' | 'or'; of: PlanViewNode[] }
   | { op: 'not'; of: PlanViewNode }
-export interface PlanView { explicit: boolean; empty: boolean; summary: string; root: PlanViewNode | null; filters: { kind: PlanFilter['kind']; values: string[]; semantics: string }[]; ambiguities: Ambiguity[]; unproven: UnprovenSignal[] }
+export interface PlanView { explicit: boolean; empty: boolean; summary: string; root: PlanViewNode | null; filters: { kind: PlanFilter['kind']; values: string[]; semantics: string }[]; ambiguities: Ambiguity[] }
 function meansOf(c: Condition): string {
   switch (c.kind) {
     case 'funding': return `a completed ${c.stage ? `${c.stage} ` : ''}funding round`
@@ -462,6 +462,6 @@ export function planView(plan: QueryPlan): PlanView {
     explicit: plan.explicit, empty: plan.root === null && plan.filters.length === 0,
     summary: describePlan(plan.root), root: plan.root ? viewNode(plan.root) : null,
     filters: plan.filters.map(f => ({ kind: f.kind, values: f.values, semantics: f.semantics })),
-    ambiguities: plan.ambiguities, unproven: plan.unproven ?? [],
+    ambiguities: plan.ambiguities,
   }
 }

@@ -51,12 +51,6 @@ export default function PlanViewCard({ plan }: { plan: PlanView | null | undefin
           <ul className="space-y-1 mt-1">{plan.ambiguities.map((a, i) => <li key={i} className="break-words">&ldquo;{a.text}&rdquo; could mean {a.readings.join(' or ')}. Used: <span className="font-medium">{a.chosen}</span></li>)}</ul>
         </div>
       )}
-      {(plan.unproven ?? []).length > 0 && (
-        <div className="mt-2" data-testid="plan-unproven">
-          <p className="font-medium text-[#111]">Asked for, but not checked. A lead never counts as having these:</p>
-          <ul className="space-y-1 mt-1">{plan.unproven.map((u, i) => <li key={i} className="break-words">&ldquo;{u.text}&rdquo;: {u.reason}</li>)}</ul>
-        </div>
-      )}
     </section>
   )
 }

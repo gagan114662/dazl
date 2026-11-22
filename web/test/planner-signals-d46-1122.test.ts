@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { compileTargeting, planConditions, planView } from '../lib/scan/targeting.ts'
 
 // #1122 follow-up, case 1: job d46c65cb asked for four signals and the plan kept two ("a new Head of Sales/VP Sales" has no verb and
@@ -22,7 +23,12 @@ test('d46c65cb: every requested signal is a plan condition or listed as unproven
     const kept = unproven.includes(s) || conds.some(c => compileTargeting(s).root && planConditions(compileTargeting(s).root).some(x => x.cond.kind === c.cond.kind))
     assert.ok(kept, `${s} survives into the plan or is held`)
   }
-  assert.equal(planView(plan).unproven.length, plan.unproven.length, 'the plan view the owner sees carries them')
+  // Internal only: the view the owner sees (and the plan card) carries no unproven list or its text.
+  const view = JSON.stringify(planView(plan))
+  assert.ok(!('unproven' in planView(plan)))
+  for (const u of plan.unproven) { assert.ok(!view.includes(u.text)); assert.ok(!view.includes(u.reason)) }
+  const card = readFileSync(new URL('../app/app/leads/plan-view.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(card, /unproven|not checked/i)
 })
 
 test('"hiring new account executives" stays an open role; a bare "a new <role>" is a completed hire', () => {
