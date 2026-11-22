@@ -44,7 +44,7 @@ async function signedIn(token: string | undefined): Promise<boolean> {
   if (!token) return false
   // Bounded like the layout (lib/auth-gate.ts, #1463): a stalled lookup is logged and the request goes on, and the
   // layout's own bounded check then shows the error boundary instead of a page that never arrives.
-  try { return await checkSessionWithin(token, { getDb, where: 'proxy' }) } catch { return true }
+  try { return await checkSessionWithin(token, { getDb, stage: 'proxy' }) } catch { return true }
 }
 
 // The third entry is lib/ops/server-action-probe.ts SERVER_ACTION_PROBE_MATCHER, written out: Next reads this object statically.

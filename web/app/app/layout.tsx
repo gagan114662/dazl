@@ -18,7 +18,7 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
   const token = (await cookies()).get('dazl_session')?.value
   // Bounded (lib/auth-gate.ts): a stalled store or lookup now reaches the error boundary (Reload / Try again) and the
   // server log, instead of leaving "Opening your workspace…" up forever (prod 2026-11-21).
-  if (!(await checkSessionWithin(token, { getDb, where: 'layout' }))) redirect('/sign-in')
+  if (!(await checkSessionWithin(token, { getDb, stage: 'layout' }))) redirect('/sign-in')
 
   return <>{children}</>
 }
