@@ -36,3 +36,11 @@ test('the amount left names the per-run limit when that is what binds, not the d
   assert.equal(estimateRun({ budget: { max_usd: 1 }, payer: 'you', ownerCapUsd: 2, reservedUsd: 1 }).cap.binding, 'daily')
   assert.equal(estimateRun({ budget: { max_usd: 3.33 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 1, ownerMonthCapUsd: 5, reservedMonthUsd: 4 }).cap.binding, 'monthly')
 })
+
+test('when the run limit binds under a day cap, the verdict names the run limit, not the day limit and its reservations', () => {
+  const e = estimateRun({ budget: { max_usd: 0.01 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 1 })
+  assert.equal(e.verdict.ok, false)
+  assert.match(e.verdict.message, /only \$0\.01 of your \$0\.01 limit is left\.$/)
+  assert.doesNotMatch(e.verdict.message, /\$10\.00|already reserved/)
+  assert.ok(e.verdict.change.some(c => /^Raise the dollar limit to at least \$0\.0\d /.test(c)), e.verdict.change.join(' | '))
+})
