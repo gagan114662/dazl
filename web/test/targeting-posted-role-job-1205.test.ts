@@ -171,3 +171,12 @@ test('#1205 a hyphenated role is read as the role, never dropped', () => {
     const h = hiring(q); assert.equal(h.length, 1, q); assert.equal(h[0].role, role, q); assert.ok(!h[0].role_unreadable, q)
   }
 })
+
+// council (Sonnet R1 on 080e58a): "a", "an" and "new" inside the words before "job" ("a brand new sales job") do not make the words a
+// non-hiring phrase; the request names a posting, so it is held, never silently dropped
+test('#1205 an article or "new" inside the role words holds the condition, never drops it', () => {
+  for (const q of ['Firms that posted a brand new sales job in the past 90 days', 'Firms that posted a very new sales job']) {
+    const h = planConditions(compileTargeting(q, null).root).map(x => x.cond).filter(c => c.kind === 'hiring')
+    assert.equal(h.length, 1, q); assert.ok(h[0].role_unreadable, q)
+  }
+})
