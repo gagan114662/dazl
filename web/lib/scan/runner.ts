@@ -1349,10 +1349,12 @@ function holdTrialBudget(db: Database.Database, job: Job): void {
 
 // Production trace capture (lib/evals/capture.ts) is OFF unless DAZL_TRACE_CAPTURE=1: then this attempt is recorded and,
 // once it ends, its redacted trace is stored. Off, the run is exactly runJobUntraced.
-// Qodo High on #1511: enough raw candidates stops further company-first passes, except an OR request's only funding-announcement pass -
-// board hits are unverified, so stopping there would mean no funding prospect is ever searched for. Spend, deadline and cap stops still apply.
-export function companyFirstTargetStop(distinct: number, target: number, nextIsFundingPass: boolean): boolean {
-  return !nextIsFundingPass && distinct >= target
+// Qodo High on #1511 (+ #1521 follow-up): enough raw candidates stops further company-first passes, except that an OR request's only
+// funding-announcement pass is always reached: board passes after the target are skipped, the funding pass runs. Board hits are
+// unverified, so stopping first would mean no funding prospect is ever searched for. Spend, deadline and cap stops still apply.
+export function companyFirstTargetStep(distinct: number, target: number, isFundingPass: boolean, fundingPassAhead: boolean): 'run' | 'skip' | 'stop' {
+  if (distinct < target || isFundingPass) return 'run'
+  return fundingPassAhead ? 'skip' : 'stop'
 }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
@@ -1745,7 +1747,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           (phaseDeadline && phaseDeadline.at - phaseDeadline.now() < 45_000)) break
         // Keep searching while too few candidates survive the supplied-account drop; each one found still goes to the verifier.
         const kept = leads?.length ? (cohort ? dropKnown(cohort, leads).kept : leads) : []
-        if (companyFirstTargetStop(new Set(kept.map(dedupKey)).size, COMPANY_FIRST_TARGET_CANDIDATES, !!fundingOr && angle === CF_FUNDING_ANGLE)) break
+        const step = companyFirstTargetStep(new Set(kept.map(dedupKey)).size, COMPANY_FIRST_TARGET_CANDIDATES, !!fundingOr && angle === CF_FUNDING_ANGLE,
+          !!fundingOr && angles.slice(angleIndex, CLAUDE_COMPANY_FIRST_MAX_CALLS).includes(CF_FUNDING_ANGLE))
+        if (step === 'stop') break
+        if (step === 'skip') continue
       }
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days

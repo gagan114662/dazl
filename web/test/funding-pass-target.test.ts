@@ -1,12 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { companyFirstTargetStop } from '../lib/scan/runner.ts'
+import { companyFirstTargetStep } from '../lib/scan/runner.ts'
 
-// Qodo High on #1511: an OR request with a funding branch put its only funding search third, and the company-first loop stopped at the
-// raw candidate target after the two board passes - so a funding prospect was never searched for. The target never skips that pass.
-test('the candidate target never skips the OR request\'s only funding pass; it still stops other passes', () => {
-  assert.equal(companyFirstTargetStop(8, 8, true), false, 'funding pass next: runs even at the target')
-  assert.equal(companyFirstTargetStop(12, 8, true), false)
-  assert.equal(companyFirstTargetStop(8, 8, false), true, 'any other pass: stops at the target as before')
-  assert.equal(companyFirstTargetStop(7, 8, false), false)
+// Qodo High on #1511 and its follow-up on #1521: at the raw candidate target an OR request with a funding branch must still reach its only
+// funding-announcement pass - from ANY earlier pass, not only when funding is the very next one. Board passes after the target are skipped.
+test('at the target, an earlier board pass is skipped so the funding pass still runs; without a funding pass ahead the loop stops', () => {
+  assert.equal(companyFirstTargetStep(8, 8, false, true), 'skip', 'board pass 2 at the target, funding still ahead: skip to funding')
+  assert.equal(companyFirstTargetStep(8, 8, true, true), 'run', 'the funding pass itself runs at the target')
+  assert.equal(companyFirstTargetStep(8, 8, false, false), 'stop', 'no funding pass ahead: stop as before')
+  assert.equal(companyFirstTargetStep(7, 8, false, true), 'run')
+  assert.equal(companyFirstTargetStep(7, 8, false, false), 'run')
 })
