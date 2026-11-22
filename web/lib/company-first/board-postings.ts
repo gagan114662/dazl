@@ -57,6 +57,31 @@ export async function freshBoardPostings(admittedUrls: string[], o: {
   return picks.sort((a, b) => b.hits - a.hits || (a.posted < b.posted ? 1 : -1)).slice(0, MAX_POSTINGS_PER_ANGLE).map(p => p.url)
 }
 
+// Run af02437c (39 boards cited, 2 read): the pick step above reads at most 8 boards on what is left of the phase, so a posting whose
+// board came later (or any posting once the phase was short) reached the read slots undated. Dating is its own step: every board behind
+// an ATS posting URL that could take a slot is read once, in parallel, on its own small deadline, only to fill dates/titles. It picks
+// nothing. The counts and the cause go to the run report.
+export type BoardDating = { boards: number; read: number; failed: number; cause: 'none' | 'deadline' | 'unreadable' | 'no_boards' }
+export async function dateBoards(urls: string[], o: { http: SafeGet; deadlineMs: number; clock?: () => number; concurrency?: number; dates?: Map<string, string>; titles?: Map<string, string> }): Promise<BoardDating> {
+  const clock = o.clock ?? Date.now, deadline = clock() + Math.max(0, o.deadlineMs)
+  const boards = new Map<string, Board>()
+  for (const u of urls) { if (!atsPostingRef(u)) continue; const b = boardOf(u); if (b && !b.host && !boards.has(`${b.ats}:${b.token}`)) boards.set(`${b.ats}:${b.token}`, b) }
+  if (!boards.size) return { boards: 0, read: 0, failed: 0, cause: 'no_boards' }
+  const queue = [...boards.values()]
+  let read = 0, failed = 0, late = false
+  const one = async (b: Board) => {
+    if (clock() >= deadline) { late = true; return }
+    const res = await o.http(boardApi(b), { accept: 'application/json', signal: AbortSignal.timeout(Math.max(1, deadline - clock())) }).catch(() => null)
+    let roles: ReturnType<typeof boardRoles> = null
+    if (res && res.status === 200 && !res.truncated && !looksLikeHtml(res.body)) { try { roles = boardRoles(b, JSON.parse(res.body)) } catch { roles = null } }
+    if (!roles) { if (clock() >= deadline) late = true; else failed++; return }
+    read++
+    for (const r of roles) { const k = postingKey(r.url); if (k && r.posted) { o.dates?.set(k, r.posted); if (r.title) o.titles?.set(k, r.title) } }
+  }
+  await Promise.all(Array.from({ length: Math.min(o.concurrency ?? 6, queue.length) }, async () => { for (let b = queue.shift(); b; b = queue.shift()) await one(b) }))
+  return { boards: boards.size, read, failed, cause: read === boards.size ? 'none' : late ? 'deadline' : 'unreadable' }
+}
+
 // One key for a posting across its URL shapes (boards. / job-boards., /application, /apply).
 export function postingKey(url: string): string | null {
   const r = atsPostingRef(url)
@@ -70,13 +95,14 @@ export function postingKey(url: string): string | null {
 export function orderByBoardDate(urls: string[], dates: ReadonlyMap<string, string>, o: { windowDays: number | null; now: Date; titles?: ReadonlyMap<string, string>; roleMatch?: (title: string) => boolean }): string[] {
   const since = o.windowDays && o.windowDays > 0 ? new Date(o.now.getTime() - o.windowDays * 86_400_000).toISOString().slice(0, 10) : null
   const today = o.now.toISOString().slice(0, 10)
-  const dated: { url: string; posted: string; i: number; req: boolean }[] = [], rest: string[] = []
+  const dated: { url: string; posted: string; i: number; req: boolean }[] = [], rest: string[] = [], undatedAts: string[] = []
   urls.forEach((url, i) => {
     const k = postingKey(url), posted = k ? dates.get(k) : undefined
-    if (!posted) { rest.push(url); return }
+    // af02437c: an ATS posting its board did not date (board unread) goes after every other source; the verifier still dates it
+    if (!posted) { (k ? undatedAts : rest).push(url); return }
     if (posted > today || (since && posted < since)) return
     const title = k ? o.titles?.get(k) : undefined
     dated.push({ url, posted, i, req: !!(title && o.roleMatch?.(title)) })
   })
-  return [...dated.sort((a, b) => Number(b.req) - Number(a.req) || (a.posted < b.posted ? 1 : a.posted > b.posted ? -1 : a.i - b.i)).map(d => d.url), ...rest]
+  return [...dated.sort((a, b) => Number(b.req) - Number(a.req) || (a.posted < b.posted ? 1 : a.posted > b.posted ? -1 : a.i - b.i)).map(d => d.url), ...rest, ...undatedAts]
 }

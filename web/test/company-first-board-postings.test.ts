@@ -93,3 +93,36 @@ test('Qodo #1548: within in-window board postings, requested-role titles first (
   const out = orderByBoardDate(['https://news.example/a', u(1), u(2), u(3), u(4)], dates, { windowDays: 45, now, titles, roleMatch: t => !!matchedHiringRole(t, roles) })
   assert.deepEqual(out, [u(3), u(2), u(1), u(4), 'https://news.example/a'])
 })
+
+// Run af02437c: 39 boards cited, 2 read; Automat (2025-04-30) and Cognition (2025-11-18) Ashby SDR postings took read slots undated.
+test('af02437c: every ATS posting slot candidate gets its own board dated (past the 8-board pick cap), so a stale one is dropped', async () => {
+  const { dateBoards, orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
+  const ash = (org: string, id: string, at: string) => ({ jobs: [{ id, title: 'Sales Development Representative', publishedAt: at, jobUrl: `https://jobs.ashbyhq.com/${org}/${id}`, isListed: true }] })
+  const bodies: Record<string, unknown> = {
+    'https://api.ashbyhq.com/posting-api/job-board/automat?includeCompensation=false': ash('automat', 'f1b67be7-60cd-4067-9f33-43c095188d82', '2025-04-30T02:10:32.968+00:00'),
+    'https://api.ashbyhq.com/posting-api/job-board/cognition?includeCompensation=false': ash('cognition', '001a11ed-d7bb-4c78-a260-1d28c12bf61a', '2025-11-18T16:22:24.715+00:00'),
+    'https://api.ashbyhq.com/posting-api/job-board/fresh?includeCompensation=false': ash('fresh', 'aaaaaaaa-0000-0000-0000-000000000001', '2026-11-10T00:00:00+00:00'),
+  }
+  const http = async (u: string) => { const k = Object.keys(bodies).find(x => x.split('?')[0] === u.split('?')[0]); return (k ? { status: 200, body: JSON.stringify(bodies[k]), finalUrl: u } : { status: 404, body: '', finalUrl: u }) as never }
+  const filler = Array.from({ length: 9 }, (_, i) => `https://boards.greenhouse.io/filler${i}/jobs/${i + 1}`)
+  const urls = [...filler, 'https://jobs.ashbyhq.com/automat/f1b67be7-60cd-4067-9f33-43c095188d82', 'https://jobs.ashbyhq.com/cognition/001a11ed-d7bb-4c78-a260-1d28c12bf61a', 'https://jobs.ashbyhq.com/fresh/aaaaaaaa-0000-0000-0000-000000000001', 'https://news.example/a']
+  const dates = new Map<string, string>(), titles = new Map<string, string>()
+  const st = await dateBoards(urls, { http, deadlineMs: 8_000, dates, titles })
+  assert.equal(st.boards, 12); assert.equal(st.read, 3); assert.equal(st.failed, 9); assert.equal(st.cause, 'unreadable')
+  const out = orderByBoardDate(urls, dates, { windowDays: 45, now })
+  assert.equal(out[0], 'https://jobs.ashbyhq.com/fresh/aaaaaaaa-0000-0000-0000-000000000001')
+  assert.ok(!out.some(u => /automat|cognition/.test(u)), out.join(' '))
+})
+test('af02437c: an undated ATS posting (board unread) never beats a dated in-window one, and stays after undated non-ATS sources', async () => {
+  const { orderByBoardDate } = await import('../lib/company-first/board-postings.ts')
+  const dates = new Map([['greenhouse:acme:1', '2026-11-10']])
+  const out = orderByBoardDate(['https://jobs.ashbyhq.com/x/11111111-0000-0000-0000-000000000000', 'https://news.example/a', 'https://job-boards.greenhouse.io/acme/jobs/1'], dates, { windowDays: 45, now })
+  assert.deepEqual(out, ['https://job-boards.greenhouse.io/acme/jobs/1', 'https://news.example/a', 'https://jobs.ashbyhq.com/x/11111111-0000-0000-0000-000000000000'])
+})
+test('af02437c: the dating step has its own deadline; when it runs out the cause is "deadline"', async () => {
+  const { dateBoards } = await import('../lib/company-first/board-postings.ts')
+  let t = 0
+  const http = async () => { t += 5_000; return { status: 200, body: JSON.stringify({ jobs: [] }), finalUrl: '' } as never }
+  const st = await dateBoards(['https://boards.greenhouse.io/a/jobs/1', 'https://boards.greenhouse.io/b/jobs/2', 'https://boards.greenhouse.io/c/jobs/3'], { http, deadlineMs: 8_000, clock: () => t, concurrency: 1 })
+  assert.equal(st.boards, 3); assert.equal(st.read, 2); assert.equal(st.cause, 'deadline')
+})
