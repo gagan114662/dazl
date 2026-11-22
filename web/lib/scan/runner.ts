@@ -1,4 +1,5 @@
 import { runClaudeWebSearch, ClaudeSearchError, CLAUDE_SEARCH_MODEL, CLAUDE_COMPANY_FIRST_MAX_CALLS, COMPANY_FIRST_MAX_PUBLISHER_READS, type ClaudeSearchEstimate, type ClaudeSearchUsage } from '../llm/claude-web-search.ts'
+import { CF_BOARD_PREFERENCE, CF_RUNNER_HIRING_ANGLES, CF_RUNNER_RULES } from '../discovery/cf-runner-prompts.ts'
 import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
@@ -1718,19 +1719,15 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // The ATS board stage proves a hiring event only; any other requested event keeps its own first-party angle.
       // cf_runner discover wording (run6: 10/10 past every hold): for a hiring request every angle prefers the public ATS boards whose
       // records dazl reads and dates, so the search cites board URLs and the board stage (freshBoardPostings) has postings to read.
-      const BOARD_PREFERENCE = 'Strongly prefer postings hosted on boards.greenhouse.io / job-boards.greenhouse.io, jobs.lever.co or jobs.ashbyhq.com (their freshness can be verified). Prefer postings from the last 30 days; skip anything that looks older.'
+      const BOARD_PREFERENCE = CF_BOARD_PREFERENCE
       const hiringAsked = salesHiringRequired(job.query, JSON.stringify(icpForSources ?? {}))
       // cf_runner stage 1 ANGLES, verbatim. cf_runner runs all six; the scan cap fits CLAUDE_COMPANY_FIRST_MAX_CALLS, so a hiring request
       // takes the three that cite boards whose records dazl reads and dates (career pages + ATS; Ashby/Lever; Greenhouse), in cf_runner order.
-      const CF_HIRING_ANGLES = [
-        'Search company career pages and public applicant-tracking job boards (e.g. boards.greenhouse.io, jobs.lever.co, jobs.ashbyhq.com, apply.workable.com) for open postings that match the signal.',
-        'Search jobs.ashbyhq.com and jobs.lever.co specifically for the role titles in the signal, newest first.',
-        'Search boards.greenhouse.io and job-boards.greenhouse.io specifically for the role titles in the signal, newest first.',
-      ]
+      const CF_HIRING_ANGLES = CF_RUNNER_HIRING_ANGLES
       // cf_runner discover(): the model returns the companies it found as JSON in its text, each with its own official website and
       // the specific posting. Those are hints only - a posting URL is read through the board's own API and a website has to pass
       // the crawler's homepage name proof (with a guessed domain's location rules) before it counts.
-      const CF_RULES = 'Rules: only companies you found evidence for in search results this session; never invent. Exclude staffing/recruiting agencies posting for clients. Company size matters: respect the company sizes in the request; skip well-known large companies and public companies.' + (hiringAsked ? ' The job posting URL must be a specific posting page (not a search page).' : '')
+      const CF_RULES = CF_RUNNER_RULES + (hiringAsked ? ' The job posting URL must be a specific posting page (not a search page).' : '')
       const CF_RETURN = hiringAsked
         ? 'Return up to 15 companies as JSON inside <json></json>: a list of objects with keys company, website (the company\'s own official domain), job_title, job_url, job_location, date_posted (YYYY-MM-DD or null if unknown), employees_estimate, why (one sentence).'
         : 'Return up to 15 companies as JSON inside <json></json>: a list of objects with keys company, website (the company\'s own official domain), source_url, event_date (YYYY-MM-DD or null if unknown), why (one sentence).'
