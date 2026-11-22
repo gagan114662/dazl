@@ -251,7 +251,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
         : `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
       if (!native) change.push(`Raise the ${monthBinds ? 'monthly ' : ''}dollar limit to at least ${money(cappedTotal.min + shownReserved)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       // #1319: raising this run's limit alone cannot unblock a run whose day room is short too: name that room
-      if (runBinds && ownerDay !== null && cappedTotal.min > ownerDay - reserved) change.push(`Your daily limit has only ${money(Math.max(0, ownerDay - reserved))} left today (${money(ownerDay)} limit, ${money(reserved)} already reserved), so raising this run's limit alone is not enough.`)
+      if (!native && runBinds && ownerDay !== null && cappedTotal.min > ownerDay - reserved) change.push(`Your daily limit has only ${money(Math.max(0, ownerDay - reserved))} left today (${money(ownerDay)} limit, ${money(reserved)} already reserved), so raising this run's limit alone is not enough.`)
       const judge = rows.find(r => r.id === 'judge')
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
