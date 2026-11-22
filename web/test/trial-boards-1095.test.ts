@@ -296,7 +296,7 @@ test('#1205: a request with no hiring in it: runner -> SourceRunLedger.write -> 
   const skip = saved?.at(-1)?.source_skips?.find(s => s.source === 'adapter:jobboards')
   assert.ok(skip, `the saved run report has the board skip: ${JSON.stringify(saved?.at(-1)?.source_skips)}`)
   assert.equal(skip!.status, 'skipped_no_hiring_signal')
-  assert.equal(skip!.reason, "Job postings are searched only when your search asks for companies that are hiring, e.g. add 'hiring a sales rep'.")
+  assert.equal(skip!.reason, "Job postings were not searched for this run. To include them, add a hiring role to your search, e.g. 'hiring a sales rep'.")
 })
 
 // #1205 review (Ziggy, F2): the named skip explanation must reach the SAVED run report, not only the progress row.

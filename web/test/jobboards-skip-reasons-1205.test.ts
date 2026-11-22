@@ -43,7 +43,9 @@ test('#1205 a request not read as hiring says the job boards need a hiring reque
   // the row as the status route reads it from scan_source_runs for the prod run
   const [row] = progressOf([{ collector: 'adapter:jobboards', status: 'skipped_no_hiring_signal', evidence_count: 0, candidate_count: null, verified_count: null, review_count: null }], 'done')
   assert.equal(row.status, 'skipped')
-  assert.equal(row.note, "Job postings are searched only when your search asks for companies that are hiring, e.g. add 'hiring a sales rep'.")
+  assert.equal(row.note, "Job postings were not searched for this run. To include them, add a hiring role to your search, e.g. 'hiring a sales rep'.")
+  // Quest: no place wording, and no claim about the person's search (what it asks or is) - only what happened and what to change
+  assert.doesNotMatch(row.note!, /place|city|region|country|province|your search (?:asks|is|does|has)|only when|not a hiring/i)
 })
 
 test('#1205 a search limited to chosen sources says the job boards were not among them', () => {
