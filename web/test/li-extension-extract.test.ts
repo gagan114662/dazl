@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
 const dir = fileURLToPath(new URL('../../extension/', import.meta.url))
-type Extract = { people: (r: unknown[]) => unknown[]; blockedReason: (h: string) => string | null }
+type Extract = { people: (r: unknown[]) => unknown[]; blockedReason: (h: string) => string | null; pageProblem: (p: Record<string, unknown>) => string | null }
 const ctx: { dazlExtract?: Extract; URL: typeof URL } = { URL }
 vm.createContext(ctx)
 vm.runInContext(readFileSync(dir + 'extract.js', 'utf8'), ctx)
@@ -43,4 +43,14 @@ test('manifest: MV3, read-only permissions (no cookies, no scripting, no webRequ
   for (const h of m.host_permissions) assert.match(h, /^https:\/\/(www\.linkedin\.com|dazl\.ai|www\.dazl\.ai|staging\.dazl\.ai)\/\*$/)
   const content = readFileSync(dir + 'content.js', 'utf8')
   assert.doesNotMatch(content, /\.click\(|dispatchEvent|fetch\(/)   // reads only: no clicks, no requests from the page
+})
+
+test('a page is read only when it is a signed-in LinkedIn page: a security check or a sign-in prompt is never "0 people"', () => {
+  const href = 'https://www.linkedin.com/company/acme/people/'
+  assert.equal(X.pageProblem({ href, hasNav: true, hasSignIn: true }), null, 'the signed-in navigation bar decides')
+  assert.equal(X.pageProblem({ href, hasNav: false, hasChallenge: true }), 'challenge')
+  assert.equal(X.pageProblem({ href, hasNav: false, title: 'Just a moment...' }), 'challenge')
+  assert.equal(X.pageProblem({ href, hasNav: false, hasSignIn: true }), 'login_required')
+  assert.equal(X.pageProblem({ href, hasNav: false }), 'extract_failed', 'an unrecognised page is a failure, never an empty read')
+  assert.equal(X.pageProblem({ href: 'https://www.linkedin.com/checkpoint/challenge/abc', hasNav: true }), 'challenge', 'the address still wins')
 })

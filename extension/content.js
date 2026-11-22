@@ -33,10 +33,23 @@ function profile() {
   const p = X.people([{ href: location.href, name, title: headline }])[0]
   return p || null
 }
+// What kind of page this is, from its structure (not its wording, which LinkedIn translates): the signed-in navigation bar, a
+// bot or security check, or a sign-in prompt. extract.js pageProblem decides what that means.
+function pageFacts() {
+  const has = sel => !!document.querySelector(sel)
+  return {
+    href: location.href, title: document.title,
+    hasNav: has('#global-nav, header.global-nav, .global-nav__me'),
+    hasChallenge: has('[id^="cf-chl"], #challenge-form, script[src*="challenges.cloudflare.com"], iframe[src*="captcha"], iframe[src*="challenge"], #captcha-internal'),
+    hasSignIn: has('a[href*="/login"], a[href*="/signup"], a[href*="/uas/login"], .nav__button-signin, form[action*="login"], .authwall-join-form'),
+  }
+}
 async function read(kind) {
-  const why = X.blockedReason(location.href)
-  if (why) return { error: why }
+  const early = X.blockedReason(location.href)
+  if (early) return { error: early }
   await sleep(2000)
+  const why = X.pageProblem(pageFacts())
+  if (why) return { error: why }
   if (kind === 'profile') { const person = profile(); return person ? { person } : { error: 'extract_failed' } }
   await scroll(kind === 'company_people' ? 5 : 3)
   return { people: kind === 'company_people' ? companyPeople() : postEngagement() }

@@ -36,5 +36,16 @@
     if (/^\/404\b/.test(p)) return 'not_found'
     return null
   }
-  root.dazlExtract = { people, profileUrl, cleanName, blockedReason }
+  // What is wrong with the page in front of us, or null when it is a signed-in LinkedIn page that can be read. A page is only read
+  // when it carries LinkedIn's signed-in navigation bar: a security check, a sign-in prompt or anything unrecognised is reported
+  // as such and never as "0 people". page: { href, hasNav, hasChallenge, hasSignIn, title } collected by content.js.
+  function pageProblem(page) {
+    const byAddress = blockedReason(page && page.href)
+    if (byAddress) return byAddress
+    if (page && page.hasNav) return null
+    if (page && (page.hasChallenge || /just a moment|security verification|security check/i.test(String(page.title || '')))) return 'challenge'
+    if (page && page.hasSignIn) return 'login_required'
+    return 'extract_failed'
+  }
+  root.dazlExtract = { people, profileUrl, cleanName, blockedReason, pageProblem }
 })(typeof globalThis !== 'undefined' ? globalThis : this)
