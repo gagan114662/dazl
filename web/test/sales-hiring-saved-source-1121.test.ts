@@ -2,8 +2,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo } from './helpers/acceptance-harness.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 const request = 'Toronto agencies hiring an SDR'
+// #1395 SYNTHETIC request plan for `request`: its one place as written ("Toronto").
+const plan = planObject([PLACE.toronto], { buyer_type: 'agencies', signals: [{ kind: 'hiring', text: 'hiring an SDR', negated: false }] })
 const posting = 'https://job-boards.greenhouse.io/mercury/jobs/6167220004'
 const news = 'https://news.example/mercury'
 const quote = 'As a Sales Development Representative at Mercury, you\u0027ll be the first point of contact for founders...'
@@ -15,7 +18,7 @@ async function savedSource(title: string, opts: { day?: string | null; org?: str
   const postingQuote = opts.pageOnlyDate ? `On ${day}, Mercury hired a Sales Development Representative for its Toronto team.` : quote
   const source = opts.org ? posting.replace('/mercury/', '/othercorp/') : posting
   const x = await runFixture({
-    request, modelIcp: profile, modelQueries: ['Toronto agencies hiring SDR'],
+    request, modelPlan: plan, modelIcp: profile, modelQueries: ['Toronto agencies hiring SDR'],
     hits: [news, source].map(url => ({ url, title: 'Mercury', snippet: url === news ? funding : postingQuote, date: daysAgo(2) })),
     tfPages: {}, own: {},
     extraction: [

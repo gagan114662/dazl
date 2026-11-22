@@ -109,11 +109,6 @@ export function sameRole(a: string | null | undefined, b: string | null | undefi
   return true
 }
 
-// How long the page keeps re-reading a lookup another tab or request has in flight, and how often (it stops as soon as
-// the row is finished or retryable; past PENDING_STALE_S the server itself reports 'uncertain').
-export const PENDING_POLL_MS = 4000
-export const PENDING_POLL_MAX = 45
-
 // Merge rows read from the server into what the page shows: a row only replaces the shown one when it is newer
 // (updated_at), or equally new while the shown one is still open (pending / error / uncertain: a quick retry in the same
 // second as a failure) and the new one is not pending. An older answer (a slow GET that started before a POST finished)
@@ -139,64 +134,29 @@ export function mergeLookups(shown: Record<string, ShownLookup>, incoming: unkno
   return next ?? shown
 }
 
+// #1036 / #1250 (Qodo High on #1545): the Leads page read is the published-only answer rebuilt from the crawl on every read, so the
+// latest read is the whole truth for the panel. A click is kept only against the read it was made on: a refreshed read replaces
+// every clicked row (an address since suppressed, or no longer printed, is not shown or copyable), and a click that was still in
+// flight when the refresh landed is dropped. `base` is the page read object (identity) the clicks belong to.
+export interface PanelClicks { base: unknown; rows: Record<string, ShownLookup> }
+export const clicksFor = (base: unknown): PanelClicks => ({ base, rows: {} })
+export function recordClick(own: PanelClicks, startedOn: unknown, current: unknown, row: ShownLookup): PanelClicks {
+  if (startedOn !== current) return own // the page read changed while this click ran: the refreshed read wins
+  return { base: current, rows: { ...(own.base === current ? own.rows : {}), [row.target]: row } }
+}
+export function shownWorkEmails(initial: unknown, own: PanelClicks): Record<string, ShownLookup> {
+  const read = initial === undefined ? {} : mergeLookups({}, initial)
+  return own.base === initial ? { ...read, ...own.rows } : read
+}
+
 export const siteSettled = (id: { state: string; site: string | null } | null | undefined): id is { state: 'fact' | 'user_confirmed'; site: string } =>
   !!id && !!id.site && (id.state === 'fact' || id.state === 'user_confirmed')
 
-// What the lead panel says for one lookup (shared by the UI and tests). Only 'verified', 'published' and a provider address whose
-// mailbox the free-tier check answered 'valid' (#1036) read as checked;
-// every other state says plainly that it is not, or why nothing is shown.
-export interface WorkEmailView { status: string; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null; mailbox_check?: string | null; mailbox_verifier?: string | null; mailbox_checked_at?: number | null }
-const VERIFIER_NAME: Record<string, string> = { zerobounce: 'ZeroBounce', 'zerobounce-staging-fake': 'the STAGING TEST verifier (not a real mailbox check)' }
-export type WorkEmailTone = 'checked' | 'unchecked' | 'none'
-const PROVIDER_NAME: Record<string, string> = { apollo: 'Apollo', pdl: 'People Data Labs', site: 'the company website' }
-const day = (s: number | null) => s ? new Date(s * 1000).toISOString().slice(0, 10) : 'an unrecorded date'
-export function workEmailCopy(v: WorkEmailView): { tone: WorkEmailTone; headline: string; note: string; showAddress: boolean; checked: boolean } {
-  const why = v.detail ? ` (${v.detail})` : ''
-  switch (v.status) {
-    case 'verified': return { tone: 'checked', checked: true, showAddress: !!v.address, headline: 'Checked work email', note: `Verified by ${PROVIDER_NAME[v.provider ?? ''] ?? 'the provider'} on ${day(v.checked_at)}, from your own key.` }
-    case 'published': return { tone: 'checked', checked: true, showAddress: !!v.address && !!v.source_url, headline: 'Published work email', note: 'Printed on the company website (see the page). Published is not a mailbox check.' }
-    case 'unverified': {
-      const from = PROVIDER_NAME[v.provider ?? ''] ?? 'The provider', by = VERIFIER_NAME[v.mailbox_verifier ?? ''] ?? 'a mailbox check'
-      // #1036: only the verifier's explicit "valid" makes it checked; a catch-all domain accepts every address, so it proves nothing.
-      if (v.mailbox_check === 'valid') return { tone: 'checked', checked: true, showAddress: !!v.address, headline: 'Checked work email', note: `Found by ${from}; ${by} confirmed the mailbox accepts mail on ${day(v.mailbox_checked_at ?? null)}.` }
-      if (v.mailbox_check === 'refused') return { tone: 'none', checked: false, showAddress: false, headline: 'Not shown: flagged as do-not-mail', note: `${from} had an address, but ${by} flagged it as one not to email (a spam trap, abuse or do-not-mail address).` }
-      if (v.mailbox_check === 'undeliverable') return { tone: 'none', checked: false, showAddress: false, headline: 'Not shown: mailbox does not exist', note: `${from} had an address, but ${by} found no such mailbox.` }
-      if (v.mailbox_check === 'pending') return { tone: 'unchecked', checked: false, showAddress: !!v.address, headline: 'Checking the mailbox...', note: `${from} has this address; ${by} is checking whether the mailbox accepts mail.` }
-      const after = v.mailbox_check === 'catch_all' ? ` ${by}: the domain accepts every address (catch-all), so the mailbox is not confirmed.` : v.mailbox_check === 'uncertain' ? ` ${by} could not confirm the mailbox.` : ''
-      return { tone: 'unchecked', checked: false, showAddress: !!v.address, headline: 'Found, not checked', note: `${from} has this address but nothing confirmed the mailbox.${after} Check it before you send; dazl does not treat it as checked.` }
-    }
-    case 'not_found': return { tone: 'none', checked: false, showAddress: false, headline: 'No work email found', note: `Nothing usable came back${why}. This does not prove none exists.` }
-    case 'not_us': return { tone: 'none', checked: false, showAddress: false, headline: 'Not shown: outside the US', note: `Outside the US dazl only uses addresses the person or company published${why}.` }
-    case 'rejected': return { tone: 'none', checked: false, showAddress: false, headline: 'Not shown: did not match', note: `The answer did not match this person at this company${why}.` }
-    case 'error': return { tone: 'none', checked: false, showAddress: false, headline: 'Lookup failed', note: `${v.detail ?? 'The provider did not answer'}. You can try again.` }
-    case 'uncertain': return { tone: 'none', checked: false, showAddress: false, headline: 'Lookup did not finish', note: 'It may have used a credit on your key. You can try again.' }
-    case 'pending': return { tone: 'none', checked: false, showAddress: false, headline: 'Looking...', note: '' }
-    default: return { tone: 'none', checked: false, showAddress: false, headline: 'Unknown state', note: 'Not shown.' }
-  }
-}
-// #1036: a GUESSED address (lib/people/email-formats.ts): built from the company's address format learned from addresses this
-// workspace already holds as confirmed. Shown only with its label. "guessed, unverified" is amber, has no Copy and says nothing
-// confirmed the mailbox; "guessed, verified" needs a mailbox check that really answered valid (who, when). Never "published", never
-// a draft recipient. `learned_from`: the confirmed addresses that taught the format, each with the page it was printed on.
-export interface GuessShown {
-  person: string; address: string; label: 'guessed, verified' | 'guessed, unverified'
-  state: 'not_checked' | 'catch_all' | 'uncertain' | 'verified'
-  verifier: string | null; checked_at: number | null; format: string; confidence: string | null; domain: string
-  learned_from: { person: string; address: string; url: string | null }[]
-}
-export function guessCopy(g: GuessShown): { checked: boolean; chip: string; headline: string; note: string; learned: string } {
-  const by = VERIFIER_NAME[g.verifier ?? ''] ?? 'a mailbox check'
-  const from = g.learned_from.length ? g.learned_from.slice(0, 2).map(e => e.address).join(' and ') : 'addresses this workspace already confirmed at this company'
-  const learned = `Format learned from ${from}${g.learned_from.length > 2 ? ` and ${g.learned_from.length - 2} more` : ''}.`
-  if (g.label === 'guessed, verified') return { checked: true, chip: 'guessed, verified', headline: 'Guessed work email, verified', note: `${by} confirmed the mailbox accepts mail on ${day(g.checked_at)}. The address itself is built from the company's format, not printed anywhere; dazl does not draft to it.`, learned }
-  const why = g.state === 'catch_all' ? ' The domain accepts every address (catch-all), so a check proves nothing.' : g.state === 'uncertain' ? ' A mailbox check did not finish.' : ' No mailbox check has run on it.'
-  return { checked: false, chip: 'guessed, unverified', headline: 'Guessed work email, not verified', note: `Built from the company's address format; nothing confirmed that this mailbox exists.${why} Do not send to it unverified; dazl does not draft to it.`, learned }
-}
-
-export function workEmailCostNote(p: { apollo: boolean; pdl: boolean; pdlNeedsOptIn: boolean; publishedOnly?: boolean }): string {
-  if (p.publishedOnly) return 'Published work email only for this scan. No broker lookup or mailbox check.'
-  // #1036: the free first step (an address the company website prints for this person) runs with no key at all.
-  if (!p.apollo && !p.pdl) return 'Free: checks whether the company website prints this person\'s own address. No Apollo or People Data Labs key is set, so nothing else is looked up (add your own key in Settings > Enrichment). US contacts only.'
-  const parts = [p.apollo ? 'up to 1 credit on your Apollo key' : null, p.pdl ? `${p.apollo ? 'then, only if Apollo has none, ' : ''}1 People Data Labs credit, only on a match` : null].filter(Boolean)
-  return `Free if the company website prints it; otherwise ${parts.join(', ')}. US contacts only.${p.pdlNeedsOptIn ? ' People Data Labs fallback is off (Settings > Enrichment).' : ''}`
+// What the lead panel says for one buyer (shared by the UI and tests, #1036 / #1250): the address the company prints on its own website,
+// or that it prints none for this person. Nothing else is ever an answer.
+export interface WorkEmailView { status: string; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null }
+export function workEmailCopy(v: WorkEmailView): { headline: string; note: string; showAddress: boolean } {
+  if (v.status === 'published' && v.address && v.source_url) return { showAddress: true, headline: 'Work email', note: 'Printed on the company website.' }
+  if (v.status === 'not_found') return { showAddress: false, headline: 'No published work email', note: v.detail ?? 'The company website prints no address for this person.' }
+  return { showAddress: false, headline: 'No published work email', note: 'The company website prints no address for this person.' }
 }

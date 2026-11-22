@@ -150,7 +150,7 @@ export function contactRoute(l: RouteLead, person: RoutePerson | null, now: numb
     // The same purpose rule createDraft applies (published-email.ts), so the card and the gate agree.
     const purpose = publishedContact({ contact: l.contact, source_url: l.source_url, evidence_excerpt: l.evidence_excerpt, contact_context: l.contact_context, enrichments: rows.map(r => ({ ...r, label: r.label ?? null })) })
     if (purpose?.purpose === 'non-sales') personRoute = { state: 'restricted_inbox', roleRelevant: false, text: `Person route: ${local}@ is a restricted inbox (${purpose.purposeHint ?? 'not for sales'}), not a sales route${who ? ` and not ${person!.name}'s address` : ''}.` }
-    else if (person && nameBound(local, person.name)) personRoute = { state: 'person_named_address', roleRelevant: person.roleRelevant, text: `Person route: the published address carries ${person.name}'s name; current role not verified.${roleNote}` }
+    else if (person && nameBound(local, person.name)) personRoute = { state: 'person_named_address', roleRelevant: person.roleRelevant, text: `Person route: the published address carries ${person.name}'s name.${roleNote}` }
     else if (GENERIC_LOCAL.test(local.split('+')[0].replace(/[._-]/g, ''))) personRoute = { state: 'shared_inbox', roleRelevant: null, text: `Person route: ${local}@ is a shared company inbox${who ? `, not ${who}'s own address` : '; no named person'}.` }
     else personRoute = { state: 'owner_unknown', roleRelevant: null, text: `Person route: whose mailbox ${local}@ is was not established${who ? `; not shown to be ${person!.name}'s` : ''}.` }
   }

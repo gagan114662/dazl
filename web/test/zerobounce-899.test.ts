@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { zeroBounceVerifier, VerifierError, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_URL, ZEROBOUNCE_STAGING_FAKE } from '../lib/people/zerobounce.ts'
 import { recordEmailGuesses, verifyCandidates, verifierFromEnv, verifyMonthlyCap, migrateEmailGuess, verifyJobCandidates } from '../lib/people/email-pattern.ts'
-import { runPostFinishBounded, emailVerifyBudgetMs } from '../lib/scan/runner.ts'
+import { runPostFinishBounded } from '../lib/scan/runner.ts'
 import { EnrichmentTrace } from '../lib/scan/enrichment-trace.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -47,9 +47,16 @@ test('#899 monthly cap: default and ceiling = the free allowance; the setting ca
   for (const bad of ['-1', '1e3', 'ten', '2.5']) assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: bad }), 0, bad)
 })
 
+// #1036 / #1250: the crawl writes no guessed row any more; guessed rows an earlier release left at rest are what the scan runner's
+// after-run mailbox check (#1037) can still read, so these tests seed them as stored data.
+function legacyGuesses(db: Database.Database, tenant: string, lead: string, addresses: string[], basis = 'homepage address: Austin, TX 78701') {
+  migrateEmailGuess(db)
+  const ins = db.prepare("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, confidence) VALUES (?, ?, ?, ?, 'first.last', ?, 'guessed', 'high')")
+  for (const a of addresses) ins.run(tenant, lead, a.split('@')[0], a, basis)
+}
 function seeded(tenant: string, lead: string, db = new Database(':memory:')) {
   const on = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '50' }
-  recordEmailGuesses(db, tenant, lead, 'acme.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP'], { env: on, homeText: '120 Main St, Austin, TX 78701' })
+  legacyGuesses(db, tenant, lead, ['dana.lee', 'ben.ortiz', 'cara.diaz', 'eve.ng', 'finn.roe'].map(l => `${l}@acme.com`))
   return { db, on }
 }
 const NOW = Date.parse('2026-11-12T12:00:00Z')
@@ -100,11 +107,11 @@ test('#899 401, 403 and 429 stop the run (the account cannot check now); a 5xx o
   await assert.rejects(zeroBounceVerifier('k', answer({}, 500)).verify('a@b.example'), (e: unknown) => e instanceof VerifierError && e.kind === 'failed')
 })
 
-// The crawl (the only writer of guesses) records candidates; the check is the scan's LAST post-finish step (runner), so a slow
+// The crawl records only published candidates now (#1036 / #1250); the check is the scan's LAST post-finish step (runner), so a slow
 // check can never delay or cut off a site read. The outcome stays on the candidate row: a guess never becomes a contact.
 const html = (b: string) => `<html><body>${b}</body></html>`
 const PROSE = '<p>We have served the community for many years and we care about every family that walks through our doors every single day.</p>'
-async function crawl(env: Record<string, string>, opts: { leads?: number } = {}) {
+async function crawl(env: Record<string, string>, opts: { leads?: number; legacy?: boolean } = {}) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'Seller', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?").run(job)
@@ -122,13 +129,21 @@ async function crawl(env: Record<string, string>, opts: { leads?: number } = {})
   const beta: Record<string, string> = { '/': html('Beta Freight 9 Elm St, Dallas, TX 75201 <a href="/team">Team</a>'), '/team': html(`${PROSE}<h3>Gil Park</h3><p>CEO</p><h3>Hal Rowe</h3><p>CFO</p><h3>Ivy Sol</h3><p>COO</p><p>Press: gil.park@betafreight.com, hal.rowe@betafreight.com</p>`) }
   const get: Get = async url => { const u = new URL(url); const p = u.hostname.includes('betafreight') && u.pathname !== '/robots.txt' ? beta[u.pathname] : pages[u.pathname]; return p !== undefined ? { status: 200, body: p, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
   await crawlJob(db, 'A', job, { get, gapMs: 0, env, now: NOW })
+  // the guess an earlier release's crawl filed for the one buyer who printed nothing (Cara Diaz; Ivy Sol at Beta Freight), left at rest
+  if (opts.legacy !== false) {
+    legacyGuesses(db, 'A', 'L1', ['cara.diaz@acmelogistics.com'])
+    if ((opts.leads ?? 1) > 1) legacyGuesses(db, 'A', 'L2', ['ivy.sol@betafreight.com'], 'homepage address: Dallas, TX 75201')
+  }
   return { db, job }
 }
 const ON = { EMAIL_GUESS_ENABLED: '1', EMAIL_VERIFY_DAILY_CAP: '5' }
 
-test('#899 the crawl itself sends no mailbox check (it only records guesses), even with a key set', async () => {
-  const { db } = await crawl({ ...ON, ZEROBOUNCE_API_KEY: 'k' })
-  assert.deepEqual(db.prepare("SELECT verification FROM email_candidates WHERE tier = 'guessed'").all(), [{ verification: 'none' }])
+test('#899 #1036 #1250 the crawl itself writes no guessed row and sends no mailbox check, even with guessing on and a key set', async () => {
+  const { db } = await crawl({ ...ON, ZEROBOUNCE_API_KEY: 'k' }, { legacy: false })
+  assert.deepEqual(db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed'").all(), [{ n: 0 }])
+  assert.deepEqual(db.prepare("SELECT address, tier, verification FROM email_candidates ORDER BY address").all(), [
+    { address: 'ben.ortiz@acmelogistics.com', tier: 'published', verification: 'none' }, { address: 'dana.lee@acmelogistics.com', tier: 'published', verification: 'none' }])
+  assert.equal(db.prepare('SELECT count(*) FROM email_patterns').pluck().get(), 0)
 })
 
 test('#899 job check: the guessed (not the published) address is checked; only the candidate row changes', async () => {
@@ -161,24 +176,23 @@ test('#899 job check: no verifier, flag off, daily cap 0 or monthly cap 0 -> no 
   assert.equal(calls, 0)
 })
 
-test('#899 runner: the check is the LAST post-finish step, traced as email_verify; without a key it is skipped visibly', async () => {
+test('#899/#1037 runner: a scan never spends a mailbox check on a guessed address, flag on with or without a key; email_verify is still traced LAST and says why', async () => {
   const { db, job } = await crawl(ON)
+  assert.ok((db.prepare("SELECT COUNT(*) n FROM email_candidates WHERE tier = 'guessed'").get() as { n: number }).n > 0, 'not vacuous: the crawl recorded a guess a check could have been spent on')
   const keep = { ...process.env }
   Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0' })
   try {
-    delete process.env.ZEROBOUNCE_API_KEY
-    const t0 = new EnrichmentTrace()
-    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false } as never, t0)
-    const s0 = JSON.stringify(t0)
-    assert.match(s0, /email_verify/); assert.match(s0, /no ZEROBOUNCE_API_KEY/)
-    process.env.ZEROBOUNCE_API_KEY = 'k'
-    let calls = 0
-    const t1 = new EnrichmentTrace()
-    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t1)
-    assert.equal(calls, 1)
-    const s1 = JSON.stringify(t1)
-    assert.match(s1, /email_verify/); assert.match(s1, /"verified":1/)
-    for (const before of ['crawl', 'signals', 'paid_enrichment']) assert.ok(s1.indexOf(before) >= 0 && s1.indexOf(before) < s1.indexOf('email_verify'), `after ${before}`)
+    for (const key of [undefined, 'k']) {
+      if (key) process.env.ZEROBOUNCE_API_KEY = key; else delete process.env.ZEROBOUNCE_API_KEY
+      let calls = 0
+      const t = new EnrichmentTrace()
+      await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t)
+      assert.equal(calls, 0, `no mailbox check (key ${key ?? 'unset'})`)
+      const s1 = JSON.stringify(t)
+      assert.match(s1, /email_verify/); assert.match(s1, /guessed addresses are never checked or used/)
+      for (const before of ['crawl', 'signals', 'paid_enrichment']) assert.ok(s1.indexOf(before) >= 0 && s1.indexOf(before) < s1.indexOf('email_verify'), `after ${before}`)
+    }
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM email_candidates WHERE verification != 'none'").get() as { n: number }).n, 0, 'no candidate was checked or reserved')
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
 })
 
@@ -210,37 +224,18 @@ test('#899 an address another run already took is skipped, not reported as a cap
   assert.ok(run.checked >= 2, `the remaining addresses were still checked (${run.checked})`)
 })
 
-test('#899 runner: a stop shows a generic line in the tenant trace, never the provider\'s account message', async () => {
-  const { db, job } = await crawl(ON)
-  const keep = { ...process.env }
-  Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0', ZEROBOUNCE_API_KEY: 'k' })
-  const err = console.error; console.error = () => {}
-  try {
-    const t = new EnrichmentTrace()
-    await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => new Response(JSON.stringify({ error: 'Invalid API key or your account ran out of credits' }))) as unknown as typeof fetch } as never, t)
-    const s = JSON.stringify(t)
-    assert.match(s, /the mailbox check is unavailable right now/)
-    assert.ok(!/ran out of credits|Invalid API key/.test(s), s)
-  } finally { console.error = err; for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
-})
-
-test('#899 the check\'s own budget: default 20 s, clamped to 1-60 s', () => {
-  assert.equal(emailVerifyBudgetMs({}), 20_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '500' }), 1_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: '900000' }), 60_000)
-  assert.equal(emailVerifyBudgetMs({ EMAIL_VERIFY_BUDGET_MS: 'x' }), 20_000)
-})
 
 test('#899 a later crawl that no longer shows a US address clears the unchecked guesses\' US basis: nothing of them is checked', async () => {
   const { db, on } = seeded('A', 'L1')
   assert.ok((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tier = 'guessed' AND country_basis IS NOT NULL").get() as { n: number }).n > 0)
-  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO'], { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO'], { env: {}, homeText: '100 King St W, Toronto, ON M5X 1A9' })
+  assert.equal(db.prepare("SELECT count(*) FROM email_candidates WHERE tier = 'guessed' AND country_basis IS NOT NULL").pluck().get(), 0, 'cleared whatever EMAIL_GUESS_ENABLED says')
   let calls = 0
   const run = await verifyCandidates(db, 'A', 'L1', { name: 'zerobounce', async verify() { calls++; return { outcome: 'deliverable' as const } } }, { env: on, now: NOW })
   assert.equal(calls, 0); assert.equal(run.checked, 0)
 })
 
-test('#899 runner: a job row that cannot be read counts as NOT alive: no address is sent (fail closed)', async () => {
+test('#899/#1037 runner: a job row that cannot be read sends no address either (fail closed)', async () => {
   const { db, job } = await crawl(ON)
   const keep = { ...process.env }
   Object.assign(process.env, { ...ON, SITECRAWL_ENABLED: '0', SIGNALS_ENRICH: '0', ZEROBOUNCE_API_KEY: 'k' })
@@ -250,36 +245,36 @@ test('#899 runner: a job row that cannot be read counts as NOT alive: no address
     const t = new EnrichmentTrace()
     await runPostFinishBounded(db, { id: job, user_id: 'A', attempts: 1 } as never, { creditEnrichment: false, fetchImpl: (async () => { calls++; return new Response(JSON.stringify({ status: 'valid' })) }) as unknown as typeof fetch } as never, t)
     assert.equal(calls, 0)
-    assert.match(JSON.stringify(t), /its state could not be read/)
   } finally { for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k]; Object.assign(process.env, keep) }
 })
 
-test('#899 US -> non-US -> US re-crawls: the guess gets its US basis back and is checked once', async () => {
+test('#899 #1036 #1250 US -> non-US -> US re-crawls: a guess left at rest never gets its US basis back, so it is never checked', async () => {
   const { db, on } = seeded('A', 'L1')
   const people = ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP']
   recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
   recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '120 Main St, Austin, TX 78701' })
   const sent: string[] = []
   await verifyCandidates(db, 'A', 'L1', { name: 'zerobounce', async verify(a) { sent.push(a); return { outcome: 'deliverable' as const } } }, { env: on, now: NOW })
-  assert.ok(sent.length >= 1, 'the unchecked guesses are checkable again')
-  assert.equal(new Set(sent).size, sent.length, 'each at most once')
+  assert.deepEqual(sent, [], 'no guessed row is written to, so none becomes checkable again')
+  assert.equal(db.prepare("SELECT count(*) FROM email_candidates WHERE tier = 'guessed'").pluck().get(), 5, 'the rows stay at rest; none is added')
 })
 
-test('#899 a US re-crawl that finds no pattern still restores the unchecked guesses\' US basis', async () => {
+test('#899 #1036 #1250 a US re-crawl that prints no address writes nothing: no guessed row and no US basis for the old ones', async () => {
   const { db, on } = seeded('A', 'L1')
   const people = ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP']
   recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
-  recordEmailGuesses(db, 'A', 'L1', 'acme.com', [], ['Dana Lee, CEO'], { env: on, homeText: '120 Main St, Austin, TX 78701' }) // no pattern this time
+  assert.equal(recordEmailGuesses(db, 'A', 'L1', 'acme.com', [], ['Dana Lee, CEO'], { env: on, homeText: '120 Main St, Austin, TX 78701' }), null)
   let calls = 0
   await verifyCandidates(db, 'A', 'L1', { name: 'zerobounce', async verify() { calls++; return { outcome: 'deliverable' as const } } }, { env: on, now: NOW })
-  assert.ok(calls >= 1)
+  assert.equal(calls, 0)
 })
 
-test('#899 the US basis is restored only for guesses on the site this crawl read', async () => {
+test('#899 #1036 #1250 a US crawl of any site restores no guess\'s US basis, on that site or another', async () => {
   const { db, on } = seeded('A', 'L1')
   const people = ['Dana Lee, CEO', 'Ben Ortiz, CFO', 'Cara Diaz, COO', 'Eve Ng, CTO', 'Finn Roe, VP']
   recordEmailGuesses(db, 'A', 'L1', 'acme.com', ['dana.lee', 'ben.ortiz'], people, { env: on, homeText: '100 King St W, Toronto, ON M5X 1A9' })
   recordEmailGuesses(db, 'A', 'L1', 'other-site.com', [], ['Dana Lee, CEO'], { env: on, homeText: '120 Main St, Austin, TX 78701' })
+  recordEmailGuesses(db, 'A', 'L1', 'acme.com', [], ['Dana Lee, CEO'], { env: on, homeText: '120 Main St, Austin, TX 78701' })
   assert.equal((db.prepare("SELECT count(*) AS n FROM email_candidates WHERE address LIKE '%@acme.com' AND tier = 'guessed' AND country_basis IS NOT NULL").get() as { n: number }).n, 0)
 })
 

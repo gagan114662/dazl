@@ -1,5 +1,6 @@
 // Worldwide means no jurisdiction assertion. This repository is display-only;
-// no sender, mailbox verifier, candidate learner, or draft path reads it.
+// no sender, mailbox verifier, candidate learner, or draft path reads it. Find work email reads a pair only where the same strict
+// crawl step also wrote the US sender route for that exact address and page (lib/people/work-email.ts withUsCompanyFirst, US-scoped scans only).
 import type Database from 'better-sqlite3'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { asDb, type DbLike } from '../db/client.ts'
@@ -57,32 +58,48 @@ export async function recordCompanyFirstPublishedDisplay(d:DbLike,tenantId:strin
   ON CONFLICT DO NOTHING`,[tenantId,leadId,jobId,attempt,r.domain,r.person,r.address,r.source_url,r.role_quote,r.observed_at,tenantId,r.address])
 }
 
+const DISPLAY_SQL=(n:number)=>`SELECT d.lead_id,d.domain,d.person,d.address,d.source_url,d.role_quote,d.observed_at,j.run_budget
+   FROM company_first_published_email_display d JOIN leads l ON l.id=d.lead_id AND l.scan_job_id=d.scan_job_id
+   JOIN scan_jobs j ON j.id=d.scan_job_id AND j.user_id=d.tenant_id AND j.attempts=d.attempt
+   WHERE d.tenant_id=? AND d.lead_id IN (${Array.from({length:n},()=>'?').join(',')}) AND d.version=1
+     AND d.observed_at BETWEEN ? AND ? AND l.company_domain=d.domain AND j.status IN ('running','done')
+     AND l.quarantined_at IS NULL AND l.review_reason IS NULL AND l.confidence IS NOT NULL
+     AND EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.tenant_id=d.tenant_id AND e.lead_id=d.lead_id
+      AND e.connector='sitecrawl' AND e.kind='person' AND e.value=d.person AND e.source_url=d.source_url
+      AND e.label=? || d.role_quote AND e.retrieved_at=d.observed_at)
+     AND NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.tenant_id=d.tenant_id AND s.email=lower(d.address))`
+
+// The one query (and binding) every reader of this table runs: a bounded batch of the tenant's leads. Each returned row still needs
+// companyFirstDisplayRow and an 'established' domain relationship (async here; the synchronous Find work email reader in work-email.ts).
+export type CompanyFirstDisplayStored=Stored
+export function companyFirstDisplayQueries(tenantId:string,leadIds:readonly string[],nowSeconds:number):{sql:string;params:(string|number)[]}[]{
+ if(!Number.isSafeInteger(nowSeconds)||nowSeconds<1)return []
+ const ids=[...new Set(leadIds.filter(id=>/^[a-f0-9]{24}$/.test(id)))], out:{sql:string;params:(string|number)[]}[]=[]
+ for(let i=0;i<ids.length;i+=200){
+  const part=ids.slice(i,i+200)
+  out.push({sql:DISPLAY_SQL(part.length),params:[tenantId,...part,nowSeconds-MAX_AGE_SECONDS,nowSeconds,COMPANY_FIRST_ROLE_LABEL]})
+ }
+ return out
+}
+export function companyFirstDisplayRow(row:Stored):CompanyFirstPublishedDisplayRow|null{
+ if(!hasCompanyFirstBudget(row.run_budget)||!valid(row))return null
+ const {person,address,source_url,role_quote,observed_at}=row
+ return Object.freeze({person,address,source_url,role_quote,observed_at,display_only:true})
+}
+export const missingDisplayTable=(e:unknown)=>/no such table|relation .* does not exist/i.test(String((e as Error)?.message))
+
 /** Display provenance only. Its present role, exact site, age and ownership bind
  * on every read. Callers still enforce the existing non-send lead view gates. */
 export async function companyFirstPublishedDisplayRows(d:DbLike,tenantId:string,leadIds:readonly string[],nowSeconds=Math.floor(Date.now()/1000)):
  Promise<Record<string,CompanyFirstPublishedDisplayRow>>{
  const db=asDb(d)
  const out:Record<string,CompanyFirstPublishedDisplayRow>={}
- if(!Number.isSafeInteger(nowSeconds)||nowSeconds<1)return out
- const ids=[...new Set(leadIds.filter(id=>/^[a-f0-9]{24}$/.test(id)))]
- try{for(let i=0;i<ids.length;i+=200){
-  const part=ids.slice(i,i+200)
-  const rows=await db.all<Stored>(`SELECT d.lead_id,d.domain,d.person,d.address,d.source_url,d.role_quote,d.observed_at,j.run_budget
-   FROM company_first_published_email_display d JOIN leads l ON l.id=d.lead_id AND l.scan_job_id=d.scan_job_id
-   JOIN scan_jobs j ON j.id=d.scan_job_id AND j.user_id=d.tenant_id AND j.attempts=d.attempt
-   WHERE d.tenant_id=? AND d.lead_id IN (${part.map(()=>'?').join(',')}) AND d.version=1
-     AND d.observed_at BETWEEN ? AND ? AND l.company_domain=d.domain AND j.status IN ('running','done')
-     AND l.quarantined_at IS NULL AND l.review_reason IS NULL AND l.confidence IS NOT NULL
-     AND EXISTS (SELECT 1 FROM lead_enrichments e WHERE e.tenant_id=d.tenant_id AND e.lead_id=d.lead_id
-      AND e.connector='sitecrawl' AND e.kind='person' AND e.value=d.person AND e.source_url=d.source_url
-      AND e.label=? || d.role_quote AND e.retrieved_at=d.observed_at)
-     AND NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.tenant_id=d.tenant_id AND s.email=lower(d.address))`,
-   [tenantId,...part,nowSeconds-MAX_AGE_SECONDS,nowSeconds,COMPANY_FIRST_ROLE_LABEL])
-  for(const row of rows){
-   if(!hasCompanyFirstBudget(row.run_budget)||!valid(row)||await domainRelationshipDb(db,tenantId,row.lead_id,row.domain)!=='established')continue
-   const {person,address,source_url,role_quote,observed_at}=row
-   out[row.lead_id]=Object.freeze({person,address,source_url,role_quote,observed_at,display_only:true})
+ try{for(const q of companyFirstDisplayQueries(tenantId,leadIds,nowSeconds)){
+  for(const row of await db.all<Stored>(q.sql,q.params)){
+   const shown=companyFirstDisplayRow(row)
+   if(!shown||await domainRelationshipDb(db,tenantId,row.lead_id,row.domain)!=='established')continue
+   out[row.lead_id]=shown
   }
- }}catch(e){if(!/no such table|relation .* does not exist/i.test(String((e as Error)?.message)))throw e}
+ }}catch(e){if(!missingDisplayTable(e))throw e}
  return out
 }

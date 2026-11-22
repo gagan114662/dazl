@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { addEnrichment } from '../lib/connectors/store.ts'
+import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { listCampaigns, nextAction } from '../lib/outreach/campaigns.ts'
@@ -34,6 +36,7 @@ test('one row per search with every stage counted from that search only', () => 
   lead(db, 'j1', 'l1', { contact: 'hello@one.example' })               // source-checked, contact, drafted
   lead(db, 'j1', 'l2', { contact: 'hi@two.example' })                  // source-checked, contact, sent
   lead(db, 'j1', 'l3', { confidence: null, excerpt: null, review: 'quote_unconfirmed' }) // needs review
+  for (const r of ownSiteBuyerRows('three.example')) addEnrichment(db, 'A', 'l3', r) // #1037: its own site names its buyer, so a review can make it ready
   lead(db, 'j1', 'l4', { confidence: null, excerpt: null, review: null, confirmed: 5, contact: 'x@four.example' }) // confirmed by you, no email yet
   lead(db, 'j1', 'l5', { quarantined: 7, contact: 'q@five.example' })  // rejected
   msg(db, 'A', 'l1', 'draft'); msg(db, 'A', 'l2', 'sent')

@@ -9,6 +9,7 @@ import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../lib/people/first-play-cap.ts'
 import { fallbackStopCode } from '../lib/scan/runner.ts'
 import { SourceRunLedger } from '../lib/scan/source-runs.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 const FIRST5 = JSON.stringify({ first5: true, paid_fallback: false, credit_enrichment: false })
 const NEWS = 'https://sifted.example/brightloop-raises-seed'
@@ -18,8 +19,13 @@ const ICP = { summary: 's', who: ['Founder'], industries: ['SaaS'], sizes: [], w
 // Job 99a93f32 shape: the news-shaped funding request. Job 2934229e shape: the hiring request.
 const FUNDING = 'London B2B SaaS startups that raised seed funding in the last 90 days'
 const HIRING = 'B2B SaaS startups hiring their first sales rep (SDR or account executive), job posted in the last 30 days; reach the founder or CEO'
+// #1395 SYNTHETIC request plans: FUNDING writes one place ("London"); HIRING writes none, so the profile place is used.
+const PLANS: Record<string, object> = {
+  [FUNDING]: planObject([PLACE.london], { buyer_type: 'London B2B SaaS startups', signals: [{ kind: 'funding', text: 'raised seed funding', negated: false }] }),
+  [HIRING]: planObject([], { buyer_type: 'B2B SaaS startups', signals: [{ kind: 'hiring', text: 'hiring their first sales rep (SDR or account executive)', negated: false }] }),
+}
 const base = (request: string, over: Partial<Fixture> = {}): Fixture => ({
-  request, modelIcp: ICP, modelQueries: ['London SaaS startup seed round', 'SaaS seed funding London', 'B2B SaaS raised seed'],
+  request, modelPlan: PLANS[request], modelIcp: ICP, modelQueries: ['London SaaS startup seed round', 'SaaS seed funding London', 'B2B SaaS raised seed'],
   hits: [{ url: NEWS, title: page.title, snippet: QUOTE, date: daysAgo(12) }], tfPages: { [NEWS]: page }, own: { [NEWS]: page },
   extraction: [{ company: 'Brightloop', signal: 'raised a seed round', source_url: NEWS, excerpt: QUOTE, event_date: daysAgo(12) }],
   runBudget: FIRST5, ...over,

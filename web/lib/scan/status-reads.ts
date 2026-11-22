@@ -38,13 +38,23 @@ export async function readRefusedModelCalls(db: Db, tenantId: string, jobId: str
     return Number(r.sent ?? 0) > 0 ? null : Number(r.n ?? 0)
   } catch { return null }
 }
-export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null; /** the row was read: reserved_usd null then means the column is empty, not that the read failed */ read: boolean }> {
+// #1517: how many of this job's paid calls never reported a cost (still 'reserved', or 'kept' at their reservation after a
+// failed or unreadable answer), owner-scoped. They are in the job's recorded cost at the amount reserved for them, and the
+// final-cost line says so. null when unreadable.
+export async function readHeldPaidSteps(db: Db, tenantId: string, jobId: string): Promise<number | null> {
+  try {
+    const row = await db.get<{ n: number | string | null }>("SELECT COUNT(*) AS n FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ? AND c.status IN ('reserved', 'kept') AND c.reserve_usd > 0", [tenantId, jobId])
+    const n = Number(row?.n)
+    return Number.isSafeInteger(n) && n >= 0 ? n : null
+  } catch { return null }
+}
+export async function readJobCost(db: Db, tenantId: string, jobId: string): Promise<{ estimate: string | null; reserved_usd: number | null; cap_reserved_usd: number | null; /** the two columns as stored, for the one cost reader (job-cost.ts), which must judge the stored value itself (#1517) */ raw: { run: unknown; cap: unknown }; /** the row was read: reserved_usd null then means the column is empty, not that the read failed */ read: boolean }> {
   try {
     // Both reservation columns: spend_reserved_usd (a max_usd run's reservation) AND spend_cap_reserved_usd (the per-job
     // spend-cap ledger, spend-cap.ts). Reading only the first hid real reserved spend on cap-only runs. NULL stays null.
     const row = await db.get<{ estimate: string | null; spend_reserved_usd: number | string | null; spend_cap_reserved_usd: number | string | null }>('SELECT estimate, spend_reserved_usd, spend_cap_reserved_usd FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
-    return { estimate: row?.estimate ?? null, reserved_usd: row?.spend_reserved_usd == null ? null : Number(row.spend_reserved_usd), cap_reserved_usd: row?.spend_cap_reserved_usd == null ? null : Number(row.spend_cap_reserved_usd), read: !!row }
-  } catch { return { estimate: null, reserved_usd: null, cap_reserved_usd: null, read: false } }
+    return { estimate: row?.estimate ?? null, reserved_usd: row?.spend_reserved_usd == null ? null : Number(row.spend_reserved_usd), cap_reserved_usd: row?.spend_cap_reserved_usd == null ? null : Number(row.spend_cap_reserved_usd), raw: { run: row?.spend_reserved_usd ?? null, cap: row?.spend_cap_reserved_usd ?? null }, read: !!row }
+  } catch { return { estimate: null, reserved_usd: null, cap_reserved_usd: null, raw: { run: null, cap: null }, read: false } }
 }
 
 // #1319: the per-scan cap a free-trial job ran under: what its trial reservation held (the job guard's limit, runner.ts).
@@ -59,6 +69,15 @@ export async function readTrialScanCap(db: Db, tenantId: string, jobId: string):
   } catch { return 'unreadable' }
 }
 
+// #1157: the amount still reserved for this job's paid calls that never got an answer (status 'reserved', any attempt) and how
+// many they are, owner-scoped. null when unreadable or nothing is reserved: the stopped scan then names neither, never a made-up one.
+export async function readUncertainHold(db: Db, tenantId: string, jobId: string): Promise<{ usd: number; steps: number } | null> {
+  try {
+    const row = await db.get<{ s: number | string | null; n: number | string | null }>("SELECT SUM(c.reserve_usd) AS s, COUNT(*) AS n FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ? AND c.status = 'reserved' AND c.reserve_usd > 0", [tenantId, jobId])   // a $0 hold (a free call) is no billed step
+    const v = row?.s == null ? null : Number(row.s), n = Number(row?.n)
+    return v !== null && Number.isFinite(v) && v > 0 && Number.isSafeInteger(n) && n > 0 ? { usd: v, steps: n } : null
+  } catch { return null }
+}
 // #1157 line 2: when this scan last did something the server recorded (a paid/free provider call sent or settled), so a
 // running page can say "last activity N s ago" instead of a silent "Still running". Owner-scoped, read only. null = no
 // call recorded yet (or the table does not exist): the page then falls back to the claim time, never an invented time.

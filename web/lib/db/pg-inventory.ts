@@ -40,6 +40,7 @@ export const LOCKS: { id: string; re: RegExp; note: string }[] = [
 // Every module-level Map/Set, reviewed: what it holds and whether two instances need to share it. A new one fails
 // test/pg-inventory.test.ts until it is classified here.
 export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' | 'constant' ; note: string }> = {
+  'lib/ops/loop-stall.ts:spans': { share: 'safe to lose', note: 'per-process diagnostic: recent scan start/end times, read only to name scans in this process\'s event-loop stall log line (#1463); losing it only drops names from a log line' },
   'lib/connectors/sitecrawl.ts:lastHit': { share: 'safe to lose', note: 'per-host crawl politeness delay; each instance waits on its own' },
   'lib/scan/place-agreement.ts:REGION_BY_ALIAS': { share: 'constant', note: 'region alias lookup, filled once at load from the fixed country / state / province lists in the file, then only read' },
   'lib/scan/place-agreement.ts:NEEDS_CAPITALS': { share: 'constant', note: 'which of those aliases must be written in capitals (ON, NY, NSW), filled once at load beside REGION_BY_ALIAS, then only read' },
@@ -52,6 +53,7 @@ export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' 
   'lib/scan/tech-fixture.ts:inFlight': { share: 'safe to lose', note: 'test-only staging technology fixture (#769): which workspaces have a fixture crawl running in this process; staging is one instance, and a second instance would at worst let two fixture crawls of one test lead overlap' },
   'lib/scan/held-state.ts:inProcess': { share: 'must share', note: 'last-resort hold when no write succeeded; another instance would not see the hold' },
   'lib/scan/fetch-page.ts:boardMemo': { share: 'safe to lose', note: 'public ATS board reads shared for 2 minutes (#533)' },
+  'lib/scan/request-plan.ts:cache': { share: 'safe to lose', note: 'request plans per tenant and request (#1395): a lost entry is read again (one more Haiku call), never a different reading' },
   'lib/sources/github.ts:cache': { share: 'safe to lose', note: 'response cache' },
   'lib/sources/jina.ts:cache': { share: 'safe to lose', note: 'response cache' },
   'lib/sources/v2ex.ts:cache': { share: 'safe to lose', note: 'response cache' },

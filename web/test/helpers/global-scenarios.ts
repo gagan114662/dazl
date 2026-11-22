@@ -1,6 +1,7 @@
 // Replay scenarios across countries, languages and non-tech categories: an article (invented business, invented text) that reports one event, run through the REAL runJob with stubbed search / pages /
 // extraction. The question each answers: does discovery + verification work when the business is not US / English / tech? All names are invented.
 import { runFixture, daysAgo, type Fixture } from './acceptance-harness.ts'
+import { planObject, type StubPlace } from './request-plan-stub.ts'
 
 export interface Scenario { id: string; country: string; category: string; lang: string; request: string; where: string[]; language: string; company: string; signal: string; quote: string; title: string; filler: string }
 const sc = (s: Scenario) => s
@@ -17,6 +18,20 @@ export const SCENARIOS: Scenario[] = [
   sc({ id: 'tokyo-clinic', country: 'JP', category: 'dental clinic (Japanese)', lang: 'ja', request: '過去90日以内に新しい医院を開業した東京の歯科クリニックを探す。', where: ['東京、日本'], language: 'ja', company: 'さくら歯科クリニック', signal: '新しい医院を開業', quote: 'さくら歯科クリニックは今月、東京の渋谷に新しい医院を開業しました', title: 'さくら歯科クリニックが渋谷に新院を開業', filler: '地域の患者さまに予防歯科を提供しています。' }),
 ]
 
+// #1395 SYNTHETIC request plans: each scenario's place exactly as its request writes it, the country an honest model would give
+// (signals left empty: the runner reads only the plan's places).
+const PLACES: Record<string, StubPlace> = {
+  'london-saas': { text: 'London UK', city: 'London', region: null, country: 'GB' },
+  'toronto-agency': { text: 'Toronto, Canada', city: 'Toronto', region: null, country: 'CA' },
+  'nyc-dental': { text: 'New York City', city: 'New York City', region: null, country: 'US' },
+  'gurugram-cre': { text: 'Gurugram, India', city: 'Gurugram', region: null, country: 'IN' },
+  'dubai-logistics': { text: 'Dubai, UAE', city: 'Dubai', region: null, country: 'AE' },
+  'berlin-cafe': { text: 'Berlin', city: 'Berlin', region: null, country: 'DE' },
+  'cdmx-restaurant': { text: 'Ciudad de México', city: 'Ciudad de México', region: null, country: 'MX' },
+  'delhi-coaching': { text: 'दिल्ली', city: 'दिल्ली', region: null, country: 'IN' },
+  'dubai-ar': { text: 'دبي', city: 'دبي', region: null, country: 'AE' },
+  'tokyo-clinic': { text: '東京', city: '東京', region: null, country: 'JP' },
+}
 export function fixtureFor(s: Scenario): Fixture {
   const published = daysAgo(10)
   const body = `${published}: ${s.quote}. ${s.filler.repeat(20)}`
@@ -24,7 +39,8 @@ export function fixtureFor(s: Scenario): Fixture {
   const url = `https://news-${s.id}.example/article`
   const icp = { summary: s.request.slice(0, 100), who: ['Owner'], industries: [s.category], sizes: [], where: s.where, signals: [s.signal], exclude: [], country: s.country, language: s.language, window_days: 90 }
   return { request: s.request, modelIcp: icp, modelQueries: [s.request.slice(0, 60)], hits: [{ url, title: s.title, snippet: s.quote, date: published }], tfPages: { [url]: page }, own: { [url]: page },
-    extraction: [{ company: s.company, signal: s.signal, source_url: url, excerpt: s.quote, event_date: published }] }
+    extraction: [{ company: s.company, signal: s.signal, source_url: url, excerpt: s.quote, event_date: published }],
+    modelPlan: planObject([PLACES[s.id]], { signals: [], language: s.lang }) }
 }
 export async function replay(s: Scenario) {
   const x = await runFixture(fixtureFor(s))

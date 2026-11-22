@@ -3,11 +3,12 @@
 // tenant's saved competitor list. Nothing here fetches, asks a model or guesses: a condition no verified fact shows stays 'unknown',
 // and 'fail' is returned only for a fact that rules the condition out (a named company that is not this lead, a competitor list it is not on).
 import type { Condition, QueryPlan, ClauseProof } from './targeting.ts'
-import { planConditions, eventMatches, eventMatchIndex } from './targeting.ts'
-import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, type Stage } from './sales-hiring-gate.ts'
+import { planConditions, eventMatchIndex, conditionRoles } from './targeting.ts'
+import { quoteShowsEvent, eventBranchShown, affirmativeSalesHiring, requestAsksFunding, requestedStage, subjectIsOther, quoteShowsCompletedHire, type Stage } from './sales-hiring-gate.ts'
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
+import { isSalesTitle, requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from './hiring-role-match.ts'
 import { parseWindowDays } from './window.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
 
@@ -69,13 +70,30 @@ function dated(ok: boolean, day: { date: string | null; boardOnly: boolean }, da
 // The sales-hiring gate's durable pass proves only what that gate checked, with ITS window and stage: a condition with a narrower clock,
 // another stage or a clock relative to another event is not proven by it. Under an OR request (salesGateOr) the gate passes a lead on ONE
 // branch, so its pass record proves neither branch in particular: each condition then needs its own verified fact.
+// #1122: the specific titles a hiring condition names, each on its own (sales gate's bounded synonyms), and whether any alternative names no
+// specific title ("hiring sales staff"), which keeps main's broad rule.
+function namedRoles(c: Condition) {
+  const alts = conditionRoles(c)
+  const perAlt = alts.map(alt => requestedHiringRoles(`hiring ${alt}`, null))
+  return { named: perAlt.flat(), broad: alts.length === 0 || perAlt.some(r => r.length === 0) }
+}
+
 function gateCovers(c: Condition, ctx: ProofContext): boolean {
   if (!ctx.salesGatePassed || !salesHiringRequired(ctx.query, ctx.icp) || c.relative_to || salesGateOr(ctx.query, ctx.icp)) return false
   const gateDays = parseWindowDays(ctx.query ?? '') ?? 90
   const clockOk = c.within_days === null || c.within_days >= gateDays
   let signals: string[] = []
   try { const j = JSON.parse(ctx.icp ?? '{}') as { signals?: unknown }; if (Array.isArray(j.signals)) signals = j.signals.filter((x): x is string => typeof x === 'string') } catch { /* no profile */ }
-  if (c.kind === 'hiring') return clockOk && (!c.role || isGtmRole(c.role))
+  if (c.kind === 'hiring') {
+    if (!clockOk || (c.role && !conditionRoles(c).some(isSalesTitle))) return false
+    // Qodo #1534 H2: the durable pass does not record which title the gate verified. It covers a condition naming specific roles only when
+    // the gate checked a named title and every title it checked is one of this condition's own roles (a request naming no specific title
+    // keeps main's rule: the gate verified a sales posting).
+    const { named, broad } = namedRoles(c)
+    if (broad) return true
+    const checked = requestedHiringRoles(ctx.query, ctx.icp).filter(roleNeedsSourceProof)
+    return checked.length > 0 && checked.every(g => matchedHiringRole(g.term, named) !== null)
+  }
   if (c.kind === 'funding') return clockOk && c.stage !== 'pre-seed' && needsEventBeyondHiring(signals, ctx.query ?? '') && requestAsksFunding(ctx.query, ctx.icp) && stageOf(c.stage) === requestedStage(ctx.query, ctx.icp)
   return false
 }
@@ -151,13 +169,23 @@ const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a
 // #1122 (case 1): the posting title names one of the role's own alternatives ("Head of Sales/VP Sales"): every word of that alternative.
 const roleAlts = (role: string) => role.split('/').map(roleWords).filter(w => w.length)
 const titleNamesRole = (title: string, role: string) => { const t = new Set(roleWords(title)); return roleAlts(role).some(a => a.every(w => t.has(w))) }
-const NOT_DATED = /posting date was not read|^unconfirmed:/i
+// The clauses of a quote: sentence ends (a stop before a capital or the end: "Example.com", "Acme Inc. is" stay whole), ";", and a comma or bare "but"/"while"/"whereas" joining another statement ("…, and its SDR team …").
+const quoteClauses = (q: string): string[] => q.split(/[.!?]+(?=\s+[A-Z]|\s*$)|[;\n]+|,\s*(?:and|but|while|whereas)\s+|\s+(?:but|while|whereas)\s+/).map(x => x.trim()).filter(Boolean)
+// Qodo #1534 H1: the generic board row's own words, "posting date unknown - the row date is when the board was read", are no posting date either
+const NOT_DATED = /posting date was not read|posting date unknown|^unconfirmed:/i
+// The title of ONE posting record ("Head of Sales - posted 2026-11-02" -> "Head of Sales"); null for a row listing several titles or a count.
+const singlePostingTitle = (v: string): string | null => { const t = v.split(/\s+-\s+posted\b/i)[0].trim(); return !t || /[;|\n]|\b\d+\s+(?:open\s+)?(?:roles|positions|jobs|openings)\b|\band\s+\d+\s+more\b/i.test(t) ? null : t }
 function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof[] {
   if (c.kind === 'hire_made' && c.new_role) {
     // "a new Head of Sales": a dated source saying the person joined, or a dated posting whose title IS that role. Each says which it is.
     const now = ctx.now ?? Date.now(), role = c.role ?? ''
-    const joined = ownProof(c, lead, rows, ctx)
-    const posts: Proof[] = rows.filter(r => (r.kind === 'hiring-role' || r.kind === 'hiring') && isDate(r.source_date) && typeof r.source_url === 'string' && !NOT_DATED.test(`${r.value} ${r.label ?? ''}`) && titleNamesRole(`${r.value} ${r.label ?? ''}`, role) && onClock(r.source_date, clockOf(c), now) === 'in')
+    // Qodo #1509 H3: on a clock, a joined quote counts only when its day is bound to it on its own source (page_bound); a bare date string or a board's day never dates a hire.
+    const joined = clockOf(c) !== null && lead.event_date_proof !== 'page_bound'
+      ? { truth: 'unknown' as const, reason: `no source-bound date shows when the new ${role || 'role'} joined` }
+      : ownProof(c, lead, rows, ctx)
+    // Qodo #1509 H1: one individually dated posting record whose OWN title is the role. An aggregate row (a board listing, several titles, a label
+    // carrying other titles) never proves it: its date may belong to another posting.
+    const posts: Proof[] = rows.filter(r => (r.kind === 'hiring-role' || r.kind === 'hiring') && isDate(r.source_date) && typeof r.source_url === 'string' && typeof r.value === 'string' && !NOT_DATED.test(`${r.value} ${r.label ?? ''}`) && !/board listing audit/i.test(r.label ?? '') && singlePostingTitle(r.value) !== null && titleNamesRole(singlePostingTitle(r.value)!, role) && onClock(r.source_date, clockOf(c), now) === 'in')
       .sort(postingOrder).map(r => ({ truth: 'pass', reason: `hiring a ${role}, posted ${r.source_date} (${r.value})`.slice(0, 300), source_url: r.source_url, date: r.source_date }))
     // The lead's own cited posting, dated by its board (ats_structured), whose title is the role.
     if (lead.event_date_proof === 'ats_structured' && titleNamesRole(`${lead.signal ?? ''} ${lead.evidence_excerpt ?? ''}`, role) && onClock(lead.event_date, clockOf(c), now) === 'in')
@@ -166,8 +194,18 @@ function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCo
   }
   if (c.kind !== 'hiring') return [ownProof(c, lead, rows, ctx)]
   const now = ctx.now ?? Date.now()
-  const gtm = !c.role || isGtmRole(c.role)
-  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
+  // #1122: each role the condition names is judged on its own; a sales role among them takes the sales proof path
+  const gtm = !c.role || conditionRoles(c).some(isSalesTitle)
+  // #1122: the signal must match the requested role. When the condition names specific roles, a posting proves it only if one of its titles
+  // (the row's value, or each title a job-board summary row lists in its label: "Sales Representative; Account Executive") is one of them,
+  // each role matched on its own with the sales gate's bounded synonyms (an SDR posting is not an AE; a hygienist is not a receptionist).
+  // A request naming no specific title ("hiring sales staff": no alternative the matcher reads as a title) keeps main's rule, and on the
+  // sales path any dated sales-titled posting counts.
+  const { named, broad } = namedRoles(c)
+  const titlesOf = (r: ProofRow) => [String(r.value), ...String(r.label ?? '').split(/[;|\n]/)].map(t => t.trim()).filter(Boolean)
+  const titleOk = (r: ProofRow) => titlesOf(r).some(t => matchedHiringRole(t, named) !== null) || (broad && (!gtm || !c.role || isGtmRole(`${r.value} ${r.label ?? ''}`)))
+  // an audit row that says its posting date was not read (or read as older than the window) is no dated posting (#1122, same rule as the new-role path)
+  const postings = rows.filter(r => (r.kind === 'hiring-role' || (r.kind === 'hiring' && gtm)) && titleOk(r) && !NOT_DATED.test(`${r.value} ${r.label ?? ''}`) && !/older than the last/i.test(`${r.value} ${r.label ?? ''}`) && typeof r.source_date === 'string' && typeof r.source_url === 'string' && typeof r.value === 'string' && onClock(r.source_date, clockOf(c), now) === 'in')
     .sort(postingOrder)
     .map((r): Proof => ({ truth: 'pass', reason: `a dated posting on this company's job board (${r.value}), ${r.source_date}`, source_url: r.source_url, date: r.source_date }))
   const rest = ownProof(c, lead, [], ctx)
@@ -208,13 +246,19 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       return { truth: 'unknown', reason: `no verified source shows ${what}` }
     }
     case 'event': {
-      const shows = GATE_EVENTS.has(c.event ?? '') ? quoteShowsEvent(quote, lead.signal, false, lead.company) && eventMatches(c.event, c.object, quote) : eventShown(c.event, c.object, quote, lead.company)
+      const shows = GATE_EVENTS.has(c.event ?? '') ? eventBranchShown(c.event, c.object, quote, lead.signal, lead.company) : eventShown(c.event, c.object, quote, lead.company)
       return dated(shows, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, `this company's ${c.event}${c.object ? ` (${c.object})` : ''} event`)
     }
     case 'hiring': {
       // Dated postings are read in ownProofs (every one of them, so row order never decides); here: the lead's own quote, then the gate's record.
-      const gtm = !c.role || isGtmRole(c.role)
-      if (gtm && affirmativeSalesHiring(quote, lead.company)) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
+      const gtm = !c.role || conditionRoles(c).some(isSalesTitle)
+      // #1122: the lead's own quote proves a condition naming specific roles only through one of those roles: an AE quote never proves "hiring SDRs"
+      const { named, broad } = namedRoles(c)
+      // Qodo #1534 M4: and only inside the hiring statement itself: one clause that both says this company is hiring and names the role
+      // ("hiring an AE; its SDR team supports outbound" never proves SDRs). A request naming no specific title keeps main's rule.
+      const quoteRoleOk = broad ? affirmativeSalesHiring(quote, lead.company)
+        : quoteClauses(quote).some(cl => matchedHiringRole(cl, named) !== null && affirmativeSalesHiring(cl, lead.company))
+      if (gtm && quoteRoleOk) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified an open sales role for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no dated posting or verified quote shows this company hiring${c.role ? ` ${c.role}` : ''}` }
     }

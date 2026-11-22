@@ -1,7 +1,7 @@
 import { COMPANY_FIRST_ROLE_LABEL, recordCompanyFirstPublishedDisplay, withdrawCompanyFirstPublishedDisplay } from '../people/company-first-published-display.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { strictOwnContactCards } from './strict-own-contacts.ts'
-import { currentReviewedDomain, domainRelationship } from '../signals/domain-basis.ts'
+import { currentReviewedDomain, domainConfirmed, domainRelationship } from '../signals/domain-basis.ts'
 import { listedProfileLabel, listedProfileUrl, profileFromListedLabel } from '../people/site-profile.ts'
 import { looksLikeJobTitle } from '../people/job-title-name.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
@@ -29,6 +29,8 @@ import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
 import { jobBoardSlugs, slugDomains, EVENT_OVER_HOLDS } from './job-board-slug.ts'
 import { atsPostingRef, atsRecord, atsRecordUrl } from '../sources/ats-posting.ts'
+import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales, postingOrgIs } from '../scan/site-contact.ts'
+export { OWN_POSTING_PERSON_LABEL }
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
 import { placeAgreement, cityScoped, geoTerms, ownProbePlace, US_STATES } from '../scan/place-agreement.ts'
@@ -316,6 +318,16 @@ export function ashbyOrgWebsite(html: string, company: string): string | null {
   if (!m || want.length < 2 || norm(m[1]) !== want) return null
   let host: string; try { host = registrable(new URL(m[2]).hostname.toLowerCase()) } catch { return null }
   if (!host || SOCIAL.test(host) || !siteHostOk(host) || nameLabel(host) !== want) return null
+  return host
+}
+// Uare.ai (Greenhouse, no website setting, no link in any posting): the employer's own ATS record names the company with a domain ("Uare.ai").
+// When that record name IS the lead's company and is itself a hostname, it is the employer's own statement of its site, bound like a link
+// (evidence_link_domain_label); the homepage identity check still decides. A plain name gives nothing (no guess).
+export function recordCompanyDomain(recordCompany: string, company: string): string | null {
+  const n = recordCompany.trim().toLowerCase()
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(n) || n !== company.trim().toLowerCase()) return null // Qodo #1549: the whole hostname IS the company name (case aside); never norm(), which strips co/company
+  const host = registrable(n)
+  if (!host || SOCIAL.test(host) || !siteHostOk(host)) return null
   return host
 }
 export function recordNamedSites(text: string, company: string): string[] {
@@ -622,6 +634,28 @@ export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
 const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
+// Qodo High #1532: words of site navigation and calls to action ("Contact Us", "Get Started", "Book a Demo") - a name made of any of
+// them only is interface text, never a person (a real name holding one word of it - "Maya A. Thornton", "Bill Read" - stays), whatever title sits beside it and whatever the page's prose shows.
+const UI_WORDS = new Set(['contact', 'us', 'get', 'started', 'start', 'book', 'demo', 'sign', 'up', 'in', 'log', 'login', 'learn', 'more', 'request', 'try', 'free',
+  'read', 'about', 'our', 'team', 'join', 'careers', 'home', 'menu', 'apply', 'pricing', 'blog', 'watch', 'see', 'view', 'schedule', 'talk', 'to', 'sales', 'call',
+  'now', 'here', 'today', 'a', 'the', 'download', 'subscribe', 'explore', 'discover', 'meet', 'reach', 'out', 'support', 'help', 'privacy', 'terms', 'policy', 'cookie',
+  'cookies', 'accept', 'close', 'open', 'next', 'previous', 'back', 'submit', 'send', 'search', 'shop', 'buy', 'order', 'news', 'press', 'events', 'resources', 'docs'])
+const isUiText = (name: string): boolean => name.toLowerCase().split(/[^a-z']+/).filter(Boolean).every(w => UI_WORDS.has(w))
+const SHORT_SURNAME_LINE = /^[A-Z][a-z'\u2019-]{2,20}\s+[A-Z][a-z]$/
+// Qodo High #1532: a person's name is made of name tokens. A grammar word (pronoun, determiner, preposition, particle) is never a name
+// token, and a token shaped like a past participle ("Started", "Connected") in the surname slot is a verb phrase. This is closed-class
+// grammar, not a vocabulary of companies or people: it is what makes "Contact Us" / "Sign In" / "Learn More" a phrase on any page.
+const GRAMMAR_WORD = /^(?:us|we|me|you|your|our|my|it|its|them|they|a|an|the|this|that|these|those|more|less|all|any|some|in|on|out|up|down|to|at|by|for|of|from|with|off|over|now|here|there|today)$/i
+// The one person-name rule (#1542 + #1540), used by every extraction path and by the site buyer chooser: closed-class grammar tokens
+// (properNameTokens) and text made wholly of navigation / call-to-action words (isUiText, "Book Demo", "Request Demo") are never a name.
+export function isPersonName(name: string): boolean { return properNameTokens(name) && !isUiText(name) }
+function properNameTokens(name: string): boolean {
+  const toks = name.replace(/^(?:Dr|Mr|Ms|Mrs)\.?\s+/, '').split(/\s+/)
+  // Qodo #1542: the given name is a name slot ("An Nguyen"), and a capital initial is an initial ("Maya A. Thornton"); a lower-case
+  // single letter ("Book a Demo") is still a grammar word. Only a DOTTED initial in a middle slot is exempt: "Book A Demo" stays a phrase.
+  if (toks.slice(1).some((t, i) => !(/^[A-Z]\.$/.test(t) && i < toks.length - 2) && GRAMMAR_WORD.test(t.replace(/\.$/, '')))) return false
+  return !/[a-z]{2,}ted$/.test(toks[toks.length - 1])
+}
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
@@ -680,6 +714,29 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
 // before: short, no comma, and nothing naming another employer ("at", "@", "for").
 // Word-preserving, any alphabet (this file's norm() drops spaces and company words, which suits domains, not titles).
 const titleNorm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+// Run 679a7354 (HowGood): the lead's own ATS posting is the employer's own record. "Reports to: <Name>, <Title>" there names a person the
+// company itself published; it counts as a buyer only when the name is a person's name (not a title) and the title is a requested buyer role.
+export const COMPANY_ROUTE_LABEL = "the company's own published role mailbox: a company contact route, not the buyer's email"
+export function companyRouteRow(found: { kind: string; value: string; url: string }[], site: string, at: number, today: string): Enrichment | null {
+  const f = found.find(f => f.kind === 'email' && isFounderRoute({ connector: 'sitecrawl', kind: 'email', value: f.value, source_url: f.url }) && sameSite(f.value.split('@')[1] ?? '', site) && (() => { try { return sameSite(new URL(f.url).hostname.replace(/^www\./, ''), site) } catch { return false } })())
+  return f ? { connector: 'sitecrawl', kind: 'company_route', value: f.value.toLowerCase().slice(0, 254), label: COMPANY_ROUTE_LABEL, confidence: null, source_url: f.url.slice(0, 500), source_date: today, retrieved_at: at } : null
+}
+export function reportsToBuyer(text: string, buyerRoles: string): { name: string; title: string } | null {
+  // Greenhouse keeps HTML (often entity-escaped) in the record: read the text, not the markup (Qodo #1513 c)
+  const plain = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/[ \t]+/g, ' ')
+  // The title is read up to its role word (Sales / Revenue / Officer / CEO / Founder): plain-text records run straight on ("SVP of Sales US Benefits").
+  const m = /\bReports?\s+to\s*:\s*([A-Z][A-Za-z'\u2019-]+(?:\s+[A-Z][A-Za-z'\u2019-]+){1,2})\s*,\s*((?:(?:Senior|Executive)\s+)?(?:S?VP|EVP|Vice\s+President|Head)(?:\s+(?:of|&|and|[A-Z][a-z]+))*?\s+(?:Sales|Revenue)|Chief\s+[A-Z][a-z]+\s+Officer|CEO|CRO|(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?)\b/.exec(plain)
+  if (!m) return null
+  // a leader AT another company (a parent, a client) is not this company's buyer (Qodo #1513 a)
+  if (/^\s*(?:at|@|for|with|of|from)\s+(?:our\s+|the\s+|a\s+)?(?:client\s+|parent\s+|partner\s+)?[A-Z]/.test(plain.slice(m.index + m[0].length))) return null
+  const name = m[1].trim(), title = m[2].trim()
+  if (!NAME_LINE.test(name) || looksLikeJobTitle(name)) return null
+  // A request for a Head of Sales takes the company's top sales leader by its own title: a (Senior / Executive) VP of Sales or a CRO.
+  const topSales = postingTopSales(`${name}, ${title}`, buyerRoles)
+  // a founder-level title for a request that names Founder or CEO (personMatchesRole's own founder rule downstream)
+  const founder = /\b(?:founder|ceo|chief executive)\b/i.test(buyerRoles) && /^(?:(?:Co-?)?Founder(?:\s+(?:&|and)\s+CEO)?|CEO|Chief\s+Executive\s+Officer)$/i.test(title)
+  return buyerTitle(title, buyerRoles) || topSales || founder ? { name, title } : null
+}
 export function buyerTitle(title: string, buyerRoles?: string): boolean {
   if (!buyerRoles || roleContradicted(title, buyerRoles) || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
   const t = titleNorm(title)
@@ -689,13 +746,63 @@ export function buyerTitle(title: string, buyerRoles?: string): boolean {
 const HEAD_MARK = '\u0001H'
 const FORMER_SECTION = /\b(?:alumni|alumnae|former\s+(?:team|staff|members?|employees?|leadership|colleagues)|past\s+(?:team|staff|members?|employees?|leadership)|previous\s+(?:team|staff|members?)|in\s+memoriam|emeriti)\b/i
 const TITLE_STOP = new Set(['chief', 'head', 'vice', 'with', 'from', 'that', 'this', 'your', 'team'])
+// A section the page itself marks as former people (aria-label, class, id or title: "Former team", "alumni", "past leadership") is cut,
+// balanced by its own tag; an unbalanced one fails closed (the whole page names no one).
+const FORMER_ATTR = /\b(?:former|past[\s_-]+(?:team|leadership|staff)|alumni|emeritus|in[\s_-]+memoriam)\b/i
+function cutFormerSections(html: string): string {
+  // comments and script/style/template bodies are not markup: removed first, so they can neither open nor close a section (Qodo #1532)
+  // The tags are scanned on a same-length copy whose comment and script/style bodies are blanked; the cut is applied to the page itself,
+  // so JSON-LD and the rest stay intact for extraction.
+  const blank = (s: string) => s.replace(/[^\n]/g, ' ')
+  html = html.replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
+  let scan = html.replace(/(<(script|style|template|noscript)\b[^>]*>)([\s\S]*?)(<\/\2\s*>|$)/gi, (_a, o: string, _t: string, body: string, c: string) => o + blank(body) + c)
+  const attrVal = (attrs: string, name: string): string[] => [...attrs.matchAll(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`, 'gi'))].map(x => x[1] ?? x[2] ?? x[3] ?? '')
+  const open = /<([a-z][a-z0-9]*)\b([^>]*)>/gi
+  let m: RegExpExecArray | null
+  while ((m = open.exec(scan))) {
+    const attrs = m[2]
+    if (/^(?:br|img|hr|input|meta|link|source|wbr|use|path)$/i.test(m[1]) || attrs.trim().endsWith('/')) continue
+    const labels = ['aria-label', 'class', 'id', 'title'].flatMap(n => attrVal(attrs, n)).join(' ').replace(/[_-]+/g, ' ')
+    const classes = attrVal(attrs, 'class').join(' ').split(/\s+/)
+    const style = attrVal(attrs, 'style').join(';')
+    const hidden = /(?:^|\s)hidden(?:\s|=|$)/i.test(attrs.replace(/(["'])[^"']*\1/g, ' ')) || attrVal(attrs, 'aria-hidden').some(v => v.trim().toLowerCase() === 'true') ||
+      /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?![.\d]*[1-9])/i.test(style) || classes.some(c => /^(?:hidden|invisible|d-none)$/i.test(c))
+    if (!FORMER_ATTR.test(labels) && !hidden) continue
+    const tag = m[1].toLowerCase(), re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi')
+    re.lastIndex = m.index + m[0].length
+    let depth = 1, t: RegExpExecArray | null
+    while (depth && (t = re.exec(scan))) depth += t[1] ? -1 : 1
+    if (depth) return ''
+    const pad = ' '.repeat(re.lastIndex - m.index)
+    html = html.slice(0, m.index) + pad + html.slice(re.lastIndex)
+    scan = scan.slice(0, m.index) + pad + scan.slice(re.lastIndex)
+    open.lastIndex = re.lastIndex
+  }
+  return html
+}
 export function extractPeople(html: string, pageUrl: string, buyerRoles?: string): Found[] {
   const found = new Map<string, Found>()
   let path = ''; try { path = new URL(pageUrl).pathname } catch { return [] }
-  const clean = cutBlocks(html)
+  const clean = cutBlocks(cutFormerSections(html))
   if (clean === null) return [] // a quoted/testimonial region that never closes cannot be separated from the page: fail closed
-  const visible = clean.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
-  const linkText = new Set([...visible.matchAll(/<a\b[^>]*>([\s\S]*?)<\/a>/gi)].map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()))
+  // screen-reader-only text (" on LinkedIn" beside a name) is not shown on the page and must not split a name from its title
+  const visible = clean.replace(/<span\b[^>]*\bclass\s*=\s*["'][^"']*\b(?:sr-only|visually-hidden|screen-reader-text)\b[^"']*["'][^>]*>[^<]*<\/span>/gi, ' ').replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ').replace(/<!--[\s\S]*?-->/g, ' ')
+  // Qodo High #1532: the label of any control on the page (link, button, nav entry, form label, menu item, input value) is an action
+  // or a destination, never a person, wherever else the same words appear (a "Contact Us" button beside the CEO's title).
+  const norm = (t: string) => t.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+  const linkText = new Set<string>()
+  // Every control is matched on the whole page, nested in a nav or not; a nav's own entries split only at block/list boundaries, so
+  // "Meet <b>Jane</b>" stays one label (Qodo #1542).
+  for (const m of visible.matchAll(/<(a|button|label|summary|option)\b[^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
+  for (const m of visible.matchAll(/<nav\b[^>]*>([\s\S]*?)<\/nav>/gi)) {
+    for (const part of m[1].split(/<\/?(?:li|ul|ol|div|p|br|section|header|footer|h[1-6])\b[^>]*>/i)) { const t = norm(part); if (t) linkText.add(t) }
+  }
+  for (const m of visible.matchAll(/<([a-z]+)\b[^>]*\brole\s*=\s*["'](?:button|link|menuitem|tab)["'][^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
+  // a hidden input is form data, not a shown control (Qodo #1542): it never removes a person named on the page
+  for (const m of visible.matchAll(/<input\b[^>]*>/gi)) {
+    if (/\btype\s*=\s*["']?hidden\b/i.test(m[0])) continue
+    for (const v of m[0].matchAll(/\b(?:value|placeholder)\s*=\s*["']([^"']+)["']/gi)) linkText.add(norm(v[1]))
+  }
   // Headings are kept as marked lines so a person can be judged against the section they sit in (alumni, former staff).
   const marked = visible.replace(/<(h[1-6])\b[^>]*>([\s\S]*?)<\/\1>/gi, (_m, t: string, inner: string) => `\n${HEAD_MARK}${t.slice(1)} ${inner.replace(/<[^>]+>/g, ' ')}\n`)
   const text = marked.replace(/<\/?(p|div|li|ul|ol|h[1-6]|br|section|article|tr|td|th|figure|figcaption|header|footer|span|strong|b|em)\b[^>]*>/gi, '\n').replace(/<[^>]+>/g, ' ')
@@ -727,7 +834,11 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   const add = (name: string, title: string, viaJson = false): boolean => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
     if (roleEndedByDate(title) || roleContradicted(title, buyerRoles)) return false // an explicit past end date or a past-tense title: not current staff
-    if (!NAME_LINE.test(name) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
+    // A two-letter surname (Li, Ng, Wu) is kept only beside a buyer-level title; the prose check below still drops any word the page writes in lower case
+    // ("us"), so "Contact Us" stays out (Simple AI's CEO Catheryn Li, 2026-11-22).
+    const shortSurname = SHORT_SURNAME_LINE.test(name) && (buyerTitle(title, buyerRoles) || /\b(?:co-?founder|founder|ceo|chief executive)\b/i.test(title))
+    if (!isPersonName(name)) return false // Qodo High #1532: "Contact Us", "Sign In", "Learn More", "Get Started" are phrases, not names (one rule: isPersonName)
+    if (!(NAME_LINE.test(name) || shortSurname) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return false
       if (lowerWords.size < 15) return false // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
@@ -777,10 +888,28 @@ export function seniority(title: string): number {
 }
 const titleOf = (f: Found) => f.value.slice(f.value.indexOf(', ') + 2)
 export const byBuyerThenSeniority = (buyerRoles: string) => (a: Found, b: Found) => titleMatches(titleOf(b), buyerRoles).length - titleMatches(titleOf(a), buyerRoles).length || bySeniority(a, b)
+// #1122: one buyer from a company's own page, even when the page prints no route for them. Only people whose title meets the request's
+// buyer bar; the request's own role first, then seniority. A tie at the top between two different people is ambiguous: no buyer.
+export function chooseSiteBuyer(found: Found[], buyerRoles: string): Found | null {
+  // the buyer bar: the request's title (two shared words), or a founder / chief-executive title when the request names Founder or CEO.
+  // A CRO or VP of Sales is not a Head of Sales here (that reading is the own-posting reader's only, PM #1513).
+  const founderAsked = /\b(?:founder|ceo|chief executive)\b/i.test(buyerRoles)
+  const isBuyer = (t: string) => buyerTitle(t, buyerRoles) || (founderAsked && /\b(?:co-?founder|founder|ceo|chief executive officer)\b/i.test(t))
+  const people = found.filter(f => f.kind === 'person' && isPersonName(f.value.split(', ')[0]) && isBuyer(titleOf(f))).sort(byBuyerThenSeniority(buyerRoles))
+  if (!people.length) return null
+  const rank = (f: Found) => [titleMatches(titleOf(f), buyerRoles).length, seniority(titleOf(f))].join(':')
+  const top = people.filter(f => rank(f) === rank(people[0]))
+  return new Set(top.map(f => f.value.split(', ')[0].toLowerCase())).size === 1 ? people[0] : null
+}
+// PM #1540 (no warning labels in the product): the fallback's person row says only where it was listed. How the site was reached
+// (its domain basis) is internal provenance, written to the crawl trace (connector_audit 'buyer_fallback basis=...'), never rendered.
+export const FALLBACK_BUYER_LABEL = "listed on the company's own team page"
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
-const BUYER_DIRECTORY_PATH = /\/(?:[^/]*-)?(?:team|leadership|management|people|staff|executives)(?:[-/]|$)/i
+// The LAST path segment names a people directory (/team, /our-team, /leadership-team, /about/management): a product page whose slug merely ends
+// in a directory word (/product/.../questionnaire-management, /board-portal/document-management) is not one (UpGuard, OnBoard 2026-11-22).
+const BUYER_DIRECTORY_PATH = /\/(?:(?:our|meet|the|meet-the|executive|senior|leadership)-)?(?:team|leadership|management|people|staff|executives)(?:-team)?\/?$/i
 function sameCompanyPage(target: URL, base: URL): boolean {
   return target.protocol === 'https:' && !target.username && !target.password && !target.port && target.hostname.replace(/^www\./, '') === base.hostname.replace(/^www\./, '')
 }
@@ -811,17 +940,21 @@ export function buyerSourceCitation(raw: string): URL | null {
 }
 export function contactPaths(homeHtml: string, home: URL, preferBuyers = false): string[] {
   const set = new Set<string>(['/contact', '/contact-us', '/about', '/team', '/leadership'])
-  const linkedLocations = new Set<string>(), linkedBuyers = new Set<string>()
+  const linkedLocations = new Set<string>(), linkedBuyers = new Set<string>(), linkedPaths = new Set<string>()
   for (const m of homeHtml.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"'#]+)["']/gi)) {
     let u: URL; try { u = new URL(m[1].replace(/&amp;/g, '&'), home) } catch { continue }
     if (u.protocol !== 'https:' || u.hostname.replace(/^www\./, '') !== home.hostname.replace(/^www\./, '')) continue
     if (!PAGE_HINT.test(u.pathname) || u.pathname.length >= 60 || /\.(pdf|jpg|png|zip)$/i.test(u.pathname) || u.search) continue
-    set.add(u.pathname)
+    set.add(u.pathname); linkedPaths.add(u.pathname)
     if (sameCompanyPage(u, home) && BUYER_DIRECTORY_PATH.test(u.pathname)) linkedBuyers.add(u.pathname)
     if (/\/(?:locations?|offices?)(?:\/|$)/i.test(u.pathname)) linkedLocations.add(u.pathname)
   }
   for (const extra of ['/locations', '/our-team', '/careers']) set.add(extra) // after the page's own links: same cap, never ahead of them
-  return [...new Set([...(preferBuyers ? [...linkedBuyers].slice(0, 1) : []), '/contact', '/contact-us', ...linkedLocations, ...set])].slice(0, 8)
+  // A buyer request reads the homepage's OWN linked people pages first (a directory, then about/company), ahead of guessed paths:
+  // the page cap counts every page that answers, so guesses first left the page naming the buyer unread (#1122, 2026-11-22).
+  const linkedAbout = [...set].filter(p => /^\/(?:[^/]+\/){0,1}(?:about(?:-us)?|company|who-we-are|our-story)\/?$/i.test(p) && linkedPaths.has(p))
+  const first = preferBuyers ? [...[...linkedBuyers].slice(0, 1), ...linkedAbout.slice(0, 1)] : []
+  return [...new Set([...first, '/contact', '/contact-us', ...linkedLocations, ...set])].slice(0, 8)
 }
 
 // Follow one named person's exact first-party bio link, from a directory that the company
@@ -1837,12 +1970,13 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       // Run 9697d013 (LiveKit): the lead's own ATS posting is the employer's own record. A domain its description writes out ("livekit.io"),
       // whose label IS the company's name, is bound by that record as a link would be (evidence_link_domain_label); the homepage name check
-      // still decides. Never a guess: a record that names no such domain adds nothing (Uare.ai stays unresolved).
+      // still decides. Never a guess: a record that names no such domain adds nothing (a company name written as a domain, "Uare.ai", is the record naming it).
       const ownRef = !anchored ? atsPostingRef(l.source_url) : null
       if (ownRef && !deps.signal?.aborted) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
-        if (rec && rec !== 'missing') for (const site of recordNamedSites(`${rec.header} ${rec.description}`, l.company)) {
+        const named = rec && rec !== 'missing' ? [...recordNamedSites(`${rec.header} ${rec.description}`, l.company), ...[recordCompanyDomain(rec.company, l.company)].filter((s): s is string => !!s)] : []
+        for (const site of [...new Set(named)]) {
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
@@ -2081,6 +2215,24 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             (cardKey(c.name) === cardKey(card.name) && !!c.email && c.email.toLowerCase() !== card.email?.toLowerCase())) ? card.email : null
           strictBuyers.push({ person: f.value, quote: card.quote, name: card.name, email, source: f.url, at: page.at })
         }
+        // #1122: no exact card pairs the buyer with a route (most real team pages: UpGuard, OnBoard, Simple AI, 2026-11-22). The buyer the
+        // page names is still stored, alone - no email, no route, so the email bar is untouched - with the page's own "listed" label.
+        // PM ruling 2026-11-22: this person-only fallback needs the domain CONFIRMED (homepage identity-checked; wider than established),
+        // never an email or route - those stay on the established path above. Pages of this site only, no redirect elsewhere (below).
+        const confirmedSite = (r.reason === 'ok' || r.reason === 'none_published') && domainConfirmed(db, tenantId, l.id, site)
+        if (confirmedSite && buyerRoles && strictBuyers.length === 0) {
+          // same guards as the exact-card path: a page on this confirmed site only (never a redirect elsewhere), a title naming no other
+          // company, and the page's former/alumni sections cut (extractPeople)
+          const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return '' } }
+          const own = r.found.filter(f => f.kind === 'person' && host(f.url) === site.replace(/^www\./, '') && (!ownOrigin || new URL(f.url).origin === ownOrigin) &&
+            !/\s(?:at|@|for|with)\s+\S/i.test(titleOf(f)))
+          const buyer = chooseSiteBuyer(own, buyerRoles)
+          if (buyer) {
+            addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: buyer.value.slice(0, 254), label: FALLBACK_BUYER_LABEL, confidence: null,
+              source_url: buyer.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }); n++; named++
+            try { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: `buyer_fallback basis=${basisOf.get(site) ?? 'unknown'}`.slice(0, 180), results: 1 }) } catch { /* trace only */ }
+          }
+        }
         // Current product readiness selects person and route independently.
         // Publish one matched pair (or one buyer only); never mix two cards.
         if (strictBuyers.length === 1) {
@@ -2110,6 +2262,24 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // just wrote, tied to this person by the page itself: publishedCandidateFor, one address per person or none) is shown on the lead
       // during the scan, as the same published contact the "Find work email" button gives for free. Published, never a guess; on this
       // lead's confirmed site only; the label names the person and says where it was printed.
+      // Run 679a7354 (HowGood): no buyer on the site, but the lead's own posting names one. Only on a site established for this lead.
+      const postRef = named === 0 && buyerRoles && (r.reason === 'ok' || r.reason === 'none_published') && domainRelationship(db, tenantId, l.id, site) === 'established' ? atsPostingRef(l.source_url) : null
+      // the lead's own board only: the posting's org token is this company / this confirmed site's name (Qodo #1513 a)
+      if (postRef && buyerRoles && !deps.signal?.aborted && (postingOrgIs(postRef.org, site) || norm(postRef.org) === norm(l.company))) {
+        let rec: ReturnType<typeof atsRecord> = null
+        try { const page = await evidenceGet(atsRecordUrl(postRef)); rec = page ? atsRecord(JSON.parse(page.body), postRef) : null } catch { rec = null }
+        const b = rec && rec !== 'missing' ? reportsToBuyer(`${rec.header} ${rec.description}`, buyerRoles) : null
+        if (b) {
+          const at = Math.floor((deps.now ?? Date.now()) / 1000)
+          addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: `${b.name}, ${b.title}`.slice(0, 120), label: OWN_POSTING_PERSON_LABEL, confidence: null, source_url: l.source_url.slice(0, 500), source_date: today, retrieved_at: at }); n++; named++
+          // PM (#1513 review): the site's own role mailbox is the COMPANY's contact route, never the buyer's email. It is stored under its own
+          // kind (company_route), which no recipient, email count or actionability route reads.
+          if (companyFirstContacts) {
+            const row = companyRouteRow(r.found, site, at, today)
+            if (row) { addEnrichment(db, tenantId, l.id, row); n++ }
+          }
+        }
+      }
       if (!companyFirstContacts && (r.reason === 'ok' || r.reason === 'none_published')) {
         const have = new Set(r.found.filter(f => f.kind === 'email').map(f => f.value.toLowerCase()))
         for (const f of r.found) {

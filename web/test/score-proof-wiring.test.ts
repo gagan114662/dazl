@@ -5,6 +5,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo } from './helpers/acceptance-harness.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
+// #1395 SYNTHETIC request plan for 'Dental clinics in Toronto opening a new location': its one place as written.
+const PLAN = planObject([PLACE.toronto], { buyer_type: 'Dental clinics', signals: [{ kind: 'event', text: 'opening a new location', negated: false }] })
 
 test('a page that binds the claimed date to this company and this event persists page_bound; a publication stamp does not', async () => {
   const day = daysAgo(5)
@@ -12,7 +15,7 @@ test('a page that binds the claimed date to this company and this event persists
   const BOUND = `Acme Dental said it will open a second clinic in Toronto on ${day}. The expansion adds six chairs.`
   const STAMPED = `Published ${day}. Beta Dental said it will open a second clinic in Toronto. The expansion adds six chairs and two hygienists to the team.`
   const x = await runFixture({
-    request: 'Dental clinics in Toronto opening a new location',
+    request: 'Dental clinics in Toronto opening a new location', modelPlan: PLAN,
     modelIcp: { summary: 'Toronto dental clinics expanding', who: ['Practice owner'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['opening a new location'], exclude: [], country: 'CA', language: 'en' },
     modelQueries: ['dental clinic second location Toronto'],
     hits: [
@@ -47,7 +50,7 @@ test('gap coverage: a second-sentence restatement with an inflected verb stays u
   const day = daysAgo(5)
   const RESTATED = `Acme Dental said it will open a second clinic in Toronto. Acme Dental confirmed the Toronto clinic opens on ${day}, adding six chairs.`
   const x = await runFixture({
-    request: 'Dental clinics in Toronto opening a new location',
+    request: 'Dental clinics in Toronto opening a new location', modelPlan: PLAN,
     modelIcp: { summary: 'Toronto dental clinics expanding', who: ['Practice owner'], industries: ['dental'], sizes: [], where: ['Toronto'], signals: ['opening a new location'], exclude: [], country: 'CA', language: 'en' },
     modelQueries: ['dental clinic second location Toronto'],
     hits: [{ url: 'https://news.example.com/acme2', title: 'Acme Dental expansion', snippet: 'Acme Dental said it will open a second clinic in Toronto', date: day }],

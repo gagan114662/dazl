@@ -12,6 +12,7 @@ import { createElement as h } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { runFixture, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { planObject } from './helpers/request-plan-stub.ts'
 import { atsPostingRef, atsRecord, atsPageText } from '../lib/sources/ats-posting.ts'
 import { htmlToText, decode } from '../lib/scan/fetch-page.ts'
 import { ResearchRationale } from '../app/app/leads/research-rationale.ts'
@@ -60,6 +61,8 @@ function fx(): Fixture {
       return out
     },
     deps: { sourceHttp: http, fetchPage },
+    // #1395: SYNTHETIC request-plan reply: the request writes the city "Austin" (a US census city)
+    modelPlan: planObject([{ text: 'Austin', city: 'Austin', region: null, country: 'US' }], { buyer_type: 'B2B SaaS companies', signals: [{ kind: 'hiring', text: 'hiring their first account executive', negated: false }] }),
   }
 }
 

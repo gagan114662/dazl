@@ -11,7 +11,8 @@ import type Database from 'better-sqlite3'
 import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
-import { runResearchScan } from '../research/scan-job.ts'
+import { runResearchScan, HAIKU } from '../research/scan-job.ts'
+import { readRequestPlan, cachedRequestPlan, planPrompt, PLAN_MAX_TOKENS } from './request-plan.ts'
 import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
@@ -26,7 +27,7 @@ import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
 import { getDomain } from 'tldts'
 import { hiringPostingVerdict } from './hiring-posting-check.ts'
-import { requestedHiringRoles, type RequestedHiringRole } from './hiring-role-match.ts'
+import { requestedHiringRoles, matchedHiringRole, type RequestedHiringRole } from './hiring-role-match.ts'
 import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
@@ -39,7 +40,7 @@ import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
-import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason } from '../sources/jobboards.ts'
+import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason, boardPlaceOf, type Place } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr, salesHiringRequired } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
@@ -56,7 +57,7 @@ import { buyerSourceCitation, companyHostsFromSearch, crawlJob, defaultGet, host
 import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
 import { effectiveCapUsd, noteAccountLimitRefusal, scanSpendContext, scanSpendRow, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
-import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, callCostUsd, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
@@ -67,13 +68,14 @@ import { applyRejections, readRejections, stripRejectedPeople, type Rejections }
 import { enrichJobSignals } from '../signals/index.ts'
 import { techQueries } from '../signals/tech-observations.ts'
 import { compileTargeting, planConditions } from './targeting.ts'
-import { applySalesHiringGate, failClosedSalesHiring, persistHeldState, postingKey, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
+import { applySalesHiringGate, requestedGateRoles, failClosedSalesHiring, persistHeldState, postingKey, type QuoteEvidence, type HeldLead } from './sales-hiring-gate.ts'
 import { beginEnrichment, endEnrichment, ENRICH_STALE_S } from './enrichment.ts'
 import { snapshotLeads, completeLeads } from './completion.ts'
 import { regradeFromKeptContacts, enforceContactSource } from './contact-agreement.ts'
 import { primarySignalKind } from './score.ts'
 import { HIRING_KINDS } from '../play-alerts.ts'
 import { isHiringTrigger } from './scoreboard.ts'
+import { scanEnded, scanStarted } from '../ops/loop-stall.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
@@ -87,7 +89,6 @@ import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
 import { meterProvider, writeModelCalls, type ModelCall } from './model-usage.ts'
 import { ownerGuarded, spendAccountingFailed, spendRefused } from '../llm/owner-guard.ts'
-import { emailGuessEnabled, verifierFromEnv, verifyJobCandidates } from '../people/email-pattern.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
 import { searchableCompanyCount } from '../people/searchable-holds.ts'
 import { findPeople, firstPlayPeopleCap, newPeopleStats, peopleSearchEnabled, peopleStatsDetail, peopleTraceMessage, peopleTraceStatus } from '../people/people-search.ts'
@@ -105,7 +106,8 @@ import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRe
 import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
-import { freshBoardPostings } from '../company-first/board-postings.ts'
+import { freshBoardPostings, orderByBoardDate } from '../company-first/board-postings.ts'
+import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
 import { boardOf } from '../research/sources/ats-boards.ts'
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -418,7 +420,7 @@ export async function verifyLeads(candidates: LeadDraft[], fetchPage: PageFetche
     // (lib/sources/ats-posting.ts: a posting URL is always read through it). Hiring only.
     const hiringCand = isHiringTrigger(cIn.signal, (cIn as LeadDraft & { signal_kind?: string | null }).signal_kind ?? null)
     // #533 / #1205 live: a hiring candidate cited to an aggregate page (market report, search listing) or to another role's posting is never a lead
-    if (hiringCand) { const hv = hiringPostingVerdict(cIn, hireRoles); if (!hv.ok) { toReview(cIn, hv.reason); continue } }
+    if (hiringCand) { const hv = hiringPostingVerdict(cIn, hireRoles, page && !isFail(page) ? { boardTitle: page.board?.title ?? null, pageTitle: page.title ?? null } : undefined); if (!hv.ok) { toReview(cIn, hv.reason); continue } }
     const boardDay = structuredDates?.get(canonUrl(cIn.source_url)) ?? (page && !isFail(page) ? page.postedAt ?? null : null)
     if (page && !isFail(page) && hiringCand && boardDay && cIn.event_date !== boardDay && !claimedRejected && !structuredDates?.has(canonUrl(cIn.source_url))) {
       // a hiring candidate cited to the posting itself (read through the board's API record) is dated by the posting's own structured publish day, whether it claimed
@@ -680,6 +682,17 @@ async function poolRoomFor(guards: SpendGuard[], usd: number): Promise<boolean> 
     const room = await g.pool.headroom().catch(() => -Infinity)
     if (!(room >= usd)) return false
   }
+  return true
+}
+// #1395: room for an OPTIONAL paid call (the request plan), read-only and never latching: every job guard has room under its limit, every owner
+// pool behind the guards has headroom, and the scan's recorded cap (when this scan has one) has room. A reservation that does not fit latches a
+// SpendGuard (every later reservation refused), so an optional call that would not fit is not reserved at all and later paid steps go on.
+export async function optionalCallHasRoom(guards: SpendGuard[], usd: number): Promise<boolean> {
+  if (!(Number.isFinite(usd) && usd >= 0)) return false
+  if (guards.some(g => g.refused || (!(g instanceof PooledGuard) && !(g.reservedUsd + usd <= g.limitUsd)))) return false
+  if (!(await poolRoomFor(guards, usd))) return false
+  const ctx = scanSpendContext()
+  if (ctx && effectiveCapUsd(ctx) !== null && !(await scanCapRoomFor(usd))) return false
   return true
 }
 async function scanCapRoomFor(usd: number): Promise<boolean> {
@@ -1349,6 +1362,14 @@ function holdTrialBudget(db: Database.Database, job: Job): void {
 
 // Production trace capture (lib/evals/capture.ts) is OFF unless DAZL_TRACE_CAPTURE=1: then this attempt is recorded and,
 // once it ends, its redacted trace is stored. Off, the run is exactly runJobUntraced.
+// Qodo High on #1511 (+ #1521 follow-up): enough raw candidates stops further company-first passes, except that an OR request's only
+// funding-announcement pass is always reached: board passes after the target are skipped, the funding pass runs. Board hits are
+// unverified, so stopping first would mean no funding prospect is ever searched for. Spend, deadline and cap stops still apply.
+export function companyFirstTargetStep(distinct: number, target: number, isFundingPass: boolean, fundingPassAhead: boolean): 'run' | 'skip' | 'stop' {
+  if (distinct < target || isFundingPass) return 'run'
+  return fundingPassAhead ? 'skip' : 'stop'
+}
+
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
   const capture = beginScanTrace(job, deps)
   if (!capture) return runJobUntraced(db, job, deps)
@@ -1715,7 +1736,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // Runs 9697d013 / b9a34d2d: an OR request with a funding branch searched boards only, so every funding claim came from a job posting's
       // "we raised..." line, undated and held. Its funding branch takes the third pass: a dated announcement on the company's own newsroom /
       // press / blog page (or a dated news article about it), cited as the source - never a job posting. Same call count.
-      const fundingOr = companyFirst && reviewedOffer && hiringAsked && salesGateOr(job.query, JSON.stringify(icpForSources ?? {}))?.event.kind === 'funding'
+      const fundingOr = companyFirst && reviewedOffer && hiringAsked && (() => { const o = salesGateOr(job.query, JSON.stringify(icpForSources ?? {})); return !!o && (o.events ?? [o.event]).some(e => e.kind === 'funding') })()   // Qodo #1522: any funding branch, not only the first
       const CF_FUNDING_ANGLE = 'Search for the requested funding: a dated announcement of the round on the company\'s own newsroom, press or blog page (or a dated news article about that round). Cite that announcement page as source_url with its published date as event_date; never cite a job posting, careers page or list for funding.'
       const CF_FUNDING_RETURN = 'Return up to 15 companies as JSON inside <json></json>: a list of objects with keys company, website (the company\'s own official domain), source_url (the funding announcement page), event_date (YYYY-MM-DD published date, or null if the page shows none), why (one sentence).'
       const angles = fundingOr ? [CF_HIRING_ANGLES[1], CF_HIRING_ANGLES[2], CF_FUNDING_ANGLE]
@@ -1729,6 +1750,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       let totalBoardsCited=0,totalBoardPostings=0,totalItems=0,totalNativeCandidates=0,totalPublisherReads=0,totalPublisherReturned=0,totalPublisherUsable=0,totalLookahead=0
       const publisherFailures: Partial<Record<FetchFail['fail'] | 'other', number>> = {}
       const phaseDeadline=jobDeadlines.get(job)
+      const fundingSourceRejects: Partial<Record<FundingSourceReason, number>> = {}
       for (const [angleIndex, angle] of angles.slice(0,CLAUDE_COMPANY_FIRST_MAX_CALLS).entries()) {
       if (angleIndex > 0) {
         // Protect any candidate that can reach the verifier. A readable set containing only supplied
@@ -1739,7 +1761,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           (phaseDeadline && phaseDeadline.at - phaseDeadline.now() < 45_000)) break
         // Keep searching while too few candidates survive the supplied-account drop; each one found still goes to the verifier.
         const kept = leads?.length ? (cohort ? dropKnown(cohort, leads).kept : leads) : []
-        if (new Set(kept.map(dedupKey)).size >= COMPANY_FIRST_TARGET_CANDIDATES) break
+        const step = companyFirstTargetStep(new Set(kept.map(dedupKey)).size, COMPANY_FIRST_TARGET_CANDIDATES, !!fundingOr && angle === CF_FUNDING_ANGLE,
+          !!fundingOr && angles.slice(angleIndex, CLAUDE_COMPANY_FIRST_MAX_CALLS).includes(CF_FUNDING_ANGLE))
+        if (step === 'stop') break
+        if (step === 'skip') continue
       }
       const discoveryNow = deps.now ?? new Date()
       const freshness = icpForSources.window_days
@@ -1810,9 +1835,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const textCands = companyFirst ? (found.textCandidates ?? []) : []
         if (textCands.length) textSitesByJob.set(job, [...(textSitesByJob.get(job) ?? []), ...textCands.filter(c => c.website).map(c => ({ company: c.company, website: c.website! }))].slice(0, 90))
         // cf_runner board_jobs(job_url): a posting URL the model listed is read only through its board's own public API (dated by the board record)
+        const boardDates = new Map<string, string>(), boardTitles = new Map<string, string>()
         const boardPosts = companyFirst && hiringAsked ? await freshBoardPostings([...found.citedUrls, ...textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) ? [c.jobUrl] : [])], {
           terms: focusTerms([job.query ?? '', ...(Array.isArray(icpForSources.signals) ? icpForSources.signals : [])].join(' ')),
-          windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), http: deps.sourceHttp ?? safeGet,
+          windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), http: deps.sourceHttp ?? safeGet, dates: boardDates, titles: boardTitles,
           deadlineMs: phaseDeadline ? Math.min(15_000, phaseDeadline.at - phaseDeadline.now() - 45_000) : 15_000,
         }).catch(() => [] as string[]) : []
         if (hiringAsked) { totalBoardsCited += new Set(found.citedUrls.map(u => { const b = boardOf(u); return b ? `${b.ats}:${b.token}` : '' }).filter(Boolean)).size; totalBoardPostings += boardPosts.length }
@@ -1823,7 +1849,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         }
         // a public-ATS posting the model listed is read itself too (guarded fetch; dated by its board), not only used to find its board
         const listedPosts = textCands.flatMap(c => c.jobUrl && boardOf(c.jobUrl) && atsPostingRef(c.jobUrl) ? [c.jobUrl] : [])
-        const ordered = [...new Set([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url))
+        // #1122: a posting its board dates outside the window never takes one of the 5 read slots; dated in-window postings go first, newest first
+        const ordered = orderByBoardDate([...new Set([...boardPosts, ...found.preferredPublisherUrls, ...listedPosts, ...found.citedUrls])].filter(url=>!seenPublisherUrls.has(url)),
+          boardDates, { windowDays: icpForSources.window_days ?? null, now: deps.now ?? new Date(), titles: boardTitles, roleMatch: (() => { const rs = requestedGateRoles(job.query, job.icp); return (t: string) => !!matchedHiringRole(t, rs) })() })
         const publisherKey = (url: URL) => {
           const board = atsPublisherRef(url.href)
           return board ? `ats:${board.kind}:${board.org.toLowerCase()}` : getDomain(url.hostname, { allowPrivateDomains: true }) ?? url.hostname
@@ -1894,6 +1922,25 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
             return !!l.company.trim()&&excerpt.length>=20&&text.includes(excerpt)&&
               hasPhrase(norm((p?.title??'')+' '+(p?.text??'')),norm(l.company))
           }).map(l => ({ ...l, name: '', contact: null })) : parsed
+          // Refs #1122 (run aa193734): the funding pass's candidates must cite the company's own dated announcement or a dated article about
+          // that one company (lib/company-first/funding-source.ts). Rejects are counted in the internal run report only - never shown in the
+          // product. 'accept' and 'read' both still go through the normal reader and verifier; nothing is trusted here. The website
+          // hint below is only a hint. Undated candidates go on to the reader, which dates them from the page or the window rule holds them.
+          if (fundingOr && angle === CF_FUNDING_ANGLE && extra.length) {
+            // the model's website hint for this company (company-first text candidates): it only lets own_site / undated_own_site be told
+            // apart here. It never confirms a domain - the normal domain proof still decides that later.
+            const hints = textSitesByJob.get(job) ?? []
+            // Judged over EVERY parsed candidate (before the excerpt/name check), so a page cited for two companies is a roundup even when
+            // one of them was dropped first, and with the cited page's own title and text, so a roundup is known by the page (Qodo #1530 b).
+            const pageOf = (u: string) => pages.find(x => x.url === u)
+            const all = fundingSourceVerdicts(parsed.map(l => ({ company: l.company, website: hints.find(h => norm(h.company) === norm(l.company))?.website ?? null,
+              source_url: l.source_url, event_date: l.event_date, page: pageOf(l.source_url) ? { title: pageOf(l.source_url)!.title, text: pageOf(l.source_url)!.text } : null })))
+            const verdictOf = new Map(parsed.map((l, i) => [l, all[i]]))
+            for (const x of all) if (x.verdict === 'reject') fundingSourceRejects[x.reason] = (fundingSourceRejects[x.reason] ?? 0) + 1
+            const keep = extra.filter(l => { const src = parsed.find(p => p.company === l.company && p.source_url === l.source_url && p.excerpt === l.excerpt); return (src ? verdictOf.get(src)?.verdict : 'reject') !== 'reject' })
+            extra.splice(0, extra.length, ...keep)
+            if (Object.keys(fundingSourceRejects).length) ledger.report({ funding_source_rejects: { ...fundingSourceRejects } })
+          }
           ledger.evidenceCandidates(items.map(e => ({ ...e, source })), extra)
           nativeCandidates = extra.length
           if (extra.length) leads = [...(leads ?? []), ...extra]
@@ -1993,15 +2040,54 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // #1095: an entry is the place text the board source resolves ("Austin" of a US profile is "Austin, TX"; profilePlaceText), and two entries
     // naming the same place are one place
     // An entry placeIn already reads is appended as the profile wrote it; a bare US city is appended with its state. The place's NAME is only the de-dupe key.
+    // #1395: the REQUEST's place is read once by the model into the request plan (lib/scan/request-plan.ts), never from the request's words by regex.
+    // Only when the board source would run (a hiring request, or the user picked it). Fail closed: no plan (a model error, a reply off the schema,
+    // a place the request does not write) holds the board source, named in its status; it never falls back to
+    // reading the words. A refused spend reservation for the plan holds the board source too; the rest of the scan goes on (Quest, #1395).
+    const explicitSel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
+    const wantsBoards = !!(job.query && icpForSources && complete && (explicitSel ? explicitSel.adapters.includes('jobboards') : hiringRequest))
+    let planHold: string | null = null
+    let planPlace: Place | null = null
+    let planSkip: string | null = null
+    let requestNamesPlace = false   // the plan read a place from the request: only that place is ever searched (Quest, #1395)
+    // Claude is the only paid API the plan may use: a tenant whose model key is not Claude keeps the board source exactly as before (Quest, #1395),
+    // the place read from the request's words as main read it, never a silent loss of the source.
+    const legacyBoards = vendor !== 'anthropic'
+    if (wantsBoards && !legacyBoards) {
+      assertOwned(db, job)
+      const pm = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(HAIKU), c => ledger.model(c))
+      const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
+      // the plan is optional: without room for it on every guard, the pool and the scan cap, nothing is reserved (no guard latches) and the boards hold
+      // (a model this check cannot price is left to the guarded call itself, which refuses an unpriced model and stops the scan, as for every paid call)
+      let planUsd: number | null = null
+      try { planUsd = callCostUsd(pm.configuredModel?.() ?? HAIKU, Buffer.byteLength(planPrompt(job.query!)), PLAN_MAX_TOKENS) } catch { planUsd = null }
+      // a plan already read for this play costs nothing: it needs no room
+      const room = planUsd === null || !!cachedRequestPlan(job.user_id, job.query!) ? true : await optionalCallHasRoom(spendGuards, planUsd)
+      const r = room ? await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl) : { ok: false as const, reason: 'spend_refused' as const }
+      if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
+      else {
+        requestNamesPlace = r.plan.places.length > 0
+        // the plan says which words are the place; the existing resolvers read them, with the profile's country and entries as a profile place is read
+        const b = boardPlaceOf(r.plan.places, { country: icpForSources?.country ?? null, where: (icpForSources?.where ?? []).filter((w): w is string => typeof w === 'string') })
+        if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason
+      }
+    }
     const named = new Map<string, string>()
-    if (job.query && !placeIn(job.query)) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
+    // the profile's place only when the request names NONE: a place the request names but the boards cannot place holds them, never another place
+    if (legacyBoards ? !!(job.query && !placeIn(job.query)) : wantsBoards && !planHold && !requestNamesPlace) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
     const profilePlaces = absorbStates([...named.keys()])
     const profilePlace = profilePlaces.length === 1 ? named.get(profilePlaces[0])! : null
-    const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
-    const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))
+    // the profile's place is read from the PROFILE entry alone ("in <entry>"), never from the request's words appended to it
+    const boardPlace: Place | null = planPlace ?? (profilePlace ? placeIn(`in ${profilePlace}`) : null)
+    const boardsQuery = job.query ? (!planPlace && profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
+    const autoBoards = legacyBoards ? !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery)) : !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
-    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : placeSkipReason(job.query, icpForSources?.where ?? []))   // #1205: the reason names the place and what to change
-    const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
+    // a board source the user picked with no place to read (the request names one the boards cannot place, or none and the profile gives none)
+    // is held with that reason, never run with no place (Qodo, #1527)
+    const pickedNoPlace = !!explicitSel && wantsBoards && !legacyBoards && !planHold && !boardPlace
+    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', planHold ?? (pickedNoPlace ? planSkip ?? placeSkipReason('', icpForSources?.where ?? []) : job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : planSkip ?? placeSkipReason(legacyBoards ? job.query : '', icpForSources?.where ?? [])))   // #1205: the reason names the place and what to change
+    // a held plan also holds a board source the user picked: the other picked sources still run
+    const sel = explicitSel ? (planHold || pickedNoPlace ? { ...explicitSel, adapters: explicitSel.adapters.filter(a => a !== 'jobboards') } : explicitSel) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
     const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (job-board source, and careers-page ATS postings: the board's own publish date, null for an own-domain page)
     const selfDescribedLeads: LeadDraft[] = []
@@ -2011,7 +2097,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job)
         // the board source reads the profile's place whether it was picked by the user or chosen automatically; only it gets the request with the
         // place appended, every other picked source keeps the user's own request (XHawk on #1155)
-        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [], boardsQuery && boardsQuery !== job.query ? { jobboards: boardsQuery } : {})
+        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [], boardsQuery && boardsQuery !== job.query ? { jobboards: boardsQuery } : {}, wantsBoards && !planHold && !legacyBoards ? { jobboards: boardPlace } : {})
         const items = collected.items
         for (const it of items) if ((it.source === 'jobboards' || it.source === 'careers') && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
@@ -2434,7 +2520,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         const icpText = nativeJudgeContext && job.query
           ? nativeBuyerFitTarget(icpForSources, job.query, playDraftOffer(db, job.user_id, job.id)?.offer ?? null)
           : gradingTarget + offerBlockFor(db, job.user_id, job.id)
-        await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', 'ok')
+        const bf = await applyBuyerFitGate(db, job.id, providers_[vendor], key, icpText, { fetchPage: deps.fetchPage, fetchImpl: deps.fetchImpl }); trace.note('buyer_fit', bf.noAnswer ? 'failed' : 'ok', bf.noAnswer ? `no answer for ${bf.noAnswer} lead(s) (${bf.noAnswerCause}) - capped below the qualified bar` : null)
       } catch (e) { const msg = e instanceof Error ? e.message : 'error'; let capped = 0; try { capped = failClosedBuyerFit(db, job.id, msg) } catch { /* the cap is best effort */ } trace.note('buyer_fit', 'failed', `${msg} - ${capped} hiring lead(s) capped below the qualified bar`); console.error('buyer-fit gate failed', msg) }
     }
     // Seed funding AND hiring sales: a lead that passed on the funding quote alone is moved to review unless sales / GTM hiring is evidenced
@@ -2534,12 +2620,6 @@ export function postFinishAliveStrict(db: Database.Database, job: { id: string; 
 }
 export function postFinishAlive(db: Database.Database, job: { id: string; attempts: number }): boolean {
   try { const r = db.prepare('SELECT status, attempts FROM scan_jobs WHERE id = ?').get(job.id) as { status: string; attempts: number } | undefined; return !!r && r.attempts === job.attempts && (r.status === 'done' || r.status === 'running') } catch { return true }
-}
-// #899: the mailbox check's own time budget (EMAIL_VERIFY_BUDGET_MS, default 20 s, between 1 s and 60 s): it runs after the
-// post-finish budget's steps, so this is the most it can add to a scan's wall time.
-export function emailVerifyBudgetMs(env: Record<string, string | undefined> = process.env): number {
-  const n = Number(env.EMAIL_VERIFY_BUDGET_MS)
-  return Number.isFinite(n) && n > 0 ? Math.min(60_000, Math.max(1_000, Math.floor(n))) : 20_000
 }
 export function postFinishBudgetMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env.SCAN_POST_FINISH_BUDGET_MS
@@ -2698,24 +2778,9 @@ export async function runPostFinishBounded(db: Database.Database, job: Job, deps
     else try { await enrichJobSignals(db, job.user_id, job.id, { fetchImpl: enrichFetch as typeof fetch, creditEnrichment: deps.creditEnrichment, ...(nativeOnly ? { thirdPartyReader: false } : {}), alive: () => postFinishAlive(db, job) }); noteFromAudit(trace, db, job.user_id, job.id, 'signals', 'signals:%') } catch (e) { trace.note('signals', 'failed', e instanceof Error ? e.message : 'error'); console.error('signal enrichment failed', e instanceof Error ? e.message : 'error') }
     if (deps.creditEnrichment === false) trace.note('paid_enrichment', 'skipped', 'this run adds no paid enrichment (run budget / no credits)')
     else notePaidEnrichment(trace, db, job.user_id, job.id)
-    // #899: the free-tier mailbox check of this scan's high-confidence US guesses, LAST, under its OWN short budget
-    // (emailVerifyBudgetMs: it never takes time from the crawl or enrichment above, and a long crawl does not starve it), and only
-    // while the scan is still this attempt's. Off unless EMAIL_GUESS_ENABLED=1 and ZEROBOUNCE_API_KEY is set.
-    if (nativeOnly) trace.note('email_verify', 'skipped', 'Claude-only play: mailbox verifier was not called')
-    else if (emailGuessEnabled()) {
-      const verifier = verifierFromEnv(process.env, deps.fetchImpl)
-      if (!verifier) trace.note('email_verify', 'skipped', 'no ZEROBOUNCE_API_KEY: guessed addresses stay unverified')
-      else if (!postFinishAliveStrict(db, job)) trace.note('email_verify', 'skipped', 'the scan was cancelled or taken over (or its state could not be read): nothing was sent')
-      else try {
-        const v = await verifyJobCandidates(db, job.user_id, job.id, verifier, { signal: AbortSignal.timeout(emailVerifyBudgetMs()), alive: () => postFinishAliveStrict(db, job) })
-        const detail = { leads: v.leads, checked: v.checked, verified: v.verified, over_cap: v.capped }
-        if (v.skipped) trace.note('email_verify', 'skipped', v.skipped)
-        // The provider's own words describe the operator's shared account: they go to the server log, not into a tenant's trace.
-        else if (v.stopped) { console.error('[email-verify] stopped: the verifier refused (bad key, no credits or rate limit)'); trace.note('email_verify', 'failed', 'the mailbox check is unavailable right now, so no further address was sent', detail) }
-        else if (v.aborted) trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', `stopped early (time budget ${emailVerifyBudgetMs()} ms, or the scan was cancelled); unchecked addresses stay unchecked`, detail)
-        else trace.note('email_verify', v.verified > 0 ? 'ok' : 'attempted_no_result', v.checked ? null : v.capped ? 'the monthly or daily check cap was reached' : 'no high-confidence US guess to check', detail)
-      } catch (e) { trace.note('email_verify', 'failed', e instanceof Error ? e.message.slice(0, 160) : 'error') }
-    }
+    // #1037 (THE BAR): a buyer's email must be published on the company's own domain, so a scan never spends a mailbox check on an
+    // address built from a learned format (#899's after-run check of guesses is gone, whatever EMAIL_GUESS_ENABLED says).
+    trace.note('email_verify', 'skipped', 'guessed addresses are never checked or used: only an address published on the company\'s own site counts')
   } finally {
     clearTimeout(postTimer)
   }
@@ -2744,7 +2809,8 @@ function inFlightSet(): Map<Job, number | null> {
   const g = globalThis as unknown as Record<symbol, Map<Job, number | null> | undefined>
   return (g[IN_FLIGHT_KEY] ??= new Map<Job, number | null>())
 }
-export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); return () => { m.delete(job) } }
+// #1463 / Qodo #1529: each scan's span is noted for the event-loop stall line (lib/ops/loop-stall.ts)
+export function trackInFlight(job: Job, queueToken?: number): () => void { const m = inFlightSet(); m.set(job, queueToken ?? null); scanStarted(job.id.slice(0, 8)); return () => { m.delete(job); scanEnded(job.id.slice(0, 8)) } }
 export function hasInFlight(): boolean { return inFlightSet().size > 0 }
 export function requeueInFlightForShutdown(db: Database.Database): number {
   let n = 0

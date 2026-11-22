@@ -24,13 +24,21 @@ function board() {
   }
   return { http, seen }
 }
+// #1395: the model's reading of each request's place (SYNTHETIC replies): the board place comes from it, never from the request's words
+const PLANS: Record<string, { text: string; city: string | null; region: string | null; country: string | null }> = {
+  'London, Indiana': { text: 'London, Indiana', city: 'London', region: 'Indiana', country: 'US' },
+  'London, IN': { text: 'London, IN', city: 'London', region: 'IN', country: 'US' },
+  'London (Ontario)': { text: 'London (Ontario)', city: 'London', region: 'Ontario', country: 'CA' },
+  'London, Ky.': { text: 'London, Ky.', city: 'London', region: 'Ky.', country: 'US' },
+}
+const planFor = (where: string) => ({ offer: null, buyer_type: 'practice manager', industry_code: '621210', places: [PLANS[where]], signals: [{ kind: 'hiring', text: 'posted a front desk receptionist job', negated: false }], exclusions: [], language: 'en' })
 function fx(sourceHttp: SafeGet, where: string): Fixture {
   const request = `Find independent dental practices in ${where} that posted a front desk receptionist job in the past 90 days.`
   const icp = { summary: `${where} dental practices hiring`, who: ['Practice manager'], industries: ['dental'], sizes: [], where: [where], signals: ['posted a front desk receptionist job'], exclude: [], country: 'US', language: 'en' }
   // the stubbed model would turn EVERY posting into a candidate: the place must be settled before extraction, not by it
   const extraction: Cand[] = LOCS.map((_, i) => ({ company: `${NAMES[i]} Family Dental`, signal: 'front desk receptionist job', source_url: gh(i), excerpt: QUOTE(i), event_date: daysAgo(9) }))
   return { request, modelIcp: icp, modelQueries: ['dental front desk receptionist job London'], hits: [{ url: gh(2), title: 'Front Desk Receptionist', snippet: QUOTE(2), date: daysAgo(9) }], tfPages: {},
-    own: Object.fromEntries(LOCS.map((_, i) => [gh(i), { title: 'Front Desk Receptionist', text: `Posted ${daysAgo(9)}. ${QUOTE(i)}. ${' The practice welcomes patients every week.'.repeat(8)}` }])), extraction, deps: { sourceHttp } }
+    own: Object.fromEntries(LOCS.map((_, i) => [gh(i), { title: 'Front Desk Receptionist', text: `Posted ${daysAgo(9)}. ${QUOTE(i)}. ${' The practice welcomes patients every week.'.repeat(8)}` }])), extraction, deps: { sourceHttp }, modelPlan: planFor(where) }
 }
 
 for (const where of ['London, Indiana', 'London, IN']) {
@@ -85,12 +93,15 @@ test('#1205 the province data reads the "Ont" form of Ontario', () => {
 })
 
 for (const where of ['London (Ontario)', 'London, Ky.']) {
-  test(`#1205 runJob: a request for ${where} never reads a UK London posting: the job boards resolve no UK place and say why`, async () => {
+  // #1395: the request plan reads these Londons as their own (London, ON / London, KY), where the words' reading resolved none: the board is
+  // listed, and no UK London posting (nor the London, IN one) is ever detail-fetched, reaches extraction or is a qualified lead
+  test(`#1205 runJob: a request for ${where} never reads a UK London posting: the job boards read only that London`, async () => {
     const { http, seen } = board()
     const x = await runFixture(fx(http, where))
-    assert.equal(seen.filter(u => /boards-api\.greenhouse\.io/.test(u)).length, 0, 'no board was read for the UK London')
-    const run = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:jobboards'").get() as { status: string }
-    assert.match(run.status, /^skipped_no_place:[a-z]+:/, `a named reason: ${run.status}`)
+    const details = seen.filter(u => /\/jobs\/\d+$/.test(u))
+    assert.deepEqual(details, [], `no listed posting is in ${where} (got ${JSON.stringify(details)})`)
+    const adapterPrompt = x.calls.prompts.find(p => p.includes('"source":"jobboards"')) ?? ''
+    for (const i of [0, 1, 2, 3]) assert.ok(!adapterPrompt.includes(gh(i)), `posting '${LOCS[i]}' never reached extraction`)
     const qualified = x.leads.filter(l => !l.review_reason).map(l => l.source_url)
     for (const i of [0, 1, 3]) assert.ok(!qualified.includes(gh(i)), `UK posting '${LOCS[i]}' is not a qualified lead`)
   })

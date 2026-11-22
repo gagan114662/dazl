@@ -15,6 +15,7 @@ import { fetchRankFor, jobPagesBehindEvents } from '../lib/scan/runner.ts'
 import { salesGateOr } from '../lib/scan/sales-hiring-required.ts'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { isPlanPrompt, planObject } from './helpers/request-plan-stub.ts'
 
 const OR_B = 'London B2B SaaS startups that raised seed funding or made their first sales hire in the last 90 days'
 const AND_B = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days and are hiring sales staff.'
@@ -22,6 +23,15 @@ const ANDOR_B = 'London B2B SaaS startups that raised seed funding and/or made t
 const TEST_A = 'Find independent dental practices in New York, NY that opened a new location or are hiring a front desk receptionist in the last 90 days. We sell dental appointment and reminder software.'
 const ICP_B = { summary: 'London B2B SaaS startups', who: ['Founder', 'Head of Sales'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['raised seed funding in the last 90 days', 'made their first sales hire in the last 90 days'], exclude: ['agencies'], country: 'GB', language: 'en', window_days: 90 }
 const ICP_A = { summary: 'Independent dental practices in New York', who: ['Practice owner', 'Office manager'], industries: ['Dental'], sizes: [], where: ['New York, NY'], signals: ['opened a new location', 'hiring a front desk receptionist'], exclude: [], country: 'US', language: 'en', window_days: 90 }
+// #1395: the model's request plan for each request (SYNTHETIC replies): the place exactly as each request writes it. Recorded on #643's head before the plan
+// call existed, so the pinned traces below hold no plan prompt; each scan now sends exactly one, compared apart from the pinned bytes.
+const LONDON = { text: 'London', city: 'London', region: null, country: 'GB' }
+const PLANS: Record<string, object> = {
+  [OR_B]: planObject([LONDON], { buyer_type: 'London B2B SaaS startups', signals: [{ kind: 'funding', text: 'raised seed funding', negated: false }, { kind: 'hiring', text: 'made their first sales hire', negated: false }] }),
+  [AND_B]: planObject([{ text: 'London UK', city: 'London', region: null, country: 'GB' }], { buyer_type: 'B2B SaaS startups', signals: [{ kind: 'funding', text: 'announced seed funding within the past 90 days', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] }),
+  [ANDOR_B]: planObject([LONDON], { buyer_type: 'London B2B SaaS startups', signals: [{ kind: 'funding', text: 'raised seed funding', negated: false }, { kind: 'hiring', text: 'made their first sales hire', negated: false }] }),
+  [TEST_A]: planObject([{ text: 'New York, NY', city: 'New York', region: 'NY', country: 'US' }], { offer: 'dental appointment and reminder software', buyer_type: 'independent dental practices', signals: [{ kind: 'event', text: 'opened a new location', negated: false }, { kind: 'hiring', text: 'hiring a front desk receptionist', negated: false }] }),
+}
 const filler = ' More about the company, its product and its people.'.repeat(10)
 
 // ---- the scan fixture ----
@@ -79,7 +89,7 @@ function scan(request: string, icp: object): { f: Fixture; calls: Calls } {
   }
   // The stub extractor returns a candidate exactly when its page is one of the prompt's items (what the model can see).
   const extractionFn = (prompt: string) => CANDS.filter(c => prompt.includes(c.source_url))
-  return { calls, f: { request, modelIcp: icp, reviewedIcp: icp, icpReviewed: true, modelQueries: ['london saas startup seed round', 'london b2b saas first sales hire', 'london saas startup hiring account executive', 'london startup news'], hits, hitsFor, tfPages: pages, own: pages, extraction: [], extractionFn, deps: { sourceHttp, newsHttp } } }
+  return { calls, f: { request, modelIcp: icp, reviewedIcp: icp, icpReviewed: true, modelQueries: ['london saas startup seed round', 'london b2b saas first sales hire', 'london saas startup hiring account executive', 'london startup news'], hits, hitsFor, tfPages: pages, own: pages, extraction: [], extractionFn, deps: { sourceHttp, newsHttp }, modelPlan: PLANS[request] } }
 }
 const fate = (x: Awaited<ReturnType<typeof runFixture>>, company: string) => {
   const ls = x.db.prepare('SELECT review_reason FROM leads WHERE company = ?').all(company) as { review_reason: string | null }[]
@@ -90,9 +100,10 @@ async function record(request: string, icp: object) {
   const { f, calls } = scan(request, icp)
   const x = await runFixture(f)
   const d = (s: string) => s.replace(/\d{4}-?\d{2}-?\d{2}(T\d{6}Z)?/g, '<date>')
-  const trace = { prompts: x.calls.prompts.map(d), searches: x.calls.searches.map(d), afters: x.calls.afters.map(a => a === null ? null : '<date>'), tfFetchBatches: x.calls.tfFetchBatches, news: calls.news.map(d), ownFetch: x.calls.ownFetch }
+  const planPrompts = x.calls.prompts.filter(isPlanPrompt).length   // #1395: the one request-plan call, kept out of the pinned trace
+  const trace = { prompts: x.calls.prompts.filter(p => !isPlanPrompt(p)).map(d), searches: x.calls.searches.map(d), afters: x.calls.afters.map(a => a === null ? null : '<date>'), tfFetchBatches: x.calls.tfFetchBatches, news: calls.news.map(d), ownFetch: x.calls.ownFetch }
   const providerCalls = trace.prompts.length + trace.searches.length + trace.tfFetchBatches.length + trace.news.length
-  return { x, trace, providerCalls }
+  return { x, trace, providerCalls, planPrompts }
 }
 
 const SNAP = new URL('./fixtures/or-upstream-snapshot.json', import.meta.url)
@@ -127,13 +138,17 @@ if (process.env.OR_UPSTREAM_SNAPSHOT_WRITE === '1') {
     assert.match(fate(x, 'Pastco'), /verifier-passed/, fate(x, 'Pastco'))
   })
   test('(3) provider calls per scan under Test B are no greater than on #643\'s head', async t => {
-    const { providerCalls, trace } = await orB()
-    t.diagnostic(`provider calls: ${providerCalls} (prompts ${trace.prompts.length}, searches ${trace.searches.length}, fetch batches ${trace.tfFetchBatches.length}, news ${trace.news.length}); #643 head: ${snap.OR_B.providerCalls}`)
+    const { providerCalls, trace, planPrompts } = await orB()
+    t.diagnostic(`provider calls: ${providerCalls} (prompts ${trace.prompts.length}, searches ${trace.searches.length}, fetch batches ${trace.tfFetchBatches.length}, news ${trace.news.length}) + ${planPrompts} request-plan call; #643 head: ${snap.OR_B.providerCalls}`)
+    // #1395: the one request-plan call is new since #643 (it did not exist there) and is counted apart: every other provider call stays within the ceiling
+    assert.equal(planPrompts, 1, 'exactly one request-plan call')
     assert.ok(providerCalls <= snap.OR_B.providerCalls, `${providerCalls} > ${snap.OR_B.providerCalls}`)
   })
   for (const [k, q, icp] of [['AND_B', AND_B, ICP_B], ['ANDOR_B', ANDOR_B, ICP_B], ['TEST_A', TEST_A, ICP_A]] as const) {
     test(`(2) ${k}: prompts, queries, news searches, fetch batches and verifier fetch order are byte-identical to #643's head`, async () => {
-      const { trace, providerCalls } = await record(q, icp)
+      const { trace, providerCalls, planPrompts } = await record(q, icp)
+      // #1395: every other prompt, query, news search, fetch batch and verifier fetch is byte-identical; the only addition is the one plan prompt
+      assert.equal(planPrompts, 1, 'exactly one request-plan prompt')
       assert.deepEqual(trace, snap[k].trace); assert.equal(providerCalls, snap[k].providerCalls)
     })
   }
@@ -192,8 +207,10 @@ test('(4) malformed plans fall back to AND in all three steps', () => {
     assert.equal(corroborationTargets({ query: OR_B, icp }, [boardLead], others).some(x => x.branch !== undefined), gateOr, icp.slice(0, 30))
     assert.equal(compoundHalves(OR_B, icp)?.or === true, gateOr && compoundHalves(OR_B, icp) !== null, icp.slice(0, 30))
   }
-  // A third branch, a negated branch or a non-sales role: not the two-branch OR, so AND.
-  for (const q of ['London B2B SaaS startups that raised seed funding or made their first sales hire or opened an office in the last 90 days', 'London B2B SaaS startups that raised seed funding or made their first engineering hire in the last 90 days']) {
+  // A non-sales role: not the sales OR, so AND. (Qodo #1509 M8: "seed funding or first sales hire or opened an office" is one OR of three
+  // alternatives, "any one of them" (#1122); each event branch is proven on its own clock at the gate: test/qodo-1509-m678.test.ts.)
+  assert.ok(salesGateOr('London B2B SaaS startups that raised seed funding or made their first sales hire or opened an office in the last 90 days', icpB)?.events?.length === 2)
+  for (const q of ['London B2B SaaS startups that raised seed funding or made their first engineering hire in the last 90 days']) {
     assert.equal(compoundHalves(q, ICP_B)?.or, undefined, q); assert.ok(corroborationTargets({ query: q, icp: icpB }, [boardLead], others).every(x => x.branch === undefined), q)
   }
   for (const q of [null, undefined, '']) assert.deepEqual(corroborationTargets({ query: q, icp: icpB }, [boardLead], others), corroborationTargets({ query: q, icp: icpB }, [boardLead]))

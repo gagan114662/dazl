@@ -14,12 +14,14 @@ import { migrateAuth } from '../../lib/auth-db.ts'
 import { migrateTrialBudget } from '../../lib/billing/trial-budget.ts'
 import { ProviderError, anthropicProvider as realAnthropic, type Provider } from '../../lib/llm/provider.ts'
 import { reserveScanSpend } from '../../lib/scan/spend-cap.ts'
+import { SpendRefused } from '../../lib/llm/spend-guard.ts'
 import { inferIcp, normalizeIcp } from '../../lib/scan/icp.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
 import { resetTinyfishState } from '../../lib/search/tinyfish.ts'
 import { runReportFor } from '../../lib/scan/run-report.ts'
 import { modelUsage } from '../../lib/scan/model-usage.ts'
 import { sourceStats } from '../../lib/search/trace.ts'
+import { PLAN_PROMPT_HEAD, clearRequestPlanCache } from '../../lib/scan/request-plan.ts'
 
 export const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -57,11 +59,14 @@ export interface Fixture {
   researchRealReserve?: boolean            // the stub research reserves through the REAL spend ledger before failing (durable production-model uncertainty, not a no-reserve stub)
   fundedBy?: 'trial'                       // the job is a free-trial scan (funded_by = 'trial'; the caller sets the DAZL_TRIAL_* env)
   model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
+  vendor?: 'openai'                        // the tenant's model key is OpenAI (not Claude): the stub OpenAI provider answers like the Anthropic one
+  modelPlan?: object | string | 'provider_error' | 'spend_refused'   // SYNTHETIC request-plan reply (#1395): an object is sent as JSON, a string as written; 'provider_error' fails the call; 'spend_refused' refuses its reservation. Unset: the plan prompt gets the extraction reply (off the schema, so the board source holds)
 }
 export async function runFixture(f: Fixture) {
-  resetTinyfishState()
+  resetTinyfishState(); clearRequestPlanCache()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateCompetitors(db); migrateNeedEvidence(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
+  if (f.vendor === 'openai') saveKey(db, 'A', 'openai', 'sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)   // the newest key is the tenant's vendor (pickVendor)
   migrateAuth(db) // the actual current users schema; a hand-rolled shape drifts (email_verified_at broke the #417 drain here)
   db.prepare("INSERT INTO users (id, email, business_name, password_hash, salt) VALUES ('A', 'acme@example.test', 'Acme', 'h', 's')").run()
   const icpProvider = { complete: async () => JSON.stringify(f.modelIcp) } as unknown as Provider
@@ -97,7 +102,14 @@ export async function runFixture(f: Fixture) {
     }
     return new Response('{}', { status: 200 })
   }) as typeof fetch
-  const reply = (p: string, maxTokens?: number) => { calls.prompts.push(p); return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
+  const reply = (p: string, maxTokens?: number) => {
+    calls.prompts.push(p)
+    if (p.startsWith(PLAN_PROMPT_HEAD) && f.modelPlan !== undefined) {
+      if (f.modelPlan === 'provider_error') throw new ProviderError('retry', 'http 529', 'none')
+      if (f.modelPlan === 'spend_refused') throw new SpendRefused('over_limit')
+      return typeof f.modelPlan === 'string' ? f.modelPlan : JSON.stringify(f.modelPlan)
+    }
+    return maxTokens === 300 ? JSON.stringify(f.modelQueries) : JSON.stringify(f.extractionFn ? f.extractionFn(p) : f.extraction) }
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async (_rk: string, _rp: string, _rf?: typeof fetch) => {
@@ -118,6 +130,7 @@ export async function runFixture(f: Fixture) {
     } as unknown as Provider,
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
+  if (f.vendor === 'openai') providers.openai = { ...providers.anthropic } as Provider
   let snapped = false
   const fetchPage = async (u: string) => {
     if (!snapped && f.onVerify) { snapped = true; f.onVerify(db, job.id) }

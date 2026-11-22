@@ -17,7 +17,7 @@
     "test:smoke:frontend": "SHOTS=preview/frontend-baseline node test/ui/frontend-baseline.ui.mjs",
     "test:smoke:touch": "node test/ui/touch-targets.ui.mjs",
     "test:smoke:console": "node test/ui/app-console-clean.ui.mjs",
-    "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs",
+    "test:smoke:chunks": "node test/smoke/chunk-recovery.smoke.mjs && node test/smoke/stall-watch.smoke.mjs",
     "test:smoke:client-errors": "node test/smoke/client-errors.smoke.mjs",
     "test:smoke:billing": "node --experimental-strip-types --no-warnings test/smoke/billing.smoke.mjs",
     "preview:shots": "node test/smoke/preview.mjs",

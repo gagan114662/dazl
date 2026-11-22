@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
+import { isPlanPrompt, planReply, PLACE } from './helpers/request-plan-stub.ts'
 import { listLeads, exportLeads } from '../lib/scan/store.ts'
 import { listLeads as listLeadsDb, exportLeads as exportLeadsDb } from '../lib/scan/store-db.ts'
 import { sqliteDb } from '../lib/db/client.ts'
@@ -19,6 +20,8 @@ async function runCrawl(f: Fixture) {
 }
 const REQUEST = 'Find London UK B2B SaaS startups with 10-50 employees that announced seed funding within the past 90 days and are hiring sales staff. Exclude agencies and recruiters. Include founder contacts and dated evidence.'
 const ICP = { summary: 'London seed-funded B2B SaaS hiring sales', who: ['Founder'], industries: ['SaaS'], sizes: ['10-50'], where: ['London, UK'], signals: ['announced seed funding', 'hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
+// #1395 SYNTHETIC request plan for REQUEST: its one place as written ("London UK"), its signals and exclusions.
+const PLAN = planReply([PLACE.londonUK], { buyer_type: 'B2B SaaS startups', exclusions: ['agencies', 'recruiters'], signals: [{ kind: 'funding', text: 'announced seed funding', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] })
 const NEWS = 'https://sifted.example/brightloop-raises-seed'
 const pad = (s: string) => `${s} ${'More about the company and its people. '.repeat(15)}`
 const QUOTE = 'Brightloop, a London B2B SaaS startup with 24 employees, raised a 3m GBP seed round this month'
@@ -27,7 +30,7 @@ const nf = (url: string) => ({ status: 404, body: '', finalUrl: url })
 
 interface Site { home?: string; team?: string; careers?: string; contact?: string; job?: string }
 const scoringProviders = (fit: number, extraction: unknown[]) => {
-  const reply = (p: string, maxTokens?: number) => p.includes('LEAD <n> | fit') ? `LEAD 1 | fit ${fit} | intent 4 | action 4 | match yyyy | signals seed_round | why London seed-funded SaaS.` : maxTokens === 300 ? JSON.stringify(['London SaaS startup seed round']) : JSON.stringify(extraction)
+  const reply = (p: string, maxTokens?: number) => isPlanPrompt(p) ? PLAN : p.includes('LEAD <n> | fit') ? `LEAD 1 | fit ${fit} | intent 4 | action 4 | match yyyy | signals seed_round | why London seed-funded SaaS.` : maxTokens === 300 ? JSON.stringify(['London SaaS startup seed round']) : JSON.stringify(extraction)
   const p = { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, pr: string, _f?: typeof fetch, mt?: number) => reply(pr, mt), completeDetailed: async (_k: string, pr: string, _f?: typeof fetch, mt?: number) => ({ text: reply(pr, mt), model: 'stub', usage: { input_tokens: 10, output_tokens: 1 } }), configuredModel: () => 'stub' }
   return { anthropic: p, openai: { research: async () => ({ text: '', citedUrls: [] }) } } as never
 }

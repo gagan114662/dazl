@@ -6,9 +6,12 @@ import { buildSourcePrompt } from '../lib/sources/index.ts'
 import { compoundHalves, halvesBlock, HALVES_ENV } from '../lib/scan/halves.ts'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
 import { runReportFor } from '../lib/scan/run-report.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 const REQUEST = 'Find London UK B2B SaaS startups that announced seed funding within the past 90 days and are hiring sales staff.'
 const ICP = { summary: 'London seed B2B SaaS', who: ['Founder'], industries: ['SaaS'], sizes: [], where: ['London, UK'], signals: ['Announced seed funding within the past 90 days AND is currently hiring sales staff'], exclude: [], country: 'GB', language: 'en', window_days: 90 }
+// #1395 SYNTHETIC request plan for REQUEST: its one place as written ("London UK") and its two signals.
+const PLAN = planObject([PLACE.londonUK], { buyer_type: 'B2B SaaS startups', signals: [{ kind: 'funding', text: 'announced seed funding', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }] })
 const filler = ' More about the company, its product and its people.'.repeat(10)
 
 test('the prompt: a seed + sales request splits into two facts; any other request is unchanged; the kill switch restores the single prompt', () => {
@@ -34,7 +37,7 @@ const extractor = (cands: Cand[]) => (prompt: string): Cand[] => {
 }
 function scan(pages: { url: string; text: string; cand: Cand }[]): Fixture {
   return { request: REQUEST, modelIcp: ICP, modelQueries: ['london saas startup seed round'], hits: pages.map(p => ({ url: p.url, title: p.url, snippet: p.text, date: daysAgo(10) })), tfPages: Object.fromEntries(pages.map(p => [p.url, page(p)])), own: Object.fromEntries(pages.map(p => [p.url, page(p)])),
-    extraction: [], extractionFn: extractor(pages.map(p => p.cand)) }
+    extraction: [], extractionFn: extractor(pages.map(p => p.cand)), modelPlan: PLAN }
 }
 const fate = (x: Awaited<ReturnType<typeof runFixture>>, company: string) => { const l = x.db.prepare('SELECT review_reason, confidence FROM leads WHERE company = ?').get(company) as { review_reason: string | null; confidence: number | null } | undefined; return !l ? 'none' : l.review_reason === null ? 'verifier-passed' : `held:${l.review_reason}` }
 const PAGES = [funding('Lette'), posting('Lette'), funding('SpaceAm'), posting('Orbitly')]

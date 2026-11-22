@@ -31,7 +31,7 @@ test('a generic recruiting or support inbox never becomes the founder\'s address
   assert.match(shared.personRoute.text, /not Dana Lee \(Founder\)'s own address/)
   const named = contactRoute(lead({ contact: 'dana.lee@brightdental.example' }), founder, NOW_MS)
   assert.equal(named.personRoute.state, 'person_named_address')
-  assert.match(named.personRoute.text, /current role not verified/)
+  assert.match(named.personRoute.text, /^Person route: the published address carries Dana Lee's name\./); assert.doesNotMatch(named.personRoute.text, /not verified/i) // PM: plain copy, no hedge
   assert.equal(contactRoute(lead({ contact: 'xq7@brightdental.example' }), founder, NOW_MS).personRoute.state, 'owner_unknown')
 })
 
@@ -161,4 +161,11 @@ test('createDraft refuses an undeliverable address; catch-all still drafts', () 
   assert.throws(() => createDraft(db, 'A', rejected, 'Acme'), /undeliverable/)
   const catchAll = add('sales@northside.example'); rec(catchAll, '@northside.example|catch_all')
   assert.doesNotThrow(() => createDraft(db, 'A', catchAll, 'Acme'))
+})
+test('PM (no hedge copy): an unverified quote blocks approval with a plain fact, never "Not verified"', async () => {
+  const { approveState } = await import('../lib/scan/lead-card.ts')
+  const s = approveState({ company: 'X', signal: 's', source_url: 'https://news.example/a', evidence_excerpt: null, event_date: '2026-11-10', date_status: null, review_reason: null,
+    fit: 5, intent: 1, why: null, icp_match: null, company_domain: null, contact: null, confidence: null, human_confirmed_at: null })
+  assert.equal(s.ok, false)
+  if (!s.ok) { assert.doesNotMatch(s.reason, /not verified/i); assert.match(s.reason, /quote/i) }
 })

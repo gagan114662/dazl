@@ -10,6 +10,7 @@ import { leadPerson } from '../lib/people/lead-person.ts'
 import { findPeople, MAX_COMPANIES } from '../lib/people/people-search.ts'
 import { HELD_ICP as ICP, HELD_WHO as WHO, HELD_RESULTS as RESULTS, env, setup, stub, type Row } from './helpers/people-held-fixture.ts'
 import { runFixture, type Fixture } from './helpers/acceptance-harness.ts'
+import { planObject } from './helpers/request-plan-stub.ts'
 
 // The counts object the pass fills (people-search.ts PeopleStats), written out so this file needs nothing the fix added.
 const newPeopleStats = () => ({ eligible: 0, held: 0, already_named: 0, searched: 0, results: 0, profiles: 0, refused: {} as Record<string, number>, failed: {} as Record<string, number> })
@@ -25,7 +26,7 @@ const JOB: Row[] = [
   ['L-surveyhive', 'Surveyhive', null, 30],
 ]
 
-test('#1037 held leads: a lead held for review gets a people search too, and its row names the person (Pagewake: Marta Solberg, Regional Sales Director)', async () => {
+test('#1037 held leads: a lead held for review gets a people search too; its results are stored for the details and never name the row (only the company\'s own site names the buyer)', async () => {
   const { db, job } = setup(JOB); const s = stub(); const stats = newPeopleStats()
   const n = await findPeople(db, 'A', job, { env, fetchImpl: s.f, stats })
   assert.equal(n, 4, 'Ewan C. Tomas (ready Surveyhive) + Marta Solberg, Anya Braun (held Pagewake) + Anders Smed (held Meshgate)')
@@ -34,10 +35,11 @@ test('#1037 held leads: a lead held for review gets a people search too, and its
     ['Pagewake', 'quote_unconfirmed', 'Anya Braun, Strategic Partner Sales Manager', 'https://www.linkedin.com/in/anya-braun-test'],
     ['Meshgate', 'blocked_by_site', 'Anders Smed, VP of Sales Development & PG', 'https://www.linkedin.com/in/anders-smed-test'],
   ])
-  // The row rule (the same one the Leads page renders with) now names the held lead's person, LinkedIn link included.
-  const row = (id: string) => leadPerson(db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? AND kind IN ('person','contact') ORDER BY insert_seq").all(id), WHO.join('; '))
-  assert.deepEqual(row('L-pagewake'), { name: 'Marta Solberg', title: 'Regional Sales Director', linkedin: 'https://www.linkedin.com/in/marta-solberg-test', source: null, via: 'a public LinkedIn search result (not verified as current)', current: false })
-  assert.equal(row('L-meshgate')?.name, 'Anders Smed'); assert.equal(row('L-meshgate')?.linkedin, 'https://www.linkedin.com/in/anders-smed-test')
+  // The row rule (the same one the Leads page renders with): a public profile search result is not the company naming its buyer (#1037),
+  // so none of these rows names a person, LinkedIn link or not.
+  const row = (id: string) => leadPerson(db.prepare("SELECT kind, value, label, source_url, connector, retrieved_at FROM lead_enrichments WHERE lead_id = ? ORDER BY insert_seq").all(id), WHO.join('; '))
+  assert.equal(row('L-pagewake'), null, 'Marta Solberg was found by search, not on Pagewake\'s own site')
+  assert.equal(row('L-meshgate'), null, 'Anders Smed was found by search, not on Meshgate\'s own site')
   assert.equal(row('L-corvane'), null, 'searched, nobody found: the row reads "No buyer named yet"')
   // A person on a held row never releases the hold.
   assert.equal((db.prepare("SELECT review_reason FROM leads WHERE id = 'L-pagewake'").get() as { review_reason: string }).review_reason, 'quote_unconfirmed')
@@ -102,6 +104,8 @@ test('#1037 held leads: another tenant\'s job id searches nothing (job ownership
 
 // ---- through the real runJob: a scan whose only candidate is held still looks up its person, and the report counts it ----
 const REQUEST = 'Find B2B software companies hiring account executives within the past 90 days.'
+// #1395 SYNTHETIC request plan: REQUEST writes no place, so the profile place is used.
+const PLAN = planObject([], { buyer_type: 'B2B software companies', signals: [{ kind: 'hiring', text: 'hiring account executives', negated: false }] })
 const RICP = { ...ICP, signals: ['Hiring account executives'], country: 'US', language: 'en', window_days: 90 }
 const SRC = 'https://news.example.test/pagewake-hiring'
 const QUOTE = 'Pagewake is hiring account executives across its enterprise sales team'
@@ -116,7 +120,7 @@ function fx(queries: string[], over: Partial<Fixture> = {}): Fixture {
     }
     return globalThis.fetch(u, init)
   }) as typeof fetch
-  return { request: REQUEST, modelIcp: RICP, modelQueries: ['B2B software hiring account executives'], hits: [{ url: SRC, title: page.title, snippet: QUOTE, date: null }], tfPages: { [SRC]: page }, own: { [SRC]: page },
+  return { request: REQUEST, modelPlan: PLAN, modelIcp: RICP, modelQueries: ['B2B software hiring account executives'], hits: [{ url: SRC, title: page.title, snippet: QUOTE, date: null }], tfPages: { [SRC]: page }, own: { [SRC]: page },
     extraction: [{ company: 'Pagewake', signal: 'hiring account executives', source_url: SRC, excerpt: QUOTE, event_date: null }], deps: { fetchImpl }, ...over }
 }
 const stage = (r: Awaited<ReturnType<typeof runFixture>>) => {

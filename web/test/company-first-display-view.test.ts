@@ -14,7 +14,7 @@ import { companyFirstResults } from '../lib/scan/company-first-results.ts'
 import { contextLabel } from '../lib/outreach/contact-context.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
 import { publishedCandidateFor, recordEmailGuesses, usEvidence, verifyCandidates } from '../lib/people/email-pattern.ts'
-import { findWorkEmail, strictPublishedWorkEmailsForLeads, workEmailsFor } from '../lib/people/work-email.ts'
+import { findWorkEmail, strictPublishedWorkEmailsForLeads } from '../lib/people/work-email.ts'
 import { targetKey } from '../lib/people/work-email-eligible.ts'
 import { approveBlockReason, createDraft, domainReviewStatus, draftBlockReason, sendBlockReason, sendMessage } from '../lib/outreach/service.ts'
 
@@ -68,7 +68,7 @@ for (const [country, market, host] of [
     assert.equal(publishedCandidateFor(db,tenant,lead,'Ada Lane'),null)
     assert.equal(db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tenant_id=? AND lead_id=?").pluck().get(tenant,lead),0)
     assert.deepEqual(strictPublishedWorkEmailsForLeads(db,tenant,[lead],at)[lead]??[],[])
-    assert.deepEqual(workEmailsFor(db,tenant,lead,at),[])
+    assert.equal(db.prepare('SELECT count(*) FROM work_email_lookups WHERE tenant_id=? AND lead_id=?').pluck().get(tenant,lead),0)
     const lookup=await findWorkEmail(db,tenant,lead,targetKey({name:'Ada Lane',title:'Owner'}),{now:at,env:{}})
     assert.equal(lookup.status,'not_eligible')
     let verifies=0

@@ -16,6 +16,7 @@ import { ProviderError, type Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { GRADING_FAILED_WHY } from '../lib/scan/score.ts'
+import { isPlanPrompt, OHIO_PAYROLL_PLAN } from './helpers/request-plan-stub.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -50,9 +51,10 @@ function run(budgetJson: string | null, model: string | undefined, tinyfishHits 
     }
     return new Response('{}', { status: 404 })
   }) as unknown as typeof fetch
+  // #1395: the request plan reply is SYNTHETIC (REQUEST writes one place, "Ohio"); it is a paid call like every other and is counted as one
   const anth: Provider = {
     research: async () => { calls.research++; return { text: '', citedUrls: [] } },
-    complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { calls.complete++; calls.maxTokens.push(maxTokens ?? 0); calls.promptBytes += Buffer.byteLength(p); if ((failExtraction && maxTokens !== 300) || (noIcp && failExtraction)) throw new ProviderError('retry', 'provider_429', 'none'); return maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead]) },
+    complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { calls.complete++; calls.maxTokens.push(maxTokens ?? 0); calls.promptBytes += Buffer.byteLength(p); if ((failExtraction && maxTokens !== 300) || (noIcp && failExtraction)) throw new ProviderError('retry', 'provider_429', 'none'); return isPlanPrompt(p) ? OHIO_PAYROLL_PLAN : maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist Ohio']) : JSON.stringify([lead]) },
     // A real provider returns its usage; the runner settles each call to it (#363). Without usage the worst case stays reserved and the scan stops after one call.
     completeDetailed: async (k: string, p: string, f?: typeof fetch, maxTokens?: number) => ({ text: await anth.complete!(k, p, f, maxTokens), model: model ?? null, usage: (typeof reportUsage === 'function' ? reportUsage(maxTokens ?? 0) : reportUsage) ? { input_tokens: USAGE_IN, output_tokens: USAGE_OUT } : undefined }) as never,
     ...(model ? { configuredModel: () => model } : {}),

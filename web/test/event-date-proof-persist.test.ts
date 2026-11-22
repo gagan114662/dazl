@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture } from './helpers/acceptance-harness.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { planObject } from './helpers/request-plan-stub.ts'
 
 const proofCols = (db: import('better-sqlite3').Database) =>
   db.prepare('SELECT company, event_date, event_date_proof, event_date_proof_note, review_reason FROM leads').all() as
@@ -64,6 +65,8 @@ test('ats_structured: a job board structured publish date for exactly this posti
     tfPages: {}, own: { [gh]: { title: 'Front Desk Receptionist', text: `${quote}. The practice welcomes patients every week.` } },
     extraction: [{ company: 'Brooklyn Smiles Dental', signal: 'hiring a front desk receptionist', source_url: gh, excerpt: quote, event_date: published }],
     deps: { sourceHttp: http },
+    // #1395: SYNTHETIC request-plan reply: the place as the request writes it
+    modelPlan: planObject([{ text: 'New York City', city: 'New York City', region: null, country: 'US' }], { buyer_type: 'independent dental practices', signals: [{ kind: 'hiring', text: 'posted a front desk receptionist job', negated: false }] }),
   })
   const rows = proofCols(x.db)
   assert.equal(rows.length, 1)

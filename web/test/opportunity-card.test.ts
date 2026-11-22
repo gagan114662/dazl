@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
+import { contactIdentity, opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
 
 // Owner direction #204: why this business, why now (dated source), who (with identity), angle, facts / assumptions /
 // missing, one next action. Built only from stored data; an opening is never presented as proof of buyer intent, an
@@ -8,7 +8,11 @@ import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
 const NOW = new Date('2026-10-26T12:00:00Z')
 type Row = NonNullable<CardLead['enrichments']>[number]
 const dom = (site: string, token: string, url = 'https://news.example/bright'): Row => ({ connector: 'sitecrawl', kind: 'domain', value: `${site}|${token}`, label: `domain-basis-v1:${token}`, source_url: url })
-const person: Row = { connector: 'sitecrawl', kind: 'person', value: 'Dana Lee, Practice Owner', label: 'x', source_url: 'https://brightteeth.example/team' }
+// #1037: the card's "who" is only a buyer the company's own website names: a person read on a page of the confirmed site (within 180 days),
+// with a title and the LinkedIn profile that page links (as the real crawl stores it: label 'sitecrawl-profile-v1: <url>').
+const READ_AT = Math.floor(NOW.getTime() / 1000) - 86_400
+const own = (name: string, title: string, slug: string): Row => ({ connector: 'sitecrawl', kind: 'person', value: `${name}, ${title}`, label: `sitecrawl-profile-v1: https://www.linkedin.com/in/${slug}`, source_url: `https://brightteeth.example/team/${slug}`, retrieved_at: READ_AT })
+const person: Row = own('Dana Lee', 'Practice Owner', 'dana-lee-example')
 const hygienist: Row = { connector: 'sitecrawl', kind: 'person', value: 'Ben Ortiz, Hygienist', label: 'x', source_url: 'https://brightteeth.example/team' }
 const email: Row = { connector: 'sitecrawl', kind: 'email', value: 'hello@brightteeth.example', label: null, source_url: 'https://brightteeth.example/contact' }
 const base: CardLead = {
@@ -26,7 +30,7 @@ test('real evidence_own_domain: identity is a fact; draft is about the offer, th
   const c = card({})
   assert.equal(c.whyThisBusiness, 'Fits your profile (5/5): matches buyer role, industry, location.')
   assert.equal(c.whyNow.dateNote, '2026-10-10 (claimed event day; event association and current need unconfirmed), 16 days ago')
-  assert.deepEqual(c.who, { name: 'Dana Lee', title: 'Practice Owner', link: 'https://brightteeth.example/team', identity: 'brightteeth.example: the cited page is on this site' })
+  assert.deepEqual(c.who, { name: 'Dana Lee', title: 'Practice Owner', link: 'https://www.linkedin.com/in/dana-lee-example', identity: 'brightteeth.example: the cited page is on this site' })
   assert.ok(c.facts.includes('Company site brightteeth.example: the cited page is on this site.'))
   assert.ok(c.facts.includes('The quoted text was found on the cited page when the scan ran.'))
   assert.ok(c.assumptions.includes('No live buying trigger was confirmed.'))
@@ -38,6 +42,7 @@ test('linked-but-unverified ownership is an assumption, never a fact, and must b
   const c = card({ enrichments: [dom('brightteeth.example', 'evidence_link_domain_label'), person, email] })
   assert.ok(!c.facts.some(f => f.includes('brightteeth.example')))
   assert.ok(c.assumptions.some(a => a.includes('not proof the site is theirs')))
+  assert.equal(c.who, null, 'a site not confirmed as theirs names no buyer')
   assert.equal(c.next, 'Confirm brightteeth.example is their site before reaching out.')
 })
 
@@ -57,8 +62,10 @@ test('weakest basis governs: a strong row does not outrank a weak one for the sa
 })
 
 test('conflicting websites: not settled, no draft', () => {
-  const c = card({ enrichments: [dom('brightteeth.example', 'evidence_own_domain'), dom('bright-teeth.example', 'evidence_link_domain_label'), person, email] })
-  assert.equal(c.who!.identity.startsWith('several websites recorded'), true)
+  const l = { ...base, enrichments: [dom('brightteeth.example', 'evidence_own_domain'), dom('bright-teeth.example', 'evidence_link_domain_label'), person, email] }
+  const c = opportunityCard(l, 'Practice owner', NOW)
+  assert.equal(c.who, null, 'no settled site, no buyer')
+  assert.equal(contactIdentity(l).text.startsWith('several websites recorded'), true)
   assert.equal(c.next, 'Settle which website is theirs before reaching out.')
 })
 
@@ -66,9 +73,12 @@ test('no domain provenance is a missing condition, not implicit verification', (
   const c = card({ enrichments: [person, email] })
   assert.ok(c.missing.includes('the company\'s own website'))
   assert.equal(c.next, 'Identify the company\'s own website before reaching out.')
-  const cited = card({ enrichments: [person], contact: 'dana@brightteeth.example' })
-  assert.equal(cited.who!.identity, 'address printed on the cited page')
-  assert.match(cited.next, /^Draft a first message/)
+  // an address printed on the cited page is still that, but no website names the buyer: no "who", and no draft advice
+  const citedLead = { ...base, enrichments: [person], contact: 'dana@brightteeth.example' }
+  const cited = opportunityCard(citedLead, 'Practice owner', NOW)
+  assert.equal(contactIdentity(citedLead).text, 'address printed on the cited page')
+  assert.equal(cited.who, null)
+  assert.equal(cited.next, 'Find the decision-maker before reaching out.')
 })
 
 test('a source-reviewed quote is the user\'s review, not a machine-checked fact', () => {
@@ -94,30 +104,37 @@ test('channel follows the contact evidence: phone only is not an email draft; a 
   assert.ok(press.missing.includes('an email or phone'))
 })
 
+// #1037: what clears the buyer hold, said as plain guidance; the same words whether nobody is listed or only people who don't qualify are
+const OWN_SITE_BUYER = 'a buyer named on the company\'s own site (a person it lists with a title and the LinkedIn its page links)'
 test('nobody found and ungraded/undated are said plainly', () => {
   const c = card({ enrichments: [], fit: null, icp_match: null, event_date: null, date_status: null }, '')
   assert.equal(c.who, null)
   assert.equal(c.whyThisBusiness, 'Not graded against your profile yet.')
   assert.equal(c.whyNow.dateNote, 'event date unknown')
-  assert.ok(c.missing.includes('event date') && c.missing.includes('a named person to approach') && c.missing.includes('buyer role (not shown in the evidence)'))
-  assert.equal(c.next, 'Find the decision-maker before reaching out.')
+  assert.ok(c.missing.includes('event date') && c.missing.includes(OWN_SITE_BUYER) && c.missing.includes('buyer role (not shown in the evidence)'))
+  assert.equal(c.next, 'Identify the company\'s own website before reaching out.', '#1037: the website first - only a confirmed site can name the buyer')
 })
 
 // Instinct #207 recheck (d8c2a5fe): contact equal to a crawled address from an unconfirmed name_probe domain is NOT
 // "printed on the cited page", and the channel must be one createDraft accepts (context label counts, not just local part).
 test('contact equal to a crawled name_probe address: identity needs review, no draft advice, not "printed on cited page"', () => {
   const rival: Row = { connector: 'sitecrawl', kind: 'email', value: 'hello@rival.example', label: null, source_url: 'https://rival.example/contact' }
-  const c = card({ contact: 'hello@rival.example', enrichments: [dom('rival.example', 'name_probe', 'https://rival.example/'), person, rival] })
-  assert.notEqual(c.who?.identity, 'address printed on the cited page')
-  assert.match(c.who!.identity, /found by name search/)
+  const l = { ...base, contact: 'hello@rival.example', enrichments: [dom('rival.example', 'name_probe', 'https://rival.example/'), person, rival] }
+  const c = opportunityCard(l, 'Practice owner', NOW)
+  assert.notEqual(contactIdentity(l).text, 'address printed on the cited page')
+  assert.match(contactIdentity(l).text, /found by name search/)
+  assert.equal(c.who, null, 'a guessed site names no buyer')
   assert.match(c.next, /^Confirm rival\.example is their site/)
   assert.ok(!c.next.startsWith('Draft'))
 })
 
 test('a plain cited-page contact (no crawl record of it) is still printed on the cited page and draftable', () => {
-  const c = card({ contact: 'owner@brightteeth.example', enrichments: [person] })
-  assert.equal(c.who?.identity, 'address printed on the cited page')
-  assert.match(c.next, /^Draft a first message/)
+  const l = { ...base, contact: 'owner@brightteeth.example', enrichments: [person] }
+  const c = opportunityCard(l, 'Practice owner', NOW)
+  assert.equal(contactIdentity(l).text, 'address printed on the cited page')
+  // #1037: no confirmed website, so no buyer it names: the next step is the buyer, never a draft to an unnamed person
+  assert.equal(c.who, null)
+  assert.equal(c.next, 'Find the decision-maker before reaching out.')
 })
 
 test('crawled address whose context label is restricted (privacy/support) is not a draft channel even with a "hello" local part', () => {
@@ -155,15 +172,40 @@ test('card: a sole contradicted stored person is never the recommended who, for 
       assert.ok(c.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m)))
     }
   }
+  // the contradiction filter itself: listed on the company's OWN confirmed site with the LinkedIn its page links, still never the buyer
+  for (const t of ['Former Practice Manager', 'Not Practice Manager', 'Assistant to Practice Manager', 'Retired Practice Manager', 'Ex-Practice Manager']) {
+    const c = whoOf([own('Eli Novak', t, 'eli-novak')], 'Practice manager')
+    assert.equal(c.who, null, `own site: ${t}`)
+    assert.ok(c.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m)), JSON.stringify(c.missing))
+  }
+  assert.equal(whoOf([own('Eli Novak', 'Practice Manager', 'eli-novak')], 'Practice manager').who?.name, 'Eli Novak', 'control: the same row with a current title is the buyer')
 })
 test('card: a contradicted person never beats a valid one; valid role controls; no-ICP and assistant-requested policies', () => {
-  const bad = row('sitecrawl', 'Eli Novak', 'Former Practice Manager'); const good = row('search:people', 'Dana Lee', 'Practice Manager')
+  const bad = row('sitecrawl', 'Eli Novak', 'Former Practice Manager'); const good = own('Dana Lee', 'Practice Manager', 'dana-lee-pm')
   for (const rows of [[bad, good], [good, bad]]) assert.equal(whoOf(rows, 'Practice manager').who?.name, 'Dana Lee')
   assert.equal(whoOf([good], 'Practice manager').who?.name, 'Dana Lee')
   // no ICP roles at all: explicit contradiction is still refused; an ordinary current row is recommended
   assert.equal(whoOf([bad], '').who, null)
   assert.equal(whoOf([bad, good], '').who?.name, 'Dana Lee')
   // the scan itself asks for assistants: an assistant is recommended, an assistant TO that role is not
-  assert.equal(whoOf([row('sitecrawl', 'Pat Kim', 'Office Assistant')], 'Office assistant').who?.name, 'Pat Kim')
-  assert.equal(whoOf([row('sitecrawl', 'Pat Kim', 'Assistant to the Office Assistant')], 'Office assistant').who, null)
+  assert.equal(whoOf([own('Pat Kim', 'Office Assistant', 'pat-kim')], 'Office assistant').who?.name, 'Pat Kim')
+  assert.equal(whoOf([own('Pat Kim', 'Assistant to the Office Assistant', 'pat-kim')], 'Office assistant').who, null)
+})
+
+// #1037 (Quest): a card never recommends a search, provider or SEC person as the buyer, held or ready. With no buyer named on the company's
+// own site the card names nobody and says what is missing; with one, that person is the "who" whatever better-titled row a search stored.
+test('#1037 card: a search, provider or filing person is never the recommended who, held or ready', () => {
+  const searched = row('search:people', 'Vic Park', 'Practice Manager')
+  const provider: Row = { connector: 'enrich:apollo', kind: 'contact', value: 'Pat Moe - Practice Manager', label: 'Apollo, record dated 2026-10-20', source_url: 'https://www.linkedin.com/in/pat-moe-example' }
+  const filing = row('signals:sec-form-d', 'Ann Fry', 'Practice Manager')
+  const listedNoLink: Row = { ...own('Lu Chen', 'Practice Manager', 'lu-chen'), label: 'listed with this title on this company page' }
+  for (const rows of [[searched], [provider], [filing], [listedNoLink], [searched, provider, filing, listedNoLink]]) {
+    const c = whoOf(rows, 'Practice manager')
+    assert.equal(c.who, null, rows.map(r => r.connector).join('+'))
+    assert.match(c.next, /^Find the decision-maker/)
+    assert.ok(c.missing.some(m => /a buyer named on the company's own site/.test(m)) || c.missing.some(m => /SEC filing/.test(m)), JSON.stringify(c.missing))
+  }
+  // ready: the own site names Dana Lee; a better-titled search / provider person never takes her place
+  const c = whoOf([searched, provider, own('Dana Lee', 'Office Lead', 'dana-lee-lead')], 'Practice manager; Office lead')
+  assert.deepEqual([c.who?.name, c.who?.link], ['Dana Lee', 'https://www.linkedin.com/in/dana-lee-lead'])
 })

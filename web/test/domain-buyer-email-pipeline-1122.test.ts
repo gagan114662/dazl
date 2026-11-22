@@ -1,4 +1,5 @@
 // Synthetic transport regression through runJob; NOT live yield evidence. No seeded domain/person/email rows.
+import { contactsFromEnrichments } from '../lib/people/rank.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, master, type Fixture } from './helpers/acceptance-harness.ts'
@@ -7,6 +8,7 @@ import { leadPerson } from '../lib/people/lead-person.ts'
 import { findWorkEmail } from '../lib/people/work-email.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { workEmailCopy } from '../lib/people/work-email-eligible.ts'
+import { planObject, PLACE } from './helpers/request-plan-stub.ts'
 
 const ATS = 'https://ats.rippling.com/war-room-careers/jobs/3d46c27a-6efa-4505-b2b4-790d52ce4ee7'
 const BOARD = 'https://growthroles.com/jobs/war-room-business-development-representative-torontoremote-toronto-7d65eab6263dde76'
@@ -61,6 +63,8 @@ async function pipeline(mode: 'board' | 'own' | 'people_error' | 'empty' | 'no_d
     modelIcp: { summary: 'agencies', who: ['Founder'], industries: [], sizes: [], where: [place], signals: ['hiring SDR'], exclude: [], country: mode === 'board' ? 'CA' : 'US', language: 'en' },
     modelQueries: ['agencies SDR'], hits: [{ url: source, title: page.title, snippet: quote, date: daysAgo(1) }], tfPages: { [source]: page }, own: { [source]: page },
     extraction: [{ company: 'War Room', signal: quote, source_url: source, excerpt: quote, event_date: daysAgo(1) }],
+    // #1395 SYNTHETIC request plan: the request's one place exactly as it writes it
+    modelPlan: planObject([mode === 'board' ? PLACE.torontoOntario : PLACE.austinTexas], { buyer_type: 'agencies', signals: [{ kind: 'hiring', text: 'hiring an SDR', negated: false }] }),
     beforeRun: db => { migrateAllSqlite(db) },
     onVerify: (db, job) => { handle = { db, job } },
     deps: { fetchImpl, crawlGet, creditEnrichment: false, paidFallback: false },
@@ -72,11 +76,16 @@ async function pipeline(mode: 'board' | 'own' | 'people_error' | 'empty' | 'no_d
     assert.ok(lead, JSON.stringify(r.leads))
     const rows = enrichmentsForLeads(r.db, 'A', [lead.id])[lead.id] ?? []
     const person = leadPerson(rows, 'Founder')
-    if (mode === 'empty' || mode === 'people_error' || mode === 'no_domain') assert.equal(person, null)
-    else assert.deepEqual([person?.name, person?.title, person?.linkedin], ['Jane Doe', 'Founder', PROFILE])
+    // #1037: the buyer-role search's result is stored for the details, but a public profile search result never names the row:
+    // only the company's own website names a lead's buyer. So no mode names a person here.
+    assert.equal(person, null)
+    if (!(mode === 'empty' || mode === 'people_error' || mode === 'no_domain')) assert.ok(rows.some(x => x.connector === 'search:people' && x.value === 'Jane Doe, Founder' && x.source_url === PROFILE), 'the search found and stored Jane Doe')
     // Exercise the existing user-clicked lookup on exactly the buyer produced by THIS scan, not another seeded lead.
     saveCredential(r.db, 'A', 'enrich:apollo', 'synthetic-apollo-key', master)
-    const email = await findWorkEmail(r.db, 'A', lead.id, person ? person.name + '|' + person.title : 'Jane Doe|Founder', { fetchImpl, master, env: ON })
+    // the user-clicked lookup targets the person THIS scan's buyer-role search stored (its row in the lead's details), not a typed name
+    const found = contactsFromEnrichments(rows.filter(x => x.connector === 'search:people'), 'Founder')[0]
+    const email = await findWorkEmail(r.db, 'A', lead.id, found ? found.name + '|' + found.title : 'Jane Doe|Founder', { fetchImpl, master, env: ON })
+    if (!(mode === 'empty' || mode === 'people_error' || mode === 'no_domain')) assert.deepEqual([found?.name, found?.title, found?.linkedin], ['Jane Doe', 'Founder', PROFILE], 'the lookup is tied to the person the search found')
     return { r, lead, person, email, events }
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]
@@ -84,13 +93,15 @@ async function pipeline(mode: 'board' | 'own' | 'people_error' | 'empty' | 'no_d
   }
 }
 
-test('same-job own-site resolution -> buyer-role search -> user-clicked email -> checked mailbox; replay spends nothing', async () => {
-  const p = await pipeline('own')
+// #1036 / #1250: the buyer's email is only an address printed on the company's own site. With a provider key and a mailbox verifier
+// configured, the click calls neither: the address People Data Labs / Apollo would have returned is never shown or checked.
+for (const mailbox of ['valid', 'catch-all']) test('same-job own-site resolution -> buyer-role search -> user-clicked email: no provider, no mailbox check (' + mailbox + ' verifier)', async () => {
+  const p = await pipeline('own', mailbox)
   assert.equal(p.lead.company_domain, SITE)
-  assert.equal(p.email.status, 'unverified')
   assert.ok('row' in p.email && p.email.row)
-  assert.equal(workEmailCopy(p.email.row).checked, true)
-  assert.deepEqual(p.events.filter(x => x === 'email_provider' || x.startsWith('mailbox:')), ['email_provider', 'mailbox:jane.doe@' + SITE])
+  assert.deepEqual([p.email.status, p.email.row.address, p.email.row.provider], ['not_found', null, null])
+  assert.equal(workEmailCopy(p.email.row).showAddress, false)
+  assert.deepEqual(p.events.filter(x => x === 'email_provider' || x.startsWith('mailbox:')), [])
   let calls = 0
   await findWorkEmail(p.r.db, 'A', p.lead.id, 'Jane Doe|Founder', { master, env: ON, fetchImpl: async () => { calls++; throw new Error('replay must not send') } })
   assert.equal(calls, 0)
@@ -111,13 +122,5 @@ for (const mode of ['people_error', 'empty', 'no_domain'] as const) test('same-j
   assert.equal(p.person, null)
   assert.ok(p.email.status === 'not_eligible' || p.email.status === 'site_unsettled')
   assert.ok(!p.events.includes('email_provider') && !p.events.some(x => x.startsWith('mailbox:')))
-  p.r.db.close()
-})
-
-test('same-job catch-all stays found-not-checked after successful domain and buyer stages', async () => {
-  const p = await pipeline('own', 'catch-all')
-  assert.ok('row' in p.email && p.email.row)
-  assert.equal(workEmailCopy(p.email.row).checked, false)
-  assert.equal(p.email.row.mailbox_check, 'catch_all')
   p.r.db.close()
 })

@@ -8,6 +8,7 @@ import { checkSessionWithin } from '@/lib/auth-gate'
 import Nav from './nav'
 import { NAV_TOGGLE_ID } from './nav-toggle'
 import MainFocus from './main-focus'
+import StallWatch from './stall-watch'
 import { Icon } from './ui/icons'
 import { OPENING_ID, stallWatchScript } from '@/lib/stall-recovery'
 
@@ -18,7 +19,7 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
   const token = (await cookies()).get('dazl_session')?.value
   // Bounded (lib/auth-gate.ts): a stalled store or lookup now reaches the error boundary (Reload / Try again) and the
   // server log, instead of leaving "Opening your workspace…" up forever (prod 2026-11-21).
-  if (!(await checkSessionWithin(token, { getDb }))) redirect('/sign-in')
+  if (!(await checkSessionWithin(token, { getDb, stage: 'layout' }))) redirect('/sign-in')
 
   return <>{children}</>
 }
@@ -57,6 +58,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         </Suspense>
       </main>
       <MainFocus />
+      {/* #1463: client-side waits (a held soft navigation, a client-rendered fallback): same one-recovery-then-Reload rule */}
+      <StallWatch />
     </div>
   )
 }

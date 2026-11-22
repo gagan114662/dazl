@@ -11,6 +11,7 @@ import { migrateScan, createQueryJob, listLeads } from '../lib/scan/store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
+import { isPlanPrompt, planReply } from './helpers/request-plan-stub.ts'
 
 // Free news search (GDELT DOC 2.0). The fixture follows a live response captured 2026-10-26 (fields and the tokenized
 // title style); no network in tests.
@@ -61,6 +62,8 @@ test('TinyFish off: a scan finds and verifies a lead from news, quoting the fetc
       research: async () => { research++; return { text: '[]', citedUrls: [] } },
       complete: async (_k, p) => {
         if (p.startsWith('Write up to')) return '["dental clinic second location Toronto"]'
+        // #1395: SYNTHETIC request-plan reply: the place as the request writes it, "Toronto" (a listed world city, CA)
+        if (isPlanPrompt(p)) return planReply([{ text: 'Toronto', city: 'Toronto', region: null, country: 'CA' }], { buyer_type: 'Dental clinics', signals: [{ kind: 'event', text: 'opening a new location', negated: false }] })
         extractionPrompt = p
         return JSON.stringify([{ name: '', company: 'Acme Dental', contact: null, signal: 'Opening a second Toronto clinic', source_url: 'https://news.example.com/acme', excerpt: QUOTE, event_date: recent.toISOString().slice(0, 10), score: 80 }])
       },

@@ -6,6 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runFixture, daysAgo, type Fixture, type Cand } from './helpers/acceptance-harness.ts'
+import { planObject, isPlanPrompt } from './helpers/request-plan-stub.ts'
 
 const NYC = 'Find independent dental practices in New York City that opened a new location or posted a front desk receptionist job in the past 90 days. Exclude chains and software vendors. Provide dated source evidence and a practice manager contact.'
 const LONDON = 'Find London UK B2B SaaS startups with 10-50 employees that announced seed funding within the past 90 days and are hiring sales staff. Exclude agencies and recruiters. Include founder contacts and dated evidence.'
@@ -22,6 +23,8 @@ const Q_FB = 'Anyone know if the new dental office on 5th Ave is hiring a front 
 const Q_WRONG = 'Lakeside Orthodontics opened its new Brooklyn office and is welcoming new patients'
 const nyc: Fixture = {
   request: NYC, modelIcp: nycIcp,
+  // #1395: SYNTHETIC request-plan reply: the place as the request writes it
+  modelPlan: planObject([{ text: 'New York City', city: 'New York City', region: null, country: 'US' }], { buyer_type: 'independent dental practices', signals: [{ kind: 'event', text: 'opened a new location', negated: false }, { kind: 'hiring', text: 'posted a front desk receptionist job', negated: false }], exclusions: ['chains', 'software vendors'] }),
   modelQueries: ['independent dental practice opens new location New York City', 'dental office front desk receptionist job New York City'],
   hits: [
     { url: 'https://news.example/brightsmile-opens', title: 'BrightSmile Dental opens in Brooklyn', snippet: Q_OPEN, date: daysAgo(20) },
@@ -125,6 +128,8 @@ const L_LI = 'Congrats to the Vector Labs team in London on closing their seed r
 const L_WRONG = 'Quartz Systems, a London SaaS startup, announced its seed round of 3m pounds'
 const london: Fixture = {
   request: LONDON, modelIcp: lonIcp,
+  // #1395: SYNTHETIC request-plan reply: the place as the request writes it, "London UK"
+  modelPlan: planObject([{ text: 'London UK', city: 'London', region: null, country: 'GB' }], { buyer_type: 'B2B SaaS startups with 10-50 employees', signals: [{ kind: 'funding', text: 'announced seed funding within the past 90 days', negated: false }, { kind: 'hiring', text: 'hiring sales staff', negated: false }], exclusions: ['agencies', 'recruiters'] }),
   modelQueries: ['London B2B SaaS startup announces seed round', 'London SaaS startup hiring account executive sales'],
   hits: [
     { url: 'https://news.example/nimbus-seed', title: 'Nimbus Analytics raises seed', snippet: L_SEED, date: daysAgo(30) },
@@ -204,9 +209,11 @@ test('instrumentation: one scan records queries, every result URL with date/sele
   for (const r of rep.urls) assert.ok('selected' in r && 'tinyfish_text_chars' in r && 'own_fetch' in r && 'walled' in r && 'hit_date' in r)
   assert.equal(rep.urls.filter((r: { selected: boolean }) => r.selected).length, 6); assert.equal(rep.urls.filter((r: { tinyfish_text_chars: number | null }) => r.tinyfish_text_chars).length, 5)
   assert.equal(rep.urls.find((r: { url: string }) => /facebook/.test(r.url)).own_fetch, 'blocked')
-  // verification outcomes, per candidate and per reason (above) and model usage (SYNTHETIC stub counts: 2 calls x 1000 in / 100 out)
-  assert.equal(rep.model.requests_recorded, 2); assert.equal(rep.model.input_tokens, 2000); assert.equal(rep.model.output_tokens, 200); assert.equal(rep.model.tokens_complete, true)
-  assert.equal(x.usage.recorded, true); assert.equal(x.usage.requests_recorded, 2); assert.equal(x.usage.input_tokens, 2000); assert.equal(x.usage.tokens_complete, true); assert.deepEqual(x.usage.served_models, ['stub-model-served'])
+  // verification outcomes, per candidate and per reason (above) and model usage (SYNTHETIC stub counts: 3 calls x 1000 in / 100 out)
+  // #1395: the third call is the request-plan call (one prompt starting with PLAN_PROMPT_HEAD); the other two are the query and extraction calls, as before
+  assert.equal(x.calls.prompts.length, 3); assert.equal(x.calls.prompts.filter(isPlanPrompt).length, 1, 'exactly one extra call, and it is the plan call')
+  assert.equal(rep.model.requests_recorded, 3); assert.equal(rep.model.input_tokens, 3000); assert.equal(rep.model.output_tokens, 300); assert.equal(rep.model.tokens_complete, true)
+  assert.equal(x.usage.recorded, true); assert.equal(x.usage.requests_recorded, 3); assert.equal(x.usage.input_tokens, 3000); assert.equal(x.usage.tokens_complete, true); assert.deepEqual(x.usage.served_models, ['stub-model-served'])
   // tenant scoping and the status route field
   const { runReportFor } = await import('../lib/scan/run-report.ts')
   const jobId = (x.db.prepare('SELECT id FROM scan_jobs').get() as { id: string }).id

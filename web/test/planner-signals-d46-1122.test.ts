@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { compileTargeting, planConditions, planView } from '../lib/scan/targeting.ts'
+import { compileTargeting, planConditions, planView, conditionRoles } from '../lib/scan/targeting.ts'
 
 // #1122 follow-up, case 1: job d46c65cb asked for four signals and the plan kept two ("a new Head of Sales/VP Sales" has no verb and
 // "a founder still doing sales" is a state). The exact request and profile from prod, through the real deterministic planner.
@@ -17,7 +17,10 @@ test('d46c65cb: every requested signal is a plan condition or listed as unproven
   for (const c of conds) assert.equal(c.cond.within_days, 45)
   const unproven = (plan.unproven ?? []).map(u => u.text)
   assert.ok(unproven.includes('Founder still doing sales'), 'a state with no dated event stays visible as unproven')
-  assert.ok(unproven.includes('Hiring first sales rep'), 'a role the open-role condition does not name stays visible')
+  // #1122 follow-up: the open-role condition now names every role of "SDR/BDR or sales rep", so the saved "Hiring first sales rep"
+  // signal is a real condition of the plan (each role matched on its own), not an unproven note
+  assert.deepEqual(conditionRoles(conds[0].cond).map(r => r.toLowerCase()), ['sdr', 'bdr', 'sales rep'])
+  assert.ok(!unproven.includes('Hiring first sales rep'), 'the sales-rep signal is covered by the plan\'s open-role condition')
   for (const u of plan.unproven) assert.match(u.reason, /never counted as met/)
   for (const s of (JSON.parse(ICP).signals as string[])) {
     const kept = unproven.includes(s) || conds.some(c => compileTargeting(s).root && planConditions(compileTargeting(s).root).some(x => x.cond.kind === c.cond.kind))
@@ -59,7 +62,7 @@ test('a dated Head of Sales posting meets "a new Head of Sales/VP Sales" and say
 })
 
 test('a source saying the person joined meets it and says "joined"; no dated source, an undated board title or another role does not', () => {
-  const j = planProofs(compileTargeting(Q, ICP), lead({ evidence_excerpt: 'Uare.ai hired Dana Lee as its new Head of Sales.', signal: 'Uare.ai hired a Head of Sales', event_date: '2026-11-10', event_date_proof: 'published_date', source_url: 'https://uare.ai/news/dana' }), [], ctx)[c3()]
+  const j = planProofs(compileTargeting(Q, ICP), lead({ evidence_excerpt: 'Uare.ai hired Dana Lee as its new Head of Sales.', signal: 'Uare.ai hired a Head of Sales', event_date: '2026-11-10', event_date_proof: 'page_bound', source_url: 'https://uare.ai/news/dana' }), [], ctx)[c3()]
   assert.equal(j.truth, 'pass'); assert.match(j.reason, /^new Head of Sales\/VP Sales joined 2026-11-10/)
   assert.notEqual(planProofs(compileTargeting(Q, ICP), lead({ event_date: null, event_date_proof: null }), [], ctx)[c3()].truth, 'pass', 'no dated source')
   assert.notEqual(planProofs(compileTargeting(Q, ICP), lead({ event_date: null, event_date_proof: null, signal: null, evidence_excerpt: '' }), [{ connector: 'signals:greenhouse', kind: 'hiring-role', value: 'Head of Sales', source_url: 'https://x/1', source_date: '2026-11-20', label: 'Board listing audit (all listed titles): title listed on the board; its posting date was not read' }], ctx)[c3()].truth, 'pass', 'a listed title without its posting date')
