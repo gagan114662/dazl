@@ -32,4 +32,7 @@ test('the amount left names the per-run limit when that is what binds, not the d
   // the daily limit still binds when its room is the smaller one
   const day = estimateRun({ budget: { max_usd: 3.33 }, payer: 'you', ownerCapUsd: 2, reservedUsd: 1 })
   assert.equal(day.cap.binding, 'daily'); assert.match(capLine(day.cap, day.cap.capped_total)!, /\$1\.00 left \(daily limit binds\)/)
+  // a tie names the daily limit; a tighter month still names the month
+  assert.equal(estimateRun({ budget: { max_usd: 1 }, payer: 'you', ownerCapUsd: 2, reservedUsd: 1 }).cap.binding, 'daily')
+  assert.equal(estimateRun({ budget: { max_usd: 3.33 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 1, ownerMonthCapUsd: 5, reservedMonthUsd: 4 }).cap.binding, 'monthly')
 })
