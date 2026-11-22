@@ -47,6 +47,7 @@ import { stagingFakePdl } from '../enrich/pdl.ts'
 import { runWithTenantSpend } from '../scan/spend-cap.ts'
 import { currentnessHeld } from '../outreach/currentness.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { companyFirstPublishedDisplayRowsSync } from './company-first-published-display.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
 
 // #1036: the test-only work-email fixture lead runs ONLY with BOTH staging fakes on (lib/enrich/pdl.ts stagingFakePdl requires
@@ -156,6 +157,24 @@ function markedWorkEmailHeld(db:Database.Database,tenantId:string,lead:LeadRow,n
   try { return currentnessHeld(db,tenantId,lead.id,new Date(now*1000)) } catch { return true }
 }
 
+// A company-first crawl files the buyer's own address from their own card on the company page (company_first_published_email_display),
+// not as a published candidate. On a US lead the same strict step also wrote the sender route for that exact address and page; only
+// then is the pair this buyer's published candidate here, so Find work email gives what the scan already found. Never outside the US.
+function withUsCompanyFirst(db: Database.Database, tenantId: string, base: Record<string, PublishedCandidateRow[]>, leadIds: string[], now: number): Record<string, PublishedCandidateRow[]> {
+  if (!leadIds.length) return base
+  const pairs = companyFirstPublishedDisplayRowsSync(db, tenantId, leadIds, now)
+  const ids = Object.keys(pairs)
+  if (!ids.length) return base
+  const routes = enrichmentsForLeads(db, tenantId, ids)
+  const out = { ...base }
+  for (const id of ids) {
+    const pair = pairs[id]
+    const routed = (routes[id] ?? []).some(e => e.connector === 'sitecrawl' && e.kind === 'email' && e.value.toLowerCase() === pair.address.toLowerCase() && e.source_url === pair.source_url)
+    if (routed) out[id] = [...(out[id] ?? []), { person: pair.person, address: pair.address.toLowerCase(), source_url: pair.source_url }]
+  }
+  return out
+}
+
 // Strict GET and page preload reconstruct the same response as POST, with no cached lookup rows.
 // Fetch owned lead provenance, people/site data, and published candidates in bounded batches.
 export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantId: string, leadIds: string[], now = Math.floor(Date.now() / 1000)): Record<string, WorkEmailRow[]> {
@@ -170,8 +189,9 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
     const strictIds = readable.map(l => l.id)
     const enriched = enrichmentsForLeads(db, tenantId, strictIds)
     const projected = readable.map(l => ({ l, ctx: workEmailTargetContext(l, enriched[l.id] ?? [], now) }))
+    const companyFirstIds = new Set(readable.filter(l => hasCompanyFirstBudget(l.run_budget)).map(l => l.id))
     const idsFor = (country: 'CA' | 'GB' | null) => projected.filter(r => r.ctx && publishedDisplayCountry(r.ctx.where) === country).map(r => r.l.id)
-    const candidates = { ...publishedCandidateRowsForLeads(db, tenantId, idsFor(null)),
+    const candidates = { ...withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, idsFor(null)), idsFor(null).filter(id => companyFirstIds.has(id)), now),
       ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
     for (const { l, ctx } of projected) {
       if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
@@ -353,7 +373,7 @@ async function lookupWorkEmail(
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }
   if (derived.publishedOnly) {
     const country = publishedDisplayCountry(ctx.where)
-    const candidates = country ? publishedDisplayRows(db, tenantId, country, [lead.id]) : publishedCandidateRowsForLeads(db, tenantId, [lead.id])
+    const candidates = country ? publishedDisplayRows(db, tenantId, country, [lead.id]) : withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, [lead.id]), hasCompanyFirstBudget(lead.run_budget) ? [lead.id] : [], now)
     const row = strictPublishedRow(target, person.name, ctx, candidates[lead.id] ?? [], now)
     return { status: row.status, row, replayed: false }
   }
