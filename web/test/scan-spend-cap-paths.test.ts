@@ -173,7 +173,9 @@ test('inventory: each gated module reserves its kind before its request, and daz
     for (const k of p.kind) assert.ok(SPEND_KINDS.includes(k), k)
     assert.ok(/reserveScanSpend\(/.test(src), `${p.file} (${e}) reserves on the scan cap`)
   }
-  assert.deepEqual(SOURCES.filter(s => s.rel !== 'lib/scan/spend-cap.ts' && /cache_control/.test(s.text)).map(s => s.rel), [], 'a cache write would be billed above the reserved input price')
+  // lib/discover is exempt: it reserves a flat worst case for the whole loop and settles at the usage the API reports, cache writes included,
+  // and without caching its search loop costs about five times as much (BENCHMARK.md, 2026-11-22).
+  assert.deepEqual(SOURCES.filter(s => s.rel !== 'lib/scan/spend-cap.ts' && !s.rel.startsWith('lib/discover/') && /cache_control/.test(s.text)).map(s => s.rel), [], 'a cache write would be billed above the reserved input price')
   const nativeGate = SOURCES.find(s => s.rel === NATIVE_SEARCH.gate)!.text
   assert.match(nativeGate, /from '\.\/spend-cap\.ts'/, 'native search adapter imports the scan gate')
   assert.ok(nativeGate.includes(`reserveScanSpend('${NATIVE_SEARCH.kind}',`), 'native search reserves its own spend kind')

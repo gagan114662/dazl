@@ -12,6 +12,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { discoverLeads, DISCOVER_MODEL } from '../lib/discover/agent.ts'
 import { checkLeads, isShown } from '../lib/discover/check.ts'
+import { enrichLeads, ENRICH_MODEL } from '../lib/discover/enrich.ts'
 
 const argv = process.argv.slice(2)
 const opt = (n: string): string | undefined => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined }
@@ -37,7 +38,10 @@ for (const c of cases) {
   const t0 = Date.now()
   try {
     const r = await discoverLeads({ query: c.query, offer: c.offer, maxLeads }, { apiKey: key, signal: AbortSignal.timeout(600_000) })
-    const leads = await checkLeads(r.leads, r.seen)
+    // second pass (--enrich): a small-model call per lead that lacks a person or a website
+    const e = argv.includes('--enrich') ? await enrichLeads(r.leads, { offer: c.offer }, { apiKey: key, signal: AbortSignal.timeout(300_000) }) : null
+    if (e) { r.usage.usd = Math.round((r.usage.usd + e.usage.usd) * 10000) / 10000; r.usage.searches += e.usage.searches; r.usage.requests += e.usage.requests }
+    const leads = await checkLeads(e ? e.leads : r.leads, r.seen)
     const s = leads.filter(isShown)
     rows.push({ id: c.id, status: r.stop, leads: leads.length, shown: s.length, datedProof: s.filter(l => l.signal_date).length, domain: pct(s.filter(l => l.domain).length, s.length), named: pct(s.filter(l => l.person).length, s.length), dated: pct(s.filter(l => l.signal_date).length, s.length), usd: r.usage.usd, secs: Math.round((Date.now() - t0) / 1000), model: r.model, note: r.note ?? '' })
     priv[c.id] = { usage: r.usage, note: r.note, leads }
@@ -56,7 +60,7 @@ const line = (cells: string[]) => cells.map((c, i) => c.padEnd(w[i])).join('  ')
 const at5 = rows.filter(r => r.shown >= 5).length, totalShown = rows.reduce((n, r) => n + r.shown, 0), totalUsd = rows.reduce((n, r) => n + r.usd, 0)
 const date = new Date().toISOString().slice(0, 16).replace('T', ' ')
 const table = [
-  `DISCOVER loop @ ${commit} ${date} UTC, model ${DISCOVER_MODEL}: ${at5}/${rows.length} prompts with 5+ shown; ${totalShown} shown in all; US$${totalUsd.toFixed(2)} total`,
+  `DISCOVER loop @ ${commit} ${date} UTC, model ${DISCOVER_MODEL}${argv.includes('--enrich') ? ` + ${ENRICH_MODEL} for people` : ''}: ${at5}/${rows.length} prompts with 5+ shown; ${totalShown} shown in all; US$${totalUsd.toFixed(2)} total`,
   line(cols), line(w.map(n => '-'.repeat(n))), ...body.map(line), '',
   'definitions:',
   '  leads: records the loop returned with a company, a signal and a proof URL',

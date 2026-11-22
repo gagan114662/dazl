@@ -41,7 +41,8 @@ A lead is a real company (or a named person at one) that matches the request AND
 How to work:
 - You have a limited number of searches and page reads. Spend roughly the first half finding companies with the signal and the rest finding the person and website for the best ones. Stop searching and answer before you run out.
 - Search for the signal first, in the place and industry the request names. Dated pages make the best proof: news items, press releases, dated blog or social posts, job postings, permit and registry records. Search in the local language too when the place calls for it.
-- For each candidate, open the page that proves the signal. Use the date printed on that page for the event. A company's own page often announces something without a date: then look for a dated page about the same event and use that as the proof. If no page prints a date, set signal_date to null; never estimate one.
+- For each candidate, open the page that proves the signal. Use the date printed on that page for the event. A company's own page often announces something without a date: then look for a dated page about the same event and use that as the proof. If no page prints a date, set signal_date to null; never estimate one. For a job posting use the date it was posted. For a news item or press release that is itself the announcement, its printed publication date is the date.
+- A lead with a dated proof page is worth far more to the seller than one without. Prefer companies whose signal you can date, and spend a search on dating a strong candidate before adding an undated one.
 - evidence_url must be a page you opened or one that appeared in your search results, and the company's name must be on it.
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
 - Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give a LinkedIn URL only when a page links it. If you cannot find a person, leave the person fields null and still return the lead.
@@ -109,7 +110,10 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       model: DISCOVER_MODEL, max_tokens: 16000,
       betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',   // a declined request is re-run on a fallback model in the same call
       output_config: { effort: 'medium' },
-      system: SYSTEM,
+      // Caching is what keeps this loop affordable: every search adds its results to the prompt, and without a cache point the whole
+      // growing prompt is billed at full price on each step (measured: US$2.16 a prompt without it, US$0.41 with it).
+      cache_control: { type: 'ephemeral' },
+      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
       tools: [
         { type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES },
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: MAX_FETCHES, max_content_tokens: 6000 },

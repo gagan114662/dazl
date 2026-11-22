@@ -4,6 +4,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseLeads, usd } from '../lib/discover/agent.ts'
 import { checkLead, companyOnPage, dayOnPage, isShown } from '../lib/discover/check.ts'
+import { mergeEnriched, needsEnrichment, parseEnriched } from '../lib/discover/enrich.ts'
 
 const lead = (o: Record<string, unknown> = {}) => ({ company: 'Northwind Dental', domain: 'https://www.northwind-dental.example/about', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind-second-clinic', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://www.northwind-dental.example/team', linkedin_url: 'https://www.linkedin.com/in/dana-ruiz/', confidence: 'high', why: 'expanding', ...o })
 
@@ -57,4 +58,18 @@ test('checkLead: the text Claude read decides first, then the read by dazl, then
   const unseen = await checkLead(l, [{ url: 'https://news.example/other', title: 'Northwind Dental', page_age: null, text: null }], page('blocked', 403))
   assert.deepEqual([unseen.proof, isShown(unseen)], ['unseen', false], 'a proof URL the run never saw and nobody can read is not shown')
   assert.equal((await checkLead({ ...l, evidence_url: 'http://127.0.0.1/admin' }, [], never)).proof, 'unseen', 'a private address is never fetched')
+})
+
+test('second pass: only empty fields are filled, a person needs the page that names them, and the first pass is never overwritten', () => {
+  const base = parseLeads(JSON.stringify({ leads: [lead({ person: null, title: null, person_source_url: null, linkedin_url: null, domain: null })] }), 1).leads[0]
+  assert.equal(needsEnrichment(base), true)
+  const found = parseEnriched('<json>{"domain":"https://www.northwind-dental.example/","person":"Dana Ruiz","title":"Owner","person_source_url":"https://northwind-dental.example/team","linkedin_url":"https://www.linkedin.com/in/dana-ruiz/"}</json>')
+  const merged = mergeEnriched(base, found)
+  assert.deepEqual([merged.domain, merged.person, merged.title, merged.person_source_url, merged.linkedin_url], ['northwind-dental.example', 'Dana Ruiz', 'Owner', 'https://northwind-dental.example/team', 'https://www.linkedin.com/in/dana-ruiz/'])
+  assert.deepEqual([merged.signal, merged.signal_date, merged.evidence_url], [base.signal, base.signal_date, base.evidence_url], 'the signal, its date and its proof are untouched')
+  assert.equal(parseEnriched('{"person":"Dana Ruiz","title":"Owner","person_source_url":null,"domain":"northwind-dental.example"}').person, null, 'a name with no page that names them is not kept')
+  const kept = mergeEnriched(parseLeads(JSON.stringify({ leads: [lead({ domain: null })] }), 1).leads[0], parseEnriched('{"domain":"other.example","person":"Someone Else","title":"CEO","person_source_url":"https://other.example/team"}'))
+  assert.deepEqual([kept.person, kept.domain], ['Dana Ruiz', 'other.example'], 'the person the first pass found stays; only the empty website is filled')
+  assert.equal(needsEnrichment(kept), false)
+  assert.deepEqual(parseEnriched('no idea'), { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null })
 })
