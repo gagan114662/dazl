@@ -20,6 +20,7 @@ import { resetTinyfishState } from '../../lib/search/tinyfish.ts'
 import { runReportFor } from '../../lib/scan/run-report.ts'
 import { modelUsage } from '../../lib/scan/model-usage.ts'
 import { sourceStats } from '../../lib/search/trace.ts'
+import { PLAN_PROMPT_HEAD, clearRequestPlanCache } from '../../lib/scan/request-plan.ts'
 
 export const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -59,10 +60,8 @@ export interface Fixture {
   model?: string                           // the stub provider's configured model (default 'stub-model-requested', which is unpriced)
   modelPlan?: object | string | 'provider_error'   // SYNTHETIC request-plan reply (#1395): an object is sent as JSON, a string as written; 'provider_error' fails the call. Unset: the plan prompt gets the extraction reply (off the schema, so the board source holds)
 }
-// #1395: the request-plan prompt opens with this line (the contract lib/scan/request-plan.ts writes to)
-const PLAN_PROMPT_HEAD = 'You read one B2B prospecting request and return its plan as JSON.'
 export async function runFixture(f: Fixture) {
-  resetTinyfishState()
+  resetTinyfishState(); clearRequestPlanCache()
   const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db); migrateCompetitors(db); migrateNeedEvidence(db)
   saveKey(db, 'A', 'anthropic', KEY, master)
   migrateAuth(db) // the actual current users schema; a hand-rolled shape drifts (email_verified_at broke the #417 drain here)

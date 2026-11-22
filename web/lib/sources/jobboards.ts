@@ -128,23 +128,31 @@ export function genericPlace(query: string): Place | null {
     const lead = j >= 0 ? toks[j].toLowerCase() : ''
     const allCap = words.every(w => /^\p{Lu}/u.test(w))
     if (!(comma || LEAD_IN.has(lead) || allCap)) continue
-    const city = words.join(' '), key = norm(city); if (key.length < 3) continue
-    const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`), namesake = namesakeOfBuiltIn(city)
-    const ok = (...locs: (string | undefined)[]) => locs.some(l => {
-      if (!l) return false
-      if (!re.test(norm(l))) return false
-      const named = countriesIn(l); if (!(named.length === 0 || named.every(c => c === country))) return false
-      if (!ukMarker(country) && LONDON_OK.test(l)) return false // #1205: a UK London location ("Greater London", a bare "London") is not a London elsewhere
-      // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK); a city read from
-      // its province ("London, Alberta") is in that province, so a posting naming another one ("London, ON") is not it
-      const regions = regionsIn(l)
-      if (!regions.every(r => countryOfRegion(r) === country && (!province || r === province))) return false
-      if (namesake && (/\bremote\b/i.test(l) || (named.length === 0 && regions.length === 0))) return false
-      return true
-    })
-    return { name: city, ok }
+    const city = words.join(' ')
+    const p = cityCountryPlace(city, country, province); if (!p) continue
+    return p
   }
   return null
+}
+// A city of a non-US country (ISO alpha-2), optionally in one Canadian province: a posting is in it when its location names the city as a whole word
+// and names no other country, no state or province of another country (or of another province), and is not a UK London location when the city is not.
+// genericPlace reads the city from the request's words; boardPlaceOf (#1395) gets it from the request plan.
+export function cityCountryPlace(city: string, country: string, province: string | null = null): Place | null {
+  const key = norm(city); if (key.length < 3) return null
+  const re = new RegExp(`(^| )${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( |$)`), namesake = namesakeOfBuiltIn(city)
+  const ok = (...locs: (string | undefined)[]) => locs.some(l => {
+    if (!l) return false
+    if (!re.test(norm(l))) return false
+    const named = countriesIn(l); if (!(named.length === 0 || named.every(c => c === country))) return false
+    if (!ukMarker(country) && LONDON_OK.test(l)) return false // #1205: a UK London location ("Greater London", a bare "London") is not a London elsewhere
+    // #1205: a location naming a state / province of ANOTHER country is another place ("Cambridge, MA" is not Cambridge, UK); a city read from
+    // its province ("London, Alberta") is in that province, so a posting naming another one ("London, ON") is not it
+    const regions = regionsIn(l)
+    if (!regions.every(r => countryOfRegion(r) === country && (!province || r === province))) return false
+    if (namesake && (/\bremote\b/i.test(l) || (named.length === 0 && regions.length === 0))) return false
+    return true
+  })
+  return { name: city.trim(), ok }
 }
 // #1095 (live staging trial, 2026-11-13): "Austin B2B SaaS companies hiring their first account executive", whose profile resolved the place
 // to "Austin, TX", named no place this function knew (a US city is neither London/NYC, a state name nor "<City>, <Country>"), so the free
@@ -256,6 +264,51 @@ export function placeIn(query: string): Place | null {
   const w = worldCityPlace(query); if (w) return w
   for (const c of COUNTRY_PLACES) if (c.ask.test(query)) return placeOf(c)
   return null
+}
+// #1395: the board place from the REQUEST PLAN's places (lib/scan/request-plan.ts: read once by the model, every place grounded in the request), not
+// from the request's words. The posting side is unchanged: the same London / New York City / US city / US state / city-in-country places and their
+// location checks. Fails closed with the run's existing skip reasons: no place, several places, a region or country the board source cannot place
+// (it never widens a city to its country or a country to everywhere), each named so the run says why.
+// The plan type is structural here (lib/scan/request-plan.ts PlanPlace) so the source layer does not import the scan layer.
+export type BoardPlace = { place: Place } | { reason: string }
+const NYC_NAMES = new Set(['new york', 'new york city', 'nyc', 'manhattan', 'brooklyn', 'queens', 'bronx', 'the bronx', 'staten island'])
+export function boardPlaceOf(places: readonly { text: string; city: string | null; region: string | null; country: string | null }[]): BoardPlace {
+  if (places.length === 0) return { reason: 'skipped_no_place' }
+  const built = places.map(p => boardPlaceOne(p))
+  const named = new Map<string, Place>()
+  for (const b of built) if ('place' in b) named.set(b.place.name, b.place)
+  // two places are never narrowed to one of them (the rule placeIn and the profile places already keep)
+  if (places.length > 1 && named.size !== 1) return { reason: `skipped_no_place:several:${clean(places.slice(0, 3).map(p => p.text).join(', '))}` }
+  const fail = built.find(b => 'reason' in b)
+  if (fail) return fail
+  return { place: [...named.values()][0] }
+}
+function boardPlaceOne(p: { text: string; city: string | null; region: string | null; country: string | null }): BoardPlace {
+  const region = p.region ? regionOf(p.region) : null
+  if (p.region && !region) return { reason: `skipped_no_place:region:${clean(p.region)}` }   // a region the board source cannot read is never dropped (that would widen)
+  const country = p.country ?? (region ? countryOfRegion(region) : null)
+  if (!country) return { reason: `skipped_no_place:${p.city ? 'city' : 'country'}:${clean(p.text)}` }
+  if (region && countryOfRegion(region) !== country) return { reason: `skipped_no_place:ambiguous:${clean(p.text)}` }
+  const city = p.city?.trim() || null
+  if (country === 'US') {
+    const abbr = region?.startsWith('US-') ? region.slice(3).toUpperCase() : null
+    if (city && NYC_NAMES.has(norm(city)) && (!abbr || abbr === 'NY')) return { place: placeOf(CITY_PLACES[1]) }
+    if (city) {
+      const st = abbr ?? bareUsCity(city)?.abbr ?? null
+      const pl = st && STATES[st] ? cityPlaceOf(city, st) : null
+      return pl ? { place: pl } : { reason: `skipped_no_place:${st ? 'city' : 'ambiguous'}:${clean(p.text)}` }
+    }
+    if (abbr && STATES[abbr] && abbr !== 'DC') { const st = STATES[abbr]; return { place: { name: st, ok: (...l) => locationInState(st, ...l) } } }
+    return { reason: `skipped_no_place:country:${clean(p.text)}` }
+  }
+  if (country === 'GB') {
+    if (city && norm(city) === 'london' && (!region || region === 'GB-eng')) return { place: placeOf(CITY_PLACES[0]) }
+    if (city) { const pl = cityCountryPlace(city, 'GB'); return pl ? { place: pl } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
+    if (!region) return { place: placeOf(COUNTRY_PLACES[0]) }
+    return { reason: `skipped_no_place:region:${clean(p.text)}` }
+  }
+  if (city) { const pl = cityCountryPlace(city, country, region?.startsWith('CA-') ? region : null); return pl ? { place: pl } : { reason: `skipped_no_place:city:${clean(p.text)}` } }
+  return { reason: `skipped_no_place:${region?.startsWith('CA-') ? 'province' : 'country'}:${clean(p.text)}` }
 }
 // #1205: a bounded list of large non-US cities that name one place on their own ("in Toronto", a profile place "Mumbai"): each resolves as "<City>, <Country>"
 // would. A data list, no network call. Cities sharing their name with a sizeable US / UK place (Paris, Dublin, Melbourne, Manchester, Birmingham,
@@ -416,7 +469,7 @@ export function guessSlugs(c: { name: string; domain?: string | null }): { token
 export const jobBoardsAdapter: SourceAdapter = {
   id: 'jobboards',
   label: 'Greenhouse and Ashby public job boards',
-  async collect({ query, keywords, feeds, pages, discovered, companies, http: rawHttp, page, note, tally }) {
+  async collect({ query, keywords, feeds, pages, discovered, companies, http: rawHttp, page, note, tally, place: planned }) {
     const t0 = Date.now()
     let cut = false
     const http: SafeGet = async (url, o) => { if (Date.now() - t0 > jobBoardsLimits.budgetMs) { cut = true; return { status: 0, body: '' } } return rawHttp(url, o) }
@@ -433,7 +486,7 @@ export const jobBoardsAdapter: SourceAdapter = {
       if (text === null) { note?.('page_unreachable'); return cands[0] }
       return cands.find(q => onPage(text, q)) ?? null
     }
-    const place = placeIn(query)
+    const place = planned !== undefined ? planned : placeIn(query)   // #1395: the runner's plan place when it read the request; never re-read from the words
     const state = place?.name ?? ''
     // The role terms are the planner's own role phrases (their head noun: "front desk receptionist" -> "receptionist", "sales staff" -> "sales").
     // The generic request keywords are only the fallback: they are the first six long words, which for "London UK B2B SaaS startups with
