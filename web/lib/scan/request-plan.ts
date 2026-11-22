@@ -131,7 +131,27 @@ export function groundedIn(request: string, p: PlanPlace, profileWhere: readonly
   if (p.city !== null && !hasWords(text, fold(p.city))) return false
   if (p.region !== null && !hasWords(text, fold(p.region))) return false
   if (p.country !== null && !writtenCountries(p.text).has(p.country) && !impliedCountries(request, p, profileWhere).has(p.country)) return false
+  // Every region and country the place text writes (beyond the city's own words) must be in the plan's fields: an omitted or contradicted
+  // qualifier is refused, never left for a resolver to infer another place ("London, Ontario" with only city London is not the UK London).
+  const rest = withoutCity(p.text, p.city)
+  const countries = writtenCountries(rest), regions = writtenRegions(rest)
+  if (countries.size && (p.country === null || !countries.has(p.country))) return false
+  if (regions.size && (p.region === null || !regions.has(regionOf(p.region) ?? ''))) return false
   return true
+}
+// The place text without the city's own words: "New York City" writes no state and "Mexico City" no country beyond the city itself.
+const withoutCity = (text: string, city: string | null): string =>
+  city ? text.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(city.trim())}(?![\\p{L}\\p{N}])`, 'giu'), ' ') : text
+// Every region (a US state, Canadian province or UK constituent country, name or code) the text writes as a capitalised word run.
+function writtenRegions(text: string): Set<string> {
+  const out = new Set<string>()
+  const words = text.split(/[\s,;()/|]+/).filter(Boolean)
+  for (let i = 0; i < words.length; i++) for (let n = 1; n <= 3 && i + n <= words.length; n++) {
+    const seg = words.slice(i, i + n).join(' ')
+    if (!/^\p{Lu}/u.test(seg)) continue
+    const r = regionOf(seg); if (r) out.add(r)
+  }
+  return out
 }
 
 // Cached per play: the same tenant's same request is read once per process (a retry or a re-run of the play costs nothing). Only a valid
