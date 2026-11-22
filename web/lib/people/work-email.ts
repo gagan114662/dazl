@@ -159,7 +159,8 @@ function markedWorkEmailHeld(db:Database.Database,tenantId:string,lead:LeadRow,n
 }
 
 // The scan's places name the United States: each one either names it as its country or ends in a US state (name or postal code)
-// and names no other country. "London", "Toronto, ON", "Remote" or no place at all is not a US scope.
+// and names no other country. "London", "Toronto, ON", "Remote" or no place at all is not a US scope. A postal code shared with a
+// country ("Toronto, CA") reads as the state; the pair still needs the crawl's US sender route, which a Canadian homepage never gets.
 const usPlace = (w: string) => {
   const codes = countriesIn(w)
   if (codes.length) return codes.length === 1 && codes[0] === 'US'
