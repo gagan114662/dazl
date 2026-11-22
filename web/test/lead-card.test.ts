@@ -72,6 +72,9 @@ test("Instinct's repro: name-guessed website, crawled address and a listed perso
   assert.equal(s.contactStatus!.confirmed, false)
   assert.match(s.contactStatus!.text, /^Unconfirmed - name match only: name-guessed\.example: found by name search, not linked from the source\./)
   assert.doesNotMatch(s.contactStatus!.text, /Role as listed/)
+  // and it never blames her title: she is not a buyer because nothing on the company's confirmed site names her
+  assert.doesNotMatch(s.contactStatus!.text, /past, negated or assistant/)
+  assert.match(s.contactStatus!.text, /No buyer named on the company's own site\./)
   assert.equal(s.approve.ok, false, 'drafting stays blocked')
 })
 
@@ -114,4 +117,12 @@ test('#1037: contactNoPerson never carries a person the card synthesized (Leads 
   const s = leadCardSummary(l)
   assert.doesNotMatch(s.contactNoPerson ?? '', /Sam Roe/)
   assert.equal(leadCardSummary(base).contactNoPerson, 'hello@brightdental.example')
+})
+
+test('#1037 a provider person with a good title is not the buyer, and the status line says so without blaming the title', () => {
+  const jane: Row = { connector: 'enrich:apollo', kind: 'contact', value: 'Jane Doe - CEO', label: 'Apollo, record dated 2026-10-20', source_url: 'https://www.linkedin.com/in/jane-doe-example' }
+  const s = leadCardSummary({ ...base, contact: 'jane@brightdental.example', enrichments: [dom('brightdental.example', 'evidence_own_domain', base.source_url), jane] }, 'CEO')
+  assert.doesNotMatch(s.contact!, /Jane Doe/)
+  assert.doesNotMatch(s.contactStatus!.text, /past, negated or assistant/)
+  assert.match(s.contactStatus!.text, /No buyer named on the company's own site\./)
 })

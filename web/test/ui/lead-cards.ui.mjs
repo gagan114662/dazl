@@ -103,7 +103,7 @@ try {
   assert.match(await pico.textContent(), /hello@name-guessed\.example/)
   assert.doesNotMatch(await pico.textContent(), /Dana Smith/)
   assert.equal(await statusOf('Pico Dental').isVisible(), true)
-  assert.equal(await statusOf('Pico Dental').textContent(), 'Unconfirmed - name match only: name-guessed.example: found by name search, not linked from the source.')
+  assert.equal(await statusOf('Pico Dental').textContent(), 'Unconfirmed - name match only: name-guessed.example: found by name search, not linked from the source. No buyer named on the company\'s own site.')
   assert.equal(await pico.getByRole('button', { name: 'Approve' }).isDisabled(), true)
   assert.match(await statusOf('Twin Dental').textContent(), /^Unconfirmed - name match only: several websites recorded \(a-dental\.example, b-dental\.example\); which one is theirs is not settled\./)
   assert.match(await statusOf('Quiet Dental').textContent(), /Restricted inbox \(privacy\): not a sales contact\./)
