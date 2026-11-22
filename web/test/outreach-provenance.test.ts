@@ -4,7 +4,8 @@ import Database from 'better-sqlite3'
 import {migrateScan,createJob} from '../lib/scan/store.ts'
 import {migrateOutreach} from '../lib/outreach/store.ts'
 import {migrateConnectors} from '../lib/connectors/store.ts'
-import {messageProvenance,provenanceDateLine,publicSourceUrl} from '../lib/outreach/provenance.ts'
+import {messageProvenance,publicSourceUrl} from '../lib/outreach/provenance.ts'
+import {provenanceDateLine} from '../lib/outreach/provenance-line.ts'
 import {listMessages} from '../lib/outreach/service.ts'
 function setup(){
  const db=new Database(':memory:');migrateScan(db);migrateOutreach(db);migrateConnectors(db)
@@ -15,7 +16,7 @@ function setup(){
 }
 test('provenance exposes exact current claims and contact match, never upgrades human/quote/date verification',()=>{
  const db=setup();const before=db.serialize();const p=messageProvenance(db,'A','lead',' HELLO@acme.example ')
- assert.deepEqual(p,{company:'Acme',signal:'Hiring SDRs',excerpt:'Acme is hiring an SDR.',source_url:'https://acme.example/jobs',event_date:'2026-10-01',date_status:'unverified',day_verified:false,contact_origin:'lead_record',contact_source_url:null})
+ assert.deepEqual(p,{company:'Acme',signal:'Hiring SDRs',excerpt:'Acme is hiring an SDR.',source_url:'https://acme.example/jobs',event_date:'2026-10-01',date_status:'unverified',day_verified:false,timing:'unconfirmed',window_missed:false,contact_origin:'lead_record',contact_source_url:null})
  assert.deepEqual(db.serialize(),before)
  db.prepare("UPDATE leads SET human_confirmed_at=123 WHERE id='lead'").run()
  assert.deepEqual(messageProvenance(db,'A','lead','hello@acme.example'),p)
