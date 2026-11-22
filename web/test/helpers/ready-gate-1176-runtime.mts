@@ -19,6 +19,8 @@ import { heldReason, previewSplit, type PreviewLead } from '../../lib/journey.ts
 import { buildProofPreview, loadProofInput } from '../../lib/scan/proof-preview.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as readyGET } from '../../app/api/home/ready/route.ts'
+import { addEnrichment } from '../../lib/connectors/store.ts'
+import { ownSiteBuyerRows } from './own-site-buyer.ts'
 
 const REQUEST = 'Find logistics and supply chain software companies that posted a new job in the past 90 days.'
 const GH = 'https://job-boards.greenhouse.io/flexport/jobs/8383190'
@@ -67,6 +69,8 @@ test('#1176 a structurally proven posting day: the real scan stores the proof, t
   assert.deepEqual([row.company, row.event_date, row.event_date_proof, row.review_reason], ['Flexport', published, 'ats_structured', null], JSON.stringify(row))
   assert.notEqual(row.date_status, 'verified')
   assert.notEqual(row.confidence, null)
+  // #1037: Flexport's own site names its buyer (the rows the real crawl stores), so the posting day is the only thing in question here
+  for (const r of ownSiteBuyerRows('flexport.example')) addEnrichment(x.db, 'A', row.id, r)
   setScanDb(x.db); setUser({ id: 'A', business_name: 'Acme' })
 
   // 1. as the scan left it: the card's own rule says the day is proven, and the gate still holds the lead for what it must (timing proof)

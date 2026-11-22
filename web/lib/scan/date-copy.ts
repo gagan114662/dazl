@@ -12,3 +12,9 @@ export function eventDateCopy(eventDate: string | null, _status: string | null, 
   if (opts.dayVerified) return `${eventDate} (event day verified on the cited source; requested recency window unresolved - current need unconfirmed)`
   return `${eventDate} (claimed event day; event association and current need unconfirmed)`
 }
+
+// A lead card's event-date line (app/app/leads/leads-client.tsx), from the lead as the leads route returns it: the proof
+// verdict (day_verified, eventDayVerified), the timing verdict and the run's window, never date_status (#1176). Every date
+// line on the card reads through this, so the card cannot say "verified" in one place and "claimed" in another.
+export const leadCardDateLine = (l: { event_date: string | null; date_status: string | null; timing?: 'proof_backed' | 'unconfirmed' | null; day_verified?: boolean; window_missed?: boolean }): string =>
+  eventDateCopy(l.event_date, l.date_status, l.timing, { dayVerified: l.day_verified, windowMissed: l.window_missed })
