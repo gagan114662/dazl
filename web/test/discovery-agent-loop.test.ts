@@ -120,7 +120,7 @@ test('end_turn without submit_leads: one nudge to submit, then it stops', async 
 })
 
 test('the loop stops at the budget (the brief: under $1 a prompt) and at max turns; a refusal stops it', async () => {
-  const big = api([{ stop_reason: 'pause_turn', content: [searched(SEEN[0])], usage: usage({ input: 400_000, output: 10_000, searches: 5 }) }])
+  const big = api([{ stop_reason: 'pause_turn', content: [searched(SEEN[0])], usage: usage({ input: 450_000, output: 10_000, searches: 5 }) }])
   const r = await runDiscoveryAgent({ apiKey: 'sk-test', request: 'q', fetchImpl: big.fetchImpl, now: NOW, budgetUsd: 1 })
   assert.equal(r.stop, 'budget'); assert.equal(big.bodies.length, 1); assert.ok(r.usage.cost_usd >= 1)
   const loop = api([{ stop_reason: 'pause_turn', content: [searched(SEEN[0])], usage: usage() }])
