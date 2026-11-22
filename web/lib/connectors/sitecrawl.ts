@@ -709,11 +709,15 @@ const TITLE_STOP = new Set(['chief', 'head', 'vice', 'with', 'from', 'that', 'th
 const FORMER_ATTR = /\b(?:former|past[\s_-]+(?:team|leadership|staff)|alumni|emeritus|in[\s_-]+memoriam)\b/i
 function cutFormerSections(html: string): string {
   // comments and script/style/template bodies are not markup: removed first, so they can neither open nor close a section (Qodo #1532)
-  html = html.replace(/<!--[\s\S]*?(?:-->|$)/g, ' ').replace(/<(script|style|template|noscript)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
+  // The tags are scanned on a same-length copy whose comment and script/style bodies are blanked; the cut is applied to the page itself,
+  // so JSON-LD and the rest stay intact for extraction.
+  const blank = (s: string) => s.replace(/[^\n]/g, ' ')
+  html = html.replace(/<!--[\s\S]*?(?:-->|$)/g, ' ')
+  let scan = html.replace(/(<(script|style|template|noscript)\b[^>]*>)([\s\S]*?)(<\/\2\s*>|$)/gi, (_a, o: string, _t: string, body: string, c: string) => o + blank(body) + c)
   const attrVal = (attrs: string, name: string): string[] => [...attrs.matchAll(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`, 'gi'))].map(x => x[1] ?? x[2] ?? x[3] ?? '')
   const open = /<([a-z][a-z0-9]*)\b([^>]*)>/gi
   let m: RegExpExecArray | null
-  while ((m = open.exec(html))) {
+  while ((m = open.exec(scan))) {
     const attrs = m[2]
     if (/^(?:br|img|hr|input|meta|link|source|wbr|use|path)$/i.test(m[1]) || attrs.trim().endsWith('/')) continue
     const labels = ['aria-label', 'class', 'id', 'title'].flatMap(n => attrVal(attrs, n)).join(' ').replace(/[_-]+/g, ' ')
@@ -725,10 +729,12 @@ function cutFormerSections(html: string): string {
     const tag = m[1].toLowerCase(), re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi')
     re.lastIndex = m.index + m[0].length
     let depth = 1, t: RegExpExecArray | null
-    while (depth && (t = re.exec(html))) depth += t[1] ? -1 : 1
+    while (depth && (t = re.exec(scan))) depth += t[1] ? -1 : 1
     if (depth) return ''
-    html = html.slice(0, m.index) + ' ' + html.slice(re.lastIndex)
-    open.lastIndex = m.index
+    const pad = ' '.repeat(re.lastIndex - m.index)
+    html = html.slice(0, m.index) + pad + html.slice(re.lastIndex)
+    scan = scan.slice(0, m.index) + pad + scan.slice(re.lastIndex)
+    open.lastIndex = re.lastIndex
   }
   return html
 }
