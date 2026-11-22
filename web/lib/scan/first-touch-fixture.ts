@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { fixtureAvailable, FixtureError } from './test-fixture.ts'
+import { fixtureAvailable, FixtureError } from '../outreach/test-fixture.ts'
 import { TEST_INBOX } from '../outreach/service.ts'
 import { tableExists } from '../outreach/send-budget.ts'
 

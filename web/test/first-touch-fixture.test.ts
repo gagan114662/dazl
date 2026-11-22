@@ -14,8 +14,8 @@ import { saveSettings, TEST_INBOX, draftBlockReason, type Deps } from '../lib/ou
 import { setTestAddresses } from '../lib/outreach/sequences.ts'
 import { ATTESTATIONS, CONSENT_VERSION, drainFirstTouch, enable, migrateAutopilot, pause, resume, runAutopilot } from '../lib/outreach/autopilot.ts'
 import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
-import { createFirstTouchFixture, deleteFirstTouchFixture, firstTouchFixtureExists, FIRST_TOUCH_FIXTURE_COMPANY } from '../lib/staging-fixtures/first-touch-fixture.ts'
-import { createVerificationFixture } from '../lib/staging-fixtures/verification-fixture.ts'
+import { createFirstTouchFixture, deleteFirstTouchFixture, firstTouchFixtureExists, FIRST_TOUCH_FIXTURE_COMPANY } from '../lib/scan/first-touch-fixture.ts'
+import { createVerificationFixture } from '../lib/scan/verification-fixture.ts'
 import { accountSendCount, anyUncertainSend } from '../lib/outreach/send-budget.ts'
 import { listReopens } from '../lib/outreach/reopen.ts'
 

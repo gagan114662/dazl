@@ -3,7 +3,7 @@
 // tests prove an existing one is refused a lookup and removed by its clean-up. Synthetic rows only.
 import type Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
-import { WORK_EMAIL_FIXTURE_JOB } from '../../lib/staging-fixtures/work-email-fixture.ts'
+import { WORK_EMAIL_FIXTURE_JOB } from '../../lib/scan/work-email-fixture.ts'
 import { WORK_EMAIL_FIXTURE_COMPANY } from '../../lib/people/work-email-eligible.ts'
 
 export const LEGACY_FIXTURE_TARGET = 'Valid Testbuyer|Owner'

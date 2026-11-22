@@ -170,7 +170,7 @@ No real site changes its stack on demand, so an adoption, a removal and an outag
 - `DELETE` removes the fixture's play, lead and every row its crawls wrote.
 - Until deleted, the fixture play is an ordinary row of the workspace on staging: it shows in the Leads history and counts as one of the day's scans (as the ranking fixture does). It is left out of Home's counts and exports (`source_kind` test).
 
-Code: `web/lib/staging-fixtures/tech-fixture.ts`; tests `web/test/tech-fixture-769.test.ts`, `web/test/tech-fixture-route-769.test.ts`.
+Code: `web/lib/scan/tech-fixture.ts`; tests `web/test/tech-fixture-769.test.ts`, `web/test/tech-fixture-route-769.test.ts`.
 
 ## Stripe in test mode (runbook, Instinct)
 Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_live_` or `rk_live_` key, and staging never holds a live key. Set these four values in `/etc/dazl-staging/env`, all from the Stripe dashboard with **Test mode** switched on:

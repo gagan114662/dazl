@@ -48,7 +48,7 @@ test('migration backfills kinds for pre-existing rows and leaves unknowns NULL',
 test('fixture company rows backfill to source_kind test by job-level fixture provenance, never by name', () => {
   const db = new Database(':memory:')
   migrateScan(db)
-  // The real fixture inserter (lib/staging-fixtures/test-fixture.ts) writes its job with
+  // The real fixture inserter (lib/outreach/test-fixture.ts) writes its job with
   // industry/location 'test only'; the backfill keys on that job-level marker.
   const job = createJob(db, 'u1', { business_name: 'dazl sequence test fixture (test only)', industry: 'test only', location: 'test only' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)

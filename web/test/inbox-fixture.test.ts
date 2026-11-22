@@ -1,4 +1,4 @@
-// The test-only, NO-SEND Inbox fixture (#369, lib/staging-fixtures/inbox-fixture.ts) on both engines: the gate, a seeded set
+// The test-only, NO-SEND Inbox fixture (#369, lib/outreach/inbox-fixture.ts) on both engines: the gate, a seeded set
 // that spans more than one Inbox page plus one bounce_review notice judged by the reply sync's own notice judgement,
 // idempotent and concurrent seeds, and a cleanup that removes the fixture's rows and nothing else. fetch is replaced
 // by a counting stub that throws: nothing here may touch the network, a provider or a model.
@@ -9,7 +9,7 @@ import { bothEngines } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { inboxPage, PAGE_MAX, type InboxThread } from '../lib/outreach/inbox.ts'
-import { cleanupInboxFixture, fixtureIds, fixtureNotice, inboxFixtureRefusal, InboxFixtureError, INBOX_FIXTURE_FLAG, INBOX_FIXTURE_PLAY, INBOX_FIXTURE_THREADS, seedInboxFixture } from '../lib/staging-fixtures/inbox-fixture.ts'
+import { cleanupInboxFixture, fixtureIds, fixtureNotice, inboxFixtureRefusal, InboxFixtureError, INBOX_FIXTURE_FLAG, INBOX_FIXTURE_PLAY, INBOX_FIXTURE_THREADS, seedInboxFixture } from '../lib/outreach/inbox-fixture.ts'
 import { judgeDeliveryNotice } from '../lib/outreach/replies.ts'
 import { createDraft, draftBlockReason, INBOX_FIXTURE_DOMAIN, isInboxFixtureAddress, OutreachError, recipientAllowed, sendBlockReason, sendMessage } from '../lib/outreach/service.ts'
 

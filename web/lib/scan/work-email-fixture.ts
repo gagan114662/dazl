@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { fixtureAvailable, FixtureError } from './test-fixture.ts'
+import { fixtureAvailable, FixtureError } from '../outreach/test-fixture.ts'
 import { migrateWorkEmail, PENDING_STALE_S } from '../people/work-email.ts'
 import { migrateWarm } from '../warm/connections.ts'
 import { WORK_EMAIL_FIXTURE_COMPANY } from '../people/work-email-eligible.ts'

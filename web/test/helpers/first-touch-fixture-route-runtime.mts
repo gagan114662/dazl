@@ -12,7 +12,7 @@ import { setTestAddresses } from '../../lib/outreach/sequences.ts'
 import { TEST_INBOX, draftBlockReason } from '../../lib/outreach/service.ts'
 import { confirmLeadReview } from '../../lib/scan/review-confirm.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
-import { FIRST_TOUCH_FIXTURE_COMPANY } from '../../lib/staging-fixtures/first-touch-fixture.ts'
+import { FIRST_TOUCH_FIXTURE_COMPANY } from '../../lib/scan/first-touch-fixture.ts'
 
 let fetches = 0
 globalThis.fetch = (async () => { fetches++; throw new Error('Unexpected network call') }) as typeof fetch

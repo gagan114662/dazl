@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { fixtureFailureMessage, fixtureNextUrl } from '../lib/staging-fixtures/fixture-action-result.ts'
+import { fixtureFailureMessage, fixtureNextUrl } from '../lib/scan/fixture-action-result.ts'
 
 const JOB = 'a1b2c3d4e5f6a7b8c9d0e1f2'
 

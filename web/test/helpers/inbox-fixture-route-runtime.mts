@@ -9,7 +9,7 @@ import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { POST, DELETE } from '../../app/api/outreach/inbox/fixture/route.staging.ts'
 import { GET as INBOX } from '../../app/api/outreach/inbox/route.ts'
-import { fixtureIds } from '../../lib/staging-fixtures/inbox-fixture.ts'
+import { fixtureIds } from '../../lib/outreach/inbox-fixture.ts'
 
 let fetches = 0
 globalThis.fetch = (async () => { fetches++; throw new Error('Unexpected network call') }) as typeof fetch

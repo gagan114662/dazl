@@ -50,7 +50,7 @@ Dialect ids are explained under "SQLite-only SQL". `pg✗` = statements Postgres
 | `lib/outreach/play-memory.ts` | 2 |  |  |  |  |
 | `lib/outreach/provenance.ts` | 2 |  |  |  |  |
 | `lib/outreach/store.ts` | 4 | 1 | strftime-now, sqlite_master |  | yes |
-| `lib/staging-fixtures/test-fixture.ts` | 8 |  |  | sqlite-tx |  |
+| `lib/outreach/test-fixture.ts` | 8 |  |  | sqlite-tx |  |
 
 ### enrichment (20)
 
@@ -146,7 +146,7 @@ Dialect ids are explained under "SQLite-only SQL". `pg✗` = statements Postgres
 | `lib/scan/csv-import.ts` | 11 | 2 | strftime-now, rowid, sqlite_master | sqlite-tx | yes |
 | `lib/scan/domain-review-action.ts` | 4 |  |  | sqlite-tx, immediate |  |
 | `lib/scan/evidence-copies.ts` | 13 | 2 | insert-or, strftime-now | sqlite-tx, immediate | yes |
-| `lib/staging-fixtures/first-touch-fixture.ts` | 16 |  |  | sqlite-tx, immediate |  |
+| `lib/scan/first-touch-fixture.ts` | 16 |  |  | sqlite-tx, immediate |  |
 | `lib/scan/first5.ts` | 3 |  |  |  |  |
 | `lib/scan/held-state.ts` | 7 |  |  |  |  |
 | `lib/scan/lookalike.ts` | 2 |  | like-case |  |  |
@@ -154,9 +154,9 @@ Dialect ids are explained under "SQLite-only SQL". `pg✗` = statements Postgres
 | `lib/scan/preview-claim.ts` | 0 |  |  |  | yes |
 | `lib/scan/quarantine.ts` | 1 |  |  |  |  |
 | `lib/scan/queue-runner.ts` | 6 | 1 | strftime-now, rowid |  |  |
-| `lib/staging-fixtures/ranking-fixture.ts` | 4 |  |  | sqlite-tx |  |
+| `lib/scan/ranking-fixture.ts` | 4 |  |  | sqlite-tx |  |
 | `lib/scan/resolution.ts` | 5 |  |  |  |  |
-| `lib/staging-fixtures/review-draft-fixture.ts` | 13 |  |  | sqlite-tx |  |
+| `lib/scan/review-draft-fixture.ts` | 13 |  |  | sqlite-tx |  |
 | `lib/scan/run-report.ts` | 5 | 1 | insert-or, strftime-now |  | yes |
 | `lib/scan/runner.ts` | 22 | 5 | insert-or, strftime-now, rowid | sqlite-tx, immediate, busy-timeout |  |
 | `lib/scan/sales-hiring-gate.ts` | 13 | 3 | scalar-max-min |  |  |
@@ -168,8 +168,8 @@ Dialect ids are explained under "SQLite-only SQL". `pg✗` = statements Postgres
 | `lib/scan/store.ts` | 32 | 11 | strftime-now, rowid, sqlite_master, like-case | sqlite-tx, immediate | yes |
 | `lib/scan/timing-proof.ts` | 6 |  |  |  |  |
 | `lib/scan/trial.ts` | 3 |  | strftime-now |  | yes |
-| `lib/staging-fixtures/tech-fixture.ts` | 16 |  |  | sqlite-tx, immediate |  |
-| `lib/staging-fixtures/verification-fixture.ts` | 24 |  | like-case | sqlite-tx |  |
+| `lib/scan/tech-fixture.ts` | 16 |  |  | sqlite-tx, immediate |  |
+| `lib/scan/verification-fixture.ts` | 24 |  | like-case | sqlite-tx |  |
 | `lib/search/news-attribution.ts` | 2 | 1 | sqlite_master |  |  |
 | `lib/search/trace.ts` | 3 | 1 | insert-or |  | yes |
 | `lib/signals/domain-basis.ts` | 2 |  |  |  |  |
@@ -234,7 +234,7 @@ Dialect ids are explained under "SQLite-only SQL". `pg✗` = statements Postgres
 | `lib/outreach/reopen.ts` | sqlite-tx, immediate |
 | `lib/outreach/sequences.ts` | sqlite-tx, immediate |
 | `lib/outreach/service.ts` | sqlite-tx, immediate |
-| `lib/staging-fixtures/test-fixture.ts` | sqlite-tx |
+| `lib/outreach/test-fixture.ts` | sqlite-tx |
 | `lib/people/email-pattern.ts` | sqlite-tx |
 | `lib/play-funding.ts` | pg-advisory |
 | `lib/play-repeat.ts` | pg-advisory |
@@ -243,15 +243,15 @@ Dialect ids are explained under "SQLite-only SQL". `pg✗` = statements Postgres
 | `lib/scan/csv-import.ts` | sqlite-tx |
 | `lib/scan/domain-review-action.ts` | sqlite-tx, immediate |
 | `lib/scan/evidence-copies.ts` | sqlite-tx, immediate |
-| `lib/staging-fixtures/first-touch-fixture.ts` | sqlite-tx, immediate |
+| `lib/scan/first-touch-fixture.ts` | sqlite-tx, immediate |
 | `lib/scan/job-feed.ts` | sqlite-tx |
-| `lib/staging-fixtures/ranking-fixture.ts` | sqlite-tx |
-| `lib/staging-fixtures/review-draft-fixture.ts` | sqlite-tx |
+| `lib/scan/ranking-fixture.ts` | sqlite-tx |
+| `lib/scan/review-draft-fixture.ts` | sqlite-tx |
 | `lib/scan/runner.ts` | sqlite-tx, immediate, busy-timeout |
 | `lib/scan/source-review.ts` | sqlite-tx |
 | `lib/scan/store.ts` | sqlite-tx, immediate |
-| `lib/staging-fixtures/tech-fixture.ts` | sqlite-tx, immediate |
-| `lib/staging-fixtures/verification-fixture.ts` | sqlite-tx |
+| `lib/scan/tech-fixture.ts` | sqlite-tx, immediate |
+| `lib/scan/verification-fixture.ts` | sqlite-tx |
 | `lib/search/tinyfish.ts` | pg-advisory |
 | `lib/secrets-rewrap.ts` | sqlite-tx |
 | `lib/seo/indexing.ts` | pg-advisory |
@@ -283,7 +283,7 @@ Module-level Maps/Sets. Each is either a cache that is safe to lose, or state th
 | `lib/scan/held-state.ts:17` | `inProcess` (Set) | must share | last-resort hold when no write succeeded; another instance would not see the hold |
 | `lib/scan/place-agreement.ts:222` | `REGION_BY_ALIAS` (Map) | constant | region alias lookup, filled once at load from the fixed country / state / province lists in the file, then only read |
 | `lib/scan/place-agreement.ts:223` | `NEEDS_CAPITALS` (Set) | constant | which of those aliases must be written in capitals (ON, NY, NSW), filled once at load beside REGION_BY_ALIAS, then only read |
-| `lib/staging-fixtures/tech-fixture.ts:151` | `inFlight` (Set) | safe to lose | test-only staging technology fixture (#769): which workspaces have a fixture crawl running in this process; staging is one instance, and a second instance would at worst let two fixture crawls of one test lead overlap |
+| `lib/scan/tech-fixture.ts:151` | `inFlight` (Set) | safe to lose | test-only staging technology fixture (#769): which workspaces have a fixture crawl running in this process; staging is one instance, and a second instance would at worst let two fixture crawls of one test lead overlap |
 | `lib/sources/github.ts:9` | `cache` (Map) | safe to lose | response cache |
 | `lib/sources/jina.ts:11` | `cache` (Map) | safe to lose | response cache |
 | `lib/sources/v2ex.ts:10` | `cache` (Map) | safe to lose | response cache |

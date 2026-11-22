@@ -11,8 +11,8 @@ import { migrateReplies } from '../lib/outreach/replies.ts'
 import { setTestAddresses } from '../lib/outreach/sequences.ts'
 import { TEST_INBOX, leadEvidenceState, listMessages, approve, sendMessage, saveSettings } from '../lib/outreach/service.ts'
 import { confirmLeadReview, unconfirmLeadReview } from '../lib/scan/review-confirm.ts'
-import { createReviewDraftFixture, deleteReviewDraftFixtures } from '../lib/staging-fixtures/review-draft-fixture.ts'
-import { deleteVerificationFixture } from '../lib/staging-fixtures/verification-fixture.ts'
+import { createReviewDraftFixture, deleteReviewDraftFixtures } from '../lib/scan/review-draft-fixture.ts'
+import { deleteVerificationFixture } from '../lib/scan/verification-fixture.ts'
 
 const tenant='review-draft-fixture-test'
 function setup(){

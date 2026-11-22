@@ -11,7 +11,7 @@ import { migrateReplies, acceptReadConsent } from '../lib/outreach/replies.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, approve, sendMessage, leadHeld, recipientAllowed, isSuppressed, OutreachError, TEST_INBOX } from '../lib/outreach/service.ts'
 import { migrateSequences, setTestAddresses, approveSequence, runSequences, SequenceError } from '../lib/outreach/sequences.ts'
-import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError, FIXTURE_STEPS, REPLY_FIXTURE_STEPS } from '../lib/staging-fixtures/test-fixture.ts'
+import { createSequenceTestFixture, createReplyStopTestFixture, fixtureAvailable, FixtureError, FIXTURE_STEPS, REPLY_FIXTURE_STEPS } from '../lib/outreach/test-fixture.ts'
 
 const NOW = 1800000000
 const master = randomBytes(32)

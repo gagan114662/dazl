@@ -44,9 +44,7 @@ import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import WorkEmail, { type WorkEmailInitial } from './work-email'
 import { siteSettled, targetKey, workEmailLeadEligible, workEmailTargets } from '@/lib/people/work-email-eligible'
-import dynamic from 'next/dynamic'
-// #1398: the test-account fixture controls load only in the staging build; production has no import of them (the flag is inlined at build).
-const VerificationFixture = process.env.NEXT_PUBLIC_DAZL_STAGING === '1' ? dynamic(() => import('./verification-fixture')) : () => null
+import VerificationFixture from './verification-fixture'
 import { leadCardDateLine } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import EstimateConfirm from './estimate-confirm'

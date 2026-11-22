@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { createRankingFixture } from '@/lib/staging-fixtures/ranking-fixture'
-import { FixtureError } from '@/lib/staging-fixtures/test-fixture'
+import { createRankingFixture } from '@/lib/scan/ranking-fixture'
+import { FixtureError } from '@/lib/outreach/test-fixture'
 import { denied } from '@/lib/workspace-access'
 
 // Test-only ranking fixture for the designated test tenant. Creates no outreach, no

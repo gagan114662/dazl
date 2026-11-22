@@ -41,7 +41,7 @@ export const TEST_INBOX = 'instinct114114@gmail.com'
 export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
   norm(email) === TEST_INBOX && isAllowlistedTestRecipient(db,tenantId,email)
-// Synthetic recipients of the test-only inbox fixture (lib/staging-fixtures/inbox-fixture.ts, #369). The .invalid TLD cannot
+// Synthetic recipients of the test-only inbox fixture (lib/outreach/inbox-fixture.ts, #369). The .invalid TLD cannot
 // resolve, and no draft, send, follow-up or sequence step may ever be addressed to one: recipientAllowed refuses them
 // (every follow-up and sequence path checks it), and draft and send refuse them first with their own code.
 export const INBOX_FIXTURE_DOMAIN = 'inbox-fixture.dazl.invalid'

@@ -50,7 +50,7 @@ export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' 
   'lib/rate-limit.ts:local': { share: 'safe to lose', note: "per-process shadow, only for the low-risk 'local' kinds while the shared store fails; closed kinds refuse (#356, #400)" },
   'lib/scan/countries.ts:BY_NAME': { share: 'constant', note: 'filled once from a literal table' },
   'lib/scan/countries.ts:ALPHA3': { share: 'constant', note: 'filled once from a literal table' },
-  'lib/staging-fixtures/tech-fixture.ts:inFlight': { share: 'safe to lose', note: 'test-only staging technology fixture (#769): which workspaces have a fixture crawl running in this process; staging is one instance, and a second instance would at worst let two fixture crawls of one test lead overlap' },
+  'lib/scan/tech-fixture.ts:inFlight': { share: 'safe to lose', note: 'test-only staging technology fixture (#769): which workspaces have a fixture crawl running in this process; staging is one instance, and a second instance would at worst let two fixture crawls of one test lead overlap' },
   'lib/scan/held-state.ts:inProcess': { share: 'must share', note: 'last-resort hold when no write succeeded; another instance would not see the hold' },
   'lib/scan/fetch-page.ts:boardMemo': { share: 'safe to lose', note: 'public ATS board reads shared for 2 minutes (#533)' },
   'lib/scan/request-plan.ts:cache': { share: 'safe to lose', note: 'request plans per tenant and request (#1395): a lost entry is read again (one more Haiku call), never a different reading' },
@@ -74,7 +74,6 @@ export interface Inventory {
 
 // The product areas #354's acceptance names, by path. First match wins.
 const AREAS: [RegExp, string][] = [
-  [/staging-fixtures\//, 'staging fixtures'],   // #1398: test-only fixtures, reached only by the staging build
   [/auth|gmail\/(oauth|connect|callback|disconnect)|secrets-rewrap|llm\/key-store/, 'auth & keys'],
   [/billing|plans|checkout|stripe/, 'billing'],
   [/outreach\/(service|send|send-budget|ledger|autopilot|followups|sequences|attribution|conversion)|unsubscribe|app\/api\/(outreach\/(route|\[id\]|autopilot|sequences|settings|conversion)|onboarding\/)/, 'sends'],

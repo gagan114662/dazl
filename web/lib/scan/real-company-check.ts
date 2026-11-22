@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { fixtureAvailable, FixtureError } from './test-fixture.ts'
+import { fixtureAvailable, FixtureError } from '../outreach/test-fixture.ts'
 import { isStaging } from '../staging.ts'
 import { crawlJob, type Get } from '../connectors/sitecrawl.ts'
 import { migrateWorkEmail } from '../people/work-email.ts'
 import { migrateEmailGuess } from '../people/email-pattern.ts'
-import { REAP_STAGING_CHECKS_SQL, STAGING_CHECK_DEAD_S } from '../scan/store.ts'
+import { REAP_STAGING_CHECKS_SQL, STAGING_CHECK_DEAD_S } from './store.ts'
 
 // A check still 'running' past the crawl deadline plus margin lost its process (a restart mid-crawl): failed, removable, not active.
 const reapDeadChecks = (db: Database.Database) => { const now = Math.floor(Date.now() / 1000); db.prepare(REAP_STAGING_CHECKS_SQL).run(now, now - STAGING_CHECK_DEAD_S) }
