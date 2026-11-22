@@ -34,3 +34,17 @@ test('the buyer is stored even with no route: one person is chosen from the own 
   assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Robin Fleming, Chief Technology Officer', label: 'x', url: 'https://a.com/about' }], WHO), null)
   assert.equal(chooseSiteBuyer([{ kind: 'person', value: 'Ann Lee, CEO', label: 'x', url: 'https://a.com/about' }, { kind: 'person', value: 'Bob Ray, CEO', label: 'x', url: 'https://a.com/about' }], WHO), null)
 })
+
+test('Qodo #1532: hidden or former sections are cut in every class form; comments and scripts never steer the cutter', () => {
+  const prose = '<p>' + 'we build software for teams and we care about our customers deeply every single day of the year '.repeat(3) + '</p>'
+  const page = (x: string) => `<html><body>${prose}<ul><li><h3>Ann Carter</h3><p>Chief Executive Officer</p></li></ul>${x}</body></html>`
+  const names = (x: string) => extractPeople(page(x), 'https://acme.com/team', WHO).map(f => f.value.split(',')[0])
+  const bob = '<li><h3>Bob Dunlop</h3><p>Co-Founder</p></li>'
+  assert.deepEqual(names(`<div class="hidden">${bob}</div>`), ['Ann Carter'])
+  assert.deepEqual(names(`<div class="d-none sm">${bob}</div>`), ['Ann Carter'])
+  assert.deepEqual(names(`<div class=former-team>${bob}</div>`), ['Ann Carter'])
+  // a commented-out unclosed former section does not wipe the page's current people
+  assert.deepEqual(names('<!-- <div class="former-team"> -->'), ['Ann Carter'])
+  // a closing tag inside a script does not end a hidden section early
+  assert.deepEqual(names(`<div class="hidden"><script>var s = "</div>"</script>${bob}</div>`), ['Ann Carter'])
+})

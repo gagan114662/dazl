@@ -708,15 +708,19 @@ const TITLE_STOP = new Set(['chief', 'head', 'vice', 'with', 'from', 'that', 'th
 // balanced by its own tag; an unbalanced one fails closed (the whole page names no one).
 const FORMER_ATTR = /\b(?:former|past[\s_-]+(?:team|leadership|staff)|alumni|emeritus|in[\s_-]+memoriam)\b/i
 function cutFormerSections(html: string): string {
-  // ...and so is anything the page hides from view (hidden, aria-hidden, display:none / visibility:hidden / opacity:0, hidden classes)
+  // comments and script/style/template bodies are not markup: removed first, so they can neither open nor close a section (Qodo #1532)
+  html = html.replace(/<!--[\s\S]*?(?:-->|$)/g, ' ').replace(/<(script|style|template|noscript)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
+  const attrVal = (attrs: string, name: string): string[] => [...attrs.matchAll(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\`]+))`, 'gi'))].map(x => x[1] ?? x[2] ?? x[3] ?? '')
   const open = /<([a-z][a-z0-9]*)\b([^>]*)>/gi
   let m: RegExpExecArray | null
   while ((m = open.exec(html))) {
     const attrs = m[2]
-    const labels = [...attrs.matchAll(/\b(?:aria-label|class|id|title)\s*=\s*["']([^"']*)["']/gi)].map(x => x[1].replace(/[_-]+/g, ' ')).join(' ')
-    const hidden = /(?:^|\s)hidden(?:\s|=|$)|aria-hidden\s*=\s*["']true["']|style\s*=\s*["'][^"']*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?![.\d]*[1-9]))/i.test(attrs) ||
-      /\bclass\s*=\s*["'][^"']*(?:^|\s)(?:hidden|invisible|d-none)(?:\s|["'])/i.test(attrs)
     if (/^(?:br|img|hr|input|meta|link|source|wbr|use|path)$/i.test(m[1]) || attrs.trim().endsWith('/')) continue
+    const labels = ['aria-label', 'class', 'id', 'title'].flatMap(n => attrVal(attrs, n)).join(' ').replace(/[_-]+/g, ' ')
+    const classes = attrVal(attrs, 'class').join(' ').split(/\s+/)
+    const style = attrVal(attrs, 'style').join(';')
+    const hidden = /(?:^|\s)hidden(?:\s|=|$)/i.test(attrs.replace(/(["'])[^"']*\1/g, ' ')) || attrVal(attrs, 'aria-hidden').some(v => v.trim().toLowerCase() === 'true') ||
+      /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?![.\d]*[1-9])/i.test(style) || classes.some(c => /^(?:hidden|invisible|d-none)$/i.test(c))
     if (!FORMER_ATTR.test(labels) && !hidden) continue
     const tag = m[1].toLowerCase(), re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi')
     re.lastIndex = m.index + m[0].length
