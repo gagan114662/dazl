@@ -1407,7 +1407,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
   // PooledGuard (runJobCapped); every other scan's model calls reserve the owner's caps at the transport, with this cap.
   // CSV jobs included (XHawk on #1154): a named account's CSV scan takes the same PooledGuard, so its unsettled-accounting marker stops it too
   const pooledByRunner = ownerLimits(job.user_id) !== null
-  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, nativeSearch: !claudeOnly && deps.discover !== false && discoverLaneEnabled(job, 'anthropic', deps.discover ? {} : process.env, job.funded_by === 'trial' ? trialCaps()?.reserveUsd ?? null : null), accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
+  return runWithScanSpend({ db, jobId: job.id, tenantId: job.user_id, attempt: job.attempts, cap: scanCapConfig(), requestMaxUsd, claudeOnly, nativeSearch: deps.discover !== false && discoverLaneEnabled(job, 'anthropic', deps.discover ? {} : process.env, job.funded_by === 'trial' ? trialCaps()?.reserveUsd ?? null : null), accountLimits: pooledByRunner ? null : accountLimits(job.user_id) }, () => runJobCapped(db, job, deps))
 }
 
 // The Claude discovery lane (launch brief, Steps 2 and 3; lib/discover). One Claude loop with its own web search and page reads finds
@@ -1588,7 +1588,9 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
-    if (!claudeOnly && deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env, trial?.reserveUsd ?? null)) {
+    // The lane also takes the first-run screen's "search with Claude" choice and the company-first rollout: both were narrower
+    // versions of the same idea (two to twelve searches, one workspace) and both returned leads that were then held.
+    if (deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env, trial?.reserveUsd ?? null)) {
       const lane = await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
       if (lane !== 'no_room') return lane
     }
