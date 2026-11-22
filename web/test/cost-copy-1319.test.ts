@@ -56,3 +56,10 @@ test('when the run limit binds and the day room is also short, the change list n
   // with day room to spare the extra line is absent
   assert.ok(!estimateRun({ budget: { max_usd: 0.01 }, payer: 'you', ownerCapUsd: 10, reservedUsd: 1 }).verdict.change.some(c => /daily limit has only/.test(c)))
 })
+
+test('a run that is never offered the run-limit raise is not told that raise is not enough', () => {
+  const e = estimateRun({ budget: { max_usd: 0.05 }, payer: 'you', companyFirst: true, ownerCapUsd: 10, reservedUsd: 9.93 })
+  assert.equal(e.verdict.ok, false)
+  const raise = e.verdict.change.some(c => /^Raise the dollar limit/.test(c))
+  assert.equal(e.verdict.change.some(c => /raising this run's limit/.test(c)), raise, e.verdict.change.join(' | '))
+})
