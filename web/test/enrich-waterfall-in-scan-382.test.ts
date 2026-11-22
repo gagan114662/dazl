@@ -99,7 +99,7 @@ for (const [why, apollo] of [
     const pdlAudit = s.db.prepare("SELECT status FROM connector_audit WHERE connector = 'enrich:pdl' ORDER BY insert_seq").all() as { status: string }[]
     assert.ok(!pdlAudit.some(a => a.status === 'error'), `never recorded as a PDL failure: ${JSON.stringify(pdlAudit)}`)
     const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
-    assert.ok(texts.includes('People Data Labs: the remaining lookups in this scan were not sent: an earlier paid request in this scan got no answer (it timed out or the provider failed) and is counted as billed at the most it could cost, so dazl made no further paid request in this scan. The refused lookups were not charged; lookups made before the refusal keep their own charges.'), JSON.stringify(texts))
+    assert.ok(texts.includes('People Data Labs: the remaining lookups in this scan were not sent: an earlier paid request in this scan ended without a settled cost (it timed out, the provider failed, or its usage could not be read) and is counted as billed at the amount reserved for it, so dazl made no further paid request in this scan. The refused lookups were not charged; lookups made before the refusal keep their own charges.'), JSON.stringify(texts))
   })
 }
 
@@ -255,7 +255,7 @@ test('#382 notices: two refusal causes for one provider are two lines, each with
   audit(s.db, { tenantId: 'u1', connector: 'enrich:pdl', jobId: s.jobId, lookup: 'spend refused: accounting_uncertain', status: 'spend_refused', results: 0 })
   audit(s.db, { tenantId: 'u1', connector: 'enrich:pdl', jobId: s.jobId, lookup: 'spend refused: over_cap', status: 'spend_refused', results: 0 })
   const texts = (await providerIssues('u1', s.jobId))!.map(providerIssueText)
-  assert.ok(texts.some(t => t.includes('is counted as billed at the most it could cost')), JSON.stringify(texts))
+  assert.ok(texts.some(t => t.includes('is counted as billed at the amount reserved for it')), JSON.stringify(texts))
   assert.ok(texts.some(t => t.includes("this scan's spending cap had no room left")), JSON.stringify(texts))
 })
 

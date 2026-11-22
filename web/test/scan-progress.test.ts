@@ -108,7 +108,7 @@ ptest('runJob: FAILED — the search source answers 500: the outcome names the s
   assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows]))
   // Provenance: ONLY the source whose own request errored is named. The model search was refused BEFORE it ran (the spend
   // hold), so its row reads skipped_hold and it is never reported as "had an error".
-  assert.equal(e.outcome.label, 'Failed - search:tinyfish had an error; one paid step counted as billed')
+  assert.equal(e.outcome.label, 'Failed - search:tinyfish had an error; the interrupted paid step counted as billed')
   const rep = (runReportFor(e.r.db, 'A', String((e.job as { id: string }).id)) ?? []).at(-1) ?? null
   assert.deepEqual(outcomeInputs(rep, e.rows, String(e.job.status)).failed_sources, ['search:tinyfish'])
   assert.equal((e.rows.find(r => r.collector === 'search:anthropic') as { status?: string } | undefined)?.status, 'skipped_hold')
@@ -122,7 +122,7 @@ ptest('runJob: FAILED — the search source answers 500: the outcome names the s
 test('runJob: FAILED — the model search itself answers 500 after send: anthropic is named, never "skipped", billing uncertainty stated', async () => {
   const e = await ending(base({ hits: [], tfPages: {}, own: {}, extraction: [], researchError: true, tinyfishOff: true }))
   assert.equal(e.outcome.kind, 'failed', JSON.stringify([e.outcome, e.job, e.rows]))
-  assert.equal(e.outcome.label, 'Failed - search:anthropic had an error; one paid step counted as billed')
+  assert.equal(e.outcome.label, 'Failed - search:anthropic had an error; the interrupted paid step counted as billed')
   assert.equal((e.rows.find(r => r.collector === 'search:anthropic') as { status?: string } | undefined)?.status, 'error')
   assert.equal(e.job.error, 'accounting_uncertain')
   const rep = (runReportFor(e.r.db, 'A', String((e.job as { id: string }).id)) ?? []).at(-1) ?? null
@@ -184,7 +184,7 @@ test('runJob: hold-stopped AFTER partial work reads partial_hold - not skipped, 
   assert.equal(mapped.status, 'partial', 'maps to partial, never to unavailable (no false outage) or skipped')
   assert.equal(mapped.note, 'stopped by the spending limit after partial results')
   // every hold reason maps to its own honest copy
-  assert.equal(partialNote('partial_hold:accounting_uncertain'), 'stopped after a request got no answer; it is counted as billed at the most it could cost; partial results kept')
+  assert.equal(partialNote('partial_hold:accounting_uncertain'), 'stopped after a request ended without a settled cost; it is counted as billed at the amount reserved for it; partial results kept')
   assert.equal(partialNote('partial_hold:provider_rejected'), 'stopped after the provider rejected a request; partial results kept')
   assert.equal(partialNote('partial_hold'), 'stopped by the spend guard after partial results')
   assert.equal(e.r.report!.search.attempted, 1, 'the search that ran (the query-plan call was itself refused, so one fallback query) is retained in the run report')

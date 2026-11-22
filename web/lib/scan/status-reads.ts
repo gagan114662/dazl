@@ -59,18 +59,18 @@ export async function readTrialScanCap(db: Db, tenantId: string, jobId: string):
   } catch { return 'unreadable' }
 }
 
+// #1157: the amount still reserved for this job's paid calls that never got an answer (status 'reserved', any attempt) and how
+// many they are, owner-scoped. null when unreadable or nothing is reserved: the stopped scan then names neither, never a made-up one.
+export async function readUncertainHold(db: Db, tenantId: string, jobId: string): Promise<{ usd: number; steps: number } | null> {
+  try {
+    const row = await db.get<{ s: number | string | null; n: number | string | null }>("SELECT SUM(c.reserve_usd) AS s, COUNT(*) AS n FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ? AND c.status = 'reserved'", [tenantId, jobId])
+    const v = row?.s == null ? null : Number(row.s), n = Number(row?.n)
+    return v !== null && Number.isFinite(v) && v > 0 && Number.isSafeInteger(n) && n > 0 ? { usd: v, steps: n } : null
+  } catch { return null }
+}
 // #1157 line 2: when this scan last did something the server recorded (a paid/free provider call sent or settled), so a
 // running page can say "last activity N s ago" instead of a silent "Still running". Owner-scoped, read only. null = no
 // call recorded yet (or the table does not exist): the page then falls back to the claim time, never an invented time.
-// #1157: the worst case still reserved for this job's paid calls that never got an answer (status 'reserved', any attempt),
-// owner-scoped. null when unreadable or nothing is reserved: the stopped scan then names no amount, never a made-up one.
-export async function readUncertainUsd(db: Db, tenantId: string, jobId: string): Promise<number | null> {
-  try {
-    const row = await db.get<{ s: number | string | null }>("SELECT SUM(c.reserve_usd) AS s FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ? AND c.status = 'reserved'", [tenantId, jobId])
-    const v = row?.s == null ? null : Number(row.s)
-    return v !== null && Number.isFinite(v) && v > 0 ? v : null
-  } catch { return null }
-}
 export async function readLastActivity(db: Db, tenantId: string, jobId: string): Promise<number | null> {
   try {
     const row = await db.get<{ c: number | string | null; s: number | string | null }>('SELECT MAX(c.created_at) AS c, MAX(c.settled_at) AS s FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ?', [tenantId, jobId])

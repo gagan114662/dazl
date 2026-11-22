@@ -12,10 +12,10 @@ test('#1157 AC-1: a free (trial) scan stopped as accounting_uncertain says the f
   }
 })
 
-test('#1157 AC-2: an accounting_uncertain stop gives a definite answer: the interrupted step is counted as billed at its most', () => {
+test('#1157 AC-2: an accounting_uncertain stop gives a definite answer: the interrupted step is counted as billed at the amount reserved for it', () => {
   for (const funded_by of ['trial', 'user']) {
     const o = scanOutcome({ id: 'j', status: 'failed', error: 'accounting_uncertain', funded_by } as never)
-    assert.match(o.detail ?? '', /it is counted as billed at the most it could cost/)
+    assert.match(o.detail ?? '', /it is counted as billed at the amount reserved for it/)
     assert.doesNotMatch(o.detail ?? '', /cannot tell|may (already )?have been billed/)
   }
 })

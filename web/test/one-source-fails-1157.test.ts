@@ -87,6 +87,7 @@ test('#1157 part 4: a failed paid search and an erroring source do not end the r
   // the run kept going: the working source's evidence was extracted and its page read for verification
   assert.ok(prompts.some(p => p.includes(item)), why)
   assert.ok(pagesRead.includes(item), why)
-  const { error } = end as { status: string; error: string | null }
+  const { status, error } = end as { status: string; error: string | null }
+  assert.equal(status, 'done', why)   // the run finished on the working source
   assert.ok(!['source_error', 'no_candidates', 'no_discovery'].includes(String(error)), why)
 })

@@ -42,10 +42,14 @@ export interface ScanRecord {
   // #1157: the worst case still reserved for this scan's paid calls that never got an answer (scan_spend_calls 'reserved'), read
   // successfully. An accounting_uncertain stop counts that step as billed at this amount. Omitted (or null) when not read.
   uncertain_usd?: number | null
+  uncertain_steps?: number | null
 }
-// #1157: a definite answer for an interrupted paid step - counted as billed at the most it could cost - never "may have been billed".
-const usd = (v: number) => `$${v < 0.01 ? v.toFixed(4) : v.toFixed(2)}`
+// #1157: a definite answer for an interrupted paid step - counted as billed at the amount reserved for it - never "may have been
+// billed". The amount is shown rounded UP (to 1/100 of a cent when it is not a whole cent), so the page never names less than the
+// ledger keeps counted against the limits.
+const usd = (v: number) => { const up = Math.ceil(v * 1e4 - 1e-9) / 1e4; return `$${Math.abs(up * 100 - Math.round(up * 100)) < 1e-9 ? up.toFixed(2) : up.toFixed(4)}` }
 const countedAmount = (j: ScanRecord) => typeof j.uncertain_usd === 'number' && Number.isFinite(j.uncertain_usd) && j.uncertain_usd > 0 ? usd(j.uncertain_usd) : null
+const countedSteps = (j: ScanRecord) => typeof j.uncertain_steps === 'number' && Number.isSafeInteger(j.uncertain_steps) && j.uncertain_steps > 0 ? j.uncertain_steps : null
 const reasonList = (r: Record<string, number> | null | undefined) => r ? Object.entries(r).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k.replace(/^(?:review|dropped):/, '').replace(/_/g, ' ')} x${v}`).join(', ') : ''
 // Zero match is claimed only when EVERY recorded source genuinely returned nothing: the search came back with a recorded 0, no source failed, none returned evidence that
 // extracted no candidates, and none was unavailable / not run (those are unknown, not zero).
@@ -145,8 +149,11 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
       case 'native_search_provider_limit': return { kind: 'stopped', label: 'Stopped after an unexpected Claude Web Search response', detail: 'Claude reported more searches or output than requested. Dazl recorded the usage and did not start any more paid steps.', next: null }
       case 'native_search_estimate_exceeded': return { kind: 'stopped', label: 'Stopped after Claude Web Search exceeded its estimate', detail: 'Dazl did not start any more paid steps after the search. Anthropic bills for actual usage. We did not determine whether matching leads exist.', next: null }
       case 'accounting_uncertain': {
-        const amount = countedAmount(j), counted = `one paid step counted as billed${amount ? ` (${amount})` : ''}`
-        const o: ScanOutcome = { kind: 'stopped', label: `Stopped after an interruption - ${counted}`, detail: `A paid step was interrupted before its answer came back, so it is counted as billed at the most it could cost${amount ? ` (${amount})` : ''}, and it stays counted against your limits. dazl did not run it again automatically: that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.${j.funded_by === 'trial' ? ' This free scan does not count toward your free scans.' : ''}`, next: { text: 'Start a new scan', href: NEW_SCAN } }
+        // The count and the amount come from the still-reserved spend rows; when they cannot be read the copy names neither.
+        const amount = countedAmount(j), steps = countedSteps(j), many = steps !== null && steps > 1, paren = amount ? ` (${amount})` : ''
+        const counted = `${many ? `${steps} paid steps` : steps === 1 ? 'one paid step' : 'the interrupted paid step'} counted as billed${paren}`
+        const what = many ? `${steps} paid steps were interrupted before their answers came back, so they are counted as billed at the amount reserved for them${paren}, and they stay` : `A paid step was interrupted before its answer came back, so it is counted as billed at the amount reserved for it${paren}, and it stays`
+        const o: ScanOutcome = { kind: 'stopped', label: `Stopped after an interruption - ${counted}`, detail: `${what} counted against your limits. dazl did not run ${many ? 'them' : 'it'} again automatically: that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.${j.funded_by === 'trial' ? ' This free scan does not count toward your free scans.' : ''}`, next: { text: 'Start a new scan', href: NEW_SCAN } }
         // An outage that names its source keeps that naming (never a bare interruption) and the same definite count.
         return sourcesFailed(j) ? { ...o, kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error; ${counted}` } : o }
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }

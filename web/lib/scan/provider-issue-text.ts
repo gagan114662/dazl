@@ -68,7 +68,7 @@ function spendRefusalText(reason: string | undefined): string {
   switch (reason) {
     case 'vendor_rejected': return 'it refused an earlier paid request in this scan (a rejected key or a rate limit), and dazl never sends it another request after a refusal.'
     case 'provider_rejected': return "the scan's AI or search provider refused an earlier request, so dazl made no further paid request in this scan."
-    case 'accounting_uncertain': return 'an earlier paid request in this scan got no answer (it timed out or the provider failed) and is counted as billed at the most it could cost, so dazl made no further paid request in this scan.'
+    case 'accounting_uncertain': return 'an earlier paid request in this scan ended without a settled cost (it timed out, the provider failed, or its usage could not be read) and is counted as billed at the amount reserved for it, so dazl made no further paid request in this scan.'
     case 'over_cap': case 'over_limit': return "this scan's spending cap had no room left for the lookup."
     case 'trial_budget_reached': return "this free scan's spending limit had no room left for the lookup."
     default: return `dazl's spend check refused the lookup before it was sent${reason ? ` (${reason})` : ''}.`

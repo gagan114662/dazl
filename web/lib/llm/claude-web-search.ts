@@ -6,6 +6,8 @@ const CLAUDE_SEARCH_TIMEOUT_MS = Math.min(150_000, LLM_TIMEOUT_MS)
 // #1157: the call streams, and a STALL - no bytes from the provider for this long - ends it in seconds. A healthy multi-search call
 // keeps sending events (pings, blocks) and runs on up to CLAUDE_SEARCH_TIMEOUT_MS, which still bounds the whole call (the stale-scan
 // window's floor in lib/scan/store.ts depends on it). A stalled call was already sent: it is counted as billed (uncertain).
+// The window relies on the API's ping events arriving more often than every 20 s while server-side searches run; the docs list
+// pings but give no cadence, so the scan's own native-search reports (stop diagnostics) are the place to see a false stall.
 export const CLAUDE_SEARCH_STALL_MS = 20_000
 const MAX_STREAM_BYTES = 4 * 1024 * 1024
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
@@ -176,6 +178,7 @@ async function readMessageStream(r: Response, alive: () => void, signal: AbortSi
   // a stall or the overall limit ends the read itself, whatever the transport does with the aborted request
   const stop = () => { void reader.cancel().catch(() => {}) }
   if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true })
+  try {
   let buffer = '', bytes = 0, message: Record<string, unknown> | null = null, stopped = false
   const content: Record<string, unknown>[] = [], partialJson = new Map<number, string>()
   const handle = (data: Record<string, unknown>) => {
@@ -201,7 +204,9 @@ async function readMessageStream(r: Response, alive: () => void, signal: AbortSi
       const delta = obj(data.delta)
       if ('stop_reason' in delta) message.stop_reason = delta.stop_reason
       if ('stop_sequence' in delta) message.stop_sequence = delta.stop_sequence
-      if (data.usage !== undefined) message.usage = { ...obj(message.usage), ...obj(data.usage) }
+      // usage counts in message_delta are cumulative; a field it sends as null (the documented delta type allows it) is
+      // "not reported here", never a reset of the count message_start carried
+      if (data.usage !== undefined) message.usage = { ...obj(message.usage), ...Object.fromEntries(Object.entries(obj(data.usage)).filter(([, v]) => v !== null)) }
       return
     }
     if (type === 'message_stop') stopped = true
@@ -228,7 +233,9 @@ async function readMessageStream(r: Response, alive: () => void, signal: AbortSi
   }
   if (!stopped && buffer.trim()) dispatch(buffer)
   if (!stopped || !message) throw new Error('stream ended before message_stop')
-  return { ...(message as Record<string, unknown>), content }
+  // a block index the stream skipped is no block at all (never a hole the readers below would trip on)
+  return { ...(message as Record<string, unknown>), content: Array.from(content, obj).filter(b => Object.keys(b).length > 0) }
+  } finally { signal.removeEventListener('abort', stop) }
 }
 export interface ClaudeSearchResult {
   outcome: 'ok' | 'partial' | 'unavailable'
