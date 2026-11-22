@@ -111,3 +111,10 @@ test('#1205 vacancy listings, quantities and "advertising for new jobs" never le
     if (days !== null) assert.equal(h[0].within_days, days, q)
   }
 })
+
+// council (Haiku R11): in a compound request "new" is never read as a role
+test('#1205 "advertised new vacancies" in a compound request reads no role "new"', () => {
+  const conds = planConditions(compileTargeting('Companies that posted a job opening for a sales rep and advertised new vacancies in the past 30 days', null).root).map(x => x.cond)
+  assert.ok(conds.some(c => c.kind === 'hiring' && c.role === 'sales rep'))
+  assert.ok(!conds.some(c => c.role === 'new'), JSON.stringify(conds.map(c => c.role)))
+})
