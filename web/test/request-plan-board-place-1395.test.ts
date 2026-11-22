@@ -143,7 +143,6 @@ test('#1395 runJob: a model reply naming "Fintech" as the city of California hol
 test('#1395 runJob: picked job boards with an unplaceable or absent request place record the reason, not "empty"', async () => {
   for (const [req, places, want] of [
     ['SaaS startups in Canada hiring account executives', [{ text: 'Canada', city: null, region: null, country: 'CA' }], /^skipped_no_place:country:Canada/],
-    ['SaaS startups hiring account executives', [], /^skipped_no_place/],
   ] as const) {
     const { http, seen } = board()
     const x = await runFixture({ ...fx(http, req, [], 'CA', plan([...places])), sources: JSON.stringify({ adapters: ['jobboards', 'careers'] }) })
@@ -151,5 +150,40 @@ test('#1395 runJob: picked job boards with an unplaceable or absent request plac
     assert.match(boardsStatus(x) ?? '', want, req)
     const careers = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:careers'").get() as { status: string } | undefined
     assert.ok(careers, `${req}: the careers source the user picked still ran`)
+  }
+})
+// PM ruling 2026-11-22 (changed from #1527/#1395, which held a picked board source with no place): a picked board source whose request names no
+// place now runs, here on the ICP's country (CA).
+test('PM ruling: picked job boards with NO request place run on the ICP country', async () => {
+  const { http, seen } = board()
+  const x = await runFixture({ ...fx(http, 'SaaS startups hiring account executives', [], 'CA', plan([])), sources: JSON.stringify({ adapters: ['jobboards', 'careers'] }) })
+  assert.ok(['ok', 'partial', 'empty'].includes(boardsStatus(x) ?? ''), `ran: ${boardsStatus(x)}`)
+  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/plannedco/jobs'), 'the board was read')
+  assert.ok(detailed(seen).every(i => i >= 3), `Canadian postings only (got ${JSON.stringify(detailed(seen))})`)
+})
+
+// PM ruling 2026-11-22 (overrides #1205/#1395 for a request with NO place): the job boards still run - on the ICP's country when one is set,
+// otherwise with no place filter. Never skipped for lack of a place. Case 1's exact prompt (run af02437c recorded skipped_no_place).
+const CASE1 = 'Find B2B companies (5-200 employees) doing outbound sales that show a dated buying signal in the last 45 days: hiring their first SDR/BDR or sales rep, new funding, a new Head of Sales/VP Sales, or a founder still doing sales. Buyer: Founder, CEO or Head of Sales. seller = dazl (dazl.ai): AI that finds high-intent leads and drafts reviewed cold outreach from your own Gmail.'
+test('PM ruling: case 1 (no place, no ICP country) reaches the job boards with no place filter, status ok', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, CASE1, [], '', plan([])))
+  assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `the job boards ran: ${boardsStatus(x)}`)
+  assert.ok(seen.includes('https://boards-api.greenhouse.io/v1/boards/plannedco/jobs'), 'the board was read')
+})
+test('PM ruling: case 1 with ICP country US reads only US postings', async () => {
+  const { http, seen } = board()
+  const x = await runFixture(fx(http, CASE1, [], 'US', plan([])))
+  assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `the job boards ran: ${boardsStatus(x)}`)
+  assert.ok(detailed(seen).every(i => i <= 2), `US postings only (got ${JSON.stringify(detailed(seen))})`)
+})
+
+// Qodo #1556: a profile place the boards cannot resolve ("Europe") is a place, not none: still held, never run worldwide or narrowed to the country.
+test('Qodo #1556: a place-free request with profile where ["Europe"] keeps the skip reason', async () => {
+  for (const country of ['', 'DE']) {
+    const { http, seen } = board()
+    const x = await runFixture(fx(http, CASE1, ['Europe'], country, plan([])))
+    assert.match(boardsStatus(x) ?? '', /^skipped_no_place/, `country=${country}`)
+    assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
   }
 })
