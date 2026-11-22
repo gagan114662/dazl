@@ -104,9 +104,11 @@ export type PlanNeedSupport =
   | { support: 'hiring'; conditions: string[] }
   | { support: 'none'; reason: 'no_plan_conditions' | 'plan_ambiguous' | 'hiring_negated' | 'hiring_one_of_choices' | 'completed_hire_not_open_need' | 'no_open_hiring_condition' }
 
+const RESOLVED_EITHER = /^either one, each on its own dated source\b/
 export function planNeedSupport(plan: QueryPlan): PlanNeedSupport {
   if (!plan.root) return { support: 'none', reason: 'no_plan_conditions' }
-  if (plan.ambiguities.length > 0) return { support: 'none', reason: 'plan_ambiguous' }
+  // A choice that proves each reading on its own dated source (the bare-role atom) is resolved, not unknown (run 679a7354).
+  if (plan.ambiguities.some(a => !RESOLVED_EITHER.test(a.chosen))) return { support: 'none', reason: 'plan_ambiguous' }
   const positiveHiring: string[] = []
   let negatedHiring = false
   let choiceHiring = false
@@ -212,6 +214,9 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
     [jobId, tenantId])
 
   const rows: VerdictRow[] = []
+  const gatePassed = new Set(support.support === 'none' && support.reason === 'hiring_one_of_choices' && hiringRequired
+    ? (await db.all<{ lead_id: string }>("SELECT e.lead_id FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id WHERE l.scan_job_id = ? AND e.tenant_id = ? AND e.connector = 'scan:gate' AND e.kind = 'gate_passed'", [jobId, tenantId])).map(r => r.lead_id)
+    : [])
   for (const lead of leads) {
     const heldReason = input.held?.get(lead.id) ?? null
     const artifact = artifacts.get(lead.source_url) ?? null
@@ -277,6 +282,9 @@ export async function recordNeedEvidence(db: Db, tenantId: string, jobId: string
     const leadVerified = lead.review_reason === null && lead.confidence !== null && lead.quarantined_at === null
     if (support.support === 'hiring' && hiringRequired && leadVerified) {
       // The trigger gate already ran and this lead still stands. Trigger-only: never "verified buying need".
+      rows.push({ lead, basis: 'hiring_trigger', verdict: 'trigger_only', reason: 'trigger_only', demand: null, artifact: null })
+    } else if (support.support === 'none' && support.reason === 'hiring_one_of_choices' && hiringRequired && leadVerified && gatePassed.has(lead.id)) {
+      // Run 679a7354: an OR plan's lead stands on the dated trigger the required gate PASSED for it (its own gate_passed row). Trigger-only.
       rows.push({ lead, basis: 'hiring_trigger', verdict: 'trigger_only', reason: 'trigger_only', demand: null, artifact: null })
     } else {
       const why = support.support === 'none' ? support.reason : !hiringRequired ? 'hiring_not_proven' : 'lead_not_verified'
