@@ -98,9 +98,10 @@ test('#1157 a usage field the final message_delta sends as null keeps the count 
 test('#1157 a stream that closes after a complete message_delta but before message_stop is counted as billed (uncertain)', async () => {
   const log: string[] = []
   const events = sseEvents(message).filter(e => !e.startsWith('event: message_stop'))
-  const e = await run(() => sseResponse(events), log).then(() => null, err => err as { code?: string })
+  let sends = 0
+  const e = await run(() => { sends++; return sseResponse(events) }, log).then(() => null, err => err as { code?: string })
   assert.equal(e?.code, 'request_uncertain')
-  assert.deepEqual(log, ['uncertain'])
+  assert.deepEqual(log, ['uncertain']); assert.equal(sends, 1)
 })
 
 test('#1157 an oversized stream (over 4 MiB) is cut and counted as billed (uncertain), never parsed', async () => {

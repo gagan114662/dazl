@@ -235,6 +235,7 @@ async function readMessageStream(r: Response, alive: () => void, signal: AbortSi
   if (!stopped || !message) throw new Error('stream ended before message_stop')
   // a block index the stream skipped is no block at all (never a hole the readers below would trip on)
   return { ...(message as Record<string, unknown>), content: Array.from(content, obj).filter(b => Object.keys(b).length > 0) }
+  } catch (e) { await reader.cancel().catch(() => {}); throw e   // a bad event closes the body now, not at the 150 s limit
   } finally { signal.removeEventListener('abort', stop) }
 }
 export interface ClaudeSearchResult {

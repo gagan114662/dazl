@@ -37,6 +37,7 @@ test('#1157 accounting_uncertain: amount not readable still answers definitely; 
   const src = stopped({ uncertain_usd: 0.0023, uncertain_steps: 1, failed_sources: ['search:anthropic'] })
   assert.equal(src.kind, 'failed')
   assert.equal(src.label, 'Failed - search:anthropic had an error; one paid step counted as billed ($0.0023)')
+  assert.equal(stopped({ uncertain_usd: 0.084641, uncertain_steps: 1 }).label, 'Stopped after an interruption - one paid step counted as billed ($0.0847)')   // up, never to nearest ($0.0846)
   assert.equal(stopped({ uncertain_usd: 0.68, uncertain_steps: 1 }).label, 'Stopped after an interruption - one paid step counted as billed ($0.68)')
   assert.doesNotMatch(`${src.label} ${src.detail}`, HEDGE)
 })
