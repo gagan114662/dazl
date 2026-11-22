@@ -140,7 +140,6 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   if (l.fit != null) assumptions.push('Fit is the model\'s grade of the evidence, not something the company confirmed.')
   assumptions.push('The event is a reason to look closer, not proof they want to buy.')
   if (l.intent === 0) assumptions.push('No live buying trigger was confirmed.')
-  if (top) assumptions.push(`${top.name} is listed with this title; current role not verified.`)
   if (ident && ident.state !== 'fact') assumptions.push(`Company site ${ident.text}.`)
   if (!l.event_date) missing.push('event date')
   else if (l.timing === 'proof_backed') facts.push(`The cited source dates the event to ${l.event_date}.`)

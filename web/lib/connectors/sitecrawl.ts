@@ -880,14 +880,9 @@ export function chooseSiteBuyer(found: Found[], buyerRoles: string): Found | nul
   const top = people.filter(f => rank(f) === rank(people[0]))
   return new Set(top.map(f => f.value.split(', ')[0].toLowerCase())).size === 1 ? people[0] : null
 }
-// Qodo #1540: the person-only fallback's label always says the role is as listed and unverified, and how the site was reached when that
-// was not the source page's own domain - so the row is never read as a verified buyer, wherever it is shown or passed on.
-export function fallbackBuyerLabel(label: string, basis: string | undefined): string {
-  const base = /not verified as current staff/.test(label) ? label : 'listed with this title on this company page, not verified as current staff'
-  const how = basis === 'evidence_own_domain' ? '' : basis === 'name_probe' || !basis ? '; site found by name search and location match, not linked from the source'
-    : '; site linked from the source, not the page the source is on, and its homepage names the company'
-  return (base + how).slice(0, 200)
-}
+// PM #1540 (no warning labels in the product): the fallback's person row says only where it was listed. How the site was reached
+// (its domain basis) is internal provenance, written to the crawl trace (connector_audit 'buyer_fallback basis=...'), never rendered.
+export const FALLBACK_BUYER_LABEL = "listed on the company's own team page"
 export const bySeniority = (a: Found, b: Found) => seniority(b.value.slice(b.value.indexOf(', ') + 2)) - seniority(a.value.slice(a.value.indexOf(', ') + 2))
 
 const PAGE_HINT = /(contact|about|impressum|kontakt|contacto|contato|nous-contacter|contactez|chi-siamo|company|team|leadership|management|people|reach|locations?|offices?|careers?|our-practice|meet-the|providers|doctors|staff)/i
@@ -2206,8 +2201,9 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             !/\s(?:at|@|for|with)\s+\S/i.test(titleOf(f)))
           const buyer = chooseSiteBuyer(own, buyerRoles)
           if (buyer) {
-            addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: buyer.value.slice(0, 254), label: fallbackBuyerLabel(buyer.label, basisOf.get(site)), confidence: null,
+            addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'person', value: buyer.value.slice(0, 254), label: FALLBACK_BUYER_LABEL, confidence: null,
               source_url: buyer.url.slice(0, 500), source_date: today, retrieved_at: Math.floor((deps.now ?? Date.now()) / 1000) }); n++; named++
+            try { audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: site, status: `buyer_fallback basis=${basisOf.get(site) ?? 'unknown'}`.slice(0, 180), results: 1 }) } catch { /* trace only */ }
           }
         }
         // Current product readiness selects person and route independently.

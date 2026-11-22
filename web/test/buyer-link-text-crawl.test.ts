@@ -30,7 +30,8 @@ async function run(opt: { foreignTeam?: boolean } = {}) {
     const get: Get = async url => ({ status: pages[url] ? 200 : 404, body: pages[url] ?? '', finalUrl: opt.foreignTeam && url === o + '/team/' ? 'https://elsewhere.example/team/' : url })
     await crawlJob(db, 'T', job, { get, gapMs: 0, now, env: {} } as never)
     const rows = enrichmentsForLeads(db, 'T', [lead])[lead] ?? []
-    return { rows, routed: publishedEmail({ contact: null, enrichments: rows }) }
+    const trace = db.prepare("SELECT lookup, status FROM connector_audit WHERE connector='sitecrawl'").all() as { lookup: string; status: string }[]
+    return { rows, trace, routed: publishedEmail({ contact: null, enrichments: rows }) }
   } finally { db.close() }
 }
 test('a confirmed (link-text, identity-checked) site stores its named buyer as a person only - no email, no route', async () => {
@@ -44,12 +45,14 @@ test('the person-only fallback never reads a page that redirected off the confir
   const { rows } = await run({ foreignTeam: true })
   assert.ok(!rows.some(r => r.kind === 'person' && !r.source_url?.startsWith('https://usesimple.ai/')))
 })
-test('Qodo #1540: a fallback buyer keeps its source warning - never shown as verified; a name-searched site says so too', async () => {
-  const { fallbackBuyerLabel } = await import('../lib/connectors/sitecrawl.ts')
-  const { rows } = await run()
-  const label = rows.find(r => r.kind === 'person')?.label ?? ''
-  assert.match(label, /not verified as current staff/); assert.match(label, /linked from the source, not the page the source is on/)
-  const probe = fallbackBuyerLabel('listed with this title on this company page, not verified as current staff', 'name_probe')
-  assert.match(probe, /site found by name search and location match, not linked from the source/)
-  assert.match(fallbackBuyerLabel('anything', 'evidence_own_domain'), /not verified as current staff/)
+test('PM #1540 (no warning labels): the fallback buyer is shown plainly - no hedge copy on the card or lead JSON; its basis lives in the trace only', async () => {
+  const { leadCardSummary } = await import('../lib/scan/lead-card.ts')
+  const { opportunityCard } = await import('../lib/scan/opportunity.ts')
+  const { rows, trace } = await run()
+  const lead = { company: 'Simple AI', signal: 'Simple AI raised a seed round', source_url: 'https://news.example/2026/11/10/simple-ai-raises', evidence_excerpt: 'Simple AI raised a seed round',
+    event_date: '2026-11-10', date_status: null, review_reason: null, fit: 5, intent: 1, why: null, icp_match: null, company_domain: 'usesimple.ai', contact: null, enrichments: rows }
+  const card = leadCardSummary(lead, 'Founder, CEO, Head of Sales')
+  const shown = JSON.stringify([card, opportunityCard(lead, 'Founder, CEO, Head of Sales'), rows.filter(r => r.kind === 'person')])
+  for (const w of [/not verified as current staff/i, /role not verified/i, /role as listed/i, /site linked from the source/i, /name search/i]) assert.doesNotMatch(shown, w)
+  assert.ok(trace.some(a => a.lookup === 'usesimple.ai' && /^buyer_fallback basis=evidence_link_text/.test(a.status)), JSON.stringify(trace))
 })
