@@ -269,3 +269,20 @@ test('Qodo #1534 M3: "or recruiting AEs" keeps the condition span whole; the lis
   // a conjunction never opens a further role
   assert.deepEqual(alts('Companies hiring SDRs, and hiring AEs').map(r => r.filter(x => /^(?:and|or)\b/.test(x))), [[]])
 })
+
+// Qodo #1534 M4 (#1122's own rule, test 16): a role proves a hiring condition only when the hiring statement itself names it. A role
+// mentioned elsewhere in the quote ("its SDR team supports outbound") is no open role.
+test('Qodo #1534 M4: a role proves the condition only inside the hiring statement', () => {
+  const quoted = (excerpt: string): ProofLead => ({ ...lead, evidence_excerpt: excerpt, signal: excerpt, event_date: '2026-11-10' })
+  const truth = (q: string, l: ProofLead) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, l, [], ctx)[c.id].truth }
+  const sdrQ = 'Companies hiring SDRs in the last 30 days'
+  for (const ex of [
+    'Example Dental Group is hiring an Account Executive; its SDR team supports outbound.',
+    'Example Dental Group is hiring an Account Executive. Its SDR team supports outbound.',
+    'Example Dental Group is hiring an Account Executive, and its SDR team supports outbound.',
+    'Example Dental Group is hiring an Account Executive but its SDR team is fully staffed.',
+  ]) assert.notEqual(truth(sdrQ, quoted(ex)), 'pass', ex)
+  // the hiring statement names the role: still proven
+  assert.equal(truth(sdrQ, quoted('Example Dental Group has a strong outbound motion. Example Dental Group is hiring SDRs to book consultations.')), 'pass')
+  assert.equal(truth('Companies hiring SDRs or AEs in the last 30 days', quoted('Example Dental Group is hiring an Account Executive; its SDR team supports outbound.')), 'pass')
+})
