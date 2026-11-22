@@ -286,3 +286,9 @@ test('Qodo #1534 M4: a role proves the condition only inside the hiring statemen
   assert.equal(truth(sdrQ, quoted('Example Dental Group has a strong outbound motion. Example Dental Group is hiring SDRs to book consultations.')), 'pass')
   assert.equal(truth('Companies hiring SDRs or AEs in the last 30 days', quoted('Example Dental Group is hiring an Account Executive; its SDR team supports outbound.')), 'pass')
 })
+
+test('Qodo #1534 M4: a dot inside the company name never splits the hiring statement', () => {
+  const l: ProofLead = { ...lead, company: 'Example.com', evidence_excerpt: 'Example.com is hiring SDRs to book consultations.', signal: 'Example.com is hiring SDRs to book consultations.', event_date: '2026-11-10' }
+  const p = compileTargeting('Companies hiring SDRs in the last 30 days', null); const [c] = planConditions(p.root).map(x => x.cond)
+  assert.equal(planProofs(p, l, [], ctx)[c.id].truth, 'pass')
+})

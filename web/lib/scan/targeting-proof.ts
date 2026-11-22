@@ -169,6 +169,8 @@ const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a
 // #1122 (case 1): the posting title names one of the role's own alternatives ("Head of Sales/VP Sales"): every word of that alternative.
 const roleAlts = (role: string) => role.split('/').map(roleWords).filter(w => w.length)
 const titleNamesRole = (title: string, role: string) => { const t = new Set(roleWords(title)); return roleAlts(role).some(a => a.every(w => t.has(w))) }
+// The clauses of a quote: sentence ends (a stop before a capital or the end: "Example.com", "Acme Inc. is" stay whole), ";", and a comma or bare "but"/"while"/"whereas" joining another statement ("…, and its SDR team …").
+const quoteClauses = (q: string): string[] => q.split(/[.!?]+(?=\s+[A-Z]|\s*$)|[;\n]+|,\s*(?:and|but|while|whereas)\s+|\s+(?:but|while|whereas)\s+/).map(x => x.trim()).filter(Boolean)
 // Qodo #1534 H1: the generic board row's own words, "posting date unknown - the row date is when the board was read", are no posting date either
 const NOT_DATED = /posting date was not read|posting date unknown|^unconfirmed:/i
 // The title of ONE posting record ("Head of Sales - posted 2026-11-02" -> "Head of Sales"); null for a row listing several titles or a count.
@@ -252,8 +254,11 @@ function ownProof(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofCon
       const gtm = !c.role || conditionRoles(c).some(isSalesTitle)
       // #1122: the lead's own quote proves a condition naming specific roles only through one of those roles: an AE quote never proves "hiring SDRs"
       const { named, broad } = namedRoles(c)
-      const quoteRoleOk = broad || matchedHiringRole(quote, named) !== null
-      if (gtm && quoteRoleOk && affirmativeSalesHiring(quote, lead.company)) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
+      // Qodo #1534 M4: and only inside the hiring statement itself: one clause that both says this company is hiring and names the role
+      // ("hiring an AE; its SDR team supports outbound" never proves SDRs). A request naming no specific title keeps main's rule.
+      const quoteRoleOk = broad ? affirmativeSalesHiring(quote, lead.company)
+        : quoteClauses(quote).some(cl => matchedHiringRole(cl, named) !== null && affirmativeSalesHiring(cl, lead.company))
+      if (gtm && quoteRoleOk) return dated(true, ownDay(lead, c.kind), clockOf(c), now, lead.source_url, 'this company hiring for the role')
       if (gateCovers(c, ctx)) return { truth: 'pass', reason: 'the sales-hiring gate verified an open sales role for this company (its durable pass record)' }
       return { truth: 'unknown', reason: `no dated posting or verified quote shows this company hiring${c.role ? ` ${c.role}` : ''}` }
     }
