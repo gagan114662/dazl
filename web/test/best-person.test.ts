@@ -135,6 +135,11 @@ test('card and CSV agree when a valid row sits beside contradicted ones, with no
   const asst = await oneLead(['Office assistant'], [['sitecrawl', 'Pat Kim, Office Assistant', 'https://a.example/t'], ['sitecrawl', 'Al Roe, Assistant to the Office Assistant', 'https://a.example/t']])
   assert.equal(asst.csv.best_person, 'Pat Kim'); assert.equal(asst.card?.name, 'Pat Kim')
 })
+test('#1037 card and CSV agree on an own-site name stored with extra whitespace', async () => {
+  const spaced = await oneLead(['CEO'], [['sitecrawl', 'Dana  Lee, CEO', 'https://a.example/t']])
+  assert.equal(spaced.card?.name, 'Dana Lee'); assert.equal(spaced.csv.best_person, 'Dana Lee')
+  assert.equal(spaced.csv.best_person_link, spaced.card?.linkedin)
+})
 test('tenant and quarantine controls still hold with contradicted rows present', async () => {
   const { db, rows } = await oneLead(['Practice manager'], [['sitecrawl', 'Dana Lee, Practice Manager', 'https://a.example/t'], ['sitecrawl', 'Eli Novak, Former Practice Manager', 'https://a.example/t']])
   assert.equal((await bestPeople(sqliteDb(db), 'B', rows)).get('L1')!.best_person, '')

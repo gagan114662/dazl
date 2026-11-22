@@ -18,9 +18,9 @@ async function buyerRoles(db: Db, jobId: string): Promise<string> {
   } catch { return '' }
 }
 
-// Recommendation, not scoring: a person whose title explicitly contradicts the buyer role (past, retired, negated,
-// assistant-to; roleContradicted, applied inside leadPerson) is never Best Person, for any
-// connector, with or without an ICP. If every stored person is contradicted the export fields are empty. A contradictory
+// Recommendation, not scoring: only the company's own site can name Best Person (#1037), and a person whose title
+// explicitly contradicts the buyer role (past, retired, negated, assistant-to; roleContradicted, applied inside
+// leadPerson) never is, with or without an ICP. If every stored person is contradicted the export fields are empty. A contradictory
 // CURRENT employer is the people-search parser's job, not detectable here.
 
 // Tenant-scoped on both sides: the enrichment row must carry the tenant AND its lead must belong to a job that tenant
@@ -48,8 +48,9 @@ export async function bestPeople(db: Db, tenantId: string, rows: { lead_id: stri
     // #1037: Best Person is the lead's buyer and nobody else - the one person leadPerson names (listed on the company's own,
     // confirmed site with a title and the LinkedIn that page links); a search, provider or SEC person is never recommended here.
     const roles = rolesByJob.get(r.job_id)!, now = Date.now(), buyer = leadPerson(enr, roles, now, site)
-    const top = buyer ? contactsFromEnrichments(enr, roles, now, site).find(c => c.connector === 'sitecrawl' && c.name === buyer.name && c.linkedin === buyer.linkedin) : undefined
-    out.set(r.lead_id, top ? { best_person: top.name, best_person_title: top.title ?? '', best_person_link: top.linkedin ?? top.source ?? '', best_person_found_via: top.verified && (top.currency === 'verified_current' || top.verified.reason) ? `${peopleSourceText(top)}; ${currencyText(top.verified, top.connector)}` : peopleSourceText(top) } : EMPTY)
+    // the export's fields are the buyer's own (as the card shows them); the ranked row only supplies its currency evidence for Found Via
+    const top = buyer ? contactsFromEnrichments(enr, roles, now, site).find(c => c.connector === 'sitecrawl' && c.name.replace(/\s+/g, ' ').trim() === buyer.name && c.linkedin === buyer.linkedin) : undefined
+    out.set(r.lead_id, buyer && top ? { best_person: buyer.name, best_person_title: buyer.title, best_person_link: buyer.linkedin ?? '', best_person_found_via: top.verified && (top.currency === 'verified_current' || top.verified.reason) ? `${peopleSourceText(top)}; ${currencyText(top.verified, top.connector)}` : peopleSourceText(top) } : EMPTY)
   }
   return out
 }
