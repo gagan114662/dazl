@@ -198,3 +198,28 @@ test('#1122 round 4: list commas read as on main; verbs never open a role; unpro
   assert.ok(unproven.includes('Hiring sales engineers') && unproven.includes('Hiring a sales manager'), JSON.stringify(unproven))
   assert.ok(!unproven.includes('Hiring first sales rep'), 'a role the condition names is covered')
 })
+
+// Quest: both of these are #1122 bugs, not out of scope.
+test('#1122 a comma-listed "or" list of roles keeps every role ("SDRs, AEs, or sales reps")', () => {
+  const at = (q: string, row: ProofRow) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, lead, [row], ctx)[c.id].truth }
+  assert.deepEqual(alts('Companies hiring SDRs, AEs, or sales reps'), [['sdrs', 'aes', 'sales reps']])
+  assert.deepEqual(alts('Companies hiring SDRs, AEs or sales reps in the last 30 days'), [['sdrs', 'aes', 'sales reps']])
+  assert.equal(at('Companies hiring SDRs, AEs, or sales reps in the last 30 days', { ...posting('Account Executive'), kind: 'hiring-role' }), 'pass')
+  // a comma that separates conditions stays a condition separator
+  const p = compileTargeting('Companies hiring SDRs, raised funding, or opened an office', null)
+  assert.deepEqual(planConditions(p.root).map(x => x.cond.kind), ['hiring', 'funding', 'event'])
+  assert.deepEqual(alts('Companies hiring SDRs, raised funding, or opened an office'), [['sdrs']])
+})
+
+test('#1122 a lead\'s own quote proves the condition only through a role the request names', () => {
+  const quoted = (excerpt: string): ProofLead => ({ ...lead, evidence_excerpt: excerpt, signal: excerpt, event_date: '2026-11-10' })
+  const truth = (q: string, l: ProofLead) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, l, [], ctx)[c.id].truth }
+  const ae = quoted('Example Dental Group is hiring an Account Executive to grow its new-patient programme.')
+  const sdr = quoted('Example Dental Group is hiring a Sales Development Representative to book new-patient consultations.')
+  assert.notEqual(truth('Companies hiring SDRs in the last 30 days', ae), 'pass', 'an AE quote never proves an SDR request')
+  assert.notEqual(truth('Companies hiring a receptionist or SDR in the last 30 days', ae), 'pass')
+  assert.equal(truth('Companies hiring SDRs in the last 30 days', sdr), 'pass')
+  assert.equal(truth('Companies hiring SDRs or AEs in the last 30 days', ae), 'pass', 'the AE alternative is named')
+  // a request naming no specific title keeps main's rule: any affirmative sales-hiring quote
+  assert.equal(truth('Companies hiring sales staff in the last 30 days', ae), 'pass')
+})
