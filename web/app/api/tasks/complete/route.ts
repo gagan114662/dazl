@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db/client'
 import { completeTask } from '@/lib/linkedin-tasks/store'
+import { onCompanyPeopleResult } from '@/lib/linkedin-tasks/buyers'
 import { extTenant } from '../_auth'
 
 export async function POST(req: NextRequest) {
@@ -17,5 +18,6 @@ export async function POST(req: NextRequest) {
   const r = await completeTask(db, a.tenantId, body.id, body)
   if (r === 'not_leased') return NextResponse.json({ error: 'not_leased' }, { status: 409 })
   if (r === 'bad_result') return NextResponse.json({ error: 'bad_result' }, { status: 400 })
+  if (r === 'stored') await onCompanyPeopleResult(db, a.tenantId, body.id as string)
   return NextResponse.json({ ok: true, result: r })
 }
