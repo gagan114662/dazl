@@ -12,7 +12,10 @@ const SALES_ABBREV: [RegExp, string][] = [
   [/\bsales\s*persons?\b|\bsales\s+rep(?:resentative)?s?\b/g, 'salesperson'], // not "sales people": broad hiring, not a named title
 ]
 const abbrev = (s: string): string => SALES_ABBREV.reduce((t, [re, to]) => t.replace(re, to), s)
-const normal = (s: string): string => abbrev(s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator').replace(/\b(?:managers|administrators|executives|engineers|directors)\b/g, w => w.slice(0, -1)).replace(/[^a-z0-9]+/g, ' ').trim())
+// #1122: a title is matched in the singular on both sides ("receptionists" ~ "Receptionist", "nurses" ~ "Registered Nurse"; "salespeople" is a
+// salesperson), never stripping the s of "sales", "ops" or a word ending in ss/us/is; and "VP of Sales" ~ "VP, Sales" (a bare "of" is dropped)
+const singular = (s: string): string => s.replace(/\bsalespeople\b/g, 'salesperson').replace(/\b([a-z]{3,}?[^su])s\b/g, (w, stem: string) => /^(?:sale|op|new)$/.test(stem) ? w : stem)
+const normal = (s: string): string => abbrev(singular(s.toLowerCase().replace(/\bsales[ -]+ops\b/g, 'sales operations').replace(/\brevops\b/g, 'revenue operations').replace(/\badmin\b/g, 'administrator')).replace(/[^a-z0-9]+/g, ' ').replace(/\bof\b/g, ' ').replace(/\s+/g, ' ').trim())
 // The words a title may use for a requested role, for finding WHERE the role sits in a title (sales-hiring-gate.ts titleIsRole):
 // the term as asked plus, for the four sales names above, their other written forms.
 const SURFACES: Record<string, string[]> = {
@@ -58,7 +61,7 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
       for (const raw of parts) {
         const term = raw.trim().replace(LEAD_WORDS, '').trim(), n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n) || LEAD_QUALIFIER.test(term)) continue
-        if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions|job|new)$/.test(n)) continue
+        if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees?|talent|sales roles?|roles?|positions?|job|new)$/.test(n)) continue
         roles.set(n, { term, normalized: n })
       }
     }
@@ -74,7 +77,7 @@ export function requestedHiringRoles(query: string | null | undefined, icp?: str
         const n = normal(term)
         if (!n || QUANTITY.test(term) || TIME_PHRASE.test(n) || ADVERB.test(n) || GERUND.test(n)) continue
         // Broad hiring is not a named title. Keep the existing generic-GTM contract for it.
-        if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees|talent|sales roles|roles|positions)$/.test(n)) continue
+        if (/^(?:sales|gtm|sales gtm|sales staff|sales people|sales team|staff|people|employees?|talent|sales roles?|roles?|positions?)$/.test(n)) continue
         // Do not infer a role from free prose. An unparseable explicit request is not a verified match.
         // Unsupported/long explicit terms stay required and unmatched, never silently generic.
         roles.set(n, { term, normalized: n })

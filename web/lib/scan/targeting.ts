@@ -15,7 +15,9 @@
 // they are listed on the plan as filters with the gate that owns them, not re-judged here.
 
 import { TECH_WORDS, techNameOf } from '../connectors/techstack.ts'
-import { endsInTitleNoun, ROLE_WORD } from './hiring-role-match.ts'
+import { endsInTitleNoun, ROLE_WORD, requestedHiringRoles, matchedHiringRole } from './hiring-role-match.ts'
+// the same role, read with the gate's bounded matcher in either direction ("sales rep" ~ "first sales rep"; "sales rep" !~ "sales engineer")
+const sameRole = (x: string, y: string) => { const rx = requestedHiringRoles(`hiring ${x}`, null), ry = requestedHiringRoles(`hiring ${y}`, null); return rx.some(r => matchedHiringRole(y, [r]) !== null) || ry.some(r => matchedHiringRole(x, [r]) !== null) }
 
 export type Truth = 'pass' | 'fail' | 'unknown'
 export type CondKind = 'funding' | 'hiring' | 'hire_made' | 'event' | 'competitor' | 'company_named' | 'category' | 'tech'
@@ -122,7 +124,7 @@ const cleanRole = (s: string) => s.trimStart().split(STOP)[0].replace(/^(?:(?:a|
 // role's alternatives already use, "Head of Sales/VP Sales"), and each is judged on its own (roleAlternatives). A further role is read after
 // "or" or "/" only (a comma separates conditions: "A, B, or C") while it reads as a title: up to five words of letters, no past-tense verb ("raised"), no time, place or
 // qualifier word, and it starts no other condition of the request ("hiring SDRs or raised a Series A" stays two conditions).
-const LIST_GAP = /^\s*,\s*(?:(?:a|an|the|new|recent|their|its)\s+)*$/i
+const LIST_GAP = /^\s*,\s*$/
 const ALT_SEP = /^(?:\s*\/\s*|\s+or\s+|\s+and\s*\/\s*or\s+)/i
 const NOT_ROLE_WORD = /^(?:now|currently|recently|soon|asap|immediately|today|actively|urgently|last|past|next|this|within|in|at|on|from|with|during|over|across|days?|weeks?|months?|years?)$/i
 // A further role must END in a job-title noun ("sales rep", "BDR", "account executive", "dental assistant") and must not open with a verb form
@@ -130,7 +132,8 @@ const NOT_ROLE_WORD = /^(?:now|currently|recently|soon|asap|immediately|today|ac
 const altRole = (s: string) => !!s && /^[A-Za-z][A-Za-z\s&\/-]*$/.test(s) && s.split(/\s+/).length <= 5 && endsInTitleNoun(s)
   // a verb opens another condition ("opening a new office", "raised a Series A", "recruiting AEs"); a modifier opens a title ("marketing manager",
   // "accounting clerk", "Director of Nursing")
-  && !/^[A-Za-z]+(?:ed|ing)\s+(?:a|an|the|its|their|our|new|into|in|to|for|from|with|on|at)\b/i.test(s) && !/^(?:hiring|recruiting|seeking|looking|posting|posted|advertising|hired)\b/i.test(s)
+  && !/^[A-Za-z]+ing\s+(?:a|an|the|its|their|our|new|into|in|to|for|from|with|on|at)\b/i.test(s) && !/^[A-Za-z]+ed\b/i.test(s)
+  && !/^(?:hiring|recruiting|seeking|looking|posting|advertising|laid|lack|lacks|need|needs|lost|lose|cut|cuts)\b/i.test(s)
   && !s.split(/[\s\/]+/).some(w => NOT_ROLE_WORD.test(w) || /^(?:who|that|which|whose|where|companies|company|firms?|businesses|startups?|teams?)$/i.test(w))
 // Run once every condition of the request is found (findAtoms' last step), so a later reading (an event, a completed hire) keeps its own span.
 function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { roles: string[]; end: number } {
@@ -187,7 +190,7 @@ function findAtoms(q: string): Atom[] {
   // 2. Funding. A bare "seed" is a stage only in a funding context ("seed oil producers" is not).
   const fundingContext = FUNDING_CUE.test(q) || /\bseries\s+[a-e]\b|\bpre-?seed\b/i.test(q)
   const fundingRes = [new RegExp(`\\b${RAISE}\\b(?:\\s+[^\\s,.;]+){0,5}?\\s+(?:${STAGE}(?:[-\\s]+(?:funding|round|financing))?|funding|round|financing|investment)\\b`, 'gi'),
-    new RegExp(`\\b${STAGE}(?:[-\\s]+(?:funded|funding|round|rounds|stage|backed))?\\b`, 'gi'), /\b(?:recently\s+)?(?:vc-?|venture-?)?(?:funded|backed)\b|\bfund(?:ing|raising)\b|\braised\s+money\b/gi]
+    new RegExp(`\\b${STAGE}(?:[-\\s]+(?:funded|funding|round|rounds|stage|backed))?\\b`, 'gi'), /\b(?:recently\s+)?(?:vc-?|venture-?)?(?:funded|backed)\b|\b(?:(?:new|fresh)\s+)?fund(?:ing|raising)\b|\braised\s+money\b/gi]
   for (const re of fundingRes) for (const m of q.matchAll(re)) {
     if (!fundingContext) break
     const st = new RegExp(STAGE, 'i').exec(m[0])
@@ -315,9 +318,8 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     if (/\bnor\b/i.test(t)) return 'and'
     if (/\bor\b|\beither\b/i.test(t)) return 'or'
     // #1122 follow-up: a bare comma inside a list ("A or B, C, or D") takes the list's own connective: the next and/or in the same clause.
-    // A list comma ("A or B, C, or D"; #1122: the item may open with an article or "new": "..., new funding, a new Head of Sales, or ...")
-    // takes the list's own connective: the next gap's, when that gap is itself part of the list; after the last condition, only a ", or" /
-    // ", and" right after the comma. An "or" inside a later place, investor or headcount ("based in Ohio or Texas", "10 or more employees")
+    // A bare list comma ("A or B, C, or D") takes the list's own connective: the next gap's, when that gap is itself part of the list; after
+    // the last condition, only a ", or" / ", and" right after the comma (#1122). An "or" inside a later place, investor or headcount ("based in Ohio or Texas", "10 or more employees")
     // never turns the list into an OR; anything else stays 'and'.
     if (LIST_GAP.test(t)) {
       if (i + 1 < gaps.length) { const n = gaps[i + 1].replace(WINDOW_RE, ' '); return /\bor\b|\beither\b/i.test(n) && !/\band\s*\/\s*or\b|\bnor\b/i.test(n) ? 'or' : LIST_GAP.test(n) ? connAt(i + 1) : 'and' }
@@ -397,7 +399,10 @@ function unprovenSignals(icp: string | null | undefined, conds: Condition[]): Un
     const words = (r: string | undefined) => (r ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 1 && !/^(?:a|an|the|its|their|our|first|new|founding|inaugural|for|of|and|or)$/.test(w))
     // A role-bearing signal is kept only if a condition of its kind names an overlapping role (or names none, so any role counts).
     const roleLost = atoms.find(a => (a.kind === 'hiring' || a.kind === 'hire_made') && words(a.role).length
-      && conds.some(c => c.kind === a.kind) && !conds.some(c => c.kind === a.kind && (!words(c.role).length || words(c.role).some(w => words(a.role).includes(w)))))
+      && conds.some(c => c.kind === a.kind) && !conds.some(c => c.kind === a.kind && (!words(c.role).length || (c.kind === 'hiring' && c.roles?.length
+        // #1122: a condition naming several roles covers a signal only when one of ITS roles is the signal's role, never on a shared word ("sales")
+        ? conditionRoles(c).some(alt => sameRole(alt, a.role ?? ''))
+        : words(c.role).some(w => words(a.role).includes(w))))))
     if (!kinds.length) out.push({ text, reason: 'not a dated event this plan can check (no hire, opening, funding or other dated event in it); shown as unproven and never counted as met' })
     else if (roleLost) out.push({ text, reason: `the plan's ${roleLost.kind === 'hiring' ? 'open-role' : 'completed-hire'} condition does not name this role (${roleLost.role}); shown as unproven and never counted as met` })
     else if (!kinds.some(k => have.has(k))) out.push({ text, reason: 'asked for in the profile but not stated as a condition in the request; shown as unproven and never counted as met' })

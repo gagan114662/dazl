@@ -122,7 +122,8 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
     if (HIRING_NOUN.test(words[words.length - 1])) return null
     const c = conds(x).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
     // #1122: every role the condition names, in plain words ("SDR or salesperson"), never only the first
-    const role = c ? conditionRoles(c.cond).join(' or ').slice(0, 80) || undefined : undefined
+    const all = c ? conditionRoles(c.cond).join(' or ') : ''
+    const role = (all.length > 80 ? all.slice(0, 80).replace(/\s+\S*$/, '') : all) || undefined   // never cut a role mid-word
     return role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an|of)\b$/i.test(role) && !/^of\s/i.test(role) ? role : null
   }
   const plainOk = (x: string) => !hiringRole(x) && !NEGATING.test(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim()))

@@ -172,3 +172,29 @@ test('#1122 round 3: roles stay separate even when a title has a "/" inside', ()
   // the list's own final "or" makes "A, new B, a new C, or D" any-one
   assert.equal(compileTargeting('Raised a Series A, new funding, a new Head of Sales, or hiring SDRs', null).root?.op, 'or')
 })
+
+// Council round 4 (opus).
+test('#1122 round 4: plural requests match their singular postings; undated audit rows prove nothing', () => {
+  const at = (q: string, row: ProofRow) => { const p = compileTargeting(q, null); const [c] = planConditions(p.root).map(x => x.cond); return planProofs(p, lead, [row], ctx)[c.id].truth }
+  assert.equal(at('Companies hiring receptionists in the last 30 days', { ...posting('Receptionist'), kind: 'hiring-role' }), 'pass')
+  assert.equal(at('Companies hiring receptionists in the last 30 days', { ...posting('Front Desk Receptionist'), kind: 'hiring-role' }), 'pass')
+  assert.equal(at('Companies hiring nurses in the last 30 days', { ...posting('Registered Nurse'), kind: 'hiring-role' }), 'pass')
+  assert.equal(at('Companies hiring salespeople in the last 30 days', { ...posting('Sales Representative'), kind: 'hiring-role' }), 'pass')
+  assert.equal(at('Companies hiring a VP of Sales in the last 30 days', posting('VP, Sales')), 'pass')
+  // still bounded: a plural request never matches a different role
+  assert.notEqual(at('Companies hiring receptionists in the last 30 days', { ...posting('Dental Hygienist'), kind: 'hiring-role' }), 'pass')
+  // an audit row that says its posting date was not read is no dated posting
+  for (const label of ['its posting date was not read', 'posting date read as older than the last 30 days'])
+    assert.notEqual(at('Companies hiring SDRs in the last 30 days', { ...posting('Sales Development Representative'), kind: 'hiring-role', label }), 'pass', label)
+})
+
+test('#1122 round 4: list commas read as on main; verbs never open a role; unproven signals compared role by role', () => {
+  for (const q of ['Companies hiring SDRs, a Series A, or opened an office', 'Companies raised a Series A, a recent rebrand, or hiring SDRs'])
+    assert.equal(compileTargeting(q, null).root?.op, 'and', q)
+  for (const q of ['Companies hiring SDRs or laid off sales reps', 'Companies hiring SDRs or added sales reps', 'Companies hiring SDRs or promoted internal sales reps', 'Companies hiring SDRs or lack a sales manager'])
+    assert.deepEqual(alts(q), [['sdrs']], q)
+  const plan = compileTargeting('Companies hiring an SDR or sales rep in the last 45 days', JSON.stringify({ signals: ['Hiring sales engineers', 'Hiring a sales manager', 'Hiring first sales rep'] }))
+  const unproven = plan.unproven.map(u => u.text)
+  assert.ok(unproven.includes('Hiring sales engineers') && unproven.includes('Hiring a sales manager'), JSON.stringify(unproven))
+  assert.ok(!unproven.includes('Hiring first sales rep'), 'a role the condition names is covered')
+})
