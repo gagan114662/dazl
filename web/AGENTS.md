@@ -1,6 +1,6 @@
-> **Read [docs/launch-brief.md](../docs/launch-brief.md) first.** The owner launch brief (2026-11-22) overrides this file, the issue queue and every earlier decision it contradicts. Where they disagree, the brief wins.
-
 **Read `docs/NEVER-AGAIN.md` first, every session:** the mistakes we never repeat, their rules and the gates that enforce them.
+
+> **Read [docs/launch-brief.md](../docs/launch-brief.md) first.** The owner launch brief (2026-11-22) overrides this file, the issue queue and every earlier decision it contradicts. Where they disagree, the brief wins.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
