@@ -1,4 +1,4 @@
-J=679a7354658121281c331e61; D=$(ls -d /home/ubuntu/dazl-ff25534b*-prod | head -1)/web; echo "RELEASE $D"
+J=${J:-679a7354658121281c331e61}; D=$(ls -d /home/ubuntu/dazl-a38df6c6*-prod | head -1)/web; echo "RELEASE $D"
 P=$(sudo ss -ltnp 2>/dev/null | grep ':3105 ' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2); E=$(sudo cat /proc/$P/environ | tr '\0' '\n')
 echo "DB_KEYS: $(echo "$E" | grep -iE '^[A-Z_]*(DB|DATABASE|SQLITE)[A-Z_]*=' | cut -d= -f1 | tr '\n' ' ')"
 F=$(echo "$E" | grep -iE '^[A-Z_]*(DB|DATABASE|SQLITE)[A-Z_]*=' | cut -d= -f2- | grep -oE '(file:)?/[^ ?]+\.(db|sqlite)' | sed 's/^file://' | head -1); echo "DB_FILE $F"
