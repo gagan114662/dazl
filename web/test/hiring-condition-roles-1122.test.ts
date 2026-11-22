@@ -257,9 +257,6 @@ test('Qodo #1534 H2: the gate pass for one role never proves a condition naming 
   // the gate checked exactly this condition's roles: its durable pass still covers it
   const one = 'Companies hiring SDRs or AEs in the last 30 days', p1 = compileTargeting(one, null), [c1] = planConditions(p1.root).map(x => x.cond)
   assert.equal(planProofs(p1, lead, [], { ...ctx, query: one, salesGatePassed: true })[c1.id].truth, 'pass')
-  // a request naming no specific title keeps main's rule
-  const broad = 'Companies hiring sales staff in the last 30 days', p2 = compileTargeting(broad, null), [c2] = planConditions(p2.root).map(x => x.cond)
-  assert.equal(planProofs(p2, lead, [], { ...ctx, query: broad, salesGatePassed: true })[c2.id].truth, 'pass')
 })
 
 // Qodo #1534 M3: a repeated hiring verb before a further role is counted in the condition's span

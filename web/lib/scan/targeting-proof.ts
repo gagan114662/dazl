@@ -8,7 +8,7 @@ import { quoteShowsEvent, affirmativeSalesHiring, requestAsksFunding, requestedS
 import { salesHiringRequired, salesGateOr } from './sales-hiring-required.ts'
 import { needsEventBeyondHiring } from '../search/page-class.ts'
 import { isGtmRole } from '../signals/ats-gtm.ts'
-import { isSalesTitle, requestedHiringRoles, matchedHiringRole } from './hiring-role-match.ts'
+import { isSalesTitle, requestedHiringRoles, matchedHiringRole, roleNeedsSourceProof } from './hiring-role-match.ts'
 import { parseWindowDays } from './window.ts'
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, TECH_SCOPE, decodeScan, parseChangeRow, day, type TechScan } from '../signals/tech-observations.ts'
 
@@ -84,7 +84,16 @@ function gateCovers(c: Condition, ctx: ProofContext): boolean {
   const clockOk = c.within_days === null || c.within_days >= gateDays
   let signals: string[] = []
   try { const j = JSON.parse(ctx.icp ?? '{}') as { signals?: unknown }; if (Array.isArray(j.signals)) signals = j.signals.filter((x): x is string => typeof x === 'string') } catch { /* no profile */ }
-  if (c.kind === 'hiring') return clockOk && (!c.role || conditionRoles(c).some(isSalesTitle))
+  if (c.kind === 'hiring') {
+    if (!clockOk || (c.role && !conditionRoles(c).some(isSalesTitle))) return false
+    // Qodo #1534 H2: the durable pass does not record which title the gate verified. It covers a condition naming specific roles only when
+    // the gate checked a named title and every title it checked is one of this condition's own roles (a request naming no specific title
+    // keeps main's rule: the gate verified a sales posting).
+    const { named, broad } = namedRoles(c)
+    if (broad) return true
+    const checked = requestedHiringRoles(ctx.query, ctx.icp).filter(roleNeedsSourceProof)
+    return checked.length > 0 && checked.every(g => matchedHiringRole(g.term, named) !== null)
+  }
   if (c.kind === 'funding') return clockOk && c.stage !== 'pre-seed' && needsEventBeyondHiring(signals, ctx.query ?? '') && requestAsksFunding(ctx.query, ctx.icp) && stageOf(c.stage) === requestedStage(ctx.query, ctx.icp)
   return false
 }
@@ -160,7 +169,8 @@ const postingOrder = (a: ProofRow, b: ProofRow) => b.source_date.localeCompare(a
 // #1122 (case 1): the posting title names one of the role's own alternatives ("Head of Sales/VP Sales"): every word of that alternative.
 const roleAlts = (role: string) => role.split('/').map(roleWords).filter(w => w.length)
 const titleNamesRole = (title: string, role: string) => { const t = new Set(roleWords(title)); return roleAlts(role).some(a => a.every(w => t.has(w))) }
-const NOT_DATED = /posting date was not read|^unconfirmed:/i
+// Qodo #1534 H1: the generic board row's own words, "posting date unknown - the row date is when the board was read", are no posting date either
+const NOT_DATED = /posting date was not read|posting date unknown|^unconfirmed:/i
 // The title of ONE posting record ("Head of Sales - posted 2026-11-02" -> "Head of Sales"); null for a row listing several titles or a count.
 const singlePostingTitle = (v: string): string | null => { const t = v.split(/\s+-\s+posted\b/i)[0].trim(); return !t || /[;|\n]|\b\d+\s+(?:open\s+)?(?:roles|positions|jobs|openings)\b|\band\s+\d+\s+more\b/i.test(t) ? null : t }
 function ownProofs(c: Condition, lead: ProofLead, rows: ProofRow[], ctx: ProofContext): Proof[] {

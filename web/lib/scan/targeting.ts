@@ -145,9 +145,11 @@ function moreRoles(atoms: Atom[], self: Atom, text: string, role: string): { rol
     const sep = ALT_SEP.exec(rest); if (!sep) break
     // "SDR or sales rep roles": the trailing "roles" / "positions" belongs to the list, not to the title
     // "or are hiring BDRs": the repeated hiring verb is not part of the title
-    const tail = rest.slice(sep[0].length).replace(/^(?:(?:are|is|also)\s+)?(?:hiring|recruiting)(?:\s+for)?\s+/i, ''), next = cleanRole(tail).replace(/\s+(?:roles?|positions?|jobs?|openings?|vacancies)$/i, '')
-    if (!altRole(next)) break
-    const nextEnd = end + sep[0].length + tail.indexOf(next) + next.length
+    const after = rest.slice(sep[0].length), tail = after.replace(/^(?:(?:are|is|also)\s+)?(?:hiring|recruiting)(?:\s+for)?\s+/i, ''), next = cleanRole(tail).replace(/\s+(?:roles?|positions?|jobs?|openings?|vacancies)$/i, '')
+    // a conjunction ("SDRs, and hiring AEs") opens another clause, never a further role
+    if (!altRole(next) || /^(?:and|or|nor|but)\b/i.test(next)) break
+    // Qodo #1534 M3: the stripped verb ("or recruiting AEs") is part of the condition's span
+    const nextEnd = end + sep[0].length + (after.length - tail.length) + tail.indexOf(next) + next.length
     if (atoms.some(b => b !== self && end < b.end && b.start < nextEnd)) break
     roles.push(next); rest = tail.slice(tail.indexOf(next) + next.length); end = nextEnd
   }
