@@ -70,14 +70,15 @@ test('#1036 real first-play runner -> ready named US lead -> one click checks it
   const pageRead = workEmailPageRead(s.r.db,'A',s.leads,ENV)
   const usage = await mailboxCheckUsage(sqliteDb(s.r.db),'A',ENV)
   if(process.env.CONTACTS_RECEIPT) writeFileSync(process.env.CONTACTS_RECEIPT,JSON.stringify({synthetic:true,jobId:s.jobId,leads:s.leads.map(l=>({...l,enrichments:s.enr[l.id]})),site:s.site,targets:s.people.map(p=>({key:targetKey(p),name:p.name,title:p.title})),result,pageRead,usage,report,crawlReads:s.crawlReads,providerCalls:s.providerCalls},null,2))
+  // checked first, so a known-failing assertion below never hides them: no new recipient authority, no cross-tenant leads
+  const stored = s.r.db.prepare('SELECT contact FROM leads WHERE id = ?').get(s.lead.id) as {contact: string | null}
+  assert.equal(stored.contact,s.lead.contact,'no new recipient authority')
+  assert.equal(listLeads(s.r.db,'B',s.jobId).length,0,'no cross-tenant leads')
   assert.equal(result.guess?.label,'guessed, verified',JSON.stringify(result))
   assert.equal(s.providerCalls.length,1,'one configured verifier request, not a provider enrichment')
   assert.deepEqual(usage.day,{used:1,cap:1,remaining:0}); assert.equal(usage.state,'day_spent')
-  const stored = s.r.db.prepare('SELECT contact FROM leads WHERE id = ?').get(s.lead.id) as {contact: string | null}
-  assert.equal(stored.contact,s.lead.contact,'no new recipient authority')
   assert.equal(pageRead.guesses?.[s.lead.id]?.[0]?.label,'guessed, verified','canonical page read persists the checked result')
   const replay = await findWorkEmail(s.r.db,'A',s.lead.id,targetKey(s.target!),{env:ENV,fetchImpl:s.fixtureFetch})
   assert.equal(replay.guess?.label,'guessed, verified'); assert.equal(s.providerCalls.length,1,'replay never checks again')
-  assert.equal(listLeads(s.r.db,'B',s.jobId).length,0,'no cross-tenant leads')
   s.r.db.close()
 }))

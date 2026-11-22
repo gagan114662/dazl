@@ -111,11 +111,11 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     return { name: (i < 0 ? r.value : r.value.slice(0, i)).trim(), title: i < 0 ? null : r.value.slice(i + sep.length).trim(), linkedin: r.source_url || null, connector: r.connector, ...(HISTORICAL_CONNECTORS.has(r.connector) ? { historical: true } : {}), ...(r.connector === 'search:people' && !companyTied(r.label) ? { nameOnly: true } : {}) }
   })
   const ident = identityOf(l, rows)
-  // #1037: when the company's own website names the buyer (lib/people/lead-person.ts: listed with a title and the LinkedIn that page links),
-  // the card names THAT person, as the lead row does - every READY lead has one, so its card, preview and contact line agree with its row.
-  // Otherwise (a held lead) the card's research suggestion is unchanged.
+  // #1037: the card's "who" is only the buyer the company's own website names (lib/people/lead-person.ts: a person it lists, with a title and
+  // the LinkedIn that page links), the same person the lead row names. A search result, provider record or filing is never recommended as
+  // the buyer, held or ready: without an own-site buyer the card names nobody and says what is missing.
   const own = leadPerson(rows, buyerRoles, now.getTime(), ident)
-  const top = own ? { name: own.name, title: own.title, linkedin: own.linkedin } : recommendedPerson(people, buyerRoles) ?? undefined
+  const top = own ? { name: own.name, title: own.title, linkedin: own.linkedin } : undefined
   // The SAME two rules createDraft enforces, not email syntax: publishedContact picks the address and classifies its
   // purpose from its own context label (support/privacy usage is rejected even when the local part is "hello");
   // domainReviewFor says whether the address's origin needs the user's website review. A contact that equals the address
@@ -149,7 +149,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
   else assumptions.push(`The date ${l.event_date} is the event day as claimed; the page was not shown to date the event itself.`)
   const history = people.filter(p => p.historical)
   if (history.length) assumptions.push(`${history.map(p => `${p.name}${p.title ? ` (${p.title})` : ''}`).join('; ')} named in an SEC Form D filing: history as of the filing, not a current role and not a contact. Not recommended for outreach.`)
-  if (!top) missing.push(people.length ? (people.every(p => p.historical) ? 'a current buyer (the only named people are from an SEC filing: historical, not current)' : onlyNameOnly(people) ? 'a confirmed buyer (a search found people at a company with this name, but nothing confirms it is this company)' : 'a current buyer (every listed person has a past, negated or assistant-to title)') : 'a named person to approach')
+  if (!top) missing.push(people.length ? (people.every(p => p.historical) ? 'a current buyer (the only named people are from an SEC filing: historical, not current)' : onlyNameOnly(people) ? 'a confirmed buyer (a search found people at a company with this name, but nothing confirms it is this company)' : recommendedPerson(people, buyerRoles) ? 'a buyer named on the company\'s own site (a person it lists with a title and the LinkedIn its page links)' : 'a current buyer (every listed person has a past, negated or assistant-to title)') : 'a named person to approach')
   if (!ident && !citedEmail) missing.push('the company\'s own website')
   if (!draftable && !phone) missing.push('an email or phone')
   for (const u of unknown) missing.push(`${u} (not shown in the evidence)`)
@@ -163,8 +163,9 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     : l.gate_held ? 'None: a required check (the sales-hiring proof) has not passed. Research only - checking the source cannot change that.'
     : l.review_reason ? 'Check the source yourself before using this lead.'
     : l.currentness_held ? (l.timing === 'proof_backed' || l.day_verified ? 'Review the source before any outreach.' : 'Review the source to confirm the timing before any outreach.')
-    : !top ? 'Find the decision-maker before reaching out.'
+    // #1037: the website comes first - only a confirmed site can name the buyer
     : identityOpen ? (ident?.state === 'conflict' ? 'Settle which website is theirs before reaching out.' : ident ? `Confirm ${ident.site} is their site before reaching out.` : 'Identify the company\'s own website before reaching out.')
+    : !top ? 'Find the decision-maker before reaching out.'
     : draftable ? `Draft a first message to ${top.name} introducing your offer; mention the event only as context.`
     : phone ? `Call using the published number; there is no usable email to draft to.`
     : `Find a way to reach ${top.name}.`
