@@ -5,7 +5,7 @@ import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { writeCredential, removeCredential, connectorStatus, setEnabled } from '@/lib/connectors/store'
 import { writeConsent, readConsent, removeConsent, xViaOperatorIndex } from '@/lib/advanced'
-import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform } from '@/lib/advanced/config'
+import { advFlags, UI_PLATFORMS, connectorId, CONSENT_VERSION, isAdvPlatform, linkedinConnectAllowed, platformAllowed, PLATFORM_SUPPORT, scopeFor, type AdvPlatform } from '@/lib/advanced/config'
 import { rateLimit } from '@/lib/rate-limit'
 import { sameOriginJson } from '@/lib/same-origin'
 import { audit } from '@/lib/audit-route'
@@ -20,7 +20,7 @@ export async function GET() {
   const f = advFlags()
   const st = await connectorStatus(db, user.tenantId)
   // One-click Connect LinkedIn (the dazl Connect extension): connected / account name / last sync. Never a secret.
-  const linkedinConnect = f.linkedin ? await connectionStatus(db, user.tenantId) : null
+  const linkedinConnect = linkedinConnectAllowed() ? await connectionStatus(db, user.tenantId) : null
   return NextResponse.json({
     available: f.enabled, version: CONSENT_VERSION, linkedin_connect: linkedinConnect,
     // The three platforms the UI offers. allowed = the operator has switched it on for this server.
@@ -43,7 +43,9 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
   const f = advFlags()
-  if (!isAdvPlatform(body?.platform) || !platformAllowed(body.platform, f)) return NextResponse.json({ error: 'Not available' }, { status: 404 })
+  // Connect LinkedIn (the customer's own browser) is open to every workspace; the session-worker platforms need the operator's switch.
+  const ownBrowser = body?.platform === 'linkedin' && linkedinConnectAllowed() && (body?.action === 'consent' || body?.action === 'revoke' || body?.action === 'pair')
+  if (!isAdvPlatform(body?.platform) || !(ownBrowser || platformAllowed(body.platform, f))) return NextResponse.json({ error: 'Not available' }, { status: 404 })
   const p = body.platform as AdvPlatform
   // A platform the worker cannot fetch offers no consent, session collection or enable flow.
   // Withdrawing consent and switching a stale stored session OFF stay available for cleanup.

@@ -115,7 +115,10 @@ test('Connect LinkedIn: an expired code is spent and refused; a viewer cannot as
   }
   asUser('A', 'viewer')
   assert.equal((await settingsPost({ action: 'pair', platform: 'linkedin', timezone: 'America/Toronto' })).status, 403)
-  const keep = process.env.ADVANCED_LINKEDIN
-  process.env.ADVANCED_LINKEDIN = '0'
-  try { assert.equal((await extPost('A.whatever', { action: 'pair' })).status, 404) } finally { process.env.ADVANCED_LINKEDIN = keep }
+  // the operator's own switch for Connect LinkedIn; the session-worker switches no longer decide it (every workspace pairs its own browser)
+  process.env.DAZL_LINKEDIN_CONNECT = '0'
+  try { assert.equal((await extPost('A.whatever', { action: 'pair' })).status, 404) } finally { delete process.env.DAZL_LINKEDIN_CONNECT }
+  const keep = { c: process.env.ADVANCED_CONNECTORS, l: process.env.ADVANCED_LINKEDIN }
+  process.env.ADVANCED_CONNECTORS = '0'; process.env.ADVANCED_LINKEDIN = '0'
+  try { assert.notEqual((await extPost('A.whatever', { action: 'pair' })).status, 404, 'with the worker tier off, the extension endpoint still answers') } finally { process.env.ADVANCED_CONNECTORS = keep.c; process.env.ADVANCED_LINKEDIN = keep.l }
 })
