@@ -298,8 +298,8 @@ export const domainHoldCode = (db: Database.Database, tenantId: string, leadId: 
   return s === 'quarantined' ? 'lead_quarantined' : s === 'unreadable' ? 'review_unreadable' : 'domain_unconfirmed'
 }
 
-export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
-  return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName)).immediate()
+export function createDraft(db: Database.Database, tenantId: string, leadId: string, businessName: string, o: { manual?: boolean } = {}): string {
+  return db.transaction(() => createDraftInner(db, tenantId, leadId, businessName, o.manual === true)).immediate()
 }
 // The same, also returning the exact words it inserted, read inside the creating transaction (#929): autopilot binds
 // these as its own authority, never a later re-read that another process's edit could have reached first.
@@ -312,7 +312,25 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 }
 
 // Every check createDraft makes before it writes, in the same order. Throws OutreachError on the first refusal.
-function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
+// A lead from the Claude discovery lane, when a PERSON asks for the draft (the Approve button; never autopilot or calibration, which keep
+// every check below): the lead's proof page was confirmed when it was stored, so the draft needs only an email address a public page
+// prints for it. The address safety rules (test inbox, suppression list, undeliverable, personal mailbox) still apply. Nothing is sent
+// by a draft; the person reviews it in Outreach.
+function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
+  const state = db.prepare('SELECT review_reason FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null } | undefined
+  if (state?.review_reason) throw new OutreachError('lead_not_verified')
+  const row = db.prepare("SELECT value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string; source_url: string } | undefined
+  const to = norm(row?.value ?? '')
+  if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
+  if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
+  const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
+  if (!recipientAllowed(db, tenantId, to)) throw new OutreachError('personal_email')
+  if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
+  return { lead, to, addressUrl: row!.source_url, test }
+}
+
+function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
   const lead = db.prepare(
     `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
@@ -322,6 +340,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string) {
   if (isInboxFixtureAddress(lead.contact ?? '')) throw new OutreachError('fixture_recipient')
   if (leadCarryExcluded(db, tenantId, leadId)) throw new OutreachError('lead_excluded')
   if (isQuarantined(db, leadId)) throw new OutreachError('lead_quarantined')
+  if (manual && (db.prepare('SELECT source_kind FROM leads WHERE id = ?').get(leadId) as { source_kind: string | null } | undefined)?.source_kind === 'discover') return discoverDraftChecks(db, tenantId, lead, leadId)
   if (requiredGateHeld(db,tenantId,leadId)) throw new OutreachError('sales_hiring_check_failed')   // confirming the lead or its domain never clears a failed required check
   if (currentnessHeld(db,tenantId,leadId)) throw new OutreachError('lead_currentness_unconfirmed')
   // Verified by dazl (quote confirmed on the cited page) OR confirmed by the user
@@ -384,8 +403,8 @@ export function playOfferRow(db: Database.Database, tenantId: string, leadId: st
   } catch (e) { if (isMissingSchema(e)) return null; throw e }
 }
 
-function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string): string {
-  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId)
+function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string, manual = false): string {
+  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId, manual)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
   // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
   // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,

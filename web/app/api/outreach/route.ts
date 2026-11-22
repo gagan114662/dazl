@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (typeof body?.lead_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.lead_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    const id = createDraft(getScanDb(), user.tenantId, body.lead_id, user.business_name)
+    const id = createDraft(getScanDb(), user.tenantId, body.lead_id, user.business_name, { manual: true })
     // Drafts are template-only here: an LLM rewrite bills the tenant's provider key,
     // so it happens only via an explicit click on POST /api/outreach/polish.
     return NextResponse.json({ id }, { status: 201 })

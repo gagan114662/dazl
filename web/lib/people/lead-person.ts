@@ -52,9 +52,25 @@ function clean(rows: unknown): ContactEnrichment[] {
   return out
 }
 const tidy = (s: string) => s.replace(/\s+/g, ' ').trim()
+function discoverPerson(rows: unknown): LeadPerson | null {
+  if (!Array.isArray(rows)) return null
+  const mine = rows.filter((r): r is Record<string, unknown> => !!r && typeof r === 'object' && (r as Record<string, unknown>).connector === 'discover')
+  const p = mine.find(r => r.kind === 'person' && typeof r.value === 'string')
+  if (!p) return null
+  const value = str(p.value, 300) ?? '', i = value.indexOf(', ')
+  const name = tidy(i < 0 ? value : value.slice(0, i)), title = tidy(i < 0 ? '' : value.slice(i + 2)).slice(0, 120)
+  if (!NAME.test(name) || (name.split(' ').filter(Boolean).length < 2 && !NO_SPACE_NAME.test(name))) return null
+  const li = mine.find(r => r.kind === 'linkedin' && typeof r.value === 'string' && PROFILE.test(r.value as string))
+  const source = typeof p.source_url === 'string' && SOURCE.test(p.source_url) ? p.source_url : null
+  return { name, title, linkedin: li ? li.value as string : null, source, via: 'named on a public page', current: true }
+}
 
 export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date.now(), site: SiteIdentity | null = null): LeadPerson | null {
   try {
+    // A lead from the Claude discovery lane (rows with connector 'discover', written only by lib/scan/runner.ts runDiscoverLane) names the
+    // person its run found for this seller, with the page that names them. The own-site rule below is the older engine's.
+    const found = discoverPerson(rows)
+    if (found) return found
     const icp = typeof icpText === 'string' ? icpText.slice(0, 2000) : ''
     const people = contactsFromEnrichments(clean(rows), icp, Number.isFinite(nowMs) ? nowMs : Date.now(), site)
     for (const p of people) {

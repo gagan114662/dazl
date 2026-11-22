@@ -3,6 +3,7 @@
 // "Approve" creates a draft for review (POST /api/outreach), which never sends; createDraft re-checks every gate on the
 // server. approveState mirrors the conditions under which the existing "Draft email" button appears, plus the window
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
+import { discoverApprove, discoverContact, isDiscoverLead } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -41,6 +42,8 @@ const firstSentence = (s: string) => {
 }
 
 export function approveState(l: CardLead): ApproveState {
+  // a discovery-lane lead: approvable when its proof was confirmed and a public page prints an email for it
+  if (isDiscoverLead(l as { source_kind?: string | null })) return discoverApprove(l as never)
   if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
   // #1062: before the review reason - confirming the source cannot release a required check that has not passed.
   if (l.gate_held) return { ok: false, reason: 'A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.' }
@@ -84,7 +87,7 @@ export function cardCounts(leads: { id: string; quarantined_at?: number | null }
 
 export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null; fit_rationale?: string | null }, buyerRoles = ''): LeadCardSummary {
   const card = opportunityCard(l, buyerRoles)
-  const email = publishedEmail(l)
+  const email = publishedEmail(l) ?? discoverContact(l as never)?.email?.address ?? null
   const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
   // #1037: why nobody is named, in the card's own words: every listed title ruled out, or no buyer the company's own site names
   const titlesRuledOut = card.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m))
