@@ -53,3 +53,14 @@ test('the proxy session check is bounded too, so a stall there cannot hold the p
   assert.match(src, /checkSessionWithin\(/)
   assert.doesNotMatch(src, /hasLiveSession\(/)
 })
+
+test('#1463: every check logs its timing and where it ran, not only the slow ones; the /app request line carries its proxy time', async () => {
+  const { db, token } = await realStore()
+  const lines: string[] = []
+  assert.equal(await checkSessionWithin(token, { getDb: async () => db, log: l => lines.push(l), where: 'layout' }), true)
+  const l = JSON.parse(lines.find(x => x.includes('"auth_gate"')) ?? '{}')
+  assert.equal(l.type, 'auth_gate'); assert.equal(l.where, 'layout'); assert.equal(l.live, true)
+  for (const k of ['open_store_ms', 'lookup_ms', 'total_ms']) assert.equal(typeof l[k], 'number', k)
+  const src = readFileSync(new URL('../proxy.ts', import.meta.url), 'utf8')
+  assert.match(src, /type: 'app_request'/)
+})

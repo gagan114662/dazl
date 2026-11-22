@@ -12,6 +12,7 @@ import { isServerActionProbe } from '@/lib/ops/server-action-probe'
 // redirect. If the lookup itself fails, the request goes on and the layout's check still decides.
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl
+  const t0 = performance.now()
   // #1463: open this bundle's store (and run its migrations) on the first request, normally the deploy's health probe,
   // so a user's first /app request after a deploy never pays the synchronous migration pass (lib/store-warm.ts).
   await warmStore(getDb).catch(() => {})
@@ -30,6 +31,8 @@ export async function proxy(req: NextRequest) {
     r.headers.set('x-request-id', id)
     return r
   }
+  // #1463: each /app page request's time in this proxy (store warm + session check), logged on every request
+  if (pathname.startsWith('/app')) logLine({ level: 'info', type: 'app_request', request_id: id, path: pathname.slice(0, 120), proxy_ms: Math.round(performance.now() - t0) })
   const headers = new Headers(req.headers)
   headers.set('x-request-id', id)
   const res = NextResponse.next({ request: { headers } })
@@ -41,8 +44,10 @@ async function signedIn(token: string | undefined): Promise<boolean> {
   if (!token) return false
   // Bounded like the layout (lib/auth-gate.ts, #1463): a stalled lookup is logged and the request goes on, and the
   // layout's own bounded check then shows the error boundary instead of a page that never arrives.
-  try { return await checkSessionWithin(token, { getDb }) } catch { return true }
+  try { return await checkSessionWithin(token, { getDb, where: 'proxy' }) } catch { return true }
 }
 
 // The third entry is lib/ops/server-action-probe.ts SERVER_ACTION_PROBE_MATCHER, written out: Next reads this object statically.
+const logLine = (l: Record<string, unknown>) => { try { console.log(JSON.stringify(l)) } catch { /* logging never breaks a request */ } }
+
 export const config = { matcher: ['/app/:path*', '/api/:path*', { source: '/:path*', has: [{ type: 'header', key: 'next-action' }] }] }
