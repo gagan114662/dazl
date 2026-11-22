@@ -20,6 +20,7 @@ import { historyJobs } from '../lib/scan/history-jobs.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
 import { bothEngines } from './helpers/engines.ts'
 import { recordedJobCostUsd } from '../lib/scan/job-cost.ts'
+import { trialAllowanceLeft, utcDay } from '../lib/billing/trial-budget.ts'
 
 const JOB = 'a1517b000000000000000001'
 const api = 'https://api.anthropic.com/v1/messages'
@@ -194,3 +195,23 @@ for (const stored of ['0x1A', '']) {
     db.close()
   })
 }
+
+// #1517 / Quest on #1535: a free trial's allowance holds the worst-case reservation while the run goes; when the run ends it
+// settles to the vendor-billed cost (the difference goes back to the allowance), and the page shows that same settled number.
+// The trial run guard (spend_reserved_usd) never settles down from the worst case; the cap ledger is what the providers billed.
+bothEngines('#1517: after a trial run settles, the allowance it used equals the final cost its page shows (worst case only while running)', async ({ db }) => {
+  const env = { DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10' }
+  const trialEstimate = JSON.stringify({ total: { min: 0.05, max: 0.3 }, rows: [{ id: 'model', label: 'AI research', kind: 'model', usd: { min: 0.05, max: 0.3 }, unit_usd: '', note: '', provider: 'anthropic' }], payer: 'trial', cap: null, trial_scan_cap_usd: 0.3 })
+  const now = 1795300200
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, funded_by, attempts, estimate, spend_reserved_usd, spend_cap_reserved_usd, created_at, finished_at) VALUES (?, 'T', 'x', 'i', 'l', 'q', 'done', 'trial', 1, ?, 0.3, 0.0412, 1795300000, 1795300100)", [JOB, trialEstimate])
+  await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES ('tr1', 'T', ?, 1, 'llm.anthropic', 0.2, 0.0412, 'settled', NULL, 1795300010, 1795300020)", [JOB])
+  await db.run("INSERT INTO trial_reservations (id, tenant_id, job_id, kind, reserve_usd, day, created_at, settled_at, settled_attempt) VALUES ('res1', 'T', ?, 'scan', 0.3, ?, 1795300000, NULL, NULL)", [JOB, utcDay(now)])
+  const used = async () => { const a = await trialAllowanceLeft(db, 'T', { now, env }); assert.ok(a); return Math.round((a.total_usd - a.left_usd) * 1e6) / 1e6 }
+  assert.equal(await used(), 0.3)   // while the run is not settled: the worst-case reservation is held
+  await db.run("UPDATE trial_reservations SET settled_at = ?, settled_attempt = 1 WHERE id = 'res1'", [now - 50])
+  const page = (await readScanStatus(db, 'T', JOB) as unknown as { cost: { actual: { final_usd: number | null; summary: string } } }).cost.actual
+  assert.equal(Number(page.final_usd), 0.0412)
+  assert.equal(await used(), 0.0412)   // settled: the allowance holds what the page shows; the difference went back
+  const history = (await historyJobs(db, 'T')).find(j => j.id === JOB) as { spend_usd?: number | string }
+  assert.equal(Number(history.spend_usd), 0.0412)
+})
