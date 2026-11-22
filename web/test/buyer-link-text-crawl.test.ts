@@ -56,3 +56,15 @@ test('PM #1540 (no warning labels): the fallback buyer is shown plainly - no hed
   for (const w of [/not verified as current staff/i, /role not verified/i, /role as listed/i, /site linked from the source/i, /name search/i]) assert.doesNotMatch(shown, w)
   assert.ok(trace.some(a => a.lookup === 'usesimple.ai' && /^buyer_fallback basis=evidence_link_text/.test(a.status)), JSON.stringify(trace))
 })
+test('PM #1540: the fallback buyer from the identity-checked team page is shown plainly on the card and opportunity card', async () => {
+  const { leadCardSummary } = await import('../lib/scan/lead-card.ts')
+  const { opportunityCard } = await import('../lib/scan/opportunity.ts')
+  const { rows } = await run()
+  const lead = { company: 'Simple AI', signal: 'Simple AI raised a seed round', source_url: 'https://news.example/2026/11/10/simple-ai-raises', evidence_excerpt: 'Simple AI raised a seed round',
+    event_date: '2026-11-10', date_status: null, review_reason: null, fit: 5, intent: 1, why: null, icp_match: null, company_domain: 'usesimple.ai', contact: null, enrichments: rows }
+  const opp = opportunityCard(lead, 'Founder, CEO, Head of Sales')
+  assert.equal(opp.who?.name, 'Catheryn Li'); assert.equal(opp.who?.title, 'Chief Executive Officer')
+  const card = leadCardSummary(lead, 'Founder, CEO, Head of Sales')
+  assert.match(card.contact ?? '', /^Catheryn Li, Chief Executive Officer$/)
+  assert.doesNotMatch(JSON.stringify([card, opp]), /not verified as current|role not verified|role as listed|site linked from the source|name search|basis/i)
+})
