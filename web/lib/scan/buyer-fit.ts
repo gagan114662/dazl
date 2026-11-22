@@ -73,10 +73,12 @@ ${items.map(i => `COMPANY ${i.n}: ${JSON.stringify(i.company)}\nHOME PAGE:\n<<<\
 export type FitAnswer = { fit: 'yes' | 'no' | 'unknown'; quote: string | null }
 export function parseBuyerFit(text: string): Map<number, FitAnswer> {
   const out = new Map<number, FitAnswer>()
-  for (const line of text.split('\n')) {
-    const m = line.match(/^\s*COMPANY\s+(\d+)\s*\|\s*fit\s+(yes|no|unknown)\s*\|\s*quote\s+(.*)$/i)
+  for (const raw of text.split('\n')) {
+    // run e1334435: models add markdown and colons ("**COMPANY 1** | fit: yes | quote: ..."); those are read, the words are not loosened
+    const line = raw.replace(/\*\*|__|`/g, '').replace(/^\s*[-*•]\s+/, '')
+    const m = line.match(/^\s*COMPANY\s+(\d+)\s*:?\s*[|\u2013\u2014-]\s*fit\s*:?\s*(yes|no|unknown)\b\s*[|\u2013\u2014-]\s*quote\s*:?\s*(.*)$/i)
     if (!m) continue
-    const q = m[3].trim().replace(/^["“]|["”]$/g, '')
+    const q = m[3].trim().replace(/^["“'`]|["”'`]$/g, '').trim()
     out.set(Number(m[1]), { fit: m[2].toLowerCase() as FitAnswer['fit'], quote: /^none$/i.test(q) || q.length < 20 ? null : q.slice(0, 200) })
   }
   return out
@@ -93,10 +95,10 @@ type LeadRow = { id: string; company: string; signal: string; source_url: string
 export interface BuyerFitDeps { fetchPage?: (url: string) => Promise<Page | FetchFail | null>; fetchImpl?: typeof fetch }
 
 // Returns how many leads were capped. Never throws: a failure caps (fail closed) and is reported in why.
-export async function applyBuyerFitGate(db: Database.Database, jobId: string, provider: Provider, apiKey: string, icpText: BuyerFitTarget, deps: BuyerFitDeps = {}): Promise<{ checked: number; confirmed: number; capped: number }> {
+export async function applyBuyerFitGate(db: Database.Database, jobId: string, provider: Provider, apiKey: string, icpText: BuyerFitTarget, deps: BuyerFitDeps = {}): Promise<{ checked: number; confirmed: number; capped: number; noAnswer: number; noAnswerCause?: string }> {
   const rows = db.prepare('SELECT id, company, signal, source_url, fit, why, company_domain FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND fit >= 4').all(jobId) as LeadRow[]
   const hiring = rows.filter(isHiringLead).sort((a, b) => (b.fit ?? 0) - (a.fit ?? 0))
-  if (hiring.length === 0) return { checked: 0, confirmed: 0, capped: 0 }
+  if (hiring.length === 0) return { checked: 0, confirmed: 0, capped: 0, noAnswer: 0 }
   const cap = db.prepare('UPDATE leads SET fit = MIN(COALESCE(fit, 0), ?), why = ? WHERE id = ?')
   const note = db.prepare('UPDATE leads SET why = ? WHERE id = ?')
   const capWith = (l: LeadRow, reason: string) => cap.run(FIT_CAP, `Buyer fit unconfirmed: ${reason} A job posting alone is not a buyer signal. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id)
@@ -110,12 +112,24 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
     if (!page || isFail(page) || page.text.trim().length < 100) { capWith(l, 'the company\'s home page could not be read.'); capped++; continue }
     items.push({ n: items.length + 1, company: l.company, homepage: page.text, lead: l })
   }
-  if (items.length === 0) return { checked: hiring.length, confirmed: 0, capped }
-  let answers = new Map<number, FitAnswer>()
-  try {
-    if (!provider.complete) throw new Error('no completion')
-    answers = parseBuyerFit(await provider.complete(apiKey, buyerFitPrompt(icpText, items), deps.fetchImpl, 600))
-  } catch { /* fail closed below */ }
+  if (items.length === 0) return { checked: hiring.length, confirmed: 0, capped, noAnswer: 0 }
+  // Run e1334435: a call that fails or returns no readable line for a company is asked once more, for the unanswered companies only.
+  // An answer that still never comes fails closed below, counted and named (noAnswer / noAnswerCause), never silently.
+  const answers = new Map<number, FitAnswer>()
+  let cause: string | undefined
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ask = items.filter(i => !answers.has(i.n))
+    if (!ask.length) break
+    const renum = ask.map((i, k) => ({ ...i, n: k + 1 }))
+    try {
+      if (!provider.complete) throw new Error('no completion')
+      const reply = await provider.complete(apiKey, buyerFitPrompt(icpText, renum), deps.fetchImpl, 600)
+      const got = parseBuyerFit(reply)
+      for (const [k, a] of got) if (ask[k - 1]) answers.set(ask[k - 1].n, a)
+      if (ask.some(i => !answers.has(i.n))) cause = `unreadable reply: ${reply.replace(/\s+/g, ' ').slice(0, 80)}`
+    } catch (e) { cause = `call failed: ${(e instanceof Error ? e.message : 'error').slice(0, 80)}` }
+  }
+  let noAnswer = 0
   let confirmed = 0
   for (const it of items) {
     const a = answers.get(it.n)
@@ -123,11 +137,12 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
       confirmed++
       note.run(`Company site confirms fit: "${a!.quote}". ${it.lead.why ?? ''}`.trim().slice(0, WHY_MAX), it.lead.id)
     } else {
-      capWith(it.lead, a ? (a.fit === 'yes' ? 'the quoted fit evidence was not found on the company\'s home page.' : `the company's home page does not show fit (${a.fit}).`) : 'the fit check returned no answer.')
+      if (!a) noAnswer++
+      capWith(it.lead, a ? (a.fit === 'yes' ? 'the quoted fit evidence was not found on the company\'s home page.' : `the company's home page does not show fit (${a.fit}).`) : `the fit check returned no answer after a rerun (${cause ?? 'no line for this company'}).`)
       capped++
     }
   }
-  return { checked: hiring.length, confirmed, capped }
+  return { checked: hiring.length, confirmed, capped, noAnswer, ...(noAnswer ? { noAnswerCause: cause ?? 'no line for this company' } : {}) }
 }
 
 // The gate itself failed before it could cap anything (a database error, not a model answer): every hiring lead still graded fit >= 4 is capped below the qualified bar.
