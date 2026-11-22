@@ -14,6 +14,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
+import { isPlanPrompt, planReply } from './helpers/request-plan-stub.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -23,6 +24,9 @@ const QUOTE = 'Harbor Freight Supply of Columbus Ohio is hiring a payroll specia
 const REQUEST = 'Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job'
 const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industries: [], sizes: ['10-100 employees'], where: ['Ohio'], signals: ['payroll job'], exclude: [] }
 
+// #1395: SYNTHETIC request-plan reply for REQUEST (the place as the request writes it, the state Ohio) and the usage the stub reports for that call
+const PLAN = planReply([{ text: 'Ohio', city: null, region: 'Ohio', country: 'US' }], { buyer_type: 'Ohio companies with 10 to 100 employees', signals: [{ kind: 'hiring', text: 'recently posted a payroll, HR or office manager job', negated: false }] })
+const PLAN_USAGE = { input_tokens: 600, output_tokens: 80 }
 function run(modelQueries: string[] | string, searchStatus = 200, _unused: unknown[] = [], detailed?: (maxTokens: number | undefined) => { text: string; model: string | null; usage?: Record<string, number> }) {
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
@@ -42,8 +46,8 @@ function run(modelQueries: string[] | string, searchStatus = 200, _unused: unkno
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async () => ({ text: '', citedUrls: [] }),
-      complete: async (_k: string, _p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300 ? (typeof modelQueries === 'string' ? modelQueries : JSON.stringify(modelQueries)) : JSON.stringify([lead]),
-      ...(detailed ? { configuredModel: () => 'configured-model-x', completeDetailed: async (_k: string, _p: string, _f?: typeof fetch, maxTokens?: number) => detailed(maxTokens) } : {}),
+      complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => isPlanPrompt(p) ? PLAN : maxTokens === 300 ? (typeof modelQueries === 'string' ? modelQueries : JSON.stringify(modelQueries)) : JSON.stringify([lead]),
+      ...(detailed ? { configuredModel: () => 'configured-model-x', completeDetailed: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => isPlanPrompt(p) ? { text: PLAN, model: 'served-model-y', usage: PLAN_USAGE } : detailed(maxTokens) } : {}),
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }

@@ -19,11 +19,14 @@ import { migrateFeedback } from '../lib/scan/feedback.ts'
 import { companyKey } from '../lib/scan/evidence.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { isPlanPrompt, planReply } from './helpers/request-plan-stub.ts'
 import { ADAPTIVE_FETCHES, ADAPTIVE_SEARCHES, MONITOR_RUN_SQL, claimKeyedJob, isMonitorRun, runJob, type RunDeps } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
 const KEY = 'sk-ant-test-AAAA'
+// #1395: SYNTHETIC request-plan reply for REQUEST: the place as the request writes it, the state Ohio
+const PLAN = planReply([{ text: 'Ohio', city: null, region: 'Ohio', country: 'US' }], { buyer_type: 'Ohio companies with 10 to 100 employees', signals: [{ kind: 'hiring', text: 'recently posted a payroll, HR or office manager job', negated: false }] })
 const recent = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10)
 const REQUEST = 'Find Ohio companies with 10 to 100 employees that recently posted a payroll, HR or office manager job'
 const A = { url: 'https://jobs.example/a', company: 'Harbor Freight Supply', quote: 'Harbor Freight Supply of Columbus Ohio is hiring a payroll specialist to manage biweekly payroll' }
@@ -87,6 +90,7 @@ async function scan(o: Opts = {}) {
   const draft = (h: typeof A) => ({ name: '', company: h.company, contact: null, signal: 'Hiring for the role', source_url: h.url, score: 80, excerpt: h.quote, event_date: recent })
   const complete = async (_k: string, prompt: string, _f?: typeof fetch, maxTokens?: number) => {
     if (maxTokens === 300) return JSON.stringify(MODEL_Q)
+    if (isPlanPrompt(prompt)) return PLAN
     extractions.push(prompt)
     return JSON.stringify(prompt.includes(B.url) ? [draft(B)] : [draft(A)])
   }

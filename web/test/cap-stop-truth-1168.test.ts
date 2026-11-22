@@ -26,7 +26,7 @@ const EST = { total: { min: 0.093, max: 0.6615 }, rows: [{ id: 'm', kind: 'model
 test('#1168 item 1: three model calls refused before sending -> the cost line says no model call was made and the cost is $0, never "recorded ... unknown"', () => {
   const refused = JOB_REFUSED.filter(r => r[0].startsWith('llm.') && r[2] === 'refused').length
   const a = compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 1, reservedUsd: 0, requests: 0, requestsWithTokens: 0, refusedBeforeSending: refused })
-  assert.equal(a.summary, 'No model call was made: 3 were refused by a spending limit before sending, so the model cost is $0. Estimate was $0.09-$0.66.')
+  assert.equal(a.summary, 'No model call was made: 3 were refused by a spending limit before sending, so the model cost is $0. The model-request estimate was $0.09-$0.66.')
   assert.doesNotMatch(a.summary, /recorded|unknown/)
   // one refused call reads in the singular; calls that WERE sent keep the existing wording (the refusals do not hide them)
   assert.match(compareActual(EST, { inputTokens: null, outputTokens: null, tokensComplete: false, searches: 0, reservedUsd: 0, requests: 0, refusedBeforeSending: 1 }).summary, /^No model call was made: 1 was refused/)

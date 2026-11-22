@@ -14,6 +14,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { isPlanPrompt, OHIO_PAYROLL_PLAN } from './helpers/request-plan-stub.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 
 const master = randomBytes(32)
@@ -50,7 +51,8 @@ function run(modelQueries: string[] | string, searchStatus = 200, extraHits: { u
   const providers: Record<'anthropic' | 'openai', Provider> = {
     anthropic: {
       research: async () => ({ text: '', citedUrls: [] }),
-      complete: async (_k: string, _p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300 ? (typeof modelQueries === 'string' ? modelQueries : JSON.stringify(modelQueries)) : JSON.stringify([lead]),
+      // #1395: the plan reply is SYNTHETIC (REQUEST writes one place, "Ohio")
+      complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => isPlanPrompt(p) ? OHIO_PAYROLL_PLAN : maxTokens === 300 ? (typeof modelQueries === 'string' ? modelQueries : JSON.stringify(modelQueries)) : JSON.stringify([lead]),
     },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }

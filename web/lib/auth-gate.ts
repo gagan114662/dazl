@@ -17,7 +17,7 @@ export class SessionCheckTimeout extends Error {
   constructor(step: GateStep, ms: number) { super(`session check stalled at ${step} after ${ms}ms`); this.step = step; this.ms = ms }
 }
 
-export type GateDeps = { getDb: () => Promise<Db>; ms?: number; now?: () => number; log?: (line: string) => void }
+export type GateDeps = { getDb: () => Promise<Db>; ms?: number; now?: () => number; log?: (line: string) => void; stage?: 'proxy' | 'layout' }
 
 function within<T>(p: Promise<T>, step: GateStep, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -36,7 +36,10 @@ export async function checkSessionWithin(token: string | undefined, deps: GateDe
     const t1 = now()
     const live = await within(hasLiveSession(token, db), 'lookup', ms)
     const total = now() - t0
-    if (total >= SLOW_SESSION_CHECK_MS) log(JSON.stringify({ level: 'warn', type: 'auth_gate_slow', open_store_ms: t1 - t0, lookup_ms: now() - t1, total_ms: total }))
+    try { if (total >= SLOW_SESSION_CHECK_MS) log(JSON.stringify({ level: 'warn', type: 'auth_gate_slow', open_store_ms: t1 - t0, lookup_ms: now() - t1, total_ms: total })) } catch { /* never decides the check */ }
+    // #1463 (PM 2026-11-22): the 86s hang did not reproduce off-scan; every check is logged with its timing so the next one during a live
+    // scan is caught, slow or not.
+    try { log(JSON.stringify({ level: 'info', type: 'auth_gate', stage: deps.stage ?? null, live, open_store_ms: t1 - t0, lookup_ms: now() - t1, total_ms: total })) } catch { /* the timing line never decides the check */ }
     return live
   } catch (e) {
     if (e instanceof SessionCheckTimeout) log(JSON.stringify({ level: 'error', type: 'auth_gate_stalled', step: e.step, ms: e.ms }))

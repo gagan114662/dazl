@@ -14,6 +14,7 @@ import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { isPlanPrompt, planReply } from './helpers/request-plan-stub.ts'
 
 const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
 const BODY = 'Nimbus Analytics is hiring an Account Executive to build its UK sales team in London.'
@@ -80,6 +81,8 @@ test('no place in the request: nothing is requested at all', async () => {
 const master = randomBytes(32); process.env.DAZL_MASTER_KEY = master.toString('base64')
 test('runner: a hiring request auto-reads the public board found by search; the dated posting reaches extraction and is verified against its page; a request with no hiring signal does not', async () => {
   const run = async (query: string, signals: string[]) => {
+    // #1395: SYNTHETIC request-plan reply: both requests write the place "London UK"
+    const plan = planReply([{ text: 'London UK', city: 'London', region: null, country: 'GB' }], { buyer_type: 'B2B SaaS startups', signals: signals.map(t => ({ kind: /hiring/.test(t) ? 'hiring' as const : 'funding' as const, text: t, negated: false })) })
     resetTinyfishState()
     const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateEvents(db)
     saveKey(db, 'A', 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', master)
@@ -96,7 +99,7 @@ test('runner: a hiring request auto-reads the public board found by search; the 
     const sourceHttp: SafeGet = async (url) => { requested.push(url); return board(9).http(url) }
     const cand = { name: '', company: 'Nimbus Analytics', contact: null, signal: 'Hiring an account executive', source_url: 'https://boards.greenhouse.io/nimbus/jobs/1', score: 80, excerpt: BODY, event_date: day(9).slice(0, 10) }
     const providers: Record<'anthropic' | 'openai', Provider> = {
-      anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { prompts.push(p); return maxTokens === 300 ? '[]' : p.includes('/jobs/1') && p.includes('first_published') === false && p.includes(BODY) ? JSON.stringify([cand]) : '[]' } },
+      anthropic: { research: async () => ({ text: '[]', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => { prompts.push(p); return isPlanPrompt(p) ? plan : maxTokens === 300 ? '[]' : p.includes('/jobs/1') && p.includes('first_published') === false && p.includes(BODY) ? JSON.stringify([cand]) : '[]' } },
       openai: { research: async () => ({ text: '', citedUrls: [] }) },
     }
     const realFetch = globalThis.fetch; globalThis.fetch = fetchImpl; process.env.TINYFISH_API_KEY = 'tf-test'

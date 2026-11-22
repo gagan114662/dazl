@@ -31,6 +31,7 @@ import { playRuns } from '../lib/play-runs.ts'
 import { playNew } from '../lib/play-now.ts'
 import { repeatFirstPlays } from '../lib/play-repeat.ts'
 import { collectMonitorResults, createMonitor, runDueMonitors } from '../lib/monitors.ts'
+import { isPlanPrompt, OHIO_PAYROLL_PLAN } from './helpers/request-plan-stub.ts'
 
 const DAY = 86400
 const NOW = Math.floor(Date.parse('2026-11-13T12:00:00Z') / 1000)
@@ -516,7 +517,8 @@ test('#883 real runner: the second play\'s scan of a company the first play aler
       }
       return new Response('{}', { status: 200 })
     }) as typeof fetch
-    const complete = async (_k: string, _p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300
+    // #1395: the request plan reply is SYNTHETIC (both watches' requests write one place, "Ohio")
+    const complete = async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => isPlanPrompt(p) ? OHIO_PAYROLL_PLAN : maxTokens === 300
       ? JSON.stringify(['small company hiring payroll specialist'])
       : JSON.stringify([{ name: '', company: HIT.company, contact: null, signal: 'Hiring for the role', source_url: HIT.url, score: 80, excerpt: HIT.quote, event_date: recent }])
     const providers: Record<'anthropic' | 'openai', Provider> = {

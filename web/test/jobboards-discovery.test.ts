@@ -14,6 +14,7 @@ import type { Provider } from '../lib/llm/provider.ts'
 import type { SafeGet } from '../lib/sources/types.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { isPlanPrompt, planReply } from './helpers/request-plan-stub.ts'
 
 const master = randomBytes(32)
 process.env.DAZL_MASTER_KEY = master.toString('base64')
@@ -21,6 +22,8 @@ const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString()
 const ago = (n: number) => day(n).slice(0, 10)
 const HFQ = 'Harbor Freight Supply of Columbus Ohio is hiring a payroll specialist to manage biweekly payroll'
 const REQUEST = 'Find Ohio companies hiring payroll roles'
+// #1395: SYNTHETIC request-plan reply for REQUEST: the place as the request writes it, the state Ohio
+const PLAN = planReply([{ text: 'Ohio', city: null, region: 'Ohio', country: 'US' }], { buyer_type: 'Ohio companies', signals: [{ kind: 'hiring', text: 'hiring payroll roles', negated: false }] })
 const ICP = { summary: 'Ohio SMBs hiring payroll', who: ['Controller'], industries: [], sizes: [], where: ['Ohio'], signals: ['payroll job'], exclude: [] }
 const BODY: Record<string, string> = {
   beta: 'Beta Logistics needs a payroll specialist to run weekly payroll for its Dayton warehouse.',
@@ -66,7 +69,7 @@ async function run(extraHitUrls: string[], sourceHttp: SafeGet, sources: unknown
   const hf = { name: '', company: 'Harbor Freight Supply', contact: null, signal: 'hiring payroll', source_url: 'https://jobs.example/hf', score: 80, excerpt: HFQ, event_date: ago(20) }
   const lead = (k: string) => ({ name: '', company: k, contact: null, signal: 'hiring payroll', source_url: `https://boards.greenhouse.io/${k}/jobs/7`, score: 80, excerpt: BODY[k], event_date: ago(6) })
   const providers: Record<'anthropic' | 'openai', Provider> = {
-    anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist']) : p.includes('PAGE') || p.includes('Beta Logistics') || p.includes('Gamma Dental') ? JSON.stringify(['beta', 'gamma'].filter(k => p.includes(BODY[k])).map(lead)) : p.startsWith('You check one claim') ? 'supports' : JSON.stringify([hf]) },
+    anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => isPlanPrompt(p) ? PLAN : maxTokens === 300 ? JSON.stringify(['small company hiring payroll specialist']) : p.includes('PAGE') || p.includes('Beta Logistics') || p.includes('Gamma Dental') ? JSON.stringify(['beta', 'gamma'].filter(k => p.includes(BODY[k])).map(lead)) : p.startsWith('You check one claim') ? 'supports' : JSON.stringify([hf]) },
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   const page = async (url: string) => {

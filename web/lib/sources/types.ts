@@ -33,6 +33,9 @@ export interface AdapterInput {
   discovered?: string[] // URLs this scan's own search returned (raw hits and candidates); only the job-board adapter derives boards from them
   companies?: { name: string; domain?: string | null }[] // companies this scan itself found (leads / seed): the job-board adapter probes their public boards by slug guess
   tally?: Partial<Record<'greenhouse' | 'lever' | 'ashby', { probed: number; failed: number; evidence: number }>> // the job-board adapter reports how each public board API went (boards asked / failed / postings kept), for per-board progress
+  // #1395: the job-board place the runner built from the request plan (lib/scan/request-plan.ts). Set (a place, or null for none) when the runner
+  // read the request; absent only for a direct call, which reads the place from `query` as before.
+  place?: { name: string; ok: (...locs: (string | undefined)[]) => boolean } | null
   http: SafeGet
   credential?: string // reserved for future user-approved connectors; no adapter below uses it
 }

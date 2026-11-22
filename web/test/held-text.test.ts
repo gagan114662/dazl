@@ -12,6 +12,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateEvents } from '../lib/events/store.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { resetTinyfishState } from '../lib/search/tinyfish.ts'
+import { isPlanPrompt, OHIO_PAYROLL_PLAN } from './helpers/request-plan-stub.ts'
 import { claimKeyedJob, runJob, verifyLeads } from '../lib/scan/runner.ts'
 import { HeldText, canonicalUrl, looksLikeWall, looksTruncated, MIN_COPY_CHARS, MAX_COPY_BYTES } from '../lib/scan/held-text.ts'
 import { evidenceOriginLabel } from '../lib/scan/evidence-origin.ts'
@@ -54,7 +55,7 @@ async function scan(o: Opt = {}) {
   }) as typeof fetch
   const lead = { name: '', company: o.company ?? 'Harbor Freight Supply', contact: null, signal: 'Hiring a payroll specialist', source_url: cited, score: 80, excerpt: o.excerpt ?? QUOTE, event_date: o.eventDate === undefined ? recent : o.eventDate }
   const providers: Record<'anthropic' | 'openai', Provider> = {
-    anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_k: string, _p: string, _f?: typeof fetch, maxTokens?: number) => maxTokens === 300 ? JSON.stringify([]) : JSON.stringify([lead]) },
+    anthropic: { research: async () => ({ text: '', citedUrls: [] }), complete: async (_k: string, p: string, _f?: typeof fetch, maxTokens?: number) => isPlanPrompt(p) ? OHIO_PAYROLL_PLAN : maxTokens === 300 ? JSON.stringify([]) : JSON.stringify([lead]) },   // #1395: the plan reply is SYNTHETIC (REQUEST writes "Ohio")
     openai: { research: async () => ({ text: '', citedUrls: [] }) },
   }
   const own = o.own ?? 'blocked'

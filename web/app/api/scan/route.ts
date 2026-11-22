@@ -207,6 +207,8 @@ export async function POST(req: NextRequest) {
   // estimate (limit, mode or key changed since) is returned for a fresh confirmation (409 estimate_changed). No paid call happens here.
   const estDb = await getDb()
   const est = await estimateForBody(websiteReview ? { ...body, mode: undefined } : body, { db: estDb, tenantId: user.tenantId, hasOwnKey: funded === 'user', model: funded === 'user' ? await keyedModel(estDb, user.tenantId) : null, enrichmentVendors: (await connectorStatus(estDb, user.tenantId).catch(() => [])).filter(c => c.enabled).map(c => c.connector) })
+  // #1319: an unreadable per-scan cap refuses every paid call of the run (spend-cap.ts), so no run starts
+  if (!est.ok && est.error === 'spend_config_invalid') return NextResponse.json({ error: est.error, detail: est.detail }, { status: est.status })
   if ((claudeOnly || companyFirst || websiteApproval) && !est.ok) return NextResponse.json({ error: est.error, detail: est.detail, message: est.message }, { status: est.status })
   if (est.ok) {
     if (websiteApproval && typeof body?.estimate_ack !== 'string') return NextResponse.json({ error: 'estimate_changed', estimate: est.estimate }, { status: 409 })

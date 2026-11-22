@@ -11,7 +11,8 @@ import type Database from 'better-sqlite3'
 import { readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
-import { runResearchScan } from '../research/scan-job.ts'
+import { runResearchScan, HAIKU } from '../research/scan-job.ts'
+import { readRequestPlan, cachedRequestPlan, planPrompt, PLAN_MAX_TOKENS } from './request-plan.ts'
 import { researchEngineOn } from '../research/engine.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { runAutopilot } from '../outreach/autopilot.ts'
@@ -39,7 +40,7 @@ import { beginScanTrace } from '../evals/capture.ts'
 import { buildSourcePrompt, canonUrl, collectEvidenceReport, normalizeSources, selfDescribedUrls } from '../sources/index.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, type SourceStats } from '../search/trace.ts'
 import { directQueries, hasHiringSignal } from '../search/direct-queries.ts'
-import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason } from '../sources/jobboards.ts'
+import { placeIn, atsKindOf, profilePlace as profilePlaceOf, absorbStates, placeSkipReason, boardPlaceOf, type Place } from '../sources/jobboards.ts'
 import { corroborationTargets } from './corroborate.ts'
 import { salesGateOr, salesHiringRequired } from './sales-hiring-required.ts'
 import { resolveTiming } from './page-timing.ts'
@@ -56,7 +57,7 @@ import { buyerSourceCitation, companyHostsFromSearch, crawlJob, defaultGet, host
 import { freeCompanySitesDetailed, siteCompanyKey } from '../connectors/free-site-finder.ts'
 import { effectiveCapUsd, noteAccountLimitRefusal, scanSpendContext, scanSpendRow, spendAttemptRejected, spendAttemptUncertain } from './spend-cap.ts'
 import { captureError } from '../ops/errors.ts'
-import { anthropicCountTokens, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
+import { anthropicCountTokens, callCostUsd, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
 import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
@@ -681,6 +682,17 @@ async function poolRoomFor(guards: SpendGuard[], usd: number): Promise<boolean> 
     const room = await g.pool.headroom().catch(() => -Infinity)
     if (!(room >= usd)) return false
   }
+  return true
+}
+// #1395: room for an OPTIONAL paid call (the request plan), read-only and never latching: every job guard has room under its limit, every owner
+// pool behind the guards has headroom, and the scan's recorded cap (when this scan has one) has room. A reservation that does not fit latches a
+// SpendGuard (every later reservation refused), so an optional call that would not fit is not reserved at all and later paid steps go on.
+export async function optionalCallHasRoom(guards: SpendGuard[], usd: number): Promise<boolean> {
+  if (!(Number.isFinite(usd) && usd >= 0)) return false
+  if (guards.some(g => g.refused || (!(g instanceof PooledGuard) && !(g.reservedUsd + usd <= g.limitUsd)))) return false
+  if (!(await poolRoomFor(guards, usd))) return false
+  const ctx = scanSpendContext()
+  if (ctx && effectiveCapUsd(ctx) !== null && !(await scanCapRoomFor(usd))) return false
   return true
 }
 async function scanCapRoomFor(usd: number): Promise<boolean> {
@@ -2025,15 +2037,54 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // #1095: an entry is the place text the board source resolves ("Austin" of a US profile is "Austin, TX"; profilePlaceText), and two entries
     // naming the same place are one place
     // An entry placeIn already reads is appended as the profile wrote it; a bare US city is appended with its state. The place's NAME is only the de-dupe key.
+    // #1395: the REQUEST's place is read once by the model into the request plan (lib/scan/request-plan.ts), never from the request's words by regex.
+    // Only when the board source would run (a hiring request, or the user picked it). Fail closed: no plan (a model error, a reply off the schema,
+    // a place the request does not write) holds the board source, named in its status; it never falls back to
+    // reading the words. A refused spend reservation for the plan holds the board source too; the rest of the scan goes on (Quest, #1395).
+    const explicitSel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : null
+    const wantsBoards = !!(job.query && icpForSources && complete && (explicitSel ? explicitSel.adapters.includes('jobboards') : hiringRequest))
+    let planHold: string | null = null
+    let planPlace: Place | null = null
+    let planSkip: string | null = null
+    let requestNamesPlace = false   // the plan read a place from the request: only that place is ever searched (Quest, #1395)
+    // Claude is the only paid API the plan may use: a tenant whose model key is not Claude keeps the board source exactly as before (Quest, #1395),
+    // the place read from the request's words as main read it, never a silent loss of the source.
+    const legacyBoards = vendor !== 'anthropic'
+    if (wantsBoards && !legacyBoards) {
+      assertOwned(db, job)
+      const pm = meterProvider(deps.providers ? rawProviders[vendor] : anthropicModel(HAIKU), c => ledger.model(c))
+      const planModel = spendLimit === null ? flagAccounting(db, job, pm, vendor) : flagAccounting(db, job, guardProvider(pm, spendGuards, !trial ? anthropicCountTokens : undefined, undefined, !trial), vendor)
+      // the plan is optional: without room for it on every guard, the pool and the scan cap, nothing is reserved (no guard latches) and the boards hold
+      // (a model this check cannot price is left to the guarded call itself, which refuses an unpriced model and stops the scan, as for every paid call)
+      let planUsd: number | null = null
+      try { planUsd = callCostUsd(pm.configuredModel?.() ?? HAIKU, Buffer.byteLength(planPrompt(job.query!)), PLAN_MAX_TOKENS) } catch { planUsd = null }
+      // a plan already read for this play costs nothing: it needs no room
+      const room = planUsd === null || !!cachedRequestPlan(job.user_id, job.query!) ? true : await optionalCallHasRoom(spendGuards, planUsd)
+      const r = room ? await readRequestPlan(planModel, key, job.query!, job.user_id, deps.fetchImpl) : { ok: false as const, reason: 'spend_refused' as const }
+      if (!r.ok) planHold = `skipped_request_plan:${r.reason}`
+      else {
+        requestNamesPlace = r.plan.places.length > 0
+        // the plan says which words are the place; the existing resolvers read them, with the profile's country and entries as a profile place is read
+        const b = boardPlaceOf(r.plan.places, { country: icpForSources?.country ?? null, where: (icpForSources?.where ?? []).filter((w): w is string => typeof w === 'string') })
+        if ('place' in b) planPlace = b.place; else if (requestNamesPlace) planSkip = b.reason
+      }
+    }
     const named = new Map<string, string>()
-    if (job.query && !placeIn(job.query)) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
+    // the profile's place only when the request names NONE: a place the request names but the boards cannot place holds them, never another place
+    if (legacyBoards ? !!(job.query && !placeIn(job.query)) : wantsBoards && !planHold && !requestNamesPlace) for (const w of icpForSources?.where ?? []) { const p = typeof w === 'string' ? profilePlaceOf(w, icpForSources?.country) : null; if (p && !named.has(p.name)) named.set(p.name, p.text) }
     const profilePlaces = absorbStates([...named.keys()])
     const profilePlace = profilePlaces.length === 1 ? named.get(profilePlaces[0])! : null
-    const boardsQuery = job.query ? (profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
-    const autoBoards = !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery))
+    // the profile's place is read from the PROFILE entry alone ("in <entry>"), never from the request's words appended to it
+    const boardPlace: Place | null = planPlace ?? (profilePlace ? placeIn(`in ${profilePlace}`) : null)
+    const boardsQuery = job.query ? (!planPlace && profilePlace ? `${job.query} in ${profilePlace}` : job.query) : null
+    const autoBoards = legacyBoards ? !!(boardsQuery && !job.sources && hiringRequest && placeIn(boardsQuery)) : !!(boardsQuery && !job.sources && wantsBoards && hiringRequest && boardPlace && !planHold)
     // Source status is attempted-or-skipped, never silent: a board source that was not selected says why (stored as the collector status).
-    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : placeSkipReason(job.query, icpForSources?.where ?? []))   // #1205: the reason names the place and what to change
-    const sel = job.query && job.sources ? normalizeSources(safeJson(job.sources)) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
+    // a board source the user picked with no place to read (the request names one the boards cannot place, or none and the profile gives none)
+    // is held with that reason, never run with no place (Qodo, #1527)
+    const pickedNoPlace = !!explicitSel && wantsBoards && !legacyBoards && !planHold && !boardPlace
+    if (job.query && icpForSources && !autoBoards) ledger.record('adapter:jobboards', planHold ?? (pickedNoPlace ? planSkip ?? placeSkipReason('', icpForSources?.where ?? []) : job.sources ? 'skipped_explicit_sources' : !hiringRequest ? 'skipped_no_hiring_signal' : planSkip ?? placeSkipReason(legacyBoards ? job.query : '', icpForSources?.where ?? [])))   // #1205: the reason names the place and what to change
+    // a held plan also holds a board source the user picked: the other picked sources still run
+    const sel = explicitSel ? (planHold || pickedNoPlace ? { ...explicitSel, adapters: explicitSel.adapters.filter(a => a !== 'jobboards') } : explicitSel) : autoBoards ? { adapters: ['jobboards'], feeds: [] as string[], pages: [] as string[] } : null
     const walledLeads: LeadDraft[] = []
     const boardDates = new Map<string, string>()   // posting URL -> the job board's own structured publish date (job-board source, and careers-page ATS postings: the board's own publish date, null for an own-domain page)
     const selfDescribedLeads: LeadDraft[] = []
@@ -2043,7 +2094,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         assertOwned(db, job)
         // the board source reads the profile's place whether it was picked by the user or chosen automatically; only it gets the request with the
         // place appended, every other picked source keeps the user's own request (XHawk on #1155)
-        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [], boardsQuery && boardsQuery !== job.query ? { jobboards: boardsQuery } : {})
+        const collected = await collectEvidenceReport(sel, job.query!, deps.sourceHttp, undefined, sel.adapters.includes('jobboards') ? [...diag.hitUrls, ...leads.map(l => l.source_url)] : [], async url => { try { const r = await fetchP(url); return r && 'text' in r && typeof r.text === 'string' ? r.text : null } catch { return null } }, sel.adapters.includes('jobboards') ? [...new Map(leads.filter(l => l.company).map(l => [l.company.toLowerCase(), { name: l.company }])).values()] : [], boardsQuery && boardsQuery !== job.query ? { jobboards: boardsQuery } : {}, wantsBoards && !planHold && !legacyBoards ? { jobboards: boardPlace } : {})
         const items = collected.items
         for (const it of items) if ((it.source === 'jobboards' || it.source === 'careers') && it.date && /^\d{4}-\d{2}-\d{2}$/.test(it.date)) boardDates.set(canonUrl(it.url), it.date)
         const leadsBefore = leads.length
