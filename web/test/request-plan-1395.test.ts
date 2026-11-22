@@ -110,3 +110,29 @@ test('#1395 a UK city with its constituent country keeps that region: Manchester
   assert.ok('place' in eng && eng.place.ok('Manchester, England, United Kingdom') && eng.place.ok('Manchester, UK'))
   assert.equal(groundedIn('Companies in Berlin hiring sales staff', { text: 'Berlin', city: 'Berlin', region: 'IN', country: null }), false, '"in" inside "Berlin" is not a region')
 })
+
+// Council review (opus R1): the built-in places are data too: a bare "London" is the UK's and "NYC" is New York City, as the board source has always
+// read them; the model's country for them is grounded, and a null country is filled from the same data.
+test('#1395 grounding: the built-in London (GB) and New York City (US) imply their country; a bare London with no country is the UK London', async () => {
+  assert.equal(groundedIn('SDRs hiring in London', { text: 'London', city: 'London', region: null, country: 'GB' }), true)
+  assert.equal(groundedIn('hiring in NYC', { text: 'NYC', city: 'NYC', region: null, country: 'US' }), true)
+  assert.equal(groundedIn('hiring in Brooklyn', { text: 'Brooklyn', city: 'Brooklyn', region: null, country: 'US' }), true)
+  assert.equal(groundedIn('SDRs hiring in London', { text: 'London', city: 'London', region: null, country: 'CA' }), false, 'London alone is never another London')
+  const lon = boardPlaceOf([{ text: 'London', city: 'London', region: null, country: null }])
+  assert.ok('place' in lon && lon.place.name === 'London' && lon.place.ok('London, UK') && !lon.place.ok('London, ON'))
+})
+
+// Council review (opus R5): a country implied by data (not written) needs the city written as a name: "mobile app teams" is not Mobile, AL.
+test('#1395 grounding: an implied country needs the city written as a name; lowercase words are not cities', () => {
+  assert.equal(groundedIn('mobile app teams hiring', { text: 'mobile', city: 'Mobile', region: null, country: 'US' }), false)
+  assert.equal(groundedIn('bathroom fitters hiring', { text: 'Bath', city: 'Bath', region: null, country: 'GB' }), false)
+  assert.equal(groundedIn('Startups SaaS à Toronto qui recrutent', { text: 'Toronto', city: 'Toronto', region: null, country: 'CA' }), true)
+  assert.equal(groundedIn('dentists in toronto, canada', { text: 'toronto, canada', city: 'toronto', region: null, country: 'CA' }), true, 'a country WRITTEN in the request is grounded whatever the case')
+})
+
+// Council review (opus R7): a rejected key is not a missing plan: it stops the scan like every other step's auth failure.
+test('#1395 readRequestPlan: an auth failure is rethrown, never held as a plan error', async () => {
+  clearRequestPlanCache()
+  const auth = { research: async () => ({ text: '', citedUrls: [] }), completeDetailed: async () => { throw new ProviderError('auth', 'http 401', 'none') } } as unknown as Provider
+  await assert.rejects(readRequestPlan(auth, 'k', REAL, 'T'), (e: unknown) => e instanceof ProviderError && e.kind === 'auth')
+})

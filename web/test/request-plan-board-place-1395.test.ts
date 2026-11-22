@@ -61,12 +61,12 @@ test('#1395 runJob (real prod wording): "Dental clinics in Toronto, Ontario ..."
 // Fail closed: each of these held the board source with a named status, read no posting, and did NOT fall back to the words (which name Toronto).
 const REAL = 'Dental clinics in Toronto, Ontario that opened a new location or are hiring front-desk staff in the last 90 days'
 for (const [name, modelPlan, status] of [
-  ['a reply that is not JSON', 'Toronto, Ontario is the place.', 'held_request_plan:schema'],
-  ['a reply with an extra key', { ...plan([{ text: 'Toronto, Ontario', city: 'Toronto', region: 'Ontario', country: 'CA' }]), radius_km: 50 }, 'held_request_plan:schema'],
-  ['a place the request does not write', plan([{ text: 'Montreal', city: 'Montreal', region: null, country: 'CA' }]), 'held_request_plan:place_not_in_request'],
-  ['a country the request neither writes nor implies', plan([{ text: 'Toronto, Ontario', city: 'Toronto', region: 'Ontario', country: 'US' }]), 'held_request_plan:place_not_in_request'],
-  ['a model error', 'provider_error', 'held_request_plan:error'],
-  ['no plan reply at all (the stub answers with the extraction list)', undefined, 'held_request_plan:schema'],
+  ['a reply that is not JSON', 'Toronto, Ontario is the place.', 'skipped_request_plan:schema'],
+  ['a reply with an extra key', { ...plan([{ text: 'Toronto, Ontario', city: 'Toronto', region: 'Ontario', country: 'CA' }]), radius_km: 50 }, 'skipped_request_plan:schema'],
+  ['a place the request does not write', plan([{ text: 'Montreal', city: 'Montreal', region: null, country: 'CA' }]), 'skipped_request_plan:place_not_in_request'],
+  ['a country the request neither writes nor implies', plan([{ text: 'Toronto, Ontario', city: 'Toronto', region: 'Ontario', country: 'US' }]), 'skipped_request_plan:place_not_in_request'],
+  ['a model error', 'provider_error', 'skipped_request_plan:error'],
+  ['no plan reply at all (the stub answers with the extraction list)', undefined, 'skipped_request_plan:schema'],
 ] as const) {
   test(`#1395 runJob: ${name} holds the job boards (${status}); no posting is read and the words are never read instead`, async () => {
     const { http, seen } = board()
@@ -93,7 +93,7 @@ test('#1395 runJob: a refused spend reservation for the plan holds only the job 
   const { http, seen } = board()
   const x = await runFixture(fx(http, REAL, ['Toronto, Ontario'], 'CA', 'spend_refused'))
   assert.equal(x.job.status, 'done', `the scan finished: ${JSON.stringify(x.job)}`)
-  assert.equal(boardsStatus(x), 'held_request_plan:spend_refused')
+  assert.equal(boardsStatus(x), 'skipped_request_plan:spend_refused')
   assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
   assert.ok(!x.calls.prompts.some(p => p.includes('"source":"jobboards"')), 'no board item reached extraction')
 })
@@ -102,7 +102,7 @@ test('#1395 runJob: a refused spend reservation for the plan holds only the job 
 test('#1395 runJob: explicit sources (jobboards + careers) with a bad plan: the job boards are held, the careers source still runs', async () => {
   const { http, seen } = board()
   const x = await runFixture({ ...fx(http, REAL, ['Toronto, Ontario'], 'CA', 'Toronto, Ontario is the place.'), sources: JSON.stringify({ adapters: ['jobboards', 'careers'] }) })
-  assert.equal(boardsStatus(x), 'held_request_plan:schema')
+  assert.equal(boardsStatus(x), 'skipped_request_plan:schema')
   assert.ok(!seen.some(u => u.includes('boards-api.greenhouse.io')), 'no board was listed')
   const careers = x.db.prepare("SELECT status FROM scan_source_runs WHERE collector = 'adapter:careers'").get() as { status: string } | undefined
   assert.ok(careers, 'the careers source the user picked still ran')
