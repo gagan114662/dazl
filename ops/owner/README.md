@@ -1,0 +1,64 @@
+# Owner scripts: run from the owner's Mac (issue #1080)
+
+Small wrappers the owner runs by hand, because only the owner's Mac has ssh access to the box. They were written in a
+scratch folder and are kept here so a restart does not lose them. Nothing in CI or on the box runs them.
+
+No script holds a host address, an account, a bucket name or a secret. Each takes the box from `DAZL_SSH_HOST` (the
+ssh alias or `user@host` in the owner's `~/.ssh/config`) and stops with a usage line when it is not set.
+
+| script | what it does | changes | who runs it |
+|---|---|---|---|
+| `reset-staging-trial.sh <email>` | Gives one test account its free trial searches back on **staging**, so a live check can be rerun. | Deletes that account's rows in `trial_reservations` in the staging database, after saving them to a root-only file. Never production. | owner, when Quest asks for a rerun |
+| `install-offhost-backup.sh [key file]` | Step 2 of the off-host backup (`ops/backup/README.md`): copies the upload-only key file to the box and runs `ops/backup/install-prod-offhost.sh` from the live release. | Installs the hourly backup timers, takes one backup, removes the copied key file from the home folder. | owner, once, after `ops/backup/aws-setup.sh` |
+| `install-downtime-alert.sh` | Runs `ops/uptime/install.sh` from the live release, points the probe at production's alert destination and sends one test message. | Adds `/usr/local/lib/dazl-uptime/`, `/etc/dazl-uptime/env`, `dazl-uptime.timer`. | owner, once |
+
+## Expected output
+
+`DAZL_SSH_HOST=<box> ops/owner/reset-staging-trial.sh <test account email>`
+
+```
+trial rows before: 3 (all accounts: 41)
+removed rows saved to /root/trial-reset-<UTC time>.sql
+rows removed: 3
+trial rows after: 0 (all accounts: 38)
+```
+
+The numbers differ; "after" is 0 and "all accounts" drops by exactly the rows removed. Any line starting `FAIL:` ends
+with "nothing changed" (no staging database, or not exactly one account with that email). To undo, run the saved
+`.sql` file against the staging database.
+
+`DAZL_SSH_HOST=<box> ops/owner/install-offhost-backup.sh`
+
+```
+key file copied to the server
+installer from: <the live release folder>
+... the installer's own lines: three PASS lines, then ALL PASS (ops/backup/README.md, step 2) ...
+--- timers ---
+<next run> ... dazl-backup.timer  dazl-backup.service
+```
+
+The exit code is the installer's. `FAIL: no live release contains ops/backup/install-prod-offhost.sh` means the
+change is not deployed to production yet. The secret key is never printed. Without an argument the script uses the
+only `*.s3.env` in `~/dazl-backup-keys` and stops when there are none or several.
+
+`DAZL_SSH_HOST=<box> ops/owner/install-downtime-alert.sh`
+
+```
+installer from: <the live release folder>
+... ops/uptime/install.sh lines ...
+env lines: 1, mode 600
+--- test alert ---
+test alert exit=0
+--- first probe run ---
+Result=success ExecMainStatus=0
+{... one JSON line per run, every check "up": true ...}
+<next run> ... dazl-uptime.timer  dazl-uptime.service
+```
+
+One test message must arrive at the alert destination (Telegram). Every URL in the output shows as `<url>`. This
+probe runs on the box, so it does not notice the box itself being off; the off-host pinger is issue #1586.
+
+## Checks
+
+`bash -n` on each script, and `shellcheck -S error` in `.github/workflows/never-again-gates.yml`. The scripts
+themselves are only ever run by the owner against the real box; there is no automated run of them.
