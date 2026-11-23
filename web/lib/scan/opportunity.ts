@@ -11,7 +11,7 @@
 import { companyTied } from '../people/company-tie.ts'
 import { onlyNameOnly, recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
 import { leadPerson } from '../people/lead-person.ts'
-import { discoverApprove, discoverContact, discoverMissing, discoverSite, isDiscoverLead } from '../discover/card.ts'
+import { discoverApprove, discoverContact, discoverLinkedIn, discoverMissing, discoverProofHold, discoverSite, isDiscoverLead } from '../discover/card.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -108,9 +108,12 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     const c = discoverContact(d as never), approve = discoverApprove(d as never), missing = discoverMissing({ ...d, name: d.name ?? '', confidence: d.confidence ?? null } as never)
     const who = c?.person ? { name: c.person.name, title: c.person.title, link: c.person.linkedin, identity: c.person.source ? 'named on a public page' : 'named in the run' } : null
     if (!c?.email) missing.push('a published email address')
+    const hold = discoverProofHold(d as never), reach = discoverLinkedIn(d as never)
     const next = l.quarantined_at ? 'None: quarantined.' : l.review_reason ? 'Check the source yourself before using this lead.'
       : approve.ok ? `Draft a first message${who ? ` to ${who.name}` : ''} introducing your offer; mention the event only as context.`
-      : who?.link ? `Message ${who.name} on LinkedIn yourself: open their profile and mention the event only as context.` : who ? `Find a way to reach ${who.name}.` : 'Find the person to contact before reaching out.'
+      // #1579: the same rule as the "Message on LinkedIn" button (discoverLinkedIn). A proof hold (no date, a required check, not a fit)
+      // is the next step in its own words; "Message ... on LinkedIn" is said only when that button is on the card.
+      : hold ? hold : reach ? `Message ${reach.name} on LinkedIn yourself: open their profile and mention the event only as context.` : who ? `Find a way to reach ${who.name}.` : 'Find the person to contact before reaching out.'
     return {
       whyThisBusiness: l.why?.trim() || 'Found for your request.',
       whyNow: { claim: l.signal, date: l.event_date, dateNote: l.event_date ? (d.date_status === 'verified' ? `${l.event_date}, printed on the proof page` : `${l.event_date}, the day the page was published`) : 'event date unknown', source: l.source_url, quote: l.evidence_excerpt },

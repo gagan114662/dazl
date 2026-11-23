@@ -109,3 +109,11 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address was not found on the company\'s own website, only on another site.' }
   return { ok: true }
 }
+// What Details says about the contact when the named person's own LinkedIn profile is stored and no address of theirs is published
+// (#1579: it said "No published contact stored" beside that profile). About the contact only, so the proof rules do not decide it.
+// Null when the lead is not from the discovery lane, has their own address, names nobody, or the stored link is not a person's profile.
+export function discoverContactNote(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): string | null {
+  const c = discoverContact(l)
+  if (!c || c.email || !c.person?.name || !c.person.linkedin || !PROFILE.test(c.person.linkedin.trim())) return null
+  return `${c.person.name}'s LinkedIn profile is known. No personal work email is published for them.`
+}
