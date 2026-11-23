@@ -9,7 +9,7 @@ import { migrateTinyfish, resetTinyfishState } from '../../lib/search/tinyfish.t
 // company NAME alone no longer ties a search result to a lead (lib/people/company-tie.ts).
 export const HELD_WHO = ['Account Executive', 'Sales Manager', 'VP Sales', 'Head of Sales', 'Director of Sales', 'Chief Revenue Officer']
 export const HELD_ICP = { summary: 'Account executives being hired at B2B software companies.', who: HELD_WHO, industries: ['B2B Software'], sizes: [], where: ['Chicago, Illinois'], signals: ['Hiring account executives'], exclude: [] }
-export const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
+export const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', TINYFISH_TENANT_DAILY: '50' }
 // Search result lines in the shape the stored search:people rows came from (invented people).
 export const HELD_RESULTS: Record<string, { url: string; title: string; snippet?: string }[]> = {
   Pagewake: [

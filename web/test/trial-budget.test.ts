@@ -41,13 +41,17 @@ const claimAgain = (db: Db, jobId: string) => db.run("UPDATE scan_jobs SET statu
 const end = async (db: Db, jobId: string, spent: number, finishedAt = NOW) => { await finish(db, jobId, spent, finishedAt); await settle(db, jobId, finishedAt) }
 const reservation = (r: Awaited<ReturnType<typeof admitTrialScan>>) => { assert.ok(r.ok, JSON.stringify(r)); return r.reservation }
 
-bothEngines('trial ceilings: off without every ceiling and TinyFish priced; Google sign-in required; one trial per company domain', async ({ db }) => {
+// #1602: the caps are the three money limits only. TinyFish (its key, its switch, its two prices) is no part of whether a free scan is
+// offered: a free scan runs on Claude. The lines that asserted the old coupling now assert its absence.
+bothEngines('trial ceilings: off without every ceiling, whatever TinyFish is set to; Google sign-in required; one trial per company domain', async ({ db }) => {
   assert.equal(trialCaps({}), null)
-  assert.deepEqual(trialCaps(caps), { reserveUsd: 0.3, accountTotalUsd: 1, globalDailyUsd: 10, tinyfishSearchUsd: 0.004, tinyfishFetchUsd: 0.002 })
-  for (const k of ['DAZL_TRIAL_SCAN_RESERVE_USD', 'DAZL_TRIAL_ACCOUNT_TOTAL_USD', 'DAZL_TRIAL_GLOBAL_DAILY_USD', 'DAZL_TRIAL_TINYFISH_SEARCH_USD', 'DAZL_TRIAL_TINYFISH_FETCH_USD', 'TINYFISH_API_KEY'])
+  assert.deepEqual(trialCaps(caps), { reserveUsd: 0.3, accountTotalUsd: 1, globalDailyUsd: 10 })
+  for (const k of ['DAZL_TRIAL_SCAN_RESERVE_USD', 'DAZL_TRIAL_ACCOUNT_TOTAL_USD', 'DAZL_TRIAL_GLOBAL_DAILY_USD'])
     assert.equal(trialCaps({ ...caps, [k]: '' }), null, `${k} unset: no trial`)
+  for (const k of ['DAZL_TRIAL_TINYFISH_SEARCH_USD', 'DAZL_TRIAL_TINYFISH_FETCH_USD', 'TINYFISH_API_KEY'])
+    assert.deepEqual(trialCaps({ ...caps, [k]: '' }), { reserveUsd: 0.3, accountTotalUsd: 1, globalDailyUsd: 10 }, `${k} unset: the trial is still offered`)
   assert.equal(trialCaps({ ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0' }), null)
-  assert.equal(trialCaps({ ...caps, TINYFISH_ENABLED: '0' }), null, "TinyFish is a trial's only web research")
+  assert.deepEqual(trialCaps({ ...caps, TINYFISH_ENABLED: '0' }), { reserveUsd: 0.3, accountTotalUsd: 1, globalDailyUsd: 10 }, 'TinyFish switched off does not switch free scans off')
   assert.equal(trialCaps({ ...caps, DAZL_TRIAL_USER_DAILY_USD: '1', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '' }), null, 'the old daily per-user cap is not an account ceiling')
   const a = await user(db, 'a'.repeat(32), 'ann@acme.example')
   assert.deepEqual(await admitTrialScan(db, a, { env: {}, now: NOW }), { ok: false, reason: 'not_configured' })

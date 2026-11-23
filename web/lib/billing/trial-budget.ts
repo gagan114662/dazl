@@ -75,20 +75,23 @@ export const READ_GRACE_S = 3600
 
 export interface TrialCaps {
   reserveUsd: number; accountTotalUsd: number; globalDailyUsd: number
-  // Prices of the paid web research a trial scan's own budget counts in the runner (lib/scan/runner.ts): each TinyFish
-  // search and fetched URL on dazl's key. Model calls are priced from their bounds (lib/llm/spend-guard.ts). 0 is allowed
-  // for a free tier, but must be set.
-  tinyfishSearchUsd: number; tinyfishFetchUsd: number
 }
 const positive = (v: string | undefined) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n > 0 ? n : null }
 const nonNegative = (v: string | undefined) => { const n = Number(v); return v !== undefined && v.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : null }
-// null unless every number is set and TinyFish (a trial's only web research) is on: no ceiling or no price, no trial.
+// null unless all three money limits are set: no ceiling, no trial. #1602: a free scan runs on Claude (dazl's own Anthropic key,
+// checked by trialFundable and the scan route) and needs nothing else. It used to require a second search service's key and two of its
+// prices as well, so switching that service off switched free scans off for every new account.
 export function trialCaps(env: Record<string, string | undefined> = process.env): TrialCaps | null {
   const reserveUsd = positive(env.DAZL_TRIAL_SCAN_RESERVE_USD), accountTotalUsd = positive(env.DAZL_TRIAL_ACCOUNT_TOTAL_USD), globalDailyUsd = positive(env.DAZL_TRIAL_GLOBAL_DAILY_USD)
-  if (!env.TINYFISH_API_KEY || env.TINYFISH_ENABLED === '0') return null
-  const tinyfishSearchUsd = nonNegative(env.DAZL_TRIAL_TINYFISH_SEARCH_USD), tinyfishFetchUsd = nonNegative(env.DAZL_TRIAL_TINYFISH_FETCH_USD)
-  if (!reserveUsd || !accountTotalUsd || !globalDailyUsd || tinyfishSearchUsd === null || tinyfishFetchUsd === null) return null
-  return { reserveUsd, accountTotalUsd, globalDailyUsd, tinyfishSearchUsd, tinyfishFetchUsd }
+  if (!reserveUsd || !accountTotalUsd || !globalDailyUsd) return null
+  return { reserveUsd, accountTotalUsd, globalDailyUsd }
+}
+// What the older engine charges a free scan for each TinyFish search and fetched URL (0 is allowed, but both must be set). Only that
+// engine reads it, and only with TinyFish switched on by name; a free scan with no price here makes no TinyFish call. Not part of
+// whether a free scan is offered.
+export function trialTinyfishPrices(env: Record<string, string | undefined> = process.env): { searchUsd: number; fetchUsd: number } | null {
+  const searchUsd = nonNegative(env.DAZL_TRIAL_TINYFISH_SEARCH_USD), fetchUsd = nonNegative(env.DAZL_TRIAL_TINYFISH_FETCH_USD)
+  return searchUsd === null || fetchUsd === null ? null : { searchUsd, fetchUsd }
 }
 
 // #409 admission isolation: the money ceilings every trial-funded admission is checked against - the account's total

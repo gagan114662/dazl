@@ -10,7 +10,7 @@ import { SearchTrace, summarizeTrace } from '../lib/search/trace.ts'
 
 const mk = () => { const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState(); return db }
 const NOW = 1_800_000_000
-const env = { TINYFISH_API_KEY: 'k', TINYFISH_FETCHES_PER_SCAN: '25', TINYFISH_TENANT_DAILY: '500', TINYFISH_GLOBAL_FETCH_DAILY: '500', TINYFISH_PER_MINUTE: '50' }
+const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', TINYFISH_FETCHES_PER_SCAN: '25', TINYFISH_TENANT_DAILY: '500', TINYFISH_GLOBAL_FETCH_DAILY: '500', TINYFISH_PER_MINUTE: '50' }
 
 test('canonicalUrl: tracking parameters, fragments, www and trailing slash do not make a different page; content parameters do', () => {
   assert.equal(canonicalUrl('https://www.indeed.com/viewjob?jk=abc&utm_source=x&utm_medium=y&fbclid=1#top'), 'https://indeed.com/viewjob?jk=abc')

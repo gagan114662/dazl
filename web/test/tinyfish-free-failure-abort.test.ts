@@ -31,7 +31,7 @@ function hanging(seen: { aborted: boolean; started: number }) {
 for (const kind of ['search', 'fetch'] as const) {
   test(`free TinyFish ${kind} aborted in flight by the caller's signal: settled at $0, not maybe-billed, not rejected, no hits`, async () => {
     const s = await setup(); const seen = { aborted: false, started: 0 }; const ac = new AbortController()
-    const deps = { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: hanging(seen), now: T0, signal: ac.signal }
+    const deps = { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, fetchImpl: hanging(seen), now: T0, signal: ac.signal }
     const out = await runWithScanSpend(s.ctx(), async () => {
       const p = kind === 'fetch' ? tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, deps) : tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, deps)
       setTimeout(() => ac.abort(), 5)
@@ -50,7 +50,7 @@ for (const kind of ['search', 'fetch'] as const) {
 test('free TinyFish search with an ALREADY-aborted signal: the request is cancelled, settled at $0, nothing reserved', async () => {
   const s = await setup(); const seen = { aborted: false, started: 0 }; const ac = new AbortController(); ac.abort()
   const out = await runWithScanSpend(s.ctx(), async () => {
-    const r = await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: hanging(seen), now: T0, signal: ac.signal })
+    const r = await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, fetchImpl: hanging(seen), now: T0, signal: ac.signal })
     return { r, uncertain: spendAttemptUncertain(), rejected: spendAttemptRejected() }
   })
   assert.equal(out.r.ok, false); assert.equal(seen.aborted, true); assert.equal(out.uncertain, false); assert.equal(out.rejected, null)
@@ -60,7 +60,7 @@ test('free TinyFish search with an ALREADY-aborted signal: the request is cancel
 
 test('a PRICED TinyFish fetch aborted in flight keeps the fail-closed rule: maybe billed, stays reserved', async () => {
   const s = await setup(); const seen = { aborted: false, started: 0 }; const ac = new AbortController()
-  const env = { TINYFISH_API_KEY: 'k', DAZL_SCAN_PRICE_TINYFISH_FETCH_USD: '0.01' }
+  const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', DAZL_SCAN_PRICE_TINYFISH_FETCH_USD: '0.01' }
   const out = await runWithScanSpend(s.ctx(), async () => {
     const p = tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env, fetchImpl: hanging(seen), now: T0, signal: ac.signal })
     setTimeout(() => ac.abort(), 5)

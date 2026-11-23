@@ -8,7 +8,7 @@ import { resetTinyfishState } from '../lib/search/tinyfish.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const NOW = 1_800_000_000
-const env = { TINYFISH_API_KEY: 'tf-key' }
+const env = { TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '1' }
 const hits = (urls: string[]) => (async () => new Response(JSON.stringify({ results: urls.map(u => ({ url: u, title: 't', snippet: 'a long enough snippet for the test', date: '2027-01-01' })) }), { status: 200 })) as unknown as typeof fetch
 
 bothEngines('indexing: config and keywords: save, cap at 10, remove', async ({ db }) => {

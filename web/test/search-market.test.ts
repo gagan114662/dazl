@@ -6,7 +6,7 @@ import { normalizeIcp, icpPrompt } from '../lib/scan/icp.ts'
 
 // TinyFish searches as US/English unless location or language is sent. These pin that the buyer's market reaches the
 // search (Instinct finding 2: a Lisbon or Pune request must not be searched as if it were American).
-const env = { TINYFISH_API_KEY: 'k', TINYFISH_SEARCHES_PER_SCAN: '4', TINYFISH_TENANT_DAILY: '50' }
+const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', TINYFISH_SEARCHES_PER_SCAN: '4', TINYFISH_TENANT_DAILY: '50' }
 const mk = () => { const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState(); return db }
 const NOW = 1_800_000_000
 
