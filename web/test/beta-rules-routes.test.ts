@@ -17,4 +17,5 @@ test('beta rules at the routes: autopilot cannot be enabled, a checkout cannot b
   assert.match(r.stdout, /# fail 0\b|ℹ fail 0\b/)
   assert.match(r.stdout, /BETA_ROUTES autopilot\b/)
   assert.match(r.stdout, /BETA_ROUTES billing\b/)
+  assert.match(r.stdout, /BETA_ROUTES sequences\b/) // #1620
 })

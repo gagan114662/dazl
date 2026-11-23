@@ -246,3 +246,14 @@ test('E: a new AI key is Anthropic (Claude) only; a saved OpenAI key is still li
   assert.match(inline, /Searches run on Claude/)
   for (const p of ['app/app/first-run.tsx', 'app/app/readiness.tsx']) assert.doesNotMatch(src(p), /Anthropic or OpenAI key/, p)
 })
+
+test('A (#1620): Outreach offers no automatic sequences and Settings shows no Autopilot link or card while autopilot is not available', () => {
+  const seq = src('app/app/outreach/sequences-client.tsx')
+  const offer = seq.slice(seq.indexOf('turn on automatic sequences') - 1500, seq.indexOf('turn on automatic sequences'))
+  assert.match(offer, /data\.auto_policy\.available!==false&&\(data\.auto_policy\.accepted/, 'the offer sits behind the availability the server reports')
+  assert.match(seq, /scheduler==='configured_on'&&data\.sequences\.some\(s=>s\.status==='approved'\|\|s\.status==='active'\)/, 'the scheduler line shows only beside a sequence that is scheduled')
+  const page = src('app/app/settings/page.tsx')
+  assert.match(page, /SECTIONS\.filter\(\(\[id\]\) => id !== 'autopilot' \|\| autopilotAvailable\(\)\)/)
+  const panel = src('app/app/settings/autopilot-panel.tsx')
+  assert.ok(panel.indexOf('if (!i.available && !s.enabled) return null') > 0 && panel.indexOf('if (!i.available && !s.enabled) return null') < panel.indexOf('if (!i.available) return ('))
+})

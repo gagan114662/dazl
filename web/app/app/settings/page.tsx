@@ -22,6 +22,7 @@ import { connection } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { can } from '@/lib/workspaces'
 import { billingAvailable } from '@/lib/beta'
+import { autopilotAvailable } from '@/lib/outreach/autopilot'
 
 const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
@@ -40,7 +41,7 @@ async function SettingsBody() {
       <h1 className="text-2xl font-semibold tracking-tight mb-1">Settings</h1>
       <p className="text-[#555] text-sm mb-4">Your plan, your team, your AI key and optional connectors.</p>
       <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 mb-6 text-xs font-mono uppercase tracking-wider">
-        {SECTIONS.map(([id, label]) => <a key={id} href={`#${id}`} className="inline-flex items-center justify-center min-h-11 min-w-11 underline underline-offset-4 text-[#111]">{label}</a>)}
+        {SECTIONS.filter(([id]) => id !== 'autopilot' || autopilotAvailable()).map(([id, label]) => <a key={id} href={`#${id}`} className="inline-flex items-center justify-center min-h-11 min-w-11 underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
       <p className="text-sm mb-4" data-testid="business-link"><a className="underline underline-offset-4 inline-flex items-center min-h-11" href="/app/business">See and edit everything dazl knows about your business</a></p>
       <ReauthGate />
