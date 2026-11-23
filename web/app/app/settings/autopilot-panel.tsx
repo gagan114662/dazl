@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 
 interface St { enabled: boolean; paused: boolean; pause_reason: string | null; consent_current: boolean; daily_cap: number }
-interface Info { available: boolean; state: St; consent: { version: string; text: string[] }; warmup: number; max_daily: number; audit: { action: string; detail: string | null; created_at: number }[] }
+interface Info { available: boolean; unavailable_text?: string; state: St; consent: { version: string; text: string[] }; warmup: number; max_daily: number; audit: { action: string; detail: string | null; created_at: number }[] }
 const KEYS = ['business_published', 'relevant_to_role', 'responsible_sender']
 const LABELS = ['The addresses I target are published by the business for business use.', 'My emails are relevant to the recipient\'s role.', 'I am the sender and responsible for these emails.']
 
@@ -17,8 +18,17 @@ export default function AutopilotPanel() {
     const r = await fetch('/api/outreach/autopilot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
     setMsg(r.ok ? '' : (await r.json()).error || 'Something went wrong'); void load()
   }
-  if (!i || (!i.available && !i.state.enabled)) return null
+  if (!i) return null
   const s = i.state
+  // Not available (the beta): nothing to turn on, resume or set. An account that had it on is not running; it can clear its stored setting.
+  if (!i.available) return (
+    <div className="card p-6 mb-4" data-testid="autopilot-unavailable">
+      <h2 className="font-semibold mb-1">Autopilot (email)</h2>
+      <p className="text-[#555] text-sm">{i.unavailable_text ?? AUTOPILOT_BETA_TEXT}</p>
+      {s.enabled && <p className="text-sm text-[#555] mt-2">Your earlier autopilot setting is not running: nothing is sent without your click. <button className="underline underline-offset-2" onClick={() => act({ action: 'disable' })}>Clear that setting</button></p>}
+      {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
+    </div>
+  )
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Autopilot (email)</h2>

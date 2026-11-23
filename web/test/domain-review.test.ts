@@ -215,10 +215,10 @@ test('createDraft reads the identity state under the write lock: a concurrent wr
   const bind = domainReviewFor({ id, contact: null }, a.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id) as never).binding!
   assert.deepEqual(setDomainReview(a, 'A', id, 'confirm', bind), { status: 'confirmed', domain: 'acme.test' })
   a.exec('BEGIN IMMEDIATE')
-  assert.throws(() => createDraft(b, 'A', id, 'Seller'), /locked|busy/i)
+  assert.throws(() => createDraft(b, 'A', id, 'Seller', { manual: true }), /locked|busy/i)
   setDomainReview(a, 'A', id, 'withdraw')
   a.exec('COMMIT')
-  assert.throws(() => createDraft(b, 'A', id, 'Seller'), /domain_unconfirmed/, 'withdraw committed before the draft: no draft')
+  assert.throws(() => createDraft(b, 'A', id, 'Seller', { manual: true }), /domain_unconfirmed/, 'withdraw committed before the draft: no draft')
   assert.equal((a.prepare('SELECT count(*) n FROM outreach_messages').get() as { n: number }).n, 0)
   a.close(); b.close(); rmSync(dir, { recursive: true })
 })

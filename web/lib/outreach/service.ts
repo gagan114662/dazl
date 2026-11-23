@@ -18,6 +18,7 @@ import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
 import { discoverContact, emailOnCompanySite } from '../discover/card.ts'
+import { isGenericInbox } from './generic-inbox.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -385,6 +386,10 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string, ma
   const to = norm(published)
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  // Beta rule (owner, 2026-11-23): no automatic function ever drafts to a shared inbox (info@, sales@, hello@, reception@, founders@ ...;
+  // lib/outreach/generic-inbox.ts). Every draft a person did not ask for by hand comes through here with manual false: autopilot,
+  // calibration, the scheduler. A shared inbox reaches a desk, not a person, so for them it is the same as no contact.
+  if (!manual && isGenericInbox(to)) throw new OutreachError('no_email_contact')
   // Published is not the same as sales-contactable: press, support, privacy,
   // careers and similar inboxes exist for another purpose. Never aim a sales
   // draft at them - the UI applies this same classification before offering a draft.
@@ -405,6 +410,12 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string, ma
 // very same checks (draftChecks); used by views that recommend a next step, so they never recommend a refused one.
 export function draftBlockReason(db: Database.Database, tenantId: string, leadId: string): string | null {
   try { draftChecks(db, tenantId, leadId); return null } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
+}
+// The same for the Approve button: why a draft a PERSON asks for would be refused (createDraft with manual), or null. Views that tell
+// the user their next step read this one (#1583): for a lead from the discovery lane the automatic gate above does not read the
+// published address Approve uses, so it said "held" about a lead Approve would draft.
+export function manualDraftBlockReason(db: Database.Database, tenantId: string, leadId: string): string | null {
+  try { draftChecks(db, tenantId, leadId, true); return null } catch (e) { if (e instanceof OutreachError) return e.code; throw e }
 }
 
 // The play a lead came from, with what is needed to resolve its offer. null: no play of this tenant for the lead, or an

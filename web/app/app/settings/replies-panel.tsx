@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { CONSENT_NEEDED_NOTICE, performReplyAction, replyReadingState, type GmailStatus } from '@/lib/outreach/replies-view'
 
-interface Info { available: boolean; gmail_connected: boolean; gmail_status?: GmailStatus; consent: { version: string; text: string[]; accepted: boolean }; bounce_scan: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
+interface Info { available: boolean; gmail_connected: boolean; gmail_status?: GmailStatus; consent: { version: string; text: string[]; accepted: boolean }; bounce_scan: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_available?: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
 
 export default function RepliesPanel() {
   const [i, setI] = useState<Info | null>(null)
@@ -70,10 +70,10 @@ export default function RepliesPanel() {
         </div>
       ) : (
         <div className="text-sm space-y-2">
-          <div>Reading replies: on. Follow-ups: {i.followups_enabled ? 'on' : 'off'}. Up to 2 follow-ups, only to people who showed interest, never after they opt out.</div>
+          <div>Reading replies: on. {i.autopilot_available === false ? 'Automatic follow-ups are not available during the beta: you write and send every reply yourself.' : `Follow-ups: ${i.followups_enabled ? 'on' : 'off'}. Up to 2 follow-ups, only to people who showed interest, never after they opt out.`}</div>
           <div className="flex gap-4">
             <button className="underline underline-offset-2" onClick={() => act('sync')}>Check replies now</button>
-            {i.followups_enabled ? <button className="underline underline-offset-2" onClick={() => act('followups_off')}>Turn off follow-ups</button> : <button className="underline underline-offset-2" disabled={!i.autopilot_on} onClick={() => act('followups_on')}>{i.autopilot_on ? 'Turn on follow-ups' : 'Turn on autopilot first'}</button>}
+            {i.followups_enabled ? <button className="underline underline-offset-2" onClick={() => act('followups_off')}>Turn off follow-ups</button> : i.autopilot_available === false ? null : <button className="underline underline-offset-2" disabled={!i.autopilot_on} onClick={() => act('followups_on')}>{i.autopilot_on ? 'Turn on follow-ups' : 'Turn on autopilot first'}</button>}
             <button className="underline underline-offset-2" onClick={() => act('revoke')}>Stop reading replies</button>
           </div>
         </div>

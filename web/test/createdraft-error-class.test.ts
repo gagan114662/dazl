@@ -27,8 +27,8 @@ function fixture() {
 
 test('a real duplicate is still reported as already_drafted', () => {
   const f = fixture()
-  createDraft(f.db, 'A', 'L1', 'Seller')
-  assert.throws(() => createDraft(f.db, 'A', 'L1', 'Seller'), (e: unknown) => e instanceof OutreachError && e.code === 'already_drafted')
+  createDraft(f.db, 'A', 'L1', 'Seller', { manual: true })
+  assert.throws(() => createDraft(f.db, 'A', 'L1', 'Seller', { manual: true }), (e: unknown) => e instanceof OutreachError && e.code === 'already_drafted')
   assert.equal((f.db.prepare('SELECT count(*) n FROM outreach_messages').get() as { n: number }).n, 1)
   f.done()
 })
@@ -38,11 +38,11 @@ test('a locked database is not reported as already_drafted and leaves no row', (
   const other = new Database(f.path, { timeout: 0 })
   other.exec('BEGIN IMMEDIATE')
   try {
-    assert.throws(() => createDraft(f.db, 'A', 'L1', 'Seller'), (e: unknown) => !(e instanceof OutreachError) && /SQLITE_BUSY/.test(String((e as { code?: string }).code)))
+    assert.throws(() => createDraft(f.db, 'A', 'L1', 'Seller', { manual: true }), (e: unknown) => !(e instanceof OutreachError) && /SQLITE_BUSY/.test(String((e as { code?: string }).code)))
   } finally { other.exec('ROLLBACK'); other.close() }
   assert.equal((f.db.prepare('SELECT count(*) n FROM outreach_messages').get() as { n: number }).n, 0)
   // after the lock is gone the same call succeeds
-  assert.ok(createDraft(f.db, 'A', 'L1', 'Seller'))
+  assert.ok(createDraft(f.db, 'A', 'L1', 'Seller', { manual: true }))
   f.done()
 })
 

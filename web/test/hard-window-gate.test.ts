@@ -55,7 +55,7 @@ function addLead(db: Database.Database, eventDate: string | null, icp: string | 
   ins.run(randomBytes(8).toString('hex'), lead, 'domain', 'fixture-company.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://fixture-company.example/news')
   return lead
 }
-const draftError = (db: Database.Database, lead: string): string | null => { try { createDraft(db, 'A', lead, 'Acme'); return null } catch (e) { return (e as { code?: string }).code ?? String(e) } }
+const draftError = (db: Database.Database, lead: string): string | null => { try { createDraft(db, 'A', lead, 'Acme', { manual: true }); return null } catch (e) { return (e as { code?: string }).code ?? String(e) } }
 
 test('control: an inside-window lead the user reviewed can be drafted (the gate is what blocks the others)', async () => {
   const db = setup(); const lead = addLead(db, day(-10))
@@ -96,7 +96,7 @@ test('no window anywhere: unchanged behaviour (review still releases the existin
 test('tenant boundary: another tenant never sees or drafts the lead', async () => {
   const db = setup(); const lead = addLead(db, day(-10))
   assert.equal(currentnessHeld(db, 'B', lead), false, 'not found for B (callers reject unknown leads separately)')
-  try { createDraft(db, 'B', lead, 'Acme'); assert.fail('drafted across tenants') } catch (e) { assert.equal((e as { code: string }).code, 'not_found') }
+  try { createDraft(db, 'B', lead, 'Acme', { manual: true }); assert.fail('drafted across tenants') } catch (e) { assert.equal((e as { code: string }).code, 'not_found') }
 })
 
 // Instinct #208 review: a malformed saved window_days must never disable the window. Stale 400-day-old and undated

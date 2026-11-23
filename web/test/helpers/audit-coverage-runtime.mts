@@ -48,10 +48,11 @@ globalThis.fetch = (async (u: unknown) => {
 }) as typeof fetch
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 process.env.STRIPE_SECRET_KEY = 'sk_test_synthetic'
+process.env.BILLING_AVAILABLE = '1' // the beta switch (lib/beta.ts): these checks start a checkout, so billing is on in this process only
 process.env.GOOGLE_CLIENT_ID = 'synthetic.apps.googleusercontent.com'
 process.env.GOOGLE_CLIENT_SECRET = 'synthetic-client-secret'
 process.env.PUBLIC_BASE_URL = 'https://app.test'
-process.env.AUTOPILOT_ENABLED = '1'
+process.env.AUTOPILOT_AVAILABLE = '1'; process.env.AUTOPILOT_ENABLED = '1'
 process.env.ADVANCED_CONNECTORS = '1'
 process.env.ADVANCED_WORKER_URL = 'https://worker.test'
 process.env.ADVANCED_WORKER_TOKEN = 'synthetic-worker-token'

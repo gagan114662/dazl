@@ -28,7 +28,7 @@ delete process.env.DAZL_ENV // production mode: sends and reads go to the stubbe
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 process.env.GOOGLE_CLIENT_ID = 'cid.apps.googleusercontent.com'; process.env.GOOGLE_CLIENT_SECRET = 'synthetic'
 process.env.AUTOPILOT_TICK_SECRET = 'test-tick-secret'
-process.env.AUTOPILOT_ENABLED = '1'; process.env.AUTOPILOT_WARMUP = '2'; process.env.SEQUENCES_ENABLED = '1'
+process.env.AUTOPILOT_AVAILABLE = '1'; process.env.AUTOPILOT_ENABLED = '1'; process.env.AUTOPILOT_WARMUP = '2'; process.env.SEQUENCES_ENABLED = '1'
 delete process.env.AUTOPILOT_KILL
 
 const T0 = 1_800_000_000, DAY = 86400

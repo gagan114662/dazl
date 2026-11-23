@@ -33,6 +33,7 @@ export default function OutreachClient() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [edit, setEdit] = useState<Record<string, { subject: string; body: string }>>({})
   const [sequenceMessages,setSequenceMessages] = useState<string[]>([])
+  const [autopilotOn,setAutopilotOn] = useState(false) // whether autopilot may be offered at all (false during the beta); the server decides
   const [creating,setCreating] = useState(false)
   const [note, setNote] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -58,7 +59,7 @@ export default function OutreachClient() {
       const cj = cr?.ok ? await cr.json().catch(() => null) : null
       setPlayOffer(cj && 'offer' in cj ? cj.offer ?? null : null)
     }
-    try { const r = await fetch('/api/outreach'); if (r.ok) { setMsgs((await r.json()).messages); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
+    try { const r = await fetch('/api/outreach'); if (r.ok) { const j = await r.json(); setMsgs(j.messages); setAutopilotOn(j.autopilot_available === true); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
     try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) setSequenceMessages((await seq.json()).sequences.map((s:{message_id:string})=>s.message_id)) } catch { /* sequence markers are optional; the email list above still stands */ }
   }
   useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); window.addEventListener('sender-updated',refresh); return ()=>{ window.removeEventListener('sequences-updated',refresh); window.removeEventListener('sender-updated',refresh) } }, []) // eslint-disable-line react-hooks/set-state-in-effect -- every setState in load() follows an await
@@ -96,7 +97,7 @@ export default function OutreachClient() {
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
-      <Caveat className="text-[#555] text-sm mb-6" summary="Review and approve each email, then send it; only autopilot (if you turn it on) and the later steps of a sequence you approved send without a click.">Review each email, approve it, then send. Manual emails send only after your click. If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings). A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-6" summary={autopilotOn ? 'Review and approve each email, then send it; only autopilot (if you turn it on) and the later steps of a sequence you approved send without a click.' : 'Review and approve each email, then send it; only the later steps of a sequence you approved send without a click.'}>Review each email, approve it, then send. Manual emails send only after your click. {autopilotOn ? 'If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings).' : ''} A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</Caveat>
       <SendReadiness />
       {note && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status">{note}</p>}
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}

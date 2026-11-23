@@ -21,7 +21,7 @@ import { ATTESTATIONS, CONSENT_VERSION, enable, migrateAutopilot, recentAutopilo
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
 const NOW = 1_800_000_000
-const ON = { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }
+const ON = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
 
@@ -76,21 +76,21 @@ test('#412 contact NULL but verified company-published crawl email: eligible on 
   const dom = 'brightloop.io'
   const ins = db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'sitecrawl', ?, ?, 'x', NULL, ?, '2026-10-28', 1)")
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-10-28', 1)").run(`${id}d`, id, `${dom}|evidence_own_domain`, `https://${dom}/`)
-  ins.run(`${id}e`, id, 'email', `sales@${dom}`, `https://${dom}/contact`)
+  ins.run(`${id}e`, id, 'email', `pat.lee@${dom}`, `https://${dom}/contact`)
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(`${id}g`, id)
   assert.equal(draftBlockReason(db, 'A', id), null, 'manual readiness: draftable')
   const mid = createDraft(db, 'A', id, 'Acme')
-  assert.equal((db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(mid) as { to_email: string }).to_email, `sales@${dom}`, 'the draft goes to the company-published crawl address')
+  assert.equal((db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(mid) as { to_email: string }).to_email, `pat.lee@${dom}`, 'the draft goes to the company-published crawl address')
   // Autopilot agrees the same lead shape is a candidate (fresh identical lead, warmup holds the draft for approval).
   const id2 = provenLead(db, null)
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'sitecrawl', 'domain', ?, 'domain-basis-v1:evidence_own_domain', NULL, ?, '2026-10-28', 1)").run(`${id2}d`, id2, `${dom}|evidence_own_domain`, `https://${dom}/`)
-  ins.run(`${id2}e`, id2, 'email', `sales@${dom}`, `https://${dom}/contact`)
+  ins.run(`${id2}e`, id2, 'email', `pat.lee@${dom}`, `https://${dom}/contact`)
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, label, confidence, source_url, source_date, retrieved_at) VALUES (?, ?, 'A', 'scan:gate', 'gate_passed', 'sales_hiring', 'x', NULL, 'https://invalid.example/', '2026-10-28', 1)").run(`${id2}g`, id2)
   const { sent, d } = deps()
   const r = await runAutopilot(db, 'A', 'Acme', d)
   assert.equal(sent.length, 0, 'warmup: held for approval, never auto-sent')
   assert.equal(r.held, 1)
-  assert.equal((db.prepare("SELECT to_email FROM outreach_messages WHERE lead_id = ?").get(id2) as { to_email: string }).to_email, `sales@${dom}`, 'autopilot drafts the same address manual readiness approved')
+  assert.equal((db.prepare("SELECT to_email FROM outreach_messages WHERE lead_id = ?").get(id2) as { to_email: string }).to_email, `pat.lee@${dom}`, 'autopilot drafts the same address manual readiness approved')
 })
 
 // A lead autopilot refused for its recipient route (no address, a restricted-purpose or personal one) is re-judged once
@@ -115,10 +115,10 @@ test('#412 phone-only lead refused for no_email_contact becomes a candidate once
   await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7200 })
   assert.deepEqual(draftsFor(db, id), []); assert.equal(skipsFor(db, id).length, 1)
   // The company's own sales inbox is found afterwards: manual readiness says draftable, and autopilot agrees.
-  crawlEmail(db, id, 'sales@brightloop.io', NOW + 7300)
+  crawlEmail(db, id, 'pat.lee@brightloop.io', NOW + 7300)
   assert.equal(draftBlockReason(db, 'A', id), null)
   const r = await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7400 })
-  assert.deepEqual(draftsFor(db, id), ['sales@brightloop.io'], 'autopilot drafts the crawled address')
+  assert.deepEqual(draftsFor(db, id), ['pat.lee@brightloop.io'], 'autopilot drafts the crawled address')
   assert.equal(r.held, 1); assert.equal(sent.length, 0, 'warmup: held for approval, never auto-sent')
 })
 
@@ -131,10 +131,10 @@ test('#412 a restricted-purpose crawl route stays refused; a newer company sales
   assert.equal(skipsFor(db, id)[0]?.detail, 'not_sales_contact', 'support inbox refused by the purpose gate')
   await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7200 })
   assert.deepEqual(draftsFor(db, id), []); assert.equal(skipsFor(db, id).length, 1, 'refusal stands without a new crawl record')
-  crawlEmail(db, id, 'sales@brightloop.io', NOW + 7300)
+  crawlEmail(db, id, 'pat.lee@brightloop.io', NOW + 7300)
   assert.equal(draftBlockReason(db, 'A', id), null)
   await runAutopilot(db, 'A', 'Acme', { ...d, now: NOW + 7400 })
-  assert.deepEqual(draftsFor(db, id), ['sales@brightloop.io'])
+  assert.deepEqual(draftsFor(db, id), ['pat.lee@brightloop.io'])
   assert.equal(sent.length, 0)
 })
 

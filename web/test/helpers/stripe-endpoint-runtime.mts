@@ -15,6 +15,7 @@ import { migrateLifecycle } from '../../lib/outreach/lifecycle.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
 process.env.STRIPE_SECRET_KEY = 'sk_test_fixture'
+process.env.BILLING_AVAILABLE = '1' // the beta switch (lib/beta.ts): these checks start a checkout, so billing is on in this process only
 process.env.STRIPE_PRICE_PRO = 'price_fixture_pro'
 process.env.STRIPE_WEBHOOK_SECRET = 'whsec_fixture_' + randomBytes(8).toString('hex')
 process.env.PUBLIC_BASE_URL = 'https://dazl.test'

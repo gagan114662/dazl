@@ -35,7 +35,7 @@ test('source context persists and human review never upgrades recruitment to sal
  const r=await createSourceReview(db,'A',{company:'Acme',signal:'A supplied hiring claim',excerpt,contact:email,source_url,event_date:null},async()=>({title:'Acme',text:excerpt+' Send your CV to '+email,retrievedAt:1800000000}))
  assert.equal(contactPurposeRestricted(db,'A',r.lead_id,email),true);assert.equal(contactPurposeRestricted(db,'B',r.lead_id,email),false)
  await confirmLeadReview(sqliteDb(db),'A',r.lead_id)
- assert.throws(()=>createDraft(db,'A',r.lead_id,'Seller'),/not_sales_contact/)
+ assert.throws(()=>createDraft(db,'A',r.lead_id,'Seller', { manual: true }),/not_sales_contact/)
  const msg='m'.repeat(24);db.prepare("INSERT INTO outreach_messages(id,tenant_id,lead_id,to_email,subject,body,status,approved_hash) VALUES(?,'A',?,?,'Saved words','These original words must remain untouched.','approved','old-hash')").run(msg,r.lead_id,email)
  const original=db.prepare('SELECT * FROM outreach_messages').get()
  await assert.rejects(sendMessage(db,'A',msg),/not_sales_contact/);assert.deepEqual(db.prepare('SELECT * FROM outreach_messages').get(),original)

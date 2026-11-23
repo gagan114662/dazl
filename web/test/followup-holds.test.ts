@@ -32,7 +32,7 @@ test('REVIEW disabled followups must not display a promised next date', async ()
 })
 
 const NOW = 1_800_000_000, DAY = 86400
-const FLAGS = { AUTOPILOT_ENABLED: '1' }
+const FLAGS = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }
 // A tenant for whom the runner would send: autopilot on with current consent, follow-ups on, Gmail and sender identity
 // set, nothing uncertain, a thread with an interested reply and a valid follow-up consent for its address.
 async function ready(db: Db, t: string, n = 1) {

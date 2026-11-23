@@ -36,7 +36,7 @@ const Database = require('better-sqlite3')
 const tmp = mkdtempSync(path.join(tmpdir(), 'dazl-followups-held-')); const DB = path.join(tmp, 'app.db')
 const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const EMAIL = 'fx-followups-held@example.invalid'
-const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', AUTOPILOT_ENABLED: '1', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
+const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 const shots = process.env.SHOTS ? path.resolve(process.env.SHOTS) : null
 if (shots) mkdirSync(shots, { recursive: true })
 const b = await chromium.launch()

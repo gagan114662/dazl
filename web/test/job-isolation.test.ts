@@ -26,7 +26,7 @@ const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
 const NOW = 1_800_000_000
 const DAY = 86400
-const ON = { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }
+const ON = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
 const hex = () => randomBytes(12).toString('hex')
@@ -102,7 +102,7 @@ test('first-touch jobs, two tenants: B drain and autopilot never draft, hold or 
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, hold_reason, hold_until, hold_policy, offer_hash) VALUES (?, 'A', ?, 'd@four.example', 's', 'bodybodybodybodybodybody', 'draft', 'daily_cap', ?, ?, ?)")
     .run(heldId, leadHeld, NOW - 60, CONSENT_VERSION, offerHashFor(db, 'A', leadHeld))
   const spyB = sendSpy()
-  const warmFlags = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' } }
+  const warmFlags = { flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' } }
   const dbRun = await drainFirstTouch(db, 'B', deps({ sendFn: spyB.sendFn, ...warmFlags }))
   assert.equal(dbRun.sent, 0)
   const apB = await runAutopilot(db, 'B', 'BCo', deps({ sendFn: spyB.sendFn, ...warmFlags }))

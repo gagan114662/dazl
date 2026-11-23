@@ -126,7 +126,7 @@ test('legacy no-excerpt, purged, confirmed and verified leads are counted exactl
   job(db, 'A', 'j1', 'Controls')
   lead(db, 'j1', 'legacy', { confidence: 90, excerpt: null, contact: 'hello@legacy.example' })   // confidence + contact, no excerpt
   lead(db, 'j1', 'purged', { contact: 'hello@purged.example', purged: 1 })                      // excerpt kept, copied page purged
-  lead(db, 'j1', 'confirmed', { confidence: null, excerpt: null, confirmed: 5, contact: 'hi@confirmed.example' })
+  lead(db, 'j1', 'confirmed', { confidence: null, excerpt: null, confirmed: 5, contact: 'pat@confirmed.example' })
   lead(db, 'j1', 'verified', { contact: 'hi@verified.example' })                                 // machine-verified, timing not yet reviewed
   finish(db, 'j1')
   // The canonical server functions for each row (draftBlockReason is createDraft's first refusal; the legacy row is

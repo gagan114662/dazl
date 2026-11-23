@@ -1,3 +1,4 @@
+import { autopilotAvailable } from '@/lib/outreach/autopilot'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { gmailStatus } from '@/lib/gmail/oauth'
@@ -14,7 +15,7 @@ export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  return NextResponse.json({ gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)), read_notice: READ_CONSENT_TEXT })
+  return NextResponse.json({ autopilot_available: autopilotAvailable(), gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)), read_notice: READ_CONSENT_TEXT })
 }
 
 export async function PUT(req: NextRequest) {

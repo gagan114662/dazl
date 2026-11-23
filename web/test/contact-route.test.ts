@@ -156,11 +156,11 @@ test('createDraft refuses an undeliverable address; catch-all still drafts', () 
     return id
   }
   const rec = (id: string, value: string) => addEnrichment(db, 'A', id, { connector: 'checker', kind: 'deliverability', value, label: null, confidence: null, source_url: 'https://checker.example/run', source_date: '2026-10-01', retrieved_at: SEC(2026, 10, 1) })
-  assert.throws(() => createDraft(db, 'A', add('info@northside.internal'), 'Acme'), /undeliverable/)
+  assert.throws(() => createDraft(db, 'A', add('info@northside.internal'), 'Acme', { manual: true }), /undeliverable/)
   const rejected = add('info@northside.example'); rec(rejected, 'info@northside.example|rejected')
-  assert.throws(() => createDraft(db, 'A', rejected, 'Acme'), /undeliverable/)
+  assert.throws(() => createDraft(db, 'A', rejected, 'Acme', { manual: true }), /undeliverable/)
   const catchAll = add('sales@northside.example'); rec(catchAll, '@northside.example|catch_all')
-  assert.doesNotThrow(() => createDraft(db, 'A', catchAll, 'Acme'))
+  assert.doesNotThrow(() => createDraft(db, 'A', catchAll, 'Acme', { manual: true }))
 })
 test('PM (no hedge copy): an unverified quote blocks approval with a plain fact, never "Not verified"', async () => {
   const { approveState } = await import('../lib/scan/lead-card.ts')

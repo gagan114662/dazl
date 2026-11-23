@@ -37,7 +37,7 @@ for (const verification of ['none', 'pending', 'verified', 'catch_all', 'undeliv
       const enrichments = db.prepare("SELECT connector, kind, value FROM lead_enrichments WHERE lead_id = 'lead'").all() as { connector: string; kind: string; value: string }[]
       assert.equal(publishedEmail({ contact: null, enrichments }), null, 'neither guessed nor published-tier storage is a published contact')
       assert.equal(draftBlockReason(db, 'A', 'lead'), 'no_email_contact')
-      assert.throws(() => createDraft(db, 'A', 'lead', 'Seller'), (e: unknown) => e instanceof OutreachError && e.code === 'no_email_contact')
+      assert.throws(() => createDraft(db, 'A', 'lead', 'Seller', { manual: true }), (e: unknown) => e instanceof OutreachError && e.code === 'no_email_contact')
       assert.equal((db.prepare('SELECT count(*) AS n FROM outreach_messages').get() as { n: number }).n, 0, 'no candidate message can enter approval/sending')
       assert.equal(draftBlockReason(db, 'B', 'lead'), 'not_found', 'another tenant cannot consume candidate storage either')
     } finally { db.close() }
@@ -49,7 +49,7 @@ test('control: independent published lead contact still drafts, not the verified
   try {
     db.prepare("UPDATE email_candidates SET verification = 'verified', verifier = 'synthetic-check', checked_at = 1800000000").run()
     db.prepare("UPDATE leads SET contact = 'sales@acme.example' WHERE id = 'lead'").run()
-    const id = createDraft(db, 'A', 'lead', 'Seller')
+    const id = createDraft(db, 'A', 'lead', 'Seller', { manual: true })
     assert.equal((db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(id) as { to_email: string }).to_email, 'sales@acme.example')
   } finally { db.close() }
 })

@@ -85,9 +85,9 @@ test('withdraw restores the exact original review reason', async () => {
 test('draft gate: unconfirmed review leads are refused; human-confirmed leads draft through the same explicit click; sends stay separate', async () => {
   const db = setup()
   const { id } = addReviewLead(db, 'A')
-  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /lead_not_verified/) // still refused while in review
+  assert.throws(() => createDraft(db, 'A', id, 'Acme', { manual: true }), /lead_not_verified/) // still refused while in review
   assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)
-  const draftId = createDraft(db, 'A', id, 'Acme') // human-confirmed: draft-eligible
+  const draftId = createDraft(db, 'A', id, 'Acme', { manual: true }) // human-confirmed: draft-eligible
   assert.ok(draftId)
   const m = db.prepare('SELECT status, approved_hash, sent_at, test FROM outreach_messages WHERE id = ?').get(draftId) as { status: string; approved_hash: string | null; sent_at: number | null; test: number }
   assert.equal(m.status, 'draft') // preparation only - approval and send remain separate steps
@@ -95,7 +95,7 @@ test('draft gate: unconfirmed review leads are refused; human-confirmed leads dr
   assert.equal(m.sent_at, null)
   assert.equal(m.test, 0)
   // one draft per lead, same as verified leads
-  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /already_drafted/)
+  assert.throws(() => createDraft(db, 'A', id, 'Acme', { manual: true }), /already_drafted/)
 })
 
 test('autopilot never picks up a human-confirmed lead (it requires a machine confidence score)', async () => {
@@ -116,13 +116,13 @@ test('#352: a lead confirmed out of counterparty_signal / location_mismatch / jo
     const { id } = addReviewLead(db, 'A', { reason })
     assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true, reason)
     assert.equal(row(db, id).human_confirmed_from, reason)
-    assert.throws(() => createDraft(db, 'A', id, 'Acme'), /lead_currentness_unconfirmed/, reason)
+    assert.throws(() => createDraft(db, 'A', id, 'Acme', { manual: true }), /lead_currentness_unconfirmed/, reason)
     assert.equal((db.prepare('SELECT count(*) AS n FROM outreach_messages').get() as { n: number }).n, 0, reason)
   }
   const db = setup()
   const { id } = addReviewLead(db, 'A', { reason: 'location_unconfirmed' })
   assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true)
-  assert.ok(createDraft(db, 'A', id, 'Acme'))
+  assert.ok(createDraft(db, 'A', id, 'Acme', { manual: true }))
 })
 
 // #352 review follow-up: the three surfaces agree for every reason. Home's "review" (heldState) <=> the card offers a draftable confirm (reviewAction) <=> after the
@@ -136,7 +136,7 @@ test('#352: for every hold reason, Home, the Leads card and the draft gate agree
     if (windowed) db.prepare("UPDATE scan_jobs SET icp = ?, query = 'roofers hiring in the past 30 days' WHERE id = ?").run(JSON.stringify({ window_days: 30 }), job)
     if (reason === 'outside_window') db.prepare("UPDATE leads SET event_date = '2025-01-01' WHERE id = ?").run(id)
     assert.equal(await confirmLeadReview(sqliteDb(db), 'A', id), true, reason)
-    try { createDraft(db, 'A', id, 'Acme'); return 'drafted' } catch (e) { return (e as Error).message }
+    try { createDraft(db, 'A', id, 'Acme', { manual: true }); return 'drafted' } catch (e) { return (e as Error).message }
   }
   for (const reason of [...REVIEWABLE, ...RESEARCH_REASONS]) {
     const dated = { review_reason: reason, event_date: '2026-10-20', window_held: reason === 'outside_window' || reason === 'outside_window_undated' }

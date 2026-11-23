@@ -3,8 +3,9 @@ import { useEffect, useState } from 'react'
 import { panelError } from './panel-error'
 import { trialCopy, type TrialBlock } from '@/lib/trial-copy'
 import { usageLine } from '@/lib/plan-usage-copy'
+import { BILLING_BETA_TEXT } from '@/lib/beta'
 
-type Usage = { plan: string; scans_used: number; scan_limit: number | null; billing_status: string | null; trial: TrialBlock | null }
+type Usage = { plan: string; billing_available?: boolean; scans_used: number; scan_limit: number | null; billing_status: string | null; trial: TrialBlock | null }
 
 // What the subscription's Stripe status means for the user (lib/billing/stripe.ts statusEffect decides the plan; this
 // only explains it). Statuses not listed need no note.
@@ -70,7 +71,8 @@ export default function PlanPanel() {
       ) })()}
       {u.plan === 'pro'
         ? <button onClick={() => go('/api/billing/portal')} className="btn-ghost">Manage billing</button>
-        : <button onClick={() => go('/api/billing/checkout')} className="btn-primary">Upgrade to Pro</button>}
+        : u.billing_available ? <button onClick={() => go('/api/billing/checkout')} className="btn-primary">Upgrade to Pro</button>
+          : <p className="text-sm text-[#555]" data-testid="beta-free">{BILLING_BETA_TEXT}</p>}
       {msg && <p className="text-sm text-[#555] mt-3">{msg}</p>}
     </div>
   )

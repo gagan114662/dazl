@@ -18,7 +18,7 @@ import * as S from '../../lib/scan/store-db.ts'
 
 process.env.DB_PATH = '/nonexistent-dazl-dir/app.db'
 // test values from the parent (neutral names: the net fence drops *KEY*/*SECRET* variables)
-Object.assign(process.env, { STRIPE_WEBHOOK_SECRET: process.env.PT_WEBHOOK, STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture', PUBLIC_BASE_URL: 'https://app.dazl.test' })
+Object.assign(process.env, { BILLING_AVAILABLE: '1', STRIPE_WEBHOOK_SECRET: process.env.PT_WEBHOOK, STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture', PUBLIC_BASE_URL: 'https://app.dazl.test' })
 const stripeCalls: string[] = []
 globalThis.fetch = (async (u: unknown, init?: RequestInit) => {
   const url = String(u)

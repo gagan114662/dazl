@@ -29,7 +29,7 @@ const planRow = t => { const d = db(); try { return d.prepare('SELECT plan, subs
 const srv = await startServer({
   env: {
     NODE_OPTIONS: `--experimental-strip-types --import ${path.join(root, 'test/helpers/net-fence.ts')} --import ${path.join(root, 'test/smoke/stripe-test-env.mjs')}`,
-    SMOKE_STRIPE_WHSEC: WHSEC, SMOKE_STRIPE_SK: 'sk_test_smoke', STRIPE_PRICE_PRO: 'price_smoke',
+    SMOKE_STRIPE_WHSEC: WHSEC, SMOKE_STRIPE_SK: 'sk_test_smoke', BILLING_AVAILABLE: '1', STRIPE_PRICE_PRO: 'price_smoke',
   },
   prepare: async p => {
     dbPath = p

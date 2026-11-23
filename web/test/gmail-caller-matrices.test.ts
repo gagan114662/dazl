@@ -45,7 +45,7 @@ test('PROBE service.sendMessage: malformed success -> uncertain + paused + error
     db.prepare("INSERT INTO autopilot_settings (tenant_id, enabled, paused, consent_version) VALUES ('A', 1, 0, ?)").run(CONSENT_VERSION)
     await connect(db, 'A')
     saveSettings(db, 'A', { sender_name: 'Pat Smith', postal_address: '1 King St W, Toronto ON M5H 1A1, Canada' })
-    const id = createDraft(db, 'A', addLeadSvc(db, 'A'), 'Acme'); approve(db, 'A', id)
+    const id = createDraft(db, 'A', addLeadSvc(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
     let calls = 0
     const sendFn = (async () => { calls++; return bad }) as never
     const deps: Deps = { env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenOk, sendFn }
@@ -80,7 +80,7 @@ test('PROBE runFollowups: malformed success -> uncertain + paused, thread stoppe
     acceptReadConsent(raw, t)
     raw.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_outcome, consecutive_failures) VALUES (?, 'reply_sync', ?, ?, 'success', 0)").run(t, NOW, NOW)
     let calls = 0
-    const d = { env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenOk, flags: { AUTOPILOT_ENABLED: '1' }, sendFn: (async () => { calls++; return bad }) as never }
+    const d = { env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenOk, flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, sendFn: (async () => { calls++; return bad }) as never }
     const r1 = await runFollowups(raw, t, 'Biz', d)
     assert.equal(r1.stopped, 'uncertain_send', JSON.stringify(bad))
     const fm = raw.prepare('SELECT status, gmail_id FROM followup_messages WHERE tenant_id = ?').get(t) as { status: string; gmail_id: string | null }

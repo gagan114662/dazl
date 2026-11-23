@@ -2,7 +2,8 @@
 import { useState } from 'react'
 import { vendorForKey } from '@/lib/onboarding'
 
-// One field: paste an Anthropic or OpenAI key, the prefix picks the provider. The server checks the key with the
+// An OpenAI key (https://platform.openai.com/api-keys) saved before the beta keeps working as it did; a new one is not asked for here.
+// One field: paste an Anthropic (Claude) key. Beta rule (owner, 2026-11-23): searches run on Claude, so no other provider's key is asked for. The server checks the key with the
 // provider before saving it (same PUT /api/settings/llm-key as Settings), so a bad key is never stored.
 //
 // Deliberately NOT a form element: KeyInline also renders inside other forms (the first-run brain and ask steps),
@@ -17,7 +18,7 @@ export default function KeyInline({ reason, onSaved }: { reason: string; onSaved
   const vendor = vendorForKey(key)
   async function save() {
     if (busy) return
-    if (!vendor) return setMsg('Paste a key that starts with sk-ant- (Anthropic) or sk- (OpenAI).')
+    if (vendor !== 'anthropic') return setMsg('Searches run on Claude. Paste an Anthropic key: it starts with sk-ant-.')
     setBusy(true); setMsg('Checking your key with the provider...')
     try {
       const r = await fetch('/api/settings/llm-key', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vendor, api_key: key.trim() }) })
@@ -29,11 +30,10 @@ export default function KeyInline({ reason, onSaved }: { reason: string; onSaved
   return (
     <div className="border border-black/10 rounded-lg p-4 bg-[#fafafa] text-sm">
       <label htmlFor="ai-key" className="font-medium block mb-1">Your AI key</label>
-      <p className="text-[#555] text-xs mb-2">{reason} Your provider bills you for usage. The key is encrypted and never shown again.{' '}
-        <a className="underline" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Get an Anthropic key</a> or{' '}
-        <a className="underline" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">an OpenAI key</a>.</p>
+      <p className="text-[#555] text-xs mb-2">{reason} Anthropic bills you for usage. The key is encrypted and never shown again.{' '}
+        <a className="underline" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Get an Anthropic key</a>.</p>
       <div className="flex gap-2">
-        <input id="ai-key" className="field flex-1" type="password" autoComplete="off" placeholder="sk-ant-... or sk-..." value={key} onChange={e => setKey(e.target.value)}
+        <input id="ai-key" className="field flex-1" type="password" autoComplete="off" placeholder="sk-ant-..." value={key} onChange={e => setKey(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void save() } }} />
         <button type="button" className="btn-ghost text-sm" disabled={busy || key.trim().length < 10} onClick={() => void save()}>{busy ? 'Checking...' : 'Save key'}</button>
       </div>

@@ -17,7 +17,7 @@ import Database from 'better-sqlite3'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { PG_URL, freshSchema } from './pg-test.ts'
 
-Object.assign(process.env, { STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture_pro', PUBLIC_BASE_URL: 'https://staging.dazl.test',
+Object.assign(process.env, { BILLING_AVAILABLE: '1', STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture_pro', PUBLIC_BASE_URL: 'https://staging.dazl.test',
   STRIPE_WEBHOOK_SECRET: 'whsec_fixture' + randomBytes(8).toString('hex'), DAZL_MASTER_KEY: randomBytes(32).toString('base64') })
 
 const { setDb, pgDb, getDb } = await import('../../lib/db/client.ts')
