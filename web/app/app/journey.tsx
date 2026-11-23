@@ -3,7 +3,7 @@ import { PlayOfferCard } from './play-offer'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { editedBuyer, journey, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
+import { editedBuyer, journey, playLeads, playLeadsUrl, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
 import { scanCounts } from '@/lib/outreach/scan-drafts'
 import { constraintPills, PILLS_SHOWN, playName, playPace, skipNoticeLine, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
@@ -83,8 +83,8 @@ export default function Journey() {
   useEffect(() => {
     if (!playId || !playDone) return
     // The play's own leads, and its own campaign record for drafts (never the account-wide Outreach list).
-    void get(`/api/leads?job_id=${playId}`).then(j => {
-      const ls: PreviewLead[] | null = Array.isArray(j?.leads) ? j.leads : null
+    void get(playLeadsUrl(playId)).then(j => {
+      const ls: PreviewLead[] | null = Array.isArray(j?.leads) ? playLeads(j.leads as PreviewLead[]) : null
       setLeads(ls)
       if (!ls) return
       void get(`/api/campaigns/${playId}`).then(c => {
