@@ -20,6 +20,10 @@ import { AUDIT_RETENTION_MIN_DAYS, auditRetention } from '../lib/audit.ts'
 import { traceCaptureConfig } from '../lib/evals/capture.ts'
 import { ALWAYS_RETAINED, CREDENTIAL_TABLES, deleteTenant, EXPORT_EXCLUDED, REDACTED_COLUMN } from '../lib/tenant/lifecycle.ts'
 import { VENDORS } from '../lib/llm/vendors.ts'
+import { paidVendorsAllowed, usableVendor } from '../lib/paid-vendors.ts'
+import { tinyfishEnabled } from '../lib/search/tinyfish.ts'
+import { autopilotInBeta, billingAvailable } from '../lib/beta.ts'
+import { PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS } from '../lib/people/work-email.ts'
 import { ENRICH_APOLLO, ENRICH_PDL } from '../lib/enrich/index.ts'
 import { GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE } from '../lib/gmail/oauth.ts'
 import { emailGuessEnabled } from '../lib/people/email-pattern.ts'
@@ -61,8 +65,8 @@ test('both policies are final, with no placeholder and no draft notice (privacy:
     assert.doesNotMatch(text, /\bDRAFT\b|NEEDS (OWNER|COUNSEL)/, name)
   }
   assert.doesNotMatch(read('lib/legal/policy.ts'), /DRAFT_NOTICE/)
-  // Each text has its own date; the privacy policy's did not move when the terms changed.
-  assert.match(privacy, /^Last updated: 22 November 2026\./)
+  // Each text has its own date. The privacy policy's moved with its #1428 revision.
+  assert.match(privacy, /^Last updated: 23 November 2026\./)
   assert.match(terms, /^Last updated: 23 November 2026\./)
   // every owner-supplied fact is shown somewhere in the text
   for (const v of Object.values(OWNER_PLACEHOLDERS)) assert.ok(privacy.includes(v) || terms.includes(v), `${v} is not shown`)
@@ -184,9 +188,10 @@ test('AI, enrichment and CRM providers named in the policy are the ones the code
   const crm = /CRM_PROVIDERS[^=]*=\s*\[([^\]]+)\]/.exec(read('lib/crm/index.ts'))
   assert.ok(crm, 'CRM provider allowlist (CRM_PROVIDERS) not found in lib/crm/index.ts')
   assert.deepEqual(crm[1].split(',').map(s => s.trim().replace(/'/g, '')).sort(), Object.keys(FACTS.crmProviders).sort())
-  for (const name of [...Object.values(FACTS.aiVendors), ...Object.values(FACTS.enrichmentProviders), 'HubSpot', 'Pipedrive']) {
-    assert.ok(privacy.includes(name), `privacy policy does not name ${name}`)
-  }
+  // #1428: the text names the providers a customer can really connect today (Anthropic key; a CRM in Settings, app/api/crm/route.ts
+  // has no switch), and not the ones the launch configuration never calls (next test).
+  for (const name of ['Anthropic', 'HubSpot', 'Pipedrive']) assert.ok(privacy.includes(name), `privacy policy does not name ${name}`)
+  assert.match(read('app/api/crm/route.ts'), /pushLead\(cfg, lead\)/)
   // the free trial runs on dazl's own Anthropic key
   assert.match(read('lib/scan/trial.ts'), /DAZL_TRIAL_ANTHROPIC_KEY/)
   assert.match(read('lib/scan/trial.ts'), /Absent means the trial is off/)
@@ -223,7 +228,40 @@ test('every third-party host the code names is disclosed or explicitly not a req
   assert.deepEqual(missing, [], 'new host literal: disclose it in API_HOSTS or list it in NON_REQUEST_HOSTS with the reason it is never called')
   assert.deepEqual(Object.keys(API_HOSTS).filter(h => !found.has(h)), [], 'API_HOSTS lists a host the code no longer names')
   assert.deepEqual(Object.keys(NON_REQUEST_HOSTS).filter(h => !found.has(h)), [], 'NON_REQUEST_HOSTS lists a host the code no longer names')
-  for (const { name } of Object.values(API_HOSTS)) assert.ok(privacy.includes(name.split(' ')[0]), `privacy policy does not name ${name}`)
+  // A host behind an operator switch that production leaves unset is not named; every other host is (#1428).
+  for (const { name, off } of Object.values(API_HOSTS)) {
+    if (off) assert.ok(off in PRIVACY_REQUIRES_ENV && PRIVACY_REQUIRES_ENV[off] === '' && !privacy.includes(name.replace(/ \(.*/, '')), `${name} is switched off (${off}), so the policy must not name it`)
+    else assert.ok(privacy.includes(name.split(' ')[0]), `privacy policy does not name ${name}`)
+  }
+})
+
+// #1428 (owner decision on #1428 / #1579, 2026-11-23): the policy lists the providers the launch configuration really uses.
+// Each removed name is held to the switch that keeps the code from calling it; each listed name to where it is used.
+test('the privacy policy names only the providers in use: removed names are absent and switched off, real ones are present (#1428)', () => {
+  assert.doesNotMatch(privacy, /OpenAI|TinyFish|Apollo|People Data Labs|Jina|ZeroBounce|Stripe/)
+  assert.doesNotMatch(privacy, /autopilot|sequence|follow-up|gmail\.readonly|replies dazl reads|Reading replies/i)
+  assert.doesNotMatch(privacy, /\b[A-Z]{3,}(?:_[A-Z]{2,})+\b/, 'no setting names in the published text')
+  for (const name of ['Google', 'Anthropic', 'Amazon Web Services', 'Resend', 'Cloudflare', 'PostHog']) assert.ok(privacy.includes(name), `the policy must name ${name}`)
+  assert.match(privacy, /sent to Anthropic, whose Claude models find and score leads/)
+  assert.match(privacy, /PostHog \(product analytics: [^)]*never the names or email addresses of prospects\)/)
+  // the switches: all off unless the operator sets them, and the policy records that production leaves them unset
+  assert.equal(tinyfishEnabled({ TINYFISH_API_KEY: 'k' }), false, 'a TinyFish key alone does not turn it on')
+  assert.equal(paidVendorsAllowed({ DAZL_PAID_VENDORS: '' }).size, 0)
+  assert.equal(usableVendor([{ vendor: 'openai' }, { vendor: 'anthropic' }], { DAZL_PAID_VENDORS: '' })?.vendor, 'anthropic', 'a saved OpenAI key is never the key a request runs on')
+  assert.equal(billingAvailable({}), false)
+  assert.equal(autopilotInBeta({}), false)
+  assert.match(read('app/api/billing/checkout/route.ts'), /if \(!billingAvailable\(\)\) return NextResponse\.json/)
+  // a search runs in the Claude lane or ends with a reason: the older engine (TinyFish, Jina, key enrichment) needs the lane switched off by name
+  const runner = read('lib/scan/runner.ts')
+  assert.match(runner, /deps\.discover === true \|\| \(deps\.discover !== false && env\.DAZL_DISCOVER_LANE !== '0'\)/)
+  assert.match(runner, /if \(laneSwitchedOn\(job, deps\)\) \{[\s\S]{0,900}?return await runDiscoverLane\(/)
+  // the other caller of the enrichment pass is the Pro-only commenter import, and no paid plan can be bought in the beta
+  assert.match(read('app/api/scan/commenters/route.ts'), /!== 'pro'\) return NextResponse\.json\(\{ error: 'pro_only' \}/)
+  assert.deepEqual(PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS, { apollo: false, pdl: false, pdlNeedsOptIn: false, mailboxCheck: false, publishedOnly: true })
+  for (const k of ['TINYFISH_ENABLED', 'DAZL_PAID_VENDORS', 'DAZL_DISCOVER_LANE', 'BILLING_AVAILABLE', 'AUTOPILOT_AVAILABLE'] as const) assert.equal(PRIVACY_REQUIRES_ENV[k], '', `${k} must stay unset in production`)
+  // the discovery engine's model calls go to Anthropic with its own web search and page fetch tools
+  assert.match(read('lib/discover/agent.ts'), /name: 'web_search'[\s\S]{0,200}name: 'web_fetch'/)
+  assert.match(read('lib/system-mail.ts'), /SYSTEM_MAIL_SMTP_URL/)
 })
 
 // Regression for the reviewer's red plant: neither a wrapper helper nor a URL object may escape detection.
@@ -247,37 +285,18 @@ test('every shipped source has a disclosure entry named in the policy', () => {
   for (const [id, name] of Object.entries(PUBLIC_SOURCES)) assert.ok(privacy.includes(name), `privacy policy does not name ${name} (${id})`)
 })
 
-test('Gmail: send is the required grant and reading is separate and optional', () => {
+test('Gmail: the policy states send access only, which is all the default grant asks for (#1428)', () => {
   assert.equal(FACTS.gmailSendScope, GMAIL_SEND_SCOPE)
   assert.equal(FACTS.gmailReadScope, GMAIL_READ_SCOPE)
   const scopes = /const SCOPES = \[([^\]]+)\]/.exec(read('lib/gmail/oauth.ts'))
   assert.ok(scopes)
   assert.ok(scopes[1].includes('GMAIL_SEND_SCOPE') && !scopes[1].includes('GMAIL_READ_SCOPE'))
   assert.match(privacy, /send access only \(gmail\.send\)/)
-  assert.match(privacy, /optional grant \(gmail\.readonly\)/)
-})
-
-test('the Gmail reading description matches the reply sync: what is read, classified, stored and for how long', () => {
-  const replies = read('lib/outreach/replies.ts')
-  assert.match(replies, /excerpt TEXT NOT NULL CHECK \(length\(excerpt\) <= 200\)/)
-  assert.match(replies, /text\.slice\(0, 200\)/)
-  assert.match(replies, /classification TEXT NOT NULL, received_at INTEGER NOT NULL/)
-  assert.match(replies, /bounded daemon-notice window beyond its own threads/)
-  assert.match(read('lib/outreach/read-consent.ts'), /bounded time window/)
-  assert.match(privacy, /classifies each reply by rules/)
-  assert.match(privacy, /the Gmail message and thread identifiers, a 200-character excerpt, the classification and the received time/)
-  assert.match(replies, /gmail_id TEXT NOT NULL, tenant_id TEXT NOT NULL, thread_id TEXT NOT NULL/)
-  assert.match(privacy, /delivery-failure notices beyond its own threads/)
-  assert.match(privacy, /an unmatched notice leaves only its message and thread identifiers, received time and classification/)
-  // the unmatched-notice row stores exactly those fields: gmail_id and thread_id, empty sender and excerpt
-  assert.match(replies, /row: \{ gmail_id: hitId, thread_id: g\.threadId \?\? '', lead_id: null, from_email: '', excerpt: '', classification: 'bounce_unmatched'/)
-  assert.match(privacy, /not deleted automatically today/)
-  assert.match(privacy, /turning reading off stops future reads and follow-ups but does not delete what is already stored/)
-  assert.match(privacy, /deleting your account deletes them with your other workspace data/)
-  assert.match(privacy, /unless the deletion request asks to keep named tables/)
-  assert.match(privacy, /Stored reply records are kept while your account exists/)
+  assert.match(privacy, /does not ask for access to read your mailbox and does not read your replies/)
   assert.match(privacy, /adheres to the Google API Services User Data Policy, including the Limited Use requirements/)
-  assert.match(privacy, /reads nothing without this consent/)
+  // Google sign-in asks for the name too (lib/auth-google.ts), and the policy says so
+  assert.match(read('lib/auth-google.ts'), /scope: 'openid email profile'/)
+  assert.match(privacy, /the name, email address and account identifier Google returns/)
 })
 
 test('the sale/share statement is the one the owner approved for publication', () => {
@@ -292,7 +311,7 @@ test('prospect rows are tenant-scoped; the only global address-based processing 
     assert.ok(!globals.includes(t), `${t} must stay tenant-scoped`)
   assert.match(read('app/api/outreach/sequences/route.ts'), /stop_reason/)
   assert.match(privacy, /tenant scoping/)
-  assert.match(privacy, /stops that address's pending automated sequences, follow-ups and held first touches/)
+  assert.match(privacy, /queued messages to that address that were waiting to go out without a further approval are stopped in every customer's workspace/)
   assert.match(privacy, /generic policy stop: the conversion kind \(signup, activation or payment\) does not appear in their stop reasons, lists or data exports/)
   assert.match(privacy, /bound to the recipient address until claimed/)
 })
@@ -311,7 +330,9 @@ test('guessed addresses are off by default, never leave the unverified state and
   }
   walk('lib/outreach'); walk('app')
   assert.deepEqual(readers, [])
-  assert.match(privacy, /never emailed or used as a recipient/) // #1036 / #1250: Find work email no longer shows guesses; the privacy text change waits on owner sign-off
+  // #1036 / #1250: no address is built from a name any more, and the text says so (#1428)
+  assert.match(read('lib/people/email-pattern.ts'), /No format is learned and no address is built\s+\/\/ from a name/)
+  assert.match(privacy, /does not build or guess an email address from a person's name; addresses that earlier versions prepared that way are not shown, never emailed and never used as a recipient/)
 })
 
 test('outbound mail carries the sender name, mailing address and an unsubscribe link and header', () => {
@@ -325,7 +346,7 @@ test('outbound mail carries the sender name, mailing address and an unsubscribe 
   assert.match(read('lib/outreach/service.ts'), /if \(!settings\) release\('sender_identity_missing'\)/)
   assert.throws(() => saveSettings(new Database(':memory:'), 't1', { sender_name: 'Ana', postal_address: '' }), (e: unknown) => e instanceof OutreachError && e.message.includes('bad_postal_address'))
   assert.match(privacy, /ends with the sender's name, a mailing address and an unsubscribe link/)
-  assert.match(privacy, /Every outreach message dazl sends to a prospect \(first touch, sequence step, follow-up or re-open\)/)
+  assert.match(privacy, /Every outreach message sent to a prospect through dazl ends with/)
   assert.match(privacy, /then the rest of your workspace data, except what the deletion request names to keep \(never credentials\) and the records listed below/)
   // the Terms say messages carry no AI label: the send path adds only the footer above
   assert.equal(body.slice('Hello there, a short note about your hiring.'.length).match(/\bAI\b|artificial intelligence/i), null)
