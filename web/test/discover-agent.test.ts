@@ -333,3 +333,54 @@ test('#1037: a profile seen for a same-named person in another lead\'s lookup, o
   assert.equal(keepSeenProfile(e, hit('Daniel Ruiz - Harbour Smiles | LinkedIn')).linkedin_url, null, 'the result is someone else')
   assert.equal(keepSeenProfile(e, hit(null)).linkedin_url, null, 'a result with no title cannot show whose profile it is')
 })
+
+// Staging, 2026-11-23 (96111ddd): the every-word rule showed 1 of 15 real leads although 12 had their quote on a page naming the
+// company. The shapes below are those leads' shapes with invented names: a long signal line with an address or a posting age, and a
+// quote that the page prints. Words cannot settle such a lead, so Claude is asked one question; the word rule stays the fast path.
+test('quote on the page, words unsettled: Claude is asked whether the quoted text states the claim, and only then', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const asked: { signal: string; company: string; statements: string[] }[] = []
+  const ask = (answer: boolean) => async (signal: string, company: string, statements: string[]) => { asked.push({ signal, company, statements }); return answer }
+  const own = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Opening a second clinic at 1448 Lawrence Avenue East, Suite 304A, currently in the midst of construction, planned to open in February', signal_date: null,
+    evidence_url: 'https://northwind-dental.example/new-location', evidence_quote: 'Our second clinic is currently under construction and is planned to open in February' })] }), 1).leads[0]
+  const body = '<html><body><h1>Northwind Dental</h1><p>Our second clinic is currently under construction and is planned to open in February. Call us to book.</p></body></html>'
+  const strict = await checkLead(own, [], page(body))
+  assert.deepEqual([strict.proof, strict.quote_on_page, strict.signal_seen, isShown(strict)], ['confirmed', true, false, false], 'with nobody to ask, the every-word rule decides alone, as before')
+  const yes = await checkLead(own, [], page(body), 12_000, new Date(), ask(true))
+  assert.deepEqual([yes.signal_seen, yes.signal_by, isShown(yes)], [true, 'claude', true])
+  assert.deepEqual([asked.length, asked[0].company, asked[0].statements], [1, 'Northwind Dental', ['Our second clinic is currently under construction and is planned to open in February.']], 'asked once, with the page\'s own statement that holds the quote')
+  const no = await checkLead(own, [], page(body), 12_000, new Date(), ask(false))
+  assert.deepEqual([no.signal_seen, no.signal_by, isShown(no)], [false, 'claude', false], 'Claude says the text does not state the claim: the user\'s review')
+  const broke = await checkLead(own, [], page(body), 12_000, new Date(), async () => { throw new Error('model unavailable') })
+  assert.deepEqual([broke.signal_seen, isShown(broke)], [false, false], 'an asker that fails leaves the lead as the words left it')
+  // never asked: the quote is not on the page (a directory page that only names the company), or the words already settle it
+  asked.length = 0
+  const dir = await checkLead(own, [], page('<html><body><h1>Northwind Dental</h1><p>Reviews, opening hours and directions for Northwind Dental. Open Monday to Friday.</p></body></html>'), 12_000, new Date(), ask(true))
+  assert.deepEqual([dir.proof, dir.quote_on_page, isShown(dir), asked.length], ['confirmed', false, false, 0])
+  const plain = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Opening a second clinic', signal_date: null, evidence_url: 'https://northwind-dental.example/new-location', evidence_quote: 'Northwind Dental is opening a second clinic' })] }), 1).leads[0]
+  const fast = await checkLead(plain, [], page('<html><body><p>Northwind Dental is opening a second clinic in March.</p></body></html>'), 12_000, new Date(), ask(false))
+  assert.deepEqual([fast.signal_seen, fast.signal_by, asked.length], [true, undefined, 0], 'every word present: shown without a call')
+  const { saysYes } = await import('../lib/discover/entail.ts')
+  assert.deepEqual(['YES', ' yes.', 'Yes, it does', 'NO', 'no', 'Not sure', 'yesterday'].map(saysYes), [true, true, true, false, false, false, false])
+})
+
+// Staging 2026-11-23 (Quest, job bdbac19a): two proof links were dead (a 404, and a job board's "Job not found" page) and labelled
+// verified; one live posting printed "Posted 4d ago" and was read as having no date.
+test('a proof page that is gone is not proof; a posting age the page prints is its date', async () => {
+  const page = (body: string, status = 200) => (async () => new Response(body, { status })) as unknown as typeof fetch
+  const now = new Date('2026-11-23T12:00:00Z')
+  const l = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Hiring an Account Executive', signal_date: null, evidence_url: 'https://jobs.example/northwind/ae', evidence_quote: 'Northwind Dental is hiring an Account Executive' })] }), 1).leads[0]
+  const listedResult = [{ url: l.evidence_url, title: 'Northwind Dental is hiring an Account Executive', page_age: '3 days ago', text: null }]
+  const nf = await checkLead(l, listedResult, page('Not Found', 404), 12_000, now)
+  assert.deepEqual([nf.proof, isShown(nf)], ['gone', false], 'the address answers 404: a search result title does not bring it back')
+  const soft = await checkLead(l, [], page('<html><title>Northwind Dental</title><body><h1>Job not found</h1><p>This job is no longer available. See all open roles at Northwind Dental.</p></body></html>'), 12_000, now)
+  assert.deepEqual([soft.proof, isShown(soft)], ['gone', false], 'a page that says the job is gone')
+  const readerGone = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental', page_age: null, text: 'Northwind Dental. Job not found.' }], page('x'), 12_000, now)
+  assert.equal(readerGone.proof, 'gone', 'also when Claude\'s reader returned that text')
+  const live = await checkLead(l, [], page('<html><body><h1>Account Executive</h1><p>Posted 4d ago</p><p>Northwind Dental is hiring an Account Executive to join the team. The last person in this role was promoted, and that position is closed.</p>' + '<p>About the role and the company, benefits and how to apply.</p>'.repeat(40) + '</body></html>'), 12_000, now)
+  assert.deepEqual([live.proof, live.date, live.date_source, isShown(live)], ['confirmed', '2026-11-19', 'page', true], 'a live posting: its printed age is its date, and a long page that mentions a closed role is not gone')
+  const { relativeDay } = await import('../lib/discover/check.ts')
+  assert.equal(relativeDay('Posted 2 weeks ago', now), '2026-11-09')
+  assert.equal(relativeDay('Posted 3 days ago ... Posted 9 days ago', now), null, 'a list of postings with different ages gives no date')
+  assert.equal(relativeDay('We posted record results. 4 days ago we met.', now), null)
+})

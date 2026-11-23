@@ -5,13 +5,14 @@
 //   3. a small-model pass fills the person, website and published email that shown leads still lack.
 // Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
 import { discoverLeads, type DiscoverInput, type DiscoverUsage } from './agent.ts'
+import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
 export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null }
-export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; now?: Date }
+export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; judge?: SignalJudge | null; now?: Date }
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
 // What the people pass has cost at most on the benchmark; a second search pass must leave room for it under the run's ceiling.
@@ -27,7 +28,9 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
 
   const first = await discover(sized, api)
   add(first.usage)
-  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4)
+  // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
+  const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
+  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
   const pages = first.seen.map(p => p.url)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note
@@ -38,7 +41,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       add(second.usage)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
       passes = 2
       note = second.note ?? note
@@ -56,5 +59,6 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       leads = leads.map(l => { const m = byCompany.get(l.company); return m && isShown(l) ? { ...l, ...mergeEnriched(l, m) } : l })
     } catch { /* the leads stay as found */ }
   }
+  if (judge) add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
   return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop, model, note }
 }
