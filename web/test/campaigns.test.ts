@@ -222,3 +222,20 @@ test('next action: leads held by the final checks are named in full, other resea
   // no other research: the held-by-checks step
   assert.equal(at({ research: 1, heldByChecks: 1 }).label, '1 lead is held by checks (read-only): open the run to see why')
 })
+
+// #1571 (Quest on staging 8132d324): every Campaigns card said "0 with a contact" while the leads of those searches showed a
+// published address. A discovery lead keeps its address as its own stored row, not in leads.contact.
+test('a discovery lead with a published address counts as a lead with a contact; another workspace\'s row and an old-engine lead do not', () => {
+  const db = setup()
+  job(db, 'A', 'jd', 'dental clinics in Toronto')
+  lead(db, 'jd', 'd-mail'); lead(db, 'jd', 'd-none'); lead(db, 'jd', 'old-mail')
+  db.prepare("UPDATE leads SET source_kind = 'discover' WHERE id IN ('d-mail', 'd-none')").run()
+  const mail = (tenant: string, leadId: string) => addEnrichment(db, tenant, leadId, { connector: 'discover', kind: 'email', value: 'hello@co.example', label: 'published on a public page', confidence: null, source_url: 'https://co.example/contact', source_date: '2026-11-22', retrieved_at: 1 })
+  mail('A', 'd-mail')
+  mail('A', 'old-mail')            // the discovery connector's row on a lead that is not a discovery lead
+  mail('B', 'd-none')              // a row carrying another workspace
+  finish(db, 'jd')
+  const c = listCampaigns(db, 'A').find(x => x.id === 'jd')!
+  assert.equal(c.contact.withContact, 1, 'only the discovery lead with its own published address')
+  assert.equal(c.contact.readyWithContact, 0, 'with no confirmed date it is timing-held, as a lead with a stored contact is: a contact, not a ready one')
+})

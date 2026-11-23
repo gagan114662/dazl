@@ -154,8 +154,14 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // #683 round 3: the sourceChecked-only slice, so a one-line reader can subtract exactly the leads it is about to
     // stop calling sourceChecked, never a held-research lead that was confirmedByYou all along.
     const heldResearchSourceChecked = heldResearchRows.filter(r => evidenceStateOf(r) === 'machine').length
-    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && (r.contact ?? '').trim() !== '').length
-    const withContact = allLive.filter(r => (r.contact ?? '').trim() !== '').length
+    // A discovery lead keeps its published address as its own stored row (connector 'discover'), not in leads.contact: its card shows
+    // it, so it is a contact here too (#1571: every card said "0 with a contact" beside leads showing an address). Workspace-scoped on both sides.
+    let published: { lead_id: string }[]
+    try { published = db.prepare(`SELECT DISTINCT e.lead_id FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE e.tenant_id = ? AND l.scan_job_id = ? AND l.source_kind = 'discover' AND e.connector = 'discover' AND e.kind = 'email' AND e.value != ''`).all(tenantId, tenantId, j.id) as { lead_id: string }[] } catch (e) { published = noTable(e) }
+    const publishedIds = new Set(published.map(r => r.lead_id))
+    const hasContact = (r: Row) => (r.contact ?? '').trim() !== '' || publishedIds.has(r.id)
+    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && hasContact(r)).length
+    const withContact = allLive.filter(hasContact).length
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
     // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.
     const drafts = msg('draft'), approved = msg('approved'), sent = msg('sent')
