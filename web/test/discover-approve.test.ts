@@ -11,6 +11,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { addEnrichment } from '../lib/connectors/store.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
+import { signalStale } from '../lib/discover/card.ts'
 import { contactSearchNote } from '../lib/outreach/published-email.ts'
 import { createDraft, discoverRecipientRefusal, OutreachError } from '../lib/outreach/service.ts'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
@@ -57,6 +58,9 @@ test('the card shows the person and the email, and Approve is on when a public p
   assert.match(why([person, email], { recipient_refused: 'unreadable' }), /could not check this address just now/)
   assert.match(why([person, email], { event_date: '2022-05-11' }), /more than a year old/)
   assert.equal(why([person, email], { event_date: new Date(Date.now() - 300 * 86_400_000).toISOString().slice(0, 10) }), 'ok', 'a signal within the last year')
+  // the cutoff is whole calendar days: at midday, a signal dated exactly 365 days ago is not stale and one dated 366 days ago is
+  const noon = new Date('2026-11-23T12:00:00Z')
+  assert.deepEqual([signalStale('2025-11-23', noon), signalStale('2025-11-22', noon), signalStale(null, noon)], [false, true, false])
   assert.match(why([person, email], { company_domain: null }), /only on another site/)
 })
 

@@ -85,7 +85,8 @@ export function emailOnCompanySite(email: string, sourceUrl: string | null | und
 export const SIGNAL_MAX_AGE_DAYS = 365
 export const signalStale = (eventDate: string | null | undefined, now: Date = new Date()): boolean => {
   const t = Date.parse(`${(eventDate ?? '').slice(0, 10)}T00:00:00Z`)
-  return Number.isFinite(t) && now.getTime() - t > SIGNAL_MAX_AGE_DAYS * 86_400_000
+  // whole calendar days (UTC), so a signal dated exactly 365 days ago is still usable all through that day
+  return Number.isFinite(t) && Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - t > SIGNAL_MAX_AGE_DAYS * 86_400_000
 }
 // What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, a signal more than
 // a year old, not graded a fit.
