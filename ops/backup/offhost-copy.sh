@@ -10,6 +10,9 @@
 #      - a directory (a mounted remote, or a second disk for tests): written as .partial, then renamed, then re-hashed;
 #      - rclone:REMOTE:PATH (any rclone remote: Cloudflare R2, Backblaze B2, S3, SFTP...): `rclone copyto`, then the
 #        uploaded object is read back and its sha256 compared.
+#      - s3:BUCKET/PREFIX (issue #1080; web/scripts/backup/s3.mts, the box's WRITE-ONLY key from /etc/dazl-backup/s3.env):
+#        the upload signs the SHA-256 of the body, so S3 refuses bytes that differ; then the object must be in the
+#        bucket listing with exactly the bytes sent. There is no read-back: this key cannot read (by design).
 #    A copy whose read-back hash differs is a failure (exit 1).
 # 4. Then the tombstone ledger (#359; DAZL_TOMBSTONE_LEDGER, the same path the app writes). A restore re-applies tenant
 #    deletions from it (docs/RECOVERY.md step 6), so it must survive the host like the backup. A snapshot of it is
@@ -28,15 +31,20 @@ B=${1:-}; [ -n "$B" ] && [ -f "$B" ] || die "usage: offhost-copy.sh BACKUP_FILE 
 R=${OFFHOST_AGE_RECIPIENTS:-}; DEST=${OFFHOST_DEST:-}
 [ -n "$R" ] && [ -s "$R" ] || die "OFFHOST_AGE_RECIPIENTS must name a non-empty file of age public keys" 2
 grep -q 'AGE-SECRET-KEY' "$R" && die "OFFHOST_AGE_RECIPIENTS holds a private key: give it public keys (age1...) only" 2
-[ -n "$DEST" ] || die "OFFHOST_DEST must be a directory or rclone:REMOTE:PATH" 2
+[ -n "$DEST" ] || die "OFFHOST_DEST must be a directory, rclone:REMOTE:PATH or s3:BUCKET/PREFIX" 2
 command -v age >/dev/null || die "age is not installed (apt install age)" 2
 [ -f "$B.json" ] || die "no sidecar $B.json: only create-backup.ts backups are copied" 2
 want=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sha256||"")' "$B.json")
 created=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).createdAt||"")' "$B.json")
 got=$(sha256sum -- "$B" | cut -d' ' -f1)
 [ -n "$want" ] && [ "$got" = "$want" ] || die "backup does not match its sidecar sha256: not copied"
+S3=${WEB_DIR:-$(cd "$(dirname "$0")/../../web" && pwd)}/scripts/backup/s3.mts
+s3() { node --experimental-strip-types --no-warnings "$S3" "$@"; }
 case "$DEST" in
   rclone:*) command -v rclone >/dev/null || die "rclone is not installed (apt install rclone)" 2 ;;
+  s3:*)
+    [ -f "$S3" ] || die "no $S3: this release has no S3 uploader" 2
+    [ -n "${AWS_ACCESS_KEY_ID:-}" ] && [ -n "${AWS_SECRET_ACCESS_KEY:-}" ] && [ -n "${AWS_REGION:-}" ] || die "OFFHOST_DEST is s3: but AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION are not all set (/etc/dazl-backup/s3.env)" 2 ;;
   *)
     [ -d "$DEST" ] || die "OFFHOST_DEST $DEST is not a directory" 2
     [ "$(realpath -- "$DEST")" != "$(realpath -- "$(dirname -- "$B")")" ] || die "OFFHOST_DEST is the backup directory itself: not off-host" 2 ;;
@@ -60,6 +68,11 @@ put() {
       rclone copyto "$tmp/$1" "$r/$1" && rclone copyto "$tmp/$1.json" "$r/$1.json"
       back=$(rclone cat "$r/$1" | sha256sum | cut -d' ' -f1)
       where="$r/$1" ;;
+    s3:*)
+      s3 put "$tmp/$1" "$DEST" "$1" >/dev/null && s3 put "$tmp/$1.json" "$DEST" "$1.json" >/dev/null || die "upload of $1 to ${DEST%%/*} failed"
+      s3 verify "$DEST" "$1" "$bytes" || die "$1 is not in the bucket listing with the $bytes bytes that were sent"
+      back=$ct   # S3 accepted the signed SHA-256 of these bytes and lists the object at this size; the key cannot read it back
+      where="${DEST%/}/$1" ;;
     *)
       install -m 600 "$tmp/$1" "$DEST/$1.partial" && mv -f "$DEST/$1.partial" "$DEST/$1"
       install -m 600 "$tmp/$1.json" "$DEST/$1.json.partial" && mv -f "$DEST/$1.json.partial" "$DEST/$1.json"

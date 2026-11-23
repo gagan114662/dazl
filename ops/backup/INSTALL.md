@@ -1,5 +1,10 @@
 # Installing the production backup (issue #1080)
 
+> **The owner-approved plan (2026-11-23) is in [`README.md`](README.md): an S3 bucket in `ca-central-1` with an
+> upload-only key, set up by `aws-setup.sh` (on the owner's machine) and `install-prod-offhost.sh` (on the box), and
+> restored with `restore-s3.sh`. Use that page.** What follows are the earlier variants (rclone with the instance role,
+> and the pull over ssh) and the details they share with the approved plan: retention, the deletion ledger, the alert.
+
 Everything the backup needs was already in the repository (`run-backup.sh`, `offhost-copy.sh`, `backup-check.mts`, the
 restore drills) but nothing installed it, and the unit templates named a release directory, which moves on every deploy.
 `install-prod.sh` installs it in one command; the units run `/usr/local/lib/dazl-backup/prod-run.sh`, which asks
