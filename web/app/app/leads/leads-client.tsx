@@ -58,6 +58,7 @@ import { historyStatus, runTone, type CampaignRun } from '@/lib/run-status'
 import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
 import { outcomeOwnCopy, scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
+import { ContactStatusLine } from './contact-status'
 import { Icon } from '../ui/icons'
 import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
@@ -1348,11 +1349,8 @@ export default function LeadsClient() {
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
                     <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
                     {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
-                    {/* A plain confirmation (one sentence, nothing in doubt) is a small mark with its basis behind the (i); any
-                        doubt - unconfirmed, role not verified, no current buyer - stays on screen in full. */}
-                    {c.contactStatus && (c.contactStatus.confirmed && /^Confirmed: [^.]+\.$/.test(c.contactStatus.text)
-                      ? <div className="text-xs mt-1"><Pill tone="mint">Source confirmed</Pill><InfoTip label="Where the contact was published"><span data-testid="contact-status">{c.contactStatus.text}</span></InfoTip></div>
-                      : <div data-testid="contact-status" className={`text-xs ${c.contactStatus.confirmed ? 'text-[var(--ink-2)] mt-0.5' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{c.contactStatus.text}</div>)}
+                    {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
+                    <ContactStatusLine status={c.contactStatus} />
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
                     {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
                       <li data-testid="contact-provenance">{c.route.provenance.text}</li>
