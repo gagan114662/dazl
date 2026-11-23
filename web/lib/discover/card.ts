@@ -1,4 +1,5 @@
 import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
+import { isPersonName } from '../people/job-title-name.ts'
 // What a lead from the Claude discovery lane says about itself on its card: how sure dazl is, and plainly what is missing
 // (launch brief, Step 3: a missing date, person or website lowers confidence and is said; it never hides the lead).
 export interface DiscoverCardLead {
@@ -14,9 +15,16 @@ export function discoverMissing(l: DiscoverCardLead): string[] {
   const missing: string[] = []
   if (!l.event_date) missing.push('a date for the signal')
   else if (l.date_status !== 'verified') missing.push(l.timing_note ? 'a date printed on the page (the date shown is when the page was published)' : 'the date confirmed on the page')
-  if (!l.name.trim() && !(l.enrichments ?? []).some(e => e.kind === 'person')) missing.push('a named person')
+  if (!namesPerson(l)) missing.push('a named person')
   if (!discoverSite(l.company_domain)) missing.push('the company website')
   return missing
+}
+// A person is named when the run's person row, or else the lead's own name, is a person's full name and not a job title (#1250, #1183).
+const rowName = (value: string) => { const i = value.indexOf(', '); return (i < 0 ? value : value.slice(0, i)).trim() }
+function namesPerson(l: { name?: string | null; enrichments?: { kind: string; connector?: string; value?: string }[] }): boolean {
+  const p = (l.enrichments ?? []).find(e => e.kind === 'person' && (e.connector === undefined || e.connector === 'discover'))
+  // a person row sent without its value (a list that carries only the kinds) cannot be judged here and counts, as before
+  return p ? p.value === undefined || isPersonName(rowName(p.value)) : isPersonName(l.name)
 }
 export function discoverLine(l: DiscoverCardLead): string {
   const missing = discoverMissing(l)
@@ -52,8 +60,11 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   let person: DiscoverContact['person'] = null
   if (p) {
     const i = p.value!.indexOf(', ')
-    person = { name: (i < 0 ? p.value! : p.value!.slice(0, i)).trim(), title: i < 0 ? null : p.value!.slice(i + 2).trim() || null, linkedin: li?.value ?? null, source: p.source_url ?? null }
+    person = { name: rowName(p.value!), title: i < 0 ? null : p.value!.slice(i + 2).trim() || null, linkedin: li?.value ?? null, source: p.source_url ?? null }
   } else if ((l.name ?? '').trim()) person = { name: l.name!.trim(), title: null, linkedin: li?.value ?? null, source: null }
+  // #1250 rule 1: a NAMED person or nobody. A job title stored as the name, or a bare first name, is not a contact by email or LinkedIn;
+  // the row says "No buyer named yet" by the same rule (lib/people/lead-person.ts).
+  if (person && !isPersonName(person.name)) person = null
   // The contact is the named person's OWN address: not a shared inbox, and carrying their name (dana@, dana.ruiz@, druiz@ ...). Another
   // employee's address stored beside it is not this person's (review of #1596); otherAddress says one was published.
   const own = (r: Row) => !isGenericInbox(r.value) && !!person && nameBound(r.value!.trim().toLowerCase().split('@')[0], person.name)
