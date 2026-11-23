@@ -38,8 +38,10 @@ export default function GmailPanel() {
         setTimeout(stop, 3000)
       }
     }
-    if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
-    else if (q) setMsg('Gmail was not connected. Try again.')
+    void Promise.resolve().then(() => {
+      if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
+      else if (q) setMsg('Gmail was not connected. Try again.')
+    })
   }, [])
 
   async function saveSender(e: React.FormEvent) {
