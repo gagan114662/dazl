@@ -5,10 +5,12 @@ import type { DiscoveredLead, SeenPage } from './agent.ts'
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
 // company_not_on_page: the text was read and does not name the company. unseen: the run never saw this URL and dazl could not read it.
-export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen'
+// 'gone': the proof address answers 'not found', or the page it serves says the job or page no longer exists (staging 2026-11-23: a 404
+// and a 'Job not found' page were shown as verified proof). A page that is gone proves nothing, whatever a search result still says.
+export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen' | 'gone'
 // date: the day shown for the signal. date_source says where it came from: 'page' = Claude read it on the proof page (date_on_page says whether
 // dazl also found it in the page text); 'index' = the proof page prints no date, so this is the day the search index dates the page itself.
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null }
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; signal_by?: 'claude' }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
 //   - a page whose text was read: the words the run quoted as evidence are in that text, and in one place where they stand the page's
@@ -74,6 +76,14 @@ export function statesSignal(signal: string, company: string, textToSearch: stri
   const { want, missing } = signalWordsIn(signal, company, textToSearch)
   return want > 0 && missing.length === 0
 }
+// When the quoted evidence IS on a read page and its statements do not carry every word of the signal line, the words cannot settle
+// it either way. Measured on staging, 2026-11-23 (commit 96111ddd, two real searches, 15 leads): the every-word rule alone showed 1
+// of 15, although 12 had their quote on a page naming the company (the companies' own sites and job postings). The engine's signal
+// line runs 6 to 23 distinguishing words (an address, "posted 7 days ago") and no one statement holds them all. A count of shared
+// words cannot tell those from a sentence of address and opening hours quoted for an "opening" claim (both share 4 or more). So that
+// one question is put to Claude (lib/discover/entail.ts): does this quoted text state the claim's event? Without an asker (tests,
+// the replay script) the every-word rule decides alone, as before.
+export type AskSignal = (signal: string, company: string, statements: string[]) => Promise<boolean>
 // The page's own statements: a line or block, cut again where a full stop, question mark, exclamation mark or semicolon ends one.
 const statements = (page: string): string[] => page.split(/\n+|(?<=[.!?…;])\s+/).map(s => s.trim()).filter(Boolean)
 // The quoted evidence as the PAGE states it: for each place the quoted words stand (the whole quote, or any six consecutive words of
@@ -146,26 +156,102 @@ function publicUrl(raw: string): URL | null {
 // Two URLs are the same page when host (without www.), path (without a trailing slash) and query match.
 const pageKey = (raw: string): string => { try { const u = new URL(raw); return `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}${u.search}` } catch { return raw } }
 
+// A page that says its own content is gone: a short page whose words are a not-found or closed-posting notice. Long pages are never judged
+// this way (a live page may mention that another role was filled).
+const GONE = /\b(?:job|page|position|posting|listing|role|opening|vacancy)\s+(?:was\s+|is\s+|has\s+been\s+)?(?:not\s+found|no\s+longer\s+(?:available|open|active|accepting\s+applications)|closed|filled|removed|expired)\b|\b(?:404|page\s+not\s+found|not\s+found)\b|\bno\s+longer\s+(?:available|exists|accepting\s+applications)\b|\b(?:doesn't|does\s+not)\s+exist\b/i
+export const pageIsGone = (body: string): boolean => { const t = body.replace(/\s+/g, ' ').trim(); return t.length < 1500 && GONE.test(t) }
+// "Posted 4d ago", "Posted: 3 days ago", "Published 2 weeks ago": the day that works out to, when the page prints exactly one such age.
+// Several different ages on one page (a list of postings) give no date.
+export function relativeDay(body: string, now: Date): string | null {
+  const days = new Set<number>()
+  for (const m of body.matchAll(/\b(?:posted|published|listed|updated)\s*:?\s*(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
+    const n = Number(m[1]), u = m[2].toLowerCase()
+    days.add(u.startsWith('h') ? 0 : u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
+  }
+  if (days.size !== 1) return null
+  const [d] = [...days]
+  return d > 365 ? null : new Date(now.getTime() - d * 86_400_000).toISOString().slice(0, 10)
+}
 function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_age: string | null, now: Date): CheckedLead {
+  if (pageIsGone(body)) return { ...lead, ...dated(lead, page_age, now), proof: 'gone', proof_read_by: by, page_age, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
   // A read page supports the signal when the quoted evidence is on it and, in ONE place where it stands, the page's own statements
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
   const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
-  return { ...lead, ...dated(lead, page_age, now), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
+  // the page's own printed age beats the search index's day, when the run gave no date (staging: 'Posted 4d ago' read as no date)
+  const rel = lead.signal_date ? null : relativeDay(body, now)
+  return { ...lead, ...(rel ? { date: rel, date_source: 'page' as const } : dated(lead, page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
     quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: dayOnPage(lead.signal_date, body) }
 }
 
-export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date()): Promise<CheckedLead> {
+// The quote is on the page, the page names the company, and the words alone did not settle it: Claude says whether the quoted text states
+// the claim. signal_by records who decided. An asker that fails leaves the lead as the words left it (not shown; the user's review).
+async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<CheckedLead> {
+  if (!ask || c.proof !== 'confirmed' || !c.quote_on_page || c.signal_seen) return c
+  const said = quoteStatements(c.evidence_quote, body).slice(0, 4).map(s => s.slice(0, 600))
+  try { return (await ask(c.signal, c.company, said)) ? { ...c, signal_seen: true, signal_by: 'claude' } : { ...c, signal_by: 'claude' } } catch { return c }
+}
+// The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
+// tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
+// moves it), not a day in the future, not one more than a year old.
+export function embeddedDay(html: string, now: Date): string | null {
+  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
+    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html)
+  if (!m) return null
+  const t = Date.parse(`${m[1]}T00:00:00Z`)
+  return Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
+}
+// A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
+// the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging
+// 2026-11-23: every hiring lead on these boards came back undated.
+const validDay = (t: number, now: Date): string | null => Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : new Date(t).toISOString().slice(0, 10)
+export function postingRecord(u: URL): { url: string; day: (j: unknown) => unknown } | null {
+  const h = u.hostname.toLowerCase(), seg = u.pathname.split('/').filter(Boolean)
+  const obj = (j: unknown) => (j && typeof j === 'object' ? j as Record<string, unknown> : {})
+  if (/(^|\.)greenhouse\.io$/.test(h) && seg.length >= 3 && seg[1] === 'jobs' && /^\d+$/.test(seg[2]))
+    return { url: `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(seg[0])}/jobs/${seg[2]}`, day: j => obj(j).first_published }
+  if (/^jobs\.(?:eu\.)?lever\.co$/.test(h) && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
+    return { url: `https://api.${h === 'jobs.eu.lever.co' ? 'eu.' : ''}lever.co/v0/postings/${encodeURIComponent(seg[0])}/${seg[1]}`, day: j => obj(j).createdAt }
+  if (h === 'jobs.ashbyhq.com' && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
+    return { url: `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(seg[0])}`, day: j => { const jobs = obj(j).jobs; const hit = Array.isArray(jobs) ? jobs.find(x => obj(x).id === seg[1] || String(obj(x).jobUrl ?? '').includes(seg[1])) : null; return obj(hit).publishedAt } }
+  return null
+}
+async function postingDay(u: URL, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<string | null> {
+  const rec = postingRecord(u)
+  if (!rec) return null
+  try {
+    const r = await fetchImpl(rec.url, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { accept: 'application/json' } })
+    if (!r.ok) return null
+    const v = rec.day(await r.json())
+    return typeof v === 'number' ? validDay(v, now) : typeof v === 'string' ? validDay(Date.parse(v), now) : null
+  } catch { return null }
+}
+// A confirmed lead the run gave no date, and whose page text printed none: the page's own structured data dates it, ahead of the
+// search index's day. `html` is dazl's raw read when it has one; otherwise the page is fetched once for this alone.
+async function datedByPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<CheckedLead> {
+  if (c.signal_date || c.proof !== 'confirmed' || c.date_source === 'page') return c
+  const posted = u ? await postingDay(u, fetchImpl, timeoutMs, now) : null
+  if (posted) return { ...c, date: posted, date_source: 'page' }
+  let raw = html
+  if (raw === null && u) {
+    try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* no date from the page */ }
+  }
+  const day = raw ? embeddedDay(raw, now) : null
+  return day ? { ...c, date: day, date_source: 'page' } : c
+}
+export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal): Promise<CheckedLead> {
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
-  if (hit?.text) return judge(lead, hit.text, 'reader', hit.page_age, now)
+  if (hit?.text) return datedByPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
   // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
-      if (r.ok) return judge(lead, text((await r.text()).slice(0, 1_500_000)), 'dazl', hit?.page_age ?? null, now)
+      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return datedByPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
+      // dazl asked and the address is gone: a search result's title does not bring it back
+      if (r.status === 404 || r.status === 410) return { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
@@ -175,11 +261,11 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
   return { ...base, proof: listed ? 'listed' : 'unseen', signal_seen: listed && statesSignal(lead.signal, lead.company, title), claim_lacks: signalWordsIn(lead.signal, lead.company, title).missing }
 }
 
-export async function checkLeads(leads: DiscoveredLead[], seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, concurrency = 4): Promise<CheckedLead[]> {
+export async function checkLeads(leads: DiscoveredLead[], seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, concurrency = 4, ask?: AskSignal): Promise<CheckedLead[]> {
   const out: CheckedLead[] = new Array(leads.length)
   let next = 0
   await Promise.all(Array.from({ length: Math.min(concurrency, leads.length) }, async () => {
-    for (let i = next++; i < leads.length; i = next++) out[i] = await checkLead(leads[i], seen, fetchImpl)
+    for (let i = next++; i < leads.length; i = next++) out[i] = await checkLead(leads[i], seen, fetchImpl, undefined, undefined, ask)
   }))
   return out
 }
