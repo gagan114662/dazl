@@ -18,7 +18,16 @@ export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_r
 // year and a number, says nothing about the signal (#1571, review of #1575). Such a lead goes to the user's review.
 export const isShown = (l: CheckedLead): boolean => (l.proof === 'confirmed' || l.proof === 'listed') && l.signal_seen
 
-const text = (html: string) => html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ')
+// A page stores punctuation and accented letters as entities ("it&#x27;s", "caf&eacute;"); a person reads the character, and so does a quote
+// taken from the page. Decoded after the tags are gone and in one pass, so escaped markup stays text. An accented letter becomes its plain
+// letter, which is what fold() makes of it anyway; an entity this does not know is left as written.
+const NAMED: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', ndash: '–', mdash: '—', hellip: '…' }
+const entities = (s: string) => s.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]{2,8});/gi, (whole, e: string) => {
+  if (e[0] !== '#') return NAMED[e.toLowerCase()] ?? /^([a-z])(?:acute|grave|circ|uml|tilde|cedil|ring|caron|slash)$/i.exec(e)?.[1] ?? whole
+  const cp = /^#x/i.test(e) ? parseInt(e.slice(2), 16) : Number(e.slice(1))
+  return cp > 0 && cp <= 0x10ffff && (cp < 0xd800 || cp > 0xdfff) ? String.fromCodePoint(cp) : ' '
+})
+const text = (html: string) => entities(html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ')
 const fold = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 
 // The company is on the page when its name appears, or when the words of its name (ignoring very short ones) all do.
@@ -30,17 +39,22 @@ export function companyOnPage(company: string, page: string): boolean {
   return words.length > 0 && words.every(w => p.includes(` ${w} `))
 }
 // The words of a text that carry meaning for matching: four letters or more, or any token with a digit ("12m", "2026"), each reduced
-// to a plain stem so "opening", "opens" and "opened" are the word "open".
-const stem = (w: string) => { for (const suf of ['ing', 'ed', 'es', 's']) if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, -suf.length); return w }
-const content = (s: string): string[] => fold(s).split(' ').filter(w => w.length >= 4 || /\d/.test(w)).map(stem)
+// to a plain stem so "opening", "opens" and "opened" are the word "open", and "raise" is the word "raised" and "raising" are (the
+// plain form of such a verb ends in an e its other forms drop: without this "to hire 40 engineers" did not state "Hiring 40 engineers").
+const stem = (w: string) => { for (const suf of ['ing', 'ed', 'es', 's']) if (w.endsWith(suf) && w.length - suf.length >= 3) return w.slice(0, -suf.length); return w.endsWith('e') ? w.slice(0, -1) : w }
+// An amount is one word however it is written: "$12 million", "12-million" and "$12M" are all "12m". A funding page prints one form in
+// its headline and the other in its text, and the signal line uses either (#1575: "has raised $12 million" did not state "Raised $12M").
+const amounts = (s: string) => s.replace(/(\d)[\s-]?(million|mln|mn|billion|bn|thousand)\b/gi, (_, d: string, u: string) => d + (/^b/i.test(u) ? 'b' : /^t/i.test(u) ? 'k' : 'm'))
+const content = (s: string): string[] => fold(amounts(s)).split(' ').filter(w => w.length >= 4 || /\d/.test(w)).map(stem)
 // Two stems are the same word when equal, or when they share their first five letters ("expansion" / "expand").
 const same = (a: string, b: string) => a === b || (a.length >= 5 && b.length >= 5 && a.slice(0, 5) === b.slice(0, 5))
-// The signal's own words (the company's name left out), and how many of them a text carries.
-export function signalWordsIn(signal: string, company: string, textToSearch: string): { want: number; found: number } {
+// The signal's own words (the company's name left out), how many of them a text carries, and which it lacks (as stems).
+export function signalWordsIn(signal: string, company: string, textToSearch: string): { want: number; found: number; missing: string[] } {
   const name = new Set(content(company))
   const want = [...new Set(content(signal).filter(w => !name.has(w)))]
   const have = content(textToSearch)
-  return { want: want.length, found: want.filter(w => have.some(h => same(w, h))).length }
+  const missing = want.filter(w => !have.some(h => same(w, h)))
+  return { want: want.length, found: want.length - missing.length, missing }
 }
 // A text states the signal's CLAIM, not merely its topic, when it carries the claim's distinguishing words: every one of them for a
 // short signal (three words or fewer), three in four for a longer one. Sharing some words is not enough: "clinic opening hours" shares
