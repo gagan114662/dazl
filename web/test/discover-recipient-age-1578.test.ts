@@ -330,21 +330,25 @@ const cannedGet = (pages: Record<string, string>): Get => async url => { const u
 type Made = { db: Database.Database; id: string }
 // A lead taken through those steps. own: the address its own run published (null: none). checked: the user also made the website check.
 // crawl false: confirmed, "Find contact" not run. contactPage: what the company's contact page prints.
-async function crawled(o: { own?: string | null; checked?: boolean; kind?: string; date?: string | null; crawl?: boolean; contactPage?: string } = {}): Promise<Made> {
+async function crawled(o: { own?: string | null; checked?: boolean; kind?: string; date?: string | null; crawl?: boolean; contactPage?: string; contacts?: number; laneShape?: boolean } = {}): Promise<Made> {
   const { db, id } = fixture({ kind: o.kind, date: o.date })
   if (o.own !== null && o.kind === undefined) email(db, id, o.own ?? 'bob@northwind-dental.example', Math.floor(NOW / 1000) - 3600)
   db.prepare("UPDATE scan_jobs SET attempts = 1, candidates = 1, dropped = 0 WHERE id = 'j1'").run()
   db.prepare("UPDATE leads SET review_reason = 'source_review_required' WHERE id = ?").run(id)
+  // the lane stores a lead it sends to review without a grade (lib/scan/runner.ts): no confidence, fit or intent
+  if (o.laneShape) db.prepare('UPDATE leads SET confidence = NULL, fit = NULL, intent = NULL WHERE id = ?').run(id)
   assert.equal(await confirmLeadReview(sqliteDb(db), 'T', id, Math.floor(NOW / 1000)), true)
   if (o.crawl === false) return { db, id }
   const found = await findContactForConfirmedLead(db, 'T', id, { get: cannedGet(pagesWith(o.contactPage ?? 'Northwind Dental. Email: hello@northwind-dental.example')), gapMs: 0, env: {} }) as { status: string; contacts: number }
-  assert.deepEqual([found.status, found.contacts], ['done', 1], 'the crawl stored one address')
+  assert.deepEqual([found.status, found.contacts], ['done', o.contacts ?? 1], 'the crawl stored the address(es) its page prints')
   const before = row(db, id)
   const rv = domainReviewFor(before as never, before.enrichments as never)
   assert.equal(rv.state, 'required', 'a crawled website waits for the user\'s check')
   if (o.checked) setDomainReview(db, 'T', id, 'confirm', rv.binding ?? undefined, NOW)
   return { db, id }
 }
+// what the server does for the lane's own row shape (observed on this code, then held here)
+const LANE_AUTO: { to?: string; code?: string } = { to: 'hello@northwind-dental.example' }, LANE_ASKED: { to?: string; code?: string } = { to: 'bob@northwind-dental.example' }
 const noteFor = (address: string) => `A website crawl found ${address}. ${CRAWLED_NOTE_TAIL}`
 const CRAWLED_NOTE = noteFor('hello@northwind-dental.example')
 // the two functions a draft nobody asked for is made with: calibration's (createDraft without `manual`) and autopilot's (createDraftWithWords)
@@ -402,10 +406,13 @@ test('#1571 (review of #1578) after a real "Find contact" on a discovery lead, n
 // draft. Each half of the sentence is held against the server here, in every state the reviews reached, with the product's own steps.
 // This does NOT approve what an automatic draft does: that is the open question P2-a (one recipient rule for automatic drafts too),
 // awaiting the coordinating reviewer. Whoever changes that rule changes the sentence in the same commit, or this fails.
-test('#1571 (review of #1578) the Details sentence about a crawled address is true in every state: Approve never drafts to it, and a draft nobody asked for uses it only where its own checks pass', async t => {
+test('#1571 (review of #1578) the Details sentence about a crawled address is held against the server in each state the reviews reached: Approve never drafts to it, and a draft nobody asked for uses the named address only where its own checks pass', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   assert.equal(CRAWLED_NOTE_TAIL, "Approve on this card never drafts to it, only to an address this lead's own proof run published. A draft made automatically (autopilot) may still use it, but only where that draft passes its own checks.")
   const HELLO = 'hello@northwind-dental.example', PRESS = 'press@northwind-dental.example', STALE = SIGNAL + YEAR + DAY
+  // Fifth review (e1c3271e): no state had a crawl that stored more than one address, so nothing held "the address Details names is the
+  // address an automatic draft uses". This contact page makes the real crawl store two at one instant.
+  const TWO = { checked: true, contacts: 2, contactPage: 'Northwind Dental. Email: sales@northwind-dental.example or hello@northwind-dental.example' }
   const after = (f: (x: Made) => void, o: Parameters<typeof crawled>[0] = { checked: true }) => async () => { const x = await crawled(o); f(x); return x }
   // [state, how it is reached, the clock, the crawled address Details names, what a draft nobody asked for does, what Approve's draft does]
   const states: [string, () => Promise<Made>, number, string, { to?: string; code?: string }, { to?: string; code?: string }][] = [
@@ -417,6 +424,10 @@ test('#1571 (review of #1578) the Details sentence about a crawled address is tr
     ['the crawled address is on the do-not-contact list', after(x => { suppress(x.db, 'T', HELLO, 'manual') }), NOW, HELLO, { code: 'suppressed' }, { to: 'bob@northwind-dental.example' }],
     ['the lead was rejected', after(x => { x.db.prepare("UPDATE leads SET quarantined_at = 1, quarantine_reason = 'Rejected' WHERE id = ?").run(x.id) }), NOW, HELLO, { code: 'lead_quarantined' }, { code: 'lead_quarantined' }],
     ['the lead\'s own address is on the do-not-contact list', after(x => { suppress(x.db, 'T', 'bob@northwind-dental.example', 'manual') }), NOW, HELLO, { to: HELLO }, { code: 'suppressed' }],
+    ['the crawl stored two addresses at one instant', () => crawled(TWO), NOW, HELLO, { to: HELLO }, { to: 'bob@northwind-dental.example' }],
+    ['two crawled addresses, the named one on the do-not-contact list: the other is not used instead', after(x => { suppress(x.db, 'T', HELLO, 'manual') }, TWO), NOW, HELLO, { code: 'suppressed' }, { to: 'bob@northwind-dental.example' }],
+    ['two crawled addresses, the lead\'s own on the do-not-contact list', after(x => { suppress(x.db, 'T', 'bob@northwind-dental.example', 'manual') }, TWO), NOW, HELLO, { to: HELLO }, { code: 'suppressed' }],
+    ['the row shape the lane itself stores for a lead in review (no grade)', () => crawled({ checked: true, laneShape: true }), NOW, HELLO, LANE_AUTO, LANE_ASKED],
   ]
   for (const [state, build, ms, crawledAddress, auto, asked] of states) {
     for (const [fn, make] of automatic) {
@@ -638,6 +649,14 @@ test('#1571 (review of #1578) Home\'s checklist says a date hold as what it is i
   // a lead a review CAN release comes first, in the same search (counted alone) or in another one
   assert.deepEqual(home([camp('a', { sourceChecked: 2, held: 2, heldDateOnly: 1 })]), ['todo', '1 lead in this search needs your review - open the list to see why each was held', 'Review leads', '/app/leads?job_id=a'])
   assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1 }), camp('b', { sourceChecked: 1, held: 1 })]), ['todo', '1 lead in this search needs your review - open the list to see why each was held', 'Review leads', '/app/leads?job_id=b'])
+  // Fifth review (e1c3271e): each count in the sentence is the count of the ONE search its link opens. Unequal counts in one search; two
+  // searches both date-held; a date-plus-unverified search that is not the newest.
+  assert.deepEqual(home([camp('a', { sourceChecked: 2, held: 2, heldDateOnly: 2, unverified: 1 })]), ['todo', DATE2 + 'Check the 1 unverified lead in this search against its source', 'Review leads', '/app/leads?job_id=a'])
+  assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1, unverified: 2 })]), ['todo', DATE1 + 'Check the 2 unverified leads in this search against their sources', 'Review leads', '/app/leads?job_id=a'])
+  assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1 }), camp('b', { sourceChecked: 2, held: 2, heldDateOnly: 2 })]), ['todo', DATE1 + 'Search again for a newer signal', 'Change the search', '/app/leads?q=search%20a'], 'the newest search, its own count, its own link')
+  assert.deepEqual(home([camp('a', { sourceChecked: 2, held: 2, heldDateOnly: 2 }), camp('b', { sourceChecked: 1, held: 1, heldDateOnly: 1 })]), ['todo', DATE2 + 'Search again for a newer signal', 'Change the search', '/app/leads?q=search%20a'])
+  assert.deepEqual(home([camp('a', { unverified: 3 }), camp('b', { sourceChecked: 1, held: 1, heldDateOnly: 1, unverified: 1 })]), ['todo', DATE1 + 'Check the 1 unverified lead in this search against its source', 'Review leads', '/app/leads?job_id=b'], 'the search that holds the date-held lead: its unverified count and its link, not the newest search\'s')
+  assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1, unverified: 1 }), camp('b', { sourceChecked: 3, held: 3, heldDateOnly: 3, unverified: 3 })]), ['todo', DATE1 + 'Check the 1 unverified lead in this search against its source', 'Review leads', '/app/leads?job_id=a'])
   // a qualified lead anywhere: the step is done, whatever else is held
   assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1 }), camp('b', { sourceChecked: 1 })]).slice(0, 2), ['done', '1 source-checked or confirmed by you'])
   // research-only leads in an older search do not hide the date hold of the newest
