@@ -236,8 +236,15 @@ test('a discovery lead with a published address counts as a lead with a contact;
   mail('B', 'd-none')              // a row carrying another workspace
   finish(db, 'jd')
   const c = listCampaigns(db, 'A').find(x => x.id === 'jd')!
-  assert.equal(c.contact.withContact, 1, 'only the discovery lead with its own published address')
+  // #1238: "with a contact" means the lead is ready by email or on LinkedIn (lib/discover/card.ts discoverState), as the Leads card decides it.
+  // With no date and no website its Approve is off, so the card counted "1 with a contact" beside a lead no action was offered for.
+  assert.equal(c.contact.withContact, 0, 'an address stored on a lead its proof still holds is not a contact yet')
   assert.equal(c.contact.readyWithContact, 0, 'with no confirmed date it is timing-held, as a lead with a stored contact is: a contact, not a ready one')
+  // dated, and the address is printed on the company's own website: now it is one, and only that lead
+  db.prepare("UPDATE leads SET event_date = '2026-11-10', company_domain = 'co.example' WHERE scan_job_id = 'jd'").run()
+  const ready = listCampaigns(db, 'A').find(x => x.id === 'jd')!
+  assert.equal(ready.contact.withContact, 1, 'only the discovery lead with its own published address')
+  assert.equal(ready.contact.readyWithContact, 1)
 })
 
 // Owner decision 2026-11-23: a named person with their own LinkedIn profile is a contact when no personal email is published.
@@ -245,7 +252,7 @@ test('a discovery lead whose named person has a LinkedIn profile counts as a lea
   const db = setup()
   job(db, 'A', 'jl', 'dental clinics in Toronto')
   lead(db, 'jl', 'l-profile'); lead(db, 'jl', 'l-company'); lead(db, 'jl', 'l-noperson')
-  db.prepare("UPDATE leads SET source_kind = 'discover' WHERE scan_job_id = 'jl'").run()
+  db.prepare("UPDATE leads SET source_kind = 'discover', event_date = '2026-11-10' WHERE scan_job_id = 'jl'").run()   // dated: an undated lead is held whatever its contact (#1238)
   const row = (leadId: string, kind: string, value: string) => addEnrichment(db, 'A', leadId, { connector: 'discover', kind, value, label: 'x', confidence: null, source_url: 'https://co.example/team', source_date: '2026-11-22', retrieved_at: 1 })
   row('l-profile', 'person', 'Dana Ruiz, Practice Owner'); row('l-profile', 'linkedin', 'https://www.linkedin.com/in/dana-ruiz/')
   row('l-company', 'person', 'Sam Patel, Owner'); row('l-company', 'linkedin', 'https://www.linkedin.com/company/co/')

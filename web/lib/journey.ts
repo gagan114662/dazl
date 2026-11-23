@@ -2,7 +2,7 @@
 // Pure and read-only. It never loosens a gate: a lead enters the preview only when every existing check already passed
 // (identity confirmed or not in doubt, a dated source whose day the cited source proves (day_verified), inside the requested window, not held, rejected or in
 // review). Everything else is counted separately as "needs review / research" and never adds to the opportunity count.
-import { discoverApprove, discoverLinkedIn, isDiscoverLead } from './discover/card.ts'
+import { discoverNotReady, isDiscoverLead } from './discover/card.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { domainReviewFor } from './outreach/domain-review.ts'
 import { publishedEmail } from './outreach/published-email.ts'
@@ -23,9 +23,11 @@ export type PreviewLead = CardLead & { id: string; seen_before?: number | boolea
 // Why a lead is not an opportunity (first failing check), or null when it is one.
 export function heldReason(l: PreviewLead): string | null {
   if (l.quarantined_at) return 'rejected'
-  // A lead from the Claude discovery lane (lib/scan/runner.ts runDiscoverLane) is shown once its proof page names the company. A missing
-  // date, person or website lowers its confidence and is said on the card; it does not hold the lead (launch brief, Step 3).
-  if ((l as { source_kind?: string | null }).source_kind === 'discover') return l.review_reason ? 'needs your review' : null
+  // A lead from the Claude discovery lane (lib/scan/runner.ts runDiscoverLane) has ONE state, the one its card's actions follow
+  // (lib/discover/card.ts discoverState): it is ready only when Approve is on or its person's own LinkedIn profile is known. Home used to
+  // call it ready whenever its proof page was confirmed, also with no date and nobody to reach (#1238: "Ready leads" counted a lead
+  // with no action). Every other state is held, in that state's own words.
+  if (isDiscoverLead(l as { source_kind?: string | null })) return discoverNotReady(l as never)
   // #1062: a REQUIRED check that has not passed (requiredGateHeld, the draft guard's own verdict) holds it whatever its review reason, evidence and date say.
   if (l.gate_held) return 'a required check has not passed'
   if (l.review_reason) return 'needs your review'
@@ -39,9 +41,11 @@ export function heldReason(l: PreviewLead): string | null {
   return null
 }
 
-export interface PreviewSplit { opportunities: (PreviewLead & { contactReady: boolean })[]; held: { lead: PreviewLead; reason: string }[]; review: PreviewLead[]; research: { lead: PreviewLead; cause: ResearchCause }[]; rejected: PreviewLead[] }
+// noContact: discovery leads whose proof is fine but nobody can be reached yet (discoverState 'no_contact'). Held, and never research:
+// finding a contact can still make them ready.
+export interface PreviewSplit { opportunities: (PreviewLead & { contactReady: boolean })[]; held: { lead: PreviewLead; reason: string }[]; review: PreviewLead[]; research: { lead: PreviewLead; cause: ResearchCause }[]; rejected: PreviewLead[]; noContact: PreviewLead[] }
 export function previewSplit(leads: PreviewLead[]): PreviewSplit {
-  const out: PreviewSplit = { opportunities: [], held: [], review: [], research: [], rejected: [] }
+  const out: PreviewSplit = { opportunities: [], held: [], review: [], research: [], rejected: [], noContact: [] }
   for (const l of leads) {
     const why = heldReason(l)
     if (why) {
@@ -49,11 +53,11 @@ export function previewSplit(leads: PreviewLead[]): PreviewSplit {
       const h = heldState(l)
       if (h?.state === 'review') out.review.push(l)
       else if (h?.state === 'rejected') out.rejected.push(l)
+      else if (h?.cause === 'contact') out.noContact.push(l)
       else out.research.push({ lead: l, cause: h?.cause ?? 'unsupported' })
     }
-    // a discovery-lane lead is contact-ready when its Approve would be on (the person's own address), or when the named person's own
-    // LinkedIn profile is known (owner decision 2026-11-23; lib/discover/card.ts discoverLinkedIn)
-    else out.opportunities.push({ ...l, contactReady: isDiscoverLead(l as { source_kind?: string | null }) ? discoverApprove(l as never).ok || !!discoverLinkedIn(l as never) : !!publishedEmail(l) })
+    // a discovery-lane lead reaches here only when it is ready by email or on LinkedIn (heldReason above), so its contact is ready
+    else out.opportunities.push({ ...l, contactReady: isDiscoverLead(l as { source_kind?: string | null }) || !!publishedEmail(l) })
   }
   return out
 }
@@ -66,7 +70,7 @@ export interface JourneyInput {
   drafts: { drafts: number; approved: number } | null                      // the SAME campaign's unsent emails; null: unknown
   watches?: PlayRun[] | null                                               // the account's repeating plays (GET /api/watch); null or absent: not read
 }
-export type Stage = 'unknown' | 'no_profile' | 'no_play' | 'running' | 'failed' | 'zero' | 'all_held' | 'research_only' | 'useful'
+export type Stage = 'unknown' | 'no_profile' | 'no_play' | 'running' | 'failed' | 'zero' | 'all_held' | 'research_only' | 'no_contact' | 'useful'
 export interface Journey { stage: Stage; play: JourneyJob | null; split: PreviewSplit | null; action: { label: string; href: string } | null; line: string }
 
 const own = (j: JourneyJob) => !!j.query && !j.csv_domain && !j.test_only
@@ -108,6 +112,9 @@ export function journey(i: JourneyInput): Journey {
     // Only leads a person's check can change are "review". Research-only leads (no usable date, outside the window,
     // someone else's customer, a different place) are shown as such and never offered as a review task.
     if (r > 0) return { ...base, play, split, stage: 'all_held', action: { label: `Review ${r} held lead${plural(r)}`, href: leadsHref }, line: `0 opportunities. ${r} lead${r === 1 ? ' needs' : 's need'} review.` }
+    // Proof found, nobody to reach yet, and nothing that is research only: the step is to open the leads, not to change the search.
+    const k = split.noContact.length
+    if (k > 0 && split.research.length === 0) return { ...base, play, split, stage: 'no_contact', action: { label: `Open ${k} lead${plural(k)} with no contact yet`, href: leadsHref }, line: `0 opportunities. ${k} lead${k === 1 ? ' has' : 's have'} proof but no contact found yet.` }
     const q = play.query ? `/app/leads?q=${encodeURIComponent(play.query)}` : '/app/leads'
     const n = split.research.length
     return { ...base, play, split, stage: 'research_only', action: { label: 'Change the search', href: q }, line: `0 opportunities. ${n} research-only lead${plural(n)}: checking ${n === 1 ? 'it' : 'them'} cannot make ${n === 1 ? 'it' : 'them'} ready.` }

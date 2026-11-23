@@ -176,5 +176,7 @@ test('a lead with a named person and their LinkedIn profile is ready to reach on
   assert.equal(leadCardSummary(lead([person, linkedin, email]) as never).approve.ok, true)
   // Home counts it as contact-ready
   const split = previewSplit([lead([person, linkedin]) as never, lead([person]) as never])
-  assert.deepEqual(split.opportunities.map(o => o.contactReady), [true, false], 'ready with a profile; not ready with a name alone')
+  // #1238: a lead with a name alone has no action, so Home no longer lists it among the ready leads at all (it was listed, marked "no contact")
+  assert.deepEqual(split.opportunities.map(o => o.contactReady), [true], 'ready with a profile')
+  assert.equal(split.noContact.length, 1, 'not ready with a name alone: counted as "no contact yet"')
 })

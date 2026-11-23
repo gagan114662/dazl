@@ -106,8 +106,8 @@ export default function Journey() {
   const pace = j.play ? playPace(j.play, watches) : null   // the plays list has answered by here (the loading return above)
   const skipLine = skipNoticeLine(watches)
   const pills = icp ? constraintPills(icp) : []
-  const opp = j.split?.opportunities.length ?? null, held = j.split?.review.length ?? null, researchN = j.split?.research.length ?? 0
-  const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' ? '?' : '0') : String(v)
+  const opp = j.split?.opportunities.length ?? null, held = j.split?.review.length ?? null, researchN = j.split?.research.length ?? 0, noContactN = j.split?.noContact.length ?? 0
+  const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' || j.stage === 'no_contact' ? '?' : '0') : String(v)
   const missing = p ? [!p.sells && 'what you sell', !buyer?.summary && 'who buys', !buyer?.who.length && 'buyer roles', !buyer?.where.length && 'where they are', !buyer?.sizes.length && 'company size', !buyer?.exclude.length && 'who to skip'].filter((x): x is string => !!x) : []
 
   return (
@@ -157,7 +157,7 @@ export default function Journey() {
         <div className="grid grid-cols-3 gap-3">
           <Stat label="Leads ready" value={stat(opp)} testid="stat-ready" strong />
           <Stat label="Needs your review" value={stat(held)} testid="stat-held" />
-          <Stat label="Contacted" value={sent === null ? (j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' ? '?' : '0') : String(sent)} testid="stat-contacted" />
+          <Stat label="Contacted" value={sent === null ? (j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' || j.stage === 'no_contact' ? '?' : '0') : String(sent)} testid="stat-contacted" />
         </div>
         {j.split && j.split.opportunities.length > 0 ? <ul className="mt-4 divide-y divide-[var(--line)] border-t border-[var(--line)]" aria-label="Opportunities" data-testid="journey-preview">
           {j.split.opportunities.slice(0, PREVIEW).map(l => {
@@ -175,9 +175,9 @@ export default function Journey() {
             </li>
           })}
         </ul>
-        : (j.stage === 'zero' || j.stage === 'all_held' || j.stage === 'research_only') && <div className="mt-4 rounded-2xl bg-[#f6f0ea] p-5 sm:p-6 text-center" data-testid="journey-empty">
-          <p className="text-lg font-bold tracking-tight">{j.stage === 'all_held' ? 'Nothing ready yet - a few leads need your eyes' : j.stage === 'research_only' ? 'Nothing ready - the leads found are research only' : 'No leads ready from this play yet'}</p>
-          <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="empty-hint">{j.stage === 'research_only' ? researchHint(j.split?.research.map(r => r.cause) ?? []) : 'Try a wider version of it:'}</p>
+        : (j.stage === 'zero' || j.stage === 'all_held' || j.stage === 'research_only' || j.stage === 'no_contact') && <div className="mt-4 rounded-2xl bg-[#f6f0ea] p-5 sm:p-6 text-center" data-testid="journey-empty">
+          <p className="text-lg font-bold tracking-tight">{j.stage === 'all_held' ? 'Nothing ready yet - a few leads need your eyes' : j.stage === 'no_contact' ? 'Nothing ready yet - no contact found for these leads' : j.stage === 'research_only' ? 'Nothing ready - the leads found are research only' : 'No leads ready from this play yet'}</p>
+          <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="empty-hint">{j.stage === 'no_contact' ? 'Their proof is fine, but dazl found no person with their own email address or LinkedIn profile yet. Open the leads to see each one.' : j.stage === 'research_only' ? researchHint(j.split?.research.map(r => r.cause) ?? []) : 'Try a wider version of it:'}</p>
           {j.stage === 'research_only' && j.split && <>
             {/* Why each lead is research, and what dazl's automatic recovery already tried for it (the scan's own record); nothing here is a task for the user. */}
             <ul className="mt-3 mx-auto max-w-xl text-left text-sm space-y-2" data-testid="research-tried">
@@ -192,6 +192,7 @@ export default function Journey() {
         </div>}
         <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
           {j.split && j.split.review.length > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-held">{j.split.review.length} need{j.split.review.length === 1 ? 's' : ''} your review<InfoTip>Leads where checking the source yourself can settle it. They are never counted as opportunities.</InfoTip></Link>}
+          {noContactN > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-no-contact">{noContactN} with no contact yet<InfoTip>Leads with a dated, confirmed proof page where no person with their own email address or LinkedIn profile was found yet. They are never counted as ready.</InfoTip></Link>}
           {researchN > 0 && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`} data-testid="journey-research">{researchN} research only<InfoTip>{researchTip(j.split?.research.map(r => r.cause) ?? [])}</InfoTip></Link>}
           {j.split && j.split.opportunities.length > PREVIEW && <Link className="btn-ghost btn-sm" href={`/app/leads?job_id=${j.play.id}`}>All {j.split.opportunities.length} leads</Link>}
           <Link className="btn-ghost btn-sm" href={`/app/outcomes?job_id=${j.play.id}`} data-testid="journey-campaign"><Icon name="check" className="w-3.5 h-3.5" />Drafts and outcomes</Link>

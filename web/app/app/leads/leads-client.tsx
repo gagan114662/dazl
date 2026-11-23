@@ -1,5 +1,5 @@
 'use client'
-import { discoverLine, discoverSources, isDiscoverLead } from '@/lib/discover/card'
+import { discoverCountParts, discoverLine, discoverSources, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
@@ -249,7 +249,7 @@ export default function LeadsClient() {
   const [heldView, setHeldView] = useState<{ jobId: string; items: { id: string; company: string; source_url: string; signal: string | null; event_date: string | null; hold_reason: string }[] } | null>(null)
   // a new scan never shows the previous scan's held candidates: the list is tied to the job it was read for
   const heldCandidates = heldView?.jobId === jobId ? heldView.items : []
-  const [resultView, setResultView] = useState<{ jobId: string; counts: CompanyFirstResultCounts | null; marked: boolean } | null>(null)
+  const [resultView, setResultView] = useState<{ jobId: string; counts: CompanyFirstResultCounts | null; marked: boolean; discover?: DiscoverCounts | null } | null>(null)
   const [cost, setCost] = useState<{ estimate: { total: { min: number; max: number }; trial_cap_line?: string | null }; actual: { summary: string; model_usd: number | null; within: string } | null; per_verification_pass?: CostPerVerificationPass; model_scope?: string } | null>(null)
   // Provider failures during THIS scan (rejected/rate-limited key etc.). null = audit store unreadable: not recorded, never read as 'no issues'.
   const [providerIssues, setProviderIssues] = useState<ProviderIssue[] | null>(null)
@@ -687,7 +687,7 @@ export default function LeadsClient() {
     if (l.ok) {
       const j = await l.json()
       setLeads(j.leads); setHeldView({ jobId: j.job_id, items: Array.isArray(j.held) ? j.held : [] }); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null)
-      setResultView({ jobId, counts: j.company_first_counts ?? null, marked: j.company_first === true || j.company_first_counts != null })
+      setResultView({ jobId, counts: j.company_first_counts ?? null, marked: j.company_first === true || j.company_first_counts != null, discover: j.discover_counts ?? null })
     }
   }
   useEffect(() => { if (status === 'done' || status === 'enriching') void loadLeads() }, [jobId, status, showHidden])
@@ -1218,7 +1218,10 @@ export default function LeadsClient() {
       {currentView?.counts && status === 'done' && <CompanyFirstResultSummary counts={currentView.counts} />}
       {quality && currentView && !currentView.marked && status === 'done' && (
         <p className="text-xs text-[var(--ink-2)] mb-3 flex flex-wrap items-center gap-1.5" data-testid="scan-quality">
-          <span className="tag">{quality.candidates} found</span><span className="tag">{quality.passed ?? 0} source-checked</span><span className="tag">{quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review</span><span className="tag">{quality.dropped ?? 0} dropped</span>
+          {/* #1238: a new-engine search is counted from its leads as they are now, each by its one state (lib/discover/card.ts), the same numbers as Home and Campaigns */}
+          {currentView.discover
+            ? <><span className="tag">{currentView.discover.found} found</span>{discoverCountParts(currentView.discover).map(part => <span key={part} className="tag" data-testid="discover-count">{part}</span>)}</>
+            : <><span className="tag">{quality.candidates} found</span><span className="tag">{quality.passed ?? 0} source-checked</span><span className="tag">{quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review</span></>}<span className="tag">{quality.dropped ?? 0} dropped</span>
           {Object.keys(quality.drop_reasons).length > 0 && <InfoTip label="Why leads were dropped">Dropped: {Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')}.</InfoTip>}
         </p>
       )}

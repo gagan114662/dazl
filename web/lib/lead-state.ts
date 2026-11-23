@@ -7,9 +7,11 @@
 // "widen the window" fix unless a dated lead was only too old. Unknown reasons fail closed to research.
 import { heldReason, NO_OWN_BUYER, type PreviewLead } from './journey.ts'
 import { reviewCanNameBuyer } from './people/buyer-reach.ts'
+import { discoverReady, discoverState, isDiscoverLead } from './discover/card.ts'
 
 export type HeldState = 'review' | 'research' | 'rejected'
-export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need'
+// unfit, contact: discovery leads only (lib/discover/card.ts discoverState 'research' not for its date, and 'no_contact')
+export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need' | 'unfit' | 'contact'
 
 // A person's check of the source can turn these into a usable lead (#352: Home, the Leads view and the draft gate agree):
 //   - dazl could not read or check the page: quote_unconfirmed, blocked_by_site, needs_javascript, login_required, location_unconfirmed;
@@ -73,6 +75,14 @@ export function reviewIsActionable(l: { review_reason?: unknown; window_held?: u
 }
 
 export function heldState(l: PreviewLead & { review_reason?: string | null }): { state: HeldState; cause: ResearchCause | null } | null {
+  // A discovery lead has ONE state (lib/discover/card.ts discoverState); the rules below are the older engine's and are not read for it.
+  // The cause only picks the words shown beside a held lead; it decides nothing.
+  if (isDiscoverLead(l as { source_kind?: string | null })) {
+    const s = discoverState(l as never)
+    if (discoverReady(s)) return null
+    if (s === 'rejected' || s === 'review') return { state: s, cause: null }
+    return { state: 'research', cause: s === 'no_contact' ? 'contact' : !l.event_date ? 'undated' : l.gate_held ? 'unsupported' : 'unfit' }
+  }
   const why = heldReason(l)
   if (!why) return null
   if (why === 'rejected') return { state: 'rejected', cause: null }
@@ -93,18 +103,20 @@ export const CAUSE_TEXT: Record<ResearchCause, string> = {
   undated: 'no usable event date', older: 'event older than your time window', customer: "only another company's page names it, as their customer",
   place: 'evidence names a different place', closed: 'the opening is closed', unsupported: 'evidence not verified',
   need: 'event day verified on the cited source; the rest of the lead is not confirmed yet',
+  unfit: 'graded as not a fit for your profile', contact: 'proof found, but no contact found yet',
 }
 // Home's one-line reason under "Nothing ready - the leads found are research only". It used to say for every such play that none has
 // verified, dated evidence - false when a lead's day IS verified and only the rest of the lead is not (#1176 reader 2).
 export function researchHint(causes: ResearchCause[]): string {
   const need = causes.filter(c => c === 'need').length
+  if (causes.length > 0 && causes.every(c => c === 'unfit')) return 'They were graded as not a fit for your profile, so reviewing them cannot make them ready.'
   if (need === 0) return 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.'
   return `${need === causes.length ? (need === 1 ? 'Its event day is' : 'Their event days are') : `For ${need} of them the event day is`} verified on the cited source, but the rest of the lead is not confirmed yet. Each lead's reason is below.`
 }
 // Home's "N research only" chip explains the WHOLE group in its InfoTip. It used to give one fixed list of reasons ("No verified, dated event, outside your
 // time window, or someone else's customer") for every lead in it - false for a lead whose day IS verified and that only the timing gate holds (#1176, the
 // prod live check of 66449147: Zayed Law and Ogletree Deakins under that sentence). It now names the causes the group really has, in the per-lead lines' own words.
-const CAUSE_ORDER: ResearchCause[] = ['need', 'undated', 'older', 'customer', 'place', 'closed', 'unsupported']
+const CAUSE_ORDER: ResearchCause[] = ['need', 'undated', 'older', 'customer', 'place', 'closed', 'unsupported', 'unfit', 'contact']
 export function researchTip(causes: ResearchCause[]): string {
   const n = new Map<ResearchCause, number>()
   for (const c of causes) n.set(c, (n.get(c) ?? 0) + 1)

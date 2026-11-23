@@ -109,6 +109,58 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address was not found on the company\'s own website, only on another site.' }
   return { ok: true }
 }
+
+// The ONE state of a discovery lead (#1238, #684, #1062): every page that counts or labels leads (Home, the Leads header and past scans,
+// Campaigns and a campaign's page, the checked list) asks this, so the same lead is called the same thing everywhere. Built from the four
+// functions above and nothing else:
+//   rejected        the user rejected it
+//   review          its proof page is not confirmed: the user can check it under Needs your review
+//   research        something no check by the user can lift holds it (no date, not graded a fit, a required check)
+//   ready_email     Approve is on: a draft email to the named person's own published address
+//   ready_linkedin  the named person's own LinkedIn profile is known (no own address)
+//   no_contact      the proof is fine, but nobody can be reached yet
+// "Ready" and "with a contact" mean ready_email or ready_linkedin and nothing else (discoverReady).
+// stored_intent: the grade as saved. GET /api/leads replaces `intent` with a display value and keeps the saved one here; the saved one
+// is what the draft check reads (lib/outreach/service.ts), so it is the one used when both are present.
+export type DiscoverState = 'rejected' | 'review' | 'research' | 'ready_email' | 'ready_linkedin' | 'no_contact'
+export type DiscoverStateLead = Parameters<typeof discoverApprove>[0] & { stored_intent?: number | null }
+const asSaved = (l: DiscoverStateLead): DiscoverStateLead => l.stored_intent !== undefined ? { ...l, intent: l.stored_intent } : l
+export function discoverState(lead: DiscoverStateLead): DiscoverState {
+  const l = asSaved(lead)
+  if (l.quarantined_at) return 'rejected'
+  const held = discoverProofHold(l)
+  // Would the hold go away, or change, if the user confirmed the proof page? Then it is theirs to check. Otherwise no check lifts it.
+  if (held) return discoverProofHold({ ...l, review_reason: null }) !== held ? 'review' : 'research'
+  if (discoverApprove(l).ok) return 'ready_email'
+  if (discoverLinkedIn(l)) return 'ready_linkedin'
+  return 'no_contact'
+}
+// The words for one lead's state, the same on every page that labels a lead.
+export const DISCOVER_STATE_LABEL: Record<DiscoverState, string> = { rejected: 'Rejected', review: 'Needs your review', research: 'Research only - checking the source cannot make it ready',
+  ready_email: 'Ready - approve it to draft an email', ready_linkedin: 'Ready - message them on LinkedIn', no_contact: 'No contact found yet' }
+export const discoverReady = (s: DiscoverState): boolean => s === 'ready_email' || s === 'ready_linkedin'
+// Why a lead that is not ready is not, in the short words the Home tile and the checked list group by; null when it is ready.
+export function discoverNotReady(lead: DiscoverStateLead): string | null {
+  const s = discoverState(lead)
+  if (discoverReady(s)) return null
+  if (s === 'rejected') return 'rejected'
+  if (s === 'review') return 'needs your review'
+  if (s === 'no_contact') return 'no contact found yet'
+  const first = (discoverProofHold(asSaved(lead)) ?? '').split('. ')[0].replace(/\.$/, '')
+  return first.charAt(0).toLowerCase() + first.slice(1)
+}
+// The counts every page shows for a search's discovery leads, and the one sentence that says them.
+export interface DiscoverCounts { found: number; ready: number; ready_email: number; ready_linkedin: number; no_contact: number; review: number; research: number; rejected: number }
+export function discoverCounts(states: Iterable<DiscoverState>): DiscoverCounts {
+  const c: DiscoverCounts = { found: 0, ready: 0, ready_email: 0, ready_linkedin: 0, no_contact: 0, review: 0, research: 0, rejected: 0 }
+  for (const s of states) { c.found++; c[s]++; if (discoverReady(s)) c.ready++ }
+  return c
+}
+export function discoverCountParts(c: DiscoverCounts): string[] {
+  return [`${c.ready} ready (${c.ready_email} by email, ${c.ready_linkedin} on LinkedIn)`, `${c.no_contact} with no contact yet`,
+    `${c.review} need${c.review === 1 ? 's' : ''} your review`, `${c.research} research only`, `${c.rejected} rejected`]
+}
+export const discoverCountsLine = (c: DiscoverCounts): string => `${c.found} lead${c.found === 1 ? '' : 's'} found: ${discoverCountParts(c).join(', ')}`
 // What Details says about the contact when the named person's own LinkedIn profile is stored and no address of theirs is published
 // (#1579: it said "No published contact stored" beside that profile). About the contact only, so the proof rules do not decide it.
 // Null when the lead is not from the discovery lane, has their own address, names nobody, or the stored link is not a person's profile.
