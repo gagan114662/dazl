@@ -8,7 +8,7 @@ test('#1463 scan DNS never holds the libuv pool that serves the app\'s static ch
   const env: NodeJS.ProcessEnv = { ...process.env, UV_THREADPOOL_SIZE: '4' }
   delete env.NODE_TEST_CONTEXT
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
-    '--test', './test/helpers/scan-dns-pool-runtime.mts'],
+    '--test-reporter=tap', '--test', './test/helpers/scan-dns-pool-runtime.mts'], // tap named: the default reporter differs by Node version
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 60000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
