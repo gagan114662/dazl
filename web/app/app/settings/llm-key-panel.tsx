@@ -6,7 +6,8 @@ interface Status { vendor: Vendor; last4: string }
 
 export default function LlmKeyPanel() {
   const [keys, setKeys] = useState<Status[]>([])
-  const [vendor, setVendor] = useState<Vendor>('anthropic')
+  // Beta rule (owner, 2026-11-23): a new key is an Anthropic (Claude) key. An OpenAI key saved earlier is still listed and removable below.
+  const vendor: Vendor = 'anthropic'
   const [apiKey, setApiKey] = useState('')
   const [msg, setMsg] = useState('')
 
@@ -33,8 +34,8 @@ export default function LlmKeyPanel() {
   const field = 'field'
   return (
     <div className="card p-6 mb-4">
-      <h2 className="font-semibold mb-1">AI provider key</h2>
-      <p className="text-[#555] text-sm mb-4">Scans use your own Anthropic or OpenAI key, so usage is billed to you by the provider. Your key is encrypted and never shown again.</p>
+      <h2 className="font-semibold mb-1">Anthropic (Claude) key</h2>
+      <p className="text-[#555] text-sm mb-4">Searches run on Claude. Add your own Anthropic key and Anthropic bills you for the usage. Your key is encrypted and never shown again.</p>
       {keys.map(k => (
         <div key={k.vendor} className="flex items-center justify-between text-sm mb-3">
           <span>{k.vendor === 'anthropic' ? 'Anthropic' : 'OpenAI'} key ending in {k.last4}</span>
@@ -42,11 +43,7 @@ export default function LlmKeyPanel() {
         </div>
       ))}
       <form method="post" onSubmit={save} className="flex flex-col gap-3" autoComplete="off">
-        <select className={field} aria-label="Key provider" value={vendor} onChange={e => setVendor(e.target.value as Vendor)}>
-          <option value="anthropic">Anthropic</option>
-          <option value="openai">OpenAI</option>
-        </select>
-        <input className={field} type="password" autoComplete="off" placeholder="Paste your API key" value={apiKey} onChange={e => setApiKey(e.target.value)} />
+        <input className={field} type="password" autoComplete="off" aria-label="Anthropic API key" placeholder="Paste your Anthropic key (sk-ant-...)" value={apiKey} onChange={e => setApiKey(e.target.value)} />
         <button className="btn-primary w-fit">Save key</button>
         {msg && <p className="text-sm text-[#555]">{msg}</p>}
       </form>

@@ -221,7 +221,7 @@ async function calibrationFixture(mailbox: string) {
   const sent: string[] = []
   const to = () => sent.map(r => /^To: (.*)$/m.exec(Buffer.from(r, 'base64url').toString())?.[1])
   const fetchImpl = (async (u: unknown) => (String(u).includes('oauth2') || String(u).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
-  const d = { flags: { AUTOPILOT_ENABLED: '1' }, env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' + sent.length } }) as never }
+  const d = { flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' + sent.length } }) as never }
   return { db, sent, to, d }
 }
 
@@ -314,7 +314,7 @@ test('follow-up: allowlist revocation during the token await stops the send and 
     }
     return json({}, 404)
   }) as unknown as typeof fetch
-  const d = { flags: { AUTOPILOT_ENABLED: '1' }, env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'gm1', threadId: 'th1' } }) as never }
+  const d = { flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, env: oauthEnv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'gm1', threadId: 'th1' } }) as never }
   await designatedAsync(async () => {
     setTestAddresses(db, T, [TEST_INBOX])
     const lead = addLead(db, T, TEST_INBOX)

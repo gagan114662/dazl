@@ -40,12 +40,12 @@ test('fixture site -> crawl stores role mailbox plus listed person with sources 
   const lead = { contact: null, enrichments: enr }
   assert.equal(publishedContact(lead)!.email, 'hello@brightsidedental.com')
   // The currentness gate is real: without a confirmed event date createDraft refuses. The fixture uses the same human-review baseline as sequences.test.ts.
-  assert.throws(() => createDraft(db, 'A', 'L1', 'Seller'), /lead_currentness_unconfirmed/)
+  assert.throws(() => createDraft(db, 'A', 'L1', 'Seller', { manual: true }), /lead_currentness_unconfirmed/)
   db.prepare("UPDATE leads SET human_confirmed_at=1800000000, human_confirmed_from='test_review' WHERE id='L1'").run()
   // The website was only linked from the cited page, which is not ownership proof: the draft waits for the user's identity review.
-  assert.throws(() => createDraft(db, 'A', 'L1', 'Seller'), /domain_unconfirmed/)
+  assert.throws(() => createDraft(db, 'A', 'L1', 'Seller', { manual: true }), /domain_unconfirmed/)
   assert.deepEqual(setDomainReview(db, 'A', 'L1', 'confirm', domainReviewFor({ id: 'L1', contact: null }, db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = 'L1'").all() as never).binding!, Date.parse('2026-10-23T12:00:00Z')), { status: 'confirmed', domain: 'brightsidedental.com' })
-  const id = createDraft(db, 'A', 'L1', 'Seller')
+  const id = createDraft(db, 'A', 'L1', 'Seller', { manual: true })
   const m = db.prepare('SELECT to_email, subject, body, status FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; subject: string; body: string; status: string }
   assert.equal(m.to_email, 'hello@brightsidedental.com')
   assert.equal(m.status, 'draft')

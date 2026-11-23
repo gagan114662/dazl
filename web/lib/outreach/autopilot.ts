@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import { autopilotInBeta } from '../beta.ts'
 import type Database from 'better-sqlite3'
 import { drainVerifiedPendingLifecycle, LIFECYCLE_NOT_CONVERTED } from './lifecycle.ts'
 import { PUBLISHED_RECIPIENT_CANDIDATE_SQL } from './published-email.ts'
@@ -39,7 +40,11 @@ export const MAX_DAILY = 50 // hard ceiling, whatever the user sets
 export const DEFAULT_DAILY = 20
 export const MIN_CONFIDENCE = 80
 
-export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1'
+// The ONE place that decides whether autopilot may be offered, turned on or run. Beta rule (owner, 2026-11-23): autopilot is not
+// available during the beta, so it is off unless the operator sets AUTOPILOT_AVAILABLE=1 (lib/beta.ts) as well as the older
+// AUTOPILOT_ENABLED=1, and AUTOPILOT_KILL is not set. While it is off an account whose stored setting says "enabled" is treated as
+// off: the settings route refuses to enable or resume, and runAutopilot, drainFirstTouch and runFollowups stop before reading a lead.
+export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1' && autopilotInBeta(env)
 
 export function migrateAutopilot(db: Database.Database): void {
   migrateLaunchPolicy(db) // a calibrated launch's accepted policy (lib/outreach/launch-policy.ts, #405)

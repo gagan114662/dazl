@@ -79,7 +79,7 @@ test('click path: confirmed company row -> own-domain mailbox stored with its pa
   assert.deepEqual({ basis: pcl.domainBasis, url: pcl.domainBasisSourceUrl }, { basis: 'linked', url: 'https://jobboard.test/a' })
   assert.ok(t.hits.every(h => /\.test\//.test(h) || /\.test$/.test(h.split('/')[0])))
   // The site was only linked from the cited page: the draft waits for the user's identity review, through the real route.
-  assert.throws(() => createDraft(db, 'A', ID(1), 'Seller'), /domain_unconfirmed/)
+  assert.throws(() => createDraft(db, 'A', ID(1), 'Seller', { manual: true }), /domain_unconfirmed/)
   const bind = () => domainReviewFor({ id: ID(1), contact: null }, db.prepare("SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?").all(ID(1)) as never).binding!
   const review = (id: string, action: string, headers: Record<string, string> = { 'content-type': 'application/json' }, binding: string | null = bind()) =>
     REVIEW(new NextRequest(`http://localhost/api/leads/${id}/domain-review`, { method: 'POST', headers, body: JSON.stringify({ action, binding }) }), { params: Promise.resolve({ lead: id }) })
@@ -92,7 +92,7 @@ test('click path: confirmed company row -> own-domain mailbox stored with its pa
   assert.equal((db.prepare("SELECT count(*) n FROM lead_enrichments WHERE kind = 'domain_review'").get() as { n: number }).n, 0)
   assert.deepEqual(await (await review(ID(1), 'confirm')).json(), { status: 'confirmed', domain: 'acmeroofing.test' })
   // createDraft's own gates decide: an address recorded by the crawl is used, nothing else is bypassed.
-  const id = createDraft(db, 'A', ID(1), 'Seller')
+  const id = createDraft(db, 'A', ID(1), 'Seller', { manual: true })
   const m = db.prepare('SELECT to_email, status, test FROM outreach_messages WHERE id = ?').get(id) as { to_email: string; status: string; test: number }
   assert.deepEqual({ ...m }, { to_email: 'hello@acmeroofing.test', status: 'draft', test: 0 })
   assert.equal((db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE status <> 'draft'").get() as { n: number }).n, 0, 'nothing was sent or approved')
@@ -118,13 +118,13 @@ test('shared domain, whole workflow: a scan with two leads on one company site -
   const bindOf = (n: number) => domainReviewFor({ id: ID(n), contact: null }, db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(ID(n)) as never).binding!
   assert.notEqual(bindOf(7), bindOf(8), 'the binding is per lead')
   const rv = (n: number) => REVIEW(new NextRequest(`http://localhost/api/leads/${ID(n)}/domain-review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'confirm', binding: bindOf(n) }) }), { params: Promise.resolve({ lead: ID(n) }) })
-  assert.throws(() => createDraft(db, 'A', ID(7), 'Seller'), /domain_unconfirmed/)
-  assert.throws(() => createDraft(db, 'A', ID(8), 'Seller'), /domain_unconfirmed/)
+  assert.throws(() => createDraft(db, 'A', ID(7), 'Seller', { manual: true }), /domain_unconfirmed/)
+  assert.throws(() => createDraft(db, 'A', ID(8), 'Seller', { manual: true }), /domain_unconfirmed/)
   assert.equal((await rv(7)).status, 200)
-  assert.ok(createDraft(db, 'A', ID(7), 'Seller'), 'reviewed lead drafts')
-  assert.throws(() => createDraft(db, 'A', ID(8), 'Seller'), /domain_unconfirmed/, 'the other lead on the same domain does not inherit that review')
+  assert.ok(createDraft(db, 'A', ID(7), 'Seller', { manual: true }), 'reviewed lead drafts')
+  assert.throws(() => createDraft(db, 'A', ID(8), 'Seller', { manual: true }), /domain_unconfirmed/, 'the other lead on the same domain does not inherit that review')
   assert.equal((await rv(8)).status, 200)
-  assert.ok(createDraft(db, 'A', ID(8), 'Seller'))
+  assert.ok(createDraft(db, 'A', ID(8), 'Seller', { manual: true }))
   assert.equal((db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE status <> 'draft'").get() as { n: number }).n, 0, 'nothing sent or approved')
 })
 
@@ -140,6 +140,6 @@ test('domain identity and robots: a homepage naming another company or disallowi
   // network, so the fence stops the crawl): nothing at all. Lead 6 (its own site forbids reading): only the named reason, never a contact (#1122).
   assert.deepEqual(stored, ['[]', JSON.stringify([{ kind: 'domain_unresolved', value: 'No company website confirmed', label: 'domain-unresolved-v1:site_not_readable' }])])
   assert.ok(!t.hits.some(h => h.startsWith('blockedco.test/contact')), 'robots-disallowed contact page never requested')
-  assert.throws(() => createDraft(db, 'A', ID(5), 'Seller'), /no_email_contact/)
+  assert.throws(() => createDraft(db, 'A', ID(5), 'Seller', { manual: true }), /no_email_contact/)
   await t.close()
 })

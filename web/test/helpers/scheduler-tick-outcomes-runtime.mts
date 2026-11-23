@@ -161,7 +161,7 @@ test('the matrix on the real route: progress, holds, failures, blocking, recover
 
   // --- tick 4: operator switch on; F's consent is no longer current (a hold while still blocked); R gets a mailbox; P resumes; S's cap is raised;
   // W arrives with follow-ups on, two interested threads due and a cap of 1
-  process.env.AUTOPILOT_ENABLED = '1'
+  process.env.AUTOPILOT_AVAILABLE = '1'; process.env.AUTOPILOT_ENABLED = '1'
   mailbox(W); identity(W); enable(db, W, { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 1 }); setFollowups(db, W, true)
   interestedThread(W, 'one@north.example', 4 * DAY); interestedThread(W, 'two@north.example', 4 * DAY)
   db.prepare("UPDATE autopilot_settings SET consent_version = '2000-01-01' WHERE tenant_id = ?").run(F)

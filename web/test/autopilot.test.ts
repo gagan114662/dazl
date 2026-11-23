@@ -13,7 +13,7 @@ import { ATTESTATIONS, CONSENT_VERSION, disable, enable, getState, migrateAutopi
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
 const NOW = 1_800_000_000
-const ON = { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }
+const ON = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
 const tokenOk = (async (url: string) => (String(url).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
@@ -133,11 +133,11 @@ test('a lead whose contact is missing but whose own site published an email IS e
   const id = lead(db, null)
   // The company's own domain (own-domain basis: identity machine-verified, no user review needed) published a sales inbox.
   db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', 'northside.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://northside.example/', '2026-10-22', 1)").run(id)
-  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'sales@northside.example', NULL, 'https://northside.example/contact', '2026-10-22', 2)").run(id)
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'dana.ruiz@northside.example', NULL, 'https://northside.example/contact', '2026-10-22', 2)").run(id)
   const r = await runAutopilot(db, 'A', 'Acme', d)
   assert.equal(r.sent, 1, 'autopilot considers the crawl-only-email lead')
   assert.equal(sent.length, 1)
-  assert.deepEqual(status(db).map(m => m.to_email), ['o1@z.example', 'o2@z.example', 'sales@northside.example'])
+  assert.deepEqual(status(db).map(m => m.to_email), ['o1@z.example', 'o2@z.example', 'dana.ruiz@northside.example'])
 })
 
 test('a crawl-only lead whose published address is not sales-contactable stays excluded (refs #412)', async () => {
@@ -158,12 +158,12 @@ test('a quarantined lead is never selected even when its sitecrawl recorded a pu
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('s1a2b3c4d5e6f7a8b9c0d1e3','A','x2','o2@z.example','s','bodybodybodybodybodybody','sent',2,2)").run()
   const id = lead(db, null)
   db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', 'northside.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://northside.example/', '2026-10-22', 1)").run(id)
-  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'sales@northside.example', NULL, 'https://northside.example/contact', '2026-10-22', 2)").run(id)
+  db.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'dana.ruiz@northside.example', NULL, 'https://northside.example/contact', '2026-10-22', 2)").run(id)
   db.prepare('UPDATE leads SET quarantined_at = 1800000001 WHERE id = ?').run(id)
   const r = await runAutopilot(db, 'A', 'Acme', d)
   assert.equal(r.sent, 0); assert.equal(sent.length, 0)
   assert.equal(r.skipped, 0, 'the prefilter excludes the quarantined lead before createDraft, no refusal churn')
-  assert.equal(status(db).filter(m => m.to_email === 'sales@northside.example').length, 0, 'quarantine beats the crawl-only admission')
+  assert.equal(status(db).filter(m => m.to_email === 'dana.ruiz@northside.example').length, 0, 'quarantine beats the crawl-only admission')
 })
 
 test('a crawled address whose website the user has not checked is never drafted or sent by autopilot', async () => {

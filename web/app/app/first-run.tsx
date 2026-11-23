@@ -409,7 +409,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
               {linkNote && <p className={`text-sm mt-4 ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
               {linkNote && trialRefused && <div className="mt-4 text-left" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="site" text="Link Google to this account to read your site free (no card)." /></div>}
-              {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); void loadUsage().then(() => readSite()) }} /></div>}
+              {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on Claude, with your own Anthropic key." onSaved={() => { setNeedKey(false); setTrialRefused(null); void loadUsage().then(() => readSite()) }} /></div>}
               <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
                 <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} />
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
@@ -446,7 +446,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                       does not promise a search this account cannot start (the server fails closed, but the button
                       must not rely on that). A trial account (trialLeft > 0) keeps the plain CTA. */}
                   {poolUnknown && !first && <p className="mt-5 text-sm text-[var(--ink-2)]">Could not check your search allowance. <button type="button" className="underline" data-testid="usage-retry" onClick={() => void loadUsage()}>Try again</button></p>}
-                  {!hasKey && (needKey || noPool) && !poolUnknown && <div className="mt-5"><KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} /></div>}
+                  {!hasKey && (needKey || noPool) && !poolUnknown && <div className="mt-5"><KeyInline reason="Searches run on Claude, with your own Anthropic key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} /></div>}
                   <div className="mt-auto pt-7">
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
                     {!first ? (noPool || poolUnknown ? null
@@ -591,7 +591,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>}
         {/* #1095: a password account is told how to link Google (the free read's guard), never "sign in with Google" */}
         {freeRead && !hasKey && freeRead.trial === 'google_required' && <div className="mb-1" data-testid="site-read-trial-refusal"><TrialRefusalNotice reason="google_required" query="" step="site" text="Link Google to this account to read your site free (no card)." /></div>}
-        {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on your own Anthropic or OpenAI key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
+        {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on Claude, with your own Anthropic key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#666]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
@@ -622,7 +622,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
           {plays.map(p => <button type="button" key={p} disabled={busy || !!trialRefused} onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); void start(p) }} className="chip justify-between">{p}<Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
         </div>
-        {needKey && !hasKey && <KeyInline reason="Searches run on your own Anthropic or OpenAI key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} />}
+        {needKey && !hasKey && <KeyInline reason="Searches run on Claude, with your own Anthropic key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} />}
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Back</button>
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Edit profile</button>

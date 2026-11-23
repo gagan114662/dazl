@@ -347,7 +347,7 @@ test('the message handed to Gmail carries no AI label and only the expected head
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
     lead, job, 'Northside Builders', 'info@northside.example', 'Hiring five roofers', 'https://news.example/a', 'Northside Builders is hiring five roofers', 85)
   db.prepare("UPDATE leads SET human_confirmed_at = 1800000000, human_confirmed_from = 'test_review' WHERE id = ?").run(lead)
-  const id = createDraft(db, 'A', lead, 'Acme')
+  const id = createDraft(db, 'A', lead, 'Acme', { manual: true })
   approve(db, 'A', id)
   let raw = ''
   const tokenOk = (async (url: unknown) => (String(url).includes('token') ? new Response(JSON.stringify({ access_token: 'at-1' })) : new Response('{}', { status: 404 }))) as unknown as typeof fetch
@@ -429,7 +429,7 @@ test('a follow-up handed to Gmail carries no AI label and only the expected head
   db.prepare("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at, followups_sent) VALUES ('A', 'th-fu', ?, 'sam@buyer.example', 'root', ?, ?, 0)").run(lead, NOW - 30 * 86400, NOW - 30 * 86400)
   db.prepare("INSERT INTO consent_ledger (id, tenant_id, contact, channel, scope, basis, evidence_ref, granted_at, expires_at) VALUES ('c-fu', 'A', 'sam@buyer.example', 'email', 'followup', 'reply_interest', 'gmail:x', ?, ?)").run(NOW - 86400, NOW + 90 * 86400)
   const { raws, sendFn } = captured()
-  const r = await runFollowups(db, 'A', 'Acme', { env: OAUTH_ENV, master: MASTER, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenFetch, flags: { AUTOPILOT_ENABLED: '1' }, sendFn } as never)
+  const r = await runFollowups(db, 'A', 'Acme', { env: OAUTH_ENV, master: MASTER, now: NOW, baseUrl: 'https://app.test', fetchImpl: tokenFetch, flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, sendFn } as never)
   assert.equal(r.sent, 1)
   assertProspectMime(raws[0], 'follow-up')
 })

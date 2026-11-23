@@ -19,7 +19,7 @@ import { migrateSequences, acceptAutoSequencePolicy, autoSequencePolicyAccepted,
 const NOW = 1800000000, DAY = 86400
 const master = randomBytes(32)
 const env = { GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
-const ON = { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }
+const ON = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status })
 
 async function setup() {

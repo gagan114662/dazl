@@ -53,7 +53,7 @@ test('follow-ups: reconnect during the token fetch releases the claim without pa
   acceptReadConsent(raw, t)
   raw.prepare("INSERT INTO scheduler_progress (tenant_id, kind, last_attempt_at, last_success_at, last_outcome, consecutive_failures) VALUES (?, 'reply_sync', ?, ?, 'success', 0)").run(t, NOW, NOW)
   let calls = 0
-  const d = { env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: racingFetch(raw, t), flags: { AUTOPILOT_ENABLED: '1' }, sendFn: (async () => { calls++; return { id: 'g1' } }) as never }
+  const d = { env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: racingFetch(raw, t), flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, sendFn: (async () => { calls++; return { id: 'g1' } }) as never }
   const r1 = await runFollowups(raw, t, 'Biz', d)
   assert.equal(r1.stopped, 'connection_replaced'); assert.equal(calls, 0)
   assert.equal(paused(raw, t).paused, 0, 'a healthy replacement connection is never paused')
@@ -95,7 +95,7 @@ test('autopilot first touch: reconnect mid-send holds the approved draft without
   db.prepare('INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence, score, human_confirmed_at, human_confirmed_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('lead1', job, 'Co one', 'a@one.example', 'Hiring roofers', 'https://n.example/a', 'Co is hiring', 90, 80, NOW, 'test_review')
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)
   const calls: string[] = []
-  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }, env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: racingFetch(db, 'A'), sendFn: (async (_t: string, raw: string) => { calls.push(raw); return { id: 'g' } }) as never }
+  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }, env, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: racingFetch(db, 'A'), sendFn: (async (_t: string, raw: string) => { calls.push(raw); return { id: 'g' } }) as never }
   const r1 = await runAutopilot(db, 'A', 'Acme', d)
   assert.equal(r1.sent, 0); assert.equal(calls.length, 0)
   const m = db.prepare("SELECT id, status FROM outreach_messages WHERE to_email = 'a@one.example'").get() as { id: string; status: string }

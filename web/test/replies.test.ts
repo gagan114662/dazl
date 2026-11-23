@@ -106,7 +106,7 @@ test('sync: positive reply grants consent; opt-out suppresses and revokes; hard 
   assert.ok((db.prepare('SELECT excerpt FROM inbound_messages WHERE gmail_id = ?').get('m1') as { excerpt: string }).excerpt.length <= 200)
 })
 
-const flags = { AUTOPILOT_ENABLED: '1' }
+const flags = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }
 function sendSpy() { const sent: { raw: string; thread?: string }[] = []; return { sent, sendFn: (async (_t: string, raw: string, _f: unknown, thread?: string) => { sent.push({ raw, thread }); return { id: 'f1' } }) as never } }
 const base = (over: object = {}) => ({ flags, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: gmail({}), ...over })
 

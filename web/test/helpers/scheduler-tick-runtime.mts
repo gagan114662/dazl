@@ -16,7 +16,7 @@ import { GET as sequences } from '../../app/api/outreach/sequences/route.ts'
 
 process.env.DAZL_ENV = 'staging'
 process.env.DAZL_MASTER_KEY = (await import('node:crypto')).randomBytes(32).toString('base64')
-process.env.AUTOPILOT_ENABLED = '1' // the operator switch, in this process only: with it off every follow-up run is a refusal
+process.env.AUTOPILOT_AVAILABLE = '1'; process.env.AUTOPILOT_ENABLED = '1' // the operator switch, in this process only: with it off every follow-up run is a refusal
 const db = new Database(':memory:')
 migrateAllSqlite(db)
 setScanDb(db)

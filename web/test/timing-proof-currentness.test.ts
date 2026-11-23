@@ -22,7 +22,7 @@ import { leadCardSummary } from '../lib/scan/lead-card.ts'
 
 const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10)
 const WHY = 'Strong fit: a multi-location dental group in Austin, the exact buyer profile.'
-const ROUTE = 'Dana Lee, Owner - email: hello@acme-dental.test'
+const ROUTE = 'Dana Lee, Owner - email: dana@acme-dental.test'
 
 type LeadOpts = Partial<{ evidence: boolean; event_date: string | null; event_date_proof: string | null; signal: string; signal_kind: string | null; company_domain: string | null; published_at: string | null; review_reason: string | null; quarantined_at: number | null; actionable: string | null; route: string }>
 function setup(o: LeadOpts = {}, job: { query?: string; icp?: string | null } = {}) {
@@ -31,7 +31,7 @@ function setup(o: LeadOpts = {}, job: { query?: string; icp?: string | null } = 
   const id = createJob(db, 'A', { business_name: 'Seller', industry: 'dental', location: 'Austin' })
   db.prepare("UPDATE scan_jobs SET status = 'running', query = ?, icp = ? WHERE id = ?").run(job.query ?? 'dental groups in Austin that opened a new clinic in the last 30 days', job.icp === undefined ? JSON.stringify({ window_days: 30 }) : job.icp, id)
   db.prepare(`INSERT INTO leads (id, scan_job_id, company, name, contact, signal, source_url, evidence_excerpt, confidence, score, fit, intent, action, why, signal_kind, event_date, event_date_proof, company_domain, published_at, review_reason, quarantined_at)
-    VALUES ('L1', ?, 'Acme Dental', 'Dana Lee', 'hello@acme-dental.test', ?, 'https://news.example.test/acme', 'Acme Dental opened its second clinic. Contact hello@acme-dental.test', 80, 70, 4, 4, 3, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES ('L1', ?, 'Acme Dental', 'Dana Lee', 'dana@acme-dental.test', ?, 'https://news.example.test/acme', 'Acme Dental opened its second clinic. Contact dana@acme-dental.test', 80, 70, 4, 4, 3, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(id, o.signal ?? 'Opened a second clinic', WHY, o.signal_kind === undefined ? 'expansion' : o.signal_kind, o.event_date === undefined ? day(5) : o.event_date, o.event_date_proof === undefined ? 'page_bound' : o.event_date_proof,
       o.company_domain === undefined ? 'acme-dental.test' : o.company_domain, o.published_at ?? null, o.review_reason ?? null, o.quarantined_at ?? null)
   // the current evidence rows the proof re-reads (#914): own-domain site, a named owner and a mailbox published on that site
@@ -39,7 +39,7 @@ function setup(o: LeadOpts = {}, job: { query?: string; icp?: string | null } = 
     const d = o.company_domain ?? 'acme-dental.test'
     const site = (kind: string, value: string, url: string, label: string | null = null) => addEnrichment(db, 'A', 'L1', { connector: 'sitecrawl', kind, value, label, confidence: null, source_url: url, source_date: day(0), retrieved_at: Math.floor(Date.now() / 1000) })
     site('domain', `${d}|evidence_own_domain`, `https://${d}/news`, 'domain-basis-v1:evidence_own_domain')
-    site('person', 'Dana Lee, Owner', `https://${d}/team`); site('email', `hello@${d}`, `https://${d}/contact`)
+    site('person', 'Dana Lee, Owner', `https://${d}/team`); site('email', `dana@${d}`, `https://${d}/contact`)
   }
   const act = o.actionable === undefined ? 'Actionable: domain, person and published contact confirmed' : o.actionable
   if (act) addEnrichment(db, 'A', 'L1', { connector: 'scan:actionable', kind: 'actionability', value: act, label: o.route ?? ROUTE, confidence: null, source_url: 'https://invalid.example/', source_date: day(0), retrieved_at: Math.floor(Date.now() / 1000) })

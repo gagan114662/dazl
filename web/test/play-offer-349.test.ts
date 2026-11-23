@@ -67,9 +67,9 @@ test('#349 exact two-play case: the London play is contested everywhere until ch
     assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'london'), { offer: null, source: 'conflict', conflict: { stated: CRM, recorded: DENTAL_SELLER } })
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'dental'))!.offer, DENTAL_SELLER)
     // template: refused, nothing inserted; the dental play drafts dental
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal((db.prepare("SELECT count(*) n FROM outreach_messages WHERE lead_id = 'lead-london'").get() as { n: number }).n, 0)
-    assert.match(body(db, createDraft(db, 'A', 'lead-dental', 'Acme')), /appointment booking/)
+    assert.match(body(db, createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true })), /appointment booking/)
     // AI rewrite of a London draft written before this fix: refused before any provider call
     db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('m-london', 'A', 'lead-london', 'sales@buyer.invalid', 's', 'old dental body written before the fix', 'draft')").run()
     const r = recording()
@@ -86,7 +86,7 @@ test('#349 exact two-play case: the London play is contested everywhere until ch
     assert.equal(r.prompts.length, 1)
     assert.match(r.prompts[0], new RegExp(CRM)); assert.doesNotMatch(r.prompts[0], /appointment booking/)
     db.prepare("DELETE FROM outreach_messages WHERE id = 'm-london'").run()
-    assert.match(body(db, createDraft(db, 'A', 'lead-london', 'Acme')), new RegExp(CRM))
+    assert.match(body(db, createDraft(db, 'A', 'lead-london', 'Acme', { manual: true })), new RegExp(CRM))
     assert.equal(memoryForLead(db, 'A', 'lead-london')!.positioning, CRM)
     assert.match(offerBlockFor(db, 'A', 'london'), new RegExp(CRM))
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'dental'))!.offer, DENTAL_SELLER)
@@ -99,7 +99,7 @@ test('#349 onboarding only (users.sells, no Memory): template and AI rewrite sta
   try {
     // a play from before seller snapshots: the tenant context is its offer
     db.prepare("UPDATE scan_jobs SET seller = NULL WHERE id = 'dental'").run()
-    const id = createDraft(db, 'A', 'lead-dental', 'Acme')
+    const id = createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true })
     assert.match(body(db, id), new RegExp(ONBOARDED))
     const r = recording()
     const res = await polishDraft(db, 'A', id, 'Acme', { master, providers: r.providers })
@@ -134,7 +134,7 @@ test('#349 HOLD caller paths: a progressive-form offer cannot draft, rewrite, fo
     db.prepare("UPDATE scan_jobs SET query = 'Find dental clinics hiring. Exclude agencies selling CRM to founders. Do not target people selling services to dental practices.' WHERE id = 'dental'").run()
     // progressive form: contested everywhere
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('m-l', 'A', 'lead-london', 'sales@buyer.invalid', 's', 'old dental body written before the fix', 'draft')").run()
     const r = recording()
     assert.deepEqual(await polishDraft(db, 'A', 'm-l', 'Acme', { master, providers: r.providers }), { rewritten: false, reason: 'offer_conflict' })
@@ -143,7 +143,7 @@ test('#349 HOLD caller paths: a progressive-form offer cannot draft, rewrite, fo
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
     // exclusion-only text: no stated offer, no conflict; the play keeps its recorded dental offer and nothing says CRM
     assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'dental'), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
-    const text = body(db, createDraft(db, 'A', 'lead-dental', 'Acme'))
+    const text = body(db, createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true }))
     assert.match(text, /appointment booking/); assert.doesNotMatch(text, /CRM|services to dental/)
     assert.doesNotMatch(offerBlockFor(db, 'A', 'dental'), /CRM/)
   } finally { db.close() }
@@ -171,7 +171,7 @@ test('#349 HOLD-3 caller paths: each prefix offer under an incompatible recorded
     try {
       db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(`Find London SaaS startups hiring. ${t}`, 'london')
       assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'london'), { offer: null, source: 'conflict', conflict: { stated: o, recorded: DENTAL_SELLER } }, t)
-      assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/, t)
+      assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/, t)
       db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status) VALUES ('m-p', 'A', 'lead-london', 'sales@buyer.invalid', 's', 'old dental body written before the fix', 'draft')").run()
       const r = recording()
       assert.deepEqual(await polishDraft(db, 'A', 'm-p', 'Acme', { master, providers: r.providers }), { rewritten: false, reason: 'offer_conflict' }, t)
@@ -223,7 +223,7 @@ test('#349 LIVE caller paths: the same-product play drafts, rewrites and scores 
     assert.equal((db.prepare("SELECT offer FROM scan_jobs WHERE id = 'dental'").get() as { offer: string | null }).offer, null, 'no offer chosen on the tenant\'s behalf')
     assert.equal((db.prepare("SELECT sells FROM users WHERE id = 'A'").get() as { sells: string }).sells, DENTAL_SELLER, 'saved offer not rewritten')
     // template drafting and scoring use the dental offer; the AI rewrite is not refused for a conflict
-    const draft = createDraft(db, 'A', 'lead-dental', 'Acme')
+    const draft = createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true })
     assert.match(body(db, draft), /appointment booking/)
     assert.match(offerBlockFor(db, 'A', 'dental'), /appointment booking and reminder software/)
     const r = recording()
@@ -232,7 +232,7 @@ test('#349 LIVE caller paths: the same-product play drafts, rewrites and scores 
     assert.ok(r.prompts.some(x => x.includes('appointment booking and reminder software')), 'the rewrite states the saved offer')
     // the London CRM play is still contested on every path
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
 })
@@ -301,10 +301,10 @@ test('#349 HOLD-4 every further service assertion is material, in any wording; u
   try {
     db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run('We sell CRM setup to founders. Outbound consulting is unavailable.', 'CRM setup - https://seller.example', 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
     // the AI rewrite refuses it too
-    const d = createDraft(db, 'A', 'lead-dental', 'Acme')
+    const d = createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true })
     db.prepare("UPDATE outreach_messages SET lead_id = 'lead-london' WHERE id = ?").run(d)
     const r = recording()
     assert.equal((await polishDraft(db, 'A', d, 'Acme', { master, providers: r.providers }) as { reason?: string }).reason, 'offer_conflict')
@@ -341,7 +341,7 @@ test('#349 HOLD-5 a service named like an instruction ("Email marketing", "Conta
   try {
     db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email marketing is unavailable.`, 'We sell CRM setup to founders. - https://seller.example', 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
   // imperatives with the same first words stay targeting instructions
@@ -369,7 +369,7 @@ test('#349 HOLD-6 only a recognised imperative with a buyer object is targeting;
   try {
     db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email marketing costs extra.`, 'CRM setup - https://seller.example', 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
   // imperatives naming buyers stay targeting instructions
@@ -400,7 +400,7 @@ test('#349 HOLD-7 only a demonstrable buyer-targeting imperative is ignored; an 
   try {
     db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email marketing supports agencies.`, 'CRM setup - https://seller.example', 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
   for (const t of ['Email founders who are hiring.', 'Email founders in London.', 'Contact clinics in Leeds.', 'Search for agencies that are growing.',
@@ -429,7 +429,7 @@ test('#349 HOLD-8 a modifier before the buyer must be provably descriptive; resu
   try {
     db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email marketing won customers.`, 'We sell CRM setup to founders. - https://seller.example', 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
   for (const t of ['Email founders who are hiring.', 'Email founders in London.', 'Contact clinics in Leeds.', 'Search for agencies that are growing.',
@@ -459,7 +459,7 @@ test('#349 HOLD-9 the whole sentence is checked: a predicate after a place or bu
   try {
     db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email providers in Canada cost extra.`, 'We sell CRM setup to founders. - https://seller.example', 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
   // genuine targeting, geographic and otherwise, stays ignored
@@ -491,7 +491,7 @@ test('#349 HOLD-10 places are verified, never inferred from capitalisation; an u
   try {
     db.prepare('UPDATE scan_jobs SET query = ?, seller = ? WHERE id = ?').run(`${P} Email providers in Canada Cost Extra.`, 'We sell CRM setup to founders. - https://seller.example', 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '')
   } finally { db.close() }
   // verified places, in any case, stay targeting
@@ -519,7 +519,7 @@ test('#349 HOLD-11 the shipped smoke case: a grounded description of the buyers 
   try {
     db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(LIVE_Q, 'dental')
     assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'dental'), { offer: DENTAL_SELLER, source: 'recorded', conflict: null })
-    assert.match(body(db, createDraft(db, 'A', 'lead-dental', 'Acme')), /appointment booking/)
+    assert.match(body(db, createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true })), /appointment booking/)
     assert.match(offerBlockFor(db, 'A', 'dental'), /appointment booking and reminder software/)
     assert.equal((db.prepare("SELECT offer FROM scan_jobs WHERE id = 'dental'").get() as { offer: string | null }).offer, null, 'nothing chosen or written')
   } finally { db.close() }
@@ -583,9 +583,9 @@ test('#349 HOLD-12 a request that withdraws the saved offer stays unresolved: no
   try {
     db.prepare('UPDATE scan_jobs SET query = ? WHERE id = ?').run(`We no longer sell ${DENTAL_PRODUCT}.`, 'london')
     assert.equal((await readPlayOffer(sqliteDb(db), 'A', 'london'))!.source, 'conflict')
-    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, 'A', 'lead-london', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(offerBlockFor(db, 'A', 'london'), '', 'scoring gets no offer block for the unresolved play')
-    const d = createDraft(db, 'A', 'lead-dental', 'Acme')
+    const d = createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true })
     const before = body(db, d)
     db.prepare("UPDATE outreach_messages SET lead_id = 'lead-london' WHERE id = ?").run(d)
     const r = recording()
@@ -594,7 +594,7 @@ test('#349 HOLD-12 a request that withdraws the saved offer stays unresolved: no
     assert.equal(await setPlayOffer(sqliteDb(db), 'A', 'london', 'CRM setup and outbound consulting'), true)
     assert.deepEqual(await readPlayOffer(sqliteDb(db), 'A', 'london'), { offer: 'CRM setup and outbound consulting', source: 'play', conflict: null })
     db.prepare("DELETE FROM outreach_messages WHERE lead_id = 'lead-london'").run()
-    assert.match(body(db, createDraft(db, 'A', 'lead-london', 'Acme')), /CRM setup and outbound consulting/)
+    assert.match(body(db, createDraft(db, 'A', 'lead-london', 'Acme', { manual: true })), /CRM setup and outbound consulting/)
     assert.equal((db.prepare("SELECT sells FROM users WHERE id = 'A'").get() as { sells: string }).sells, DENTAL_SELLER, 'profile unchanged')
   } finally { db.close() }
 })

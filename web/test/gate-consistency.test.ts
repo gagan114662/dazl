@@ -86,7 +86,7 @@ for (const s of SCENARIOS) {
     const { db, id, lead } = await build(s)
     const card = opportunityCard(lead, 'Practice owner', NOW)
     let drafted = false
-    try { createDraft(db, 'A', id, 'Acme'); drafted = true } catch { /* refused */ }
+    try { createDraft(db, 'A', id, 'Acme', { manual: true }); drafted = true } catch { /* refused */ }
     const advisesDraft = card.next.startsWith('Draft')
     // The card may be more cautious than the gate (e.g. no person named) but never advise what the gate refuses.
     if (s.expectHeld !== undefined) assert.equal(drafted, !s.expectHeld, `gate expectation for ${s.name}`)
@@ -98,7 +98,7 @@ for (const s of SCENARIOS) {
 test('control: the strongest scenario is actually draftable by both (the property is not vacuous)', async () => {
   const { db, id, lead } = await build(SCENARIOS[0])
   assert.ok(opportunityCard(lead, 'Practice owner', NOW).next.startsWith('Draft'))
-  assert.doesNotThrow(() => createDraft(db, 'A', id, 'Acme'))
+  assert.doesNotThrow(() => createDraft(db, 'A', id, 'Acme', { manual: true }))
 })
 
 // Instinct #210 recheck: a contact equal to a crawled address must be cited at the page the crawler saved it from
@@ -112,7 +112,7 @@ function body(db: Database.Database, id: string): { to_email: string; body: stri
 const CONTACT_URL = 'https://x.example/contact'
 test('draft source URL: contact equal to a crawled own-domain address cites /contact; the news excerpt is separate', async () => {
   const { db, id } = await build({ name: 'eq own', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), mail('owner@x.example'), person] })
-  createDraft(db, 'A', id, 'Acme')
+  createDraft(db, 'A', id, 'Acme', { manual: true })
   const m = body(db, id)
   assert.equal(m.to_email, 'owner@x.example')
   assert.ok(m.body.includes(`published on X Dental's page:\n${CONTACT_URL}\n`), m.body)
@@ -121,17 +121,17 @@ test('draft source URL: contact equal to a crawled own-domain address cites /con
 })
 test('draft source URL: a website-reviewed name_probe address that equals the contact also cites /contact', async () => {
   const { db, id } = await build({ name: 'eq probe reviewed', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'name_probe'), mail('owner@x.example'), person] })
-  assert.throws(() => createDraft(db, 'A', id, 'Acme'), /domain_unconfirmed/)
+  assert.throws(() => createDraft(db, 'A', id, 'Acme', { manual: true }), /domain_unconfirmed/)
   const rows = db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id) as Parameters<typeof domainReviewFor>[1] & object
   const binding = domainReviewFor({ id, contact: 'owner@x.example' }, rows).binding!
   assert.equal(setDomainReview(db, 'A', id, 'confirm', binding).status, 'confirmed')
-  createDraft(db, 'A', id, 'Acme')
+  createDraft(db, 'A', id, 'Acme', { manual: true })
   const m = body(db, id)
   assert.equal(m.to_email, 'owner@x.example'); assert.ok(m.body.includes(`page:\n${CONTACT_URL}\n`), m.body); assert.ok(!m.body.includes(`page:\n${S}`))
 })
 test('draft source URL: cited-page-only contact (no crawl record) still cites the signal page, with no duplicate excerpt block', async () => {
   const { db, id } = await build({ name: 'cited only', contact: 'owner@x.example', date: day(-10), rows: [person] })
-  createDraft(db, 'A', id, 'Acme')
+  createDraft(db, 'A', id, 'Acme', { manual: true })
   const m = body(db, id)
   assert.ok(m.body.includes(`page:\n${S}\n`), m.body); assert.ok(!m.body.includes('Saved excerpt'))
 })

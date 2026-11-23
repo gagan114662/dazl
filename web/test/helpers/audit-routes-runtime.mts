@@ -31,6 +31,7 @@ globalThis.fetch = (async (u: unknown) => {
 }) as typeof fetch
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 process.env.STRIPE_SECRET_KEY = 'sk_test_synthetic'
+process.env.BILLING_AVAILABLE = '1' // the beta switch (lib/beta.ts): these checks start a checkout, so billing is on in this process only
 process.env.STRIPE_PRICE_PRO = 'price_synthetic'
 
 const raw = new Database(':memory:')

@@ -3,7 +3,8 @@ import { getScanDb, requireUser } from '@/lib/scan/service'
 import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, recentInbound, revokeReadConsent, syncReplies } from '@/lib/outreach/replies'
 import { acceptBounceScanConsent, BOUNCE_SCAN_CONSENT_TEXT, BOUNCE_SCAN_CONSENT_VERSION, hasBounceScanConsent, revokeBounceScanConsent } from '@/lib/outreach/bounce-scan'
 import { followupsEnabled, runFollowups, setFollowups } from '@/lib/outreach/followups'
-import { getState } from '@/lib/outreach/autopilot'
+import { autopilotAvailable, getState } from '@/lib/outreach/autopilot'
+import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
@@ -16,7 +17,7 @@ export async function GET() {
   const acc = db.prepare('SELECT read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number; status: string } | undefined
   const gmail_status = !acc ? 'none' : acc.status === 'active' ? 'active' : 'needs_reconnect'
   // #931: connected means an ACTIVE account; a needs_reconnect row is reported separately, not as connected
-  return NextResponse.json({ available: true, gmail_connected: gmail_status === 'active', gmail_status, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.tenantId) }, bounce_scan: { version: BOUNCE_SCAN_CONSENT_VERSION, text: BOUNCE_SCAN_CONSENT_TEXT, accepted: hasBounceScanConsent(db, user.tenantId) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.tenantId), autopilot_on: getState(db, user.tenantId).enabled, inbound: recentInbound(db, user.tenantId) })
+  return NextResponse.json({ available: true, gmail_connected: gmail_status === 'active', gmail_status, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.tenantId) }, bounce_scan: { version: BOUNCE_SCAN_CONSENT_VERSION, text: BOUNCE_SCAN_CONSENT_TEXT, accepted: hasBounceScanConsent(db, user.tenantId) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.tenantId), autopilot_available: autopilotAvailable(), autopilot_on: autopilotAvailable() && getState(db, user.tenantId).enabled, inbound: recentInbound(db, user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
@@ -61,6 +62,7 @@ export async function POST(req: NextRequest) {
     case 'followups_on': {
       const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
       if (!hasReadConsent(db, user.tenantId) || acc?.read_granted !== 1) return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })
+      if (!autopilotAvailable()) return NextResponse.json({ error: AUTOPILOT_BETA_TEXT, code: 'autopilot_unavailable' }, { status: 400 })
       if (!getState(db, user.tenantId).enabled || !getState(db, user.tenantId).consent_current) return NextResponse.json({ error: 'Turn on autopilot first' }, { status: 400 })
       const was = followupsEnabled(db, user.tenantId)
       setFollowups(db, user.tenantId, true)

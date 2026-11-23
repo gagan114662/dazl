@@ -50,9 +50,9 @@ const messages = (raw: Database.Database) => (raw.prepare("SELECT count(*) n FRO
 test('drafting: an unreadable play refuses with offer_unreadable and inserts nothing; once readable it says the play\'s offer', () => {
   const raw = setup()
   try {
-    assert.throws(() => createDraft(busy(raw), 'A', 'lead-play', 'Acme'), (e: Error & { code?: string }) => e.code === 'offer_unreadable')
+    assert.throws(() => createDraft(busy(raw), 'A', 'lead-play', 'Acme', { manual: true }), (e: Error & { code?: string }) => e.code === 'offer_unreadable')
     assert.equal(messages(raw), 0, 'nothing drafted, no global offer used')
-    const id = createDraft(raw, 'A', 'lead-play', 'Acme')
+    const id = createDraft(raw, 'A', 'lead-play', 'Acme', { manual: true })
     assert.match((raw.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(id) as { body: string }).body, new RegExp(CRM))
   } finally { raw.close() }
 })
@@ -60,7 +60,7 @@ test('drafting: an unreadable play refuses with offer_unreadable and inserts not
 test('rewrite: an unreadable play refuses before any paid call and records the refusal', async () => {
   const raw = setup()
   try {
-    const id = createDraft(raw, 'A', 'lead-play', 'Acme')
+    const id = createDraft(raw, 'A', 'lead-play', 'Acme', { manual: true })
     let calls = 0
     const providers = { anthropic: { completeDetailed: async () => { calls++; return { text: 'x', model: 'm' } } } } as unknown as Record<string, Provider>
     assert.deepEqual(await polishDraft(busy(raw), 'A', id, 'Acme', { master, providers }), { rewritten: false, reason: 'offer_unreadable' })

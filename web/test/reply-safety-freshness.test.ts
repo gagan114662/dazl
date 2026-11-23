@@ -123,7 +123,7 @@ async function seedSequenceTenant() {
 }
 const seqDeps = (master: Buffer, onToken?: () => void) => {
   const sent: string[] = []
-  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }, env: genv, master, now: NOW + 3 * 86400 + 1, baseUrl: 'https://app.test', fetchImpl: (async (u: unknown) => {
+  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }, env: genv, master, now: NOW + 3 * 86400 + 1, baseUrl: 'https://app.test', fetchImpl: (async (u: unknown) => {
     const url = String(u)
     if (url.includes('token')) { onToken?.(); return json({ access_token: 'at' }) }
     if (url.includes('/threads/')) return json({ messages: [] })
@@ -197,7 +197,7 @@ test('reply_sync_stale hold: drain avoids the send while stale, then selects the
   // lifecycle as the real runner: pending -> running -> leads -> done).
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = (SELECT scan_job_id FROM leads WHERE id = 'L9')").run()
   const sent: string[] = []
-  const d = (now: number, onToken?: () => void): Deps & { flags: Record<string, string> } => ({ flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '1' }, env: genv, master: mstr, now, baseUrl: 'https://app.test', fetchImpl: tokenFetch(onToken), sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never })
+  const d = (now: number, onToken?: () => void): Deps & { flags: Record<string, string> } => ({ flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '1' }, env: genv, master: mstr, now, baseUrl: 'https://app.test', fetchImpl: tokenFetch(onToken), sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never })
   syncRow(db, wall - REPLY_SAFETY_STALE_S - 10) // stale: the actual hold path
   const r1 = await runAutopilot(db, 'A', 'Acme', d(wall))
   assert.equal(r1.sent, 0)
@@ -244,7 +244,7 @@ test('warm follow-up: stale ingest at claim holds; staleness DURING the token aw
   const { db, master: mstr } = await seedFollowupTenant()
   const wall = Math.floor(Date.now() / 1000)
   const sent: string[] = []
-  const d = (onToken?: () => void): Deps & { flags: Record<string, string> } => ({ flags: { AUTOPILOT_ENABLED: '1' }, env: genv, master: mstr, now: wall, baseUrl: 'https://app.test', fetchImpl: tokenFetch(onToken), sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never })
+  const d = (onToken?: () => void): Deps & { flags: Record<string, string> } => ({ flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, env: genv, master: mstr, now: wall, baseUrl: 'https://app.test', fetchImpl: tokenFetch(onToken), sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never })
   syncRow(db, wall - REPLY_SAFETY_STALE_S - 10) // stale at claim time
   await runFollowups(db, 'A', 'Acme', d())
   assert.equal(sent.length, 0)

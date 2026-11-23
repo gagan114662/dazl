@@ -24,7 +24,7 @@ test('template uses only this tenant saved positioning, literally and without pr
   try {
     saveMemory(db, 'A', { positioning: 'Find leads from public signals, with source links and quotes.' })
     saveMemory(db, 'B', { positioning: 'Unrelated tenant consulting service' })
-    const id = createDraft(db, 'A', 'one', 'dazl')
+    const id = createDraft(db, 'A', 'one', 'dazl', { manual: true })
     assert.match(body(db,id), /About dazl: Find leads from public signals, with source links and quotes\./)
     assert.doesNotMatch(body(db,id), /Unrelated tenant|consulting/)
     assert.match(body(db,id), /contact address published on Buyer's page/)
@@ -37,7 +37,7 @@ test('template uses only this tenant saved positioning, literally and without pr
     // Edits apply only to new drafts. Already prepared words never change silently.
     saveMemory(db, 'A', { positioning: 'Updated seller description.' })
     assert.match(body(db,id), /Find leads from public signals/)
-    assert.match(body(db,createDraft(db,'A','two','dazl')), /Updated seller description/)
+    assert.match(body(db,createDraft(db,'A','two','dazl', { manual: true })), /Updated seller description/)
   } finally { db.close() }
 })
 
@@ -46,7 +46,7 @@ test('missing saved offer or seller name rejects: manual path inserts nothing',(
     const db=setup(memory)
     try {
       if (memory) saveMemory(db,'B',{positioning:'Other tenant offer'})
-      assert.throws(()=>createDraft(db,'A','one','dazl'),/seller_offer_required/)
+      assert.throws(()=>createDraft(db,'A','one','dazl', { manual: true }),/seller_offer_required/)
       assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
     } finally { db.close() }
   }
@@ -58,9 +58,9 @@ test('saved onboarding offer is fallback, never another user or website inferenc
     db.exec('CREATE TABLE users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)')
     db.prepare('INSERT INTO users VALUES(?,?,?)').run('A','Public-source lead finding software.','https://seller.invalid')
     db.prepare('INSERT INTO users VALUES(?,?,?)').run('B','Other user consulting.','https://other.invalid')
-    assert.match(body(db,createDraft(db,'A','one','dazl')), /About dazl: Public-source lead finding software/)
+    assert.match(body(db,createDraft(db,'A','one','dazl', { manual: true })), /About dazl: Public-source lead finding software/)
     saveMemory(db,'A',{positioning:'Explicit Memory positioning.'})
-    const text=body(db,createDraft(db,'A','two','dazl'))
+    const text=body(db,createDraft(db,'A','two','dazl', { manual: true }))
     assert.match(text,/Explicit Memory positioning/)
     assert.doesNotMatch(text,/Other user consulting|seller.invalid/)
   } finally { db.close() }
@@ -70,20 +70,20 @@ test('saved onboarding offer is fallback, never another user or website inferenc
 test('internal QA signal and fabricated event claims cannot enter initial draft',()=>{
  const db=setup();saveMemory(db,'A',{positioning:'Sales prospecting software for B2B sales teams'})
  db.prepare("UPDATE leads SET signal='OPERATOR QA ONLY - recently raised $10M. No outreach authorized.'").run()
- const text=body(db,createDraft(db,'A','one','dazl'))
+ const text=body(db,createDraft(db,'A','one','dazl', { manual: true }))
  assert.match(text,/About dazl: Sales prospecting software for B2B sales teams/)
  assert.doesNotMatch(text,/OPERATOR QA|raised|No outreach|About :|We offer|hiring/)
  assert.equal((db.prepare('SELECT signal FROM leads WHERE id=?').get('one') as {signal:string}).signal,'OPERATOR QA ONLY - recently raised $10M. No outreach authorized.')
 })
 test('no seller context fails before saving words and never fabricates an offer',()=>{
- const db=setup();assert.throws(()=>createDraft(db,'A','one','  '),/seller_context_required/)
+ const db=setup();assert.throws(()=>createDraft(db,'A','one','  ', { manual: true }),/seller_context_required/)
  assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
 })
 
 test('blank seller name fails with no draft; no anonymous fallback',()=>{
  for (const name of ['','  ']){
   const db=setup(); saveMemory(db,'A',{positioning:'Real offer'})
-  assert.throws(()=>createDraft(db,'A','one',name),/seller_context_required/)
+  assert.throws(()=>createDraft(db,'A','one',name, { manual: true }),/seller_context_required/)
   assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
  }
 })

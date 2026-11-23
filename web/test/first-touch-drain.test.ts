@@ -17,7 +17,7 @@ import { ATTESTATIONS, CONSENT_VERSION, drainFirstTouch, enable, getState, offer
 const master = randomBytes(32)
 const genv = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'cs', PUBLIC_BASE_URL: 'https://app.test' }
 const NOW = 1_800_000_000
-const ON = { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }
+const ON = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
 const tokenOk = (async (url: string) => (String(url).includes('token') ? json({ access_token: 'at' }) : json({}, 404))) as unknown as typeof fetch
