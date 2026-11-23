@@ -37,10 +37,13 @@ test('the card shows the person and the email, and Approve is on when a public p
   const why = (e: unknown[], o: Record<string, unknown> = {}) => { const a = leadCardSummary(lead(e, o) as never).approve; return a.ok ? 'ok' : a.reason }
   assert.match(why([person, email], { event_date: null }), /no date/)
   assert.match(why([person, { ...email, value: 'dana@other-company.example', source_url: 'https://directory.example/northwind' }]), /only on another site/)
-  // review of #1574: the company's own mailbox domain is not publication by the company. The SAME address, found only on a directory, is refused
-  assert.match(why([person, { ...email, source_url: 'https://directory.example/northwind' }]), /only on another site/)
+  // owner decision 2026-11-23 (replaces the review-of-#1574 rule): the person's own address at the company's own domain counts wherever it was found
+  assert.equal(why([person, { ...email, source_url: 'https://directory.example/northwind' }]), 'ok')
+  assert.equal(why([person, { ...email, value: 'dana@mail.northwind-dental.example', source_url: 'https://jobs.example/northwind' }]), 'ok', 'a subdomain of the company\'s domain')
+  assert.match(why([person, { ...email, value: 'dana@northwind-dental.example.evil.example', source_url: 'https://jobs.example/northwind' }]), /only on another site/, 'a look-alike domain is not the company\'s')
   assert.equal(why([person, { ...email, source_url: 'https://team.northwind-dental.example/people' }]), 'ok', 'a subdomain of the company site is its own site')
-  assert.match(why([person, { ...email, source_url: 'https://northwind-dental.example.evil.example/contact' }]), /only on another site/)
+  assert.equal(why([person, { ...email, source_url: 'https://northwind-dental.example.evil.example/contact' }]), 'ok', 'the address is at the company\'s own domain; where it was found is shown, not judged')
+  assert.match(why([person, { ...email, value: 'dana@other-mail.example', source_url: 'https://northwind-dental.example.evil.example/contact' }]), /only on another site/, 'another domain\'s address on a look-alike site')
   assert.equal(why([person, { ...email, value: 'dana@other-mail.example', source_url: 'https://www.northwind-dental.example/contact' }]), 'ok', 'an address printed on the company\'s own site')
   assert.match(why([person, { ...email, value: 'privacy@northwind-dental.example' }]), /not a sales contact/)
   assert.match(why([person, email], { gate_held: true }), /required check/)
@@ -75,9 +78,9 @@ test('Approve creates a draft for the published address; autopilot and calibrati
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j2'").run()
   const [undated, offSite, privacy, directoryOnly, ownSite] = cases.map(c => { addEnrichment(db, 'T', c.lid, { ...email, value: c.to, source_url: c.src, confidence: null, source_date: '2026-11-22', retrieved_at: now }); return code(() => createDraft(db, 'T', c.lid, 'Fit-out Co', { manual: true })) })
   assert.deepEqual([undated, offSite, privacy], ['lead_currentness_unconfirmed', 'domain_unconfirmed', 'not_sales_contact'])
-  // review of #1574: dana@<company domain> sourced only from a directory is refused and NO draft row exists; an address the company's own page prints is drafted
+  // owner decision 2026-11-23: dana@<company domain> found on a directory is the company's mailbox and is drafted (it replaces the review-of-#1574 refusal)
   const drafts = (lid: string) => (db.prepare("SELECT COUNT(*) AS n FROM outreach_messages WHERE tenant_id = 'T' AND lead_id = ?").get(lid) as { n: number }).n
-  assert.deepEqual([directoryOnly, drafts(cases[3].lid)], ['domain_unconfirmed', 0])
+  assert.deepEqual([directoryOnly, drafts(cases[3].lid)], ['created', 1])
   assert.deepEqual([ownSite, drafts(cases[4].lid)], ['created', 1])
 })
 

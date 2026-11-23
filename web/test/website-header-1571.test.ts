@@ -66,5 +66,7 @@ test('#1571 the website line does not move Approve: every hold is the one it was
   // (the branch this test was written on also had holds for a refused recipient and a signal more than a year old; main has neither rule, so they are not asserted here)
   assert.match(why({ event_date: null }), /no date/)
   assert.match(why({ enrichments: [person] }), /No email address is published/)
-  assert.match(why({ enrichments: [person, { ...email, source_url: 'https://directory.example/northwind' }] }), /only on another site/)
+  // owner decision 2026-11-23: an address at another domain found off the company's site is still refused; the person's own address at
+  // the company's own domain now counts wherever it was found (test/discover-approve.test.ts)
+  assert.match(why({ enrichments: [person, { ...email, value: 'dana@other-mail.example', source_url: 'https://directory.example/northwind' }] }), /only on another site/)
 })

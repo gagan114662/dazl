@@ -159,7 +159,10 @@ const pageKey = (raw: string): string => { try { const u = new URL(raw); return 
 // A page that says its own content is gone: a short page whose words are a not-found or closed-posting notice. Long pages are never judged
 // this way (a live page may mention that another role was filled).
 const GONE = /\b(?:job|page|position|posting|listing|role|opening|vacancy)\s+(?:was\s+|is\s+|has\s+been\s+)?(?:not\s+found|no\s+longer\s+(?:available|open|active|accepting\s+applications)|closed|filled|removed|expired)\b|\b(?:404|page\s+not\s+found|not\s+found)\b|\bno\s+longer\s+(?:available|exists|accepting\s+applications)\b|\b(?:doesn't|does\s+not)\s+exist\b/i
-export const pageIsGone = (body: string): boolean => { const t = body.replace(/\s+/g, ' ').trim(); return t.length < 1500 && GONE.test(t) }
+// A notice that THIS listing is gone, specific enough to trust on a long page too when it stands near the top (a job board keeps its
+// header, footer and "similar jobs" around the notice; Quest, staging 2026-11-23: a listing "recently taken down" was shown as proof).
+const TAKEN_DOWN = /\bthis\s+(?:job\s+)?(?:job|listing|posting|position|role|opening|vacancy|page)\s+(?:was|is|has\s+been)\s+(?:recently\s+)?(?:taken\s+down|removed|closed|filled|expired|deleted|unpublished)\b|\bthis\s+(?:job\s+)?(?:job|listing|posting|position|role)\s+(?:is\s+)?no\s+longer\s+(?:available|open|active|listed|accepting\s+applications)\b|\b(?:job|listing|posting)\s+not\s+found\b|\b(?:was|been)\s+recently\s+taken\s+down\b/i
+export const pageIsGone = (body: string): boolean => { const t = body.replace(/\s+/g, ' ').trim(); return (t.length < 1500 && GONE.test(t)) || TAKEN_DOWN.test(t.slice(0, 2500)) }
 // "Posted 4d ago", "Posted: 3 days ago", "Published 2 weeks ago": the day that works out to, when the page prints exactly one such age.
 // Several different ages on one page (a list of postings) give no date.
 export function relativeDay(body: string, now: Date): string | null {
@@ -226,30 +229,53 @@ async function postingDay(u: URL, fetchImpl: typeof fetch, timeoutMs: number, no
     return typeof v === 'number' ? validDay(v, now) : typeof v === 'string' ? validDay(Date.parse(v), now) : null
   } catch { return null }
 }
-// A confirmed lead the run gave no date, and whose page text printed none: the page's own structured data dates it, ahead of the
-// search index's day. `html` is dazl's raw read when it has one; otherwise the page is fetched once for this alone.
-async function datedByPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<CheckedLead> {
-  if (c.signal_date || c.proof !== 'confirmed' || c.date_source === 'page') return c
-  const posted = u ? await postingDay(u, fetchImpl, timeoutMs, now) : null
-  if (posted) return { ...c, date: posted, date_source: 'page' }
+// The named person's own LinkedIn profile, when the proof page links it (Quest, staging rerun 2026-11-23: a job posting linked the
+// poster's profile and the lead had none). A link counts when it is a person's profile (/in/<name>) and its link text, or the profile
+// address itself, carries the person's first and last name. Two different matching profiles give none: the page does not say which.
+const personParts = (n: string): string[] => n.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\b(?:dr|mr|mrs|ms|prof)\.?\s/g, ' ').match(/[a-z]{2,}/g) ?? []
+export function profileOnPage(html: string, person: string): string | null {
+  const who = personParts(person)
+  if (who.length < 2) return null
+  const first = who[0], last = who[who.length - 1], found = new Map<string, string>()
+  for (const m of html.matchAll(/<a\b[^>]*\bhref=["'](https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/in\/([^"'/?#\s]{2,})\/?(?:[?#][^"']*)?)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi)) {
+    let slug = m[2]; try { slug = decodeURIComponent(slug) } catch { /* as written */ }
+    const label = personParts(m[3].replace(/<[^>]+>/g, ' ')), inSlug = personParts(slug.replace(/[-_.]/g, ' '))
+    const names = (parts: string[]) => parts.includes(first) && parts.includes(last)
+    if (names(label) || names(inSlug)) found.set(slug.toLowerCase(), `https://www.linkedin.com/in/${m[2]}`)
+  }
+  return found.size === 1 ? [...found.values()][0] : null
+}
+// What the proof page itself adds to a confirmed lead: a date (the job board's own record of the posting, else the page's structured
+// data) when the run and the page text gave none, and the named person's LinkedIn profile when the page links it. `html` is dazl's raw
+// read when it has one; otherwise the page is fetched once, and only when something is still missing.
+async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<CheckedLead> {
+  if (c.proof !== 'confirmed') return c
+  const needDate = !c.signal_date && c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
+  if (!needDate && !needProfile) return c
+  let out = c
+  if (needDate && u) { const posted = await postingDay(u, fetchImpl, timeoutMs, now); if (posted) out = { ...out, date: posted, date_source: 'page' } }
+  const stillDate = needDate && out.date_source !== 'page'
+  if (!stillDate && !needProfile) return out
   let raw = html
   if (raw === null && u) {
-    try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* no date from the page */ }
+    try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
   }
-  const day = raw ? embeddedDay(raw, now) : null
-  return day ? { ...c, date: day, date_source: 'page' } : c
+  if (!raw) return out
+  if (stillDate) { const day = embeddedDay(raw, now); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
+  return out
 }
 export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal): Promise<CheckedLead> {
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
-  if (hit?.text) return datedByPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
+  if (hit?.text) return fromPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
   // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
-      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return datedByPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
+      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
       // dazl asked and the address is gone: a search result's title does not bring it back
       if (r.status === 404 || r.status === 410) return { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }

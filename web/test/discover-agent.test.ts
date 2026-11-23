@@ -438,3 +438,35 @@ test('a posting on Greenhouse, Lever or Ashby is dated from the board\'s own rec
   assert.equal(none.date, null, 'no record, no date; the lead is unchanged otherwise')
   assert.equal(none.proof, 'confirmed')
 })
+
+// Quest, staging rerun 2026-11-23: a job board's page for a listing that was "recently taken down" was shown as proof. Such a page
+// is long (header, footer, similar jobs), so the short-page rule missed it.
+test('a long page that says this listing was taken down is gone; a live page that mentions another closed role is not', async () => {
+  const { pageIsGone } = await import('../lib/discover/check.ts')
+  const filler = ' Similar jobs you may like: Account Executive at Harbour, Sales Lead at Finch.'.repeat(60)
+  for (const notice of ['This job listing was recently taken down.', 'Sorry, this job is no longer available.', 'This position has been filled.', 'Job not found', 'The listing you are looking for was recently taken down by the company.'])
+    assert.equal(pageIsGone(`Northwind Dental careers. ${notice}${filler}`), true, notice)
+  assert.equal(pageIsGone(`Account Executive at Northwind Dental. Posted 4d ago. The last person in this role was promoted, and that position is closed. We are hiring again.${filler}`), false)
+  assert.equal(pageIsGone(`Northwind Dental is hiring an Account Executive.${filler} This job is no longer available.`), false, 'a notice far down the page (another listing\'s) does not mark this page gone')
+})
+
+// Quest, staging rerun 2026-11-23: the proof page linked the named person's own LinkedIn profile and the lead showed none.
+test('the named person\'s LinkedIn profile is read off the proof page when the page links it', async () => {
+  const { profileOnPage } = await import('../lib/discover/check.ts')
+  const a = (href: string, text: string) => `<a class="x" href="${href}" target="_blank">${text}</a>`
+  assert.equal(profileOnPage(`<p>Posted by ${a('https://www.linkedin.com/in/dana-ruiz-dds/', '<span>Dana Ruiz</span>')}</p>`, 'Dana Ruiz'), 'https://www.linkedin.com/in/dana-ruiz-dds')
+  assert.equal(profileOnPage(a('https://ca.linkedin.com/in/dana-m-ruiz?trk=x', 'LinkedIn'), 'Dr. Dana Ruiz'), 'https://www.linkedin.com/in/dana-m-ruiz', 'the name in the profile address, whatever the link text')
+  assert.equal(profileOnPage(a('https://www.linkedin.com/in/a1b2c3', 'Dana Ruiz'), 'Dana Ruiz'), 'https://www.linkedin.com/in/a1b2c3', 'the name in the link text')
+  assert.equal(profileOnPage(a('https://www.linkedin.com/in/sam-patel', 'Sam Patel') + a('https://www.linkedin.com/company/northwind', 'Northwind Dental'), 'Dana Ruiz'), null, 'someone else\'s profile and a company page are not hers')
+  assert.equal(profileOnPage(a('https://www.linkedin.com/in/dana-ruiz-1', 'Dana Ruiz') + a('https://www.linkedin.com/in/dana-ruiz-2', 'Dana Ruiz'), 'Dana Ruiz'), null, 'two different matching profiles: the page does not say which')
+  assert.equal(profileOnPage(a('https://www.linkedin.com/in/dana-ruiz', 'Dana Ruiz') + a('https://www.linkedin.com/in/dana-ruiz/', 'her profile'), 'Dana Ruiz'), 'https://www.linkedin.com/in/dana-ruiz', 'the same profile linked twice is one profile')
+  assert.equal(profileOnPage(a('https://www.linkedin.com/in/dana-ruiz', 'Dana Ruiz'), 'Dana'), null, 'a first name alone is not enough')
+  // through the check: the lead gets the profile, and one that already has a profile keeps it
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const body = `<html><body><p>Northwind Dental will open its second clinic.</p><p>Contact ${a('https://www.linkedin.com/in/dana-ruiz-dds', 'Dana Ruiz')}</p></body></html>`
+  const l = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Opening a second clinic', linkedin_url: null, evidence_url: 'https://northwind-dental.example/news' })] }), 1).leads[0]
+  assert.equal((await checkLead(l, [], page(body))).linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-dds')
+  const viaReader = await checkLead(l, [{ url: l.evidence_url, title: 'News', page_age: null, text: 'Northwind Dental will open its second clinic. Contact Dana Ruiz' }], page(body))
+  assert.deepEqual([viaReader.proof_read_by, viaReader.linkedin_url], ['reader', 'https://www.linkedin.com/in/dana-ruiz-dds'], 'Claude\'s reader gave text only: dazl reads the page once for its links')
+  assert.equal((await checkLead({ ...l, linkedin_url: 'https://www.linkedin.com/in/dana-ruiz-original/' }, [], page(body))).linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-original/')
+})
