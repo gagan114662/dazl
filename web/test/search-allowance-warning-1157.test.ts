@@ -8,7 +8,7 @@ import { searchAllowanceLine } from '../lib/scan/price-estimate.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 
 const NOW = Math.floor(Date.parse('2026-11-14T20:00:00Z') / 1000)
-const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '200' }
+const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', TINYFISH_TENANT_DAILY: '200' }
 const setup = () => { const raw = new Database(':memory:'); migrateTinyfish(raw); return { raw, db: sqliteDb(raw) } }
 const use = (raw: Database.Database, tenant: string, kind: string, n: number, day = '2026-11-14') => raw.prepare('INSERT INTO tinyfish_usage (day, tenant_id, kind, n) VALUES (?, ?, ?, ?) ON CONFLICT(day, tenant_id, kind) DO UPDATE SET n = n + excluded.n').run(day, tenant, kind, n)
 

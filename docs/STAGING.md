@@ -182,7 +182,11 @@ Staging takes test-mode Stripe only: `deploy.sh --check-env` refuses any `sk_liv
 | `STRIPE_WEBHOOK_SECRET` | `whsec_…` | Developers → Webhooks → Add endpoint `https://staging.dazl.ai/api/stripe`, with the events `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.payment_failed`. Then reveal its signing secret. |
 | `PUBLIC_BASE_URL` | `https://staging.dazl.ai` | Already set. Checkout returns to `…/app/settings?billing=success` (or `=cancelled`), and the portal returns to `…/app/settings`. |
 
+| `BILLING_AVAILABLE` | `1` | The beta switch (`web/lib/beta.ts`). dazl is free during the beta, so without it Settings shows no "Upgrade to Pro" and `POST /api/billing/checkout` answers 403 before Stripe is called. Set it on staging only to exercise checkout; production leaves it unset during the beta. |
+
 In Settings → Billing → Customer portal (test mode), save the portal configuration once, or portal sessions fail.
+
+The other beta switch is `AUTOPILOT_AVAILABLE=1` (same file; see `docs/AUTOPILOT.md`): unset, autopilot is not offered and never runs, whatever `AUTOPILOT_ENABLED` says. Set it on staging only to exercise autopilot.
 
 Then check, in this order:
 1. `PROD_ENV_FILE=<production's env file> bash ops/staging/deploy.sh --check-env /etc/dazl-staging/env` prints `env ok`.

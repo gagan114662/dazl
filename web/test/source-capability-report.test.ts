@@ -78,12 +78,13 @@ test('the matrix is consumed by a real route, not just tests', () => {
 const ADV_ON = { ADVANCED_CONNECTORS: '1', ADVANCED_WORKER_URL: 'http://worker.internal:9000', ADVANCED_WORKER_TOKEN: 't' }
 // [name, env extras, X reachable with consent and NO session]
 const X_CASES: [string, Record<string, string>, boolean][] = [
-  ['key set, X_VIA_SEARCH unset', { TINYFISH_API_KEY: 'tf-key' }, true],
-  ['key set, X_VIA_SEARCH=1', { TINYFISH_API_KEY: 'tf-key', X_VIA_SEARCH: '1' }, true],
-  ['key set, X_VIA_SEARCH=0', { TINYFISH_API_KEY: 'tf-key', X_VIA_SEARCH: '0' }, false],
+  ['key set and TinyFish switched on, X_VIA_SEARCH unset', { TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '1' }, true],
+  ['key set and TinyFish switched on, X_VIA_SEARCH=1', { TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '1', X_VIA_SEARCH: '1' }, true],
+  ['key set and TinyFish switched on, X_VIA_SEARCH=0', { TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '1', X_VIA_SEARCH: '0' }, false],
   ['no key, X_VIA_SEARCH unset', {}, false],
   ['no key, X_VIA_SEARCH=0', { X_VIA_SEARCH: '0' }, false],
   ['key set but TinyFish switched off', { TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '0' }, false],
+  ['key set, TinyFish not switched on by name (the default, #1435)', { TINYFISH_API_KEY: 'tf-key' }, false],
 ]
 async function xStore() {
   const raw = new Database(':memory:'); migrateConnectors(raw); migrateAdvanced(raw); migrateTinyfish(raw); resetTinyfishState()
@@ -108,9 +109,9 @@ test('capabilities report (the route\'s function): consented X with no session i
   const { raw, db } = await xStore()
   try {
     saveCredential(raw, 'A', 'adv:x', 'x-session-of-A', master)
-    for (const v of ['0', '1']) assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON, TINYFISH_API_KEY: 'tf-key', X_VIA_SEARCH: v }), 'adv:x').availability, 'available', `session, X_VIA_SEARCH=${v}`)
+    for (const v of ['0', '1']) assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON, TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '1', X_VIA_SEARCH: v }), 'adv:x').availability, 'available', `session, X_VIA_SEARCH=${v}`)
     // and another tenant's consent or session never counts for this one
-    assert.equal(row(await tenantCapabilities(db, 'B', { ...ADV_ON, TINYFISH_API_KEY: 'tf-key' }), 'adv:x').availability, 'unavailable', 'tenant B has no consent')
+    assert.equal(row(await tenantCapabilities(db, 'B', { ...ADV_ON, TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '1' }), 'adv:x').availability, 'unavailable', 'tenant B has no consent')
   } finally { raw.close() }
 })
 
@@ -162,7 +163,7 @@ test('#1035 review: a key-dependent source (Companies House) is available in the
     assert.equal(JSON.stringify(rows).includes('ch-key-not-a-secret'), false, 'the key value never reaches the report')
     // the key belongs to the deployment, so it counts for every tenant; another credential's name does not stand in for it
     assert.equal(row(await tenantCapabilities(db, 'B', { ...ADV_ON, COMPANIES_HOUSE_API_KEY: 'k' }), 'companies-house').availability, 'available')
-    assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON, TINYFISH_API_KEY: 'k' }), 'companies-house').availability, 'unavailable')
+    assert.equal(row(await tenantCapabilities(db, 'A', { ...ADV_ON, TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }), 'companies-house').availability, 'unavailable')
   } finally { raw.close() }
   // the pure report: no credentials given = unavailable (fail closed); the right name = available
   assert.equal(row(capabilityReport(none), 'companies-house').availability, 'unavailable')

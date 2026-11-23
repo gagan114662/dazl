@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { migrateTinyfish, tfSearch, tfFetch, resetTinyfishState, queryPlan } from '../lib/search/tinyfish.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, migrateSourceStats, writeSourceStats, sourceStats, sourceStatsEnabled } from '../lib/search/trace.ts'
 
-const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_SEARCHES_PER_SCAN: '2', TINYFISH_TENANT_DAILY: '50' }
+const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_ENABLED: '1', TINYFISH_SEARCHES_PER_SCAN: '2', TINYFISH_TENANT_DAILY: '50' }
 const mk = () => { const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState(); return db }
 const NOW = 1_800_000_000
 const res = (body: unknown, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch

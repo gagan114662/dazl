@@ -99,45 +99,45 @@ test('token lifecycle: refresh works; revoked grant flips to needs_reconnect; di
 
 test('draft rules: needs a verified lead, a business email, no suppression; one draft per lead; tenant scoped', () => {
   const db = setup()
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { evidence: null, confidence: null }), 'Acme'), /lead_not_verified/)
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: null }), 'Acme'), /no_email_contact/)
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: '(416) 555-0199' }), 'Acme'), /no_email_contact/)
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'someone@gmail.com' }), 'Acme'), /personal_email/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { evidence: null, confidence: null }), 'Acme', { manual: true }), /lead_not_verified/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: null }), 'Acme', { manual: true }), /no_email_contact/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: '(416) 555-0199' }), 'Acme', { manual: true }), /no_email_contact/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'someone@gmail.com' }), 'Acme', { manual: true }), /personal_email/)
   // A published inbox whose purpose is not sales must never receive a sales draft -
   // whether it came from the cited page or from the company's own contact page.
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'press@northside.example' }), 'Acme'), /not_sales_contact/)
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'support@northside.example' }), 'Acme'), /not_sales_contact/)
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'jobs@northside.example' }), 'Acme'), /not_sales_contact/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'press@northside.example' }), 'Acme', { manual: true }), /not_sales_contact/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'support@northside.example' }), 'Acme', { manual: true }), /not_sales_contact/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { contact: 'jobs@northside.example' }), 'Acme', { manual: true }), /not_sales_contact/)
   {
     const db2 = setup()
     db2.prepare("CREATE TABLE IF NOT EXISTS lead_enrichments (tenant_id TEXT, lead_id TEXT, connector TEXT, kind TEXT, value TEXT, label TEXT, confidence REAL, source_url TEXT, source_date TEXT, retrieved_at INTEGER)").run()
     const leadId = addLead(db2, 'A', { contact: null })
     db2.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'press@figma.com', 'https://figma.com/contact', '2026-10-22', 1)").run(leadId)
-    assert.throws(() => createDraft(db2, 'A', leadId, 'Acme'), /not_sales_contact/)
+    assert.throws(() => createDraft(db2, 'A', leadId, 'Acme', { manual: true }), /not_sales_contact/)
     const leadId2 = addLead(db2, 'A', { contact: null })
     db2.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'email', 'info@northside.example', 'https://northside.example/contact', '2026-10-22', 1)").run(leadId2)
     // An unrecorded crawled website needs the user's identity review first (see test/domain-review.test.ts); the same address on a domain the cited page itself is on does not.
-    assert.throws(() => createDraft(db2, 'A', leadId2, 'Acme'), /domain_unconfirmed/)
+    assert.throws(() => createDraft(db2, 'A', leadId2, 'Acme', { manual: true }), /domain_unconfirmed/)
     db2.prepare("INSERT INTO lead_enrichments (tenant_id, lead_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('A', ?, 'sitecrawl', 'domain', 'northside.example|evidence_own_domain', 'domain-basis-v1:evidence_own_domain', 'https://northside.example/careers/1', '2026-10-22', 1)").run(leadId2)
-    assert.ok(createDraft(db2, 'A', leadId2, 'Acme'))
+    assert.ok(createDraft(db2, 'A', leadId2, 'Acme', { manual: true }))
   }
   // Held by failed grading (fit 0, intent unset): not draftable until a rescan grades it.
-  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { fit: 0, intent: null }), 'Acme'), /lead_ungraded/)
+  assert.throws(() => createDraft(db, 'A', addLead(db, 'A', { fit: 0, intent: null }), 'Acme', { manual: true }), /lead_ungraded/)
   // A real grade of 0 (mismatch) and a never-scored lead (fit unset) stay draftable.
-  assert.ok(createDraft(db, 'A', addLead(db, 'A', { fit: 0, intent: 1 }), 'Acme'))
-  assert.ok(createDraft(db, 'A', addLead(db, 'A', { contact: 'x@unscored.example' }), 'Acme'))
+  assert.ok(createDraft(db, 'A', addLead(db, 'A', { fit: 0, intent: 1 }), 'Acme', { manual: true }))
+  assert.ok(createDraft(db, 'A', addLead(db, 'A', { contact: 'x@unscored.example' }), 'Acme', { manual: true }))
   const lead = addLead(db, 'A')
-  assert.throws(() => createDraft(db, 'B', lead, 'Acme'), /not_found/)
+  assert.throws(() => createDraft(db, 'B', lead, 'Acme', { manual: true }), /not_found/)
   suppress(db, 'A', 'INFO@northside.example', 'manual')
-  assert.throws(() => createDraft(db, 'A', lead, 'Acme'), /suppressed/)
+  assert.throws(() => createDraft(db, 'A', lead, 'Acme', { manual: true }), /suppressed/)
   const db2 = setup(); const l2 = addLead(db2, 'A')
-  createDraft(db2, 'A', l2, 'Acme')
-  assert.throws(() => createDraft(db2, 'A', l2, 'Acme'), /already_drafted/)
+  createDraft(db2, 'A', l2, 'Acme', { manual: true })
+  assert.throws(() => createDraft(db2, 'A', l2, 'Acme', { manual: true }), /already_drafted/)
 })
 
 test('approve needs sender identity and a connected Gmail; editing after approval drops the approval; other tenants cannot touch it', async () => {
   const db = setup(); await connect(db, 'A')
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme')
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true })
   assert.throws(() => approve(db, 'A', id), /sender_identity_missing/)
   ready(db)
   assert.throws(() => approve(db, 'B', id), /not_found/)
@@ -154,7 +154,7 @@ test('approve needs sender identity and a connected Gmail; editing after approva
 
 test('send: once only. repeated and concurrent calls never double send; footer, identity and unsubscribe headers are added', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
   const { sent, sendFn } = okSend()
   const results = await Promise.allSettled([sendMessage(db, 'A', id, deps({ sendFn })), sendMessage(db, 'A', id, deps({ sendFn }))])
   assert.equal(sent.length, 1)
@@ -174,7 +174,7 @@ test('send: once only. repeated and concurrent calls never double send; footer, 
 
 test('failure handling: definite Gmail refusals go back to approved; unknown outcomes become uncertain and are never auto resent', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
   const failing = (status: number) => ({ sendFn: (async () => { throw new GmailSendError(status) }) as never })
   await assert.rejects(sendMessage(db, 'A', id, deps(failing(429))), /gmail_rate_limited/)
   assert.equal((db.prepare('SELECT status FROM outreach_messages').get() as { status: string }).status, 'approved')
@@ -188,7 +188,7 @@ test('failure handling: definite Gmail refusals go back to approved; unknown out
   assert.equal(await sendMessage(db, 'A', id, deps({ sendFn })), 'sent')
   assert.equal(sent.length, 1)
   // network exception
-  const id2 = createDraft(db, 'A', addLead(db, 'A', { contact: 'x@other.example' }), 'Acme'); approve(db, 'A', id2)
+  const id2 = createDraft(db, 'A', addLead(db, 'A', { contact: 'x@other.example' }), 'Acme', { manual: true }); approve(db, 'A', id2)
   assert.equal(await sendMessage(db, 'A', id2, deps({ sendFn: (async () => { throw new TypeError('fetch failed') }) as never })), 'uncertain')
   resolveUncertain(db, 'A', id2, 'sent')
   assert.equal((db.prepare('SELECT status FROM outreach_messages WHERE id = ?').get(id2) as { status: string }).status, 'sent')
@@ -196,7 +196,7 @@ test('failure handling: definite Gmail refusals go back to approved; unknown out
 
 test('crash mid-send: a stale sending claim becomes uncertain, not sendable', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
   db.prepare("UPDATE outreach_messages SET status = 'sending', claimed_at = ? WHERE id = ?").run(NOW - 3600, id) // process died after claiming
   const { sent, sendFn } = okSend()
   await assert.rejects(sendMessage(db, 'A', id, deps({ sendFn })), /already_uncertain/)
@@ -205,7 +205,7 @@ test('crash mid-send: a stale sending claim becomes uncertain, not sendable', as
 
 test('a revoked Gmail grant stops sends and keeps the message approved', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
   const { sent, sendFn } = okSend()
   const revoked = (async () => json({ error: 'invalid_grant' }, 400)) as unknown as typeof fetch
   await assert.rejects(sendMessage(db, 'A', id, deps({ sendFn, fetchImpl: revoked })), /gmail_reconnect_needed/)
@@ -215,8 +215,8 @@ test('a revoked Gmail grant stops sends and keeps the message approved', async (
 
 test('suppression: enforced at send time, by unsubscribe token, and cancels pending drafts to that address', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
-  const other = createDraft(db, 'A', addLead(db, 'A'), 'Acme') // same address, second lead
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
+  const other = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }) // same address, second lead
   const { sent, sendFn } = okSend()
   // the recipient unsubscribes between approval and send
   db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES ('A','info@northside.example','manual')").run()
@@ -227,7 +227,7 @@ test('suppression: enforced at send time, by unsubscribe token, and cancels pend
   void other
 
   const db2 = setup(); await connect(db2, 'A'); ready(db2)
-  const a = createDraft(db2, 'A', addLead(db2, 'A'), 'Acme'); const b = createDraft(db2, 'A', addLead(db2, 'A'), 'Acme'); approve(db2, 'A', b)
+  const a = createDraft(db2, 'A', addLead(db2, 'A'), 'Acme', { manual: true }); const b = createDraft(db2, 'A', addLead(db2, 'A'), 'Acme', { manual: true }); approve(db2, 'A', b)
   const token = unsubToken(a, master)
   assert.equal(readUnsubToken(token, master), a)
   assert.equal(readUnsubToken(token.slice(0, -1) + (token.endsWith('0') ? '1' : '0'), master), null)
@@ -243,7 +243,7 @@ test('suppression: enforced at send time, by unsubscribe token, and cancels pend
 test('daily cap stops sends past the limit', async () => {
   const db = setup(); await connect(db, 'A'); ready(db)
   for (let i = 0; i < 30; i++) db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, claimed_at) VALUES (?, 'A', ?, 'a@b.example', 's', 'body body body body body', 'sent', ?)").run(String(i).padStart(24, '0'), 'l' + i, NOW - 100)
-  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
+  const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
   const { sent, sendFn } = okSend()
   await assert.rejects(sendMessage(db, 'A', id, deps({ sendFn })), /daily_cap/)
   assert.equal(sent.length, 0)
@@ -262,14 +262,14 @@ test('test bypass: exact operator tenant + exact inbox + exact list only; revoke
  const db=setup(); migrateSequences(db); await connect(db,'B'); await connect(db,'A'); ready(db)
  delete process.env.OUTREACH_TEST_TENANT_ID
  setTestAddresses(db,'A',['instinct114114@gmail.com','other@gmail.com'])
- assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'instinct114114@gmail.com'}),'Acme'),/personal_email/)
+ assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'instinct114114@gmail.com'}),'Acme', { manual: true }),/personal_email/)
  process.env.OUTREACH_TEST_TENANT_ID='A'
  try {
-  assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'other@gmail.com'}),'Acme'),/personal_email/)
-  const id=createDraft(db,'A',addLead(db,'A',{contact:'instinct114114@gmail.com'}),'Acme'); approve(db,'A',id)
+  assert.throws(()=>createDraft(db,'A',addLead(db,'A',{contact:'other@gmail.com'}),'Acme', { manual: true }),/personal_email/)
+  const id=createDraft(db,'A',addLead(db,'A',{contact:'instinct114114@gmail.com'}),'Acme', { manual: true }); approve(db,'A',id)
   assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id=?').get(id) as {test:number}).test,1)
   setTestAddresses(db,'B',['instinct114114@gmail.com'])
-  assert.throws(()=>createDraft(db,'B',addLead(db,'B',{contact:'instinct114114@gmail.com'}),'Acme'),/personal_email/)
+  assert.throws(()=>createDraft(db,'B',addLead(db,'B',{contact:'instinct114114@gmail.com'}),'Acme', { manual: true }),/personal_email/)
   delete process.env.OUTREACH_TEST_TENANT_ID
   await assert.rejects(sendMessage(db,'A',id,deps()),/personal_email/)
  } finally { delete process.env.OUTREACH_TEST_TENANT_ID }
@@ -277,7 +277,7 @@ test('test bypass: exact operator tenant + exact inbox + exact list only; revoke
 
 test('existing approved draft cannot send after lead becomes held; successful regrade permits it', async () => {
  const db = setup(); await connect(db, 'A'); ready(db)
- const lead = addLead(db, 'A'), id = createDraft(db, 'A', lead, 'Acme'); approve(db, 'A', id)
+ const lead = addLead(db, 'A'), id = createDraft(db, 'A', lead, 'Acme', { manual: true }); approve(db, 'A', id)
  const { sent, sendFn } = okSend()
  db.prepare('UPDATE leads SET fit=0, intent=NULL WHERE id=?').run(lead)
  await assert.rejects(sendMessage(db,'A',id,deps({sendFn})), /lead_ungraded/)
@@ -288,7 +288,7 @@ test('existing approved draft cannot send after lead becomes held; successful re
 
 test('held status is rechecked after async token refresh', async () => {
  const db = setup(); await connect(db, 'A'); ready(db)
- const lead = addLead(db,'A'), id = createDraft(db,'A',lead,'Acme'); approve(db,'A',id)
+ const lead = addLead(db,'A'), id = createDraft(db,'A',lead,'Acme', { manual: true }); approve(db,'A',id)
  const {sent,sendFn} = okSend()
  const d = deps({sendFn})
  const fetchImpl = d.fetchImpl!
@@ -302,14 +302,14 @@ test('approval freezes lead signal context, preserving secondary signals and tes
   await connect(db,'A')
   db.prepare("UPDATE leads SET signals='[\"hiring\",\"funding\"]',signal_kind='hiring',source_kind='query' WHERE id=?").run(lead)
   saveSettings(db,'A',{sender_name:'Pat',postal_address:'1 King St W, Toronto ON M5H 1A1'})
-  const id=createDraft(db,'A',lead,'Seller'); approve(db,'A',id)
+  const id=createDraft(db,'A',lead,'Seller', { manual: true }); approve(db,'A',id)
   const row=db.prepare('SELECT signals_json,signal_kind,source_kind FROM outreach_signal_context WHERE message_id=?').get(id) as any
   assert.deepEqual(row,{signals_json:'["hiring","funding"]',signal_kind:'hiring',source_kind:'query'})
 })
 
 test('known recruitment context blocks approval and rechecks after token await without changing approved words',async()=>{
  const db=setup();await connect(db,'A');ready(db)
- const lead=addLead(db,'A'),draft=createDraft(db,'A',lead,'Seller')
+ const lead=addLead(db,'A'),draft=createDraft(db,'A',lead,'Seller', { manual: true })
  db.prepare("UPDATE leads SET evidence_excerpt='Send your CV to info@northside.example' WHERE id=?").run(lead)
  assert.throws(()=>approve(db,'A',draft),/not_sales_contact/)
  db.prepare("UPDATE leads SET evidence_excerpt='Northside Builders is hiring five roofers' WHERE id=?").run(lead);approve(db,'A',draft)
@@ -346,7 +346,7 @@ test('a crawled address needs the user identity review at approve and at send, n
   assert.equal(sent.length, 1)
   // An address printed on the cited page is unaffected.
   const own = addLead(db, 'A')
-  const id2 = createDraft(db, 'A', own, 'Acme'); approve(db, 'A', id2)
+  const id2 = createDraft(db, 'A', own, 'Acme', { manual: true }); approve(db, 'A', id2)
 })
 
 test('unreadable crawl state holds a non-email lead (fail closed), and the review check shares the write lock of approve and of the send claim', async () => {
@@ -445,7 +445,7 @@ test('current email contact + unreadable crawl table is held with review_unreada
 test('an unverifiable handoff (no usable provider message id) is never marked sent: uncertain, tenant paused, no automatic retry', async () => {
   for (const bad of [undefined, null, {}, { id: '' }, { id: '   ' }, { id: 7 }, { id: ['x'] }, { threadId: 'th1' }]) {
     const db = setup(); await connect(db, 'A'); ready(db)
-    const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme'); approve(db, 'A', id)
+    const id = createDraft(db, 'A', addLead(db, 'A'), 'Acme', { manual: true }); approve(db, 'A', id)
     let calls = 0
     const sendFn = (async () => { calls++; return bad }) as never
     assert.equal(await sendMessage(db, 'A', id, deps({ sendFn })), 'uncertain', JSON.stringify(bad))

@@ -54,7 +54,7 @@ const [webhook, signins, processed] = await Promise.all([
     }
     return n
   })(),
-  (async () => { for (let i = 0; i < 8; i++) await tfSearch(db, process.env.MI_TENANT!, `query ${name} ${i}`, {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'tf-test', TINYFISH_PER_MINUTE: '6' } }) })(),
+  (async () => { for (let i = 0; i < 8; i++) await tfSearch(db, process.env.MI_TENANT!, `query ${name} ${i}`, {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'tf-test', TINYFISH_ENABLED: '1', TINYFISH_PER_MINUTE: '6' } }) })(),
 ])
 const finishedAt = Date.now()
 await db.close()

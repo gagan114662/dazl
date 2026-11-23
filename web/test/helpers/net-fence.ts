@@ -21,6 +21,11 @@ process.env.DAZL_FREE_SITE_FINDER = '0'
 // The Claude discovery lane (lib/scan/runner.ts runDiscoverLane) stays off in fenced tests, so a scan run with stubbed providers keeps the
 // path it was written for; a test of the lane passes discover: true and its own canned loop.
 process.env.DAZL_DISCOVER_LANE = '0'
+// TinyFish is off unless the operator switches it on by name (TINYFISH_ENABLED=1, lib/search/tinyfish.ts; owner rule #1435). The tests of
+// the older engine were written when a key alone switched it on, so the fence names the switch for them: a test that sets a TinyFish key
+// gets the path it was written for. A test of the default passes its own env (test/claude-only-1435.test.ts); a test that sets
+// TINYFISH_ENABLED itself keeps its own value. Without a key TinyFish stays off here as everywhere.
+process.env.TINYFISH_ENABLED ??= '1'
 // 1b) Store fence: code under test that reaches the app's own store (getAuthDb / getDb, e.g. the shared rate limiter in
 //     a route) must never open the default production path. A test that did not choose a DB_PATH gets a throwaway
 //     SQLite file for this process, removed on exit.

@@ -146,7 +146,7 @@ test('#1157 a free call answered 402 leaves a DURABLE maybe-billed mark, so a la
   const id = createQueryJob(db, 'A', { query: 'free 402' })
   db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1, claimed_at = 1 WHERE id = ?").run(id)
   const f = (async () => new Response('{}', { status: 402 })) as unknown as typeof fetch
-  const uncertain = await runWithScanSpend({ db, jobId: id, tenantId: 'A', attempt: 1, cap: scanCapConfig({}), accountLimits: null, clock: () => T0 }, async () => { await tfSearch(db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }); return spendAttemptUncertain() })
+  const uncertain = await runWithScanSpend({ db, jobId: id, tenantId: 'A', attempt: 1, cap: scanCapConfig({}), accountLimits: null, clock: () => T0 }, async () => { await tfSearch(db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, fetchImpl: f, now: T0 }); return spendAttemptUncertain() })
   assert.equal(uncertain, true)
   const calls = await scanSpendCalls(db, id, 'A')
   assert.deepEqual(calls.map(c => [c.kind, c.status, c.reserve_usd]), [['tinyfish.search', 'reserved', 0]])

@@ -8,6 +8,9 @@ export const DRAFT_UNREADABLE_COPY = 'Your AI key worked, but its answer could n
 
 export const PROVIDER_FAILED_COPY = 'The AI provider did not return an answer, so nothing was filled in. Your key was not rejected. Try again shortly.'
 
+// #1435: dazl finds leads with Claude only. A workspace whose only key is from another provider is told so, with the next step.
+export const CLAUDE_KEY_REQUIRED_COPY = 'dazl searches with Claude. Add your Anthropic key in Settings to run a search. No search was run and nothing was charged.'
+
 // Friendly copy for codes that mean the same thing on every surface.
 // Returns null for codes a caller phrases in its own context (or unknown
 // codes), so the caller keeps its specific fallback.
@@ -15,6 +18,8 @@ export function knownErrorCopy(code: unknown): string | null {
   switch (code) {
     case 'scan_active':
       return 'A scan is still running or finishing. Wait for it to end before starting another.'
+    case 'claude_key_required':
+      return CLAUDE_KEY_REQUIRED_COPY
     case 'key_unreadable':
       return KEY_UNREADABLE_COPY
     case 'key_rejected':

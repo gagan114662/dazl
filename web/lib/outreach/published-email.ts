@@ -1,4 +1,5 @@
 import { isRecruitingInbox } from '../recruiting-inbox.ts'
+import { discoverContactNote } from '../discover/card.ts'
 import {contextRestriction,readContextLabel,type ContactContext} from './contact-context.ts'
 export const PUBLISHED_EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
 const address = (value: string | null) => value?.trim().toLowerCase() ?? ''
@@ -141,6 +142,9 @@ export function contactSearchNote(lead: PublishedEmailLead & { confidence?: numb
   if (lead.contact) return null
   // #1571: a discovery-lane lead's published address is its own record (connector 'discover'); with one, there is no "no contact" note
   if ((lead.enrichments ?? []).some(r => (r as { connector?: string }).connector === 'discover' && r.kind === 'email' && !!r.value)) return null
+  // #1579: the named person's LinkedIn profile is stored, so "no contact stored" would be untrue; what is missing is their own email
+  const profileKnown = discoverContactNote(lead as never)
+  if (profileKnown) return profileKnown
   if ((lead.confidence === null || lead.confidence === undefined) && lead.human_confirmed_at) return 'No contact stored. Automatic contact search only runs for machine-verified leads; you can ask dazl to look on the company website below.'
   if (lead.confidence === null || lead.confidence === undefined) return 'No contact stored. Contact search only runs for machine-verified leads; this lead is not machine-verified.'
   if (lead.company_domain) return `No published contact stored. Company website identified: ${lead.company_domain}. This does not prove no address exists.`

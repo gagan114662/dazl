@@ -64,7 +64,7 @@ import { effectiveCapUsd, noteAccountLimitRefusal, reserveScanSpend, scanSpendCo
 import { captureError } from '../ops/errors.ts'
 import { anthropicCountTokens, callCostUsd, guardProvider, PooledGuard, reserveAllUsd, SpendAccountingFailed, SpendGuard, SpendRefused } from '../llm/spend-guard.ts'
 import { accountLimits, OWNER_POOL_LIMIT_REASON, ownerLimits, ownerSetting, PENDING_STALE_S, sharedPool } from '../llm/spend-pool.ts'
-import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
+import { settlePinnedTrialReservation, settleTrialReservation, trialCaps, trialTinyfishPrices, TRIAL_BUDGET_REASON } from '../billing/trial-budget.ts'
 import { outsideScanSpend, runWithScanSpend, scanCapConfig } from './spend-cap.ts'
 import { recordingFetcher, summarizeProvenance, type FetchOutcome } from './verify-provenance.ts'
 import { applyEvidenceQualityGate, applyIcpGate, GRADING_FAILED_WHY, holdUngraded, icpTextFor, nativeQueryIcpTextFor, NOT_GRADED_WHY, OFFER_UNRESOLVED_WHY, scoreLeads, sellerOfferBlock } from './score.ts'
@@ -1420,7 +1420,7 @@ async function runJobUntraced(db: Database.Database, job: Job, deps: RunDeps): P
 // Claude as written.
 // On for an ordinary request on the workspace's own Anthropic key. DAZL_DISCOVER_LANE=0 switches it off.
 // A free-trial scan (dazl's own key) uses it only when the trial's per-scan reserve (DAZL_TRIAL_SCAN_RESERVE_USD) is at least
-// DISCOVER_TRIAL_MIN_USD, and then with a smaller search budget so a run fits that reserve. Below that it keeps the older path.
+// DISCOVER_TRIAL_MIN_USD, and then with a smaller search budget so a run fits that reserve. Below that the scan ends as not available.
 export const DISCOVER_SOURCE_KIND = 'discover'
 const DISCOVER_RESERVE_USD = 1.5   // the worst case reserved before the call; the settled cost is what the run really used
 export const DISCOVER_TRIAL_MIN_USD = 0.3   // the least a run can do anything useful with (measured: US$0.08 to US$0.20 at the smallest budget)
@@ -1431,6 +1431,13 @@ const DISCOVER_TINY_BUDGET = { maxSearches: 5, maxFetches: 4, enrichLeads: 2 } a
 export function discoverLaneEnabled(job: Pick<Job, 'query' | 'csv_domain' | 'watch_id' | 'funded_by'>, vendor: string | null, env: Record<string, string | undefined> = process.env, trialReserveUsd: number | null = null): boolean {
   if (job.funded_by === 'trial' && !(trialReserveUsd !== null && trialReserveUsd >= DISCOVER_TRIAL_MIN_USD)) return false
   return env.DAZL_DISCOVER_LANE !== '0' && vendor === 'anthropic' && !!job.query && job.query.trim().length >= 3 && !job.csv_domain
+}
+// Whether this request belongs to the lane at all: an ordinary request (not a CSV/company job) with the lane not switched off by name.
+// Whether the lane can then RUN (an Anthropic key, enough of a free scan's limit) is discoverLaneEnabled; when it cannot, the scan ends
+// with that reason instead of running the older engine.
+export function laneSwitchedOn(job: Pick<Job, 'query' | 'csv_domain'>, deps: Pick<RunDeps, 'discover'>, env: Record<string, string | undefined> = process.env): boolean {
+  if (job.csv_domain || !job.query || job.query.trim().length < 3) return false
+  return deps.discover === true || (deps.discover !== false && env.DAZL_DISCOVER_LANE !== '0')
 }
 const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
 function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
@@ -1445,14 +1452,24 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed' | 'no_room'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   // What this run may still spend: the tightest of the job's own budget, the account's limits and the scan's cap. With room for a full
   // run it gets the full search budget; with less (a free-trial run, or a request that set its own lower limit) it gets the smaller
-  // budget and reserves what there is; with too little for even that, the lane does not run and the older path takes the request.
+  // budget and reserves what there is; with too little for even that, the scan stops and says so.
   const ctx = scanSpendContext()
   const capRoom = ctx ? (effectiveCapUsd(ctx) ?? 0) - ((await scanSpendRow(ctx.db, ctx.jobId, ctx.tenantId))?.spend_cap_reserved_usd ?? 0) : Infinity
   const room = Math.min(capRoom, trialReserveUsd ?? Infinity, ...spendGuards.map(g => g.limitUsd - g.reservedUsd))
-  if (!(room >= DISCOVER_TRIAL_MIN_USD)) return 'no_room'
+  if (!(room >= DISCOVER_TRIAL_MIN_USD)) {
+    // Claude only (#1435): too little is left for even the smallest search. The scan stops as a budget stop that names the limit and
+    // what was left; the older engine never runs in its place. Nothing was reserved or sent here.
+    // on a tie the named limit (the run's own, the account's, the free scan's) is reported rather than the recorded cap that mirrors it
+    const limits = [...spendGuards.map(g => ({ usd: g.limitUsd - g.reservedUsd, reason: g.label })), ...(trialReserveUsd !== null ? [{ usd: trialReserveUsd, reason: TRIAL_BUDGET_REASON }] : []), { usd: capRoom, reason: 'over_cap' }]
+    const tightest = limits.reduce((a, b) => (b.usd < a.usd ? b : a))
+    ledger.record('search:claude_discover', 'skipped_hold')
+    ledger.report({ stop: { code: 'budget_stopped', spend_refusal_reason: tightest.reason, room: { left_usd: Math.max(0, Math.floor((Number.isFinite(room) ? room : 0) * 100) / 100), needed_usd: DISCOVER_TRIAL_MIN_USD } } })
+    finish(db, job, 'failed', 'budget_stopped', null, null, ledger)
+    return 'failed'
+  }
   const small = room < DISCOVER_RESERVE_USD
   const reserveUsd = Math.min(DISCOVER_RESERVE_USD, Math.floor(room * 100) / 100)
   const source = 'search:claude_discover'
@@ -1599,16 +1616,27 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // from TinyFish or the free news search ends as stopped, not empty), and no people search, advanced sources or
     // autopilot (TinyFish or other paid calls the trial charge does not see).
     if (trial || companyFirst) deps = { ...deps, paidFallback: false, ...(companyFirst ? { creditEnrichment: false } : {}) }
-    if (trial) trialCharges.set(job, async (kind, units) => { await reserveAllUsd(spendGuards, units * (kind === 'search' ? trial.tinyfishSearchUsd : trial.tinyfishFetchUsd)) })
+    // #1602: the TinyFish prices are no longer part of the trial's caps. Without them (NaN here) every TinyFish step of a free scan is
+    // refused before it is sent: the charge below does not fit any limit, and the two planners further down plan zero searches.
+    const trialTf = trial ? trialTinyfishPrices() : null, trialTfSearchUsd = trialTf?.searchUsd ?? NaN, trialTfFetchUsd = trialTf?.fetchUsd ?? NaN
+    if (trial) trialCharges.set(job, async (kind, units) => { await reserveAllUsd(spendGuards, units * (kind === 'search' ? trialTfSearchUsd : trialTfFetchUsd)) })
     // Narrowing flags of a query job's own budget (paid_fallback / credit_enrichment / judge = false). They only ever switch a paid
     // surface off; before this the query path honoured max_usd but ignored the flags.
     if (!job.csv_domain) deps = budgetDeps(deps, parseRunBudget(job.run_budget))
     if (job.csv_domain) return await runCompanyJob(db, job, providers_[vendor], vendor, key, budgetDeps(deps, parseRunBudget(job.run_budget)), ledger)
     // The lane also takes the first-run screen's "search with Claude" choice and the company-first rollout: both were narrower
     // versions of the same idea (two to twelve searches, one workspace) and both returned leads that were then held.
-    if (deps.discover !== false && discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env, trial?.reserveUsd ?? null)) {
-      const lane = await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
-      if (lane !== 'no_room') return lane
+    // Claude only (#1435): a request either runs in the lane or ends with a reason the person can act on. It never falls through to the
+    // older engine below. That engine is reached only with the lane switched off by name (DAZL_DISCOVER_LANE=0, or discover: false from a
+    // test), which is how its own tests still run it.
+    if (laneSwitchedOn(job, deps)) {
+      if (!discoverLaneEnabled(job, vendor, deps.discover ? {} : process.env, trial?.reserveUsd ?? null)) {
+        // A free scan: its per-scan limit is too small for a Claude search, or dazl's own key is not a Claude key. Otherwise the
+        // workspace's key is not an Anthropic key. No model call was made and nothing was charged.
+        finish(db, job, 'failed', trial ? 'trial_unavailable' : 'claude_key_required', null, null, ledger)
+        return 'failed'
+      }
+      return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
     }
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
@@ -1753,7 +1781,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     // A free-trial play's fallback never plans into the last FIRST_PLAY_TRIAL_KEEP of the trial reserve (left for the checks after the
     // scan), the same rule as its people step: the caps shrink to what fits, priced at the trial's own search and page-read prices.
     if (trial && trialGuard && playCaps.searches > 0) {
-      const sp = trial.tinyfishSearchUsd, fp = trial.tinyfishFetchUsd, full = playCaps
+      const sp = trialTfSearchUsd, fp = trialTfFetchUsd, full = playCaps
       const room = trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP) - trialGuard.reservedUsd
       const fetchesFor = (n: number) => n === full.searches ? full.fetches : Math.floor(full.fetches * n / full.searches)
       let n = Number.isFinite(sp) && sp >= 0 && Number.isFinite(fp) && fp >= 0 && Number.isFinite(room) ? full.searches : 0
@@ -2533,7 +2561,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
       // One search per distinct company (the pass searches each company once), at most the cap.
       // The leads the pass can search (searchable-holds.ts searchableCompanyCount): a row it can never search reserves nothing. It may still
       // search fewer (a lead the crawl names first, a request with no buyer role): the reserve over-counts then, never under.
-      const want = Math.min(firstPlayPeopleCap(), searchableCompanyCount([...outcome.leads, ...outcome.review], companyKey)), price = trial.tinyfishSearchUsd
+      const want = Math.min(firstPlayPeopleCap(), searchableCompanyCount([...outcome.leads, ...outcome.review], companyKey)), price = trialTfSearchUsd
       // An unusable price (not a finite number >= 0) makes no search at all: never an unpriced trial search.
       const room = !(Number.isFinite(price) && price >= 0) ? 0 : price > 0 ? Math.floor((trialGuard.limitUsd * (1 - FIRST_PLAY_TRIAL_KEEP) - trialGuard.reservedUsd) / price + 1e-9) : want
       const k = Math.max(0, Math.min(want, Number.isFinite(room) ? room : 0))

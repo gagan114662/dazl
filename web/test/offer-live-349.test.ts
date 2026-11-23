@@ -242,7 +242,7 @@ test('#349 live records: drafting, rewrite, follow-ups and scoring use the denta
   const providers = { anthropic: { completeDetailed: async (_k: string, prompt: string) => { prompts.push(prompt); return { text: 'x', model: 'm' } } } } as unknown as Record<string, Provider>
   const body = (id: string) => (db.prepare('SELECT body FROM outreach_messages WHERE id = ?').get(id) as { body: string }).body
   try {
-    const d = createDraft(db, T, `lead-${DENTAL_ID}`, 'Acme')
+    const d = createDraft(db, T, `lead-${DENTAL_ID}`, 'Acme', { manual: true })
     assert.match(body(d), /appointment booking and reminder software/)
     // the stub answers "x", which is unusable as a rewrite: what matters is that the rewrite ran (one provider call) with the dental offer and was not refused for the offer
     const pol = await polishDraft(db, T, d, "Acme", { master, providers }) as { rewritten: boolean; reason?: string }
@@ -250,7 +250,7 @@ test('#349 live records: drafting, rewrite, follow-ups and scoring use the denta
     assert.equal(prompts.length, 1); assert.match(prompts[0], /appointment booking and reminder software/); assert.doesNotMatch(prompts[0], /CRM/)
     assert.match(memoryForLead(db, T, `lead-${DENTAL_ID}`)!.positioning, /appointment booking/)
     assert.match(offerBlockFor(db, T, DENTAL_ID), /appointment booking/)
-    assert.throws(() => createDraft(db, T, `lead-${LONDON_ID}`, 'Acme'), /offer_conflict/)
+    assert.throws(() => createDraft(db, T, `lead-${LONDON_ID}`, 'Acme', { manual: true }), /offer_conflict/)
     assert.equal(memoryForLead(db, T, `lead-${LONDON_ID}`)?.positioning ?? '', '')
     assert.equal(offerBlockFor(db, T, LONDON_ID), '')
     assert.equal(prompts.length, 1, 'no provider call for the contested play')

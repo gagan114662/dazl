@@ -75,7 +75,7 @@ test('[pg] the TinyFish breaker one instance trips stops the other instance too'
   try {
     await runPgMigrations(one.pool)
     const now = 1_793_000_000
-    const env = { TINYFISH_API_KEY: 'tf-test' }
+    const env = { TINYFISH_API_KEY: 'tf-test', TINYFISH_ENABLED: '1' }
     let calls = 0
     const limited = (async () => { calls++; return new Response('{}', { status: 429 }) }) as unknown as typeof fetch
     const fine = (async () => { calls++; return new Response(JSON.stringify({ results: [] }), { status: 200 }) }) as unknown as typeof fetch

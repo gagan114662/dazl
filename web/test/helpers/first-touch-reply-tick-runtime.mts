@@ -25,7 +25,7 @@ import { POST as tick } from '../../app/api/internal/tick/route.ts'
 delete process.env.DAZL_ENV // production mode: the tick's syncReplies reads Gmail (here: the stub below)
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 process.env.GOOGLE_CLIENT_ID = 'cid.apps.googleusercontent.com'; process.env.GOOGLE_CLIENT_SECRET = 'synthetic'
-process.env.AUTOPILOT_ENABLED = '1'
+process.env.AUTOPILOT_AVAILABLE = '1'; process.env.AUTOPILOT_ENABLED = '1'
 process.env.AUTOPILOT_TICK_SECRET = 'test-tick-secret'
 
 // ---------- stubbed Google: token refresh + thread reads + the bounded daemon-notice search; anything else throws ----------

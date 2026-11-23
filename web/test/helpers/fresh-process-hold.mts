@@ -11,6 +11,6 @@ const db = new Database(file)
 const out: Record<string, unknown> = { heldBefore: requiredGateHeld(db, 'A', leadId) }
 out.confirmed = await confirmLeadReview(sqliteDb(db), 'A', leadId)
 try { setDomainReview(db, 'A', leadId, 'confirm'); out.domain = 'confirmed' } catch (e) { out.domain = `refused: ${(e as Error).message}` }
-try { out.draft = createDraft(db, 'A', leadId, 'Acme') } catch (e) { out.draftError = (e as Error).message }
+try { out.draft = createDraft(db, 'A', leadId, 'Acme', { manual: true }) } catch (e) { out.draftError = (e as Error).message }
 out.heldAfter = requiredGateHeld(db, 'A', leadId)
 console.log(`RESULT ${JSON.stringify(out)}`)

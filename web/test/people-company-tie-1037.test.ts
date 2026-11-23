@@ -28,7 +28,7 @@ import { SpendRefused } from '../lib/llm/spend-guard.ts'
 
 const WHO = ['Founder', 'CEO', 'Co-Founder']
 const ICP = { summary: 'Founders or CEOs at B2B SaaS startups hiring their first sales rep', who: WHO, industries: ['B2B SaaS'], sizes: [], where: [], signals: ['Hiring first sales rep'], exclude: [] }
-const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
+const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', TINYFISH_TENANT_DAILY: '50' }
 const LEADS: [id: string, company: string, source_url: string][] = [
   ['L-nautilus', 'Nautilus', 'https://www.ycombinator.com/companies/nautilus/jobs/ePUjzKu-senior-bdr'],
   ['L-garage', 'Garage', 'https://www.ycombinator.com/companies/garage-2/jobs/oESnEDf-founding-sales-development-representative-sdr'],

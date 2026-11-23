@@ -33,7 +33,10 @@ export const limits = (env: Env = process.env): Limits => ({
   globalFetchDaily: n(env.TINYFISH_GLOBAL_FETCH_DAILY, 400), // docs: Fetch is free to 1,000 URLs/day
   perMinute: n(env.TINYFISH_PER_MINUTE, 20), // docs: 30 requests/minute default on Search
 })
-export const tinyfishEnabled = (env: Env = process.env) => !!env.TINYFISH_API_KEY && env.TINYFISH_ENABLED !== '0'
+// Claude only (#1435): off unless the operator switches it on by name. A key that is merely present never turns it on, so no scan
+// reaches this service by default. Every caller (the scan's search and page reads, the people search, the X search, the index check)
+// asks this one function.
+export const tinyfishEnabled = (env: Env = process.env) => !!env.TINYFISH_API_KEY && env.TINYFISH_ENABLED === '1'
 
 export function migrateTinyfish(db: Database.Database): void {
   migratePlatform(db) // the minute window and the breaker live in the shared rate_limits table

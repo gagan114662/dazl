@@ -211,7 +211,7 @@ function scan(): { raw: Database.Database; db: ReturnType<typeof sqliteDb> } {
 }
 type Call = (f: typeof fetch, raw: Database.Database) => Promise<unknown>
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
-const TF_ENV = { TINYFISH_API_KEY: 'tf-test' }
+const TF_ENV = { TINYFISH_API_KEY: 'tf-test', TINYFISH_ENABLED: '1' }
 const TRANSPORTS: { name: string; kind: SpendKind; call: Call; reply: () => Response }[] = [
   { name: 'anthropic completion', kind: 'llm.anthropic', call: f => anthropicProvider.completeDetailed!('sk-test', 'hello', f, 50), reply: () => ok({ id: 'm', model: 'claude-sonnet-4-5-20250929', content: [{ type: 'text', text: 'hi' }], usage: { input_tokens: 5, output_tokens: 2 } }) },
   { name: 'openai completion', kind: 'llm.openai', call: f => openaiProvider.completeDetailed!('sk-test', 'hello', f, 50), reply: () => ok({ id: 'r', model: 'gpt-4.1-2025-04-14', output: [{ type: 'message', content: [{ type: 'output_text', text: 'hi' }] }], usage: { input_tokens: 5, output_tokens: 2 } }) },

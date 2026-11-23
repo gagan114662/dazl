@@ -19,7 +19,7 @@ import { POST as tick } from '../../app/api/internal/tick/route.ts'
 process.env.DAZL_ENV = 'staging'
 process.env.DAZL_STAGING_FAKE_REPLIES = '1'
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
-process.env.AUTOPILOT_ENABLED = '1'
+process.env.AUTOPILOT_AVAILABLE = '1'; process.env.AUTOPILOT_ENABLED = '1'
 process.env.AUTOPILOT_TICK_SECRET = 'test-tick-secret'
 
 const db = new Database(':memory:')

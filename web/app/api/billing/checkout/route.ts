@@ -9,6 +9,7 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
+import { BILLING_BETA_TEXT, billingAvailable } from '@/lib/beta'
 
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -17,6 +18,9 @@ export async function POST(req: NextRequest) {
   const old = stale(user); if (old) return old
 
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  // Beta rule (owner, 2026-11-23): dazl is free during the beta. No checkout is started, whatever the page shows, unless the operator
+  // sets BILLING_AVAILABLE=1 (lib/beta.ts). Stripe is never called on this path.
+  if (!billingAvailable()) return NextResponse.json({ error: BILLING_BETA_TEXT, code: 'billing_unavailable' }, { status: 403 })
   if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_PRICE_PRO) return NextResponse.json({ error: 'Billing is not available yet' }, { status: 503 })
   if (!(await rateLimit(`checkout:${user.tenantId}`, 10, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many attempts' }, { status: 429 })
   const db = await getDb()

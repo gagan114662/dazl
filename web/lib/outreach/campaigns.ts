@@ -12,7 +12,7 @@ import { discoverCounts, type DiscoverCounts } from '../discover/card.ts'
 import { DISCOVER_LEAD_COLUMNS, discoverNoTable, discoverStatesFromRows, discoverStatesOfDb, discoverStoredSql, type DiscoverStoredRow } from '../discover/state-db.ts'
 import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
-import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
+import { approveBlockReason, manualDraftBlockReason, sendBlockReason } from './service.ts'
 
 // One row per search (a scan job is a campaign, as in the Outreach analytics): discovery -> qualification -> contact ->
 // outreach -> sequence -> reply, and the single next action. Read-only and tenant-scoped: every count is limited to the
@@ -41,7 +41,9 @@ export interface Campaign {
   qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number; noContact?: number; discover?: DiscoverCounts }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
-  contact: { withContact: number; readyWithContact: number; draftable: number }
+  // linkedinOnly (#1583): leads Approve cannot draft an email for, whose named person's own LinkedIn profile is known and whose proof
+  // holds - the card offers "Message on LinkedIn" (lib/discover/card.ts discoverLinkedIn). The user writes and sends that message.
+  contact: { withContact: number; readyWithContact: number; draftable: number; linkedinOnly?: number }
   // Stored counts, then what the real gates say about them right now (approveBlockReason / sendBlockReason):
   // ready = the gate accepts it; setup = refused only for sender details or Gmail; held = refused for anything else.
   outreach: { drafts: number; approved: number; sent: number; draftsReady: number; draftsSetup: number; draftsHeld: number; approvedReady: number; approvedSetup: number; approvedHeld: number }
@@ -156,7 +158,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       else unverified++
     }
     // The real gates, not a re-derivation: currentnessHeld is what holds drafting until timing is confirmed, and
-    // draftBlockReason runs every createDraft check without writing. A stored contact alone never counts as ready.
+    // manualDraftBlockReason runs every check the Approve button's createDraft makes, without writing. A stored contact alone never counts as ready.
     const heldIds = new Set(liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && currentnessHeld(db, tenantId, r.id)).map(r => r.id))
     const held = heldIds.size
     // Of those, the ones only a hold no check can lift keeps: the time window, someone else's customer, a different place, a closed
@@ -195,14 +197,17 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const an = sequenceAnalytics(db, tenantId, leadIds)
     const interested = leadIds.length ? n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification = 'positive' AND lead_id IN (${leadIds.map(() => '?').join(',')})`, tenantId, ...leadIds) : 0
     const drafted = new Set((db.prepare('SELECT lead_id FROM outreach_messages WHERE tenant_id = ?').all(tenantId) as { lead_id: string }[]).map(r => r.lead_id))
-    // a discovery lead can be drafted only when it is ready by email, and then the draft check itself still decides
+    // a discovery lead can be drafted only when it is ready by email; #1583: the gate read is the Approve button's own (a person asks for
+    // the draft). Every draft is made by hand during the beta.
     const emailReady = dStates ? every.filter(r => dStates.get(r.id) === 'ready_email') : []
-    const undrafted = [...liveRows, ...emailReady].filter(r => !byChecks(r.id) && !drafted.has(r.id) && draftBlockReason(db, tenantId, r.id) === null).length
+    const undrafted = [...liveRows, ...emailReady].filter(r => !byChecks(r.id) && !drafted.has(r.id) && manualDraftBlockReason(db, tenantId, r.id) === null).length
+    // ready on LinkedIn (the one state rule, lib/discover/card.ts discoverState): the card's "Message on LinkedIn"
+    const linkedinOnly = dc?.ready_linkedin ?? 0
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
       qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected, heldByChecks, ...(dc ? { noContact: dc.no_contact, discover: dc } : {}) },
-      contact: { withContact, readyWithContact, draftable: undrafted },
+      contact: { withContact, readyWithContact, draftable: undrafted, ...(linkedinOnly > 0 ? { linkedinOnly } : {}) }, // linkedinOnly only when there is one: absent reads as none
       outreach: { drafts, approved, sent, draftsReady: d.ready, draftsSetup: d.setup, draftsHeld: d.held, approvedReady: a.ready, approvedSetup: a.setup, approvedHeld: a.held },
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
       reply: { replied: an.replied, interested, bounced: an.bounced, optOuts: an.optOuts },
@@ -232,9 +237,10 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   // Every lead this search found has been rejected: none passed, whatever the scan recorded when it finished.
   if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
-  // New-engine leads that are ready on LinkedIn: the user sends the first message there themselves (lib/discover/card.ts discoverLinkedIn).
-  const onLinkedIn = c.qualification.discover?.ready_linkedin ?? 0
-  if (onLinkedIn > 0) return { label: `Message ${plural(onLinkedIn, 'lead', 'leads')} on LinkedIn`, href: leadsHref }
+  // No email draft is possible for these, but the person's LinkedIn profile is known (#1583; lib/discover/card.ts discoverState).
+  // dazl opens the profile; the user sends the message.
+  const linkedin = c.contact.linkedinOnly ?? c.qualification.discover?.ready_linkedin ?? 0
+  if (linkedin > 0) return { label: `Message ${plural(linkedin, 'lead', 'leads')} on LinkedIn: open ${linkedin === 1 ? 'the lead' : 'each lead'} and use "Message on LinkedIn"`, href: leadsHref }
   // Only held leads a timing review can release are offered for review; the rest are research (#683).
   const heldReviewable = c.qualification.held - (c.qualification.heldResearch ?? 0)
   if (heldReviewable > 0) return { label: `Review the source of ${plural(heldReviewable, 'lead', 'leads')} to confirm timing`, href: leadsHref }

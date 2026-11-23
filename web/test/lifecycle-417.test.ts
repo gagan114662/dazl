@@ -104,7 +104,7 @@ async function autopilotTenant() {
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('w1','A','x1','o1@z.example','s',?,'sent',1,1)").run(BODY)
   db.prepare("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, claimed_at) VALUES ('w2','A','x2','o2@z.example','s',?,'sent',2,2)").run(BODY)
   const sent: string[] = []
-  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: (async (u: string) => String(u).includes('token') ? json({ access_token: 'at' }) : json({}, 404)) as unknown as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never }
+  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '2' }, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: (async (u: string) => String(u).includes('token') ? json({ access_token: 'at' }) : json({}, 404)) as unknown as typeof fetch, sendFn: (async (_t: string, raw: string) => { sent.push(raw); return { id: 'g' } }) as never }
   return { db, sent, d }
 }
 
@@ -268,7 +268,7 @@ test('sequence step: a conversion proven DURING the token refresh stops the step
   // Pending conversion, still unverified: the claim must succeed; verification lands inside the token await.
   assert.equal(queuePendingLifecycle(db, 'signup', 'seqprospect@corp.example', 'u9', NOW), true)
   const sent: string[] = []
-  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }, env: genv, master, now: NOW + 3 * 86400 + 1, baseUrl: 'https://app.test', fetchImpl: (async (u: unknown) => {
+  const d: Deps & { flags: Record<string, string> } = { flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', AUTOPILOT_WARMUP: '0', SEQUENCES_ENABLED: '1' }, env: genv, master, now: NOW + 3 * 86400 + 1, baseUrl: 'https://app.test', fetchImpl: (async (u: unknown) => {
     const url = String(u)
     if (url.includes('token')) { db.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'u9'").run(); return json({ access_token: 'at' }) }
     if (url.includes('/threads/')) return json({ messages: [] })

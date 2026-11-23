@@ -14,7 +14,7 @@ import { setUser } from './tenant-route-db.ts'
 import { pgDb, setDb } from '../../lib/db/client.ts'
 
 // test values from the parent (neutral names: the net fence drops *KEY*/*SECRET* variables)
-Object.assign(process.env, { STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture_pro', STRIPE_WEBHOOK_SECRET: process.env.ST_WEBHOOK, PUBLIC_BASE_URL: 'https://dazl.test' })
+Object.assign(process.env, { BILLING_AVAILABLE: '1', STRIPE_SECRET_KEY: 'sk_test_fixture', STRIPE_PRICE_PRO: 'price_fixture_pro', STRIPE_WEBHOOK_SECRET: process.env.ST_WEBHOOK, PUBLIC_BASE_URL: 'https://dazl.test' })
 const checkoutForms: string[] = []
 globalThis.fetch = (async (u: unknown, init?: RequestInit) => {
   const url = new URL(String(u))

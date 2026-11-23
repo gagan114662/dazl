@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import SenderInline from '../sender-inline'
 
-interface S { gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null }
+interface S { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null }
 
 // Request state for the settings read (#902): a failed read must say readiness could not be checked, never render
 // nothing (which hides that sending may be blocked). The last confirmed settings stay on screen if a reload fails.
@@ -55,7 +55,7 @@ export default function SendReadiness() {
     : null
   const gmailOk = s.gmail?.status === 'active'
   const senderOk = !!s.sender?.sender_name && !!s.sender?.postal_address
-  if (gmailOk && senderOk) return <>{reloadError}<p className="text-xs text-[#666] mb-4">Ready to send from {s.gmail!.email}. Manual emails send only after your click; autopilot, if you turn it on in Settings, can send first emails on its own. Reply reading is {s.gmail!.read_granted ? 'on' : 'off (optional)'}.</p></>
+  if (gmailOk && senderOk) return <>{reloadError}<p className="text-xs text-[#666] mb-4">Ready to send from {s.gmail!.email}. {s.autopilot_available ? 'Manual emails send only after your click; autopilot, if you turn it on in Settings, can send first emails on its own.' : 'Every email is reviewed and sent by you: nothing sends without your click.'} Reply reading is {s.gmail!.read_granted ? 'on' : 'off (optional)'}.</p></>
   return (
     <div className="card p-4 mb-4 text-sm">
       {reloadError}

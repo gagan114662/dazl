@@ -203,7 +203,7 @@ async function interestedReviewThread(db: Database.Database, email = 'lead@acme.
   return { lead, thread }
 }
 
-const followupFlags = { AUTOPILOT_ENABLED: '1', SEQUENCES_ENABLED: '1' }
+const followupFlags = { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1', SEQUENCES_ENABLED: '1' }
 
 test('withdraw stops a warm follow-up thread before send; re-confirm does not resurrect it', async () => {
   const db = await setupFollowups()

@@ -11,7 +11,7 @@ import { HARD_CAP_USD, scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { accountLimits, ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
-import { trialCaps } from '../billing/trial-budget.ts'
+import { trialCaps, trialTinyfishPrices } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '../people/people-search.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
@@ -93,8 +93,8 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
     // #1037: the people step the run itself will take (runner.ts: off when people search cannot run, else the first-play cap).
     firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0,
-    trialTinyfishSearchUsd: ctx.hasOwnKey ? null : trialCaps()?.tinyfishSearchUsd ?? null,
-    trialTinyfishFetchUsd: ctx.hasOwnKey ? null : trialCaps()?.tinyfishFetchUsd ?? null,
+    trialTinyfishSearchUsd: ctx.hasOwnKey ? null : (trialCaps() ? trialTinyfishPrices()?.searchUsd : null) ?? null,
+    trialTinyfishFetchUsd: ctx.hasOwnKey ? null : (trialCaps() ? trialTinyfishPrices()?.fetchUsd : null) ?? null,
     firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 },
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
     trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,

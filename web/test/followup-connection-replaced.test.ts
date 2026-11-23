@@ -52,7 +52,7 @@ for (const [label, reply] of [['old token success', () => json({ access_token: '
       await connect(db, 'rt-new')
       return reply()
     }) as unknown as typeof fetch
-    const base = { env, master, now: NOW, baseUrl: 'https://app.test', flags: { AUTOPILOT_ENABLED: '1' }, sendFn }
+    const base = { env, master, now: NOW, baseUrl: 'https://app.test', flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, sendFn }
     const r1 = await runFollowups(db, T, 'Biz', { ...base, fetchImpl: replacing })
     assert.equal(r1.stopped, 'connection_replaced', '#739: reported as a replacement, not an outage')
     assert.equal(sends, 0, 'nothing is sent with a replaced connection')
@@ -74,7 +74,7 @@ for (const [label, reply] of [['old token success', () => json({ access_token: '
 
 test('follow-up control: a genuine reconnect failure on an unreplaced connection still pauses', async () => {
   const db = await setup()
-  const r = await runFollowups(db, T, 'Biz', { env, master, now: NOW, baseUrl: 'https://app.test', flags: { AUTOPILOT_ENABLED: '1' }, fetchImpl: (async () => json({ error: 'invalid_grant' }, 400)) as unknown as typeof fetch, sendFn: (async () => { throw new Error('must not send') }) as never })
+  const r = await runFollowups(db, T, 'Biz', { env, master, now: NOW, baseUrl: 'https://app.test', flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' }, fetchImpl: (async () => json({ error: 'invalid_grant' }, 400)) as unknown as typeof fetch, sendFn: (async () => { throw new Error('must not send') }) as never })
   assert.equal(r.stopped, 'gmail_unavailable')
   assert.deepEqual(autopilot(db), { paused: 1, pause_reason: 'gmail_reconnect_needed' })
   assert.equal(thread(db).followups_sent, 0)

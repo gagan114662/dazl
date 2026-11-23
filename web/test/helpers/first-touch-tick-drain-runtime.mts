@@ -28,7 +28,7 @@ import { POST as tick } from '../../app/api/internal/tick/route.ts'
 process.env.DAZL_ENV = 'staging'
 process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 process.env.AUTOPILOT_TICK_SECRET = 'test-tick-secret'
-process.env.AUTOPILOT_ENABLED = '1'
+process.env.AUTOPILOT_AVAILABLE = '1'; process.env.AUTOPILOT_ENABLED = '1'
 process.env.AUTOPILOT_WARMUP = '2'
 delete process.env.AUTOPILOT_KILL; delete process.env.SEQUENCES_ENABLED
 

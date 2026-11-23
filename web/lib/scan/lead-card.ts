@@ -134,7 +134,7 @@ function statusOf(l: CardLead, personShown: boolean, titlesRuledOut: boolean): {
   if (pc?.purpose === 'non-sales') notes.push(`Restricted inbox (${pc.purposeHint ?? 'not for sales'}): not a sales contact.`)
   const id = contactIdentity(l)
   const established = id.state === 'cited' || id.state === 'fact' || id.state === 'user_confirmed'
-  if (!established) notes.unshift(`Unconfirmed - ${id.state === 'none' ? id.text : `name match only: ${id.text}`}.`)
+  if (!established) notes.unshift(id.state === 'identified' ? `${id.text}.` : `Unconfirmed - ${id.state === 'none' ? id.text : `name match only: ${id.text}`}.`)
   if (personShown) { /* PM #1540: the person is shown plainly - no hedge copy */ } else if (rows.some(r => r.kind === 'contact' || r.kind === 'person')) notes.push(titlesRuledOut ? 'Listed people have past, negated or assistant titles; no current buyer named.' : 'No buyer named on the company\'s own site.')
   const confirmed = established && pc?.purpose !== 'non-sales'
   return { confirmed, text: confirmed ? [`Confirmed: ${id.text}.`, ...notes].join(' ') : notes.join(' ') }
