@@ -10,6 +10,7 @@ ssh alias or `user@host` in the owner's `~/.ssh/config`) and stops with a usage 
 |---|---|---|---|
 | `reset-staging-trial.sh <email>` | Gives one test account its free trial searches back on **staging**, so a live check can be rerun. | Deletes that account's rows in `trial_reservations` in the staging database, after saving them to a root-only file. Never production. | owner, when Quest asks for a rerun |
 | `install-offhost-backup.sh [key file]` | Step 2 of the off-host backup (`ops/backup/README.md`): copies the upload-only key file to the box and runs `ops/backup/install-prod-offhost.sh` from the live release. | Installs the hourly backup timers, takes one backup, removes the copied key file from the home folder. | owner, once, after `ops/backup/aws-setup.sh` |
+| `sample-deploy-memory.sh [seconds]` | Records the box's memory once a second while a production deploy runs and prints the peak above the level before it (issue #1084, criterion 4: under 300 MB). | Nothing: read-only, no sudo. | owner or lead, started just before a production deploy |
 | `install-downtime-alert.sh` | Runs `ops/uptime/install.sh` from the live release, points the probe at production's alert destination and sends one test message. | Adds `/usr/local/lib/dazl-uptime/`, `/etc/dazl-uptime/env`, `dazl-uptime.timer`. | owner, once |
 | `prove-prod-restart.sh [--kill]` | Shows how production is supervised (unit, user, restart and memory settings, starts at boot, boot time next to unit start time). With `--kill`, proves systemd restarts it (issue #1083). | Without `--kill`: nothing. With `--kill`: kills the live production process once; dazl.ai answers 502 until it is back (expected under 30 seconds). | owner, at a quiet moment; the report again after a reboot |
 
@@ -41,6 +42,24 @@ installer from: <the live release folder>
 The exit code is the installer's. `FAIL: no live release contains ops/backup/install-prod-offhost.sh` means the
 change is not deployed to production yet. The secret key is never printed. Without an argument the script uses the
 only `*.s3.env` in `~/dazl-backup-keys` and stops when there are none or several.
+
+`DAZL_SSH_HOST=<box> ops/owner/sample-deploy-memory.sh` (start it, then start the deploy within about 20 seconds)
+
+```
+start 22:40:59Z: total 1834 MB, production port:process 3104:<pid> 3105:<pid> , commit 3104=<8 hex> 3105=<8 hex>
+level before the deploy (10 second average): 1044 MB used, swap 1133 MB
+watching for 300 seconds: start the deploy now
+<time> production port:process now 3104:<pid> (used <n> MB)
+<time> production port:process now 3104:<pid> 3105:<new pid> (used <n> MB)
+end <time>: used <n> MB, production port:process 3104:<pid> 3105:<new pid> , commit 3104=<8 hex> 3105=<new 8 hex>
+peak: <n> MB used at <time>, <n> MB above the level before; swap went from 1133 MB to at most <n> MB
+out-of-memory kills in the kernel log during the watch: 0
+PASS: the peak during the deploy was <n> MB above the level before (limit 300 MB)
+```
+
+The two lines at the top were recorded on the box on 2026-11-23 with no deploy running; that run ended
+`NO DEPLOY SEEN ... this run proves nothing` (exit 1), which is what it must say when no production port gets a new
+process. The lines from a real deploy are what is expected, not yet seen. Post the whole output on #1084.
 
 `DAZL_SSH_HOST=<box> ops/owner/install-downtime-alert.sh`
 
