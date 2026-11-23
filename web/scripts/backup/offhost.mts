@@ -1,5 +1,6 @@
 // The off-host destination as the recovery tools use it (issue #360): the same OFFHOST_DEST spec offhost-copy.sh writes
-// to and backup-check.mts reads, either a directory (a mounted remote, a second disk) or rclone:REMOTE:PATH. Used by
+// to and backup-check.mts reads: a directory (a mounted remote, a second disk), rclone:REMOTE:PATH, or s3:BUCKET/PREFIX
+// (s3.mts: a write-only key, so list and put work and read, fetch and remove are refused by design). Used by
 // prune-backups.mts (list, delete) and replacement-drill.mts (list, read, fetch). Every rclone call is bounded by
 // RCLONE_TIMEOUT_S (a positive integer, default 120; anything else is 120) and any rclone failure throws, naming the
 // subcommand and exit code only (never a path or a remote's credentials).
@@ -7,6 +8,8 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, chownSync, copyFileSync, existsSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseS3, s3Label, type S3Object } from './s3.mts'
 
 export const sha256File = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex')
 
@@ -18,6 +21,9 @@ export interface OffhostDest {
   // upload a local file under name: a directory gets .partial then a rename (mode 600); rclone gets copyto
   put(from: string, name: string): void
   remove(name: string): void
+  // true for s3:BUCKET/PREFIX: the key can add and list copies, never read or delete one. Retention there is the
+  // bucket's lifecycle rule, not prune-backups.mts.
+  writeOnly?: boolean
 }
 
 // only plain file names are ever read, fetched or removed: no path separators, no leading dot, no traversal
@@ -49,6 +55,24 @@ export function openDest(spec: string): OffhostDest {
       fetch: (n, to) => { guard(n); run(['copyto', `${remote}/${n}`, to]) },
       put: (from, n) => { guard(n); run(['copyto', from, `${remote}/${n}`]) },
       remove: n => { guard(n); run(['deletefile', `${remote}/${n}`]) },
+    }
+  }
+  if (spec.startsWith('s3:')) {
+    parseS3(spec) // a malformed destination is refused here, not at the first upload
+    // the same CLI offhost-copy.sh uploads with, as a child process: this interface is synchronous, s3.mts is fetch
+    const cli = fileURLToPath(new URL('./s3.mts', import.meta.url)), limit = rcloneTimeoutS(process.env.S3_TIMEOUT_S)
+    const run = (args: string[]) => {
+      const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', cli, ...args], { encoding: 'utf8', timeout: (limit + 30) * 1000, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 * 1024 })
+      if (r.error) throw new Error(`s3 ${args[0]} not runnable (${(r.error as NodeJS.ErrnoException).code ?? r.error.name})`)
+      if (r.status !== 0) throw new Error((r.stderr.trim().split('\n').pop() ?? '').replace(/^s3: /, '') || `s3 ${args[0]} failed (exit ${r.status})`)
+      return r.stdout
+    }
+    const no = (what: string) => (): never => { throw new Error(`${what} is not possible at an s3: destination: the box's key is write-only by design (restore with ops/backup/restore-s3.sh on a machine with the owner's AWS login)`) }
+    return {
+      label: s3Label(spec), writeOnly: true,
+      list: () => (JSON.parse(run(['list', spec])) as S3Object[]).map(o => o.name),
+      read: no('reading a copy'), fetch: no('fetching a copy'), remove: no('deleting a copy'),
+      put: (from, n) => { guard(n); run(['put', from, spec, n]) },
     }
   }
   const d = path.resolve(spec)

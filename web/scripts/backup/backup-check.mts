@@ -7,6 +7,10 @@
 //     listing or read fails), holds no copy manifest, the newest copy is older than --offhost-max-age-s, or the newest
 //     manifest's ciphertext is absent, has other bytes than declared, or does not hash to its declared sha256: a
 //     manifest alone is not a recoverable backup. With OFFHOST_REQUIRED=1, no destination configured is a problem;
+//     An s3:BUCKET/PREFIX destination (#1080) is judged from the bucket LISTING alone, because the box's key can list
+//     and cannot read: the newest dazl-backup-*.db.age object by S3's own LastModified must be younger than
+//     --offhost-max-age-s, not empty, not smaller than the local backup it is a copy of, and have its manifest next to
+//     it; the newest ledger copy must not be older than it. Its bytes are proved by the restore (ops/backup/restore-s3.sh);
 //   - the tombstone ledger copy at that destination (#359; offhost-copy.sh step 4), when DAZL_TOMBSTONE_LEDGER is set
 //     (with OFFHOST_REQUIRED=1, unset is a problem): no dazl-ledger-* copy, a copy that is missing or does not match its
 //     manifest, or a newest ledger copy older than the newest backup copy (a restore could undo deletions made since);
@@ -53,6 +57,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { s3Label, s3List } from './s3.mts'
 
 const arg = (f: string) => {
   const i = process.argv.indexOf(f); if (i < 0) return undefined
@@ -181,6 +186,43 @@ if (!offSpec) {
   if (process.env.OFFHOST_REQUIRED === '1') problems.push('an off-host copy is required (OFFHOST_REQUIRED=1) but no destination is configured (OFFHOST_DEST)')
   else console.error('backup-check: off-host copy not configured (OFFHOST_DEST empty, OFFHOST_REQUIRED=0): only local backups and the drill are checked')
   facts.offhost = 'not configured'
+} else if (offSpec.startsWith('s3:')) {
+  const max = num('--offhost-max-age-s', 7200)
+  let label = 's3:'
+  try {
+    label = s3Label(offSpec); facts.offhost = label
+    const objs = await s3List(offSpec)
+    const names = new Set(objs.map(o => o.name))
+    const newestOf = (re: RegExp) => objs.filter(o => re.test(o.name)).sort((a, b) => Date.parse(b.lastModified) - Date.parse(a.lastModified) || b.name.localeCompare(a.name))
+    const copies = newestOf(/^dazl-backup-[0-9A-Za-z._-]+\.db\.age$/)
+    facts.offhost_copies = copies.length
+    if (!copies.length) problems.push(`no off-host copy at ${label}`)
+    else {
+      const n = copies[0], age = ageS(n.lastModified)
+      facts.newest_offhost = n.name; facts.newest_offhost_age_s = age; facts.newest_offhost_bytes = n.size
+      if (age === null || age > max) problems.push(`newest off-host copy is ${age}s old (limit ${max}s)`)
+      // age adds a header and a tag per 64 KiB: a copy that is not larger than its plaintext was cut short
+      let localBytes: number | null = null
+      try { localBytes = statSync(path.join(dir, n.name.slice(0, -'.age'.length))).size } catch { /* already pruned locally: nothing to compare */ }
+      if (n.size <= 0) problems.push(`newest off-host copy ${n.name} is empty`)
+      else if (localBytes !== null && n.size <= localBytes) problems.push(`newest off-host copy ${n.name} has ${n.size} bytes, fewer than the backup it is a copy of (truncated)`)
+      else if (!names.has(n.name + '.json')) problems.push(`newest off-host copy ${n.name} has no manifest next to it`)
+      else facts.newest_offhost_listed = true
+    }
+    if (!process.env.DAZL_TOMBSTONE_LEDGER?.trim()) {
+      if (process.env.OFFHOST_REQUIRED === '1') problems.push('an off-host copy is required (OFFHOST_REQUIRED=1) but DAZL_TOMBSTONE_LEDGER is not set: the deletion ledger is not copied off-host')
+      facts.offhost_ledger = 'not configured'
+    } else {
+      const ledgers = newestOf(/^dazl-ledger-\d{8}T\d{6}Z\.jsonl\.age$/)
+      if (!ledgers.length) problems.push(`no off-host copy of the tombstone ledger at ${label}`)
+      else {
+        facts.newest_offhost_ledger_age_s = ageS(ledgers[0].lastModified)
+        if (ledgers[0].size <= 0 || !names.has(ledgers[0].name + '.json')) problems.push(`newest off-host ledger copy ${ledgers[0].name} is empty or has no manifest next to it`)
+        if (copies.length && Date.parse(ledgers[0].lastModified) < Date.parse(copies[0].lastModified)) problems.push('newest off-host ledger copy is older than the newest off-host backup copy: a restore from it could undo deletions made since')
+      }
+    }
+    if (process.env.CONFIG_REQUIRED === '1' && !objs.some(o => /^dazl-config-\d{8}T\d{6}Z-[0-9a-f]{8}\.tar\.age$/.test(o.name))) problems.push(`no config bundle at ${label} (CONFIG_REQUIRED=1)`)
+  } catch (e) { facts.offhost = label; problems.push(`off-host destination ${label} unreadable: ${reason(e)}`) }
 } else {
   const max = num('--offhost-max-age-s', 7200)
   const dest = offSpec.startsWith('rclone:') ? rcloneDest(offSpec) : localDest(offSpec)

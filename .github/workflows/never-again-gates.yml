@@ -23,4 +23,4 @@ jobs:
       - name: shellcheck the deploy scripts (errors only)
         run: shellcheck -S error ops/staging/deploy.sh ops/staging/pull-prebuilt.sh ops/prod/deploy-prod.sh ops/prod/pull-release.sh ops/prod/run-release.sh ops/prod/check-installed.sh
       - name: shellcheck the backup install scripts (errors only)
-        run: shellcheck -S error ops/backup/install-prod.sh ops/backup/prod-run.sh ops/backup/live-release.sh ops/backup/restore-offhost.sh
+        run: shellcheck -S error ops/backup/install-prod.sh ops/backup/prod-run.sh ops/backup/live-release.sh ops/backup/restore-offhost.sh ops/backup/aws-setup.sh ops/backup/install-prod-offhost.sh ops/backup/restore-s3.sh ops/backup/offhost-copy.sh

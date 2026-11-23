@@ -11,14 +11,18 @@
 #   --db PATH             the live database                     (/home/ubuntu/dazl-data/dazl-pr16.db)
 #   --user NAME           the app user the jobs run as          (ubuntu)
 #   --backup-dir DIR      local backups                         (/var/backups/dazl)
-#   --offhost DEST        rclone:REMOTE:PATH or a mounted directory; with it OFFHOST_REQUIRED=1 (no fresh off-host
-#                         copy = an alert). Without it backups are LOCAL ONLY and the script says so.
+#   --offhost DEST        s3:BUCKET/PREFIX, rclone:REMOTE:PATH or a mounted directory; with it OFFHOST_REQUIRED=1 (no
+#                         fresh off-host copy = an alert). Without it backups are LOCAL ONLY and the script says so.
+#                         s3: needs /etc/dazl-backup/s3.env (the upload-only key) first: install-prod-offhost.sh
+#                         writes it and then calls this script; use that one for S3.
 #   --recipients FILE     age PUBLIC keys for the off-host copy (/etc/dazl-backup/recipients.txt); required with --offhost
 #   --ledger PATH         the app's DAZL_TOMBSTONE_LEDGER. Default: the value in --app-env; when the app sets none,
 #                         /var/lib/dazl-ledger/tombstones.jsonl with a WARNING (the app must be given the same path).
 #                         A --ledger that differs from the app's own value is refused. Created empty if absent.
 #   --app-env FILE        the app's run env, read as data for DAZL_TOMBSTONE_LEDGER only (/home/ubuntu/dazl-pr16-run.env)
-#   --alert-url URL       https webhook for backup alerts (OPS_ALERT_WEBHOOK_URL); without it alerts go to the journal only
+#   --alert-url URL       https webhook for backup alerts (OPS_ALERT_WEBHOOK_URL); without it alerts go to the journal only.
+#                         The URL can hold a token: DAZL_BACKUP_ALERT_URL in the environment is the same setting
+#                         without putting it on a command line.
 #   --no-retention        leave retention OFF (BACKUP_RETENTION=0): nothing is ever deleted, and the installer prints how many
 #                         days the disk lasts. Default is ON: 48 local hourly copies; off-host 48 hourly + 14 daily + 8
 #                         weekly (the owner-approved numbers). The 15-minute check alerts on low space either way.
@@ -37,12 +41,13 @@
 #   the ledger's append-only flag (chattr +a, #1089), on a new or an existing ledger: the app appends, nobody rewrites
 # Then: systemctl daemon-reload, enable --now both timers, and one backup run right away so the first copy exists
 # before this script returns (its exit code is the script's). No secrets are read or written: the off-host recipients
-# are PUBLIC keys; rclone credentials stay in the app user's own rclone config (or the instance role).
+# are PUBLIC keys; rclone credentials stay in the app user's own rclone config (or the instance role); the S3 key is in
+# /etc/dazl-backup/s3.env (written by install-prod-offhost.sh, root:<app group> 640), which both units read when it exists.
 set -euo pipefail
 die() { echo "install-prod: $1" >&2; exit "${2:-1}"; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 DB=/home/ubuntu/dazl-data/dazl-pr16.db; APP_USER=ubuntu; BACKUP_DIR=/var/backups/dazl; OFFHOST=; RECIP=/etc/dazl-backup/recipients.txt
-LEDGER=; LEDGER_DEFAULT=/var/lib/dazl-ledger/tombstones.jsonl; APP_ENV=/home/ubuntu/dazl-pr16-run.env; ALERT=; ROOT=; START=1; MODE=install; KEEP_ENV=0; APP_ENV_GIVEN=0; RETENTION=1
+LEDGER=; LEDGER_DEFAULT=/var/lib/dazl-ledger/tombstones.jsonl; APP_ENV=/home/ubuntu/dazl-pr16-run.env; ALERT=${DAZL_BACKUP_ALERT_URL:-}; ROOT=; START=1; MODE=install; KEEP_ENV=0; APP_ENV_GIVEN=0; RETENTION=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --db|--user|--backup-dir|--offhost|--recipients|--ledger|--app-env|--alert-url|--root)
@@ -96,8 +101,12 @@ if [ -z "$ROOT" ]; then
   sudo -u "$APP_USER" env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin sh -c 'command -v node >/dev/null' || die "node is not on the default PATH for $APP_USER (the units run /usr/bin/env node): link it into /usr/local/bin"
   if [ -n "$OFFHOST" ]; then
     command -v age >/dev/null || die "age is not installed (apt-get install -y age): needed for the encrypted off-host copy"
-    case "$OFFHOST" in rclone:*) command -v rclone >/dev/null || die "rclone is not installed (apt-get install -y rclone)" ;; *) [ -d "$OFFHOST" ] || die "--offhost $OFFHOST is not a directory" ;; esac
+    case "$OFFHOST" in rclone:*) command -v rclone >/dev/null || die "rclone is not installed (apt-get install -y rclone)" ;; s3:*) ;; *) [ -d "$OFFHOST" ] || die "--offhost $OFFHOST is not a directory" ;; esac
   fi
+fi
+if [[ $OFFHOST == s3:* ]]; then
+  [[ $OFFHOST =~ ^s3:[a-z0-9][a-z0-9-]{1,61}[a-z0-9]/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "--offhost $OFFHOST is not s3:BUCKET/PREFIX" 2
+  [ -s "$ETC/s3.env" ] || die "--offhost s3: needs the upload-only key in /etc/dazl-backup/s3.env first: run ops/backup/install-prod-offhost.sh (it writes that file and calls this script)"
 fi
 if [ -n "$OFFHOST" ]; then
   [ -s "$ROOT$RECIP" ] || die "--offhost needs the age PUBLIC keys in $RECIP (one age1... per line; the private key stays offline)"
@@ -107,7 +116,7 @@ fi
 # the deletion ledger must be the file the APP writes: its own DAZL_TOMBSTONE_LEDGER (read as data, never sourced)
 app_ledger=
 [ "$APP_ENV_GIVEN" = 0 ] || { [ -f "$APP_ENV" ] && [ -r "$APP_ENV" ]; } || die "--app-env $APP_ENV is not a readable file" 2
-if [ -f "$APP_ENV" ] && [ -r "$APP_ENV" ]; then app_ledger=$(sed -n 's/^\(export[[:space:]]\+\)\?DAZL_TOMBSTONE_LEDGER=//p' "$APP_ENV" | tail -1 | sed -e "s/^['\"]//" -e "s/['\"]\$//"); fi
+if [ -f "$APP_ENV" ] && [ -r "$APP_ENV" ]; then app_ledger=$(sed -n 's/^\(export[[:space:]]\{1,\}\)\{0,1\}DAZL_TOMBSTONE_LEDGER=//p' "$APP_ENV" | tail -1 | sed -e "s/^['\"]//" -e "s/['\"]\$//"); fi
 LEDGER_WARN=
 if [ -n "$app_ledger" ]; then
   [ -z "$LEDGER" ] || [ "$LEDGER" = "$app_ledger" ] || die "--ledger $LEDGER is not the app's DAZL_TOMBSTONE_LEDGER ($app_ledger in $APP_ENV): the copy would be of a file the app never writes"
@@ -127,6 +136,7 @@ if [ "$RETENTION" = 1 ]; then
   need_mb=$(( db_mb * 48 * 2 ))   # the 48 kept copies, twice over for growth and the copy being written
   [ "$free_mb" -ge "$need_mb" ] || die "not enough room for the retained backups: $BACKUP_DIR has $free_mb MB free, 48 copies of a $db_mb MB database need $(( db_mb * 48 )) MB (want $need_mb MB free). Free space or give another --backup-dir."
   SPACE_NOTE="install-prod: retention ON: at most 48 local copies (about $(( db_mb * 48 )) MB of $free_mb MB free); off-host 48 hourly + 14 daily + 8 weekly"
+  [[ $OFFHOST != s3:* ]] || SPACE_NOTE="install-prod: retention ON: at most 48 local copies (about $(( db_mb * 48 )) MB of $free_mb MB free); off-host: the bucket's own 30-day lifecycle rule (the box's key cannot delete)"
 else
   days=$(( free_mb / (db_mb * 24) ))
   [ "$days" -ge 7 ] || die "retention is OFF and $BACKUP_DIR would be full in about $days days ($free_mb MB free, $(( db_mb * 24 )) MB of backups a day): refusing. Install without --no-retention, or free space first."
@@ -208,6 +218,7 @@ Description=dazl database backup (online snapshot, restore check, encrypted off-
 Type=oneshot
 User=$APP_USER
 EnvironmentFile=/etc/dazl-backup/env
+EnvironmentFile=-/etc/dazl-backup/s3.env
 ExecStart=/usr/bin/env bash /usr/local/lib/dazl-backup/prod-run.sh backup
 TimeoutStartSec=20min
 Nice=10
@@ -222,6 +233,7 @@ Type=oneshot
 TimeoutStartSec=5min
 User=$APP_USER
 EnvironmentFile=/etc/dazl-backup/env
+EnvironmentFile=-/etc/dazl-backup/s3.env
 ExecStart=/usr/bin/env bash /usr/local/lib/dazl-backup/prod-run.sh check"
 unit dazl-backup-check.timer "$(cat "$HERE/dazl-backup-check.timer")"
 echo "install-prod: installed ${NAMES[*]} and $LIB/{prod-run.sh,live-release.sh}"

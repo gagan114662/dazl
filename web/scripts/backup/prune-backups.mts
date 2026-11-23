@@ -3,7 +3,8 @@
 // backup, its restore check and its off-host copy all passed, and only when BACKUP_RETENTION=1 (the owner approves the
 // numbers, Instinct sets the flag; until then backups accumulate and nothing is ever deleted).
 //   local (--dir):        the newest RETAIN_LOCAL (default 48: two days of hourly backups) by sidecar createdAt
-//   off-host (--offhost): the newest RETAIN_OFFHOST_HOURLY copies (default 48), plus the newest copy of each of the
+//   off-host (--offhost): never for s3:BUCKET/PREFIX (the box's key cannot delete; the bucket lifecycle rule expires
+//                         copies). Otherwise the newest RETAIN_OFFHOST_HOURLY copies (default 48), plus the newest copy of each of the
 //                         last RETAIN_OFFHOST_DAILY UTC days (14) and each of the last RETAIN_OFFHOST_WEEKLY ISO weeks (8)
 // Fail-closed rules (each refuses the WHOLE run, exit 1, nothing deleted):
 //   - a retention number that is not a decimal integer >= 1 (exit 2);
@@ -109,7 +110,11 @@ for (const l of locals) {
 out.local = { total: locals.length, kept: locals.length - deleted.length - failed.length }
 
 // ---- off-host retention: copies are <backup>.age + <backup>.age.json; the timestamp is the one in the name
-if (dest) {
+// An s3: destination is write-only for the box (no delete permission, by design): its copies are expired by the
+// bucket's own lifecycle rule (30 days; ops/backup/aws-setup.sh), so nothing is deleted there and nothing is attempted.
+if (dest?.writeOnly) {
+  out.offhost = { label: dest.label, total: new Set(remote.filter(f => f.endsWith('.db.age'))).size, pruned_by: 'the bucket lifecycle rule (this key cannot delete)' }
+} else if (dest) {
   const before = deleted.length + failed.length
   const copies = new Map<string, number>()
   for (const f of remote) {
