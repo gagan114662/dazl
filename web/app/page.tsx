@@ -3,7 +3,7 @@ import Link from 'next/link'
 import Banner from './banner'
 import LandingDemo from './landing-demo'
 
-import { SITE_BASE, SITE_TITLE, publicMeta } from '@/lib/site'
+import { SITE_BASE, SITE_TITLE, SUPPORT_EMAIL, publicMeta } from '@/lib/site'
 import { FREE_BETA_TERMS, OWNER_PLACEHOLDERS } from '@/lib/legal/policy'
 
 // Self-referencing canonical (Indexing audit finding: the homepage had none, so the
@@ -108,7 +108,15 @@ export default function Home() {
       <footer className="mt-auto border-t border-[var(--line)]">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--ink-2)]">
           <span className="font-semibold text-[var(--ink)]">dazl</span>
-          <span>© 2026 dazl · <a href="/terms" className="hover:text-[var(--ink)]">Terms</a> · <a href="/privacy" className="hover:text-[var(--ink)]">Privacy</a> · <a href="/contact" className="hover:text-[var(--ink)]">Contact</a> · <a href={`mailto:${OWNER_PLACEHOLDERS.privacyContact}`} className="hover:text-[var(--ink)]">{OWNER_PLACEHOLDERS.privacyContact}</a> · <Link href="/sign-in" className="hover:text-[var(--ink)]">Sign in</Link></span>
+          {/* #1644: each item stays whole and the row wraps between items, so no link is left alone mid-sentence. #1650: support address. */}
+          <nav aria-label="Footer" className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span className="whitespace-nowrap">© 2026 dazl</span>
+            <a href="/terms" className="hover:text-[var(--ink)]">Terms</a>
+            <a href="/privacy" className="hover:text-[var(--ink)]">Privacy</a>
+            <a href="/contact" className="hover:text-[var(--ink)]">Contact</a>
+            <a href={`mailto:${SUPPORT_EMAIL}`} className="hover:text-[var(--ink)]">{SUPPORT_EMAIL}</a>
+            <Link href="/sign-in" className="whitespace-nowrap hover:text-[var(--ink)]">Sign in</Link>
+          </nav>
         </div>
       </footer>
     </main>

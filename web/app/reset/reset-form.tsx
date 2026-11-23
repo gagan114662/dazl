@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 
 // Without a token: ask for the email to send a reset link to. With one (from the email's #fragment, never sent to a
 // server log): choose the new password.
@@ -29,14 +30,19 @@ export default function Reset({ mailAvailable }: { mailAvailable: boolean }) {
   return (
     <main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">
       <div className="card p-8 sm:p-10 w-full max-w-sm">
+        <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">{token ? 'Choose a new password' : 'Reset your password'}</h1>
-        <p className="text-[#555] text-sm mb-6 text-center">{token ? 'This signs your account out on every device.' : mailAvailable ? 'We will email you a link that works for 30 minutes.' : 'Email delivery is not available right now. Try again later.'}</p>
+        <p className="text-[#555] text-sm mb-6 text-center">{token ? 'This signs your account out on every device.' : mailAvailable ? 'If an account uses that email, we will send it a link that works for 30 minutes.' : 'Email delivery is not available right now. Try again later.'}</p>
         {msg && <p role="status" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{msg}</p>}
         <form method="post" onSubmit={submit} className="flex flex-col gap-3">
           {token
-            ? <input name="password" type="password" required minLength={10} autoComplete="new-password" placeholder="New password (10+ characters, letters and numbers)" className="field" />
-            : <input name="email" type="email" required autoComplete="email" placeholder="you@company.com" className="field" />}
-          <button type="submit" disabled={busy || (!token && !mailAvailable)} className="btn-primary mt-1 !py-3">{busy ? 'Working...' : token ? 'Set password' : mailAvailable ? 'Send link' : 'Email unavailable'}</button>
+            ? <label className="flex flex-col gap-1 text-sm text-[#333]">New password
+                <input name="password" type="password" required minLength={10} autoComplete="new-password" placeholder="10+ characters, letters and numbers" className="field" />
+              </label>
+            : <label className="flex flex-col gap-1 text-sm text-[#333]">Email
+                <input name="email" type="email" required autoComplete="email" placeholder="you@company.com" className="field" />
+              </label>}
+          <button type="submit" disabled={busy || (!token && !mailAvailable)} className="btn-primary btn-plain mt-1 !py-3">{busy ? 'Working...' : token ? 'Set password' : mailAvailable ? 'Send link' : 'Email unavailable'}</button>
         </form>
         <p className="mt-4 text-sm text-[#666] text-center"><a href="/sign-in" className="text-[#111] underline underline-offset-2">Back to sign in</a></p>
       </div>
