@@ -9,6 +9,7 @@ ssh alias or `user@host` in the owner's `~/.ssh/config`) and stops with a usage 
 | script | what it does | changes | who runs it |
 |---|---|---|---|
 | `reset-staging-trial.sh <email>` | Gives one test account its free trial searches back on **staging**, so a live check can be rerun. | Deletes that account's rows in `trial_reservations` in the staging database, after saving them to a root-only file. Never production. | owner, when Quest asks for a rerun |
+| `swap-anthropic-key.sh staging\|production` | Puts a new Anthropic key in place of an exposed one (issue #1617). Asks for the key with a hidden prompt; shows only the last 4 characters of the old and new key. | Staging: the key line in the staging env file, then restarts staging. Production: the key lines in the run env the deploy reads; no restart, the next deploy picks it up. Keeps the file from before the change next to it. | owner, once per environment, after creating the new key and before revoking the old one |
 | `install-offhost-backup.sh [key file]` | Step 2 of the off-host backup (`ops/backup/README.md`): copies the upload-only key file to the box and runs `ops/backup/install-prod-offhost.sh` from the live release. | Installs the hourly backup timers, takes one backup, removes the copied key file from the home folder. | owner, once, after `ops/backup/aws-setup.sh` |
 | `install-downtime-alert.sh` | Runs `ops/uptime/install.sh` from the live release, points the probe at production's alert destination and sends one test message. | Adds `/usr/local/lib/dazl-uptime/`, `/etc/dazl-uptime/env`, `dazl-uptime.timer`. | owner, once |
 | `prove-prod-restart.sh [--kill]` | Shows how production is supervised (unit, user, restart and memory settings, starts at boot, boot time next to unit start time). With `--kill`, proves systemd restarts it (issue #1083). | Without `--kill`: nothing. With `--kill`: kills the live production process once; dazl.ai answers 502 until it is back (expected under 30 seconds). | owner, at a quiet moment; the report again after a reboot |
@@ -27,6 +28,24 @@ trial rows after: 0 (all accounts: 38)
 The numbers differ; "after" is 0 and "all accounts" drops by exactly the rows removed. Any line starting `FAIL:` ends
 with "nothing changed" (no staging database, or not exactly one account with that email). To undo, run the saved
 `.sql` file against the staging database.
+
+`DAZL_SSH_HOST=<box> ops/owner/swap-anthropic-key.sh production`
+
+```
+Paste the NEW Anthropic key for production, then Enter (it will not show):
+new key ends ...<4 characters>
+file before the change kept as: <run env file>.before-key-swap-<UTC time>
+DAZL_TRIAL_ANTHROPIC_KEY: ...LAAA -> ...<4 characters>
+ANTHROPIC_API_KEY: ...LAAA -> ...<4 characters>
+production was NOT restarted: the running app still uses the old key.
+Next: deploy the live commit again (<40-hex commit>) with the prod-deploy workflow, run one trial search, then revoke the old key.
+```
+
+For `staging` the last lines are `staging restarted and healthy on commit <commit>` and `DONE for staging`. Order for
+each environment: create the new key, run this, (production only) deploy the live commit again, run one trial
+search, then revoke the old key. `ANTHROPIC_API_KEY` is replaced only when it holds the same old key; otherwise the
+script says it left it. Any `FAIL:` line that ends "nothing changed" left the file as it was. No key value is ever
+printed: anything shaped like a key in the output shows as `<key>`.
 
 `DAZL_SSH_HOST=<box> ops/owner/install-offhost-backup.sh`
 
