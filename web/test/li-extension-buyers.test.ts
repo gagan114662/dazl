@@ -3,7 +3,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import { chooseLinkedInBuyer, companyPeopleUrl, enqueueCompanyPeople, onCompanyPeopleResult } from '../lib/linkedin-tasks/buyers.ts'
-import { completeTask, createExtensionToken, nextTask } from '../lib/linkedin-tasks/store.ts'
+import {completeTask, nextTask } from '../lib/linkedin-tasks/store.ts'
+import { pairLinkedIn } from './helpers/li-pair.ts'
 import { LINKEDIN_PEOPLE_LABEL, onCompanySite, siteContactFromRows } from '../lib/scan/site-contact.ts'
 import type { Db } from '../lib/db/client.ts'
 
@@ -47,7 +48,7 @@ bothEngines('no extension token: nothing is queued', async ({ db }) => {
 
 bothEngines('queued read -> extension result -> the ICP buyer stored with name, title and LinkedIn URL; a second result names no one else', async ({ db }) => {
   await seed(db)
-  await createExtensionToken(db, 'A', 'u1', 'America/Toronto', TEN_AM)
+  await pairLinkedIn(db, 'A', 'u1', 'America/Toronto', TEN_AM)
   const id = await enqueueCompanyPeople(db, 'A', 'j1', 'l1', 'https://www.linkedin.com/company/acme/people/', TEN_AM)
   assert.ok(id)
   const n = await nextTask(db, 'A', TEN_AM, () => 0.5)
@@ -61,7 +62,7 @@ bothEngines('queued read -> extension result -> the ICP buyer stored with name, 
 
 bothEngines('nobody meeting the role: nothing stored', async ({ db }) => {
   await seed(db)
-  await createExtensionToken(db, 'A', 'u1', 'America/Toronto', TEN_AM)
+  await pairLinkedIn(db, 'A', 'u1', 'America/Toronto', TEN_AM)
   const id = await enqueueCompanyPeople(db, 'A', 'j1', 'l1', 'https://www.linkedin.com/company/acme/people/', TEN_AM)
   await nextTask(db, 'A', TEN_AM, () => 0.5)
   await completeTask(db, 'A', id!, { people: [P('Ann Lee', 'Software Engineer', 'ann')] }, TEN_AM + 30)

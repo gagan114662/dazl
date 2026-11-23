@@ -3,7 +3,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
-import { createExtensionToken, completeTask, nextTask } from '../lib/linkedin-tasks/store.ts'
+import {completeTask, nextTask } from '../lib/linkedin-tasks/store.ts'
+import { pairLinkedIn } from './helpers/li-pair.ts'
 import { enqueuePostEngagement, linkedinPostUrls, onPostEngagementResult, MAX_POSTS_PER_SCAN } from '../lib/linkedin-tasks/engagers.ts'
 import { heldReason, type PreviewLead } from '../lib/journey.ts'
 import type { Db } from '../lib/db/client.ts'
@@ -28,14 +29,14 @@ async function seed(db: Db) {
 bothEngines('no connected extension: nothing is queued; with one, each post is queued once', async ({ db }) => {
   await seed(db)
   assert.equal(await enqueuePostEngagement(db, 'A', 'j1', [POST], TEN_AM), 0)
-  await createExtensionToken(db, 'A', 'u1', 'America/Toronto', TEN_AM)
+  await pairLinkedIn(db, 'A', 'u1', 'America/Toronto', TEN_AM)
   assert.equal(await enqueuePostEngagement(db, 'A', 'j1', [POST, POST], TEN_AM), 1)
   assert.equal(await enqueuePostEngagement(db, 'A', 'j1', [POST], TEN_AM + 60), 0, 'the same post is not read twice in a week')
 })
 
 bothEngines('the people the extension read become shown leads of the same request, each with their own profile link', async ({ db }) => {
   await seed(db)
-  await createExtensionToken(db, 'A', 'u1', 'America/Toronto', TEN_AM)
+  await pairLinkedIn(db, 'A', 'u1', 'America/Toronto', TEN_AM)
   await enqueuePostEngagement(db, 'A', 'j1', [POST], TEN_AM)
   const next = await nextTask(db, 'A', TEN_AM + 5, () => 0.5)
   assert.ok('task' in next, JSON.stringify(next))
