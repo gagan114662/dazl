@@ -32,3 +32,21 @@ test('fewer than five shown: a second pass for different companies, when a pass 
   const tight = await runDiscovery({ query: 'q' }, { maxUsd: 0.6 }, { apiKey: 'k', fetch: never, discover, enrich: null })
   assert.deepEqual([tight.passes, tight.usd], [1, 0.4], 'no room for a second pass: the first stands')
 })
+
+// Review of #1596: a profile address from the FIRST pass went to the card unchecked. It is held to the same rule as the people pass:
+// the run must have seen that address, in a result or page whose title carries the person's name; otherwise it is dropped and the
+// people pass looks for the profile. A profile with no named person is never kept for whoever is found later.
+test('#1037: a first-pass LinkedIn profile is kept only when the run saw it for that person', async () => {
+  const withProfile = (company: string, slug: string) => lead(company, { person: 'Dana Ruiz', title: 'Owner', person_source_url: 'https://x.example/team', linkedin_url: `https://www.linkedin.com/in/${slug}/` })
+  const first: DiscoverResult = result([withProfile('A Co', 'dana-ruiz-a'), withProfile('B Co', 'dana-ruiz-made-up'), lead('C Co', { linkedin_url: 'https://www.linkedin.com/in/somebody/' })], 0.3)
+  first.seen.push({ url: 'https://www.linkedin.com/in/dana-ruiz-a', title: 'Dana Ruiz - Owner - A Co | LinkedIn', page_age: null, text: null })
+  first.seen.push({ url: 'https://www.linkedin.com/in/somebody', title: 'Somebody Else | LinkedIn', page_age: null, text: null })
+  const sent: (string | null)[][] = []
+  const run = await runDiscovery({ query: 'q' }, { maxUsd: 1, wantShown: 1 }, { apiKey: 'k', fetch: never, discover: async () => first,
+    enrich: async leads => { sent.push(leads.map(l => l.linkedin_url)); return { leads: leads.map(l => l.company === 'C Co' ? { ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://c.example/team' } : l), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 1, usd: 0.01 }, seen: [], enriched: 1 } } })
+  const of = (c: string) => run.leads.find(l => l.company === c)!
+  assert.equal(of('A Co').linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-a/', 'seen for this person: kept')
+  assert.equal(of('B Co').linkedin_url, null, 'an address the run never saw is dropped')
+  assert.deepEqual([of('C Co').person, of('C Co').linkedin_url], ['Pat Lee', null], 'a profile that came with no person is not attached to the person found later')
+  assert.ok(sent[0].every(u => u === null || u === 'https://www.linkedin.com/in/dana-ruiz-a/'), 'the people pass is asked to find the dropped ones')
+})

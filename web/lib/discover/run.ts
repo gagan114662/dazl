@@ -6,7 +6,7 @@
 // Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
 import { discoverLeads, type DiscoverInput, type DiscoverUsage } from './agent.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
-import { enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
+import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
@@ -27,7 +27,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
 
   const first = await discover(sized, api)
   add(first.usage)
-  let leads = await checkLeads(first.leads, first.seen, deps.fetch, 4)
+  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4)
   const pages = first.seen.map(p => p.url)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note
@@ -38,7 +38,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       add(second.usage)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkLeads(second.leads, second.seen, deps.fetch, 4)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
       passes = 2
       note = second.note ?? note
