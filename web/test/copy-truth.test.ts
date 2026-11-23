@@ -11,18 +11,20 @@ test('briefs render as readable text: no heading or emphasis marks, links keep t
   assert.equal(markdownToPlain('keep snake_case_word'), 'keep snake_case_word')
 })
 
-test('copy matches behaviour: no "approve every send" vs autopilot contradiction, no "in seconds", "proven" or "Unlimited scans"', () => {
+test('copy matches behaviour: Autopilot is not offered in the beta (#1428), no "in seconds", "proven" or "Unlimited scans"', () => {
   const page = read('app/page.tsx'); const banner = read('app/banner.tsx')
-  assert.doesNotMatch(page, /You approve every send/)
+  // #1428 (owner decision 2026-11-23): Autopilot is off for the beta, so the page no longer says it can be turned on.
+  // It was pinned to "Autopilot is off unless you turn it on"; that sentence is now false for a beta user.
   assert.doesNotMatch(page, /Sending is off in this release/)
-  assert.match(page, /Autopilot is off unless you turn it on/)
+  assert.doesNotMatch(page, /unless you turn (it )?on/i)
+  assert.match(page, /Autopilot is not available during the beta\./)
   assert.doesNotMatch(page, /and proven\./)
   assert.doesNotMatch(page, /Unlimited scans/)
   assert.doesNotMatch(banner, /in seconds/)
   for (const p of ['app/app/seo/brief-panel.tsx', 'app/app/seo/newsjack-panel.tsx']) assert.match(read(p), /markdownToPlain\(/, p)
 })
 
-test('homepage claims match behaviour (Instinct #326, #1042): example demo labelled, first play daily, held not dropped, provider costs at Pro', () => {
+test('homepage claims match behaviour (Instinct #326, #1042, #1428): example demo labelled, first play daily, unconfirmed leads set aside not dropped, free beta only', () => {
   const page = read('app/page.tsx'); const demo = read('app/landing-demo.tsx')
   // #1042 (decision 2026-11-12): the first play's automatic repeat runs every day (lib/play-repeat.ts, lib/play-cadence.ts);
   // a play saved by hand still runs weekly. So the homepage may say "every day" only about the first Play.
@@ -31,8 +33,11 @@ test('homepage claims match behaviour (Instinct #326, #1042): example demo label
   assert.match(read('lib/play-repeat.ts'), /REPEAT_INTERVAL_S = DAY_S/)
   assert.match(page, /Your first Play runs again every day/)
   assert.equal(page.match(/\bdaily\b|every day/gi)?.length, 2, 'the step title and its first-Play sentence only')
-  assert.doesNotMatch(demo, /\bdaily\b|every day/i)
-  assert.match(demo, /Live · runs weekly/)
+  // #1428: the demo plays a first run, whose Play repeats daily. It said "Live · runs weekly", which contradicted the step above it.
+  assert.doesNotMatch(demo, /weekly/i)
+  assert.match(demo, /Live · runs every day/)
+  // #1428: the step says what a Play is.
+  assert.match(page, /saves your first search as a Play: a search it keeps running for you/)
   // The demo's people and companies are invented: labelled on screen and for screen readers.
   assert.match(demo, /data-testid="demo-label">Illustrative example · made-up companies and people</)
   assert.match(demo, /'Illustrative example of a dazl run, with made-up companies and people/)
@@ -43,27 +48,37 @@ test('homepage claims match behaviour (Instinct #326, #1042): example demo label
   assert.doesNotMatch(ex, /url: 'http/, 'made-up leads link no source')
   // Leads that fail a check are kept as held research for review, not deleted.
   assert.doesNotMatch(page, /are dropped|drops what fails/)
-  assert.match(page, /held for your review, out of the ready-to-contact list/)
-  // Pro is a flat dazl fee; AI usage on the user's own key is billed by the provider, stated on the Pro card itself.
-  const pro = page.slice(page.indexOf('>Pro<'), page.indexOf('Start free, upgrade any time'))
-  // The card renders the one disclosure the product truth record carries (lib/plans.ts PRICE_DISCLOSURE, #402).
-  assert.match(pro, /\{PRICE_DISCLOSURE\}/)
-  assert.match(read('lib/plans.ts'), /PRICE_DISCLOSURE = '[^']*your provider bills that usage separately/)
+  assert.match(page, /A lead whose proof could not be confirmed is set aside for you to check, with the reason/)
+  // #1428 (owner decision 2026-11-20): launch shows the free beta only. No Pro card, no price other than $0, and no
+  // "own AI key" or "Fair-use limits apply" wording. (This used to pin the Pro card and its PRICE_DISCLOSURE line.)
+  const pricing = page.slice(page.indexOf('id="pricing"'), page.indexOf('<footer'))
+  assert.match(pricing, /Free during the beta/)
+  // The card's one sentence about price is the terms' own (lib/legal/policy.ts FREE_BETA_TERMS): no amount anywhere.
+  assert.match(pricing, /\{FREE_BETA_TERMS\}/)
+  assert.match(read('lib/legal/policy.ts'), /FREE_BETA_TERMS = "dazl is free during the beta\. We don't charge you anything\./)
+  assert.doesNotMatch(page, /PLAN_PRICE_USD_MONTHLY|PRICE_DISCLOSURE|>Pro<|Fair-use|own (AI )?key|upgrade|\$\d|\/mo\b/i)
   assert.doesNotMatch(page, /no overages/i)
+  // The free card says what a lead's contact is, as the owner defined it: the person's own details, never a shared inbox.
+  assert.match(page, /their name, title and own LinkedIn profile, plus their own work email when it is published/)
+  assert.match(page, /When no personal email is published, their LinkedIn profile is the way to reach them, and you send that message yourself\./)
+  assert.match(page, /Shared inboxes such as info@ or sales@ never count/)
 })
 
-test('homepage approval wording matches the sending contract (Instinct #338): approval per email unless Autopilot is on', () => {
+test('homepage approval wording matches the sending contract (#338, #1428): you approve every email; Autopilot is not offered in the beta', () => {
   const page = read('app/page.tsx'), ap = read('lib/outreach/autopilot.ts')
   // What Autopilot does once on (its consent text): later emails go out without asking first, within limits, after the
   // first approved sends. So no categorical "nothing sends until you approve it" anywhere on the page.
   assert.match(ap, /without asking you first/)
   assert.match(ap, /after the first sends have been approved by you/)
-  assert.doesNotMatch(page, /Nothing sends until you approve it/)
-  // Every approval claim on the page names the Autopilot exception in the same sentence.
-  const claims = page.split(/(?<=[.!?'])\s+/).filter(x => /\byou approve\b/i.test(x) && !/first sends/.test(x))
-  assert.ok(claims.length >= 2, 'the proof strip and step 3 both state it')
-  for (const c of claims) assert.match(c, /unless you turn on Autopilot/, c)
-  assert.match(page, /later emails can send without your individual review/)
+  // #1428 (owner decision 2026-11-23): Autopilot is off for the beta. It runs only where the operator sets
+  // AUTOPILOT_ENABLED=1, so the page says you approve every email and names no exception.
+  // (These assertions used to require "unless you turn on Autopilot" in every approval claim.)
+  assert.match(ap, /autopilotAvailable = \(env[^)]*\) => env\.AUTOPILOT_ENABLED === '1'/)
+  const claims = page.split(/(?<=[.!?'])\s+/).filter(x => /\byou approve\b/i.test(x))
+  assert.ok(claims.length >= 3, 'step 3, the proof strip and the free card all state it')
+  for (const c of claims) assert.match(c, /You approve every (email|one)/, c)
+  assert.match(page, /Every message is reviewed and sent by you, from your own Gmail\. Autopilot is not available during the beta\./)
+  assert.doesNotMatch(page, /without your individual review/)
   // Autopilot is one switch per account (autopilot_settings keyed by tenant): no per-Play claim.
   assert.match(ap, /tenant_id TEXT PRIMARY KEY/)
   assert.doesNotMatch(page, /which Plays it covers/)
@@ -76,14 +91,20 @@ test('homepage evidence and coverage claims match what a scan returns (Instinct 
   const page = read('app/page.tsx'), demo = read('app/landing-demo.tsx')
   // Undated, unconfirmed or blocked candidates stay held for review: only ready leads carry the checked evidence.
   assert.doesNotMatch(page, /Every lead (comes|shows)|Each lead comes|Evidence for every lead/)
-  assert.match(page, /Leads marked ready come with the quoted line/)
-  assert.match(page, /stay held for your review, with the reason/)
+  // #1428: the subhead is the owner's sentence; what is missing or unconfirmed is said in the proof strip in plain words
+  // (it used to be "Leads marked ready come with the quoted line" / "stay held for your review, with the reason").
+  assert.match(page, /Paste your website\. dazl finds businesses that need what you sell right now, shows you the proof, and drafts the email from your Gmail\./)
+  assert.match(page, /Proof behind every lead, not a database dump/)
+  assert.match(page, /Anything missing, such as a date or a person, is said on the lead\./)
   // Any business is welcome; results are not promised for every market.
   assert.doesNotMatch(page, /works out who buys from you\./)
   assert.match(page, /What it finds depends on the public evidence available for your market/)
   // The demo shows held leads beside ready ones, never only a headline count.
   assert.doesNotMatch(demo, /5 leads found/)
-  assert.match(demo, /held for your review/)
+  assert.match(demo, /2 more set aside for you to check/)
+  // #1428: no "fit 5/5" or "held for review" jargon in the demo, and a local business is the first example.
+  assert.doesNotMatch(demo, /fit \{l\.fit\}\/5|held for/)
+  assert.match(read('lib/landing-examples.ts'), /scenarios: \[\n    \{ id: 'dental-nyc', chip: 'Dental · New York'/)
 })
 
 test('onboarding "brain ready" copy matches behaviour: no approve-every-send, no unconditional follow-up stop, no contact-today promise', () => {

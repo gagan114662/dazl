@@ -100,7 +100,12 @@ test('#1095: when the account cannot be read, google_required still offers Link 
 
 test('#1095: sign-up says the free trial scans come with Google sign-in, never promised to the email path', () => {
   const on = signUpPlanLine(true)
-  assert.equal(on, 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.')
+  // #1428: free beta wording, "search" defined, and no key implied where the free first search can run. (Was
+  // 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.')
+  assert.equal(on, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Sign in with Google (or link it later) and your first search is free: no card and no key.')
   assert.doesNotMatch(on, /New accounts may get 3 trial scans/)
-  assert.equal(signUpPlanLine(false), 'Free plan: 50 scans a month with your own AI key. Upgrade any time.')
+  // Where no free search can run, the line says what a search needs here and promises no free one.
+  const off = signUpPlanLine(false)
+  assert.equal(off, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. On this site a search runs on your own Anthropic key, which you add in Settings.')
+  assert.doesNotMatch(off, /first search is free/)
 })

@@ -8,7 +8,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
-import { API_HOSTS, DRAFT_NOTICE, FACTS, NON_REQUEST_HOSTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, PRIVACY_REQUIRES_ENV, PRIVACY_STATUS, PUBLIC_SOURCES, TERMS } from '../lib/legal/policy.ts'
+import { API_HOSTS, FACTS, FREE_BETA_TERMS, NON_REQUEST_HOSTS, OWNER_PLACEHOLDERS, POLICY_STATUS, PRIVACY, PRIVACY_REQUIRES_ENV, PRIVACY_STATUS, PUBLIC_SOURCES, TERMS } from '../lib/legal/policy.ts'
 import { MATRIX } from '../lib/sources/capability-matrix.ts'
 import { PLAN_LIMITS } from '../lib/plans.ts'
 import { SESSION_RETAIN_S } from '../lib/sessions.ts'
@@ -51,19 +51,41 @@ const MASTER = randomBytes(32)
 const OAUTH_ENV = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'csecret', PUBLIC_BASE_URL: 'https://app.test' }
 const NOW = 1_800_000_000
 
-test('the terms stay labelled DRAFT with their open decisions visible; the privacy policy is final, with no placeholder and no draft notice (owner instruction 2026-11-22)', () => {
-  assert.equal(POLICY_STATUS, 'draft')
+// #1428: this test used to hold the terms to a DRAFT label and their [NEEDS ...] markers. The owner approved plain-English
+// free-beta terms on 2026-11-23, so it now holds them to that approved text: final, no placeholder, no draft notice.
+test('both policies are final, with no placeholder and no draft notice (privacy: owner instruction 2026-11-22; terms: owner decision 2026-11-23, #1428)', () => {
+  assert.equal(POLICY_STATUS, 'final')
   assert.equal(PRIVACY_STATUS, 'final')
-  assert.doesNotMatch(privacy, /\[(?:NEEDS|DATE|SYSTEM)[^\]]*\]/, 'the published privacy policy carries no placeholder')
-  assert.doesNotMatch(privacy, /\bDRAFT\b/)
-  assert.match(DRAFT_NOTICE, /^DRAFT\b/)
-  assert.match(DRAFT_NOTICE, /not yet approved by the site owner or reviewed by a lawyer/)
+  for (const [name, text] of [['privacy', privacy], ['terms', terms]] as const) {
+    assert.doesNotMatch(text, /\[(?:NEEDS|DATE|SYSTEM)[^\]]*\]/, `the published ${name} text carries no placeholder`)
+    assert.doesNotMatch(text, /\bDRAFT\b|NEEDS (OWNER|COUNSEL)/, name)
+  }
+  assert.doesNotMatch(read('lib/legal/policy.ts'), /DRAFT_NOTICE/)
+  // Each text has its own date; the privacy policy's did not move when the terms changed.
+  assert.match(privacy, /^Last updated: 22 November 2026\./)
+  assert.match(terms, /^Last updated: 23 November 2026\./)
   // every owner-supplied fact is shown somewhere in the text
   for (const v of Object.values(OWNER_PLACEHOLDERS)) assert.ok(privacy.includes(v) || terms.includes(v), `${v} is not shown`)
-  assert.match(terms, /\[NEEDS COUNSEL: warranty disclaimer, limitation of liability/)
+  // The approved terms, sentence by sentence (decision on #1579, 2026-11-23).
+  for (const s of [
+    `These terms are between you and ${OWNER_PLACEHOLDERS.legalName}, ${OWNER_PLACEHOLDERS.companyRegistration}. dazl is a product of Mathematricks - F.Z.E.`,
+    'By creating an account you agree to these Terms and to the Privacy Policy.',
+    'Autopilot is not available during the beta. Every message is reviewed and sent by you.',
+    'You are responsible for any disclosure the law where your recipient lives requires.',
+    'If you connect your own Anthropic key, usage is billed to you by Anthropic.',
+    "dazl is free during the beta. We don't charge you anything. We'll give at least 30 days' notice by email before any paid plan starts, and nothing will be charged without you choosing a plan.",
+    'During the beta the service is provided "as is", with no warranties.',
+    'Our liability to you is capped at the greater of the amounts you paid us in the last 12 months or US$100.',
+    'You indemnify us for the messages you send.',
+    'You can close your account at any time',
+    'We can suspend accounts that break the Acceptable use rules above.',
+    'These terms are governed by the laws of Ontario, Canada. Disputes go to the courts in Toronto.',
+  ]) assert.ok(terms.includes(s), `the terms must say: ${s}`)
+  assert.ok(terms.includes(FREE_BETA_TERMS))
+  // Claude only: no other AI, data or CRM provider is named in the terms, and no payment processor or scan allowance.
+  assert.doesNotMatch(terms, /OpenAI|Apollo|People Data Labs|HubSpot|Pipedrive|\bCRM\b|Stripe|scans a month/)
   for (const page of ['app/privacy/page.tsx', 'app/terms/page.tsx']) assert.ok(read(page).includes("from '@/lib/legal/policy'"), `${page} must render the checked policy text, not its own copy`)
-  assert.ok(read('app/terms/page.tsx').includes('{DRAFT_NOTICE}'), 'the terms page must render the draft notice')
-  assert.ok(!read('app/privacy/page.tsx').includes('DRAFT_NOTICE'), 'the privacy page renders no draft notice')
+  for (const page of ['app/privacy/page.tsx', 'app/terms/page.tsx']) assert.ok(!/DRAFT/.test(read(page)), `${page} renders no draft notice`)
   assert.ok(read('app/privacy/page.tsx').includes('PRIVACY.map'))
   assert.ok(read('app/terms/page.tsx').includes('TERMS.map'))
 })
@@ -448,13 +470,17 @@ test('an unsubscribe stops that sender at once: opt-out list, pending messages a
   assert.match(privacy, /An unsubscribe works at once, with no login/)
 })
 
-test('autopilot terms match the consent text the user accepts', () => {
+// #1428: the terms used to describe Autopilot and carry a [NEEDS OWNER] note about its consent text. Autopilot is not
+// offered in the beta, so the terms now say only that. The stored consent text is unchanged here (it still overpromises
+// on pausing, and must get a new consent version before Autopilot is ever turned on: a separate change).
+test('the terms say Autopilot is not available in the beta; the stored consent text is untouched', () => {
   const consent = CONSENT_TEXT.join(' ')
   assert.match(consent, /without asking you first, within the daily limits you set, after the first sends have been approved by you/)
   assert.match(consent, /Pausing stops sends immediately/)
-  assert.match(terms, /without asking you each time, within the daily limits you set and only after your first sends were approved by you/)
-  assert.match(terms, /pausing stops sends before the next send/)
-  assert.match(terms, /\[NEEDS OWNER: the autopilot consent text users accepted still says 'Pausing stops sends immediately'/)
+  assert.match(terms, /Autopilot is not available during the beta\. Every message is reviewed and sent by you\./)
+  assert.doesNotMatch(terms, /without asking you each time|pausing stops sends/i)
+  // Autopilot runs only where the operator switches it on.
+  assert.match(read('lib/outreach/autopilot.ts'), /autopilotAvailable = \(env[^)]*\) => env\.AUTOPILOT_ENABLED === '1'/)
   assert.match(read('lib/outreach/autopilot.ts'), /overpromises: the code re-checks pause before each send/)
 })
 
@@ -469,7 +495,8 @@ test('error reports leaving the server carry no message, account id or personal 
 
 test('the free plan allowance matches the plan limits', () => {
   assert.equal(FACTS.freeScansPerMonth, PLAN_LIMITS.free.scansPerMonth)
-  assert.ok(terms.includes(`${FACTS.freeScansPerMonth} scans a month`))
+  // #1428: the terms no longer state the allowance (free beta, no plan table); it used to be "50 scans a month with your own AI key".
+  assert.doesNotMatch(terms, /scans a month/)
 })
 
 // The privacy page's qualified claim ("deleting your account deletes them ... unless the deletion request asks to

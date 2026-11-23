@@ -67,7 +67,8 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
         </p>
         <ClaimContextBanner business={claim.business} action="Create your account" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>
-        <p className="text-xs text-[#555] text-center mt-2 mb-4">Free scans need Google sign-in.</p>
+        {/* Said only where a free first search can really run (#1428); the spacing stays the same either way. */}
+        <p className="text-xs text-[#555] text-center mt-2 mb-4">{trialFunded ? 'The free first search needs Google sign-in.' : ''}</p>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         {/* action (#1116): before or without the script, the browser posts the form to the same route the script calls, which
@@ -101,7 +102,7 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
           Already have an account? <a href="/sign-in" className="text-[#111] underline underline-offset-2 hover:underline">Sign in</a>
         </p>
         <p className="mt-3 text-xs text-[#6b6b6b] text-center">
-          <a href="/terms" className="underline underline-offset-2 hover:text-[#111]">Terms of Service</a> · <a href="/privacy" className="underline underline-offset-2 hover:text-[#111]">Privacy Policy</a>
+          By creating an account you agree to the <a href="/terms" className="underline underline-offset-2 hover:text-[#111]">Terms</a> and <a href="/privacy" className="underline underline-offset-2 hover:text-[#111]">Privacy Policy</a>.
         </p>
       </div>
     </main>
