@@ -44,7 +44,7 @@ export const MIN_CONFIDENCE = 80
 // available during the beta, so it is off unless the operator sets AUTOPILOT_AVAILABLE=1 (lib/beta.ts) as well as the older
 // AUTOPILOT_ENABLED=1, and AUTOPILOT_KILL is not set. While it is off an account whose stored setting says "enabled" is treated as
 // off: the settings route refuses to enable or resume, and runAutopilot, drainFirstTouch and runFollowups stop before reading a lead.
-export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => autopilotInBeta(env) && env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1'
+export const autopilotAvailable = (env: Record<string, string | undefined> = process.env) => env.AUTOPILOT_ENABLED === '1' && env.AUTOPILOT_KILL !== '1' && autopilotInBeta(env)
 
 export function migrateAutopilot(db: Database.Database): void {
   migrateLaunchPolicy(db) // a calibrated launch's accepted policy (lib/outreach/launch-policy.ts, #405)
