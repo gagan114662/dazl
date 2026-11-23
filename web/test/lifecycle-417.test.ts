@@ -251,7 +251,7 @@ test('sequence step: a conversion proven DURING the token refresh stops the step
   db.exec(USERS_DDL)
   db.prepare("INSERT INTO users (id, email, email_verified_at) VALUES ('u9', 'seqprospect@corp.example', NULL)").run()
   const master = randomBytes(32)
-  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   acceptReadConsent(db, 'A'); acceptAutoSequencePolicy(db, 'A', AUTO_SEQUENCE_POLICY)

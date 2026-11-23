@@ -171,7 +171,9 @@ async function run({ width, height, tag, drafted = [] }) {
   assert.deepEqual(st.drafts, [ROWS[0].id, ROWS[3].id], 'one draft per approval, through the existing action')
   // 3. Send setup.
   assert.equal(await page.getByTestId('review-step').locator('h1').textContent(), '2 drafts ready for you')
-  assert.deepEqual(await page.getByTestId('read-notice').locator('li').allTextContents(), NOTICE, 'the read notice the connect accepts is shown beside it')
+  // #1603: the connect is send-only, so no reply-reading notice is shown beside it even if the API still sent one.
+  assert.equal(await page.getByTestId('read-notice').count(), 0, 'no read notice beside the send-only connect')
+  await page.getByTestId('setup-gmail').getByText(/dazl does not ask to read your mailbox/).waitFor()
   assert.equal(await page.getByTestId('connect-gmail').getAttribute('href'), '/api/gmail/connect')
   await shot('6-setup')
   await type(page.getByPlaceholder('Your name, as recipients will see it'), 'Dana Okafor')

@@ -119,7 +119,7 @@ test('every audited route in the Covered table records its event, with the redac
   await step('follow-ups off, never on', t.A, () => replies.POST(post('/api/outreach/replies', { action: 'followups_off' })), [])
 
   // ---- Gmail connect: the OAuth callback with a stubbed token exchange
-  const state = new URL(startOAuth(raw, 'A', { withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(raw, 'A')).searchParams.get('state')!
   const cb = await step('gmail connected', t.A, () => gmailCallback.GET(req(`/api/gmail/callback?code=synthetic-code&state=${encodeURIComponent(state)}`, 'GET')), [['A', 'credential.saved', 'gmail', null, {}]], 307)
   assert.equal(cb.headers.get('location'), 'https://app.test/app/settings?gmail=connected')
   assert.deepEqual(raw.prepare("SELECT email, status, read_granted FROM gmail_accounts WHERE tenant_id = 'A'").get(), { email: MARK.mailbox, status: 'active', read_granted: 1 })

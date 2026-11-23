@@ -112,7 +112,7 @@ const has = async (page, text) => (await page.locator('#replies').innerText()).i
     for (const [name, initial, want, control, notWant] of [
       ['disconnected', { gmail_connected: false, gmail_status: 'none', read_granted: false, consent: { version: 'v1', text: TEXT, accepted: false } }, 'Connect Gmail', 'a', 'Reading replies: on'],
       ['needs-reconnect', { gmail_status: 'needs_reconnect' }, 'Gmail needs to be reconnected', 'a', 'Reading replies: on'],
-      ['read-scope-missing', { read_granted: false }, 'connected send-only', 'a', 'Reading replies: on'],
+      ['read-scope-missing', { read_granted: false }, 'connected send-only', 'p', 'Reading replies: on'],   // #1603: no reconnect link, a reconnect cannot add read access
       ['consent-needed', { consent: { version: 'v1', text: TEXT, accepted: false } }, 'Reading replies: off', 'button', 'Reading replies: on'],
       ['on', {}, 'Reading replies: on', 'button', 'Reading replies: off'],
     ]) {

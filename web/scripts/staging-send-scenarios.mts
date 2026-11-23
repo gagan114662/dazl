@@ -101,7 +101,7 @@ const inbound = (id: string, from: string, body: string, at: number) => ({ id, t
 
 async function tenant(db: Database.Database, id: string, master: Buffer) {
   db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES (?, ?, 'x', 'y')").run(id, `${id}@staging.dazl.test`)
-  const state = new URL(startOAuth(db, id, { env: GENV, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, id, { env: GENV, now: NOW })).searchParams.get('state')!
   const idToken = 'x.' + Buffer.from(JSON.stringify({ email: `sender-${id}@staging.dazl.test`, email_verified: true })).toString('base64url') + '.y'
   await completeOAuth(db, id, 'scenario-code', state, { env: GENV, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'scenario-refresh', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken })) as unknown as typeof fetch })
   saveSettings(db, id, SENDER)

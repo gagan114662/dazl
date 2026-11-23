@@ -5,17 +5,17 @@ import { decryptSecret, encryptSecret } from '../secrets.ts'
 import { norm } from '../outreach/store.ts'
 import { stagingGmail, STUB_SENDER } from '../staging.ts'
 
-// Least privilege: send is the required grant. Reading replies is a separate, optional gmail.readonly grant (below).
+// Least privilege (#1603): send is the only Gmail grant dazl asks for. No connect requests gmail.readonly.
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
-// Reading is a separate, optional grant. gmail.readonly is the narrowest scope that returns message bodies.
-// dazl opens its outreach threads and searches a bounded daemon-notice window for delivery failures correlated to its recorded sends.
+// Never requested any more. Kept only to recognise accounts connected before #1603, whose stored grant still includes it:
+// for those, dazl opens its outreach threads and searches a bounded daemon-notice window for delivery failures.
 export const GMAIL_READ_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const SCOPES = ['openid', 'email', GMAIL_SEND_SCOPE]
 const STATE_TTL_S = 600
 
 export interface OAuthEnv { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string; PUBLIC_BASE_URL?: string; DAZL_ENV?: string; DAZL_STAGING_REAL_GMAIL?: string; GMAIL_STAGING_CLIENT_ID?: string; GMAIL_STAGING_CLIENT_SECRET?: string; DAZL_STAGING_GMAIL_ALLOWLIST?: string }
 const E = (env: OAuthEnv) => env as Record<string, string | undefined>
-export interface OAuthDeps { withRead?: boolean; env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
+export interface OAuthDeps { env?: OAuthEnv; fetchImpl?: typeof fetch; master?: Buffer; now?: number }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const nowS = (d: OAuthDeps) => d.now ?? Math.floor(Date.now() / 1000)
@@ -57,12 +57,12 @@ export function startOAuth(db: Database.Database, tenantId: string, deps: OAuthD
   const verifier = randomBytes(32).toString('base64url')
   const t = nowS(deps)
   db.prepare('DELETE FROM oauth_states WHERE expires_at < ?').run(t)
-  db.prepare('INSERT INTO oauth_states (state_hash, tenant_id, verifier, expires_at, read_scope) VALUES (?, ?, ?, ?, ?)').run(sha(state), tenantId, verifier, t + STATE_TTL_S, deps.withRead ? 1 : 0)
+  db.prepare('INSERT INTO oauth_states (state_hash, tenant_id, verifier, expires_at, read_scope) VALUES (?, ?, ?, ?, ?)').run(sha(state), tenantId, verifier, t + STATE_TTL_S, 0)
   const q = new URLSearchParams({
     client_id: c.id,
     redirect_uri: redirectUri(env),
     response_type: 'code',
-    scope: (deps.withRead ? [...SCOPES, GMAIL_READ_SCOPE] : SCOPES).join(' '),
+    scope: SCOPES.join(' '),
     access_type: 'offline',
     prompt: 'consent',
     state,
@@ -104,9 +104,8 @@ export async function completeOAuth(db: Database.Database, tenantId: string, cod
   const t = (await res.json()) as { refresh_token?: string; scope?: string; id_token?: string }
   if (!t.refresh_token) throw new GmailError('google', 'no_refresh_token')
   if (!(t.scope ?? '').split(' ').includes(GMAIL_SEND_SCOPE)) throw new GmailError('google', 'send_scope_not_granted')
-  // Google's granular consent lets the user untick the read scope on the consent screen.
-  // That is a valid choice: the connection still works send-only, and read_granted records
-  // what was actually granted. Only a missing send scope is a failure (handled above).
+  // read_granted records what Google actually granted. dazl requests send only (#1603), so this is false for every new
+  // connection and for a reconnect of an account that once had the read scope.
   const readGranted = (t.scope ?? '').split(' ').includes(GMAIL_READ_SCOPE)
   const who = t.id_token ? idTokenEmail(t.id_token) : null
   if (!who || !who.verified) throw new GmailError('google', 'email_not_verified')

@@ -46,7 +46,7 @@ const sendSpy = () => { const sent: { raw: string; thread?: string }[] = []; ret
 const deps = (over: object = {}): Deps & { flags: Record<string, string> } => ({ flags: ON, env: genv, master, now: NOW, baseUrl: 'https://app.test', fetchImpl: gmail({}), ...over })
 
 async function onboard(db: Database.Database, t: string, email: string, read = true) {
-  const state = new URL(startOAuth(db, t, { env: genv, now: NOW, withRead: read })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, t, { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, t, 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send${read ? ' ' + GMAIL_READ_SCOPE : ''}`, id_token: idToken(email) })) as unknown as typeof fetch })
   saveSettings(db, t, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   enable(db, t, { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 5 })
