@@ -6,7 +6,7 @@
 //     up front (verdict blocked, with what to do), for the same reasons POST /api/scan would refuse at confirm time.
 import assert from 'node:assert/strict'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan, ledger, linkTrialReservation, settleTrialReservation, trialCaps, utcDay, type LedgerRow } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, ledger, linkTrialReservation, settleTrialReservation, trialCaps, trialDay, type LedgerRow } from '../lib/billing/trial-budget.ts'
 import { estimateRun, FREE_TRIAL_SCANS } from '../lib/scan/price-estimate.ts'
 import { TRIAL_SCANS_PER_ACCOUNT } from '../lib/scan/trial.ts'
 import { bothEngines } from './helpers/engines.ts'
@@ -19,7 +19,7 @@ import { reapStaleRunningJobs } from '../lib/scan/store.ts'
 import { reapStaleRunningJobs as reapStaleRunningJobsDb } from '../lib/scan/store-db.ts'
 import { reapStaleScans } from '../lib/queue/scan-claimer.ts'
 
-const NOW = 1_800_000_000, DAY = utcDay(NOW)
+const NOW = 1_800_000_000, DAY = trialDay(NOW)
 const caps = { DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0', DAZL_TRIAL_TINYFISH_FETCH_USD: '0' }
 const mkUser = async (db: Db, id: string, email: string) => {
   await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])
