@@ -22,7 +22,7 @@ export default function GmailPanel() {
     setBooking(b => b || j.sender?.booking_url || '')
   }
   useEffect(() => {
-    void load()
+    void Promise.resolve().then(load) // after the effect, as the other panels load (react-hooks/set-state-in-effect)
     const q = new URLSearchParams(window.location.search).get('gmail')
     // Google's redirect lands at the top of Settings: bring this panel (and its next step) into view.
     // The sections above load on their own and can push it back down, so it keeps its place while they settle
