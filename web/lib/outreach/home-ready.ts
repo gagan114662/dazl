@@ -12,7 +12,7 @@ import { getScanDb } from '@/lib/scan/service'
 import { getJob, listLeads } from '@/lib/scan/store'
 import { enrichmentsForLeads } from '@/lib/connectors/store'
 import { leadHoldReason, timingOptsFor } from '@/lib/outreach/lead-hold'
-import type { PreviewLead } from '@/lib/journey'
+import { countedOnHome, type PreviewLead } from '@/lib/journey'
 import { companyKey } from '@/lib/scan/evidence'
 import { RESULTS_WINDOW_DAYS } from '@/lib/outreach/home-results'
 import { companyFirstShown, gateHoldReason, heldByChecksOf } from '@/lib/outreach/campaigns'
@@ -40,10 +40,10 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
   const since = now - RESULTS_WINDOW_DAYS * 86400, at = new Date(now * 1000)
   const db = getScanDb()
   // The tenant's own scans (never test-only runs) holding leads the tile can judge - found in the window, shown on Leads
-  // (not a poor fit), not rejected, not a fixture, not seen before - by their newest such lead, with how many each holds.
+  // (not a poor fit; #1620: a new-engine lead whatever its fit, as every other page counts it), not rejected, not a fixture, not seen before - by their newest such lead, with how many each holds.
   const jobs = db.prepare(`SELECT j.id, j.run_budget, j.status, j.enrich_started_at, j.enrich_finished_at, MAX(l.created_at) AS last, COUNT(*) AS n FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id
     WHERE j.user_id = ? AND l.created_at >= ? AND NOT (j.industry = 'test only' AND j.location = 'test only')
-      AND (l.fit IS NULL OR l.fit > 1) AND l.quarantined_at IS NULL AND COALESCE(l.source_kind, '') <> 'test' AND COALESCE(l.seen_before, 0) = 0
+      AND (l.fit IS NULL OR l.fit > 1 OR l.source_kind = 'discover') AND l.quarantined_at IS NULL AND COALESCE(l.source_kind, '') <> 'test' AND COALESCE(l.seen_before, 0) = 0
     GROUP BY j.id ORDER BY last DESC, j.id DESC`).all(tenantId, since) as { id: string; n: number; run_budget: string | null; status: string; enrich_started_at: number | null; enrich_finished_at: number | null }[]
   // #1062: a company-first scan shows only the leads its final checks let through (companyFirstResults, the run page's own gate), judged from
   // this one read of the scans; the rest are held by those checks (or by checks still running), never "needs your review". Fails closed.
@@ -59,8 +59,8 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
     const job = getJob(db, tenantId, id) as { id: string; query: string | null; icp: string | null } | undefined
     if (!job) continue
     const timingOpts = timingOptsFor(job)
-    const leads = (listLeads(db, tenantId, id, perScan, false) as (PreviewLead & { created_at: number; seen_before?: number | null; source_kind?: string | null; company_domain?: string | null; company: string; quarantined_at?: unknown })[])
-      .filter(l => Number(l.created_at) >= since && !l.seen_before && l.source_kind !== 'test' && !l.quarantined_at)   // rejected leads are not judged
+    const leads = (listLeads(db, tenantId, id, perScan, true) as (PreviewLead & { created_at: number; seen_before?: number | null; source_kind?: string | null; company_domain?: string | null; company: string; quarantined_at?: unknown })[])
+      .filter(l => countedOnHome(l) && Number(l.created_at) >= since && !l.seen_before && l.source_kind !== 'test' && !l.quarantined_at)   // rejected leads are not judged
     const enr = enrichmentsForLeads(db, tenantId, leads.map(l => l.id))
     let whole = leads.length >= Number(n)   // false: the per-scan read limit left judgeable leads of this scan unread
     for (const l of leads) {

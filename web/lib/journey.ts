@@ -41,6 +41,14 @@ export function heldReason(l: PreviewLead): string | null {
   return null
 }
 
+// #1620: the leads Home counts for a search. The Leads header, Campaigns and the checklist count EVERY lead of a new-engine search
+// (lib/discover/state-db.ts), also one graded a poor fit, which the Leads list leaves out until "Show hidden leads". Home read only the
+// default list, so one search said "2 need your review" on the checklist and 1 on its play card. Home now reads every row (all=1) and
+// keeps every new-engine lead; an older-engine poor-fit lead stays out, as it always has.
+export const playLeadsUrl = (jobId: string): string => `/api/leads?job_id=${jobId}&all=1`
+export const countedOnHome = (l: { fit?: number | null; source_kind?: string | null }): boolean => isDiscoverLead(l) || l.fit == null || l.fit > 1
+export const playLeads = <T extends PreviewLead>(rows: T[]): T[] => rows.filter(l => countedOnHome(l as { fit?: number | null; source_kind?: string | null }))
+
 // noContact: discovery leads whose proof is fine but nobody can be reached yet (discoverState 'no_contact'). Held, and never research:
 // finding a contact can still make them ready.
 export interface PreviewSplit { opportunities: (PreviewLead & { contactReady: boolean })[]; held: { lead: PreviewLead; reason: string }[]; review: PreviewLead[]; research: { lead: PreviewLead; cause: ResearchCause }[]; rejected: PreviewLead[]; noContact: PreviewLead[] }

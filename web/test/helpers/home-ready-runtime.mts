@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
-import { heldReason, type PreviewLead } from '../../lib/journey.ts'
+import { heldReason, playLeads, playLeadsUrl, previewSplit, type PreviewLead } from '../../lib/journey.ts'
 import { companyKey } from '../../lib/scan/evidence.ts'
 import { GET as leadsGET } from '../../app/api/leads/route.ts'
 import { GET as readyGET } from '../../app/api/home/ready/route.ts'
@@ -202,4 +202,45 @@ test('#1040 Ready tile: a lead held by a required check is counted under that re
   assert.deepEqual(r.held, [{ reason: 'a required check has not passed', count: 1, job_id: L, scans: 1 }])
   assert.deepEqual(r.companies.map(c => [c.lead_id, c.ready, c.reason]), [['gated', false, 'a required check has not passed'], ['real', true, '']])
   assert.ok(!r.companies.some(c => c.company === 'Fixture Co'))
+})
+
+// #1620 (Quest on prod 164e9f08, 2026-11-23): "Needs review" was 2 on the checklist and 1 on Home's play card, and the totals differed
+// too. The Leads header, Campaigns and the checklist count every lead of a new-engine search; Home's play card and its 30-day tile
+// counted only the rows the Leads list shows by default (fit above 1), so a poor-fit lead was missing from both.
+test('#1620 one new-engine search: the Leads header, Home\'s play card and Home\'s tile count the same leads, poor-fit ones included', async () => {
+  const { db, job, done } = seed()
+  const J = 'c'.repeat(24)
+  job(J, 'A', 'B2B SaaS founders hiring their first salesperson', NOW - 2 * DAY)
+  const lead = (id: string, o: { review?: boolean; fit?: number; intent?: number | null; rejected?: boolean } = {}) => db.prepare(
+    `INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, fit, intent, company_domain, source_kind, quarantined_at, created_at)
+     VALUES (?, ?, '', ?, 'hiring a first salesperson', ?, 85, 'is hiring its first salesperson', ?, ?, ?, ?, ?, 'discover', ?, ?)`)
+    .run(id, J, `Co ${id}`, `https://jobs.example/${id}`, o.review ? 'source_review_required' : null, recent, o.fit ?? 4, o.intent === undefined ? 4 : o.intent, `${id}.example`, o.rejected ? NOW : null, NOW - DAY)
+  lead('nobody')                                    // proof fine, nobody to reach
+  lead('unsure', { review: true })                  // needs your review
+  lead('unsure-lowfit', { review: true, fit: 1 })   // needs your review, and a poor fit: not in the default Leads list
+  lead('unfit', { fit: 0, intent: null })           // research only (graded not a fit): not in the default Leads list
+  lead('gone', { rejected: true })                  // rejected
+  done(J)
+
+  // The Leads header: GET /api/leads discover_counts (the numbers Campaigns and the checklist also read).
+  type Counts = { found: number; ready: number; review: number; research: number; no_contact: number; rejected: number }
+  const header = (await (await leadsGET(new NextRequest(`http://test/api/leads?job_id=${J}`))).json() as { discover_counts: Counts }).discover_counts
+  assert.deepEqual(header, { found: 5, ready: 0, ready_email: 0, ready_linkedin: 0, no_contact: 1, review: 2, research: 1, rejected: 1 })
+
+  // Home's play card: the read app/app/journey.tsx makes, split by previewSplit.
+  const rows = (await (await leadsGET(new NextRequest(`http://test${playLeadsUrl(J)}`))).json() as { leads: PreviewLead[] }).leads
+  const split = previewSplit(playLeads(rows))
+  assert.deepEqual({ found: split.opportunities.length + split.held.length, ready: split.opportunities.length, review: split.review.length, research: split.research.length, no_contact: split.noContact.length, rejected: split.rejected.length },
+    { found: header.found, ready: header.ready, review: header.review, research: header.research, no_contact: header.no_contact, rejected: header.rejected }, 'Home play card')
+
+  // Home's tile (30 days, one line per company; a rejected lead is not judged): every other lead of the search, in the same words.
+  const tile = await homeReady('A', NOW)
+  assert.equal(tile.judged, header.found - header.rejected, 'Home tile: companies checked')
+  assert.equal(tile.held.find(h => h.reason === 'needs your review')?.count, header.review, 'Home tile: needs your review')
+  assert.equal(tile.ready, header.ready)
+})
+
+test('#1620 an older-engine poor-fit lead stays out of Home\'s play card, as before', () => {
+  const rows = [{ id: 'a', fit: 1, source_kind: null }, { id: 'b', fit: null, source_kind: null }, { id: 'c', fit: 3, source_kind: null }, { id: 'd', fit: 0, source_kind: 'discover' }] as unknown as PreviewLead[]
+  assert.deepEqual(playLeads(rows).map(l => l.id), ['b', 'c', 'd'])
 })
