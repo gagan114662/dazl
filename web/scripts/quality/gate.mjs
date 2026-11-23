@@ -48,7 +48,7 @@ try {
     if (!candidates.length) throw new Error(`empty ${label} source inventory`);
     await writeFile(path.join(cwd, '.quality-inventory.json'), JSON.stringify(candidates));
     const output = path.join(scratch, `${label}-findings.json`);
-    execFileSync(process.execPath, ['--max-old-space-size=1400', path.join(web, 'scripts/quality/scan.mjs'), cwd, output], { cwd: root, stdio: 'inherit', timeout: 8 * 60 * 1000 });
+    execFileSync(process.execPath, ['--max-old-space-size=3072', path.join(web, 'scripts/quality/scan.mjs'), cwd, output], { cwd: root, stdio: 'inherit', timeout: 8 * 60 * 1000 });
     const { records, coverage } = JSON.parse(await readFile(output, 'utf8'));
     report.coverage[label] = coverage;
     findings[label] = records;

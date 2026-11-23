@@ -12,7 +12,7 @@ import { Avatar, Pill } from '../ui/bits'
 // and mailing address every email carries. Progress is the server's, not this component's: each mount (first entry, Back
 // and Start reaching out again, a refresh) reads this play's existing drafts (GET /api/campaigns/<id>, complete for one
 // scan) and counts those leads as approved, so nothing is approved twice and the queue resumes at the next lead.
-interface Settings { gmail: { email?: string; status?: string } | null; sender: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null; read_notice?: string[] }
+interface Settings { gmail: { email?: string; status?: string } | null; sender: { sender_name?: string; postal_address?: string; booking_url?: string | null } | null }
 type Verdict = 'approved' | 'skipped'
 
 export default function FirstReview({ jobId }: { jobId: string }) {
@@ -105,10 +105,8 @@ export default function FirstReview({ jobId }: { jobId: string }) {
           <div data-testid="setup-gmail">
             <div className="font-semibold text-sm">{gmailOn ? '✓ Gmail connected' : 'Connect Gmail'}</div>
             {gmailOn ? <p className="text-sm text-[var(--ink-2)]">Sending from {settings?.gmail?.email}</p> : <>
-              {/* Connecting accepts this notice (the connect route records it), so it is shown right here, as in Settings. */}
-              {settings?.read_notice && settings.read_notice.length > 0 && <ul className="list-disc pl-5 text-xs text-[var(--ink-2)] mt-1 space-y-0.5" data-testid="read-notice">{settings.read_notice.map((t, k) => <li key={k}>{t}</li>)}</ul>}
               <a href="/api/gmail/connect" className="btn-ghost btn-sm mt-2 inline-flex" data-testid="connect-gmail">Connect Gmail</a>
-              <p className="text-xs text-[var(--ink-3)] mt-1">Connecting means you agree to the reply-reading above. Google brings you back to Settings; your drafts wait in Outreach.</p>
+              <p className="text-xs text-[var(--ink-3)] mt-1">Google asks only for permission to send email as you; dazl does not ask to read your mailbox. Google brings you back to Settings; your drafts wait in Outreach.</p>
             </>}
           </div>
           <div data-testid="setup-sender">

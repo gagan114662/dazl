@@ -23,7 +23,7 @@ const SEND = 'https://www.googleapis.com/auth/gmail.send'
 
 async function setup(withRead = true) {
   const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
-  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `${SEND}${withRead ? ' ' + GMAIL_READ_SCOPE : ''}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 5 })
@@ -211,10 +211,10 @@ test('booking link: https-only, stored on sender settings, lands in follow-up te
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1', booking_url: '' })
   assert.equal(getSettings(db, 'A')?.booking_url, null) // cleared
 })
-test('granular consent: read requested but unticked on Google\'s screen connects send-only, no error', async () => {
+test('a send-only grant connects without error and reply reading stays off', async () => {
   const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db)
-  // The connect always requests read now (withRead: true), but the granted scope lacks it.
-  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  // The connect requests send only (#1603), so the granted scope has no read access.
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   const r = await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: SEND, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   assert.equal(r.email, 'me@acme.example')
   const acc = db.prepare('SELECT status, read_granted FROM gmail_accounts WHERE tenant_id = ?').get('A') as { status: string; read_granted: number }

@@ -20,6 +20,8 @@ export default function AutopilotPanel() {
   }
   if (!i) return null
   const s = i.state
+  // #1620: not available and nothing stored: no Autopilot card at all, so Settings does not advertise a feature that is off.
+  if (!i.available && !s.enabled) return null
   // Not available (the beta): nothing to turn on, resume or set. An account that had it on is not running; it can clear its stored setting.
   if (!i.available) return (
     <div className="card p-6 mb-4" data-testid="autopilot-unavailable">

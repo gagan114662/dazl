@@ -8,7 +8,7 @@ type Sequence = { currentness_held?: boolean; id: string; message_id: string; le
 type Analytics = { sent: number; delivered: number; replied: number; bounced: number; optOuts: number }
 type Freshness = { scheduler: 'never_ran'|'running'|'fresh'|'stale'|'crashed'; state: 'healthy'|'idle'|'stale'|'blocked'|'held'; reasons: string[]; holds: string[]; work: { kind: string; last_success_at: number|null; consecutive_failures: number }[]; oldest_due: { due_at: number; overdue_s: number }|null }
 const ago = (t: number) => { const m = Math.max(0, Math.round((Date.now() / 1000 - t) / 60)); return m < 1 ? 'just now' : m < 120 ? `${m} min ago` : `${Math.round(m / 60)} h ago` }
-type AutoPolicy = { version: string; text: string[]; accepted: boolean }
+type AutoPolicy = { version: string; text: string[]; accepted: boolean; available?: boolean }
 type Data = { freshness?: Freshness; gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'configured_on'|'operator_off'|'kill_switch'|'paused'; sequences: Sequence[]; test_addresses: string[]; auto_policy?: AutoPolicy; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 const COPY: Record<string,string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
@@ -49,7 +49,7 @@ export default function SequencesClient() {
     try {
       const r=await fetch(target,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
       const j=await r.json()
-      if (!r.ok) {setNote(COPY[j.error]??`Could not complete this action (${j.error ?? r.status}).`);return}
+      if (!r.ok) {setNote(COPY[j.error]??(j.code==='autopilot_unavailable'?String(j.error):`Could not complete this action (${j.error ?? r.status}).`));return}
       setEdit(null);await load()
       setNote(body.action==='approve'?'All three steps approved. Send step 1 above when ready. Steps 2 and 3 then run on schedule unless a reply, bounce or opt-out stops them.': 'Saved.')
       window.dispatchEvent(new Event('sequences-updated'))
@@ -60,7 +60,10 @@ export default function SequencesClient() {
     <h2 className="text-lg font-semibold">Cold sequences</h2>
     <Caveat className="text-sm text-[#555] mt-2" summary="Approve a three-step sequence once and send step 1 yourself; steps 2 and 3 send automatically unless someone replies, bounces or opts out.">Create a three-step sequence from a draft above. Review and edit every word, then approve the set once. Send step 1 yourself. If there is no reply, steps 2 and 3 send automatically at 3 and 7 days after step 1. Any human reply, bounce or opt-out stops the sequence. No content is generated after approval.</Caveat>
     <p className="text-xs text-[#666] mt-2">Every step includes your sender details and unsubscribe link. One shared limit of 20 emails per account in 24 hours. Reply reading must stay connected. Scheduled sends require the sequence scheduler to be enabled by the site operator.</p>
-    {data?.auto_policy&&(data.auto_policy.accepted
+    {/* #1620: the automatic-sequences policy is offered only where autopilot is available; the server sends none otherwise. */}
+    {data?.auto_policy&&data.auto_policy.available===false&&data.auto_policy.accepted&&<div className="text-xs text-[#666] mt-2" role="status" data-testid="auto-policy-unavailable"><p>Sequences that start by themselves are not available during the beta, so the setting you accepted earlier is not running.</p>
+      <button disabled={busy} className="btn-ghost text-xs mt-2" data-testid="auto-policy-revoke" onClick={()=>void action({action:'revoke_auto_policy'})}>Clear that setting</button></div>}
+    {data?.auto_policy&&data.auto_policy.available!==false&&(data.auto_policy.accepted
       ? <div className="text-xs text-[#666] mt-2" role="status" data-testid="auto-policy-status"><p>Automatic follow-up sequences are on (policy {data.auto_policy.version}). A confirmed-sent first email starts a 3-step sequence by itself; a reply, opt-out, bounce or changed details stops it. You can stop any sequence below.</p>
         <button disabled={busy} className="btn-ghost text-xs mt-2" data-testid="auto-policy-revoke" onClick={()=>void action({action:'revoke_auto_policy'})}>Turn off automatic sequences</button>
         <p className="mt-1">Turning off stops every automatic sequence at its next scheduled step and no new ones start. A step already handed to Gmail at that moment cannot be recalled. Sequences you approved yourself are unaffected.</p></div>
@@ -70,7 +73,7 @@ export default function SequencesClient() {
         <button disabled={busy} className="btn-ghost text-xs mt-3" onClick={()=>void action({action:'accept_auto_policy',version:data.auto_policy!.version})}>Accept policy {data.auto_policy.version} and turn on automatic sequences</button>
       </div>)}
     {data?.scheduler&&data.scheduler!=='configured_on'&&<p className="text-xs mt-2 border border-[#999] rounded p-2" role="status">{data.scheduler==='operator_off'?'Scheduled steps are switched off by the site operator right now. Approved steps 2 and 3 will not send until it is switched on.':data.scheduler==='kill_switch'?'Scheduled sending is stopped by the operator kill switch. Approved steps 2 and 3 will not send.':'Your scheduled sending is paused. Approved steps 2 and 3 will not send until you resume it.'}</p>}
-    {data?.scheduler==='configured_on'&&<p className="text-xs text-[#666] mt-2" role="status">Scheduler configuration is on (operator switch, kill switch and your pause). This is not a heartbeat: it does not confirm the scheduler is running, that a step is due, or that Gmail, reply reading and the sender account are healthy.</p>}
+    {data?.scheduler==='configured_on'&&data.sequences.some(s=>s.status==='approved'||s.status==='active')&&<p className="text-xs text-[#666] mt-2" role="status">Scheduler configuration is on (operator switch, kill switch and your pause). This is not a heartbeat: it does not confirm the scheduler is running, that a step is due, or that Gmail, reply reading and the sender account are healthy.</p>}
     {data?.freshness&&(data.freshness.state==='stale'||data.freshness.state==='blocked')&&<div className="text-xs mt-2 border border-[#b45309] rounded p-2" role="alert" data-testid="scheduler-freshness"><p className="font-medium">{data.freshness.state==='blocked'?'Scheduled work is blocked.':'Scheduled work is not keeping up.'}</p><ul className="list-disc pl-5">{data.freshness.reasons.map(r=><li key={r}>{reasonCopy(r)}</li>)}</ul></div>}
     {data?.freshness&&data.freshness.state==='held'&&<p className="text-xs text-[#666] mt-2" role="status" data-testid="scheduler-freshness">Scheduled work is on hold: {data.freshness.holds.map(h=>{const [kind,reason]=h.split(':');return `${kindCopy(kind)} (${holdCopy(reason??'unknown')})`}).join(', ')}.</p>}
     {data?.freshness&&data.freshness.state==='healthy'&&<p className="text-xs text-[#666] mt-2" role="status" data-testid="scheduler-freshness">Scheduler progress: {data.freshness.work.filter(w=>w.last_success_at).map(w=>`${w.kind==='reply_sync'?'replies read':kindCopy(w.kind)} ${ago(w.last_success_at!)}`).join(', ')||'no work yet'}.</p>}

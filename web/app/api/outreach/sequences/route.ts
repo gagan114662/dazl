@@ -9,7 +9,8 @@ import { approve, leadEvidenceState, testFixtureSend, OutreachError } from '@/li
 import { createSequence, editSequenceStep, approveSequence, sequenceAnalytics, sequenceStatusByLead, sequenceStepsView, testAddresses, acceptAutoSequencePolicy, revokeAutoSequencePolicy, AUTO_SEQUENCE_POLICY, AUTO_SEQUENCE_POLICY_TEXT, autoSequencePolicyAccepted, setTestAddresses, SequenceError, resolveSequenceUncertain, resumeSequences } from '@/lib/outreach/sequences'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
-import { getState } from '@/lib/outreach/autopilot'
+import { autopilotAvailable, getState } from '@/lib/outreach/autopilot'
+import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 import { displayStopReason } from '@/lib/outreach/lifecycle'
 
 export async function GET() {
@@ -20,8 +21,12 @@ export async function GET() {
   const sequences = rows.map(s => ({ ...s, stop_reason: displayStopReason((s as { stop_reason?: string | null }).stop_reason), evidence_state: leadEvidenceState(db, user.tenantId, s.lead_id), currentness_held: (()=>{const m=db.prepare('SELECT to_email,test FROM outreach_messages WHERE id=? AND tenant_id=?').get(s.message_id,user.tenantId) as {to_email:string;test:number}|undefined;return !(m&&testFixtureSend(db,user.tenantId,m))&&currentnessHeld(db,user.tenantId,s.lead_id)})(), steps: sequenceStepsView(db, user.tenantId, s as { id: string; message_id: string; status: string }) }))
   const campaigns = db.prepare('SELECT DISTINCT j.id,j.query FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id JOIN outreach_messages m ON m.lead_id = l.id AND m.tenant_id = j.user_id WHERE j.user_id = ? ORDER BY j.created_at DESC LIMIT 50').all(user.tenantId) as { id: string; query: string }[]
   const { scheduler, gates } = schedulerReadiness(db, user.tenantId)
+  // #1620: automatic sequences only ever follow an autopilot first email, so while autopilot is not available the policy is
+  // not offered at all. An account that accepted it earlier is told so (accepted, not available) and can still clear it.
+  const available = autopilotAvailable(), accepted = autoSequencePolicyAccepted(db, user.tenantId)
+  const auto_policy = available ? { version: AUTO_SEQUENCE_POLICY, text: AUTO_SEQUENCE_POLICY_TEXT, accepted, available } : accepted ? { version: AUTO_SEQUENCE_POLICY, text: [], accepted, available } : undefined
   // scheduler/gates: configuration. freshness: whether the scheduler is actually making progress for this tenant (its own rows only).
-  return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), auto_policy: { version: AUTO_SEQUENCE_POLICY, text: AUTO_SEQUENCE_POLICY_TEXT, accepted: autoSequencePolicyAccepted(db, user.tenantId) }, status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
+  return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), auto_policy, status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
 
 }
 export async function POST(req: NextRequest) {
@@ -33,6 +38,8 @@ export async function POST(req: NextRequest) {
   const b = await req.json().catch(() => null)
   const db = getScanDb()
   try {
+    // #1620: refused while autopilot is not available, whatever a page shows; turning it off (revoke) always works.
+    if (b?.action === 'accept_auto_policy' && !autopilotAvailable()) return NextResponse.json({ error: AUTOPILOT_BETA_TEXT, code: 'autopilot_unavailable' }, { status: 404 })
     if (b?.action === 'accept_auto_policy' && typeof b.version === 'string') { acceptAutoSequencePolicy(db, user.tenantId, b.version); return NextResponse.json({ ok: true, version: AUTO_SEQUENCE_POLICY }) }
     if (b?.action === 'revoke_auto_policy') { revokeAutoSequencePolicy(db, user.tenantId); return NextResponse.json({ ok: true, accepted: false }) }
     if (b?.action === 'test_addresses' && Array.isArray(b.addresses) && b.addresses.every((v: unknown) => typeof v === 'string')) return NextResponse.json({ addresses: setTestAddresses(db,user.tenantId,b.addresses) })

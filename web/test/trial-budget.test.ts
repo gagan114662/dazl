@@ -8,11 +8,11 @@
 import assert from 'node:assert/strict'
 import { pgDb } from '../lib/db/client.ts'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan, linkTrialReservation, releaseTrialReservation, settleTrialReservation, trialCaps, utcDay } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, linkTrialReservation, releaseTrialReservation, settleTrialReservation, trialCaps, trialDay, trialDayStart } from '../lib/billing/trial-budget.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const NOW = 1_800_000_000
-const DAY = utcDay(NOW)
+const DAY = trialDay(NOW)
 const caps = { DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10',
   TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0.004', DAZL_TRIAL_TINYFISH_FETCH_USD: '0.002' }
 const user = async (db: Db, id: string, email: string, google = true) => {
@@ -106,7 +106,7 @@ bothEngines('trial ceilings: $10 a day globally, including scans still running f
   for (let i = 0; i < 33; i++) ids.push(await scan(db, us[i].id, rs[i]))
   assert.deepEqual(await admit(db, last, tomorrow), { ok: false, reason: 'global_daily_cap' }, 'running, linked: still counted')
   // 30 of them end yesterday at their full reserve: no longer today's; 3 end today, after midnight, at $0.30: still today's
-  const midnight = (DAY + 1) * 86400
+  const midnight = trialDayStart(DAY + 1)
   for (let i = 0; i < 30; i++) await end(db, ids[i], 0.3, midnight - 60)
   for (let i = 30; i < 33; i++) await end(db, ids[i], 0.3, midnight + 60)
   // today: 0.90 from those three; 31 more fit (0.90 + 9.30 = 10.20 > 10, so 30: 0.90 + 9.00 = 9.90)
@@ -115,7 +115,7 @@ bothEngines('trial ceilings: $10 a day globally, including scans still running f
   let admitted = 0
   for (const u of fresh) if ((await admit(db, u, tomorrow)).ok) admitted++
   assert.equal(admitted, 30)
-  assert.equal(DAY + 1, utcDay(tomorrow))
+  assert.equal(DAY + 1, trialDay(tomorrow))
 })
 
 bothEngines('trial ceilings: concurrent workers on separate Postgres pools never pass the global or the account ceiling', async ({ db, kind, url, schema }) => {
@@ -165,7 +165,7 @@ bothEngines('trial ceilings: a scan that reads done but is still enriching keeps
 bothEngines('trial ceilings: enrichment that crosses midnight counts on the day it settles; a retry counts in full again', async ({ db }) => {
   const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
   const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
-  const midnight = (DAY + 1) * 86400
+  const midnight = trialDayStart(DAY + 1)
   // admitted and finished before midnight; its enrichment is still running after it
   const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: midnight - 120 })))
   await finish(db, ja, 0.01, midnight - 60)
@@ -193,7 +193,7 @@ bothEngines('trial ceilings: enrichment that crosses midnight counts on the day 
 bothEngines('trial ceilings: a retry queued before midnight still counts in full on the next day', async ({ db }) => {
   const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
   const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
-  const midnight = (DAY + 1) * 86400
+  const midnight = trialDayStart(DAY + 1)
   // A, admitted yesterday: attempt 1 records $0.01, fails and goes back to the queue; its run settles yesterday
   const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: midnight - 600 })))
   await db.run("UPDATE scan_jobs SET attempts = 1, status = 'pending', spend_reserved_usd = 0.01 WHERE id = ?", [ja])
@@ -221,7 +221,7 @@ bothEngines('trial ceilings: the settle of an earlier attempt never releases a l
 bothEngines('trial ceilings: a retry done before midnight but enriching after it is selected for the new day despite the old settle', async ({ db }) => {
   const day = { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.59' }
   const a = await user(db, 'a'.repeat(32), 'a@gmail.com'), b = await user(db, 'b'.repeat(32), 'b@gmail.com')
-  const midnight = (DAY + 1) * 86400
+  const midnight = trialDayStart(DAY + 1)
   const ja = await scan(db, a.id, reservation(await admitTrialScan(db, a, { env: day, now: midnight - 900 })))
   await db.run("UPDATE scan_jobs SET attempts = 1, status = 'pending' WHERE id = ?", [ja]); await settle(db, ja, midnight - 800) // attempt 1 settles yesterday
   await claimAgain(db, ja); await finish(db, ja, 0.01, midnight - 60) // attempt 2 reads done yesterday, its enrichment runs past midnight

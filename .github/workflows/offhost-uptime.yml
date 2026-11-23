@@ -1,0 +1,74 @@
+name: offhost-uptime
+# Issue #1586: the downtime probe (ops/uptime) runs on the production box, so a dead box sends nothing. This check
+# runs on GitHub's machines instead: every 5 minutes it asks https://dazl.ai/api/health and, when production does not
+# answer, sends one message to the same Telegram destination (repo secret OPS_ALERT_WEBHOOK_URL, the URL form in
+# ops/uptime/README.md). It alerts once when production goes down, once at the start of each further hour while it
+# stays down, and once when it is back. A run is red exactly when production was down, and that is the only state kept.
+# GitHub starts scheduled runs late when it is busy (often 5 to 15 minutes), so this is the backstop for "the whole
+# box is off", not a replacement for the one-minute probe. Set-up and the test message: ops/owner/README.md.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: 'Send one test message to the alert destination (production is still checked)'
+        type: boolean
+        default: false
+permissions:
+  actions: read
+concurrency:
+  group: offhost-uptime
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask production for its health, alert on a change
+        env:
+          OPS_ALERT_WEBHOOK_URL: ${{ secrets.OPS_ALERT_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          TEST_ALERT: ${{ inputs.test_alert }}
+          HEALTH_URL: https://dazl.ai/api/health
+        run: |
+          set -u
+          # one Telegram message; the destination is never printed, only the HTTP status
+          send() {
+            case "${OPS_ALERT_WEBHOOK_URL:-}" in
+              https://api.telegram.org/bot*) ;;
+              *) echo "no Telegram alert destination set (repo secret OPS_ALERT_WEBHOOK_URL): NOT sent: $1"; return 1 ;;
+            esac
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --data-urlencode "text=$1" --data-urlencode 'disable_web_page_preview=true' "$OPS_ALERT_WEBHOOK_URL" || true)
+            echo "alert sent, HTTP $code: $1"
+            [ "$code" = 200 ]
+          }
+          if [ "${TEST_ALERT:-}" = true ]; then
+            send "dazl test alert from the off-server check (GitHub): alerts reach this destination" || { echo "::error::the test alert was NOT delivered"; exit 1; }
+          fi
+          # up = HTTP 200 and a 40-character commit in the answer; three tries, 20 seconds apart
+          up=0; why=
+          for try in 1 2 3; do
+            code=$(curl -s -o health.json -w '%{http_code}' --connect-timeout 10 --max-time 20 "$HEALTH_URL" || true)
+            if [ "$code" = 200 ] && grep -Eq '"commit" *: *"[0-9a-f]{40}"' health.json; then up=1; break; fi
+            why="HTTP $code"; [ "$code" = 200 ] && why="HTTP 200 without a commit"; [ "$code" = 000 ] && why="no answer"
+            echo "try $try: $why"
+            [ "$try" = 3 ] || sleep 20
+          done
+          # the run before this one: failure = production was down then
+          prev=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow offhost-uptime.yml --status completed --limit 1 --json conclusion,createdAt --jq '.[0] | "\(.conclusion) \(.createdAt[0:13])"' 2>/dev/null || true)
+          prev_result=${prev%% *}; prev_hour=${prev##* }
+          now=$(date -u +%H:%M)
+          if [ "$up" = 1 ]; then
+            echo "production is up ($HEALTH_URL)"
+            if [ "$prev_result" = failure ]; then send "dazl.ai is BACK UP ($now UTC), seen from outside the server." || true; fi
+            exit 0
+          fi
+          echo "::error::production is DOWN from outside the server: $why"
+          if [ "$prev_result" != failure ]; then
+            send "dazl.ai is DOWN ($now UTC): /api/health gave $why three times in a minute, checked from outside the server. If nothing else alerted, the whole server may be off." || true
+          elif [ "$prev_hour" != "$(date -u +%Y-%m-%dT%H)" ]; then
+            send "dazl.ai is STILL DOWN ($now UTC): /api/health gives $why, checked from outside the server." || true
+          else
+            echo "still down; already alerted this hour"
+          fi
+          exit 1

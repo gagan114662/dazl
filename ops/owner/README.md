@@ -9,8 +9,12 @@ ssh alias or `user@host` in the owner's `~/.ssh/config`) and stops with a usage 
 | script | what it does | changes | who runs it |
 |---|---|---|---|
 | `reset-staging-trial.sh <email>` | Gives one test account its free trial searches back on **staging**, so a live check can be rerun. | Deletes that account's rows in `trial_reservations` in the staging database, after saving them to a root-only file. Never production. | owner, when Quest asks for a rerun |
+| `swap-anthropic-key.sh staging\|production` | Puts a new Anthropic key in place of an exposed one (issue #1617). Asks for the key with a hidden prompt; shows only the last 4 characters of the old and new key. | Staging: the key line in the staging env file, then restarts staging. Production: the key lines in the run env the deploy reads; no restart, the next deploy picks it up. Keeps the file from before the change next to it. | owner, once per environment, after creating the new key and before revoking the old one |
 | `install-offhost-backup.sh [key file]` | Step 2 of the off-host backup (`ops/backup/README.md`): copies the upload-only key file to the box and runs `ops/backup/install-prod-offhost.sh` from the live release. | Installs the hourly backup timers, takes one backup, removes the copied key file from the home folder. | owner, once, after `ops/backup/aws-setup.sh` |
+| `sample-deploy-memory.sh [seconds]` | Records the box's memory once a second while a production deploy runs and prints the peak above the level before it (issue #1084, criterion 4: under 300 MB). | Nothing: read-only, no sudo. | owner or lead, started just before a production deploy |
 | `install-downtime-alert.sh` | Runs `ops/uptime/install.sh` from the live release, points the probe at production's alert destination and sends one test message. | Adds `/usr/local/lib/dazl-uptime/`, `/etc/dazl-uptime/env`, `dazl-uptime.timer`. | owner, once |
+| `prove-prod-restart.sh [--kill]` | Shows how production is supervised (unit, user, restart and memory settings, starts at boot, boot time next to unit start time). With `--kill`, proves systemd restarts it (issue #1083). | Without `--kill`: nothing. With `--kill`: kills the live production process once; dazl.ai answers 502 until it is back (expected under 30 seconds). | owner, at a quiet moment; the report again after a reboot |
+| `setup-offhost-pinger.sh` | Turns on the off-server downtime check (issue #1586, `.github/workflows/offhost-uptime.yml`): copies the box's alert destination into the GitHub repo secret `OPS_ALERT_WEBHOOK_URL` and starts one run that sends a test message. | Sets one GitHub repo secret. Nothing on the box. | owner, once, after `install-downtime-alert.sh` |
 
 ## Expected output
 
@@ -27,6 +31,24 @@ The numbers differ; "after" is 0 and "all accounts" drops by exactly the rows re
 with "nothing changed" (no staging database, or not exactly one account with that email). To undo, run the saved
 `.sql` file against the staging database.
 
+`DAZL_SSH_HOST=<box> ops/owner/swap-anthropic-key.sh production`
+
+```
+Paste the NEW Anthropic key for production, then Enter (it will not show):
+new key ends ...<4 characters>
+file before the change kept as: <run env file>.before-key-swap-<UTC time>
+DAZL_TRIAL_ANTHROPIC_KEY: ...LAAA -> ...<4 characters>
+ANTHROPIC_API_KEY: ...LAAA -> ...<4 characters>
+production was NOT restarted: the running app still uses the old key.
+Next: deploy the live commit again (<40-hex commit>) with the prod-deploy workflow, run one trial search, then revoke the old key.
+```
+
+For `staging` the last lines are `staging restarted and healthy on commit <commit>` and `DONE for staging`. Order for
+each environment: create the new key, run this, (production only) deploy the live commit again, run one trial
+search, then revoke the old key. `ANTHROPIC_API_KEY` is replaced only when it holds the same old key; otherwise the
+script says it left it. Any `FAIL:` line that ends "nothing changed" left the file as it was. No key value is ever
+printed: anything shaped like a key in the output shows as `<key>`.
+
 `DAZL_SSH_HOST=<box> ops/owner/install-offhost-backup.sh`
 
 ```
@@ -40,6 +62,24 @@ installer from: <the live release folder>
 The exit code is the installer's. `FAIL: no live release contains ops/backup/install-prod-offhost.sh` means the
 change is not deployed to production yet. The secret key is never printed. Without an argument the script uses the
 only `*.s3.env` in `~/dazl-backup-keys` and stops when there are none or several.
+
+`DAZL_SSH_HOST=<box> ops/owner/sample-deploy-memory.sh` (start it, then start the deploy within about 20 seconds)
+
+```
+start 22:40:59Z: total 1834 MB, production port:process 3104:<pid> 3105:<pid> , commit 3104=<8 hex> 3105=<8 hex>
+level before the deploy (10 second average): 1044 MB used, swap 1133 MB
+watching for 300 seconds: start the deploy now
+<time> production port:process now 3104:<pid> (used <n> MB)
+<time> production port:process now 3104:<pid> 3105:<new pid> (used <n> MB)
+end <time>: used <n> MB, production port:process 3104:<pid> 3105:<new pid> , commit 3104=<8 hex> 3105=<new 8 hex>
+peak: <n> MB used at <time>, <n> MB above the level before; swap went from 1133 MB to at most <n> MB
+out-of-memory kills in the kernel log during the watch: 0
+PASS: the peak during the deploy was <n> MB above the level before (limit 300 MB)
+```
+
+The two lines at the top were recorded on the box on 2026-11-23 with no deploy running; that run ended
+`NO DEPLOY SEEN ... this run proves nothing` (exit 1), which is what it must say when no production port gets a new
+process. The lines from a real deploy are what is expected, not yet seen. Post the whole output on #1084.
 
 `DAZL_SSH_HOST=<box> ops/owner/install-downtime-alert.sh`
 
@@ -57,6 +97,54 @@ Result=success ExecMainStatus=0
 
 One test message must arrive at the alert destination (Telegram). Every URL in the output shows as `<url>`. This
 probe runs on the box, so it does not notice the box itself being off; the off-host pinger is issue #1586.
+
+`DAZL_SSH_HOST=<box> ops/owner/prove-prod-restart.sh --kill`
+
+```
+dazl-prod@3104: active=inactive enabled=disabled
+dazl-prod@3105: active=active enabled=enabled
+live unit: dazl-prod@3105.service, process <pid>, user ubuntu
+settings: Restart=on-failure RestartUSec=3s MemoryMax=1610612736 NoNewPrivileges=yes ProtectSystem=no
+restarts so far: 0
+box booted: <time>   unit started: <time>
+listens on: *:3105
+health commit: <40-hex commit>
+installed unit file: same as the live release's copy
+--- kill test: SIGKILL to dazl-prod@3105.service at <UTC time> ---
+healthy again after 9s: process <new pid>, user ubuntu, same commit <40-hex commit>
+restarts: 0 -> 1
+PASS: systemd restarted production by itself in 9s
+```
+
+The live port and the numbers differ. Without `--kill` the output stops after the unit file line with
+`REPORT ONLY: nothing changed`. It fails, and says why, when the process is root, the restart takes more than 30
+seconds, or the restart counter does not go up by exactly one. `FAIL: no healthy answer 90 seconds after the kill`
+means production may be down: run `deploy-prod.sh --status` on the box. For the reboot part of #1083, reboot the box
+in a quiet window, log in to nothing, wait for dazl.ai to answer, then run the report: "unit started" is seconds
+after "box booted". `listens on: *:<port>` and `ProtectSystem=no` are the two parts of #1083 that are still open.
+`DAZL_SSH_HOST=<box> ops/owner/setup-offhost-pinger.sh`
+
+```
+secret OPS_ALERT_WEBHOOK_URL set on <owner>/<repository>
+test run started: one message, 'dazl test alert from the off-server check', should arrive within a minute or two
+watch it: gh run list --workflow offhost-uptime.yml --limit 3
+```
+
+**Until this script has run once, the off-server check sends nothing:** the repository has no secret named
+`OPS_ALERT_WEBHOOK_URL`, so a run still goes red when production is down, but no message leaves. The one command
+above sets the secret and sends the test alert. To check or repeat either part by hand:
+
+```bash
+gh secret list | grep OPS_ALERT_WEBHOOK_URL                  # the secret exists (the value is never shown)
+gh workflow run offhost-uptime.yml -f test_alert=true        # send the test alert again
+gh run list --workflow offhost-uptime.yml --limit 3          # the test run: completed, success
+```
+
+One test message must arrive in Telegram and the run must be green. The destination is never printed. From then on
+GitHub asks `https://dazl.ai/api/health` about every 5 minutes (it starts scheduled runs late when busy, often 5 to
+15 minutes) and sends "dazl.ai is DOWN" once, "STILL DOWN" once per further hour and "BACK UP" once. The stop test
+for #1586: with production's web server stopped for 15 minutes in a quiet window, the DOWN message arrives. GitHub
+turns scheduled runs off in a repository with no commits for 60 days; it emails the owner first.
 
 ## Checks
 

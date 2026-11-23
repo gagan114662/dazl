@@ -24,6 +24,8 @@ const autopilot = await import('../../app/api/outreach/autopilot/route.ts')
 const checkout = await import('../../app/api/billing/checkout/route.ts')
 const usage = await import('../../app/api/usage/route.ts')
 const outreachSettings = await import('../../app/api/outreach/settings/route.ts')
+const sequences = await import('../../app/api/outreach/sequences/route.ts')
+const { AUTO_SEQUENCE_POLICY, acceptAutoSequencePolicy, autoSequencePolicyAccepted } = await import('../../lib/outreach/sequences.ts')
 
 const stripeCalls: string[] = []
 globalThis.fetch = (async (input: unknown) => {
@@ -106,4 +108,33 @@ test('D: no checkout is started while billing is not available', async () => {
     assert.deepEqual(stripeCalls, ['/v1/checkout/sessions'])
   } finally { delete process.env.BILLING_AVAILABLE }
   console.log('BETA_ROUTES billing')
+})
+
+// #1620: "Accept policy ... and turn on automatic sequences" was autopilot by another name. Not offered, and refused, while
+// autopilot is not available; an account that accepted it earlier can still clear it.
+test('A: automatic sequences are not offered and cannot be turned on while autopilot is not available', async () => {
+  const db = await account()
+  process.env.AUTOPILOT_ENABLED = '1' // the older operator flag alone changes nothing
+  try {
+    type P = { auto_policy?: { version: string; text: string[]; accepted: boolean; available: boolean } }
+    assert.equal((await (await sequences.GET()).json() as P).auto_policy, undefined, 'no policy is sent, so the page has nothing to offer')
+    const r = await sequences.POST(post('/api/outreach/sequences', { action: 'accept_auto_policy', version: AUTO_SEQUENCE_POLICY }))
+    assert.equal(r.status, 404)
+    assert.deepEqual(await r.json(), { error: AUTOPILOT_BETA_TEXT, code: 'autopilot_unavailable' })
+    assert.equal(autoSequencePolicyAccepted(db, T), false, 'nothing was accepted')
+
+    // accepted before the beta rule: reported as accepted but not available, with no policy text to re-offer; clearing works
+    acceptAutoSequencePolicy(db, T, AUTO_SEQUENCE_POLICY)
+    assert.deepEqual((await (await sequences.GET()).json() as P).auto_policy, { version: AUTO_SEQUENCE_POLICY, text: [], accepted: true, available: false })
+    assert.equal((await sequences.POST(post('/api/outreach/sequences', { action: 'revoke_auto_policy' }))).status, 200)
+    assert.equal(autoSequencePolicyAccepted(db, T), false)
+
+    // the switch on: offered and accepted as before (the code is kept, only gated)
+    process.env.AUTOPILOT_AVAILABLE = '1'
+    const offer = (await (await sequences.GET()).json() as P).auto_policy!
+    assert.equal(offer.available, true); assert.equal(offer.accepted, false); assert.ok(offer.text.length > 0)
+    assert.equal((await sequences.POST(post('/api/outreach/sequences', { action: 'accept_auto_policy', version: AUTO_SEQUENCE_POLICY }))).status, 200)
+    assert.equal(autoSequencePolicyAccepted(db, T), true)
+  } finally { delete process.env.AUTOPILOT_AVAILABLE; delete process.env.AUTOPILOT_ENABLED }
+  console.log('BETA_ROUTES sequences')
 })

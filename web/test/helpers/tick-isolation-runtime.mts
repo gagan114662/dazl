@@ -46,7 +46,7 @@ function world() {
   // consent and the read scope only when read=true (OAuth helpers never create the users row the route joins on).
   async function onboard(t: string, email: string, read = true) {
     raw.prepare("INSERT INTO users (id, email, business_name, password_hash, salt, created_at) VALUES (?, ?, ?, 'x', 'x', ?)").run(t, email, `${t} Co`, nowS())
-    const state = new URL(startOAuth(raw, t, { env: genv, now: nowS(), withRead: read })).searchParams.get('state')!
+    const state = new URL(startOAuth(raw, t, { env: genv, now: nowS() })).searchParams.get('state')!
     await completeOAuth(raw, t, 'c', state, { env: genv, master, now: nowS(), fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send${read ? ' ' + GMAIL_READ_SCOPE : ''}`, id_token: idToken(email) })) as unknown as typeof fetch })
     saveSettings(raw, t, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
     enable(raw, t, { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 5 })

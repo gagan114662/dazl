@@ -39,28 +39,17 @@ export default function RepliesPanel() {
       {state === 'needs_reconnect' ? (
         <div className="text-sm space-y-2">
           <p className="text-[#555]">Gmail needs to be reconnected. dazl can&apos;t read replies or send until you reconnect.</p>
-          {!i.consent.accepted && (<>
-            <p className="text-[#555]">{CONSENT_NEEDED_NOTICE}</p>
-            <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
-            <p className="text-xs text-[#6b6b6b]">Reconnecting Gmail means you accept the reply-reading terms above (the connect step records it).</p>
-          </>)}
+          <p className="text-[#555]">Reconnecting is send-only: dazl no longer asks Google for read access, so reply reading stays off afterwards.</p>
           <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail</a>
         </div>
       ) : state === 'disconnected' ? (
         <div className="text-sm space-y-2">
-          <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
+          <p className="text-[#555]">Reply reading is not available for new Gmail connections: dazl connects send-only. Replies and delivery-failure notices arrive in your own Gmail inbox.</p>
           <a className="btn-primary inline-block" href="/api/gmail/connect">Connect Gmail</a>
-          <p className="text-xs text-[#6b6b6b]">Connecting means you agree to the reply-reading above. On Google&apos;s screen you can untick the read access and still connect send-only.</p>
         </div>
       ) : state === 'read_scope_missing' ? (
         <div className="text-sm space-y-2">
-          <p className="text-[#555]">Gmail is connected send-only (the read access was unticked on Google&apos;s screen, or it predates reply reading). Reconnect and leave the read access ticked to turn on reply reading.</p>
-          {!i.consent.accepted && (<>
-            <p className="text-[#555]">{CONSENT_NEEDED_NOTICE}</p>
-            <ul className="list-disc pl-5 text-[#555]">{i.consent.text.map((t, k) => <li key={k}>{t}</li>)}</ul>
-            <p className="text-xs text-[#6b6b6b]">Reconnecting Gmail means you accept the reply-reading terms above (the connect step records it).</p>
-          </>)}
-          <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail with reply access</a>
+          <p className="text-[#555]">Gmail is connected send-only, so dazl does not read replies. Replies and delivery-failure notices arrive in your own Gmail inbox.</p>
         </div>
       ) : state === 'consent_needed' ? (
         <div className="text-sm space-y-2">
