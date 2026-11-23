@@ -182,3 +182,32 @@ test('hitting CSV row limit inside final fetched batch resumes after last examin
     assert.equal((await exportGET(get(path+'&cursor='+ready))).status,409)
   } finally { db.close() }
 })
+
+// #1571 (Quest on staging 8132d324): the card showed a published address and a named person on a discovery lead, and the
+// spreadsheet's Contact and Best Person columns were empty for every row. The export reads the same rows the card reads.
+test('export route: a discovery lead exports the person and the published address its card shows; another workspace never sees them', async () => {
+  const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db); setScanDb(db)
+  const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' }); db.prepare("UPDATE scan_jobs SET status='running', attempts=1 WHERE id=?").run(job)
+  const ins = db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,confidence,score,fit,source_kind) VALUES (?,?,?,?,?,?,?,?,?)")
+  const ids = { full: hex(), bare: hex(), old: hex() }
+  ins.run(ids.full, job, 'FullCo', 's', 'https://fullco.example/news', 65, 65, 3, 'discover')
+  ins.run(ids.bare, job, 'BareCo', 's', 'https://bareco.example/news', 65, 65, 3, 'discover')
+  ins.run(ids.old, job, 'OldEngineCo', 's', 'https://old.example/news', 65, 65, 3, null)
+  const add = (lead: string, kind: string, value: string, source_url: string, connector = 'discover') => addEnrichment(db, 'A', lead, { connector, kind, value, label: 'x', confidence: null, source_url, source_date: '2026-11-22', retrieved_at: 1 })
+  add(ids.full, 'person', 'Dana Reyes, Head of Sales', 'https://fullco.example/team')
+  add(ids.full, 'email', 'dana@fullco.example', 'https://fullco.example/contact')
+  add(ids.full, 'linkedin', 'https://www.linkedin.com/in/dana-reyes', 'https://fullco.example/team')
+  // rows of the discovery connector on a lead that is not a discovery lead are not this lead's card contact
+  add(ids.old, 'email', 'someone@old.example', 'https://old.example/contact')
+  setUser({ id: 'A', business_name: 'Acme' })
+  const res = await exportGET(get(`/api/leads/export?job_id=${job}`)); assert.equal(res.status, 200)
+  const rows = parseCsv(await res.text()); const by = (c: string) => rows.find(r => r['Company'] === c)!
+  const P = 'Best Person (research candidate, not verified as current)'
+  assert.deepEqual([by('FullCo')['Contact'], by('FullCo')[P], by('FullCo')['Best Person Title'], by('FullCo')['Best Person Profile or Source'], by('FullCo')['Contact Name']],
+    ['dana@fullco.example', 'Dana Reyes', 'Head of Sales', 'https://www.linkedin.com/in/dana-reyes', 'Dana Reyes'], 'the discovery lead exports what its card shows')
+  assert.match(by('FullCo')['Best Person Found Via'], /fullco\.example\/team/, 'the page that names the person is said')
+  assert.deepEqual([by('BareCo')['Contact'], by('BareCo')[P]], ['', ''], 'a discovery lead with nothing stored stays empty')
+  assert.deepEqual([by('OldEngineCo')['Contact'], by('OldEngineCo')[P]], ['', ''], 'a lead from another engine is unchanged')
+  setUser({ id: 'B', business_name: 'Other' })
+  assert.equal((await exportGET(get(`/api/leads/export?job_id=${job}`))).status, 404, "another workspace's scan is not found")
+})

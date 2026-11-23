@@ -179,7 +179,7 @@ function exportLeadRows(db:Db,userId:string,jobId:string|undefined,limit:number,
   return allHeld(db,
     `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
             l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
-            l.event_date_proof, l.signal_kind, j.query AS job_query, j.icp AS job_icp,${includeBudget ? ' j.run_budget AS job_run_budget,' : ''}
+            l.event_date_proof, l.signal_kind, l.source_kind, j.query AS job_query, j.icp AS job_icp,${includeBudget ? ' j.run_budget AS job_run_budget,' : ''}
             l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
             ${includeCursor ? ', l.insert_seq AS export_insert_seq' : ''}
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
