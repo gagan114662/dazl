@@ -87,7 +87,7 @@ try {
     if (process.env.SHOTS) await page.getByTestId('proof').screenshot({ path: path.join(process.env.SHOTS, `${kind}-proof.png`) })
     assert.match(await page.locator('#pricing').innerText(), /Free during the beta[\s\S]*We don't charge you anything\.[\s\S]*You approve every one/)
     assert.doesNotMatch(await page.locator('#pricing').innerText(), /\$\d|Pro\b|own (AI )?key|Fair-use/i, 'free beta only (#1428)')
-    assert.match(await page.locator('footer').innerText(), /Terms[\s\S]*Privacy[\s\S]*Contact[\s\S]*privacy@dazl\.ai/)
+    assert.match(await page.locator('footer').innerText(), /Terms[\s\S]*Privacy[\s\S]*Contact[\s\S]*support@dazl\.ai/)
     // 4. Nothing of the old page.
     const all = await main.innerText()
     for (const gone of [/Illustration only/i, /site blocked/i, /BYOK/, /\bFIND\b|\bVERIFY\b/]) assert.doesNotMatch(all, gone, String(gone))
