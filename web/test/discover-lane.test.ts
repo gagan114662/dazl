@@ -140,3 +140,35 @@ test('a scan accepted as company-first and answered by the lane shows its leads:
     assert.deepEqual([c.discovery.leads, c.qualification.sourceChecked, c.qualification.heldByChecks], [1, 1, 0], 'its lead is counted as source-checked, not held')
   } finally { if (before === undefined) delete process.env.DAZL_COMPANY_FIRST_TENANT_ID; else process.env.DAZL_COMPANY_FIRST_TENANT_ID = before }
 })
+
+// Production 145d2eba, Quest's pass on #1579: a hiring request ("...hiring their first SDR or salesperson") returned 7 leads through the
+// lane and every Approve was off: "A required check has not passed. Research only." The old engine's sales-hiring gate denies by default
+// (a lead is usable only with a recorded pass of that gate), and the lane never runs that gate: its own proof check decides.
+test('a hiring request answered by the lane is not held by the old sales-hiring gate, which never ran on it', async () => {
+  const { requiredGateHeld, requiredGateHeldForJob } = await import('../lib/scan/held-state.ts')
+  const { sqliteDb } = await import('../lib/db/client.ts')
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'B2B SaaS founders in the US and Canada hiring their first SDR or salesperson', seller: 'Outbound sales agency' })
+  const job = claimKeyedJob(db, id)
+  assert.ok(job)
+  const canned: DiscoverResult = {
+    leads: [lead({ company: 'Northwind Software', domain: 'northwind-software.example', signal: 'Hiring its first SDR', evidence_url: 'https://northwind-software.example/careers/sdr', evidence_quote: 'Northwind Software is hiring its first Sales Development Representative' })],
+    seen: [{ url: 'https://northwind-software.example/careers/sdr', title: 'SDR', page_age: null, text: 'Posted 14 October 2026. Northwind Software is hiring its first Sales Development Representative.' }],
+    usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
+  }
+  let n = 0
+  const result = await runJob(db, job!, { master, fetchImpl: (async () => new Response('no', { status: 403 })) as unknown as typeof fetch, discover: true,
+    discoverImpl: async () => n++ === 0 ? canned : { ...canned, leads: [], seen: [] }, enrichImpl: null })
+  assert.equal(result, 'done')
+  const rows = db.prepare('SELECT id, source_kind, review_reason, confidence FROM leads WHERE scan_job_id = ?').all(id) as { id: string; source_kind: string; review_reason: string | null; confidence: number | null }[]
+  assert.deepEqual(rows.map(r => [r.source_kind, r.review_reason]), [['discover', null]], 'one confirmed lane lead')
+  assert.equal(requiredGateHeld(db, 'T', rows[0].id), null, 'the draft guard does not hold it for a gate that never ran')
+  assert.deepEqual([...await requiredGateHeldForJob(sqliteDb(db), 'T', id)], [], 'nor does the page reader')
+  // the gate still holds a lead of the older engine on the same request: no recorded pass, default deny
+  db.prepare("UPDATE leads SET source_kind = NULL WHERE id = ?").run(rows[0].id)
+  assert.equal(requiredGateHeld(db, 'T', rows[0].id), 'sales_hiring_check_failed', 'an old-engine lead with no recorded pass stays held')
+})

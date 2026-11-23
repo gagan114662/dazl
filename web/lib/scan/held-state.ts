@@ -57,11 +57,14 @@ export function releaseHeld(db: Database.Database, tenantId: string, jobId: stri
   } catch { /* no report table */ }
 }
 
-type GateRow = { review_reason: string | null; human_confirmed_from: string | null; confidence: number | null; company: string | null; query: string | null; icp: string | null }
+type GateRow = { review_reason: string | null; human_confirmed_from: string | null; confidence: number | null; company: string | null; query: string | null; icp: string | null; source_kind?: string | null }
 type GateFacts = { inProcess: boolean; failedMarker: boolean; passed: (value: string) => boolean; reportHeld: boolean }
 
 // The ONE verdict, over facts read by either reader below (the draft guard's sync read, and the campaign page's read on the Db layer, #1062).
 function gateVerdict(row: GateRow, f: GateFacts): string | null {
+  // A lead of the Claude discovery lane was never put to this gate: the lane's own proof check decides it (lib/discover/check.ts). Default-deny
+  // on a gate that never ran locked every Approve on a hiring request (production 145d2eba, #1579: 7 leads, "A required check has not passed").
+  if (row.source_kind === 'discover') return null
   if (f.inProcess) return SALES_GATE_HELD
   if (row.review_reason === SALES_GATE_HELD || row.human_confirmed_from === SALES_GATE_HELD) return SALES_GATE_HELD
   if (f.failedMarker || f.reportHeld) return SALES_GATE_HELD
@@ -76,7 +79,7 @@ function gateVerdict(row: GateRow, f: GateFacts): string | null {
 export function requiredGateHeld(db: Database.Database, tenantId: string, leadId: string): string | null {
   const inProc = inProcess.has(`${tenantId}:${leadId}`)
   if (inProc) return SALES_GATE_HELD
-  const row = db.prepare('SELECT l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.created_at, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as GateRow | undefined
+  const row = db.prepare('SELECT l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.created_at, l.source_kind, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(leadId, tenantId) as GateRow | undefined
   if (!row) return null
   let failedMarker = false
   let passes: Set<string> = new Set()
@@ -100,7 +103,7 @@ export async function requiredGateHeldForJob(db: Db, tenantId: string, jobId: st
   if (ids && ids.length>500) throw new Error('required gate selection too large')
   const selected=ids?` AND l.id IN (${ids.map(()=>'?').join(',')})`:''
   const params=[jobId,tenantId,...(ids??[])]
-  const rows = await db.all<GateRow & { id: string }>(`SELECT l.id, l.review_reason, l.human_confirmed_from, l.confidence, l.company, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ?${selected}`, params)
+  const rows = await db.all<GateRow & { id: string }>(`SELECT l.id, l.review_reason, l.human_confirmed_from, l.confidence, l.company, l.source_kind, j.query, j.icp FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ?${selected}`, params)
   const held = new Set<string>()
   if (!rows.length) return held
   // A missing table means nothing of that kind was written (the sync reader agrees); any other read error throws to the caller.
