@@ -263,3 +263,30 @@ test('#1575 a claim is judged against the page\'s own sentence, read to its end:
   // and the line that says only what the sentence says is shown
   assert.equal(isShown(await checkLead(of({ company: 'LO:TECH', signal: 'Raised $12M Series A led by MMC', evidence_quote: quote }), [], page(article('.')))), true)
 })
+
+// Review of #1575 at 0db467b5: the same quoted words stood in two unrelated statements, and the words of both were pooled into one
+// piece of evidence. Each place the quote stands is its own evidence. The first two cases are the review's own, unchanged, on the
+// reader and dazl-read paths.
+test('#1575 a claim must be stated where the quote stands: statements that only share the quoted words are never pooled', async () => {
+  const q = 'Northwind Dental opening hours run Monday to Friday'
+  const cases = [
+    { id: 'two-unrelated-matched-statements', quote: q, parts: [`${q} for the clinic.`, `${q}; the second page has information.`], want: false },
+    { id: 'actual-event-completes-quote', quote: 'Northwind Dental issued a statement today', parts: ['Northwind Dental issued a statement today announcing it is opening a second clinic.'], want: true },
+    // the same two statements written as one sentence: a semicolon ends a statement too
+    { id: 'one-sentence-two-statements', quote: q, parts: [`${q} for the clinic; the second page has information.`], want: false },
+    // three places, none of which says it; and the words of the claim spread over places that each hold the quote
+    { id: 'three-places', quote: q, parts: [`${q}.`, `${q} at our clinic.`, `${q}, second floor.`], want: false },
+    // one of several places does say it: that place alone is the proof
+    { id: 'one-place-states-it', quote: 'Northwind Dental said today', parts: ['Northwind Dental said today that parking is free.', 'Northwind Dental said today it is opening a second clinic.'], want: true },
+    // a quote that itself runs through two statements is read as both, there and nowhere else
+    { id: 'quote-spans-two-statements', quote: 'has outgrown its site; Northwind Dental is opening a second clinic', parts: ['The practice has outgrown its site; Northwind Dental is opening a second clinic.'], want: true },
+  ]
+  for (const c of cases) for (const path of ['reader', 'dazl'] as const) {
+    const l = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Opening a second clinic', evidence_quote: c.quote, evidence_url: 'https://northwind.example/news', signal_date: null })] }), 1).leads[0]
+    const seen = [{ url: l.evidence_url, title: 'Northwind Dental', text: path === 'reader' ? c.parts.join('\n') : null, page_age: null }]
+    const fetcher = (async () => new Response(c.parts.map(x => `<p>${x}</p>`).join(''))) as unknown as typeof fetch
+    const out = await checkLead(l, seen, fetcher)
+    assert.deepEqual([out.quote_on_page, isShown(out)], [true, c.want], `${c.id} ${path}: ${JSON.stringify(out.claim_lacks)}`)
+    if (!c.want) assert.ok(out.claim_lacks.length > 0, `${c.id} ${path}: the hold names what the nearest place lacks`)
+  }
+})

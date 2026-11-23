@@ -11,10 +11,11 @@ export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unsee
 export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
-//   - a page whose text was read: the words the run quoted as evidence are in that text, and the page's own sentences that hold them
-//     (quoteSentences) state the signal line, every distinguishing word of it (statesSignal);
+//   - a page whose text was read: the words the run quoted as evidence are in that text, and in one place where they stand the page's
+//     own statements that hold them (quoteStatements) state the signal line, every distinguishing word of it (statesSignal);
 //   - a page nobody could read: the search result's own title names the company and states that line.
-// claim_lacks: the words of the signal line that proof does not carry (empty when it carries them all).
+// claim_lacks: the words of the signal line that proof does not carry (empty when it carries them all); with the quote in several
+// places, those of the place that lacks fewest.
 // A date is never support. The day the search index gives a page, and a day-of-month number found somewhere on a page, only label
 // the lead (date, date_source, date_on_page): a recently indexed directory profile, or a company page that happens to print the
 // year and a number, says nothing about the signal (#1571, review of #1575). Such a lead goes to the user's review.
@@ -73,29 +74,32 @@ export function statesSignal(signal: string, company: string, textToSearch: stri
   const { want, missing } = signalWordsIn(signal, company, textToSearch)
   return want > 0 && missing.length === 0
 }
-// The page's own statements: a line or block, cut again where a full stop, question mark or exclamation mark ends a sentence.
-const sentences = (page: string): string[] => page.split(/\n+|(?<=[.!?…])\s+/).map(s => s.trim()).filter(Boolean)
-// The quoted evidence as the PAGE states it: the sentences of the page that hold the quote (the whole quote, or any six consecutive
-// words of it: a quote is often trimmed or joined with an ellipsis), each read to its end. '' when the quote is not on the page.
+// The page's own statements: a line or block, cut again where a full stop, question mark, exclamation mark or semicolon ends one.
+const statements = (page: string): string[] => page.split(/\n+|(?<=[.!?…;])\s+/).map(s => s.trim()).filter(Boolean)
+// The quoted evidence as the PAGE states it: for each place the quoted words stand (the whole quote, or any six consecutive words of
+// it: a quote is often trimmed or joined with an ellipsis), the statements those words run through THERE, each read to its end. Empty
+// when the quote is not on the page.
 // This, not the run's excerpt, is what a claim is judged against: an excerpt stops where the run cut it (300 characters at most), and
-// words in an excerpt that the page does not print are not evidence. A word in the next sentence is not this sentence's word.
-export function quoteSentences(quote: string | null, page: string): string {
+// words in an excerpt that the page does not print are not evidence. A word in the next statement is not this statement's word.
+// Each place is its own evidence and is judged alone. The same words often stand in several places (a heading, a menu, two unrelated
+// sentences); pooling them let one place's words finish another's claim (review of #1575 at 0db467b5).
+export function quoteStatements(quote: string | null, page: string): string[] {
   const q = fold(quote ?? '').split(' ').filter(Boolean)
-  if (q.join(' ').length < 12) return ''
-  const all = sentences(page), words: string[] = [], at: number[] = []
+  if (q.join(' ').length < 12) return []
+  const all = statements(page), words: string[] = [], at: number[] = []
   all.forEach((s, i) => { for (const w of fold(s).split(' ')) if (w) { words.push(w); at.push(i) } })
-  const held = new Set<number>()
+  const places = new Set<string>()
   const find = (needle: string[]): boolean => {
     let found = false
     for (let i = words.indexOf(needle[0]); i >= 0 && i + needle.length <= words.length; i = words.indexOf(needle[0], i + 1)) {
-      if (needle.every((w, j) => words[i + j] === w)) { found = true; for (let j = 0; j < needle.length; j++) held.add(at[i + j]) }
+      if (needle.every((w, j) => words[i + j] === w)) { found = true; places.add(all.slice(at[i], at[i + needle.length - 1] + 1).join(' ')) }
     }
     return found
   }
   if (!find(q)) for (let i = 0; i + 6 <= q.length; i++) find(q.slice(i, i + 6))
-  return [...held].sort((a, b) => a - b).map(i => all[i]).join(' ')
+  return [...places]
 }
-export const quoteOnPage = (quote: string | null, page: string): boolean => quoteSentences(quote, page) !== ''
+export const quoteOnPage = (quote: string | null, page: string): boolean => quoteStatements(quote, page).length > 0
 
 // The day is on the page when its year is and either the ISO day or the day-of-month number is (pages print dates in many
 // styles and languages, so this is a weak check on purpose: it labels, it does not decide).
@@ -143,10 +147,12 @@ function publicUrl(raw: string): URL | null {
 const pageKey = (raw: string): string => { try { const u = new URL(raw); return `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}${u.search}` } catch { return raw } }
 
 function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_age: string | null, now: Date): CheckedLead {
-  // A read page supports the signal when the quoted evidence is on it and the page's own sentences that hold it state the signal line.
-  const named = companyOnPage(lead.company, body), said = quoteSentences(lead.evidence_quote, body)
+  // A read page supports the signal when the quoted evidence is on it and, in ONE place where it stands, the page's own statements
+  // that hold it state the signal line. Places are never added together.
+  const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
+  const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
   return { ...lead, ...dated(lead, page_age, now), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
-    quote_on_page: said !== '', signal_seen: named && said !== '' && statesSignal(lead.signal, lead.company, said), claim_lacks: signalWordsIn(lead.signal, lead.company, said).missing, date_on_page: dayOnPage(lead.signal_date, body) }
+    quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: dayOnPage(lead.signal_date, body) }
 }
 
 export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date()): Promise<CheckedLead> {
