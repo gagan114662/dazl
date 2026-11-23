@@ -58,6 +58,7 @@ How to work:
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
 - Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give a LinkedIn URL only when a page links it. If you cannot find a person, leave the person fields null and still return the lead.
 - Give an email address only when a page prints it for this company or this person, and give that page's URL. Never build an address from a name or a pattern.
+- The email must be the named person's own work address. A shared inbox (info@, sales@, hello@, contact@, reception@, founders@ and the like) is not a contact: leave email null rather than give one.
 - The company's website domain should be its own site, not a directory or news site. If you are not sure, set it to null.
 - Never invent a company, a person, a date, a quote or a URL. Every URL you return must be one you saw in a search result or opened.
 - Different companies are worth more than several items about one company. Aim for the number of leads asked for, but return fewer good ones over more weak ones.

@@ -91,3 +91,40 @@ test('Details does not say "no published contact" beside a published address (#1
   assert.equal(contactSearchNote({ ...base, enrichments: [email] } as never), null)
   assert.match(contactSearchNote({ ...base, enrichments: [person] } as never) ?? '', /No published contact stored/)
 })
+
+// #1250, owner decision 2026-11-23: a shared inbox (sales@, info@, reception@, founders@ ...) is not a contact. On production that day
+// 12 leads carried 4 addresses and 3 were shared inboxes, each shown as the lead's contact and counted as one.
+test('#1250: a shared inbox is never a discovery lead\'s contact; the person\'s own address is', () => {
+  for (const local of ['info', 'sales', 'reception', 'founders', 'hello', 'contact', 'front-desk', 'Info']) {
+    const shared = { ...email, value: `${local}@northwind-dental.example` }
+    const c = leadCardSummary(lead([person, linkedin, shared]) as never)
+    assert.equal(c.contact, 'Dana Ruiz, Practice Owner', `${local}@ is not shown as the contact`)
+    assert.deepEqual(c.approve, { ok: false, reason: 'Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact. Reach them through their LinkedIn profile.' }, `${local}@ cannot be approved`)
+    assert.deepEqual(leadCardSummary(lead([person, shared]) as never).approve, { ok: false, reason: 'Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact.' })
+  }
+  const both = leadCardSummary(lead([person, linkedin, { ...email, value: 'info@northwind-dental.example' }, email]) as never)
+  assert.equal(both.contact, 'Dana Ruiz, Practice Owner - dana@northwind-dental.example', 'the person\'s own address is the contact, wherever the shared one is listed')
+  assert.deepEqual(both.approve, { ok: true })
+})
+
+test('#1250 at the server and in the counts: a shared inbox is not drafted to and not counted; the person\'s own address is', async () => {
+  const { listCampaigns } = await import('../lib/outreach/campaigns.ts')
+  process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j1', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
+  const mk = (id: string) => db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j1', 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', ?, 85, 'Northwind Dental will open its second clinic', '2026-10-14', 'verified', 85, 4, 4, 'expanding', 'discover', 'northwind-dental.example')").run(id, `https://news.example/${id}`)
+  const shared = 'c'.repeat(24), own = 'd'.repeat(24)
+  mk(shared); mk(own)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
+  const now = Math.floor(Date.now() / 1000)
+  const add = (lead: string, value: string, at: number) => addEnrichment(db, 'T', lead, { ...email, value, confidence: null, source_date: '2026-11-22', retrieved_at: at })
+  add(shared, 'info@northwind-dental.example', now)
+  add(own, 'reception@northwind-dental.example', now)      // stored first
+  add(own, 'dana@northwind-dental.example', now + 1)
+  const code = (fn: () => unknown) => { try { fn(); return 'created' } catch (e) { if (e instanceof OutreachError) return e.code; throw e } }
+  assert.equal(code(() => createDraft(db, 'T', shared, 'Fit-out Co', { manual: true })), 'no_email_contact', 'a shared inbox is nothing to draft to')
+  assert.equal(code(() => createDraft(db, 'T', own, 'Fit-out Co', { manual: true })), 'created')
+  assert.equal((db.prepare("SELECT to_email FROM outreach_messages WHERE tenant_id = 'T' AND lead_id = ?").get(own) as { to_email: string }).to_email, 'dana@northwind-dental.example', 'the person\'s own address, not the shared inbox stored before it')
+  assert.equal(listCampaigns(db, 'T').find(c => c.id === 'j1')!.contact.withContact, 1, 'Campaigns counts the lead with a real address only')
+})
