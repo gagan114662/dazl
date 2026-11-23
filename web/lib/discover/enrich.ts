@@ -49,6 +49,13 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
   }
   return { ...e, linkedin_url: null }
 }
+// The first pass's own profile address is held to the same rule (review of #1596): no named person, or an address the run did not see
+// for that person, and it is dropped so the people pass looks for the real one.
+export function dropUnseenProfile<T extends DiscoveredLead>(l: T, seen: readonly SeenPage[]): T {
+  if (!l.linkedin_url) return l
+  const kept = l.person ? keepSeenProfile({ domain: null, person: l.person, title: null, person_source_url: null, linkedin_url: l.linkedin_url, email: null, email_source_url: null }, new Map(seen.map(p => [p.url, p]))).linkedin_url : null
+  return kept ? l : { ...l, linkedin_url: null }
+}
 export function parseEnriched(text: string): Enriched {
   const none = { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null }
   const m = /<json>([\s\S]*?)<\/json>/.exec(text)
@@ -68,7 +75,7 @@ export const needsEnrichment = (l: DiscoveredLead): boolean => !l.person || !l.d
 export function mergeEnriched(l: DiscoveredLead, e: Enriched): DiscoveredLead {
   // the first pass's person is never replaced; a profile found for that SAME person fills an empty one (#1037)
   const person = l.person ? (!l.linkedin_url && e.linkedin_url && samePerson(l.person, e.person) ? { linkedin_url: e.linkedin_url } : {})
-    : { person: e.person, title: e.title, person_source_url: e.person_source_url, linkedin_url: l.linkedin_url ?? e.linkedin_url }
+    : { person: e.person, title: e.title, person_source_url: e.person_source_url, linkedin_url: e.linkedin_url }   // never a profile that came with no person
   return { ...l, domain: l.domain ?? e.domain, ...person, ...(l.email ? {} : { email: e.email, email_source_url: e.email_source_url }) }
 }
 
