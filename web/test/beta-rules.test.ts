@@ -230,7 +230,9 @@ test('D: billing is off unless BILLING_AVAILABLE is exactly 1; the sentence is t
   assert.equal(billingAvailable({ BILLING_AVAILABLE: '1' }), true)
   assert.equal(BILLING_BETA_TEXT, 'dazl is free during the beta. We don\'t charge you anything.')
   const panel = src('app/app/settings/plan-panel.tsx')
-  assert.match(panel, /u\.billing_available \? <button[^\n]*Upgrade to Pro/, 'the upgrade button is shown only when the server says billing is available')
+  assert.match(panel, /: billingAvailable \? <button[^\n]*Upgrade to Pro/, 'the upgrade button is shown only when the server says billing is available')
+  assert.match(panel, /PlanPanel\(\{ billingAvailable = false \}/, 'off unless the server page says otherwise')
+  assert.match(src('app/app/settings/page.tsx'), /<PlanPanel billingAvailable=\{billingAvailable\(\)\} \/>/, 'the server page reads the one switch')
   assert.match(panel, /BILLING_BETA_TEXT/)
 })
 

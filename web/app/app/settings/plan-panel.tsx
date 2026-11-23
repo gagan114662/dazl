@@ -5,7 +5,7 @@ import { trialCopy, type TrialBlock } from '@/lib/trial-copy'
 import { usageLine } from '@/lib/plan-usage-copy'
 import { BILLING_BETA_TEXT } from '@/lib/beta'
 
-type Usage = { plan: string; billing_available?: boolean; scans_used: number; scan_limit: number | null; billing_status: string | null; trial: TrialBlock | null }
+type Usage = { plan: string; scans_used: number; scan_limit: number | null; billing_status: string | null; trial: TrialBlock | null }
 
 // What the subscription's Stripe status means for the user (lib/billing/stripe.ts statusEffect decides the plan; this
 // only explains it). Statuses not listed need no note.
@@ -18,7 +18,8 @@ const STATUS_NOTE: Record<string, string> = {
   canceled: 'Your Pro subscription has ended. You are on the Free plan.',
 }
 
-export default function PlanPanel() {
+// billingAvailable: the server's BILLING_AVAILABLE switch (lib/beta.ts), read by the Settings page. False during the beta: no upgrade is offered.
+export default function PlanPanel({ billingAvailable = false }: { billingAvailable?: boolean }) {
   const [u, setU] = useState<Usage | null>(null)
   const [msg, setMsg] = useState('')
   // The return from Stripe Checkout (lib/billing/stripe.ts success_url / cancel_url). The URL is not evidence of a
@@ -71,7 +72,7 @@ export default function PlanPanel() {
       ) })()}
       {u.plan === 'pro'
         ? <button onClick={() => go('/api/billing/portal')} className="btn-ghost">Manage billing</button>
-        : u.billing_available ? <button onClick={() => go('/api/billing/checkout')} className="btn-primary">Upgrade to Pro</button>
+        : billingAvailable ? <button onClick={() => go('/api/billing/checkout')} className="btn-primary">Upgrade to Pro</button>
           : <p className="text-sm text-[#555]" data-testid="beta-free">{BILLING_BETA_TEXT}</p>}
       {msg && <p className="text-sm text-[#555] mt-3">{msg}</p>}
     </div>

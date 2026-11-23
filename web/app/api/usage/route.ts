@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { billingAvailable } from '@/lib/beta'
 import { clientIp } from '@/lib/rate-limit'
 import { readHasKey } from '@/lib/llm/key-store'
 import { requireUser } from '@/lib/scan/service'
@@ -24,7 +23,6 @@ export async function GET(req: NextRequest) {
   const blocked = !t ? null : !t.funded ? t.reason ?? null : await trialRefusal(db, principal!)
   return NextResponse.json({
     plan: q.plan, scans_used: q.used, scan_limit: q.limit, has_key: keyed,
-    billing_available: billingAvailable(), // false during the beta (lib/beta.ts): the page offers no upgrade and says the beta is free
     billing_status: await readBillingStatus(db, user.tenantId), // e.g. past_due after a failed payment while Stripe retries (still Pro)
     trial: t ? { funded: t.funded && blocked === null, remaining: t.remaining, cap: TRIAL_SCANS_PER_ACCOUNT, blocked } : null,
   })

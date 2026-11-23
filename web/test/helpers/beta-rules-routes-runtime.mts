@@ -1,7 +1,7 @@
 // The beta rules at the routes (test/beta-rules-routes.test.ts), whatever a page shows:
 //   A. POST /api/outreach/autopilot refuses to enable or resume while autopilot is not available, and changes nothing; pause and
 //      turn off still work; GET says it is not available, with the sentence the page shows.
-//   D. POST /api/billing/checkout refuses and never calls Stripe while billing is not available; GET /api/usage says so.
+//   D. POST /api/billing/checkout refuses and never calls Stripe while billing is not available.
 // Each rule is also run with its switch on, to show the refusal is the switch and nothing else. Route modules load through the
 // resolver hook, so this runs in its own process.
 import { test } from 'node:test'
@@ -88,10 +88,10 @@ test('A: the server refuses to turn autopilot on while it is not available, and 
   console.log('BETA_ROUTES autopilot')
 })
 
-test('D: no checkout is started while billing is not available; the plan read tells the page so', async () => {
+test('D: no checkout is started while billing is not available', async () => {
   await account()
-  const u = await (await usage.GET(new NextRequest('https://dazl.test/api/usage'))).json() as { plan: string; billing_available: boolean }
-  assert.deepEqual([u.plan, u.billing_available], ['free', false])
+  const u = await (await usage.GET(new NextRequest('https://dazl.test/api/usage'))).json() as { plan: string }
+  assert.equal(u.plan, 'free')
   const r = await checkout.POST(post('/api/billing/checkout', {}))
   assert.equal(r.status, 403)
   assert.deepEqual(await r.json(), { error: BILLING_BETA_TEXT, code: 'billing_unavailable' })
@@ -100,7 +100,6 @@ test('D: no checkout is started while billing is not available; the plan read te
 
   process.env.BILLING_AVAILABLE = '1'
   try {
-    assert.equal((await (await usage.GET(new NextRequest('https://dazl.test/api/usage'))).json() as { billing_available: boolean }).billing_available, true)
     const ok = await checkout.POST(post('/api/billing/checkout', {}))
     assert.equal(ok.status, 200, JSON.stringify(await ok.clone().json()))
     assert.equal((await ok.json()).url, 'https://checkout.stripe.test/c/pay/cs_test_fixture')

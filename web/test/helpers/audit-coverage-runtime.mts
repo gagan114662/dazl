@@ -148,7 +148,7 @@ test('every audited route in the Covered table records its event, with the redac
   await step('lead unconfirmed twice', t.O, () => confirm.DELETE(req(`/api/leads/${leads[6]}/confirm`, 'DELETE'), ctx('lead', leads[6])), [], 404)
 
   // ---- messages: approve, send (with its outcome), a repeat send of a sent message, skip, mark sent, retry
-  const [m1, m2, m3, m4] = leads.slice(0, 4).map(l => createDraft(raw, 'A', l, 'Acme'))
+  const [m1, m2, m3, m4] = leads.slice(0, 4).map(l => createDraft(raw, 'A', l, 'Acme', { manual: true }))
   const act = (m: string, action: string) => () => message.POST(post(`/api/outreach/${m}`, { action }), ctx('id', m))
   const sends = () => fetched.filter(u => u.includes('gmail.googleapis.com')).length
   await step('message approved', t.O, act(m1, 'approve'), [['O', 'outreach.approve', 'message', m1, {}]])
@@ -248,7 +248,7 @@ test('every audited route in the Covered table records its event, with the redac
     [['A', 'consent.accepted', 'reply_reading', null, { version: READ_CONSENT_VERSION }]])
 
   // ---- sequences: approve, mark sent and retry an uncertain step, resume, stop a running sequence (once)
-  const seq = createSequence(raw, 'A', createDraft(raw, 'A', leads[4], 'Acme'), { businessName: 'Acme' })
+  const seq = createSequence(raw, 'A', createDraft(raw, 'A', leads[4], 'Acme', { manual: true }), { businessName: 'Acme' })
   const sq = (body: Record<string, unknown>) => () => sequences.POST(post('/api/outreach/sequences', body))
   await step('sequence approved', t.O, sq({ action: 'approve', id: seq }), [['O', 'sequence.approve', 'sequence', seq, {}]])
   await step('sequence approved twice', t.O, sq({ action: 'approve', id: seq }), [], 400)
