@@ -384,3 +384,57 @@ test('a proof page that is gone is not proof; a posting age the page prints is i
   assert.equal(relativeDay('Posted 3 days ago ... Posted 9 days ago', now), null, 'a list of postings with different ages gives no date')
   assert.equal(relativeDay('We posted record results. 4 days ago we met.', now), null)
 })
+
+// Job boards carry the posting day in the page's structured data and print "Posted 4d ago" or nothing in the text (Quest, staging
+// 2026-11-23: three of five leads had a date only there). The page's own data dates the lead when nothing else does.
+test('a page\'s own structured data dates a confirmed lead the run and the text left undated', async () => {
+  const now = new Date('2026-11-23T12:00:00Z')
+  const l = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Hiring an Account Executive', signal_date: null, evidence_url: 'https://jobs.example/northwind/ae', evidence_quote: 'Northwind Dental is hiring an Account Executive' })] }), 1).leads[0]
+  const html = (ld: string) => `<html><head><script type="application/ld+json">${ld}</script></head><body><p>Northwind Dental is hiring an Account Executive.</p></body></html>`
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const a = await checkLead(l, [], page(html('{"@type":"JobPosting","datePosted":"2026-11-10T09:00:00Z","dateModified":"2026-11-22"}')), 12_000, now)
+  assert.deepEqual([a.proof, a.date, a.date_source, isShown(a)], ['confirmed', '2026-11-10', 'page', true])
+  // Claude's reader gave the text (no markup): dazl reads the page once for its date
+  const viaReader = await checkLead(l, [{ url: l.evidence_url, title: 'AE', page_age: '2 days ago', text: 'Northwind Dental is hiring an Account Executive.' }], page(html('{"@type":"JobPosting","datePosted":"2026-11-10"}')), 12_000, now)
+  assert.deepEqual([viaReader.proof_read_by, viaReader.date, viaReader.date_source], ['reader', '2026-11-10', 'page'], 'the page\'s own day, ahead of the search index\'s')
+  const { embeddedDay } = await import('../lib/discover/check.ts')
+  assert.equal(embeddedDay('{"datePublished":"2026-09-01"}', now), '2026-09-01')
+  assert.equal(embeddedDay('<meta property="article:published_time" content="2026-10-02T10:00:00Z">', now), '2026-10-02')
+  assert.equal(embeddedDay('{"dateModified":"2026-11-22"}', now), null, 'an edit day is not the event\'s day')
+  assert.equal(embeddedDay('{"datePosted":"2025-03-01"}', now), null, 'more than a year old')
+  assert.equal(embeddedDay('{"datePosted":"2027-01-01"}', now), null, 'a day in the future')
+  // a date the run read stays; a page that could not be fetched for its date changes nothing
+  const given = await checkLead({ ...l, signal_date: '2026-11-15' }, [], page(html('{"datePosted":"2026-11-10"}')), 12_000, now)
+  assert.equal(given.date, '2026-11-15')
+})
+
+// Staging 2026-11-23: hiring leads proven by Greenhouse and Lever postings all came back undated; those pages print no date. The
+// board's own record of the same posting carries the day it was first published.
+test('a posting on Greenhouse, Lever or Ashby is dated from the board\'s own record of that posting', async () => {
+  const now = new Date('2026-11-23T12:00:00Z')
+  const { postingRecord } = await import('../lib/discover/check.ts')
+  assert.equal(postingRecord(new URL('https://job-boards.greenhouse.io/northwind/jobs/4012345'))!.url, 'https://boards-api.greenhouse.io/v1/boards/northwind/jobs/4012345')
+  assert.equal(postingRecord(new URL('https://boards.greenhouse.io/northwind/jobs/4012345?gh_src=x'))!.url, 'https://boards-api.greenhouse.io/v1/boards/northwind/jobs/4012345')
+  assert.equal(postingRecord(new URL('https://jobs.lever.co/northwind/0a1b2c3d-1111-2222-3333-444455556666'))!.url, 'https://api.lever.co/v0/postings/northwind/0a1b2c3d-1111-2222-3333-444455556666')
+  assert.equal(postingRecord(new URL('https://jobs.ashbyhq.com/northwind/0a1b2c3d-1111-2222-3333-444455556666'))!.url, 'https://api.ashbyhq.com/posting-api/job-board/northwind')
+  assert.equal(postingRecord(new URL('https://northwind.example/careers/ae')), null)
+  assert.equal(postingRecord(new URL('https://job-boards.greenhouse.io/northwind')), null, 'a board\'s list page is not one posting')
+  const calls: string[] = []
+  const net = (records: Record<string, unknown>) => (async (input: RequestInfo | URL) => {
+    const url = String(input); calls.push(url)
+    if (url in records) return new Response(JSON.stringify(records[url]), { status: 200, headers: { 'content-type': 'application/json' } })
+    return new Response('<html><body><p>Northwind Dental is hiring an Account Executive.</p></body></html>', { status: 200 })
+  }) as unknown as typeof fetch
+  const of = (evidence_url: string) => parseLeads(JSON.stringify({ leads: [lead({ signal: 'Hiring an Account Executive', signal_date: null, evidence_url, evidence_quote: 'Northwind Dental is hiring an Account Executive' })] }), 1).leads[0]
+  const gh = await checkLead(of('https://job-boards.greenhouse.io/northwind/jobs/4012345'), [], net({ 'https://boards-api.greenhouse.io/v1/boards/northwind/jobs/4012345': { first_published: '2026-11-12T15:04:05-05:00', updated_at: '2026-11-22T10:00:00-05:00' } }), 12_000, now)
+  assert.deepEqual([gh.proof, gh.date, gh.date_source], ['confirmed', '2026-11-12', 'page'], 'first published, not the last edit')
+  const lv = await checkLead(of('https://jobs.lever.co/northwind/0a1b2c3d-1111-2222-3333-444455556666'), [], net({ 'https://api.lever.co/v0/postings/northwind/0a1b2c3d-1111-2222-3333-444455556666': { createdAt: Date.parse('2026-10-30T12:00:00Z') } }), 12_000, now)
+  assert.deepEqual([lv.date, lv.date_source], ['2026-10-30', 'page'])
+  const ab = await checkLead(of('https://jobs.ashbyhq.com/northwind/0a1b2c3d-1111-2222-3333-444455556666'), [], net({ 'https://api.ashbyhq.com/posting-api/job-board/northwind': { jobs: [{ id: 'other', publishedAt: '2026-01-01' }, { id: '0a1b2c3d-1111-2222-3333-444455556666', publishedAt: '2026-11-01T00:00:00Z' }] } }), 12_000, now)
+  assert.equal(ab.date, '2026-11-01')
+  const old = await checkLead(of('https://job-boards.greenhouse.io/northwind/jobs/4012345'), [], net({ 'https://boards-api.greenhouse.io/v1/boards/northwind/jobs/4012345': { first_published: '2024-01-05T00:00:00Z' } }), 12_000, now)
+  assert.equal(old.date, null, 'a record more than a year old gives no date')
+  const none = await checkLead(of('https://job-boards.greenhouse.io/northwind/jobs/4012345'), [], net({}), 12_000, now)
+  assert.equal(none.date, null, 'no record, no date; the lead is unchanged otherwise')
+  assert.equal(none.proof, 'confirmed')
+})

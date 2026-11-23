@@ -191,17 +191,65 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
   const said = quoteStatements(c.evidence_quote, body).slice(0, 4).map(s => s.slice(0, 600))
   try { return (await ask(c.signal, c.company, said)) ? { ...c, signal_seen: true, signal_by: 'claude' } : { ...c, signal_by: 'claude' } } catch { return c }
 }
+// The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
+// tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
+// moves it), not a day in the future, not one more than a year old.
+export function embeddedDay(html: string, now: Date): string | null {
+  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
+    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html)
+  if (!m) return null
+  const t = Date.parse(`${m[1]}T00:00:00Z`)
+  return Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
+}
+// A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
+// the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging
+// 2026-11-23: every hiring lead on these boards came back undated.
+const validDay = (t: number, now: Date): string | null => Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : new Date(t).toISOString().slice(0, 10)
+export function postingRecord(u: URL): { url: string; day: (j: unknown) => unknown } | null {
+  const h = u.hostname.toLowerCase(), seg = u.pathname.split('/').filter(Boolean)
+  const obj = (j: unknown) => (j && typeof j === 'object' ? j as Record<string, unknown> : {})
+  if (/(^|\.)greenhouse\.io$/.test(h) && seg.length >= 3 && seg[1] === 'jobs' && /^\d+$/.test(seg[2]))
+    return { url: `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(seg[0])}/jobs/${seg[2]}`, day: j => obj(j).first_published }
+  if (/^jobs\.(?:eu\.)?lever\.co$/.test(h) && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
+    return { url: `https://api.${h === 'jobs.eu.lever.co' ? 'eu.' : ''}lever.co/v0/postings/${encodeURIComponent(seg[0])}/${seg[1]}`, day: j => obj(j).createdAt }
+  if (h === 'jobs.ashbyhq.com' && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
+    return { url: `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(seg[0])}`, day: j => { const jobs = obj(j).jobs; const hit = Array.isArray(jobs) ? jobs.find(x => obj(x).id === seg[1] || String(obj(x).jobUrl ?? '').includes(seg[1])) : null; return obj(hit).publishedAt } }
+  return null
+}
+async function postingDay(u: URL, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<string | null> {
+  const rec = postingRecord(u)
+  if (!rec) return null
+  try {
+    const r = await fetchImpl(rec.url, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { accept: 'application/json' } })
+    if (!r.ok) return null
+    const v = rec.day(await r.json())
+    return typeof v === 'number' ? validDay(v, now) : typeof v === 'string' ? validDay(Date.parse(v), now) : null
+  } catch { return null }
+}
+// A confirmed lead the run gave no date, and whose page text printed none: the page's own structured data dates it, ahead of the
+// search index's day. `html` is dazl's raw read when it has one; otherwise the page is fetched once for this alone.
+async function datedByPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<CheckedLead> {
+  if (c.signal_date || c.proof !== 'confirmed' || c.date_source === 'page') return c
+  const posted = u ? await postingDay(u, fetchImpl, timeoutMs, now) : null
+  if (posted) return { ...c, date: posted, date_source: 'page' }
+  let raw = html
+  if (raw === null && u) {
+    try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* no date from the page */ }
+  }
+  const day = raw ? embeddedDay(raw, now) : null
+  return day ? { ...c, date: day, date_source: 'page' } : c
+}
 export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal): Promise<CheckedLead> {
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
-  if (hit?.text) return settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask)
+  if (hit?.text) return datedByPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
   // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
-      if (r.ok) { const body = text((await r.text()).slice(0, 1_500_000)); return settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask) }
+      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return datedByPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
       // dazl asked and the address is gone: a search result's title does not bring it back
       if (r.status === 404 || r.status === 410) return { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
