@@ -87,3 +87,29 @@ export function savedGradeWhy(l: { why?: string | null; fit?: number | null; int
 export function repeatingSearchesCopy(onSearchPage: boolean): { heading: string; scope: string | null } {
   return { heading: 'Your repeating searches (all searches)', scope: onSearchPage ? 'This list covers your whole account and is the same on every search. It is not a setting of the search open on this page.' : null }
 }
+
+// #1038: the leads list as a table. Cards stay the default view; the table is chosen with the "Table" switch and remembered in the
+// browser. The same list feeds both views, so a sort chosen in one holds in the other.
+export type LeadView = 'cards' | 'table'
+export type LeadSort = 'default' | 'fit' | 'date'
+export const LEAD_VIEW_KEY = 'dazl.leads.view', LEAD_SORT_KEY = 'dazl.leads.sort'
+export const leadViewOf = (v: unknown): LeadView => v === 'table' ? 'table' : 'cards'
+export const leadSortOf = (v: unknown): LeadSort => v === 'fit' || v === 'date' ? v : 'default'
+// 'default' keeps the order the list arrived in. 'fit': highest fit first, then higher timing grade; a lead with no grade goes last.
+// 'date': newest event day first; a lead with no full day (YYYY-MM-DD) goes last. Ties keep their arrival order. Never mutates.
+interface SortRow { fit?: number | null; intent?: number | null; event_date?: string | null }
+const dayOf = (d: string | null | undefined): string => /^\d{4}-\d{2}-\d{2}/.test(d ?? '') ? (d as string).slice(0, 10) : ''
+export function sortLeads<T extends SortRow>(leads: T[], sort: LeadSort): T[] {
+  if (sort === 'default') return leads
+  const key = (l: T): [number, number] | string => sort === 'fit' ? [l.fit ?? -1, l.intent ?? -1] : dayOf(l.event_date)
+  return leads.map((l, i) => ({ l, i, k: key(l) })).sort((a, b) => {
+    if (typeof a.k === 'string' || typeof b.k === 'string') return a.k === b.k ? a.i - b.i : a.k < b.k ? 1 : -1
+    return b.k[0] - a.k[0] || b.k[1] - a.k[1] || a.i - b.i
+  }).map(x => x.l)
+}
+// The lead open under the table, with the ones before and after it in the list as shown: Previous / Next move without closing it.
+// A lead that left the list (another tab, rejected) is not open: index -1 and no neighbours.
+export function leadNeighbours(ids: string[], openId: string | null): { index: number; prev: string | null; next: string | null } {
+  const index = openId === null ? -1 : ids.indexOf(openId)
+  return { index, prev: index > 0 ? ids[index - 1] : null, next: index >= 0 && index < ids.length - 1 ? ids[index + 1] : null }
+}

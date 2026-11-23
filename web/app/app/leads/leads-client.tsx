@@ -12,12 +12,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, costPerShownLead, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
-import { emptyLeadsMessage, readyRepeats, repeatingSearchesCopy, scoreLabel, quoteNote, visibleReadyLeads } from '@/lib/scan/leads-view'
+import { emptyLeadsMessage, leadNeighbours, leadSortOf, leadViewOf, readyRepeats, repeatingSearchesCopy, scoreLabel, quoteNote, sortLeads, visibleReadyLeads, LEAD_SORT_KEY, LEAD_VIEW_KEY, type LeadSort, type LeadView } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, onlyNameOnly, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
 import { identityOf } from '@/lib/scan/opportunity'
-import { leadPerson, personBasis, NO_BUYER, type LeadPerson } from '@/lib/people/lead-person'
+import { leadPerson, leadPersonLine, personBasis, NO_BUYER, type LeadPerson } from '@/lib/people/lead-person'
 import { peopleSearchable } from '@/lib/people/searchable-holds'
 import { NAME_ONLY_REASON } from '@/lib/people/company-tie'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
@@ -379,6 +379,13 @@ export default function LeadsClient() {
   // The cards open on what is left to decide; an approved card moves to Approved (it became a draft) and a rejected one to
   // Rejected (it leaves the list), each with a one-line result above the list.
   const [leadTab, setLeadTab] = useState<'review' | 'approved' | 'rejected'>('review')
+  // #1038: cards (the default) or a table, and the order; both remembered in this browser. Read after mount, so the first paint matches the server's.
+  const [leadView, setLeadView] = useState<LeadView>('cards')
+  const [leadSort, setLeadSort] = useState<LeadSort>('default')
+  const [openLead, setOpenLead] = useState<string | null>(null)
+  useEffect(() => { queueMicrotask(() => { try { setLeadView(leadViewOf(localStorage.getItem(LEAD_VIEW_KEY))); setLeadSort(leadSortOf(localStorage.getItem(LEAD_SORT_KEY))) } catch { /* storage blocked: cards, default order */ } }) }, [])
+  const chooseView = (v: LeadView) => { setLeadView(v); try { localStorage.setItem(LEAD_VIEW_KEY, v) } catch { /* not remembered */ } }
+  const chooseSort = (v: LeadSort) => { setLeadSort(v); try { localStorage.setItem(LEAD_SORT_KEY, v) } catch { /* not remembered */ } }
   const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
   const scanActive = !!jobId && (status === 'pending' || status === 'running' || status === 'enriching')
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
@@ -864,6 +871,11 @@ export default function LeadsClient() {
   // currentView is set only by a successful GET /api/leads for this job: until then there is no per-lead line at all
   const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads, showSeen, leadsRead: currentView !== null })
   const repeats = readyRepeats(leads)
+  // #1038: the tab's leads in the chosen order, for the cards and the table alike. In the table view only the open lead's card is shown.
+  const tabLeads = sortLeads(visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])), leadSort)
+  const openAt = leadNeighbours(tabLeads.map(l => l.id), openLead)
+  const cardLeads = leadView === 'table' ? tabLeads.filter(l => l.id === openLead) : tabLeads
+  const buyerRoles = icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''
 
   return (
     <div className="p-4 sm:p-8 max-w-6xl mx-auto flex flex-col">
@@ -1315,6 +1327,10 @@ export default function LeadsClient() {
           <div className="seg" role="tablist" aria-label="Filter leads" data-testid="lead-tabs">
             {(['review', 'approved', 'rejected'] as const).map(t => <button key={t} type="button" role="tab" aria-selected={leadTab === t} onClick={() => setLeadTab(t)} data-testid={`tab-${t}`}>{{ review: 'To decide', approved: 'Approved', rejected: 'Rejected' }[t]} <span className="text-[var(--ink-3)]">{count[t] ?? '?'}</span></button>)}
           </div>
+          <div className="seg" role="tablist" aria-label="Show leads as" data-testid="lead-view">
+            {(['cards', 'table'] as const).map(v => <button key={v} type="button" role="tab" aria-selected={leadView === v} onClick={() => chooseView(v)} data-testid={`view-${v}`}>{v === 'cards' ? 'Cards' : 'Table'}</button>)}
+          </div>
+          <label className="text-xs text-[var(--ink-2)] flex items-center gap-1">Order <select className="field py-1 min-h-11 w-auto" value={leadSort} onChange={e => chooseSort(leadSortOf(e.target.value))} data-testid="lead-sort"><option value="default">As found</option><option value="fit">Highest fit first</option><option value="date">Newest date first</option></select></label>
           {/* "Approved" on a card only makes a draft: the email itself is still approved in Outreach before anything sends. */}
           <InfoTip label="About these counts"><span data-testid="card-counts-scope">Cards below, not counting Needs your review{!showSeen && repeats.collapsible ? ' or hidden already-seen leads' : ''}. </span>{n.approved === null ? <span data-testid="card-counts-note">Drafts could not be loaded, so Approved is unknown.</span> : <span data-testid="card-counts-note">Approving a card makes a draft; each email is still approved in Outreach before it sends.</span>}</InfoTip>
         </div>
@@ -1325,7 +1341,41 @@ export default function LeadsClient() {
           : <><Pill tone="pink">Rejected</Pill><span className="flex-1"><span className="font-semibold">{cardResult.company}</span>{cardResult.reason ? ` (${cardResult.reason})` : ''} left the list.<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button type="button" className="btn-ghost btn-sm" onClick={() => void quarantine(cardResult.id, true)}>Undo</button></>}
         <button type="button" aria-label="Dismiss" className="text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setCardResult(null)}><Icon name="x" className="w-4 h-4" /></button>
       </div>}
-      <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
+      {jobId && leadView === 'table' && visibleLeads.length > 0 && <div className="card overflow-x-auto mb-3" data-testid="lead-table">
+        <table className="w-full text-sm text-left">
+          <thead className="text-xs text-[var(--ink-2)]"><tr>
+            <th scope="col" className="px-3 py-2 font-semibold">Company</th><th scope="col" className="px-3 py-2 font-semibold">Person</th><th scope="col" className="px-3 py-2 font-semibold">Signal</th>
+            <th scope="col" className="px-3 py-2 font-semibold" aria-sort={leadSort === 'date' ? 'descending' : 'none'}><button type="button" className="underline underline-offset-2" onClick={() => chooseSort(leadSort === 'date' ? 'default' : 'date')} data-testid="sort-date">Date{leadSort === 'date' ? ' ↓' : ''}</button></th>
+            <th scope="col" className="px-3 py-2 font-semibold" aria-sort={leadSort === 'fit' ? 'descending' : 'none'}><button type="button" className="underline underline-offset-2" onClick={() => chooseSort(leadSort === 'fit' ? 'default' : 'fit')} data-testid="sort-fit">Fit{leadSort === 'fit' ? ' ↓' : ''}</button></th>
+            <th scope="col" className="px-3 py-2 font-semibold">Contact</th><th scope="col" className="px-3 py-2 font-semibold">Status</th>
+          </tr></thead>
+          <tbody className="divide-y divide-[var(--line)]">
+            {tabLeads.length === 0 && <tr><td colSpan={7} className="px-3 py-4 text-[var(--ink-2)]">No leads under this tab.</td></tr>}
+            {tabLeads.map(l => {
+              const c = leadCardSummary(l, buyerRoles)
+              const lp = leadPerson(l.enrichments, buyerRoles, undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
+              const open = l.id === openLead
+              return <tr key={l.id} data-testid="lead-row" data-open={open} aria-selected={open} className={`cursor-pointer hover:bg-white ${open ? 'bg-white' : 'bg-[var(--panel)]'}`} onClick={() => setOpenLead(open ? null : l.id)}>
+                <td className="px-3 py-2 font-semibold max-w-[12rem] truncate"><button type="button" className="text-left hover:underline" aria-expanded={open} onClick={e => { e.stopPropagation(); setOpenLead(open ? null : l.id) }}>{c.company}</button></td>
+                <td className="px-3 py-2 max-w-[12rem] truncate" title={leadPersonLine(lp)}>{leadPersonLine(lp)}</td>
+                <td className="px-3 py-2 max-w-[18rem] truncate" title={l.signal}>{l.signal}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{c.date}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{scoreLabel(l.score, l.fit, l.intent, l.source_kind)}</td>
+                <td className="px-3 py-2 max-w-[14rem] truncate" title={c.contactStatus?.text ?? undefined}>{(lp ? c.contact : c.contactNoPerson) ?? 'No contact yet'}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{l.quarantined_at ? 'Rejected' : draftedLeads?.has(l.id) || approved[l.id] ? 'Approved' : 'To decide'}</td>
+              </tr>
+            })}
+          </tbody>
+        </table>
+        {/* The open lead's full card sits under the table; Previous and Next move through the rows without closing it. */}
+        {openAt.index >= 0 && <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-t border-[var(--line)] text-sm" data-testid="lead-open-nav">
+          <span className="flex-1">Lead {openAt.index + 1} of {tabLeads.length}</span>
+          <button type="button" className="btn-ghost btn-sm" disabled={!openAt.prev} onClick={() => setOpenLead(openAt.prev)} data-testid="lead-prev">Previous</button>
+          <button type="button" className="btn-ghost btn-sm" disabled={!openAt.next} onClick={() => setOpenLead(openAt.next)} data-testid="lead-next">Next</button>
+          <button type="button" className="btn-ghost btn-sm" onClick={() => setOpenLead(null)} data-testid="lead-close">Close</button>
+        </div>}
+      </div>}
+      <div className={visibleLeads.length && (leadView === 'cards' || cardLeads.length > 0) ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
           // #1579: with no scan open, nothing is said until the past scans have been read ("No leads yet" beside a list of them was false).
@@ -1336,7 +1386,7 @@ export default function LeadsClient() {
               : status === 'done' && currentView?.marked && !currentView.counts
               ? 'Lead results could not be checked. Refresh to try again.'
               : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? quality?.needs_review : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
-        ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
+        ) : cardLeads.map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
