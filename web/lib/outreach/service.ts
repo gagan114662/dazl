@@ -17,7 +17,7 @@ import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
-import { discoverContact, emailOnCompanySite } from '../discover/card.ts'
+import { discoverContact, emailOnCompanySite, signalStale } from '../discover/card.ts'
 import { isGenericInbox } from './generic-inbox.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
@@ -320,15 +320,33 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // address is the one a public page prints (the run's own record, with that page), timing is the lead's own dated signal (an undated
 // lead is not drafted to), and the address must belong to the company's own website (lib/discover/card.ts emailOnCompanySite), else
 // the person confirms the website first. Nothing is sent by a draft; the person reviews it in Outreach.
+// The recipient rules for a discovery lead's published address, for the lead card: the SAME two refusals discoverDraftChecks makes
+// (a personal mailbox, the do-not-contact list), so Approve is never on for an address the server would refuse. null: not refused,
+// or the lead has no published address. 'unreadable': the address or the list could not be read (review of #1578). That is never
+// "not refused": the card keeps Approve off and says so, and the failure is recorded for the operator instead of being dropped.
+// The address a discovery lead is drafted to: the named person's own, as the card decides it (lib/discover/card.ts discoverContact).
+// One read, used by the draft check and by the card's recipient verdict, so both judge the same address.
+const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null) =>
+  discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string }[] })?.email ?? null
+export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
+  try {
+    const to = norm(discoverOwnEmail(db, tenantId, leadId, (db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as { name: string | null } | undefined)?.name ?? '')?.address ?? '')
+    if (!EMAIL_RE.test(to)) return null
+    return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
+  } catch (e) {
+    captureError(e, { source: 'route', where: '/api/leads', tenantId })
+    return 'unreadable'
+  }
+}
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
   const state = db.prepare('SELECT review_reason, event_date, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; event_date: string | null; company_domain: string | null } | undefined
   if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  if (!state?.event_date) throw new OutreachError('lead_currentness_unconfirmed')
+  if (!state?.event_date || signalStale(state.event_date)) throw new OutreachError('lead_currentness_unconfirmed')
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // #1250: a shared inbox (info@, sales@, reception@ ...) is not a contact and is never drafted to; the first address that is not one is used
   // and the address must be the named person's own, as the card decides it (lib/discover/card.ts discoverContact): one rule, read here too
-  const mine = discoverContact({ source_kind: 'discover', name: lead.name, enrichments: db.prepare("SELECT kind, connector, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string }[] })?.email
+  const mine = discoverOwnEmail(db, tenantId, leadId, lead.name)
   const row = mine ? { value: mine.address, source_url: mine.source } : undefined
   // a press, support or privacy inbox keeps its own refusal, as before
   if (!mine && (db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email'").all(tenantId, leadId) as { value: string }[]).some(r => classifyPurpose(norm(r.value)).purpose === 'non-sales')) throw new OutreachError('not_sales_contact')
