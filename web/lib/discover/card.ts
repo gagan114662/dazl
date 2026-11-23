@@ -69,11 +69,16 @@ const bare = (h: string) => h.toLowerCase().replace(/^www\./, '')
 // the site is the company's own.
 const HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export const discoverSite = (domain: string | null | undefined): string | null => { const h = bare((domain ?? '').trim()); return HOST.test(h) ? h : null }
+// Owner decision 2026-11-23 (after Quest's staging rerun): the named person's own address AT THE COMPANY'S OWN DOMAIN is the company's
+// mailbox and counts wherever it was found (a job board, a press release); the card shows the page it was found on. An address at any
+// other domain counts only when the company's own website prints it. This replaces the review-of-#1574 rule that a company-domain
+// address found only on another site was refused. Whether the address is the PERSON's is discoverContact's rule, above.
 export function emailOnCompanySite(email: string, sourceUrl: string | null | undefined, companyDomain: string | null | undefined): boolean {
   const site = bare((companyDomain ?? '').trim())
-  if (!site) return false
+  if (!site || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/.test(site)) return false
   const under = (h: string) => h === site || h.endsWith(`.${site}`)
   if (!email.includes('@')) return false
+  if (under(bare(email.trim().toLowerCase().split('@').pop() ?? ''))) return true
   try { const u = new URL(sourceUrl ?? ''); return (u.protocol === 'https:' || u.protocol === 'http:') && under(bare(u.hostname)) } catch { return false }
 }
 // What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, not graded a fit.
@@ -106,7 +111,7 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (!c?.email && c?.otherAddress) return { ok: false, reason: `The published address does not carry this person's name, so it is not known to be theirs.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
   if (!c?.email && c?.sharedInbox) return { ok: false, reason: `Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
-  if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address was not found on the company\'s own website, only on another site.' }
+  if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address is not at the company\'s own domain and was not found on the company\'s own website, only on another site.' }
   return { ok: true }
 }
 
