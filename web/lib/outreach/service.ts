@@ -321,13 +321,18 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // the person confirms the website first. Nothing is sent by a draft; the person reviews it in Outreach.
 // The recipient rules for a discovery lead's published address, for the lead card: the SAME two refusals discoverDraftChecks makes
 // (a personal mailbox, the do-not-contact list), so Approve is never on for an address the server would refuse. null: not refused,
-// or the lead has no published address.
-export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | null {
-  let row: { value: string } | undefined
-  try { row = db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string } | undefined } catch { return null }
-  const to = norm(row?.value ?? '')
-  if (!EMAIL_RE.test(to)) return null
-  return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
+// or the lead has no published address. 'unreadable': the address or the list could not be read (review of #1578). That is never
+// "not refused": the card keeps Approve off and says so, and the failure is recorded for the operator instead of being dropped.
+export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
+  try {
+    const row = db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string } | undefined
+    const to = norm(row?.value ?? '')
+    if (!EMAIL_RE.test(to)) return null
+    return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
+  } catch (e) {
+    captureError(e, { source: 'route', where: '/api/leads', tenantId })
+    return 'unreadable'
+  }
 }
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')

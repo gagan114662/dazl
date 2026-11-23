@@ -86,6 +86,8 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   // the server's own verdict on the address (lib/outreach/service.ts discoverRecipientRefusal), sent with the lead: a personal mailbox
   // (a free webmail address, even one the company's site prints) or an address on the workspace's do-not-contact list
   if (l.recipient_refused === 'personal_email') return { ok: false, reason: 'The published address is a personal mailbox (free webmail), not a company address.' }
+  // the check itself could not be read: not a refusal of the address, and not a pass
+  if (l.recipient_refused === 'unreadable') return { ok: false, reason: 'dazl could not check this address just now, so Approve stays off. Reload the page to try again.' }
   if (l.recipient_refused) return { ok: false, reason: 'This address is on your do-not-contact list.' }
   return { ok: true }
 }
