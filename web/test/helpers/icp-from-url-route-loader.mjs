@@ -7,6 +7,8 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier === '@/lib/scan/service') return { url: new URL('./tenant-route-db.ts', import.meta.url).href, shortCircuit: true }
   if (specifier === 'next/server') return { url: new URL('./status-route-next-server-shim.mjs', import.meta.url).href, shortCircuit: true }
   if ((specifier.endsWith('/net/public-fetch.ts') || specifier === '@/lib/net/public-fetch') && !String(context.parentURL).endsWith('icp-public-fetch-wrap.mts')) return { url: new URL('./icp-public-fetch-wrap.mts', import.meta.url).href, shortCircuit: true }
+  // #1463: scan hosts resolve through lib/net/scan-dns.ts (c-ares) now; the same stub answers there
+  if (/(^|\/)scan-dns\.ts$/.test(specifier)) return { url: new URL('./icp-scan-dns-stub.mjs', import.meta.url).href, shortCircuit: true }
   if (specifier === 'node:dns/promises') return { url: new URL('./icp-dns-stub.mjs', import.meta.url).href, shortCircuit: true }
   if (specifier.startsWith('@/')) {
     for (const suffix of ['.ts', '.tsx', '/index.ts']) {

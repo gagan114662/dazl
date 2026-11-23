@@ -14,7 +14,7 @@ import robotsParser from 'robots-parser'
 import { getDomain, getDomainWithoutSuffix } from 'tldts'
 import { parse, type DefaultTreeAdapterMap } from 'parse5'
 import { social } from '@crawlee/utils'
-import { lookup as dnsLookup } from 'node:dns/promises'
+import { scanLookupAll } from '../net/scan-dns.ts' // #1463: c-ares, never a libuv pool thread
 import { isIP } from 'node:net'
 import { guardedLookup, isPublicIp } from '../scan/fetch-page.ts'
 import { audit, addEnrichment, recordCrawlPage, type Enrichment } from './store.ts'
@@ -193,7 +193,7 @@ export function rawGet(rawUrl: string, hops = 0, timeoutMs = TIMEOUT_MS, lookup:
 // Set CRAWL4AI_URL (e.g. http://127.0.0.1:11235). Page requests go to its POST /crawl with check_robots_txt on; we still
 // run our own robots.txt check first, and we only ever send it hostnames that resolve to public addresses.
 async function publicHost(host: string): Promise<boolean> {
-  try { const a = await dnsLookup(host, { all: true }); return a.length > 0 && a.every(x => isPublicIp(x.address)) } catch { return false }
+  try { const a = await scanLookupAll(host); return a.length > 0 && a.every(x => isPublicIp(x.address)) } catch { return false }
 }
 export function crawl4aiGet(base: string, fetchImpl: typeof fetch = fetch, hostOk: (h: string) => Promise<boolean> = publicHost): Get {
   const endpoint = base.replace(/\/$/, '') + '/crawl'

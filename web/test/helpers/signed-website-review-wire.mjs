@@ -22,6 +22,10 @@ dns.lookup=async (name, options)=>{
   if(name==='localhost'||name==='127.0.0.1'||name==='::1')return fencedLookup(name,options)
   throw Error('Unexpected fixture DNS request')
 }
+// #1463: scan hosts resolve through c-ares (lib/net/scan-dns.ts, dns.promises.Resolver), not dns.lookup: the same fixture answer there.
+const scanResolver=dns.Resolver.prototype
+scanResolver.resolve4=async function(name){ if(name===host)return [publicPin]; throw Error('Unexpected fixture DNS request') }
+scanResolver.resolve6=async function(name){ if(name===host)throw Object.assign(Error('no AAAA for fixture'),{code:'ENODATA'}); throw Error('Unexpected fixture DNS request') }
 https.request=(url,opts,onResponse)=>{
   if(!(url instanceof URL)||url.origin!=='https://'+host) return fencedHttps(url,opts,onResponse)
   if(opts?.method!=='GET'||!['/single','/multiple'].includes(url.pathname)||url.search||url.hash)
