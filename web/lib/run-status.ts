@@ -1,6 +1,7 @@
 import { scanOutcome, type ScanOutcome, type ScanOutcomeKind, type ScanRecord } from './scan/scan-outcome.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { reviewIsActionable, uncheckableCause } from './lead-state.ts'
+import { discoverCounts, discoverCountsLine, discoverReady, type DiscoverCounts, type DiscoverState } from './discover/card.ts'
 
 // How a run ended, in one of a few states that each have their own next action, so the Campaigns list, a campaign's
 // page and the Leads history never disagree (one said "failed" while another said "no candidates extracted"). The
@@ -40,11 +41,18 @@ export const runStatusOf = (j: ScanRecord) => runStatus(scanOutcome(j), j.lead_c
 // The same split as the Campaigns funnel (lib/outreach/campaigns.ts): rejected = quarantined; of the rest, the evidence
 // state first, then a review reason - split into review a check can resolve and research it cannot (#683, the same verdict as
 // Home: lib/lead-state.ts reviewIsActionable) - else unverified.
-export interface CurrentQual { leads: number; sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; rejected: number }
-type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean; gate_held?: boolean; buyer_unreachable?: boolean; human_confirmed_from?: string | null }
+// A lead from the new engine carries its ONE state (discover_state: lib/discover/card.ts discoverState) and is counted from it alone:
+// ready (by email or on LinkedIn) in sourceChecked, review in needsReview, research in research, and noContact for proof with nobody to
+// reach yet. discover = those leads' own counts; a run made only of them is labelled with their one sentence (discoverCountsLine).
+export interface CurrentQual { leads: number; sourceChecked: number; confirmedByYou: number; needsReview: number; research?: number; unverified: number; rejected: number; noContact?: number; discover?: DiscoverCounts }
+type QualRow = { evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; quarantined_at: number | null; window_held?: boolean; gate_held?: boolean; buyer_unreachable?: boolean; human_confirmed_from?: string | null; discover_state?: DiscoverState | null }
 export function currentQual(rows: QualRow[]): CurrentQual & { research: number } {
-  const q = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, rejected: 0 }
+  const q: CurrentQual & { research: number } = { leads: rows.length, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, unverified: 0, rejected: 0 }
+  const states = rows.flatMap(r => r.discover_state ? [r.discover_state] : [])
+  if (states.length) { q.discover = discoverCounts(states); q.noContact = q.discover.no_contact }
   for (const r of rows) {
+    const s = r.discover_state
+    if (s) { if (s === 'rejected') q.rejected++; else if (discoverReady(s)) q.sourceChecked++; else if (s === 'review') q.needsReview++; else if (s === 'research') q.research++; continue }
     const st = evidenceStateOf(r)
     // A source-checked or confirmed lead is still research, never passed, if the time window holds it, it was
     // confirmed OUT of a hold a check cannot resolve, or it carries an uncheckable review_reason of its own (a lead
@@ -80,17 +88,20 @@ export function currentRun(run: RunStatus, q: CurrentQual, query?: string | null
   const research = q.research ?? 0
   if (research > 0) parts.push(`${research} research only`)
   if (q.unverified > 0) parts.push(`${q.unverified} unverified`)
+  const noContact = q.noContact ?? 0
+  if (noContact > 0) parts.push(`${noContact} with no contact yet`)
   parts.push(`${q.rejected} rejected`)
   // An older run that did not record its check counts keeps saying so; the label still counts its leads as they are now.
   // An unverified lead is still actionable by checking its source (#683 round 3, haiku), so it must outrank "Research
   // only" here the same way it already does in the label/next-action guard above - "Research only" implies nothing
   // left can be changed, which isn't true while an unverified lead sits there.
-  const tag = passed > 0 ? (run.kind === 'unrecorded' ? run.tag : 'Leads found') : q.needsReview > 0 ? 'Needs your review' : q.unverified > 0 ? 'Not verified yet' : research > 0 ? 'Research only' : 'Not verified yet'
-  const label = `${leads} found: ${parts.join(', ')}`
+  const tag = passed > 0 ? (run.kind === 'unrecorded' ? run.tag : 'Leads found') : q.needsReview > 0 ? 'Needs your review' : noContact > 0 ? 'No contact yet' : q.unverified > 0 ? 'Not verified yet' : research > 0 ? 'Research only' : 'Not verified yet'
+  // a run made only of new-engine leads says their one sentence, the same words as the Leads header and the campaign's page
+  const label = q.discover && q.discover.found === q.leads ? discoverCountsLine(q.discover) : `${leads} found: ${parts.join(', ')}`
   // Nothing passed and nothing a check can release: the scan-time "Review them" would hand the user failed research (#352/#683). Offer a
   // step that can change the result instead - but only when every lead is accounted for as research; an unverified lead
   // alongside it is still actionable by checking its source (#683 round 2), which "search again" would wrongly tell it to do instead.
-  if (passed === 0 && q.needsReview === 0 && q.unverified === 0 && research > 0) return {
+  if (passed === 0 && q.needsReview === 0 && q.unverified === 0 && noContact === 0 && research > 0) return {
     ...run, tag, label,
     detail: `Checking ${research === 1 ? 'this lead' : 'these leads'} cannot make ${research === 1 ? 'it' : 'them'} ready (no usable date in your time window, someone else's customer, a different place, a closed opening, or a required check that could not run). Search again with a different signal or source.`,
     next: { text: 'Change the search', href: query ? `/app/leads?q=${encodeURIComponent(query)}` : '/app/leads' },

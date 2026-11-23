@@ -48,7 +48,9 @@ bothEngines('the people the extension read become shown leads of the same reques
   assert.deepEqual(jobs.map(j => [j.status, j.query, j.seller, Number(j.verified)]), [['done', 'People engaging with posts about sales coaching', 'Sales call coaching software', 2]])
   const leads = await db.all<Record<string, unknown> & { id: string; name: string }>('SELECT * FROM leads WHERE scan_job_id = ? ORDER BY name', [jobs[0].id])
   assert.deepEqual(leads.map(l => [l.name, l.source_url, l.source_kind, l.review_reason]), [['Jane Doe1', POST, 'discover', null], ['Jane Doe2', POST, 'discover', null]])
-  for (const l of leads) assert.equal(heldReason({ ...l, enrichments: [] } as unknown as PreviewLead), null, 'a LinkedIn signal with a profile link is shown')
+  // #1238: these leads are saved and listed on Leads as before. They carry no date (LinkedIn shows who engaged, not when), so their card offers
+  // neither Approve nor Message on LinkedIn (lib/discover/card.ts discoverProofHold), and Home no longer calls a lead with no action ready.
+  for (const l of leads) assert.equal(heldReason({ ...l, enrichments: [] } as unknown as PreviewLead), 'the signal has no date, so its timing is unknown', 'a LinkedIn signal with no date has no action, so Home does not count it as ready')
   const links = await db.all<{ kind: string; value: string }>("SELECT kind, value FROM lead_enrichments WHERE tenant_id = 'A' AND lead_id = ? ORDER BY kind", [leads[0].id])
   assert.deepEqual(links.map(e => [e.kind, e.value]), [['linkedin', 'https://www.linkedin.com/in/jane-doe-1/'], ['person', 'Jane Doe1, VP Sales at Northwind']])
 })

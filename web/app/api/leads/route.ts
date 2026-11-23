@@ -20,6 +20,8 @@ import { jobWindowDays } from '@/lib/scan/window'
 import { currentBuyingNeed, needReadContext, type NeedRecord } from '@/lib/scan/need-evidence'
 import { leadLookalikeFit, lookalikeOf } from '@/lib/scan/lookalike-discovery'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
+import { discoverCounts } from '@/lib/discover/card'
+import { discoverStatesForDb } from '@/lib/discover/state-db'
 
 const FINAL_GAP_REASON: Partial<Record<string, string>> = {
   not_actionable: 'no_named_buyer_with_contact_route', domain_unconfirmed: 'company_domain_unconfirmed', no_domain: 'no_company_domain',
@@ -103,7 +105,9 @@ export async function GET(req: NextRequest) {
   const learned = new Map<string, Learned>(leads.map(l => [l.id, learnedPreference(yields, l)]))
   const ranked = rankLeads(safeLeads, pri, Object.fromEntries([...learned].map(([id, p]) => [id, p.delta])))
   const via = gdeltAttribution(getScanDb(), user.tenantId, ranked.map(l => l.id))
-  return NextResponse.json({ job_id: job.id, status: job.status, company_first: companyFirst, held, company_first_counts: results?.counts ?? null, hidden_count: includeHidden || companyFirst ? 0 : await db.countHiddenLeads(user.tenantId, job.id), repeat_count: readyRepeats(leads as { review_reason?: string | null; seen_before?: number | null }[]).repeats, work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, ...(Object.hasOwn(displayEmails, l.id) ? { company_first_published_email: displayEmails[l.id] } : {}), discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  // #1238: every new-engine lead of this search by its ONE state (all of them, also the ones this list hides), and each listed lead's own
+  const dStates = (await discoverStatesForDb(sqliteDb(scanDb), user.tenantId, [job.id])).get(job.id)
+  return NextResponse.json({ job_id: job.id, status: job.status, company_first: companyFirst, held, company_first_counts: results?.counts ?? null, discover_counts: dStates ? discoverCounts(dStates.values()) : null, hidden_count: includeHidden || companyFirst ? 0 : await db.countHiddenLeads(user.tenantId, job.id), repeat_count: readyRepeats(leads as { review_reason?: string | null; seen_before?: number | null }[]).repeats, work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, discover_state: dStates?.get(l.id) ?? null, ...(Object.hasOwn(displayEmails, l.id) ? { company_first_published_email: displayEmails[l.id] } : {}), discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()

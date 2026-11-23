@@ -62,8 +62,10 @@ test('a scan through the lane: confirmed leads are ready, an undated one too, an
   const leads = listLeads(db, 'T', id, 50, false) as (Record<string, unknown> & { id: string; company: string })[]
   const enr = enrichmentsForLeads(db, 'T', leads.map(l => l.id)) as Record<string, { kind: string; value: string; source_url: string }[]>
   const why = (company: string) => { const l = leads.find(x => x.company === company)!; return leadHoldReason(db, 'T', l, enr[l.id] ?? [], timingOptsFor(j), new Date()) }
-  assert.equal(why('Northwind Dental'), null, 'a confirmed, dated lead is ready')
-  assert.equal(why('Harbour Smiles'), null, 'no date, no person and no website lower the confidence; they do not hold the lead')
+  // #1238: Home calls a lead ready only when an action is available for it (Approve, or Message on LinkedIn: lib/discover/card.ts discoverState).
+  // Both leads are still saved and listed on the Leads page (found in `leads` above); Home used to count both as ready with no action for either.
+  assert.equal(why('Northwind Dental'), 'no contact found yet', 'confirmed and dated, with a named person but no address or profile of theirs: not ready yet')
+  assert.equal(why('Harbour Smiles'), 'the signal has no date, so its timing is unknown', 'no date: its Approve is off, so Home does not call it ready')
   assert.equal(why('Ghost Dental'), 'needs your review', 'a proof page the run never saw and dazl could not read is not shown as ready')
   const nw = leads.find(l => l.company === 'Northwind Dental')!
   assert.deepEqual([nw.source_kind, nw.company_domain, nw.event_date, nw.event_date_proof, nw.name], ['discover', 'northwind-dental.example', '2026-10-14', 'page_bound', 'Dana Ruiz'])
@@ -137,7 +139,8 @@ test('a scan accepted as company-first and answered by the lane shows its leads:
     assert.deepEqual([j.status, j.verified], ['done', 1])
     assert.equal(hasCompanyFirstBudget(j.run_budget), false, 'the finished scan is no longer marked for the older rollout')
     const c = (await listCampaignsNow(db, 'T')).find(x => x.id === id)!
-    assert.deepEqual([c.discovery.leads, c.qualification.sourceChecked, c.qualification.heldByChecks], [1, 1, 0], 'its lead is counted as source-checked, not held')
+    // #1238: the lead is counted by its one state. It names a person but no address or profile of theirs, so it is "no contact yet" - and still not held by checks
+    assert.deepEqual([c.discovery.leads, c.qualification.noContact, c.qualification.heldByChecks, c.qualification.research], [1, 1, 0, 0], 'its lead is counted, not held')
   } finally { if (before === undefined) delete process.env.DAZL_COMPANY_FIRST_TENANT_ID; else process.env.DAZL_COMPANY_FIRST_TENANT_ID = before }
 })
 

@@ -16,7 +16,7 @@ export const timingOptsFor = (job: { query: string | null; icp: string | null })
 
 // null = ready; otherwise the first failing check's own words.
 export function leadHoldReason(db: Database.Database, tenantId: string, lead: Record<string, unknown> & { id: string }, enrichments: unknown[], timing: TimingOpts, at: Date): string | null {
-  const row = { ...lead, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
+  const row = { ...lead, stored_intent: lead.intent ?? null, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
     window_held: leadWindowHeld(db, tenantId, lead.id, at), currentness_held: currentnessHeld(db, tenantId, lead.id, at), gate_held: requiredGateHeld(db, tenantId, lead.id) !== null }
   return heldReason(row as unknown as PreviewLead)
 }

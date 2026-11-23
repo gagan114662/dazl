@@ -8,7 +8,8 @@ import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
 import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
-import { discoverContact } from '../discover/card.ts'
+import { discoverCounts, type DiscoverCounts } from '../discover/card.ts'
+import { DISCOVER_LEAD_COLUMNS, discoverNoTable, discoverStatesFromRows, discoverStatesOfDb, discoverStoredSql, type DiscoverStoredRow } from '../discover/state-db.ts'
 import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
@@ -34,7 +35,10 @@ export interface Campaign {
   // any other bucket: one the other checks would still call reviewable, passed or unverified is counted as research; one they already call
   // research or heldResearch (its window, an uncheckable cause) keeps that verdict. No check a person can do releases them, so they are
   // never "needs your review", and the next step names them all (live check on prod 23c6533: "2 research-only leads" beside 3 held).
-  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number }
+  // A lead from the new engine (source_kind 'discover') is counted by its ONE state (lib/discover/card.ts discoverState), never by the rules
+  // above: ready (by email or on LinkedIn) is in sourceChecked, review in needsReview, research in research, rejected in rejected, and
+  // noContact holds the ones whose proof is fine but nobody can be reached yet. discover = those leads' own counts, as every page says them.
+  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number; noContact?: number; discover?: DiscoverCounts }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
   contact: { withContact: number; readyWithContact: number; draftable: number }
@@ -114,11 +118,18 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
     const L = `FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id = ?`
-    type Row = { id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null }
-    const rows = db.prepare(`SELECT l.id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at ${L}`).all(tenantId, j.id) as Row[]
-    const leads = rows.length
+    type Row = { id: string; scan_job_id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; name: string | null; company_domain: string | null; event_date: string | null; fit: number | null; intent: number | null; source_kind: string | null }
+    const every = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, ${DISCOVER_LEAD_COLUMNS} ${L}`).all(tenantId, j.id) as Row[]
+    // #1238: the new engine's leads have ONE state each (lib/discover/card.ts discoverState). They are counted from it below and are
+    // left out of the older engine's rules, which `rows` and everything derived from it keep exactly as they were.
+    let dStored: DiscoverStoredRow[] = []
+    if (every.some(r => r.source_kind === 'discover')) try { dStored = db.prepare(discoverStoredSql(1)).all(tenantId, tenantId, j.id) as DiscoverStoredRow[] } catch (e) { dStored = discoverNoTable(e) }
+    const dStates = discoverStatesFromRows(every, dStored).get(j.id)
+    const dc = dStates ? discoverCounts(dStates.values()) : null
+    const rows = dStates ? every.filter(r => !dStates.has(r.id)) : every
+    const leads = every.length
     const allLive = rows.filter(r => r.quarantined_at === null)
-    const rejected = leads - allLive.length
+    const rejected = rows.length - allLive.length + (dc?.rejected ?? 0)
     // #1062: a lead the company-first gate keeps off every page that the checks below would still count as reviewable, passed or
     // unverified is held by checks and nothing else (inside research); one they already count as research keeps that verdict.
     const byChecks = heldByChecksOf(j, shown)
@@ -155,19 +166,13 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // #683 round 3: the sourceChecked-only slice, so a one-line reader can subtract exactly the leads it is about to
     // stop calling sourceChecked, never a held-research lead that was confirmedByYou all along.
     const heldResearchSourceChecked = heldResearchRows.filter(r => evidenceStateOf(r) === 'machine').length
-    // A discovery lead keeps its published address as its own stored row (connector 'discover'), not in leads.contact: its card shows
-    // it, so it is a contact here too (#1571: every card said "0 with a contact" beside leads showing an address). Workspace-scoped on both sides.
-    let published: { lead_id: string; name: string | null; kind: string; connector: string; value: string; source_url: string | null }[]
-    try { published = db.prepare(`SELECT e.lead_id, l.name, e.kind, e.connector, e.value, e.source_url FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE e.tenant_id = ? AND l.scan_job_id = ? AND l.source_kind = 'discover' AND e.connector = 'discover' AND e.kind IN ('person', 'email', 'linkedin') AND e.value != '' ORDER BY e.retrieved_at, e.id`).all(tenantId, tenantId, j.id) as typeof published } catch (e) { noTable(e); published = [] }
-    // #1250: the named person's own address, as the card decides it (never a shared inbox or another employee's)
-    const byLead = new Map<string, typeof published>()
-    for (const r of published) byLead.set(r.lead_id, [...(byLead.get(r.lead_id) ?? []), r])
-    // the person's own address, or (owner decision 2026-11-23) the named person's own LinkedIn profile
-    const reachable = (rows: typeof published) => { const c = discoverContact({ source_kind: 'discover', name: rows[0].name, enrichments: rows }); return !!c?.email || (!!c?.person?.name && /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/in\/[^/?#]{2,}/i.test(c.person.linkedin ?? '')) }
-    const publishedIds = new Set([...byLead].filter(([, rows]) => reachable(rows)).map(([id]) => id))
-    const hasContact = (r: Row) => (r.contact ?? '').trim() !== '' || publishedIds.has(r.id)
-    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && hasContact(r)).length
-    const withContact = allLive.filter(hasContact).length
+    // A discovery lead is "with a contact" exactly when it is ready, by email or on LinkedIn (discoverState): the card's own actions. It used
+    // to count here whenever an address or a profile was stored, also while its proof held it, so the card said "1 with a contact" beside a
+    // Leads page that offered no action for any lead (#1238, staging 96111ddd). A shared inbox or another employee's address is never one (#1250).
+    if (dc) { sourceChecked += dc.ready; needsReview += dc.review; research += dc.research }
+    const hasContact = (r: Row) => (r.contact ?? '').trim() !== ''
+    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && hasContact(r)).length + (dc?.ready ?? 0)
+    const withContact = allLive.filter(hasContact).length + (dc?.ready ?? 0)
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
     // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.
     const drafts = msg('draft'), approved = msg('approved'), sent = msg('sent')
@@ -190,11 +195,13 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const an = sequenceAnalytics(db, tenantId, leadIds)
     const interested = leadIds.length ? n(`SELECT count(DISTINCT thread_id) AS n FROM inbound_messages WHERE tenant_id = ? AND classification = 'positive' AND lead_id IN (${leadIds.map(() => '?').join(',')})`, tenantId, ...leadIds) : 0
     const drafted = new Set((db.prepare('SELECT lead_id FROM outreach_messages WHERE tenant_id = ?').all(tenantId) as { lead_id: string }[]).map(r => r.lead_id))
-    const undrafted = liveRows.filter(r => !byChecks(r.id) && !drafted.has(r.id) && draftBlockReason(db, tenantId, r.id) === null).length
+    // a discovery lead can be drafted only when it is ready by email, and then the draft check itself still decides
+    const emailReady = dStates ? every.filter(r => dStates.get(r.id) === 'ready_email') : []
+    const undrafted = [...liveRows, ...emailReady].filter(r => !byChecks(r.id) && !drafted.has(r.id) && draftBlockReason(db, tenantId, r.id) === null).length
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
-      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected, heldByChecks },
+      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected, heldByChecks, ...(dc ? { noContact: dc.no_contact, discover: dc } : {}) },
       contact: { withContact, readyWithContact, draftable: undrafted },
       outreach: { drafts, approved, sent, draftsReady: d.ready, draftsSetup: d.setup, draftsHeld: d.held, approvedReady: a.ready, approvedSetup: a.setup, approvedHeld: a.held },
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
@@ -225,12 +232,18 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   // Every lead this search found has been rejected: none passed, whatever the scan recorded when it finished.
   if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
+  // New-engine leads that are ready on LinkedIn: the user sends the first message there themselves (lib/discover/card.ts discoverLinkedIn).
+  const onLinkedIn = c.qualification.discover?.ready_linkedin ?? 0
+  if (onLinkedIn > 0) return { label: `Message ${plural(onLinkedIn, 'lead', 'leads')} on LinkedIn`, href: leadsHref }
   // Only held leads a timing review can release are offered for review; the rest are research (#683).
   const heldReviewable = c.qualification.held - (c.qualification.heldResearch ?? 0)
   if (heldReviewable > 0) return { label: `Review the source of ${plural(heldReviewable, 'lead', 'leads')} to confirm timing`, href: leadsHref }
   const heldEmails = c.outreach.draftsHeld + c.outreach.approvedHeld
   if (heldEmails > 0) return { label: `${plural(heldEmails, 'email is', 'emails are')} held: open Outreach to see why`, href: '/app/outreach' }
   if (c.qualification.unverified > 0) return { label: `Check ${plural(c.qualification.unverified, 'unverified lead', 'unverified leads')} against their sources`, href: leadsHref }
+  // New-engine leads whose proof is fine but nobody can be reached yet: they are not research, so the step is to open them.
+  const noContact = c.qualification.noContact ?? 0
+  if (noContact > 0) return { label: `${plural(noContact, 'lead has', 'leads have')} proof but no contact yet. Open the search to see ${noContact === 1 ? 'it' : 'them'}`, href: leadsHref }
   // Research only: checking cannot make these ready, so the step offered is one that can change the result - a new search (#352/#683).
   // #1062: leads held by a company-first scan's checks are all inside research / heldResearch; they get their own read-only step, which counts
   // every one of them (the run page lists them with why), and only the other research-only leads get the research step.
@@ -268,9 +281,9 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
     ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number; run_budget: string | null; enrich_started_at: number | null; enrich_finished_at: number | null }[]
   if (!jobs.length) return []
   const shown = await companyFirstShown(db, tenantId, jobs, now)
-  type Row = { id: string; scan_job_id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null; run_budget: string | null }
+  type Row = { id: string; scan_job_id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null; run_budget: string | null; name: string | null; company_domain: string | null; fit: number | null; intent: number | null; source_kind: string | null }
   const jq = jobs.map(() => '?').join(',')
-  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, l.event_date, j.query, j.icp, j.run_budget
+  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, j.query, j.icp, j.run_budget, ${DISCOVER_LEAD_COLUMNS}
     FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${jq})`).all(tenantId, ...jobs.map(j => j.id)) as Row[]
   // the required-check verdict per listed scan (requiredGateHeldForJob: the campaign page's own reader, 3 reads per scan whatever its lead count)
   const gate = new Set<string>()
@@ -281,8 +294,12 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
   const mailed = new Set((db.prepare(`SELECT DISTINCT l.scan_job_id AS id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id IN (${jq})`).all(tenantId, tenantId, ...jobs.map(j => j.id)) as { id: string }[]).map(r => r.id))
   const byJob = new Map<string, Row[]>()
   for (const r of rows) { const a = byJob.get(r.scan_job_id) ?? []; a.push(r); byJob.set(r.scan_job_id, a) }
+  // #1238: the new engine's leads, each by its ONE state (one more read, and only when a listed scan has such a lead); the older rules below never see them
+  const dAll = await discoverStatesOfDb(adb, tenantId, rows)
   return jobs.map(j => {
-    const all = byJob.get(j.id) ?? []
+    const found = byJob.get(j.id) ?? []
+    const dStates = dAll.get(j.id), dc = dStates ? discoverCounts(dStates.values()) : null
+    const all = dStates ? found.filter(r => !dStates.has(r.id)) : found
     // #1062: the same company-first gate and rule as listCampaigns: a hidden lead these checks would not already call research is held by checks.
     const byChecks = heldByChecksOf(j, shown)
     const allLive = all.filter(r => r.quarantined_at === null)
@@ -299,14 +316,15 @@ export async function historyCampaigns(db: Database.Database, adb: Db, tenantId:
       else unverified++
       if (heldRes) { heldResearch++; if (st === 'machine') heldResearchSourceChecked++ }
     }
-    const qualification = { sourceChecked, confirmedByYou, needsReview, research, unverified, held: 0, heldResearch, heldResearchSourceChecked, rejected: all.length - allLive.length, heldByChecks }
-    const base = { id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at, discovery: { leads: all.length }, qualification }
+    if (dc) { sourceChecked += dc.ready; needsReview += dc.review; research += dc.research }
+    const qualification = { sourceChecked, confirmedByYou, needsReview, research, unverified, held: 0, heldResearch, heldResearchSourceChecked, rejected: all.length - allLive.length + (dc?.rejected ?? 0), heldByChecks, ...(dc ? { noContact: dc.no_contact, discover: dc } : {}) }
+    const base = { id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at, discovery: { leads: found.length }, qualification }
     // The full card's next action exactly, wherever it needs no outreach read: a review a check can resolve comes first in nextAction; and a run
     // where nothing passed (after listQual) and no email was ever written has no drafts, approvals, replies, draftable or timing-reviewable
     // leads, so nextAction over zero outreach is the card's own step. Otherwise the campaign page holds the pipeline's next action.
     const q = listQual(qualification)
     const exact = needsReview > 0 || (q.sourceChecked + q.confirmedByYou === 0 && !mailed.has(j.id))
-    const next = checksPending(j, shown) ?? (exact ? nextAction({ ...base, discovery: { candidates: null, leads: all.length }, contact: { withContact: 0, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }, 0)
+    const next = checksPending(j, shown) ?? (exact ? nextAction({ ...base, discovery: { candidates: null, leads: found.length }, contact: { withContact: 0, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0, draftsReady: 0, draftsSetup: 0, draftsHeld: 0, approvedReady: 0, approvedSetup: 0, approvedHeld: 0 }, sequence: { active: 0, stopped: 0 }, reply: { replied: 0, interested: 0, bounced: 0, optOuts: 0 } }, 0)
       : { label: 'Open its campaign', href: `/app/campaigns/${j.id}` })
     return { ...base, next }
   })
