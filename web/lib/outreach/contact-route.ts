@@ -61,19 +61,9 @@ export function emailDomainInvalid(email: string): boolean {
 
 const PHONE = /\+?\d[\d\s().-]{6,}\d/
 const norm = (v: string | null | undefined) => (v ?? '').trim().toLowerCase()
-export const GENERIC_LOCAL = /^(?:hello|hi|info|information|contact|contactus|enquiries|enquiry|inquiries|inquiry|office|admin|team|sales|mail|general|reception|frontdesk|bookings?|appointments?|studio|clinic|hq|business|partners?|partnerships?|newbusiness)$/
+export { GENERIC_LOCAL, nameBound } from './generic-inbox.ts'
+import { GENERIC_LOCAL, nameBound } from './generic-inbox.ts'
 
-// Does the address's local part carry this person's own name (first, last, first.last, flast, firstl...)? A published
-// address shaped like the person's name is the only person binding read here; a shared inbox never is.
-export function nameBound(local: string, name: string): boolean {
-  const parts = name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').match(/[a-z]+/g) ?? []
-  if (parts.length === 0) return false
-  const l = local.split('+')[0].replace(/[._-]/g, '')
-  const first = parts[0] ?? '', last = parts[parts.length - 1] ?? ''
-  const shapes = new Set([first, `${first}${last}`, `${first[0]}${last}`, `${first}${last[0]}`, `${last}${first}`, `${last}${first[0]}`])
-  if (parts.length === 1) return l === first && first.length >= 3
-  return shapes.has(l) || (l === last && last.length >= 4)
-}
 
 function deliverabilityOf(email: string, rows: RouteRow[], now: number): ContactRoute['deliverability'] {
   if (emailDomainInvalid(email)) return { state: 'domain_invalid', checkedAt: null, text: `Deliverability: fails. ${email.split('@')[1]} is not a domain that can receive mail.` }

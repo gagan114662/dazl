@@ -90,3 +90,17 @@ test('tokens drops stopwords and short words', () => {
   assert.ok(t.has('tools'))
   assert.ok(!t.has('the'))
 })
+
+// #1571: a play's industry and location describe the seller and are the same on every play of an account. A lead about something else
+// entirely (a new profile, a different kind of signal) must not "resemble" past leads because of them alone.
+test('the same industry and location alone are not a resemblance; beside a real signal overlap they are still reported', () => {
+  const d = db()
+  seedCohort(d)
+  const m = lookalikeSignals(d, TENANT, [
+    { id: 'other', signal: 'fintech startup raises seed round from venture investors', industry: 'sales tech', location: 'Toronto' },
+    { id: 'alike', signal: 'company hiring sales operations manager', industry: 'sales tech', location: 'Toronto' },
+  ])
+  assert.deepEqual([m.get('other')!.matches, m.get('other')!.matched_on], [0, []])
+  assert.ok(m.get('alike')!.matches >= 3)
+  assert.deepEqual([...m.get('alike')!.matched_on].sort(), ['industry', 'location', 'signal keywords'])
+})

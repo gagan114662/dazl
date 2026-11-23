@@ -105,7 +105,7 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     if (!c?.email) missing.push('a published email address')
     const next = l.quarantined_at ? 'None: quarantined.' : l.review_reason ? 'Check the source yourself before using this lead.'
       : approve.ok ? `Draft a first message${who ? ` to ${who.name}` : ''} introducing your offer; mention the event only as context.`
-      : who?.link ? `Reach ${who.name} through their LinkedIn profile.` : who ? `Find a way to reach ${who.name}.` : 'Find the person to contact before reaching out.'
+      : who?.link ? `Message ${who.name} on LinkedIn yourself: open their profile and mention the event only as context.` : who ? `Find a way to reach ${who.name}.` : 'Find the person to contact before reaching out.'
     return {
       whyThisBusiness: l.why?.trim() || 'Found for your request.',
       whyNow: { claim: l.signal, date: l.event_date, dateNote: l.event_date ? (d.date_status === 'verified' ? `${l.event_date}, printed on the proof page` : `${l.event_date}, the day the page was published`) : 'event date unknown', source: l.source_url, quote: l.evidence_excerpt },

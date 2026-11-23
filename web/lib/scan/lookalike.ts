@@ -82,8 +82,10 @@ export function lookalikeSignals(db: Database.Database, tenantId: string, leads:
       let shared = 0
       for (const t of lt) if (c.tok.has(t)) shared++
       if (shared >= 2) { hit = true; on.add('signal keywords') }
-      if (l.industry && c.row.industry && l.industry === c.row.industry) { hit = true; on.add('industry') }
-      if (l.location && c.row.location && l.location === c.row.location) { hit = true; on.add('location') }
+      // #1571: a play's industry and location describe the SELLER and repeat on every play of the account, so by themselves they made every
+      // lead "resemble" every past lead. They are reported only beside a real overlap in what the two leads are about.
+      if (hit && l.industry && c.row.industry && l.industry === c.row.industry) on.add('industry')
+      if (hit && l.location && c.row.location && l.location === c.row.location) on.add('location')
       if (hit) matches++
     }
     out.set(l.id, { state: 'scored', cohort_size: cohort.length, matches, matched_on: [...on] })
