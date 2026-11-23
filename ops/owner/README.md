@@ -11,6 +11,7 @@ ssh alias or `user@host` in the owner's `~/.ssh/config`) and stops with a usage 
 | `reset-staging-trial.sh <email>` | Gives one test account its free trial searches back on **staging**, so a live check can be rerun. | Deletes that account's rows in `trial_reservations` in the staging database, after saving them to a root-only file. Never production. | owner, when Quest asks for a rerun |
 | `install-offhost-backup.sh [key file]` | Step 2 of the off-host backup (`ops/backup/README.md`): copies the upload-only key file to the box and runs `ops/backup/install-prod-offhost.sh` from the live release. | Installs the hourly backup timers, takes one backup, removes the copied key file from the home folder. | owner, once, after `ops/backup/aws-setup.sh` |
 | `install-downtime-alert.sh` | Runs `ops/uptime/install.sh` from the live release, points the probe at production's alert destination and sends one test message. | Adds `/usr/local/lib/dazl-uptime/`, `/etc/dazl-uptime/env`, `dazl-uptime.timer`. | owner, once |
+| `prove-prod-restart.sh [--kill]` | Shows how production is supervised (unit, user, restart and memory settings, starts at boot, boot time next to unit start time). With `--kill`, proves systemd restarts it (issue #1083). | Without `--kill`: nothing. With `--kill`: kills the live production process once; dazl.ai answers 502 until it is back (expected under 30 seconds). | owner, at a quiet moment; the report again after a reboot |
 
 ## Expected output
 
@@ -57,6 +58,31 @@ Result=success ExecMainStatus=0
 
 One test message must arrive at the alert destination (Telegram). Every URL in the output shows as `<url>`. This
 probe runs on the box, so it does not notice the box itself being off; the off-host pinger is issue #1586.
+
+`DAZL_SSH_HOST=<box> ops/owner/prove-prod-restart.sh --kill`
+
+```
+dazl-prod@3104: active=inactive enabled=disabled
+dazl-prod@3105: active=active enabled=enabled
+live unit: dazl-prod@3105.service, process <pid>, user ubuntu
+settings: Restart=on-failure RestartUSec=3s MemoryMax=1610612736 NoNewPrivileges=yes ProtectSystem=no
+restarts so far: 0
+box booted: <time>   unit started: <time>
+listens on: *:3105
+health commit: <40-hex commit>
+installed unit file: same as the live release's copy
+--- kill test: SIGKILL to dazl-prod@3105.service at <UTC time> ---
+healthy again after 9s: process <new pid>, user ubuntu, same commit <40-hex commit>
+restarts: 0 -> 1
+PASS: systemd restarted production by itself in 9s
+```
+
+The live port and the numbers differ. Without `--kill` the output stops after the unit file line with
+`REPORT ONLY: nothing changed`. It fails, and says why, when the process is root, the restart takes more than 30
+seconds, or the restart counter does not go up by exactly one. `FAIL: no healthy answer 90 seconds after the kill`
+means production may be down: run `deploy-prod.sh --status` on the box. For the reboot part of #1083, reboot the box
+in a quiet window, log in to nothing, wait for dazl.ai to answer, then run the report: "unit started" is seconds
+after "box booted". `listens on: *:<port>` and `ProtectSystem=no` are the two parts of #1083 that are still open.
 
 ## Checks
 
