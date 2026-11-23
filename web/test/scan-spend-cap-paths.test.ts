@@ -98,6 +98,7 @@ const FREE: Record<string, string> = {
   'env:SYSTEM_MAIL_SMTP_URL': "dazl's own account mail (SMTP), not a scan path",
   'env:JINA_READER_URL': 'Jina Reader endpoint override: free reader',
   'env:PUBLIC_BASE_URL': "dazl's own public URL, not a provider",
+  'env:NEXT_PUBLIC_POSTHOG_HOST': 'PostHog capture host for the funnel events (#1616, lib/analytics/track.ts): not a scan path; free plan with billing limits at $0',
   'env:NEXT_PUBLIC_DAZL_CONNECT_EXTENSION_URL': 'a link the user opens to install the dazl Connect extension (#1037): dazl requests nothing there',
 }
 

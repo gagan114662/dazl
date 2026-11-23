@@ -15,6 +15,7 @@ import { requestIdOf } from '@/lib/ops/request-log'
 import { deviceLabel } from '@/lib/sessions'
 import { PREVIEW_CLAIM_COOKIE } from '@/lib/auth-google-response'
 import { isClaimToken } from '@/lib/scan/preview-claim'
+import { track } from '@/lib/analytics/track'
 
 // #357, only while dazl can deliver mail (systemMailAvailable): one answer for every accepted sign-up, whether or not
 // the address already has an account. Nobody is signed in here: the new account is marked email_confirmation_required
@@ -72,6 +73,7 @@ export async function POST(req: NextRequest) {
       await sendSignupNotice(await getDb(), email).catch(e => captureError(e, { source: 'route', where: '/api/auth/signup:notice', method: 'POST', requestId: requestIdOf(req) }))
       return accepted()
     }
+    track('signup', id, { method: 'password' })
 
     // #417: queue the conversion as PENDING: this typed address is unverified, so it cancels nothing and
     // excludes nothing until its owner proves it (verification link, reset link, or Google sign-in). The row

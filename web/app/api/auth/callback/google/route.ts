@@ -10,6 +10,7 @@ import { isClaimToken } from '@/lib/scan/preview-claim'
 import { clientIp, rateLimit } from '@/lib/rate-limit'
 import { deviceLabel } from '@/lib/sessions'
 import { captureError } from '@/lib/ops/errors'
+import { track } from '@/lib/analytics/track'
 
 // linkMode: this attempt was a Google link (return cookie 'link'). A failed link must not leave link mode behind, or the
 // next plain Google sign-in within 10 minutes would take the link branch and never sign in (#1095). Any other return
@@ -62,6 +63,7 @@ export async function GET(req: NextRequest) {
     // The link may have just confirmed the address (#1095): complete any pending conversion queued for it, as a Google
     // sign-in does below. Best-effort: never blocks the link.
     if (result === 'linked') { try { await activateLifecycleForDb(db, id.email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:link-lifecycle', method: 'GET' }) } }
+    if (result === 'linked') track('google_linked', me!.actorId)
     // #1095: back to the page that asked (re-validated here), with the result; otherwise Settings as before
     const res = linkLanding(base, req, result)
     clearOauthCookie(res, base)
@@ -75,6 +77,8 @@ export async function GET(req: NextRequest) {
   // #417: a newly created account (not a re-sign-in) is a converted prospect; stop queued acquisition work
   // for its exact, Google-verified email. Best-effort: never blocks the sign-in, failures are surfaced.
   if (r.created) { try { await recordLifecycleEventDb(db, 'signup', id.email, r.user_id) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle', method: 'GET' }) } }
+  // #1616: an account made by Google sign-in has signed up and has Google linked, in one step
+  if (r.created) { track('signup', r.user_id, { method: 'google' }); track('google_linked', r.user_id) }
   // Google just proved ownership of this address (auth-google requires email_verified): complete any pending
   // conversion queued for it (e.g. an earlier unverified password signup of the same account).
   try { await activateLifecycleForDb(db, id.email) } catch (e) { captureError(e, { source: 'route', where: '/api/auth/callback/google:lifecycle-drain', method: 'GET' }) }

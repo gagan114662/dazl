@@ -82,6 +82,7 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole; off?: key
   'gmail.googleapis.com': { name: 'Google', role: 'provider' },
   'api.stripe.com': { name: 'Stripe', role: 'provider', off: 'BILLING_AVAILABLE' },
   'api.anthropic.com': { name: 'Anthropic', role: 'provider' },
+  'us.i.posthog.com': { name: 'PostHog', role: 'provider' }, // #1616 lib/analytics/track.ts: funnel step names with counts and internal ids only; off without NEXT_PUBLIC_POSTHOG_KEY
   'api.openai.com': { name: 'OpenAI', role: 'customer_provider', off: 'DAZL_PAID_VENDORS' },
   'api.search.tinyfish.ai': { name: 'TinyFish', role: 'provider', off: 'TINYFISH_ENABLED' },
   'api.fetch.tinyfish.ai': { name: 'TinyFish', role: 'provider', off: 'TINYFISH_ENABLED' },
