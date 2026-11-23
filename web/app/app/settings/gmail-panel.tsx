@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
 
-interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; read_notice: string[] }
+interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number }
 
 export default function GmailPanel() {
   const [s, setS] = useState<State | null>(null)
@@ -57,25 +57,24 @@ export default function GmailPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
-      <Caveat className="text-[#555] text-sm mb-4" summary={`Emails go out from your own Gmail after you approve them${s?.autopilot_available ? ' (or on autopilot, if you turn it on)' : ''}, and connecting asks to read replies in dazl outreach threads and check delivery-failure notices for its sends.`}>Emails go out from your own Gmail. {s?.autopilot_available ? 'By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set.' : 'Each one is sent only after you approve it and click send.'} Connecting also asks for read access, limited to replies in the threads dazl started for you and delivery-failure notices for them. To find separate-thread delivery failures, dazl searches mailer-daemon and postmaster notices in a bounded time window and checks whether they match its recorded sends. Unmatched notice content is not kept as a reply. On Google&apos;s consent screen you can untick the read access and still connect send-only.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-4" summary={`Emails go out from your own Gmail after you approve them${s?.autopilot_available ? ' (or on autopilot, if you turn it on)' : ''}. Connecting asks Google only for permission to send; dazl does not ask to read your mailbox.`}>Emails go out from your own Gmail. {s?.autopilot_available ? 'By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set.' : 'Each one is sent only after you approve it and click send.'} Connecting asks Google only for permission to send email as you. dazl does not ask to read your mailbox, so replies and delivery-failure notices arrive in your own Gmail inbox and are not shown in dazl. An account connected earlier with read access keeps it until it is disconnected or reconnected; reconnecting makes it send-only.</Caveat>
       {s?.gmail ? (
         <div className="text-sm mb-4">
           <div className="flex items-center justify-between">
             <span>{s.gmail.email} {s.gmail.status === 'active' ? '(connected)' : '(needs reconnecting)'}</span>
             <span className="flex gap-3">
-              {(s.gmail.status !== 'active' || !s.gmail.read_granted) && <a href="/api/gmail/connect" className="underline text-[#111]">Reconnect</a>}
+              {s.gmail.status !== 'active' && <a href="/api/gmail/connect" className="underline text-[#111]">Reconnect</a>}
               <button onClick={disconnect} className="underline text-[#111]">Disconnect</button>
             </span>
           </div>
           {s.gmail.status === 'active' && (
-            <p className="text-[#666] text-xs mt-1">{s.gmail.read_granted ? 'Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.' : 'Reply reading: off (send only). Reconnect and leave the read access ticked to turn it on.'}</p>
+            <p className="text-[#666] text-xs mt-1">{s.gmail.read_granted ? 'Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.' : 'Send only. dazl does not read this mailbox: replies and delivery-failure notices arrive in your Gmail inbox.'}</p>
           )}
         </div>
       ) : (
         <div className="mb-4">
-          {s?.read_notice && <ul className="list-disc pl-5 text-[#555] text-sm mb-3 space-y-1">{s.read_notice.map((t, k) => <li key={k}>{t}</li>)}</ul>}
           <a href="/api/gmail/connect" className="inline-block btn-primary px-5 py-2 text-sm">Connect Gmail</a>
-          <p className="text-[#666] text-xs mt-2">Connecting means you agree to the reply-reading above. You can withdraw it any time in Settings.</p>
+          <p className="text-[#666] text-xs mt-2">Google will ask for permission to send email as you. dazl does not ask to read your mailbox.</p>
         </div>
       )}
       <form onSubmit={saveSender} className="flex flex-col gap-3">

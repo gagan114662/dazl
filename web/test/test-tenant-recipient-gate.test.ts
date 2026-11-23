@@ -159,7 +159,7 @@ test('send boundary: allowlist revocation during the token await stops the send 
 test('sequence step: allowlist revocation during the token await stops the step and the sequence', async () => {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db); seedOffers(db, [T])
-  const state = new URL(startOAuth(db, T, { env: oauthEnv, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, T, { env: oauthEnv, now: NOW })).searchParams.get('state')!
   const idToken = 'x.' + Buffer.from(JSON.stringify({ email: 'me@acme.example', email_verified: true })).toString('base64url') + '.y'
   await completeOAuth(db, T, 'c', state, { env: oauthEnv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken })) as unknown as typeof fetch })
   saveSettings(db, T, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })

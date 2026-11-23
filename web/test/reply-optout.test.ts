@@ -121,7 +121,7 @@ const NOW = 1_800_000_000, DAY = 86400
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
 async function tenant(db: Database.Database, t: string, me: string) {
-  const state = new URL(startOAuth(db, t, { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, t, { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, t, 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken(me) })) as unknown as typeof fetch })
   saveSettings(db, t, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   enable(db, t, { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 5 })

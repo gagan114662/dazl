@@ -112,7 +112,7 @@ async function seedSequenceTenant() {
   const db = setup()
   db.exec('CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, email_verified_at INTEGER)')
   const master = randomBytes(32)
-  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   acceptAutoSequencePolicy(db, 'A', AUTO_SEQUENCE_POLICY)
   approvedMsg(db, 'M0', 'sent')
@@ -229,7 +229,7 @@ test('reply_sync_stale hold: drain avoids the send while stale, then selects the
 async function seedFollowupTenant() {
   const db = setup()
   const master2 = randomBytes(32)
-  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master: master2, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   db.prepare("INSERT INTO autopilot_settings (tenant_id, enabled, paused, consent_version, followups_enabled, daily_cap) VALUES ('A', 1, 0, ?, 1, 20)").run(CONSENT_VERSION)
   approvedMsg(db, 'M1', 'sent') // the sent first touch: history for this recipient, and the thread's original
@@ -268,7 +268,7 @@ async function seedReopenTenant(withConsent: boolean) {
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateReopen(db); migrateSchedulerRuns(db)
   saveSettings(db, 'A', { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
   const master3 = randomBytes(32)
-  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, 'A', { env: genv, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env: genv, master: master3, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
   if (withConsent) acceptReadConsent(db, 'A')
   const job = createJob(db, 'A', { business_name: 'Acme', industry: 'x', location: 'y' })

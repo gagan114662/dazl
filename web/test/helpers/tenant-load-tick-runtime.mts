@@ -99,7 +99,7 @@ function world() {
   async function onboard(t: string) {
     const email = `me@${t.toLowerCase()}.example`
     raw.prepare("INSERT INTO users (id, email, business_name, password_hash, salt, created_at) VALUES (?, ?, ?, 'x', 'x', ?)").run(t, email, `${t} Co`, nowS())
-    const state = new URL(startOAuth(raw, t, { env: genv, now: nowS(), withRead: true })).searchParams.get('state')!
+    const state = new URL(startOAuth(raw, t, { env: genv, now: nowS() })).searchParams.get('state')!
     await completeOAuth(raw, t, 'c', state, { env: genv, master, now: nowS(), fetchImpl: (async () => json({ refresh_token: 'rt', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken(email) })) as unknown as typeof fetch })
     acceptReadConsent(raw, t)
     saveKey(raw, t, 'anthropic', KEYS[t], master)

@@ -29,7 +29,7 @@ const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, em
 async function store(tenants: string[]) {
   const db = new Database(':memory:'); migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
   for (const t of tenants) {
-    const state = new URL(startOAuth(db, t, { env: genv, now: NOW, withRead: true })).searchParams.get('state')!
+    const state = new URL(startOAuth(db, t, { env: genv, now: NOW })).searchParams.get('state')!
     await completeOAuth(db, t, 'c', state, { env: genv, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'rt', scope: `${SEND} ${GMAIL_READ_SCOPE}`, id_token: idToken(`me@${t.toLowerCase()}.example`) })) as unknown as typeof fetch })
     saveSettings(db, t, { sender_name: 'Pat', postal_address: '1 King St W, Toronto ON M5H 1A1' })
     enable(db, t, { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 5 })

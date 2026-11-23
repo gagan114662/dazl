@@ -21,7 +21,7 @@ const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { sta
 async function setup() {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
-  const state = new URL(startOAuth(db, 'A', { env, now: NOW, withRead: true })).searchParams.get('state')!
+  const state = new URL(startOAuth(db, 'A', { env, now: NOW })).searchParams.get('state')!
   await completeOAuth(db, 'A', 'c', state, { env, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'test-token', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: 'x.' + Buffer.from(JSON.stringify({ email: TEST_INBOX, email_verified: true })).toString('base64url') + '.y' })) as typeof fetch })
   saveSettings(db, 'A', { sender_name: 'Dazl', postal_address: '1122 International Blvd, Ste 700, Burlington, ON L7L 6Z8' })
   acceptReadConsent(db, 'A')
