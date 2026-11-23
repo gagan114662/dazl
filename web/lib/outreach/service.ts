@@ -17,8 +17,7 @@ import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
-import { emailOnCompanySite } from '../discover/card.ts'
-import { isGenericInbox } from './generic-inbox.ts'
+import { discoverContact, emailOnCompanySite } from '../discover/card.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -327,7 +326,11 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   if (!state?.event_date) throw new OutreachError('lead_currentness_unconfirmed')
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // #1250: a shared inbox (info@, sales@, reception@ ...) is not a contact and is never drafted to; the first address that is not one is used
-  const row = (db.prepare("SELECT value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id").all(tenantId, leadId) as { value: string; source_url: string }[]).find(r => !isGenericInbox(r.value))
+  // and the address must be the named person's own, as the card decides it (lib/discover/card.ts discoverContact): one rule, read here too
+  const mine = discoverContact({ source_kind: 'discover', name: lead.name, enrichments: db.prepare("SELECT kind, connector, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string }[] })?.email
+  const row = mine ? { value: mine.address, source_url: mine.source } : undefined
+  // a press, support or privacy inbox keeps its own refusal, as before
+  if (!mine && (db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email'").all(tenantId, leadId) as { value: string }[]).some(r => classifyPurpose(norm(r.value)).purpose === 'non-sales')) throw new OutreachError('not_sales_contact')
   const to = norm(row?.value ?? '')
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')

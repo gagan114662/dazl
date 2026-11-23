@@ -322,3 +322,14 @@ test('#1037: the profile must be one the run actually saw in its search results 
   assert.match(enrichRequest(base, null), /Person already found: Dana Ruiz, Practice Owner/)
   assert.doesNotMatch(enrichRequest({ ...base, person: null, title: null }, null), /Person already found/)
 })
+
+// Review of #1596: the profile check must use what THIS lead's lookup saw, and the result must name the person.
+test('#1037: a profile seen for a same-named person in another lead\'s lookup, or a result that does not name the person, is not kept', async () => {
+  const { keepSeenProfile } = await import('../lib/discover/enrich.ts')
+  const e = parseEnriched('<json>{"person":"Dana Ruiz","title":"Owner","person_source_url":"https://northwind-dental.example/team","linkedin_url":"https://www.linkedin.com/in/dana-ruiz-dds/"}</json>')
+  const hit = (title: string | null) => new Map([['https://www.linkedin.com/in/dana-ruiz-dds', { url: 'https://www.linkedin.com/in/dana-ruiz-dds', title, page_age: null, text: null }]])
+  assert.equal(keepSeenProfile(e, hit('Dana Ruiz - Practice Owner - Northwind Dental | LinkedIn')).linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-dds/')
+  assert.equal(keepSeenProfile(e, hit('Dana M. Ruiz, DDS | LinkedIn')).linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-dds/')
+  assert.equal(keepSeenProfile(e, hit('Daniel Ruiz - Harbour Smiles | LinkedIn')).linkedin_url, null, 'the result is someone else')
+  assert.equal(keepSeenProfile(e, hit(null)).linkedin_url, null, 'a result with no title cannot show whose profile it is')
+})

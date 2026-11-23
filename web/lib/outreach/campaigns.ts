@@ -8,7 +8,7 @@ import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
 import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
-import { isGenericInbox } from './generic-inbox.ts'
+import { discoverContact } from '../discover/card.ts'
 import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, draftBlockReason, sendBlockReason } from './service.ts'
@@ -157,10 +157,12 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const heldResearchSourceChecked = heldResearchRows.filter(r => evidenceStateOf(r) === 'machine').length
     // A discovery lead keeps its published address as its own stored row (connector 'discover'), not in leads.contact: its card shows
     // it, so it is a contact here too (#1571: every card said "0 with a contact" beside leads showing an address). Workspace-scoped on both sides.
-    let published: { lead_id: string; value: string }[]
-    try { published = db.prepare(`SELECT e.lead_id, e.value FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE e.tenant_id = ? AND l.scan_job_id = ? AND l.source_kind = 'discover' AND e.connector = 'discover' AND e.kind = 'email' AND e.value != ''`).all(tenantId, tenantId, j.id) as { lead_id: string; value: string }[] } catch (e) { published = noTable(e) }
-    // #1250: a shared inbox (info@, sales@ ...) is not a contact
-    const publishedIds = new Set(published.filter(r => !isGenericInbox(r.value)).map(r => r.lead_id))
+    let published: { lead_id: string; name: string | null; kind: string; connector: string; value: string; source_url: string | null }[]
+    try { published = db.prepare(`SELECT e.lead_id, l.name, e.kind, e.connector, e.value, e.source_url FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE e.tenant_id = ? AND l.scan_job_id = ? AND l.source_kind = 'discover' AND e.connector = 'discover' AND e.kind IN ('person', 'email', 'linkedin') AND e.value != '' ORDER BY e.retrieved_at, e.id`).all(tenantId, tenantId, j.id) as typeof published } catch (e) { noTable(e); published = [] }
+    // #1250: the named person's own address, as the card decides it (never a shared inbox or another employee's)
+    const byLead = new Map<string, typeof published>()
+    for (const r of published) byLead.set(r.lead_id, [...(byLead.get(r.lead_id) ?? []), r])
+    const publishedIds = new Set([...byLead].filter(([, rows]) => discoverContact({ source_kind: 'discover', name: rows[0].name, enrichments: rows })?.email).map(([id]) => id))
     const hasContact = (r: Row) => (r.contact ?? '').trim() !== '' || publishedIds.has(r.id)
     const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && hasContact(r)).length
     const withContact = allLive.filter(hasContact).length

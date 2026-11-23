@@ -37,10 +37,16 @@ const profileKey = (url: string): string | null => { try { const u = new URL(url
 const nameParts = (n: string | null): string[] => (n ?? '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\b(?:dr|mr|mrs|ms|prof)\.?\s/g, ' ').match(/[a-z]{2,}/g) ?? []
 export const samePerson = (a: string | null, b: string | null): boolean => { const x = nameParts(a), y = nameParts(b); return x.length >= 2 && y.length >= 2 && x[0] === y[0] && x[x.length - 1] === y[y.length - 1] }
 // #1037: a profile address is kept only when the run saw it (a search result or a page it opened). One it never saw may be made up.
+// `seen` is what THIS lead's lookup saw, never the whole batch's: a same-named person at another company must not lend their profile.
+// The result's own title must also carry the person's first and last name (review of #1596).
 export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>): Enriched {
   if (!e.linkedin_url) return e
-  const want = profileKey(e.linkedin_url)
-  for (const url of seen.keys()) if (want && profileKey(url) === want) return e
+  const want = profileKey(e.linkedin_url), who = nameParts(e.person)
+  for (const [url, page] of seen) {
+    if (!want || profileKey(url) !== want) continue
+    const title = nameParts(page.title)
+    if (who.length >= 2 && title.includes(who[0]) && title.includes(who[who.length - 1])) return e
+  }
   return { ...e, linkedin_url: null }
 }
 export function parseEnriched(text: string): Enriched {
@@ -71,8 +77,9 @@ const usdOf = (u: Omit<DiscoverUsage, 'usd'>) => Math.round(((u.input_tokens * P
 export const enrichRequest = (lead: DiscoveredLead, offer: string | null): string => [`Company: ${lead.company}`, lead.domain ? `Website: ${lead.domain}` : '', `What we know: ${lead.signal}`, `Where we read it: ${lead.evidence_url}`,
   lead.person ? `Person already found: ${[lead.person, lead.title].filter(Boolean).join(', ')}` : '', offer ? `The seller sells: ${str(offer, 400)}` : ''].filter(Boolean).join('\n')
 
-async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string | null, seen: Map<string, SeenPage>, usage: Omit<DiscoverUsage, 'usd'>, signal?: AbortSignal): Promise<Enriched> {
+async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string | null, allSeen: Map<string, SeenPage>, usage: Omit<DiscoverUsage, 'usd'>, signal?: AbortSignal): Promise<Enriched> {
   const user = enrichRequest(lead, offer)
+  const seen = new Map<string, SeenPage>()   // this lookup's own results: the profile check reads these only
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: user }]
   let text = ''
   for (let turn = 0; turn < 3; turn++) {
@@ -101,6 +108,7 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
     if (res.stop_reason !== 'pause_turn') break
     messages.push({ role: 'assistant', content: res.content as Anthropic.ContentBlockParam[] })
   }
+  for (const [url, page] of seen) if (!allSeen.has(url) || page.text) allSeen.set(url, page)
   return keepSeenProfile(parseEnriched(text), seen)
 }
 

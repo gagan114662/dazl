@@ -45,6 +45,9 @@ export function approveState(l: CardLead): ApproveState {
   // a discovery-lane lead: approvable when its proof was confirmed and a public page prints an email for it
   if (isDiscoverLead(l as { source_kind?: string | null })) {
     const a = discoverApprove(l as never)
+    // a press, support or privacy inbox keeps its own wording, as before the contact became the named person's own address
+    if (!a.ok && a.reason.startsWith('The published address does not carry') && (l.enrichments ?? []).some(e => (e as { connector?: string }).connector === 'discover' && e.kind === 'email' && classifyPurpose(String((e as { value?: string }).value ?? '').trim().toLowerCase()).purpose === 'non-sales'))
+      return { ok: false, reason: 'The published address is a press, support or privacy inbox, not a sales contact.' }
     const to = a.ok ? discoverContact(l as never)?.email?.address ?? '' : ''
     if (a.ok && classifyPurpose(to).purpose === 'non-sales') return { ok: false, reason: 'The published address is a press, support or privacy inbox, not a sales contact.' }
     if (a.ok && deliverabilityBlocked(to, l.enrichments ?? [])) return { ok: false, reason: 'This address cannot receive mail (invalid domain or a failed mailbox check).' }
