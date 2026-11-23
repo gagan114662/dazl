@@ -239,3 +239,17 @@ test('a discovery lead with a published address counts as a lead with a contact;
   assert.equal(c.contact.withContact, 1, 'only the discovery lead with its own published address')
   assert.equal(c.contact.readyWithContact, 0, 'with no confirmed date it is timing-held, as a lead with a stored contact is: a contact, not a ready one')
 })
+
+// Owner decision 2026-11-23: a named person with their own LinkedIn profile is a contact when no personal email is published.
+test('a discovery lead whose named person has a LinkedIn profile counts as a lead with a contact; a company page or a profile with no person does not', () => {
+  const db = setup()
+  job(db, 'A', 'jl', 'dental clinics in Toronto')
+  lead(db, 'jl', 'l-profile'); lead(db, 'jl', 'l-company'); lead(db, 'jl', 'l-noperson')
+  db.prepare("UPDATE leads SET source_kind = 'discover' WHERE scan_job_id = 'jl'").run()
+  const row = (leadId: string, kind: string, value: string) => addEnrichment(db, 'A', leadId, { connector: 'discover', kind, value, label: 'x', confidence: null, source_url: 'https://co.example/team', source_date: '2026-11-22', retrieved_at: 1 })
+  row('l-profile', 'person', 'Dana Ruiz, Practice Owner'); row('l-profile', 'linkedin', 'https://www.linkedin.com/in/dana-ruiz/')
+  row('l-company', 'person', 'Sam Patel, Owner'); row('l-company', 'linkedin', 'https://www.linkedin.com/company/co/')
+  row('l-noperson', 'linkedin', 'https://www.linkedin.com/in/someone/')
+  finish(db, 'jl')
+  assert.equal(listCampaigns(db, 'A').find(x => x.id === 'jl')!.contact.withContact, 1)
+})

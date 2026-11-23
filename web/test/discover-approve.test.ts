@@ -154,3 +154,27 @@ test('#1250: an address that does not carry the named person\'s name is not thei
   const { listCampaigns } = await import('../lib/outreach/campaigns.ts')
   assert.equal(listCampaigns(db, 'T').find(x => x.id === 'j1')!.contact.withContact, 0, 'and it is not counted as a contact')
 })
+
+// Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
+// email is published. The first step is a LinkedIn message the user sends themselves; nothing is automated.
+test('a lead with a named person and their LinkedIn profile is ready to reach on LinkedIn when no personal email is published', async () => {
+  const { discoverLinkedIn } = await import('../lib/discover/card.ts')
+  const { previewSplit } = await import('../lib/journey.ts')
+  const c = leadCardSummary(lead([person, linkedin]) as never)
+  assert.deepEqual(c.linkedin, { name: 'Dana Ruiz', profile: 'https://www.linkedin.com/in/dana-ruiz/' }, 'the card offers the profile as the way to reach them')
+  assert.equal(c.approve.ok, false, 'Approve (an email draft) stays off: there is no address to draft to')
+  // every proof rule still applies, and it must be a person's profile
+  const li = (e: unknown[], o: Record<string, unknown> = {}) => discoverLinkedIn(lead(e, o) as never)
+  assert.equal(li([person, linkedin], { review_reason: 'source_review_required' }), null, 'an unconfirmed proof page is reviewed first')
+  assert.equal(li([person, linkedin], { event_date: null }), null, 'an undated signal is not ready')
+  assert.equal(li([person, linkedin], { quarantined_at: 1 }), null)
+  assert.equal(li([person, linkedin], { gate_held: true }), null)
+  assert.equal(li([person, { ...linkedin, value: 'https://www.linkedin.com/company/northwind-dental/' }]), null, 'a company page is not the person\'s profile')
+  assert.equal(li([linkedin], { name: '' }), null, 'a profile with no named person is not a contact')
+  assert.equal(li([person]), null)
+  // with the person's own address too, email stays the route and the card does not offer both as the first step
+  assert.equal(leadCardSummary(lead([person, linkedin, email]) as never).approve.ok, true)
+  // Home counts it as contact-ready
+  const split = previewSplit([lead([person, linkedin]) as never, lead([person]) as never])
+  assert.deepEqual(split.opportunities.map(o => o.contactReady), [true, false], 'ready with a profile; not ready with a name alone')
+})

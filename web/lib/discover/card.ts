@@ -71,15 +71,32 @@ export function emailOnCompanySite(email: string, sourceUrl: string | null | und
   if (!email.includes('@')) return false
   try { const u = new URL(sourceUrl ?? ''); return (u.protocol === 'https:' || u.protocol === 'http:') && under(bare(u.hostname)) } catch { return false }
 }
+// What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, not graded a fit.
+// One list, read by Approve (email) and by the LinkedIn route below.
+type ProofLead = { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
+export function discoverProofHold(l: ProofLead): string | null {
+  if (l.quarantined_at) return 'Rejected. Undo to use it again.'
+  if (l.gate_held) return 'A required check has not passed. Research only.'
+  if (l.review_reason) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
+  if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
+  if (l.fit === 0 && l.intent === null) return 'Graded as not a fit for your profile.'
+  return null
+}
+// Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
+// email is published. The user sends the first message on LinkedIn themselves; dazl opens the profile and automates nothing.
+// Null unless every proof rule passes, a person is named, and the stored link is a person's profile (/in/<name>), never a company page.
+const PROFILE = /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/in\/[^/?#]{2,}\/?(?:[?#].*)?$/i
+export function discoverLinkedIn(l: ProofLead & { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { name: string; profile: string } | null {
+  if (!isDiscoverLead(l) || discoverProofHold(l)) return null
+  const p = discoverContact(l)?.person
+  return p?.name && p.linkedin && PROFILE.test(p.linkedin.trim()) ? { name: p.name, profile: p.linkedin.trim() } : null
+}
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
 // Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
 // (lib/scan/lead-card.ts), which already has them.
 export function discoverApprove(l: { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; company_domain?: string | null; fit?: number | null; intent?: number | null; source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { ok: true } | { ok: false; reason: string } {
-  if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
-  if (l.gate_held) return { ok: false, reason: 'A required check has not passed. Research only.' }
-  if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.' }
-  if (!l.event_date) return { ok: false, reason: 'The signal has no date, so its timing is unknown. Open the proof to check it.' }
-  if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
+  const held = discoverProofHold(l)
+  if (held) return { ok: false, reason: held }
   const c = discoverContact(l)
   if (!c?.email && c?.otherAddress) return { ok: false, reason: `The published address does not carry this person's name, so it is not known to be theirs.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
   if (!c?.email && c?.sharedInbox) return { ok: false, reason: `Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }

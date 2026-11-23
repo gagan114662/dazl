@@ -162,7 +162,9 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // #1250: the named person's own address, as the card decides it (never a shared inbox or another employee's)
     const byLead = new Map<string, typeof published>()
     for (const r of published) byLead.set(r.lead_id, [...(byLead.get(r.lead_id) ?? []), r])
-    const publishedIds = new Set([...byLead].filter(([, rows]) => discoverContact({ source_kind: 'discover', name: rows[0].name, enrichments: rows })?.email).map(([id]) => id))
+    // the person's own address, or (owner decision 2026-11-23) the named person's own LinkedIn profile
+    const reachable = (rows: typeof published) => { const c = discoverContact({ source_kind: 'discover', name: rows[0].name, enrichments: rows }); return !!c?.email || (!!c?.person?.name && /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/in\/[^/?#]{2,}/i.test(c.person.linkedin ?? '')) }
+    const publishedIds = new Set([...byLead].filter(([, rows]) => reachable(rows)).map(([id]) => id))
     const hasContact = (r: Row) => (r.contact ?? '').trim() !== '' || publishedIds.has(r.id)
     const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && hasContact(r)).length
     const withContact = allLive.filter(hasContact).length

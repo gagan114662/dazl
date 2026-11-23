@@ -3,7 +3,7 @@
 // "Approve" creates a draft for review (POST /api/outreach), which never sends; createDraft re-checks every gate on the
 // server. approveState mirrors the conditions under which the existing "Draft email" button appears, plus the window
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
-import { discoverApprove, discoverContact, isDiscoverLead } from '../discover/card.ts'
+import { discoverApprove, discoverContact, discoverLinkedIn, isDiscoverLead } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { classifyPurpose, publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -33,6 +33,8 @@ export interface LeadCardSummary {
   sourceHost: string
   date: string
   approve: ApproveState
+  // The person's own LinkedIn profile, when the lead is ready to be reached there (lib/discover/card.ts discoverLinkedIn); null otherwise.
+  linkedin: { name: string; profile: string } | null
 }
 
 const firstSentence = (s: string) => {
@@ -120,6 +122,7 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
     sourceHost,
     date: cardDate(l.event_date, l.published_at, { dayVerified: l.day_verified === true, windowMissed: l.window_missed === true }),
     approve: approveState(l),
+    linkedin: discoverLinkedIn(l as never),
   }
 }
 

@@ -2,7 +2,7 @@
 // Pure and read-only. It never loosens a gate: a lead enters the preview only when every existing check already passed
 // (identity confirmed or not in doubt, a dated source whose day the cited source proves (day_verified), inside the requested window, not held, rejected or in
 // review). Everything else is counted separately as "needs review / research" and never adds to the opportunity count.
-import { discoverApprove, isDiscoverLead } from './discover/card.ts'
+import { discoverApprove, discoverLinkedIn, isDiscoverLead } from './discover/card.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { domainReviewFor } from './outreach/domain-review.ts'
 import { publishedEmail } from './outreach/published-email.ts'
@@ -51,8 +51,9 @@ export function previewSplit(leads: PreviewLead[]): PreviewSplit {
       else if (h?.state === 'rejected') out.rejected.push(l)
       else out.research.push({ lead: l, cause: h?.cause ?? 'unsupported' })
     }
-    // a discovery-lane lead is contact-ready exactly when its Approve would be on (lib/discover/card.ts discoverApprove)
-    else out.opportunities.push({ ...l, contactReady: isDiscoverLead(l as { source_kind?: string | null }) ? discoverApprove(l as never).ok : !!publishedEmail(l) })
+    // a discovery-lane lead is contact-ready when its Approve would be on (the person's own address), or when the named person's own
+    // LinkedIn profile is known (owner decision 2026-11-23; lib/discover/card.ts discoverLinkedIn)
+    else out.opportunities.push({ ...l, contactReady: isDiscoverLead(l as { source_kind?: string | null }) ? discoverApprove(l as never).ok || !!discoverLinkedIn(l as never) : !!publishedEmail(l) })
   }
   return out
 }
