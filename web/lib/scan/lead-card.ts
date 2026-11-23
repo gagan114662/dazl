@@ -3,7 +3,7 @@
 // "Approve" creates a draft for review (POST /api/outreach), which never sends; createDraft re-checks every gate on the
 // server. approveState mirrors the conditions under which the existing "Draft email" button appears, plus the window
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
-import { discoverApprove, discoverContact, isDiscoverLead } from '../discover/card.ts'
+import { discoverApprove, discoverContact, discoverRecipient, isDiscoverLead } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { classifyPurpose, pickCrawledEmail, publishedContact, publishedEmail, type PublishedContact, type PublishedEmailLead } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -145,7 +145,16 @@ function statusOf(l: CardLead, personShown: boolean, titlesRuledOut: boolean): {
 // Other leads: the older engine's projection, as before. A discovery lead: neither. Its one draft action is Approve on the card, and that
 // writes to the address its own run published (lib/discover/card.ts discoverRecipient); showing the cited contact or a crawled address
 // here beside a draft button named an address the draft would not use. An address a crawl stored is still said, as what it is.
-export function detailsContact(l: PublishedEmailLead & { source_kind?: string | null }): { contact: PublishedContact | null; draftTo: string | null; alsoCrawled: string | null } {
-  if (!isDiscoverLead(l)) return { contact: publishedContact(l), draftTo: publishedEmail(l), alsoCrawled: null }
-  return { contact: null, draftTo: null, alsoCrawled: pickCrawledEmail(l.enrichments)?.value.trim().toLowerCase() || null }
+//
+// crawledNote is that sentence (third review of #1578). It claims only what holds: Approve drafts to the lead's own published address
+// (discoverRecipient) and to nothing else. It does NOT say every draft does: a draft made without a person asking (autopilot,
+// calibration) still follows the older engine's rule and can use the crawled address (lib/outreach/service.ts createDraft, the
+// non-manual path), so the sentence says that too. If that rule changes, this sentence changes with it; a test holds the two together.
+// No note when the crawl stored the very address Approve drafts to: there is no second address to tell apart.
+export const CRAWLED_NOTE_TAIL = "Approve on this card never drafts to it, only to an address this lead's own proof run published. A draft made automatically (autopilot) may still use it."
+export function detailsContact(l: PublishedEmailLead & { source_kind?: string | null }): { contact: PublishedContact | null; draftTo: string | null; alsoCrawled: string | null; crawledNote: string | null } {
+  if (!isDiscoverLead(l)) return { contact: publishedContact(l), draftTo: publishedEmail(l), alsoCrawled: null, crawledNote: null }
+  const alsoCrawled = pickCrawledEmail(l.enrichments)?.value.trim().toLowerCase() || null
+  const own = discoverRecipient(l.enrichments ?? [])?.address ?? null
+  return { contact: null, draftTo: null, alsoCrawled, crawledNote: alsoCrawled && alsoCrawled !== own ? `A website crawl found ${alsoCrawled}. ${CRAWLED_NOTE_TAIL}` : null }
 }

@@ -83,13 +83,19 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   const noSearchYet = finishedN === 0
   // Qualified: point at held or to-review leads a check can still release first (something to act on), else the newest finished search.
   // Research-only leads (no check can make them ready: lib/lead-state.ts) are never counted as review (#683).
-  const reviewable = (c: Camp) => Math.max(0, (c.qualification.held ?? 0) - (c.qualification.heldResearch ?? 0)) + (c.qualification.needsReview ?? 0)
+  // Nor is a discovery lead held only by its signal's date (heldDateOnly, lib/outreach/campaigns.ts): no review changes a date. Third
+  // review of #1578: Campaigns stopped offering that review and this checklist, reading the same counts, still asked for it.
+  const dateOnlyOf = (c: Camp) => c.qualification.heldDateOnly ?? 0
+  const reviewable = (c: Camp) => Math.max(0, (c.qualification.held ?? 0) - (c.qualification.heldResearch ?? 0) - dateOnlyOf(c)) + (c.qualification.needsReview ?? 0)
   const researchOf = (c: Camp) => (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0)
   const reviewCamp = first(c => reviewable(c) > 0)
   // Nothing to review anywhere: the newest search whose leads are research only, with a step that can change the result - a new search.
   // Only when that search has no unverified lead either (#683 round 3): an unverified lead is still actionable by
   // checking its source, so "search again" would be the wrong advice while one is sitting right there.
   const researchCamp = reviewCamp ? null : first(c => researchOf(c) > 0 && (c.qualification.unverified ?? 0) === 0)
+  // The same for leads held only by their signal's date: said as what it is, with the one step that can change it - a new search.
+  const dateCamp = reviewCamp ? null : first(c => dateOnlyOf(c) > 0 && (c.qualification.unverified ?? 0) === 0)
+  const dateN = dateCamp ? dateOnlyOf(dateCamp) : 0, dateQ = dateCamp?.query?.trim()
   const linkCamp = reviewCamp ?? researchCamp ?? first(c => c.status === 'done')
   // The count and the link describe the SAME set (#352 review of #647): the leads of the one search the link opens.
   const reviewN = reviewCamp ? reviewable(reviewCamp) : 0
@@ -99,6 +105,7 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
     : !campsComplete ? unknown('qualified', 'Qualified lead', campGap)
     : noSearchYet ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: 'comes from your first search', fix: null }
     : reviewN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${reviewN} lead${reviewN === 1 ? '' : 's'} in this search ${reviewN === 1 ? 'needs' : 'need'} your review - open the list to see why each was held`, fix: { href: href(reviewCamp)!, label: 'Review leads' } }
+    : dateN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${dateN} lead${dateN === 1 ? '' : 's'} in this search ${dateN === 1 ? 'is' : 'are'} held by ${dateN === 1 ? "its signal's" : "their signals'"} date (none, or more than a year old) - no review changes a date. Search again for a newer signal`, fix: { href: dateQ ? `/app/leads?q=${encodeURIComponent(dateQ)}` : '/app/leads', label: 'Change the search' } }
     : researchN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${researchN} lead${researchN === 1 ? '' : 's'} in this search ${researchN === 1 ? 'is' : 'are'} research only - checking ${researchN === 1 ? 'it' : 'them'} cannot make ${researchN === 1 ? 'it' : 'them'} ready. Search again with a different signal or source`, fix: { href: researchQ ? `/app/leads?q=${encodeURIComponent(researchQ)}` : '/app/leads', label: 'Change the search' } }
     : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: 'no lead has passed the source check yet', fix: linkCamp ? { href: href(linkCamp)!, label: 'Review leads' } : null }
   const contactCamp = first(c => ready(c) > 0)
