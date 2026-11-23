@@ -29,9 +29,9 @@ export function discoverSources(l: { source_url?: string | null; enrichments?: {
   const out: FieldSource[] = []
   if (l.source_url) out.push({ field: 'signal', label: 'Signal', url: l.source_url })
   const from = (kind: string) => (l.enrichments ?? []).find(e => e.kind === kind && e.connector === 'discover' && e.source_url)
-  const person = from('person'), email = from('email'), linkedin = from('linkedin')
+  const person = from('person'), email = shownRecipient(l.enrichments ?? []), linkedin = from('linkedin')
   if (person) out.push({ field: 'person', label: 'Person', url: person.source_url! })
-  if (email) out.push({ field: 'email', label: 'Email', url: email.source_url! })
+  if (email) out.push({ field: 'email', label: 'Email', url: email.source })   // the page of the address the card shows and the draft uses
   if (linkedin?.value) out.push({ field: 'linkedin', label: 'LinkedIn', url: linkedin.value })
   return out
 }
@@ -44,7 +44,7 @@ const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
   const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
-  const p = rows.find(r => r.kind === 'person' && r.value), e = discoverRecipient(rows)
+  const p = rows.find(r => r.kind === 'person' && r.value), e = shownRecipient(rows)
   const li = rows.find(r => r.kind === 'linkedin' && r.value)
   let person: DiscoverContact['person'] = null
   if (p) {
@@ -58,13 +58,19 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
 // the first row it was handed and the server the earliest stored; with two addresses they could differ.)
 // Which one: among the run's own email rows that are an address and name the page that prints it, the earliest stored; stored at the
 // same instant, the address first in order. A row that is not an address, or names no page, is not a published address.
+// "An address" is read loosely here on purpose (something@something.tld): a row that only nearly is one is still the chosen row, and
+// the stricter checks of the card and of the server then hold the lead. Reading it strictly would pass over such a row and move on to
+// the next address, which is exactly how a held address is escaped.
 // The choice never asks whether the address may be written to. A chosen address that is suppressed, personal or off the company's
 // site holds the lead; it is never passed over for the next one.
+const ADDRESS_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// What the card shows and links for it: the chosen address, when it is a well-formed one. Otherwise nothing is shown, never another row.
+const shownRecipient = (rows: Row[]): { address: string; source: string } | null => { const c = discoverRecipient(rows); return c && EMAIL.test(c.address) ? c : null }
 export function discoverRecipient(rows: Row[]): { address: string; source: string } | null {
   const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
   const c = rows.filter(r => r.connector === 'discover' && r.kind === 'email' && !!r.source_url)
     .map(r => ({ address: (r.value ?? '').trim().toLowerCase(), source: r.source_url!, at: r.retrieved_at ?? Number.MAX_SAFE_INTEGER }))
-    .filter(r => EMAIL.test(r.address))
+    .filter(r => ADDRESS_LIKE.test(r.address))
     .sort((a, b) => a.at - b.at || order(a.address, b.address) || order(a.source, b.source))
   return c.length ? { address: c[0].address, source: c[0].source } : null
 }
@@ -85,6 +91,13 @@ export const signalStale = (eventDate: string | null | undefined, now: Date = ne
   const t = Date.parse(`${(eventDate ?? '').slice(0, 10)}T00:00:00Z`)
   return Number.isFinite(t) && now.getTime() - t > SIGNAL_MAX_AGE_DAYS * 86_400_000
 }
+// Why a discovery lead's signal cannot carry outreach right now, or null: the ONE timing rule of the card, of draft creation and of the
+// shared gate approve and send re-read (lib/outreach/currentness.ts). 'undated': no date, or a stored value that does not read as a
+// day (it was "has a date" to the gate before; review of #1578). 'stale': more than a year old. Exactly a year old is still in.
+export const signalHeld = (eventDate: string | null | undefined, now: Date = new Date()): 'undated' | 'stale' | null => {
+  if (!eventDate || !Number.isFinite(Date.parse(`${eventDate.slice(0, 10)}T00:00:00Z`))) return 'undated'
+  return signalStale(eventDate, now) ? 'stale' : null
+}
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
 // Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
 // (lib/scan/lead-card.ts), which already has them.
@@ -92,8 +105,9 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
   if (l.gate_held) return { ok: false, reason: 'A required check has not passed. Research only.' }
   if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.' }
-  if (!l.event_date) return { ok: false, reason: 'The signal has no date, so its timing is unknown. Open the proof to check it.' }
-  if (signalStale(l.event_date, now)) return { ok: false, reason: 'The signal is more than a year old. It stays here as background; it is not a reason to write now.' }
+  const timing = signalHeld(l.event_date, now)
+  if (timing === 'undated') return { ok: false, reason: 'The signal has no date, so its timing is unknown. Open the proof to check it.' }
+  if (timing === 'stale') return { ok: false, reason: 'The signal is more than a year old. It stays here as background; it is not a reason to write now.' }
   if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
   const c = discoverContact(l)
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }

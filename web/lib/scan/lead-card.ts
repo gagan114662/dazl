@@ -93,8 +93,12 @@ export function cardCounts(leads: { id: string; quarantined_at?: number | null }
 
 export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null; fit_rationale?: string | null }, buyerRoles = ''): LeadCardSummary {
   const card = opportunityCard(l, buyerRoles)
-  const email = publishedEmail(l) ?? discoverContact(l as never)?.email?.address ?? null
-  const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
+  // A discovery lead's line shows the address Approve drafts to and no other (review of #1578): an address a later crawl stored on the
+  // same lead is not the one the draft uses, so it never stands beside Approve. It stays in Details. Other leads: as before.
+  const discovery = isDiscoverLead(l as { source_kind?: string | null })
+  const email = discovery ? discoverContact(l as never)?.email?.address ?? null : publishedEmail(l)
+  const stored = discovery ? null : (l.contact?.trim() || null)
+  const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? stored
   // #1037: why nobody is named, in the card's own words: every listed title ruled out, or no buyer the company's own site names
   const titlesRuledOut = card.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m))
   const contactStatus = contact ? statusOf(l, !!card.who, titlesRuledOut) : null
@@ -106,7 +110,7 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
   return {
     company: l.company || l.name || 'Unnamed company',
     contact,
-    contactNoPerson: email ?? (l.contact?.trim() || null),
+    contactNoPerson: email ?? stored,
     contactStatus,
     route,
     // The research rationale when there is one, else the saved signal claim itself. One line, never invented.

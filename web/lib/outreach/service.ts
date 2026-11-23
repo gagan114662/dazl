@@ -17,7 +17,7 @@ import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
-import { discoverRecipient, emailOnCompanySite, signalStale } from '../discover/card.ts'
+import { discoverRecipient, emailOnCompanySite, signalHeld } from '../discover/card.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -341,7 +341,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
   const state = db.prepare('SELECT review_reason, event_date, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; event_date: string | null; company_domain: string | null } | undefined
   if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  if (!state?.event_date || signalStale(state.event_date)) throw new OutreachError('lead_currentness_unconfirmed')
+  if (signalHeld(state?.event_date)) throw new OutreachError('lead_currentness_unconfirmed')
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   const row = discoverPublished(db, tenantId, leadId)
   const to = norm(row?.address ?? '')

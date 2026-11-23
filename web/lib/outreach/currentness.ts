@@ -5,7 +5,7 @@ import { companyFirstJobWindow, parseWindowDays, windowStatus } from '../scan/wi
 import { requiredGateHeld } from '../scan/held-state.ts'
 import { uncheckableCause } from '../lead-state.ts'
 import { timingProofGap, timingProofGapDb } from '../scan/timing-proof.ts'
-import { signalStale } from '../discover/card.ts'
+import { signalHeld } from '../discover/card.ts'
 // A legacy nearby-year verdict proves no event association. Human confirmation
 // remains a user's review choice, not a machine freshness or consent verdict.
 // The user's own recency window (#198) is a hard gate on top: a lead whose event date is not inside the window of the
@@ -15,10 +15,10 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
  const row=db.prepare('SELECT l.source_kind,l.human_confirmed_at,l.human_confirmed_from,l.review_reason,l.confidence,l.event_date,j.icp,j.query,j.run_budget FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null}|undefined
  if (!row) return false
  // #1571: a lead from the Claude discovery lane has one timing rule, the one its card and its Approve use (lib/discover/card.ts): held
- // while its signal has no date, or is more than a year old (signalStale). The older engine's timing proof below was counting every such
+ // while its signal has no date, or is more than a year old (signalHeld). The older engine's timing proof below was counting every such
  // lead as held on Home and the checklist. The age half was missing here (review of #1578): this is the gate approve, send, follow-ups
  // and sequences re-read, so a draft made while its signal was fresh stayed approvable and sendable however old the signal became.
- if ((row as { source_kind?: string | null }).source_kind === 'discover') return !row.event_date || signalStale(row.event_date, now)
+ if ((row as { source_kind?: string | null }).source_kind === 'discover') return signalHeld(row.event_date, now) !== null
  if (windowHeld(row, now)) return true
  // Someone else's customer, a different place, a closed opening: research only, and confirming it does not change that (#352).
  if (uncheckableCause(row.review_reason) || uncheckableCause(row.human_confirmed_from)) return true
@@ -35,6 +35,12 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
  // all still bound to the recorded proof. Model confidence alone never lifts this hold.
  // (The research engine's proof, the only other way out of this hold, was deleted with that engine: #1393. It ran only with LEAD_ENGINE=research.)
  try { return timingProofGap(db, tenant, lead, now)!==null } catch { return true }   // an unreadable proof store holds
+}
+
+// A discovery lead held by its signal's date alone. Nothing a person can review releases it, so a page must not offer a review for it.
+export function discoverSignalHeld(db: Database.Database, tenant: string, lead: string, now: Date = new Date()): boolean {
+ const row=db.prepare('SELECT l.source_kind,l.event_date FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {source_kind:string|null;event_date:string|null}|undefined
+ return !!row && row.source_kind==='discover' && signalHeld(row.event_date, now)!==null
 }
 
 // Read alone for the page: a window hold survives the user's own review, so the page must not clear it optimistically.

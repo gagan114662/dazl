@@ -11,8 +11,10 @@ import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
-import { discoverContact, discoverRecipient, SIGNAL_MAX_AGE_DAYS } from '../lib/discover/card.ts'
-import { approveBlockReason, createDraft, discoverRecipientRefusal, OutreachError, sendBlockReason, sendMessage, suppress } from '../lib/outreach/service.ts'
+import { discoverContact, discoverRecipient, discoverSources, SIGNAL_MAX_AGE_DAYS } from '../lib/discover/card.ts'
+import { approve as approveMessage, approveBlockReason, createDraft, discoverRecipientRefusal, OutreachError, saveSettings, sendBlockReason, sendMessage, suppress } from '../lib/outreach/service.ts'
+import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
+import { listCampaignsNow } from '../lib/outreach/campaigns.ts'
 import { currentnessHeld } from '../lib/outreach/currentness.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
 
@@ -36,7 +38,7 @@ const draft = (db: Database.Database, id: string, tenant = 'T') => { try { retur
 const drafts = (db: Database.Database) => (db.prepare('SELECT COUNT(*) AS n FROM outreach_messages').get() as { n: number }).n
 const NOW = Date.parse('2026-11-22T12:00:00Z')
 
-test('#1578 the address the card shows is the address the draft is written to, whatever order the rows were stored or read in', t => {
+test('#1571 (review of #1578) the address the card shows is the address the draft is written to, whatever order the rows were stored or read in', t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   for (const order of [['alice', 'bob'], ['bob', 'alice']]) {
     const { db, id } = fixture()
@@ -53,7 +55,7 @@ test('#1578 the address the card shows is the address the draft is written to, w
   assert.deepEqual(draft(tie.db, tie.id), { to: 'alice@northwind-dental.example' })
 })
 
-test('#1578 a row that is not an address, or names no page, is not a published address: card and draft agree on the one that is', t => {
+test('#1571 (review of #1578) a row that is not an address, or names no page, is not a published address: card and draft agree on the one that is', t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   const { db, id } = fixture()
   email(db, id, 'not-an-address', 1)
@@ -76,7 +78,7 @@ test('#1578 a row that is not an address, or names no page, is not a published a
   assert.deepEqual(discoverRecipient([r({ source_url: null }), r({ value: 'Dana@Northwind-Dental.example ', retrieved_at: 9 })] as never), { address: 'dana@northwind-dental.example', source: SITE })
 })
 
-test('#1578 the chosen address is never passed over to escape its hold: suppressed or personal, the lead is held and nothing is drafted', t => {
+test('#1571 (review of #1578) the chosen address is never passed over to escape its hold: suppressed or personal, the lead is held and nothing is drafted', t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   // the earlier address is on the do-not-contact list; a later, clean one exists
   const s = fixture()
@@ -103,7 +105,7 @@ test('#1578 the chosen address is never passed over to escape its hold: suppress
   assert.deepEqual(draft(c.db, c.id), { to: 'alice@northwind-dental.example' })
 })
 
-test('#1578 another workspace\'s rows and do-not-contact list never choose or hold this workspace\'s recipient', t => {
+test('#1571 (review of #1578) another workspace\'s rows and do-not-contact list never choose or hold this workspace\'s recipient', t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   const { db, id } = fixture()
   email(db, id, 'zed@northwind-dental.example', 0, { tenant: 'OTHER' })   // earlier, but not this workspace's record
@@ -115,35 +117,76 @@ test('#1578 another workspace\'s rows and do-not-contact list never choose or ho
   assert.deepEqual(draft(db, id, 'OTHER'), { code: 'not_found' }, 'the other workspace cannot draft to this lead')
 })
 
-test('#1578 a draft made while the signal was fresh is held at approve and at send once the signal is more than a year old; nothing is sent', async t => {
+const env = { GOOGLE_CLIENT_ID: 'cid.apps.googleusercontent.com', GOOGLE_CLIENT_SECRET: 'csecret', PUBLIC_BASE_URL: 'https://app.test' }
+const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
+const idToken = (e: string) => 'x.' + Buffer.from(JSON.stringify({ email: e, email_verified: true })).toString('base64url') + '.y'
+const tokenOk = (async (url: string) => (String(url).includes('token') ? json({ access_token: 'at-1' }) : json({}, 404))) as unknown as typeof fetch
+const DAY = 86_400_000, SIGNAL = Date.parse('2026-10-14T00:00:00Z'), YEAR = SIGNAL_MAX_AGE_DAYS * DAY
+
+// Review of cc3c3c87: the earlier form of this test marked a row approved by hand (no approval hash, so it could never be sent) and
+// passed its send stub under a key the send path does not read. This one approves for real, wires the provider hand-off, and shows the
+// same message going out while fresh.
+test('#1571 (review of #1578) a genuinely approved, sendable message is refused at approve and at send once its signal is more than a year old; inside the year it is sent', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   const { db, id } = fixture()   // signal dated 2026-10-14
   email(db, id, 'dana@northwind-dental.example', 1)
+  const master = Buffer.from(process.env.DAZL_MASTER_KEY!, 'base64')
   const mid = createDraft(db, 'T', id, 'Fit-out Co', { manual: true })
-  assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), null, 'a fresh draft passes the approve check')
-  assert.equal(currentnessHeld(db, 'T', id), false)
-  // inside the year: still passes
-  t.mock.timers.setTime(Date.parse('2026-10-14T00:00:00Z') + (SIGNAL_MAX_AGE_DAYS - 1) * 86_400_000)
-  assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), null, 'a day inside the year')
-  // only the clock moves: the same draft, the same lead
-  t.mock.timers.setTime(Date.parse('2028-11-22T12:00:00Z'))
-  assert.equal(currentnessHeld(db, 'T', id), true)
-  assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), 'lead_currentness_unconfirmed')
+  // a real sender and a connected mailbox, so nothing but the lead's own state can refuse this message
+  saveSettings(db, 'T', { sender_name: 'Pat Smith', postal_address: '1 King St W, Toronto ON M5H 1A1, Canada' } as never)
+  const state = new URL(startOAuth(db, 'T', { env, now: Math.floor(NOW / 1000) })).searchParams.get('state')!
+  await completeOAuth(db, 'T', 'code', state, { env, master, now: Math.floor(NOW / 1000), fetchImpl: (async () => json({ refresh_token: 'rt-secret-123', scope: 'openid email https://www.googleapis.com/auth/gmail.send', id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
+  const handed: string[] = []   // every message handed to the mail provider
+  const deps = (ms: number) => ({ env, master, now: Math.floor(ms / 1000), baseUrl: 'https://app.test', fetchImpl: tokenOk, sendFn: async (_token: string, raw: string) => { handed.push(raw); return { id: 'gm1' } } }) as never
+  const stored = () => db.prepare('SELECT status, attempts, claimed_at, sent_at, (approved_hash IS NOT NULL) AS hashed FROM outreach_messages WHERE id = ?').get(mid)
+  const STALE = SIGNAL + YEAR + 1   // one millisecond past the year
+
+  // approve: refused while stale and the draft stays a draft; accepted while fresh
+  t.mock.timers.setTime(STALE)
+  assert.throws(() => approveMessage(db, 'T', mid), { code: 'lead_currentness_unconfirmed' })
+  assert.deepEqual(stored(), { status: 'draft', attempts: 0, claimed_at: null, sent_at: null, hashed: 0 })
+  t.mock.timers.setTime(NOW)
+  approveMessage(db, 'T', mid)
+  assert.deepEqual(stored(), { status: 'approved', attempts: 0, claimed_at: null, sent_at: null, hashed: 1 })
+  // positive control: with every account check included, nothing refuses this message while its signal is fresh. It IS sendable.
+  assert.equal(sendBlockReason(db, 'T', mid, { now: Math.floor(NOW / 1000) }), null)
+
+  // only the clock moves. The same approved message is refused for its age before it is claimed; nothing reaches the provider.
+  t.mock.timers.setTime(STALE)
+  assert.equal(sendBlockReason(db, 'T', mid, { now: Math.floor(STALE / 1000) }), 'lead_currentness_unconfirmed')
+  await assert.rejects(sendMessage(db, 'T', mid, deps(STALE)), { code: 'lead_currentness_unconfirmed' })
+  assert.equal(handed.length, 0, 'nothing was handed to the mail provider')
+  assert.deepEqual(stored(), { status: 'approved', attempts: 0, claimed_at: null, sent_at: null, hashed: 1 })
   assert.equal(leadCardSummary(row(db, id) as never).approve.ok, false, 'the card says the same')
   assert.deepEqual(draft(db, id), { code: 'lead_currentness_unconfirmed' }, 'and no new draft is made')
-  // a message approved while fresh is not sent once stale: refused before it is claimed, left exactly as it was
-  db.prepare("UPDATE outreach_messages SET status = 'approved' WHERE id = ?").run(mid)
-  assert.equal(sendBlockReason(db, 'T', mid, { skipAccount: true }), 'lead_currentness_unconfirmed')
-  await assert.rejects(sendMessage(db, 'T', mid, { fetch: (async () => { throw new Error('nothing may be sent') }) as unknown as typeof fetch } as never), { code: 'lead_currentness_unconfirmed' })
-  assert.deepEqual(db.prepare('SELECT status, attempts, claimed_at, sent_at FROM outreach_messages WHERE id = ?').get(mid), { status: 'approved', attempts: 0, claimed_at: null, sent_at: null })
-  // back inside the year the age hold is gone again: it is the signal's age and nothing else. (This message was marked approved by
-  // hand, so the next check, the approval hash, still refuses it; it is never sendable in this test.)
+
+  // back inside the year the very same message goes out, once: the hold was the signal's age and nothing else
   t.mock.timers.setTime(NOW)
-  assert.equal(currentnessHeld(db, 'T', id), false)
-  assert.equal(sendBlockReason(db, 'T', mid, { skipAccount: true }), 'changed_since_approval')
+  assert.equal(await sendMessage(db, 'T', mid, deps(NOW)), 'sent')
+  assert.equal(handed.length, 1, 'handed to the provider exactly once')
+  assert.equal((stored() as { status: string }).status, 'sent')
 })
 
-test('#1578 the age rule is the discovery lane\'s only: an undated discovery lead is still held, and a lead of the older engine reads as it did at any age', t => {
+test('#1571 (review of #1578) the limit is one year exactly: 365 days old is in, one millisecond more is out, for the card, the approve check and a new draft alike', t => {
+  assert.equal(SIGNAL_MAX_AGE_DAYS, 365)
+  t.mock.timers.enable({ apis: ['Date'], now: SIGNAL + YEAR })   // exactly 365 days after the signal's day
+  const { db, id } = fixture(); email(db, id, 'dana@northwind-dental.example', 1)
+  assert.equal(currentnessHeld(db, 'T', id), false, 'exactly a year old: in')
+  assert.equal(approve(db, id), 'ok')
+  const mid = createDraft(db, 'T', id, 'Fit-out Co', { manual: true })
+  assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), null)
+  t.mock.timers.setTime(SIGNAL + YEAR + 1)
+  assert.equal(currentnessHeld(db, 'T', id), true, 'one millisecond past a year: out')
+  assert.match(approve(db, id), /more than a year old/)
+  assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), 'lead_currentness_unconfirmed')
+  const next = fixture(); email(next.db, next.id, 'dana@northwind-dental.example', 1)
+  assert.deepEqual(draft(next.db, next.id), { code: 'lead_currentness_unconfirmed' })
+  // and well inside it
+  t.mock.timers.setTime(SIGNAL + YEAR - DAY)
+  assert.equal(currentnessHeld(db, 'T', id), false)
+})
+
+test('#1571 (review of #1578) the age rule is the discovery lane\'s only: an undated discovery lead is still held, and a lead of the older engine reads as it did at any age', t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   const undated = fixture({ date: null })
   assert.equal(currentnessHeld(undated.db, 'T', undated.id), true)
@@ -155,4 +198,75 @@ test('#1578 the age rule is the discovery lane\'s only: an undated discovery lea
   t.mock.timers.setTime(Date.parse('2028-11-22T12:00:00Z'))
   assert.equal(currentnessHeld(old.db, 'T', old.id), false)
   assert.equal(typeof before, 'boolean')
+})
+
+// Review of cc3c3c87, the readers the first change missed.
+test('#1571 (review of #1578) an address a crawl stored on a discovery lead is never the line beside Approve: the card shows the address the draft goes to', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  const crawled = (db: Database.Database, id: string, value: string) => addEnrichment(db, 'T', id, { connector: 'sitecrawl', kind: 'email', value, label: null, confidence: null, source_url: SITE, source_date: '2026-11-22', retrieved_at: 1 })
+  // the run's own published address, and an address a later crawl (Find contact) stored on the same lead
+  const { db, id } = fixture()
+  email(db, id, 'bob@northwind-dental.example', 5); crawled(db, id, 'alice@northwind-dental.example')
+  const card = leadCardSummary(row(db, id) as never)
+  assert.match(card.contact ?? '', /bob@northwind-dental\.example/)
+  assert.doesNotMatch(card.contact ?? '', /alice@/)
+  assert.equal(card.contactNoPerson, 'bob@northwind-dental.example')
+  assert.deepEqual(card.approve, { ok: true })
+  assert.deepEqual(draft(db, id), { to: 'bob@northwind-dental.example' })
+  // only the crawled address, also copied into the lead's own contact field: nothing to draft to, so no address on the line
+  const c = fixture()
+  crawled(c.db, c.id, 'alice@northwind-dental.example'); c.db.prepare("UPDATE leads SET contact = 'alice@northwind-dental.example' WHERE id = ?").run(c.id)
+  const only = leadCardSummary(row(c.db, c.id) as never)
+  assert.doesNotMatch(only.contact ?? '', /@/)
+  assert.equal(only.contactNoPerson, null)
+  assert.match(approve(c.db, c.id), /No email address is published/)
+  assert.deepEqual(draft(c.db, c.id), { code: 'no_email_contact' })
+  // a lead of the older engine keeps its own contact on the line, as before
+  const old = fixture({ kind: 'news' })
+  old.db.prepare("UPDATE leads SET contact = '+1 416 555 0100' WHERE id = ?").run(old.id)
+  assert.equal(leadCardSummary(row(old.db, old.id) as never).contactNoPerson, '+1 416 555 0100')
+})
+
+test('#1571 (review of #1578) the Sources link for Email is the page of the chosen address, and a nearly-valid first address is not passed over', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  const TEAM = 'https://northwind-dental.example/team'
+  const { db, id } = fixture()
+  email(db, id, 'alice@northwind-dental.example', 99, { source: TEAM }); email(db, id, 'bob@northwind-dental.example', 1)
+  const r = row(db, id)
+  assert.deepEqual(discoverContact(r as never)?.email, { address: 'bob@northwind-dental.example', source: SITE })
+  assert.equal(discoverSources(r as never).find(s => s.field === 'email')?.url, SITE, 'the page that prints the address shown, not the first row\'s page')
+  // an earlier row the server reads as an address and the card does not, on the do-not-contact list, with a clean address after it:
+  // the lead is held; neither the card nor the draft moves on to the clean one
+  const m = fixture()
+  email(m.db, m.id, 'bob@-northwind-dental.example', 1); email(m.db, m.id, 'alice@northwind-dental.example', 2)
+  suppress(m.db, 'T', 'bob@-northwind-dental.example', 'manual')
+  assert.equal(shown(m.db, m.id), null, 'no address is shown rather than the next one')
+  assert.equal(discoverSources(row(m.db, m.id) as never).some(s => s.field === 'email'), false)
+  assert.notEqual(approve(m.db, m.id), 'ok')
+  assert.ok('code' in draft(m.db, m.id), 'the server refuses it')
+  assert.equal(drafts(m.db), 0, 'nothing is drafted to the other address')
+})
+
+test('#1571 (review of #1578) Campaigns does not offer a source review for a discovery lead held by its signal\'s date', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  const { db, id } = fixture(); email(db, id, 'dana@northwind-dental.example', 1)
+  db.prepare("UPDATE scan_jobs SET candidates = 1, dropped = 0 WHERE id = 'j1'").run()
+  const at = async (ms: number) => { t.mock.timers.setTime(ms); return (await listCampaignsNow(db, 'T', 10, new Date(ms)))[0] as unknown as { qualification: { held: number; heldResearch?: number }; next: { label: string } } }
+  const fresh = await at(NOW)
+  assert.equal(fresh.qualification.held, 0, 'a fresh lead is not held')
+  const stale = await at(SIGNAL + YEAR + DAY)
+  assert.equal(currentnessHeld(db, 'T', id), true)
+  assert.equal(stale.qualification.held, 1)
+  assert.equal(stale.qualification.held - (stale.qualification.heldResearch ?? 0), 0, 'none of it is offered for a timing review')
+  assert.doesNotMatch(stale.next.label, /Review the source/)
+})
+
+test('#1571 (review of #1578) a stored signal date that does not read as a day is no date: held by the gate, the card and a new draft', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  for (const d of ['2026-13-45', 'soon', '20261014']) {
+    const { db, id } = fixture({ date: d }); email(db, id, 'dana@northwind-dental.example', 1)
+    assert.equal(currentnessHeld(db, 'T', id), true, d)
+    assert.match(approve(db, id), /no date/, d)
+    assert.deepEqual(draft(db, id), { code: 'lead_currentness_unconfirmed' }, d)
+  }
 })

@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { sequenceAnalytics } from './sequences.ts'
 import { evidenceStateOf } from './evidence-state.ts'
-import { currentnessHeld, leadWindowHeld, windowHeld } from './currentness.ts'
+import { currentnessHeld, discoverSignalHeld, leadWindowHeld, windowHeld } from './currentness.ts'
 import { requiredGateHeld, requiredGateHeldForJob } from '../scan/held-state.ts'
 import { sqliteDb, type Db } from '../db/client.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
@@ -149,7 +149,8 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const held = heldIds.size
     // Of those, the ones only a hold no check can lift keeps: the time window, someone else's customer, a different place, a closed
     // opening (also when the user confirmed out of one), a failed required check. Reviewing the source cannot release them (#683).
-    const heldResearchRows = liveRows.filter(r => heldIds.has(r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || requiredGateHeld(db, tenantId, r.id) !== null))
+    // ...and a discovery lead held by its signal's date (none, or more than a year old): no review changes a date (review of #1578).
+    const heldResearchRows = liveRows.filter(r => heldIds.has(r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || requiredGateHeld(db, tenantId, r.id) !== null || discoverSignalHeld(db, tenantId, r.id)))
     const heldResearch = heldResearchRows.length
     // #683 round 3: the sourceChecked-only slice, so a one-line reader can subtract exactly the leads it is about to
     // stop calling sourceChecked, never a held-research lead that was confirmedByYou all along.
