@@ -158,7 +158,10 @@ try {
   await step('connect-gmail', async () => {
     await page.getByRole('link', { name: 'Connect Gmail in Settings' }).click()
     await page.waitForURL(/\/app\/settings#gmail/, T)
-    await page.getByRole('link', { name: 'Connect Gmail', exact: true }).click() // simulated Google grant
+    await page.getByRole('link', { name: 'Connect Gmail', exact: true }).click()
+    // #1603: first the page that explains Google's unverified-app warning; its button goes on to Google
+    await page.waitForURL(/\/app\/connect-gmail$/, T)
+    await page.getByTestId('gmail-explainer-continue').click() // simulated Google grant
     await page.waitForURL(/\/app\/settings\?gmail=connected/, T)
     await page.getByText('Gmail connected.').waitFor(T)
     assert.ok(await page.getByText('Gmail connected.').isVisible() && await page.locator('#gmail').evaluate(e => e.getBoundingClientRect().top < window.innerHeight), 'the confirmation is on screen, not below the fold')

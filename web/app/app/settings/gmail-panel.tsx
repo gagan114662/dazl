@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
+import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 
 interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number }
 
@@ -63,7 +64,7 @@ export default function GmailPanel() {
           <div className="flex items-center justify-between">
             <span>{s.gmail.email} {s.gmail.status === 'active' ? '(connected)' : '(needs reconnecting)'}</span>
             <span className="flex gap-3">
-              {s.gmail.status !== 'active' && <a href="/api/gmail/connect" className="underline text-[#111]">Reconnect</a>}
+              {s.gmail.status !== 'active' && <a href={GMAIL_EXPLAINER_PATH} className="underline text-[#111]">Reconnect</a>}
               <button onClick={disconnect} className="underline text-[#111]">Disconnect</button>
             </span>
           </div>
@@ -73,7 +74,7 @@ export default function GmailPanel() {
         </div>
       ) : (
         <div className="mb-4">
-          <a href="/api/gmail/connect" className="inline-block btn-primary px-5 py-2 text-sm">Connect Gmail</a>
+          <a href={GMAIL_EXPLAINER_PATH} className="inline-block btn-primary px-5 py-2 text-sm">Connect Gmail</a>
           <p className="text-[#666] text-xs mt-2">Google will ask for permission to send email as you. dazl does not ask to read your mailbox.</p>
         </div>
       )}

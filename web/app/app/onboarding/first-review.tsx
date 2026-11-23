@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import SenderInline from '../sender-inline'
@@ -105,7 +106,7 @@ export default function FirstReview({ jobId }: { jobId: string }) {
           <div data-testid="setup-gmail">
             <div className="font-semibold text-sm">{gmailOn ? '✓ Gmail connected' : 'Connect Gmail'}</div>
             {gmailOn ? <p className="text-sm text-[var(--ink-2)]">Sending from {settings?.gmail?.email}</p> : <>
-              <a href="/api/gmail/connect" className="btn-ghost btn-sm mt-2 inline-flex" data-testid="connect-gmail">Connect Gmail</a>
+              <a href={GMAIL_EXPLAINER_PATH} className="btn-ghost btn-sm mt-2 inline-flex" data-testid="connect-gmail">Connect Gmail</a>
               <p className="text-xs text-[var(--ink-3)] mt-1">Google asks only for permission to send email as you; dazl does not ask to read your mailbox. Google brings you back to Settings; your drafts wait in Outreach.</p>
             </>}
           </div>
