@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { connection } from 'next/server'
-import { GMAIL_CONNECT_START, GOOGLE_PERMISSIONS_URL, gmailExplainer } from '@/lib/auth-google-explainer'
+import { GMAIL_CONNECT_START, gmailExplainer } from '@/lib/auth-google-explainer'
 
 export const metadata = { title: 'Connect Gmail' }
 
@@ -19,7 +19,6 @@ export default async function ConnectGmailPage() {
       )}
       <div className="card p-5 mb-5">
         <ul className="list-disc pl-5 space-y-1 text-[#333]">{x.asks.map((s, i) => <li key={i}>{s}</li>)}</ul>
-        <a className="underline underline-offset-2 inline-flex items-center min-h-[44px]" href={GOOGLE_PERMISSIONS_URL} target="_blank" rel="noreferrer">Open Google account permissions</a>
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <a className="btn-primary inline-block" href={GMAIL_CONNECT_START} data-testid="gmail-explainer-continue">{x.cta}</a>

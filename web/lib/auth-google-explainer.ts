@@ -6,7 +6,6 @@
 // When Google has verified the app, set DAZL_GOOGLE_APP_VERIFIED=1: the warning steps go and only the permission stays.
 export const GMAIL_EXPLAINER_PATH = '/app/connect-gmail'
 export const GMAIL_CONNECT_START = '/api/gmail/connect'
-export const GOOGLE_PERMISSIONS_URL = 'https://myaccount.google.com/permissions'
 
 export const googleAppVerified = (env: Record<string, string | undefined> = process.env) => ['1', 'on', 'true', 'yes'].includes((env.DAZL_GOOGLE_APP_VERIFIED ?? '').trim().toLowerCase())
 
