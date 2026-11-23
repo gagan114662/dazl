@@ -199,6 +199,9 @@ body { font-size: 16px; line-height: 1.5; }
 .lp-avatar { width: 2.25rem; height: 2.25rem; border-radius: 999px; background: var(--soft); display: inline-flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 700; flex-shrink: 0; }
 .lp-fade { opacity: .25; transform: translateY(4px); transition: opacity .45s, transform .45s; }
 .lp-fade.lp-in { opacity: 1; transform: none; }
+/* #1644: at phone width the demo is taller than the screen, so a visitor scrolls onto the leads while the loop is still on an
+   earlier step and finds them washed out. There the results are always at full strength; the typing and the checks still play. */
+@media (max-width: 639px) { .lp-fade { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .lp-fade, .lp-tick { transition: none; } .lp-caret, .lp-tick-now { animation: none; } }
 
 /* Home's setup checklist (app/app/ready-card.tsx): one step per row. */
