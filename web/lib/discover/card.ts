@@ -11,7 +11,7 @@ export function discoverConfidence(l: Pick<DiscoverCardLead, 'confidence'>): 'hi
 }
 export function discoverMissing(l: DiscoverCardLead): string[] {
   const missing: string[] = []
-  if (!l.event_date) missing.push('a date for the signal')
+  if (signalDay(l.event_date) === null) missing.push('a date for the signal')   // the same reading Approve uses: a value that is not a day is no date
   else if (l.date_status !== 'verified') missing.push(l.timing_note ? 'a date printed on the page (the date shown is when the page was published)' : 'the date confirmed on the page')
   if (!l.name.trim() && !(l.enrichments ?? []).some(e => e.kind === 'person')) missing.push('a named person')
   if (!l.company_domain) missing.push('the company website')
@@ -87,15 +87,23 @@ export function emailOnCompanySite(email: string, sourceUrl: string | null | und
 }
 // A signal older than this is history, not a reason to write now: the lead keeps its card and its proof, and Approve stays off.
 export const SIGNAL_MAX_AGE_DAYS = 365
+// The day a stored signal date names (its first ten characters, YYYY-MM-DD), as a time, or null when that is not a real calendar day:
+// "soon", "2026", "2026-10" and "2026-02-30" are not days.
+export const signalDay = (eventDate: string | null | undefined): number | null => {
+  const d = (eventDate ?? '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null
+  const t = Date.parse(`${d}T00:00:00Z`)
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === d ? t : null
+}
 export const signalStale = (eventDate: string | null | undefined, now: Date = new Date()): boolean => {
-  const t = Date.parse(`${(eventDate ?? '').slice(0, 10)}T00:00:00Z`)
-  return Number.isFinite(t) && now.getTime() - t > SIGNAL_MAX_AGE_DAYS * 86_400_000
+  const t = signalDay(eventDate)
+  return t !== null && now.getTime() - t > SIGNAL_MAX_AGE_DAYS * 86_400_000
 }
 // Why a discovery lead's signal cannot carry outreach right now, or null: the ONE timing rule of the card, of draft creation and of the
 // shared gate approve and send re-read (lib/outreach/currentness.ts). 'undated': no date, or a stored value that does not read as a
 // day (it was "has a date" to the gate before; review of #1578). 'stale': more than a year old. Exactly a year old is still in.
 export const signalHeld = (eventDate: string | null | undefined, now: Date = new Date()): 'undated' | 'stale' | null => {
-  if (!eventDate || !Number.isFinite(Date.parse(`${eventDate.slice(0, 10)}T00:00:00Z`))) return 'undated'
+  if (signalDay(eventDate) === null) return 'undated'
   return signalStale(eventDate, now) ? 'stale' : null
 }
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.

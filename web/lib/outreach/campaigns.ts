@@ -33,7 +33,7 @@ export interface Campaign {
   // any other bucket: one the other checks would still call reviewable, passed or unverified is counted as research; one they already call
   // research or heldResearch (its window, an uncheckable cause) keeps that verdict. No check a person can do releases them, so they are
   // never "needs your review", and the next step names them all (live check on prod 23c6533: "2 research-only leads" beside 3 held).
-  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number }
+  qualification: { sourceChecked: number; confirmedByYou: number; needsReview: number; research: number; unverified: number; held: number; heldResearch: number; heldResearchSourceChecked: number; rejected: number; heldByChecks?: number; heldDateOnly?: number }
   // withContact: any live lead with a stored contact. readyWithContact: of those, the qualified ones (source-checked
   // or confirmed by you) whose timing is not held. draftable: leads every draft gate accepts right now, not yet drafted.
   contact: { withContact: number; readyWithContact: number; draftable: number }
@@ -149,9 +149,12 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const held = heldIds.size
     // Of those, the ones only a hold no check can lift keeps: the time window, someone else's customer, a different place, a closed
     // opening (also when the user confirmed out of one), a failed required check. Reviewing the source cannot release them (#683).
-    // ...and a discovery lead held by its signal's date (none, or more than a year old): no review changes a date (review of #1578).
-    const heldResearchRows = liveRows.filter(r => heldIds.has(r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || requiredGateHeld(db, tenantId, r.id) !== null || discoverSignalHeld(db, tenantId, r.id)))
+    const heldResearchRows = liveRows.filter(r => heldIds.has(r.id) && (leadWindowHeld(db, tenantId, r.id) || !!uncheckableCause(r.review_reason) || !!uncheckableCause(r.human_confirmed_from) || requiredGateHeld(db, tenantId, r.id) !== null))
     const heldResearch = heldResearchRows.length
+    // A discovery lead held ONLY by its signal's date (none, or more than a year old). No source review changes a date, so nextAction
+    // does not offer one for it. It is deliberately not moved to research here: the Leads history card and the campaign page count it
+    // as they did, and this card must agree with them (second review of #1578).
+    const heldDateOnly = liveRows.filter(r => heldIds.has(r.id) && !heldResearchRows.includes(r) && discoverSignalHeld(db, tenantId, r.id)).length
     // #683 round 3: the sourceChecked-only slice, so a one-line reader can subtract exactly the leads it is about to
     // stop calling sourceChecked, never a held-research lead that was confirmedByYou all along.
     const heldResearchSourceChecked = heldResearchRows.filter(r => evidenceStateOf(r) === 'machine').length
@@ -183,7 +186,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
-      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected, heldByChecks },
+      qualification: { sourceChecked, confirmedByYou, needsReview, research, unverified, held, heldResearch, heldResearchSourceChecked, rejected, heldByChecks, ...(heldDateOnly ? { heldDateOnly } : {}) },   // present only when there is one: every other reader sees the object it always did
       contact: { withContact, readyWithContact, draftable: undrafted },
       outreach: { drafts, approved, sent, draftsReady: d.ready, draftsSetup: d.setup, draftsHeld: d.held, approvedReady: a.ready, approvedSetup: a.setup, approvedHeld: a.held },
       sequence: { active: seq("'approved','active'"), stopped: seq("'replied','done','stopped'") },
@@ -215,7 +218,7 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
   // Only held leads a timing review can release are offered for review; the rest are research (#683).
-  const heldReviewable = c.qualification.held - (c.qualification.heldResearch ?? 0)
+  const heldReviewable = c.qualification.held - (c.qualification.heldResearch ?? 0) - (c.qualification.heldDateOnly ?? 0)
   if (heldReviewable > 0) return { label: `Review the source of ${plural(heldReviewable, 'lead', 'leads')} to confirm timing`, href: leadsHref }
   const heldEmails = c.outreach.draftsHeld + c.outreach.approvedHeld
   if (heldEmails > 0) return { label: `${plural(heldEmails, 'email is', 'emails are')} held: open Outreach to see why`, href: '/app/outreach' }

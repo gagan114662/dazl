@@ -8,15 +8,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { readFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
-import { discoverContact, discoverRecipient, discoverSources, SIGNAL_MAX_AGE_DAYS } from '../lib/discover/card.ts'
+import { discoverContact, discoverLine, discoverRecipient, discoverSources, SIGNAL_MAX_AGE_DAYS } from '../lib/discover/card.ts'
 import { approve as approveMessage, approveBlockReason, createDraft, discoverRecipientRefusal, OutreachError, saveSettings, sendBlockReason, sendMessage, suppress } from '../lib/outreach/service.ts'
 import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
-import { listCampaignsNow } from '../lib/outreach/campaigns.ts'
-import { currentnessHeld } from '../lib/outreach/currentness.ts'
-import { leadCardSummary } from '../lib/scan/lead-card.ts'
+import { historyCampaigns, listCampaignsNow } from '../lib/outreach/campaigns.ts'
+import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
+import { leadStatus } from '../lib/outreach/campaign-view.ts'
+import { publishedContact, publishedEmail } from '../lib/outreach/published-email.ts'
+import { domainReviewFor } from '../lib/outreach/domain-review.ts'
+import { findContactForConfirmedLead } from '../lib/scan/find-contact.ts'
+import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
+import { setDomainReview } from '../lib/scan/domain-review-action.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import type { Get } from '../lib/connectors/sitecrawl.ts'
+import { currentnessHeld, discoverSignalHeld } from '../lib/outreach/currentness.ts'
+import { detailsContact, leadCardSummary } from '../lib/scan/lead-card.ts'
 
 const SITE = 'https://northwind-dental.example/contact'
 function fixture(o: { date?: string | null; kind?: string } = {}) {
@@ -247,18 +257,33 @@ test('#1571 (review of #1578) the Sources link for Email is the page of the chos
   assert.equal(drafts(m.db), 0, 'nothing is drafted to the other address')
 })
 
-test('#1571 (review of #1578) Campaigns does not offer a source review for a discovery lead held by its signal\'s date', async t => {
+test('#1571 (review of #1578) Campaigns offers no source review for a discovery lead held by its signal\'s date, and counts it exactly as Leads history and the campaign page do', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
-  const { db, id } = fixture(); email(db, id, 'dana@northwind-dental.example', 1)
-  db.prepare("UPDATE scan_jobs SET candidates = 1, dropped = 0 WHERE id = 'j1'").run()
-  const at = async (ms: number) => { t.mock.timers.setTime(ms); return (await listCampaignsNow(db, 'T', 10, new Date(ms)))[0] as unknown as { qualification: { held: number; heldResearch?: number }; next: { label: string } } }
-  const fresh = await at(NOW)
-  assert.equal(fresh.qualification.held, 0, 'a fresh lead is not held')
-  const stale = await at(SIGNAL + YEAR + DAY)
-  assert.equal(currentnessHeld(db, 'T', id), true)
-  assert.equal(stale.qualification.held, 1)
-  assert.equal(stale.qualification.held - (stale.qualification.heldResearch ?? 0), 0, 'none of it is offered for a timing review')
-  assert.doesNotMatch(stale.next.label, /Review the source/)
+  type Q = { sourceChecked: number; research: number; held: number; heldResearch: number; heldDateOnly?: number }
+  for (const [label, date, ms] of [['stale', '2026-10-14', SIGNAL + YEAR + DAY], ['undated', null, NOW], ['fresh', '2026-10-14', NOW]] as [string, string | null, number][]) {
+    const { db, id } = fixture({ date }); email(db, id, 'dana@northwind-dental.example', 1)
+    db.prepare("UPDATE scan_jobs SET candidates = 1, dropped = 0 WHERE id = 'j1'").run()
+    t.mock.timers.setTime(ms)
+    const card = (await listCampaignsNow(db, 'T', 10, new Date(ms)))[0] as unknown as { qualification: Q; next: { label: string } }
+    const hist = (await historyCampaigns(db, sqliteDb(db), 'T', ['j1'], new Date(ms)))[0] as unknown as { qualification: Q }
+    const page = await campaignDetail(sqliteDb(db), 'T', 'j1')
+    assert.ok(hist && page, `${label}: the history card and the campaign page read this search`)
+    const held = label !== 'fresh'
+    assert.equal(currentnessHeld(db, 'T', id), held, label)
+    assert.deepEqual([card.qualification.held, card.qualification.heldResearch, card.qualification.heldDateOnly ?? 0], held ? [1, 0, 1] : [0, 0, 0], label)
+    assert.equal('heldDateOnly' in card.qualification, held, `${label}: the field is there only when a lead is held this way`)
+    assert.doesNotMatch(card.next.label, /Review the source/, `${label}: no review is offered that cannot release the lead`)
+    // the three surfaces say the same thing about this lead: source-checked, not research
+    assert.deepEqual([card.qualification.sourceChecked, card.qualification.research], [1, 0], label)
+    assert.deepEqual([hist.qualification.sourceChecked, hist.qualification.research], [card.qualification.sourceChecked, card.qualification.research], `${label}: Campaigns card and Leads history card`)
+    assert.equal(leadStatus(page.leads[0] as never, page.messages as never).text, 'Source-checked, not drafted', `${label}: campaign page`)
+    // the helper reads only this workspace's leads
+    assert.equal(discoverSignalHeld(db, 'T', id, new Date(ms)), held, label)
+    assert.equal(discoverSignalHeld(db, 'OTHER', id, new Date(ms)), false, `${label}: another workspace`)
+  }
+  // a lead of the older engine with the same old date is never a "date only" hold
+  const old = fixture({ date: '2022-05-11', kind: 'news' })
+  assert.equal(discoverSignalHeld(old.db, 'T', old.id), false)
 })
 
 test('#1571 (review of #1578) a stored signal date that does not read as a day is no date: held by the gate, the card and a new draft', t => {
@@ -269,4 +294,75 @@ test('#1571 (review of #1578) a stored signal date that does not read as a day i
     assert.match(approve(db, id), /no date/, d)
     assert.deepEqual(draft(db, id), { code: 'lead_currentness_unconfirmed' }, d)
   }
+})
+
+// Second review (a59c6b38): the card line was right, but Details and the card's route and status lines still read the older engine's
+// address on the same lead. The state below is reached with the product's own steps: the lead is in review, the user confirms it, runs
+// "Find contact" (canned pages, no network), then checks the website.
+const html = (b: string) => `<html><body>${b}</body></html>`
+const PAGES: Record<string, string> = {
+  'news.example/northwind': html('Northwind Dental will open its second clinic. <a href="https://northwind-dental.example">Northwind Dental</a>'),
+  'news.example/robots.txt': '', 'northwind-dental.example/robots.txt': '',
+  'northwind-dental.example/': html('Northwind Dental home <a href="/contact-us">Contact us</a>'),
+  'northwind-dental.example/contact-us': html('Northwind Dental. Email: hello@northwind-dental.example'),
+}
+const cannedGet: Get = async url => { const u = new URL(url); const p = PAGES[`${u.hostname.replace(/^www\./, '')}${u.pathname}`]; return p === undefined ? { status: 404, body: '', finalUrl: url } : { status: 200, body: p, finalUrl: url } }
+
+test('#1571 (review of #1578) after a real "Find contact" on a discovery lead, nothing beside its draft action names the crawled address: Details, route and status follow the published one', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  const { db, id } = fixture(); email(db, id, 'bob@northwind-dental.example', Math.floor(NOW / 1000) - 3600)
+  db.prepare("UPDATE scan_jobs SET attempts = 1, candidates = 1, dropped = 0 WHERE id = 'j1'").run()
+  db.prepare("UPDATE leads SET review_reason = 'source_review_required' WHERE id = ?").run(id)
+  assert.equal(await confirmLeadReview(sqliteDb(db), 'T', id, Math.floor(NOW / 1000)), true)
+  const found = await findContactForConfirmedLead(db, 'T', id, { get: cannedGet, gapMs: 0, env: {} }) as { status: string; contacts: number }
+  assert.deepEqual([found.status, found.contacts], ['done', 1], 'the crawl stored one address')
+  const before = row(db, id)
+  const rv = domainReviewFor(before as never, before.enrichments as never)
+  if (rv.state === 'required') setDomainReview(db, 'T', id, 'confirm', rv.binding ?? undefined, NOW)
+  const r = row(db, id)
+  const older = publishedContact(r as never)
+  assert.equal(older?.email, 'hello@northwind-dental.example', 'the state is the reviewed one: the older projection now reads the crawled address')
+  // the card
+  const card = leadCardSummary(r as never)
+  assert.match(card.contact ?? '', /bob@northwind-dental\.example/)
+  assert.deepEqual(card.approve, { ok: true })
+  assert.equal(card.route, null, 'no route lines about another address beside Approve')
+  assert.doesNotMatch(card.contactStatus?.text ?? '', /hello@|shared company inbox|Restricted inbox/)
+  // Details
+  assert.deepEqual(detailsContact(r as never), { contact: null, draftTo: null, alsoCrawled: 'hello@northwind-dental.example' }, 'no second contact and no second draft button; the crawled address is said as what it is')
+  // and the draft a person asks for goes where the card says
+  assert.deepEqual(draft(db, id), { to: 'bob@northwind-dental.example' })
+
+  // a crawled restricted inbox on a discovery lead whose published address is fine: the card does not call its contact restricted
+  const p = fixture(); email(p.db, p.id, 'bob@northwind-dental.example', 5)
+  addEnrichment(p.db, 'T', p.id, { connector: 'sitecrawl', kind: 'email', value: 'privacy@northwind-dental.example', label: null, confidence: null, source_url: SITE, source_date: '2026-11-22', retrieved_at: 1 })
+  const pr = row(p.db, p.id), pcard = leadCardSummary(pr as never)
+  assert.doesNotMatch(pcard.contactStatus?.text ?? '', /Restricted inbox/)
+  assert.deepEqual([pcard.approve, detailsContact(pr as never).draftTo, detailsContact(pr as never).alsoCrawled], [{ ok: true }, null, 'privacy@northwind-dental.example'])
+
+  // a lead of the older engine: Details is the older projection exactly, as before
+  const o = fixture({ kind: 'news' })
+  addEnrichment(o.db, 'T', o.id, { connector: 'sitecrawl', kind: 'email', value: 'alice@northwind-dental.example', label: null, confidence: null, source_url: SITE, source_date: '2026-11-22', retrieved_at: 1 })
+  const or = row(o.db, o.id)
+  assert.deepEqual(detailsContact(or as never), { contact: publishedContact(or as never), draftTo: publishedEmail(or as never), alsoCrawled: null })
+  assert.equal(detailsContact(or as never).contact?.email, 'alice@northwind-dental.example')
+
+  // the Leads page reads Details' contact and its draft button from that one function
+  const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.match(src, /const dc = detailsContact\(l\), pc = dc\.contact, draftTo = dc\.draftTo/)
+  assert.equal(/publishedEmail\(/.test(src), false, 'the page no longer derives a draft target of its own')
+})
+
+test('#1571 (review of #1578) only a real calendar day is a date; the card\'s "Missing" line and Approve agree on it', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  for (const d of ['2026', '2026-10', '2026-02-30', 'soon']) {
+    const { db, id } = fixture({ date: d }); email(db, id, 'dana@northwind-dental.example', 1)
+    assert.equal(currentnessHeld(db, 'T', id), true, d)
+    assert.match(approve(db, id), /no date/, d)
+    assert.match(discoverLine(row(db, id) as never), /Missing: .*a date for the signal/, `${d}: the card does not say a dated signal was found`)
+  }
+  // a stored day with a time after it is still that day
+  const timed = fixture({ date: '2026-10-14 09:00' }); email(timed.db, timed.id, 'dana@northwind-dental.example', 1)
+  assert.equal(currentnessHeld(timed.db, 'T', timed.id), false)
+  assert.equal(approve(timed.db, timed.id), 'ok')
 })

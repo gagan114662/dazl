@@ -5,7 +5,7 @@
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
 import { discoverApprove, discoverContact, isDiscoverLead } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
-import { classifyPurpose, publishedContact, publishedEmail } from '../outreach/published-email.ts'
+import { classifyPurpose, pickCrawledEmail, publishedContact, publishedEmail, type PublishedContact, type PublishedEmailLead } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
 import { evidenceStateOf } from '../outreach/evidence-state.ts'
 import { contactRoute, deliverabilityBlocked, type ContactRoute } from '../outreach/contact-route.ts'
@@ -103,8 +103,10 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
   const titlesRuledOut = card.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m))
   const contactStatus = contact ? statusOf(l, !!card.who, titlesRuledOut) : null
   const person = card.who ? { name: card.who.name, title: card.who.title, roleRelevant: buyerRoles.trim() && card.who.title ? titleMatches(card.who.title, buyerRoles).length > 0 : null } : null
-  const r = contactRoute(l, person)
-  const route = r.channel === 'none' ? null : r
+  // Second review of #1578: the route lines describe the older engine's address (the cited contact, or one a crawl stored). On a
+  // discovery lead that is not the address a draft goes to, so they are not shown beside its Approve.
+  const r = discovery ? null : contactRoute(l, person)
+  const route = !r || r.channel === 'none' ? null : r
   let sourceHost = l.source_url
   try { sourceHost = new URL(l.source_url).hostname.replace(/^www\./, '') } catch { /* keep the raw value */ }
   return {
@@ -128,7 +130,8 @@ function statusOf(l: CardLead, personShown: boolean, titlesRuledOut: boolean): {
   if (l.quarantined_at) return { confirmed: false, text: 'Quarantined or rejected: do not contact.' }
   const rows = l.enrichments ?? []
   const notes: string[] = []
-  const pc = publishedContact({ contact: l.contact, source_url: l.source_url, evidence_excerpt: l.evidence_excerpt, enrichments: rows })
+  // (a discovery lead: the older engine's address is not its recipient, so its inbox purpose says nothing about this card's contact)
+  const pc = isDiscoverLead(l as { source_kind?: string | null }) ? null : publishedContact({ contact: l.contact, source_url: l.source_url, evidence_excerpt: l.evidence_excerpt, enrichments: rows })
   if (pc?.purpose === 'non-sales') notes.push(`Restricted inbox (${pc.purposeHint ?? 'not for sales'}): not a sales contact.`)
   const id = contactIdentity(l)
   const established = id.state === 'cited' || id.state === 'fact' || id.state === 'user_confirmed'
@@ -136,4 +139,13 @@ function statusOf(l: CardLead, personShown: boolean, titlesRuledOut: boolean): {
   if (personShown) { /* PM #1540: the person is shown plainly - no hedge copy */ } else if (rows.some(r => r.kind === 'contact' || r.kind === 'person')) notes.push(titlesRuledOut ? 'Listed people have past, negated or assistant titles; no current buyer named.' : 'No buyer named on the company\'s own site.')
   const confirmed = established && pc?.purpose !== 'non-sales'
   return { confirmed, text: confirmed ? [`Confirmed: ${id.text}.`, ...notes].join(' ') : notes.join(' ') }
+}
+
+// What a lead's Details shows as its contact, and whether Details offers its own "Draft email" (second review of #1578).
+// Other leads: the older engine's projection, as before. A discovery lead: neither. Its one draft action is Approve on the card, and that
+// writes to the address its own run published (lib/discover/card.ts discoverRecipient); showing the cited contact or a crawled address
+// here beside a draft button named an address the draft would not use. An address a crawl stored is still said, as what it is.
+export function detailsContact(l: PublishedEmailLead & { source_kind?: string | null }): { contact: PublishedContact | null; draftTo: string | null; alsoCrawled: string | null } {
+  if (!isDiscoverLead(l)) return { contact: publishedContact(l), draftTo: publishedEmail(l), alsoCrawled: null }
+  return { contact: null, draftTo: null, alsoCrawled: pickCrawledEmail(l.enrichments)?.value.trim().toLowerCase() || null }
 }

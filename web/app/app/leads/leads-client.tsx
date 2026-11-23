@@ -23,13 +23,13 @@ import { NAME_ONLY_REASON } from '@/lib/people/company-tie'
 import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { ResearchRationale } from './research-rationale'
 import { OpportunityCardView } from './opportunity-card'
-import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
+import { cardCounts, detailsContact, leadCardSummary } from '@/lib/scan/lead-card'
 import { reviewAction } from '@/lib/scan/review-action'
 import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
-import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
+import { publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainUnresolvedText } from '@/lib/connectors/domain-unresolved'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -1514,11 +1514,13 @@ export default function LeadsClient() {
             <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             <DiscoveredVia l={l} />
             {(() => {
-              const pc = publishedContact(l)
-              const draftTo = publishedEmail(l)
+              // Second review of #1578: what Details shows as the contact and whether it offers its own draft button come from one place
+              // (lib/scan/lead-card.ts detailsContact). On a discovery lead neither is the older engine's address; `site` keeps that
+              // address only for the website check below, which still holds a draft at the server.
+              const dc = detailsContact(l), pc = dc.contact, draftTo = dc.draftTo, site = publishedContact(l)
               return <>
                 {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
-                {pc && (() => { const rv = domainReviewFor(l, l.enrichments)
+                {site && (() => { const pc = site; const rv = domainReviewFor(l, l.enrichments)
                   // A contact email that is also the address the crawl recorded is reviewed like a crawled address: equality does not show a cited-page origin.
                   const lc = pc.source === 'lead' && rv.state !== 'not_required'
                   if (pc.source !== 'sitecrawl' && !lc) return null
@@ -1534,7 +1536,8 @@ export default function LeadsClient() {
                   </span> })()}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
                 {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
-                {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && (
+                {dc.alsoCrawled && <span className="text-gray-500 text-xs ml-3 block mt-1" data-testid="also-crawled">A website crawl also found {dc.alsoCrawled}. Drafts for this lead go only to the address its own proof run published.</span>}
+                {!pc && !dc.alsoCrawled && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && (
                   <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
                 )}
                 {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
