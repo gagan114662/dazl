@@ -210,3 +210,32 @@ test('#1575 a page stored with HTML entities is read as the text a person sees: 
   const esc = await checkLead(accented, [], page('<p>Caf&eacute; R&iacute;o Group</p><p>&lt;p&gt;will open its second clinic in March&lt;/p&gt; &bogus;</p>'))
   assert.deepEqual([esc.proof, esc.quote_on_page], ['confirmed', true])
 })
+
+// #1575 replay over the 16 discovery leads stored on staging (the four test searches on #1571): 13 failed the rule with their proof in
+// hand, each because the signal line says more than one quoted sentence can: an address, the other investors, the run's own comment.
+// The signal lines and quotes below are the stored ones, word for word; the pages are public.
+test('#1575 the claim is the signal line\'s first statement: stored leads whose quote states it are shown, detail and comment are not asked of the quote', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const stored = (company: string, signal: string, quote: string) => parseLeads(JSON.stringify({ leads: [lead({ company, signal, signal_date: null, evidence_url: 'https://proof.example/page', evidence_quote: quote })] }), 1).leads[0]
+  const cases: [string, string, string][] = [
+    ['LO:TECH', 'Raised $12M Series A led by MMC, with existing investors Faction and 13 Books Capital, plus Atka', 'London-based LO:TECH, a capital markets firm built for round-the-clock and onchain markets, has raised $12 million in a Series A funding round led by MMC'],
+    ['Seva Money', 'Raised $5M seed round co-led by Blockwall and Revent, with Seedcamp, Stride.VC and Ada Ventures also taking part', 'London-based fintech Seva Money raised $5 million in a seed round co-led by Blockwall and Revent'],
+    ['Dental Care Group', 'Opened a second office at 717 Coxwell Avenue, across the street from its existing clinic at 700 Coxwell Ave in Toronto.', 'We\'re thrilled to announce that we\'ve opened a second office – located just across the street!– at 717 Coxwell Avenue'],
+    ['Toronto Smile Centre', 'Joined Passion Dental Group\'s Canadian network through a new partnership. Practices that join a group like this are often renovated or rebranded.', 'Passion Dental Group expanded its Canadian network through two new partnerships: Toronto Smile Centre, Toronto, Ontario, led by Dr. Priyanka Choudhary'],
+  ]
+  for (const [company, signal, quote] of cases) {
+    const l = stored(company, signal, quote)
+    const c = await checkLead(l, [], page(`<article><h1>${company}</h1><p>${quote}, the announcement said.</p></article>`))
+    assert.deepEqual([company, c.proof, c.quote_on_page, c.signal_seen, isShown(c)], [company, 'confirmed', true, true, true])
+  }
+  // controls: detail and comment never stand in for the claim. The routine line is quoted and on the page; the first statement is not in it.
+  const routine = 'Northwind Dental clinic opening hours Monday to Friday'
+  // The last two were stated by this routine text under the whole-line rule, at 0ec2bd93: their detail words matched it.
+  for (const signal of ['Opening a second clinic (Unit 6, 14 Main Street). The site lists its opening hours, Monday to Friday.', 'Opening a second clinic; clinics that open a second site often need a fit-out.', 'Opening a second clinic, Monday to Friday', 'Opening a second clinic; open Monday to Friday']) {
+    const c = await checkLead(stored('Northwind Dental', signal, routine), [], page(`<h1>Northwind Dental</h1><p>${routine}. Call to book.</p>`))
+    assert.deepEqual([signal, c.quote_on_page, c.signal_seen, isShown(c)], [signal, true, false, false])
+  }
+  // a first statement too short to be a claim is extended with what follows, so a place alone is never the claim
+  assert.equal(statesSignal('In Toronto, opening a second clinic', 'Northwind Dental', 'Northwind Dental Toronto'), false)
+  assert.equal(statesSignal('In Toronto, opening a second clinic', 'Northwind Dental', 'Northwind Dental will open its second clinic in Toronto'), true)
+})

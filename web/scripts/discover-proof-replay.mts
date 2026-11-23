@@ -38,8 +38,10 @@ for (const [i, r] of rows.entries()) {
   const w = check.signalWordsIn(signal, company, quote ?? '')
   const states = !!quote && check.statesSignal(signal, company, quote)
   if (states) stated++
-  const lacks = (w as { missing?: string[] }).missing?.join(', ')
-  let line = !quote ? 'no quote stored' : states ? `quote states the claim (${w.found} of ${w.want} claim words)` : `quote has ${w.found} of ${w.want} claim words${lacks ? `, lacks: ${lacks}` : ''}`
+  // the claim is the line's first statement where this copy of check.ts has that rule, else the whole line
+  const first = (check as Partial<Check>).leadStatement
+  const c = (first ? check.signalWordsIn(first(signal, company), company, quote ?? '') : w) as { want: number; found: number; missing?: string[] }
+  let line = !quote ? 'no quote stored' : `${states ? 'quote states the claim' : 'quote does NOT state the claim'}: ${c.found} of ${c.want} claim words${c.missing?.length ? `, lacks: ${c.missing.join(', ')}` : ''}${first ? ` (whole line ${w.found} of ${w.want})` : ''}`
   if (read) {
     const lead: DiscoveredLead = { company, domain: null, signal, signal_date: null, evidence_url: String(r.source_url ?? ''), evidence_quote: quote, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '' }
     const c = await check.checkLead(lead, [])

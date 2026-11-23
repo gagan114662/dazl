@@ -57,11 +57,27 @@ export function signalWordsIn(signal: string, company: string, textToSearch: str
   return { want: want.length, found: want.length - missing.length, missing }
 }
 // A text states the signal's CLAIM, not merely its topic, when it carries the claim's distinguishing words: every one of them for a
-// short signal (three words or fewer), three in four for a longer one. Sharing some words is not enough: "clinic opening hours" shares
+// short claim (three words or fewer), three in four for a longer one. Sharing some words is not enough: "clinic opening hours" shares
 // two of the three words of "opening a second clinic" and says nothing about a second clinic (second review of #1575).
+//
+// The claim is the signal line's first statement. What the run writes after it (an address, the other investors, its own comment on what
+// the event means) is detail, and counting detail as claim failed both ways on real data (#1575 replay): a quote is one sentence, so 13
+// of the 16 leads stored on staging failed with their proof in hand; and detail that matches routine text carried a false claim past
+// three in four ("Opening a second clinic, Monday to Friday" was stated by "clinic opening hours Monday to Friday"). A statement ends at
+// a full stop, semicolon, colon, bracket, dash or comma; one too short to be a claim is extended with what follows until it has three
+// distinguishing words, so a place or a name alone is never the claim. Limit: a long first statement with no punctuation between the
+// event and its detail is still judged three in four.
+export function leadStatement(signal: string, company: string): string {
+  let lead = ''
+  for (const part of signal.split(/(?<=[.;:!?])\s+|\s+[–—-]\s+|\s*\(|,\s+/)) {
+    lead = lead ? `${lead} ${part}` : part
+    if (signalWordsIn(lead, company, '').want >= 3) break
+  }
+  return lead
+}
 export function statesSignal(signal: string, company: string, textToSearch: string): boolean {
-  const { want, found } = signalWordsIn(signal, company, textToSearch)
-  return want > 0 && found >= (want <= 3 ? want : Math.ceil(want * 0.75))
+  const states = (claim: string) => { const { want, found } = signalWordsIn(claim, company, textToSearch); return want > 0 && found >= (want <= 3 ? want : Math.ceil(want * 0.75)) }
+  return states(leadStatement(signal, company))
 }
 // The quoted evidence is on the page: the whole quote, or any six consecutive words of it (a quote is often trimmed or joined with an ellipsis).
 export function quoteOnPage(quote: string | null, page: string): boolean {
