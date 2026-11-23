@@ -9,6 +9,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { addEnrichment } from '../lib/connectors/store.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
+import { contactSearchNote } from '../lib/outreach/published-email.ts'
 import { createDraft, OutreachError } from '../lib/outreach/service.ts'
 
 const person = { connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: 'named on a public page', source_url: 'https://northwind-dental.example/team' }
@@ -83,4 +84,10 @@ test('Approve creates a draft for the published address; autopilot and calibrati
 test('the scheduler enrols a first search into a repeat only when the operator switch is on', () => {
   const src = readFileSync(new URL('../app/api/internal/tick/route.ts', import.meta.url), 'utf8')
   assert.ok(src.includes("if (process.env.DAZL_FIRST_PLAY_REPEAT === '1') try { firstPlayRepeats = (await repeatFirstPlays("))
+})
+
+test('Details does not say "no published contact" beside a published address (#1571)', () => {
+  const base = { contact: null, source_url: 'https://news.example/northwind', evidence_excerpt: 'x', confidence: 85, company_domain: 'northwind-dental.example' }
+  assert.equal(contactSearchNote({ ...base, enrichments: [email] } as never), null)
+  assert.match(contactSearchNote({ ...base, enrichments: [person] } as never) ?? '', /No published contact stored/)
 })
