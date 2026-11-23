@@ -211,7 +211,7 @@ export function postingRecord(u: URL): { url: string; day: (j: unknown) => unkno
   if (/(^|\.)greenhouse\.io$/.test(h) && seg.length >= 3 && seg[1] === 'jobs' && /^\d+$/.test(seg[2]))
     return { url: `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(seg[0])}/jobs/${seg[2]}`, day: j => obj(j).first_published }
   if (/^jobs\.(?:eu\.)?lever\.co$/.test(h) && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
-    return { url: `https://api.${h === 'jobs.eu.lever.co' ? 'eu.' : ''}lever.co/v0/postings/${encodeURIComponent(seg[0])}/${seg[1]}`, day: j => obj(j).createdAt }
+    return { url: `${h === 'jobs.eu.lever.co' ? 'https://api.eu.lever.co/v0/postings/' : 'https://api.lever.co/v0/postings/'}${encodeURIComponent(seg[0])}/${seg[1]}`, day: j => obj(j).createdAt }
   if (h === 'jobs.ashbyhq.com' && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
     return { url: `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(seg[0])}`, day: j => { const jobs = obj(j).jobs; const hit = Array.isArray(jobs) ? jobs.find(x => obj(x).id === seg[1] || String(obj(x).jobUrl ?? '').includes(seg[1])) : null; return obj(hit).publishedAt } }
   return null
