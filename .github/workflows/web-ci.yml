@@ -27,9 +27,9 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
-    # Gate 2: PRs get a hard 5-minute budget (affected tests only); main runs the full suite (gate 3).
+    # Gate 2: PRs get a hard 20-minute budget (affected tests only; 5 minutes cancelled most pull requests that touch a shared file, 2026-11-23); main runs the full suite (gate 3).
     # A reviewer-applied `full-suite-ci` label gives a PR the 45-minute ceiling AND forces ALL (#1099/#1273, Hermes F1).
-    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}
+    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
     defaults:
       run:
         working-directory: web
@@ -116,7 +116,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}
+    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
     services:
       postgres:
         image: postgres:16
@@ -233,7 +233,7 @@ jobs:
           gh api "repos/$REPO/git/refs/tags/main-green" -X PATCH -f sha="$SHA" -F force=true \
             || gh api "repos/$REPO/git/refs" -f ref=refs/tags/main-green -f sha="$SHA"
 
-  # Gate 2: say clearly when a PR job hit the 5-minute budget, so an optimization lane gets opened.
+  # Gate 2: say clearly when a PR job hit the 20-minute budget, so an optimization lane gets opened.
   pr-budget:
     if: always() && github.event_name == 'pull_request'
     needs: [sqlite-shard, postgres-shard]
@@ -247,6 +247,6 @@ jobs:
         run: |
           echo "test-sqlite=$R1 test-postgres=$R2"
           if [ "$R1" = cancelled ] || [ "$R2" = cancelled ]; then
-            echo "::error::PR CI over the 5-minute budget (job cancelled by timeout). Open an optimization lane."
+            echo "::error::PR CI over the 20-minute budget (job cancelled by timeout). Open an optimization lane."
             exit 1
           fi
