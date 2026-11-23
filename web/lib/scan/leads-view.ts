@@ -5,14 +5,16 @@
 // the scan found nothing.
 // repeatCount (#1238): ready leads that are collapsed behind "Show ... leads seen in your earlier scans". They passed verification, so
 // "No leads passed verification" would contradict the scan's own "N source-checked" count on the same screen.
-export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null, repeatCount = 0): string | null {
+// pastScansWithLeads (#1579): with no scan open, the past scans in the page's own list that saved leads. "No leads yet" beside that list
+// contradicted it (production 145d2eba), so the line points at the list instead.
+export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null, repeatCount = 0, pastScansWithLeads = 0): string | null {
   if (visibleCount > 0) return null
   if (status === 'pending') return 'This scan is queued and has not started yet. Leads appear here after it runs.'
   if (status === 'running') return 'This scan is still running. Leads appear here when it finishes.'
   if (status === 'enriching') return 'This scan is finishing contact and fit checks. Ready leads will appear here when those checks finish.'
   if (status === 'loading') return 'Loading this scan...'
   if (status === 'failed') return 'This scan ended without leads. See the message above.'
-  if (status !== 'done') return 'No leads yet. Run a scan.'
+  if (status !== 'done') return pastScansWithLeads > 0 ? 'No scan is open. Your leads are in your past scans: open one to see them, or run a new scan.' : 'No leads yet. Run a scan.'
   if (repeatCount > 0) return `${repeatCount} lead${repeatCount === 1 ? '' : 's'} passed verification but ${repeatCount === 1 ? 'was' : 'were'} also found in your earlier scans - open "Show ${repeatCount} lead${repeatCount === 1 ? '' : 's'} seen in your earlier scans" below.`
   if (hiddenCount > 0) return `The scan found nothing above your fit bar - ${hiddenCount} lower-fit lead${hiddenCount === 1 ? ' is' : 's are'} hidden below.`
   // An all-review scan shows its cards below - 'no leads' would contradict them.
@@ -77,4 +79,11 @@ export function savedGradeWhy(l: { why?: string | null; fit?: number | null; int
   if (l.why) return `${timingHeadline(t)} Saved grades are historical, not a currentness verdict.`
   const parts = [['fit', l.fit], ['intent', l.intent], ['action', l.action]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${v}`)
   return parts.length ? `A saved grade exists (${parts.join(', ')}) but no written rationale was saved. ${timingHeadline(t)}` : `This lead has no saved grade. ${timingHeadline(t)}`
+}
+
+// The watch list on the Leads page (#1579). It is the whole account's list and is the same on every search's page, where it sits
+// under that search's own "Settings for this play": the heading says whose it is, and on a search's page one line says it is not that
+// search's setting.
+export function repeatingSearchesCopy(onSearchPage: boolean): { heading: string; scope: string | null } {
+  return { heading: 'Your repeating searches (all searches)', scope: onSearchPage ? 'This list covers your whole account and is the same on every search. It is not a setting of the search open on this page.' : null }
 }

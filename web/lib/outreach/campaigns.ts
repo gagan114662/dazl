@@ -230,7 +230,14 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   // every one of them (the run page lists them with why), and only the other research-only leads get the research step.
   const byChecks = c.qualification.heldByChecks ?? 0
   const research = (c.qualification.research ?? 0) + (c.qualification.heldResearch ?? 0) - byChecks
-  if (research > 0) return { label: `${plural(research, 'research-only lead', 'research-only leads')}: checking ${research === 1 ? 'it' : 'them'} cannot make ${research === 1 ? 'it' : 'them'} ready. Change the search`, href: `/app/leads?q=${encodeURIComponent(c.query)}` }
+  if (research > 0) {
+    const why = `${plural(research, 'research-only lead', 'research-only leads')}: checking ${research === 1 ? 'it' : 'them'} cannot make ${research === 1 ? 'it' : 'them'} ready.`
+    // #1579: a search that still has leads that passed is not one to replace. Its step opens that search, as every other step about its
+    // own leads does; only a search where nothing passed offers a new one (the same rule as the run's own status, lib/run-status.ts currentRun).
+    const q = listQual(c.qualification), passed = q.sourceChecked + q.confirmedByYou
+    if (passed > 0) return { label: `${why} Open the search to see the ${plural(passed, 'lead', 'leads')} that passed`, href: leadsHref }
+    return { label: `${why} Change the search`, href: `/app/leads?q=${encodeURIComponent(c.query)}` }
+  }
   if (byChecks > 0) return { label: `${plural(byChecks, 'lead is', 'leads are')} held by checks (read-only): open the run to see why`, href: leadsHref }
   if (c.discovery.leads === 0) return { label: 'No leads from this search. Try a broader one', href: '/app/leads' }
   return { label: 'Nothing waiting on you', href: null }

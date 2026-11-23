@@ -12,7 +12,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, costPerShownLead, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
-import { emptyLeadsMessage, readyRepeats, scoreLabel, quoteNote, visibleReadyLeads } from '@/lib/scan/leads-view'
+import { emptyLeadsMessage, readyRepeats, repeatingSearchesCopy, scoreLabel, quoteNote, visibleReadyLeads } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, onlyNameOnly, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
@@ -1175,8 +1175,8 @@ export default function LeadsClient() {
       )}
       {watches.length > 0 && (
         <div className="card p-4 mb-4 text-sm">
-          <h2 className="text-sm font-semibold mb-1">Repeating searches <a className="underline font-normal text-xs ml-1" href="/app/plays" data-testid="manage-plays">Manage in Plays</a></h2>
-          <p className="text-gray-500 text-xs mb-2">These searches re-run on their own (your first play every day, a search you chose to watch once a week) and only show leads you have not seen. On your own AI key they count toward your monthly scans.</p>
+          <h2 className="text-sm font-semibold mb-1" data-testid="repeating-heading">{repeatingSearchesCopy(!!jobId).heading} <a className="underline font-normal text-xs ml-1" href="/app/plays" data-testid="manage-plays">Manage in Plays</a></h2>
+          <p className="text-gray-500 text-xs mb-2">These searches re-run on their own (your first play every day, a search you chose to watch once a week) and only show leads you have not seen. On your own AI key they count toward your monthly scans.{repeatingSearchesCopy(!!jobId).scope && <span data-testid="repeating-scope"> {repeatingSearchesCopy(!!jobId).scope}</span>}</p>
           {watches.map(w => (
             <div key={w.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 border-t border-white/5 first:border-t-0">
               <span className="text-gray-200 min-w-0 flex-1 truncate" title={w.query}>{w.query}</span>
@@ -1324,12 +1324,14 @@ export default function LeadsClient() {
       <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
+          // #1579: with no scan open, nothing is said until the past scans have been read ("No leads yet" beside a list of them was false).
           status === 'loading' || status === 'failed' || statusError ? null
+            : !jobId && !pastJobs ? null
             : <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' && currentView?.marked && currentView.counts?.reviewable === 0
               ? 'No leads passed the checks for review.'
               : status === 'done' && currentView?.marked && !currentView.counts
               ? 'Lead results could not be checked. Refresh to try again.'
-              : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? quality?.needs_review : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0) ?? ''}</p>
+              : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? quality?.needs_review : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
