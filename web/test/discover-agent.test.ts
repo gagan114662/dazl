@@ -290,3 +290,35 @@ test('#1575 a claim must be stated where the quote stands: statements that only 
     if (!c.want) assert.ok(out.claim_lacks.length > 0, `${c.id} ${path}: the hold names what the nearest place lacks`)
   }
 })
+
+// #1037 (launch blocker). Production 2026-11-23: 10 of 12 leads named a person and none showed a LinkedIn profile. The people pass
+// dropped a profile it found whenever the lead already had its person, and was never sent the person's name to look for.
+test('#1037: a named person with no LinkedIn profile goes to the people pass; the profile is kept only for that same person, and only a profile address', () => {
+  const base = parseLeads(JSON.stringify({ leads: [lead({ linkedin_url: null, email: 'dana@northwind-dental.example', email_source_url: 'https://northwind-dental.example/contact' })] }), 1).leads[0]
+  assert.deepEqual([base.person, base.linkedin_url], ['Dana Ruiz', null])
+  assert.equal(needsEnrichment(base), true, 'a named person with no profile still needs the pass')
+  const found = (o: Record<string, unknown>) => parseEnriched(`<json>${JSON.stringify({ domain: null, person: 'Dana Ruiz', title: 'Owner', person_source_url: 'https://www.linkedin.com/in/dana-ruiz-dds/', linkedin_url: 'https://www.linkedin.com/in/dana-ruiz-dds/', ...o })}</json>`)
+  const merged = mergeEnriched(base, found({}))
+  assert.deepEqual([merged.person, merged.title, merged.person_source_url, merged.linkedin_url], ['Dana Ruiz', 'Practice Owner', 'https://www.northwind-dental.example/team', 'https://www.linkedin.com/in/dana-ruiz-dds/'], 'the first pass\'s person, title and source stay; only the empty profile is filled')
+  assert.equal(needsEnrichment(merged), false)
+  assert.equal(mergeEnriched(base, found({ person: 'dana  RUIZ' })).linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-dds/', 'the same name, whatever its case and spacing')
+  assert.equal(mergeEnriched(base, found({ person: 'Dr. Dana M. Ruiz' })).linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-dds/', 'the same first and last name with a title or middle initial')
+  assert.equal(mergeEnriched(base, found({ person: 'Daniel Ruiz' })).linkedin_url, null, 'another person\'s profile is not attached to this person')
+  assert.equal(mergeEnriched(base, found({ person: 'Dana Reyes' })).linkedin_url, null)
+  assert.equal(found({ linkedin_url: 'https://www.linkedin.com/company/northwind-dental/' }).linkedin_url, null, 'a company page is not a person\'s profile')
+  assert.equal(found({ linkedin_url: 'https://www.linkedin.com/in/' }).linkedin_url, null)
+  assert.equal(found({ linkedin_url: 'https://linkedin.com.evil.example/in/dana-ruiz' }).linkedin_url, null)
+  assert.equal(found({ linkedin_url: 'https://ca.linkedin.com/in/dana-ruiz-dds' }).linkedin_url, 'https://ca.linkedin.com/in/dana-ruiz-dds', 'a country address of LinkedIn is LinkedIn')
+})
+
+test('#1037: the profile must be one the run actually saw in its search results or opened; the request names the person to look for', async () => {
+  const { keepSeenProfile, enrichRequest } = await import('../lib/discover/enrich.ts')
+  const seen = new Map([['https://www.linkedin.com/in/dana-ruiz-dds?trk=public', { url: 'https://www.linkedin.com/in/dana-ruiz-dds?trk=public', title: 'Dana Ruiz - Northwind Dental', page_age: null, text: null }]])
+  const e = parseEnriched('<json>{"person":"Dana Ruiz","title":"Owner","person_source_url":"https://northwind-dental.example/team","linkedin_url":"https://www.linkedin.com/in/dana-ruiz-dds/"}</json>')
+  assert.equal(keepSeenProfile(e, seen).linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-dds/', 'seen, whatever the tracking suffix or trailing slash')
+  assert.equal(keepSeenProfile({ ...e, linkedin_url: 'https://www.linkedin.com/in/dana-ruiz-1a2b3c/' }, seen).linkedin_url, null, 'an address the run never saw is dropped: it may be made up')
+  assert.equal(keepSeenProfile(e, new Map()).linkedin_url, null)
+  const base = parseLeads(JSON.stringify({ leads: [lead({ linkedin_url: null })] }), 1).leads[0]
+  assert.match(enrichRequest(base, null), /Person already found: Dana Ruiz, Practice Owner/)
+  assert.doesNotMatch(enrichRequest({ ...base, person: null, title: null }, null), /Person already found/)
+})

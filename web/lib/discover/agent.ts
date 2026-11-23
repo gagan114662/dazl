@@ -57,7 +57,7 @@ How to work:
 - evidence_quote is the sentence on the proof page that states the event itself, copied word for word, 300 characters at most. A line that only describes the company (its services, its address, its opening hours) is not a quote for the event. Write signal as one short line that says what that sentence says, keeping the sentence's own words for what happened and its numbers and names. Leave out of signal any detail the proof page does not state.
 - The proof page must be about this one company: a single job posting, one news item, a press release, the company's own page. A search-results page, a job-board listing or a directory that shows many companies is not proof, even when the company appears in it. When a listing page shows a promising company, open that company's own posting or careers page and use that as the proof; if you cannot reach one, leave the company out.
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
-- Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give a LinkedIn URL only when a page links it. If you cannot find a person, leave the person fields null and still return the lead.
+- Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give the person's own LinkedIn profile address (it contains /in/) only when a page links it or a search result shows it for this name at this company; never build one. If you cannot find a person, leave the person fields null and still return the lead.
 - Give an email address only when a page prints it for this company or this person, and give that page's URL. Never build an address from a name or a pattern.
 - The email must be the named person's own work address. A shared inbox (info@, sales@, hello@, contact@, reception@, founders@ and the like) is not a contact: leave email null rather than give one.
 - The company's website domain should be its own site, not a directory or news site. If you are not sure, set it to null.
@@ -102,7 +102,8 @@ export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]
     out.push({
       company, signal, evidence_url, domain: host(l.domain), signal_date: day(l.signal_date), evidence_quote: str(l.evidence_quote, 300) || null,
       person, title: person ? str(l.title, 150) || null : null, person_source_url: person ? httpUrl(l.person_source_url) : null,
-      linkedin_url: linkedin && /(^|\.)linkedin\.com$/.test(new URL(linkedin).hostname) ? linkedin : null,
+      // a person's own profile only (/in/<name>): a company page is not the person's LinkedIn (#1037)
+      linkedin_url: linkedin && /(^|\.)linkedin\.com$/.test(new URL(linkedin).hostname) && /^\/in\/[^/]{2,}\/?$/.test(new URL(linkedin).pathname) ? linkedin : null,
       ...publishedEmail(l.email, l.email_source_url),
       confidence: l.confidence === 'high' || l.confidence === 'low' ? l.confidence : 'medium', why: str(l.why, 300),
     })
