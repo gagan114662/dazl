@@ -12,6 +12,7 @@ import { createMonitor, runDueMonitors } from '../lib/monitors.ts'
 import { FIRST_PLAY_WINDOW_S, REPEAT_INTERVAL_S, repeatFirstPlays, repeatIcp } from '../lib/play-repeat.ts'
 import { MAIL_LIST_MAX, MAIL_WINDOW_S, composePlayRunMail, oneLine, sendPlayRunMails } from '../lib/play-mail.ts'
 import { isFirstPlayRepeat, trialPauseReason } from '../lib/play-funding.ts'
+import { admitTrialScan } from '../lib/billing/trial-budget.ts'
 import { NEW_LIMIT, playNew, runPlayNow, seenThrough } from '../lib/play-now.ts'
 import { runEnded, runNowMessage } from '../lib/play-new-view.ts'
 import { noteOf, savedPlays } from '../lib/saved-plays.ts'
@@ -251,11 +252,18 @@ bothEngines('#1042 the trial caps decide: 3 searches per account, then the repea
   for (const r of ['not_configured', 'google_required', 'domain_used'] as const) assert.equal(trialPauseReason(r), 'no_api_key')
 })
 
-bothEngines('#1042 no Google sign-in (the trial needs one): the keyless repeat pauses; nothing is reserved', async ({ db }) => {
+// #1095: without Google an account has one free scan, its first search; the repeat is a second one, so it still needs Google
+bothEngines('#1042 no Google sign-in (the trial needs one past the first search): the keyless repeat pauses; nothing more is reserved', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a.example', { google: false })
+  assert.equal((await admitTrialScan(db, { id: A, email: 'a@a.example' }, { now: NOW, env: TRIAL_ENV })).ok, true, 'the first search')
   assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 1, skipped: 0 })
   assert.equal((await db.get<{ paused_reason: string }>('SELECT paused_reason FROM watches WHERE id = ?', [w]))!.paused_reason, 'no_api_key')
-  assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations'), 0)
+  assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations'), 1)
+  // with the password path switched off, nothing is reserved at all
+  const w2 = await autoRepeat(db, B, 'b@b.example', { google: false })
+  assert.deepEqual(await runDueWatches(db, { now: due, env: { ...TRIAL_ENV, DAZL_TRIAL_PASSWORD_FIRST_SCAN: '0' } }), { ran: 0, paused: 1, skipped: 0 })
+  assert.equal((await db.get<{ paused_reason: string }>('SELECT paused_reason FROM watches WHERE id = ?', [w2]))!.paused_reason, 'no_api_key')
+  assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations WHERE tenant_id = ?', [B]), 0)
 })
 
 bothEngines('#1042 a trial reservation for a run that did not happen is given back (lost race, scan already running, lost lease)', async ({ db }) => {

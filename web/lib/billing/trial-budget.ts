@@ -25,7 +25,8 @@
 // Attempts: at most TRIAL_SCANS_PER_ACCOUNT (3) admitted trial scans per account that can cost dazl money, counted at
 // admission under the same lock: a failed or cancelled scan keeps its place once any paid step was reserved; only a
 // scan that failed before any cost releases it (releasedBeforeCost).
-// Admission (admitTrialScan) also requires a verified Google account, and one trial per company email domain (consumer
+// Admission (admitTrialScan) also requires a verified Google account (#1095: except a confirmed password account's first
+// scan, see PASSWORD_TRIAL_SCANS), and one trial per company email domain (consumer
 // mailboxes count per account). Owner-funded calls outside a scan are off: the search-profile preview of a trial
 // account returns the plain profile with no model call (lib/scan/runner.ts previewIcp). "Fill the profile from my
 // website" may run on the trial key for a keyless account (#409, lib/scan/trial-site-read.ts): it is paid work in this
@@ -141,12 +142,55 @@ export function stagingTrialWithoutGoogle(email: string, env: Record<string, str
   const list = (env.DAZL_STAGING_TRIAL_NO_GOOGLE ?? '').split(',').map(x => x.trim().toLowerCase()).filter(x => x && !x.includes('*'))
   return list.includes(email.trim().toLowerCase())
 }
+const GOOGLE_SQL = "SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?"
 // One check per listed prerequisite: a token added to TRIAL_REQUIRES without its check here does not typecheck, so the record can
 // never advertise a prerequisite the gate does not enforce.
 const TRIAL_REQUIREMENT_CHECKS: { [K in typeof TRIAL_REQUIRES[number]]: { refusal: TrialRefusal; sql: string } } = {
-  google_account: { refusal: 'google_required', sql: "SELECT 1 AS x FROM oauth_identities WHERE provider = 'google' AND user_id = ?" },
+  google_account: { refusal: 'google_required', sql: GOOGLE_SQL },
 }
 export type Admission = { ok: true; reservation: string } | { ok: false; reason: TrialRefusal }
+
+// #1095 (owner, 2026-11-23: "let password users run free scans"): an account made with a password runs its FIRST search free
+// without Google. This narrows the Google guard, on purpose, and only this far:
+//   - scans only, and only PASSWORD_TRIAL_SCANS (1) of them; the second free scan, and every free website read, still needs Google
+//     (refused google_required, which the screens answer with Link Google). The first search counts toward the usual three.
+//   - the address must be confirmed (users.email_verified_at): a sign-up made where dazl can send mail cannot sign in before that.
+//   - one per mailbox: a +tag alias, or a Gmail address that differs only by dots or googlemail.com, of a mailbox that already drew
+//     on the trial is refused; one trial per company domain (below) covers every other domain, throwaway ones included.
+//   - every money ceiling (per scan, per account, per day) and the per-network daily throttle (lib/scan/trial.ts) are unchanged,
+//     so the most this can cost dazl in a day is the same DAZL_TRIAL_GLOBAL_DAILY_USD as before.
+// DAZL_TRIAL_PASSWORD_FIRST_SCAN=0 switches it off (every free scan needs Google again).
+export const PASSWORD_TRIAL_SCANS = 1
+export const passwordTrialOn = (env: Record<string, string | undefined> = process.env) => !['0', 'off', 'false', 'no'].includes((env.DAZL_TRIAL_PASSWORD_FIRST_SCAN ?? '').trim().toLowerCase())
+const GMAIL = ['gmail.com', 'googlemail.com']
+// The mailbox an address delivers to, as far as dazl can tell without asking the provider: lower case, no +tag, and on Gmail no dots.
+export function canonicalMailbox(email: string): string {
+  const [local = '', domain = ''] = email.trim().toLowerCase().split('@')
+  const base = local.split('+')[0]
+  return GMAIL.includes(domain) ? `${base.replaceAll('.', '')}@gmail.com` : `${base}@${domain}`
+}
+// Whether this account, which has no Google sign-in, may run a free scan on the password path: confirmed address, and no other
+// account of the same mailbox has drawn on the trial. (Company domains are held to one trial by the domain rule in refusal.)
+function* passwordPathOpen(t: Tx, user: { id: string; email: string }): TxBody<boolean> {
+  if (!(yield* t.get('SELECT 1 AS x FROM users WHERE id = ? AND email_verified_at IS NOT NULL', [user.id]))) return false
+  const domain = emailDomain(user.email)
+  if (!CONSUMER_DOMAINS.has(domain)) return true
+  const me = canonicalMailbox(user.email)
+  for (const d of GMAIL.includes(domain) ? GMAIL : [domain]) {
+    const others = yield* t.all<{ email: string }>(`SELECT DISTINCT u.email AS email FROM trial_reservations r JOIN users u ON u.id = r.tenant_id
+      WHERE u.id <> ? AND lower(u.email) LIKE ?`, [user.id, `%@${d}`])
+    if (others.some(o => canonicalMailbox(String(o.email)) === me)) return false
+  }
+  return true
+}
+// How many free scans the account can have as it stands, for the counter: all of them with Google (or the staging test bypass),
+// the first one without. Read-only; admission decides for itself under the lock.
+export async function trialScanAllowance(db: Db, userId: string, env: Record<string, string | undefined> = process.env): Promise<number> {
+  if (await db.get(GOOGLE_SQL, [userId])) return TRIAL_SCANS_PER_ACCOUNT
+  const u = await db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [userId])
+  if (u && stagingTrialWithoutGoogle(String(u.email), env)) return TRIAL_SCANS_PER_ACCOUNT
+  return passwordTrialOn(env) ? PASSWORD_TRIAL_SCANS : TRIAL_SCANS_PER_ACCOUNT
+}
 
 // A reservation's cost: its reserve while the scan runs (or before it exists, or if creating it failed), then, once the run
 // has settled, the job's one recorded cost (lib/scan/job-cost.ts, #1517): what the providers billed for each paid call
@@ -211,11 +255,15 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // The attempts counter is the account's trial SCANS only (ledger: a website read is money in the wallet, not an
 // attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
-function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env): TxBody<TrialRefusal | null> {
+function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env, scan = false): TxBody<TrialRefusal | null> {
+  let attemptsCap = TRIAL_SCANS_PER_ACCOUNT
   for (const req of TRIAL_REQUIRES) {
     if (req === 'google_account' && stagingTrialWithoutGoogle(user.email, env)) continue
     const check = TRIAL_REQUIREMENT_CHECKS[req]
-    if (!(yield* t.get(check.sql, [user.id]))) return check.refusal
+    if (yield* t.get(check.sql, [user.id])) continue
+    // #1095: without Google, a confirmed password account still runs its first scan (see PASSWORD_TRIAL_SCANS); nothing else
+    if (!(req === 'google_account' && scan && passwordTrialOn(env) && (yield* passwordPathOpen(t, user)))) return check.refusal
+    attemptsCap = PASSWORD_TRIAL_SCANS
   }
   const domain = emailDomain(user.email)
   if (domain && !CONSUMER_DOMAINS.has(domain)) {
@@ -230,7 +278,8 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet,
   const l = ledger(yield* t.all<LedgerRow>(LEDGER_SQL, [user.id, day, day, day * 86400, day * 86400]), user.id, day)
   // a small tolerance for float sums (0.1 + 0.2), far below a cent
   // three admitted attempts that can cost dazl money per account, paid failures and cancellations included
-  if (l.attempts >= TRIAL_SCANS_PER_ACCOUNT) return 'attempts_cap'
+  // (#1095: one without Google; past it the answer is to link Google, which opens the rest)
+  if (l.attempts >= attemptsCap) return attemptsCap < TRIAL_SCANS_PER_ACCOUNT ? 'google_required' : 'attempts_cap'
   if (l.account + reserveUsd > caps.accountTotalUsd + 1e-9) return 'account_total_cap'
   if (l.today + reserveUsd > caps.globalDailyUsd + 1e-9) return 'global_daily_cap'
   return null
@@ -244,7 +293,7 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
     // every admission takes this row first (created by the first admission, so a freshly migrated store stays empty), so
     // two instances cannot both admit against the same remaining budget: the upsert locks the row until this commits
     yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
-    const why = yield* refusal(t, user, caps, day, caps.reserveUsd, o.env ?? process.env)
+    const why = yield* refusal(t, user, caps, day, caps.reserveUsd, o.env ?? process.env, true)
     if (why) return { ok: false, reason: why }
     const id = randomBytes(12).toString('hex')
     yield* t.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, ?, ?, ?)', [id, user.id, caps.reserveUsd, day, now])
@@ -288,7 +337,7 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   if (!caps) return 'not_configured'
   const day = utcDay(o.now ?? Math.floor(Date.now() / 1000))
   const reserveUsd = o.reserveUsd ?? (read ? TRIAL_SITE_READ_RESERVE_USD : (caps as TrialCaps).reserveUsd)
-  return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env))
+  return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env, !read))
 }
 
 // What is left of the account's trial dollar allowance, for the cost screen (read-only; admission and the caps are untouched): the account total
