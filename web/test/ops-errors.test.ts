@@ -73,12 +73,23 @@ test('every emitted field is scrubbed or shape-checked: PII in a name, cause nam
   // the alert hook posts the same record, so it is equally clean
   const posted: string[] = []
   const hook = makeAlertHook({ url: 'https://hooks.example.test/x', fetchImpl: (async (_u: string, init: RequestInit) => { posted.push(String(init.body)); return new Response('ok') }) as unknown as typeof fetch })
-  hook(toRecord(e, hostile[0]))
+  // Pinned to AT like the records above, so what the hook posts is the same on every run and every checkout.
+  const sent = toRecord(e, hostile[0], AT)
+  hook(sent)
   return new Promise<void>(res => setImmediate(() => {
     assert.equal(posted.length, 1)
-    // ts (the clock) and fingerprint (a hex hash) are not input-derived; a planted digit run can occur in them by chance.
-    const body = posted[0].replace(/\\*"(?:ts|fingerprint)\\*":\\*"[^"\\]*\\*"/g, '')
+    // ts (the clock) and fingerprint (a hex hash) are generated here, not taken from input, and the posted body carries each twice: as
+    // its own field and inside the `text` summary (lib/ops/errors.ts alertText). Stripping only the two fields left the copies in `text`,
+    // so a capture time ending .555Z, or a fingerprint with 555 in it, read as the planted phone fragment (required Postgres shard on
+    // #1578). Only those two exact generated values are taken out, wherever they stand; everything else in the body is still checked.
+    assert.ok(posted[0].includes('555'), 'control: at this pinned instant the generated capture time itself holds 555')
+    const inputDerived = (payload: string) => payload.replaceAll(sent.ts, '[capture-time]').replaceAll(sent.fingerprint, '[fingerprint]')
+    const body = inputDerived(posted[0])
     for (const leak of leaks) assert.ok(!body.includes(leak), `${leak} leaked to the alert hook`)
+    // the check still refuses real input: the same payload with a caller's phone fragment in its text, or in a field, fails it
+    const p = JSON.parse(posted[0]) as Record<string, unknown> & { text: string }
+    assert.ok(inputDerived(JSON.stringify({ ...p, text: `${p.text}\ncaller +1 415 555 0134` })).includes('555'), 'a phone fragment in the text summary is still caught')
+    assert.ok(inputDerived(JSON.stringify({ ...p, where: 'tick:Jane Doe +1 415 555 0134' })).includes('555'), 'a phone fragment in a field is still caught')
     res()
   }))
 })
