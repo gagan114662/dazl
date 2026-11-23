@@ -88,7 +88,7 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
           </label>
           <div className="flex flex-col gap-1">
             <label className="flex flex-col gap-1 text-sm text-[#333]">Password
-              <input name="password" type="password" required minLength={10} placeholder="At least 10 characters" autoComplete="new-password"
+              <input name="password" type="password" required minLength={10} autoComplete="new-password"
                 aria-describedby="signup-password-rules" className="field" />
             </label>
             <p id="signup-password-rules" className="text-xs text-[#555]">Use at least 10 characters, including a letter and a number.</p>

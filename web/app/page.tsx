@@ -4,7 +4,7 @@ import Banner from './banner'
 import LandingDemo from './landing-demo'
 
 import { SITE_BASE, SITE_TITLE, SUPPORT_EMAIL, publicMeta } from '@/lib/site'
-import { FREE_BETA_TERMS, OWNER_PLACEHOLDERS } from '@/lib/legal/policy'
+import { FREE_BETA_TERMS } from '@/lib/legal/policy'
 
 // Self-referencing canonical (Indexing audit finding: the homepage had none, so the
 // apex and www duplicates competed). Kept on the page, not the root layout, so child
