@@ -125,6 +125,7 @@ export const ROUTE_TEMPLATES: readonly string[] = [
   '/api/tenant/lifecycle',
   '/api/tenant/lifecycle/delete',
   '/api/tenant/lifecycle/export',
+  '/api/track',
   '/api/unsubscribe',
   '/api/usage',
   '/api/warm/connections',
