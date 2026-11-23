@@ -15,6 +15,15 @@ export function markCompanyFirstBudget(raw: string | null): string {
   return JSON.stringify({ ...(raw ? JSON.parse(raw) : {}), discovery_source: 'company_first_v1' })
 }
 
+// The same budget without the marker (null when nothing else is in it). A scan the Claude discovery lane answered is the lane's:
+// every reader holds a marked scan's leads until the company-first final checks pass, and the lane never runs those (#1579).
+export function unmarkCompanyFirstBudget(raw: string | null): string | null {
+  if (!hasCompanyFirstBudget(raw)) return raw
+  const { discovery_source: _dropped, ...rest } = JSON.parse(raw!) as Record<string, unknown>
+  void _dropped
+  return Object.keys(rest).length ? JSON.stringify(rest) : null
+}
+
 export function hasCompanyFirstBudget(raw: string | null | undefined): boolean {
   try { return !!raw && JSON.parse(raw)?.discovery_source === 'company_first_v1' } catch { return false }
 }

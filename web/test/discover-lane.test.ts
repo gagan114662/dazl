@@ -105,3 +105,38 @@ test('a request limited to US$0.30 gets the smallest budget: five searches, no s
   const spend = db.prepare('SELECT reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id = ?').all(id) as { reserve_usd: number; actual_usd: number }[]
   assert.ok(spend.length === 1 && spend[0].reserve_usd <= 0.3 && spend[0].actual_usd === 0.15, JSON.stringify(spend))
 })
+
+// Production, 2026-11-23 (#1579): on the one workspace named by DAZL_COMPANY_FIRST_TENANT_ID, two paid searches found 7 and 5 leads
+// through the lane and showed none. The request had been marked company-first when it was accepted, and every reader holds a marked
+// scan's leads until that older rollout's own final checks pass, which the lane never runs. A scan the lane answered is the lane's.
+test('a scan accepted as company-first and answered by the lane shows its leads: nothing is held by final checks that never run', async () => {
+  const { markCompanyFirstBudget, hasCompanyFirstBudget } = await import('../lib/company-first/product-discovery.ts')
+  const { listCampaignsNow } = await import('../lib/outreach/campaigns.ts')
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const before = process.env.DAZL_COMPANY_FIRST_TENANT_ID
+  process.env.DAZL_COMPANY_FIRST_TENANT_ID = 'T'
+  try {
+    const db = new Database(':memory:')
+    migrateAllSqlite(db)
+    saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+    const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor' })
+    db.prepare('UPDATE scan_jobs SET run_budget = ? WHERE id = ?').run(markCompanyFirstBudget(null), id)
+    const job = claimKeyedJob(db, id)
+    assert.ok(job && hasCompanyFirstBudget(job.run_budget), 'the scan starts marked, as /api/scan marks it for this workspace')
+    const canned: DiscoverResult = {
+      leads: [lead({})],
+      seen: [{ url: 'https://news.example/northwind', title: 'Northwind Dental', page_age: null, text: 'On 14 October 2026 Northwind Dental will open its second clinic downtown.' }],
+      usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
+    }
+    let n = 0
+    const result = await runJob(db, job!, { master, fetchImpl: (async () => new Response('no', { status: 403 })) as unknown as typeof fetch, discover: true,
+      discoverImpl: async () => n++ === 0 ? canned : { ...canned, leads: [], seen: [] }, enrichImpl: null })
+    assert.equal(result, 'done')
+    const j = db.prepare('SELECT status, verified, run_budget FROM scan_jobs WHERE id = ?').get(id) as { status: string; verified: number; run_budget: string | null }
+    assert.deepEqual([j.status, j.verified], ['done', 1])
+    assert.equal(hasCompanyFirstBudget(j.run_budget), false, 'the finished scan is no longer marked for the older rollout')
+    const c = (await listCampaignsNow(db, 'T')).find(x => x.id === id)!
+    assert.deepEqual([c.discovery.leads, c.qualification.sourceChecked, c.qualification.heldByChecks], [1, 1, 0], 'its lead is counted as source-checked, not held')
+  } finally { if (before === undefined) delete process.env.DAZL_COMPANY_FIRST_TENANT_ID; else process.env.DAZL_COMPANY_FIRST_TENANT_ID = before }
+})
