@@ -828,7 +828,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     ).run(status, error, candidates, status === 'done' ? leads.length : null, status === 'done' ? review.length : null, dropped, out ? JSON.stringify(out.dropped) : null, status, job.id)
     return true
   }).immediate()
-  if (owned && status === 'done') searchFinished(db, job.user_id, job.id, leads.length, review.length) // #1616: counts only
+  if (owned && status === 'done') void searchFinished(sqliteDb(db), job.user_id, job.id, leads.length, review.length) // #1616: counts only
   return owned
 }
 

@@ -280,7 +280,7 @@ export async function POST(req: NextRequest) {
       }
       return claudeOnly ? pinAdmittedStrictJob(db, user.tenantId, jid, runBudget) : null
     }).immediate()
-    searchStarted(db, user.tenantId, jid, funded === 'trial')
+    void searchStarted(getDb(), user.tenantId, jid, funded === 'trial') // #1616: never rejects, never awaited
     if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION, ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}), ...(manualTarget && sized?.ok ? { accepted_target: target(sized.icp) } : {}) }, { status: 202 })
     after(() => kickRunner(db))
     if (companyFirst) return NextResponse.json({ job_id, discovery_source: 'company_first_v1', execution: 'queued', ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}), ...(manualTarget && sized?.ok ? { accepted_target: target(sized.icp) } : {}) }, { status: 202 })

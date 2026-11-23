@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { CLIENT_EVENTS, DEFAULT_HOST, FUNNEL_EVENTS, PROPS, TIMEOUT_MS, funnelProps, track, type FunnelProps } from '../lib/analytics/track.ts'
 import { searchFinished, searchStarted } from '../lib/analytics/funnel.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { resetTrackClient, trackClient } from '../lib/analytics/track-client.ts'
 import { API_HOSTS } from '../lib/legal/policy.ts'
 
@@ -105,32 +106,33 @@ test('never throws into or waits for the caller: a throwing, rejecting or hangin
   } finally { process.off('unhandledRejection', onUnhandled) }
 })
 
-test('first search started / finished fire once per account, for a search and never for an import', () => {
-  const db = new Database(':memory:')
-  db.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', csv_domain TEXT)")
+test('first search started / finished fire once per account, for a search and never for an import', async () => {
+  const raw = new Database(':memory:'), db = sqliteDb(raw)
+  raw.exec("CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', csv_domain TEXT)")
   const env = { NEXT_PUBLIC_POSTHOG_KEY: KEY }
   const other = 'e'.repeat(32), j1 = '1'.repeat(24), j2 = '2'.repeat(24), csv = '3'.repeat(24)
   const s = stub(), d = { env, fetch: s.fetch }
-  db.prepare('INSERT INTO scan_jobs (id, user_id, csv_domain) VALUES (?, ?, ?)').run(csv, ACCOUNT, 'acme.example')
-  assert.equal(searchStarted(db, ACCOUNT, csv, false, d), false, 'an import is not a search')
-  db.prepare('INSERT INTO scan_jobs (id, user_id) VALUES (?, ?)').run(j1, ACCOUNT)
-  db.prepare('INSERT INTO scan_jobs (id, user_id) VALUES (?, ?)').run('9'.repeat(24), other)
-  assert.equal(searchStarted(db, ACCOUNT, j1, true, d), true)
+  raw.prepare('INSERT INTO scan_jobs (id, user_id, csv_domain) VALUES (?, ?, ?)').run(csv, ACCOUNT, 'acme.example')
+  assert.equal(await searchStarted(db, ACCOUNT, csv, false, d), false, 'an import is not a search')
+  raw.prepare('INSERT INTO scan_jobs (id, user_id) VALUES (?, ?)').run(j1, ACCOUNT)
+  raw.prepare('INSERT INTO scan_jobs (id, user_id) VALUES (?, ?)').run('9'.repeat(24), other)
+  assert.equal(await searchStarted(db, ACCOUNT, j1, true, d), true)
   assert.deepEqual(sent(s.calls[0]).properties, { job_id: j1, trial: true, $process_person_profile: false, $geoip_disable: true })
   assert.equal(sent(s.calls[0]).event, 'first_search_started')
-  assert.equal(searchFinished(db, ACCOUNT, j1, 4, 2, d), false, 'not finished yet')
-  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id IN (?, ?)").run(j1, csv)
-  assert.equal(searchFinished(db, ACCOUNT, j1, 4, 2, d), true)
+  assert.equal(await searchFinished(db, ACCOUNT, j1, 4, 2, d), false, 'not finished yet')
+  raw.prepare("UPDATE scan_jobs SET status = 'done' WHERE id IN (?, ?)").run(j1, csv)
+  assert.equal(await searchFinished(db, ACCOUNT, j1, 4, 2, d), true)
   assert.equal(sent(s.calls[1]).event, 'first_search_finished')
   assert.deepEqual(sent(s.calls[1]).properties, { job_id: j1, count: 4, needs_review: 2, $process_person_profile: false, $geoip_disable: true })
-  db.prepare("INSERT INTO scan_jobs (id, user_id, status) VALUES (?, ?, 'done')").run(j2, ACCOUNT)
-  assert.equal(searchStarted(db, ACCOUNT, j2, false, d), false, 'the second search is not the first')
-  assert.equal(searchFinished(db, ACCOUNT, j2, 1, 0, d), false)
+  raw.prepare("INSERT INTO scan_jobs (id, user_id, status) VALUES (?, ?, 'done')").run(j2, ACCOUNT)
+  assert.equal(await searchStarted(db, ACCOUNT, j2, false, d), false, 'the second search is not the first')
+  assert.equal(await searchFinished(db, ACCOUNT, j2, 1, 0, d), false)
   assert.equal(s.calls.length, 2)
   // a store that cannot be read is not the caller's problem
-  db.close()
-  assert.equal(searchStarted(db, ACCOUNT, j1, false, d), false)
-  assert.equal(searchFinished(db, ACCOUNT, j1, 0, 0, d), false)
+  raw.close()
+  assert.equal(await searchStarted(db, ACCOUNT, j1, false, d), false)
+  assert.equal(await searchFinished(db, ACCOUNT, j1, 0, 0, d), false)
+  assert.equal(await searchStarted(Promise.reject(new Error('no store')), ACCOUNT, j1, false, d), false, 'a store that cannot be opened resolves false')
 })
 
 test('the browser helper posts to this app only, each distinct event once per page, and never throws', () => {
