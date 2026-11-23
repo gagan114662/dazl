@@ -12,6 +12,7 @@ ssh alias or `user@host` in the owner's `~/.ssh/config`) and stops with a usage 
 | `install-offhost-backup.sh [key file]` | Step 2 of the off-host backup (`ops/backup/README.md`): copies the upload-only key file to the box and runs `ops/backup/install-prod-offhost.sh` from the live release. | Installs the hourly backup timers, takes one backup, removes the copied key file from the home folder. | owner, once, after `ops/backup/aws-setup.sh` |
 | `install-downtime-alert.sh` | Runs `ops/uptime/install.sh` from the live release, points the probe at production's alert destination and sends one test message. | Adds `/usr/local/lib/dazl-uptime/`, `/etc/dazl-uptime/env`, `dazl-uptime.timer`. | owner, once |
 | `prove-prod-restart.sh [--kill]` | Shows how production is supervised (unit, user, restart and memory settings, starts at boot, boot time next to unit start time). With `--kill`, proves systemd restarts it (issue #1083). | Without `--kill`: nothing. With `--kill`: kills the live production process once; dazl.ai answers 502 until it is back (expected under 30 seconds). | owner, at a quiet moment; the report again after a reboot |
+| `setup-offhost-pinger.sh` | Turns on the off-server downtime check (issue #1586, `.github/workflows/offhost-uptime.yml`): copies the box's alert destination into the GitHub repo secret `OPS_ALERT_WEBHOOK_URL` and starts one run that sends a test message. | Sets one GitHub repo secret. Nothing on the box. | owner, once, after `install-downtime-alert.sh` |
 
 ## Expected output
 
@@ -83,6 +84,29 @@ seconds, or the restart counter does not go up by exactly one. `FAIL: no healthy
 means production may be down: run `deploy-prod.sh --status` on the box. For the reboot part of #1083, reboot the box
 in a quiet window, log in to nothing, wait for dazl.ai to answer, then run the report: "unit started" is seconds
 after "box booted". `listens on: *:<port>` and `ProtectSystem=no` are the two parts of #1083 that are still open.
+`DAZL_SSH_HOST=<box> ops/owner/setup-offhost-pinger.sh`
+
+```
+secret OPS_ALERT_WEBHOOK_URL set on <owner>/<repository>
+test run started: one message, 'dazl test alert from the off-server check', should arrive within a minute or two
+watch it: gh run list --workflow offhost-uptime.yml --limit 3
+```
+
+**Until this script has run once, the off-server check sends nothing:** the repository has no secret named
+`OPS_ALERT_WEBHOOK_URL`, so a run still goes red when production is down, but no message leaves. The one command
+above sets the secret and sends the test alert. To check or repeat either part by hand:
+
+```bash
+gh secret list | grep OPS_ALERT_WEBHOOK_URL                  # the secret exists (the value is never shown)
+gh workflow run offhost-uptime.yml -f test_alert=true        # send the test alert again
+gh run list --workflow offhost-uptime.yml --limit 3          # the test run: completed, success
+```
+
+One test message must arrive in Telegram and the run must be green. The destination is never printed. From then on
+GitHub asks `https://dazl.ai/api/health` about every 5 minutes (it starts scheduled runs late when busy, often 5 to
+15 minutes) and sends "dazl.ai is DOWN" once, "STILL DOWN" once per further hour and "BACK UP" once. The stop test
+for #1586: with production's web server stopped for 15 minutes in a quiet window, the DOWN message arrives. GitHub
+turns scheduled runs off in a repository with no commits for 60 days; it emails the owner first.
 
 ## Checks
 
