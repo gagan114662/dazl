@@ -61,7 +61,8 @@ export function emailDomainInvalid(email: string): boolean {
 
 const PHONE = /\+?\d[\d\s().-]{6,}\d/
 const norm = (v: string | null | undefined) => (v ?? '').trim().toLowerCase()
-export const GENERIC_LOCAL = /^(?:hello|hi|info|information|contact|contactus|enquiries|enquiry|inquiries|inquiry|office|admin|team|sales|mail|general|reception|frontdesk|bookings?|appointments?|studio|clinic|hq|business|partners?|partnerships?|newbusiness)$/
+export { GENERIC_LOCAL } from './generic-inbox.ts'
+import { GENERIC_LOCAL } from './generic-inbox.ts'
 
 // Does the address's local part carry this person's own name (first, last, first.last, flast, firstl...)? A published
 // address shaped like the person's name is the only person binding read here; a shared inbox never is.

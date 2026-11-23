@@ -230,7 +230,7 @@ test('a discovery lead with a published address counts as a lead with a contact;
   job(db, 'A', 'jd', 'dental clinics in Toronto')
   lead(db, 'jd', 'd-mail'); lead(db, 'jd', 'd-none'); lead(db, 'jd', 'old-mail')
   db.prepare("UPDATE leads SET source_kind = 'discover' WHERE id IN ('d-mail', 'd-none')").run()
-  const mail = (tenant: string, leadId: string) => addEnrichment(db, tenant, leadId, { connector: 'discover', kind: 'email', value: 'hello@co.example', label: 'published on a public page', confidence: null, source_url: 'https://co.example/contact', source_date: '2026-11-22', retrieved_at: 1 })
+  const mail = (tenant: string, leadId: string) => addEnrichment(db, tenant, leadId, { connector: 'discover', kind: 'email', value: 'dana.ruiz@co.example', label: 'published on a public page', confidence: null, source_url: 'https://co.example/contact', source_date: '2026-11-22', retrieved_at: 1 })
   mail('A', 'd-mail')
   mail('A', 'old-mail')            // the discovery connector's row on a lead that is not a discovery lead
   mail('B', 'd-none')              // a row carrying another workspace

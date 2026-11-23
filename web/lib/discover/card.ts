@@ -1,3 +1,4 @@
+import { isGenericInbox } from '../outreach/generic-inbox.ts'
 // What a lead from the Claude discovery lane says about itself on its card: how sure dazl is, and plainly what is missing
 // (launch brief, Step 3: a missing date, person or website lowers confidence and is said; it never hides the lead).
 export interface DiscoverCardLead {
@@ -38,20 +39,22 @@ export function discoverSources(l: { source_url?: string | null; enrichments?: {
 
 // The person and the published email a discovery lead carries, with the pages they came from. These are the rows the run stored
 // (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
-export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null }
+// email: the person's or company's own published address. A shared inbox (info@, sales@ ...) is never one (#1250); sharedInbox says one was published.
+export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null; sharedInbox: boolean }
 type Row = { kind: string; connector?: string; value?: string; source_url?: string | null }
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
   const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
-  const p = rows.find(r => r.kind === 'person' && r.value), e = rows.find(r => r.kind === 'email' && r.value && r.source_url && EMAIL.test(r.value.trim().toLowerCase()))
+  const mails = rows.filter(r => r.kind === 'email' && r.value && r.source_url && EMAIL.test(r.value.trim().toLowerCase()))
+  const p = rows.find(r => r.kind === 'person' && r.value), e = mails.find(r => !isGenericInbox(r.value))
   const li = rows.find(r => r.kind === 'linkedin' && r.value)
   let person: DiscoverContact['person'] = null
   if (p) {
     const i = p.value!.indexOf(', ')
     person = { name: (i < 0 ? p.value! : p.value!.slice(0, i)).trim(), title: i < 0 ? null : p.value!.slice(i + 2).trim() || null, linkedin: li?.value ?? null, source: p.source_url ?? null }
   } else if ((l.name ?? '').trim()) person = { name: l.name!.trim(), title: null, linkedin: li?.value ?? null, source: null }
-  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null }
+  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)) }
 }
 // The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
 // A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's
@@ -74,6 +77,7 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (!l.event_date) return { ok: false, reason: 'The signal has no date, so its timing is unknown. Open the proof to check it.' }
   if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
   const c = discoverContact(l)
+  if (!c?.email && c?.sharedInbox) return { ok: false, reason: `Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
   if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address was not found on the company\'s own website, only on another site.' }
   return { ok: true }

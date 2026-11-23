@@ -1,9 +1,9 @@
 // The Claude discovery loop's own code: reading the model's answer into lead records, pricing a run, and labelling a lead
-// from its proof page. Invented companies and pages only; no network.
+// from its proof page. No network. Invented companies and pages, except the #1575 cases at the end, which quote public proof pages.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseLeads, usd } from '../lib/discover/agent.ts'
-import { checkLead, companyOnPage, dayOnPage, isShown, pageAgeDay } from '../lib/discover/check.ts'
+import { checkLead, companyOnPage, dayOnPage, isShown, pageAgeDay, statesSignal } from '../lib/discover/check.ts'
 import { mergeEnriched, needsEnrichment, parseEnriched } from '../lib/discover/enrich.ts'
 
 const lead = (o: Record<string, unknown> = {}) => ({ company: 'Northwind Dental', domain: 'https://www.northwind-dental.example/about', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind-second-clinic', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://www.northwind-dental.example/team', linkedin_url: 'https://www.linkedin.com/in/dana-ruiz/', email: null, email_source_url: null, confidence: 'high', why: 'expanding', ...o })
@@ -53,11 +53,42 @@ test('checkLead: the text Claude read decides first, then the read by dazl, then
   const ours = await checkLead(l, [], page('<html><body><p>14 October 2026</p><p>Northwind Dental will open its second clinic in the spring.</p></body></html>'))
   assert.deepEqual([ours.proof, ours.proof_read_by], ['confirmed', 'dazl'])
   assert.equal((await checkLead(l, [], page('<p>Unrelated story</p>'))).proof, 'company_not_on_page')
-  const listed = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('blocked', 403))
-  assert.deepEqual([listed.proof, isShown(listed)], ['listed', true])
+  // a page nobody could read: shown when the search result's own title names the company AND speaks of the signal, dated or not
+  const listed = await checkLead({ ...l, signal_date: null }, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('blocked', 403))
+  assert.deepEqual([listed.proof, listed.signal_seen, isShown(listed)], ['listed', true, true])
+  assert.equal(isShown(read), true, 'a real expansion page: the quoted words are in the text that was read')
   const unseen = await checkLead(l, [{ url: 'https://news.example/other', title: 'Northwind Dental', page_age: null, text: null }], page('blocked', 403))
   assert.deepEqual([unseen.proof, isShown(unseen)], ['unseen', false], 'a proof URL the run never saw and nobody can read is not shown')
   assert.equal((await checkLead({ ...l, evidence_url: 'http://127.0.0.1/admin' }, [], never)).proof, 'unseen', 'a private address is never fetched')
+})
+
+// Review of #1575: recency and a date-like number are labels, never support for the buying signal.
+test('a recently indexed directory result nobody could read is not shown, however fresh the index date', async () => {
+  const blocked = (async () => new Response('blocked', { status: 403 })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead({ signal_date: null, evidence_quote: null })] }), 1).leads[0]
+  const dir = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental - reviews and opening hours', page_age: '3 days ago', text: null }], blocked)
+  assert.deepEqual([dir.proof, dir.date_source, dir.signal_seen, isShown(dir)], ['listed', 'index', false, false], 'the index date still labels the lead; it does not admit it')
+})
+
+test('a company page that prints the year and a routine number is not shown for a signal dated that day', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0]   // signal_date 2026-10-14, quote about the second clinic
+  const plain = await checkLead(l, [], page('<h1>Northwind Dental</h1><p>Family dentistry at 14 Main Street. Open Monday to Friday.</p><footer>Copyright 2026</footer>'))
+  assert.deepEqual([plain.proof, plain.date_on_page, plain.quote_on_page, plain.signal_seen, isShown(plain)], ['confirmed', true, false, false, false], 'the weak date check still labels; it does not admit')
+  // a quote that IS on the page but says nothing of the signal (the company describing itself) is not support either
+  const self = await checkLead({ ...l, evidence_quote: 'Family dentistry at 14 Main Street' }, [], page('<h1>Northwind Dental</h1><p>Family dentistry at 14 Main Street. Open Monday to Friday.</p>'))
+  assert.deepEqual([self.quote_on_page, self.signal_seen, isShown(self)], [true, false, false])
+})
+
+test('real signal pages stay shown: the full quote, a trimmed quote, and an undated page', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0]
+  const body = '<article><h1>Northwind Dental grows</h1><p>The practice said Northwind Dental will open its second clinic on King Street next spring, adding six chairs.</p></article>'
+  assert.equal(isShown(await checkLead(l, [], page(body))), true)
+  const trimmed = await checkLead({ ...l, evidence_quote: 'Northwind Dental will open its second clinic on King Street ... adding six chairs' }, [], page(body))
+  assert.deepEqual([trimmed.quote_on_page, isShown(trimmed)], [true, true], 'six consecutive quoted words on the page')
+  const undated = await checkLead({ ...l, signal_date: null }, [], page(body))
+  assert.deepEqual([undated.date, isShown(undated)], [null, true], 'no date is a missing label, not a missing proof')
 })
 
 test('second pass: only empty fields are filled, a person needs the page that names them, and the first pass is never overwritten', () => {
@@ -116,4 +147,146 @@ test('an index day older than a year is not shown as the date of the signal (#15
   assert.deepEqual([old.proof, old.date, old.date_source], ['confirmed', null, null])
   const recent = await checkLead(lead as never, page('November 10, 2026') as never, undefined as never, 1000, now)
   assert.deepEqual([recent.date, recent.date_source], ['2026-11-10', 'index'])
+})
+
+// Second review of #1575: overlapping words are not the claim. Signal: "Opening a second clinic".
+test('routine directory text that shares words with the signal is not shown; the real second-clinic announcement is', async () => {
+  const page = (body: string, status = 200) => (async () => new Response(body, { status })) as unknown as typeof fetch
+  const l = parseLeads(JSON.stringify({ leads: [lead({ signal_date: null })] }), 1).leads[0]
+  // the quoted words ARE on the page and share "opening" and "clinic" with the signal; nothing says a second clinic is opening
+  const routine = 'Northwind Dental clinic opening hours Monday to Friday'
+  const hours = await checkLead({ ...l, evidence_quote: routine }, [], page(`<h1>Northwind Dental</h1><p>${routine}. Call to book.</p>`))
+  assert.deepEqual([hours.proof, hours.quote_on_page, hours.signal_seen, isShown(hours)], ['confirmed', true, false, false])
+  // the same kind of title on a result nobody could read
+  const title = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental clinic reviews and opening hours', page_age: '3 days ago', text: null }], page('blocked', 403))
+  assert.deepEqual([title.proof, title.signal_seen, isShown(title)], ['listed', false, false])
+  // the real announcement, read and unread
+  const real = await checkLead(l, [], page('<p>Northwind Dental will open its second clinic on King Street next spring.</p>'))
+  assert.deepEqual([real.proof, real.signal_seen, isShown(real)], ['confirmed', true, true])
+  const realTitle = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental opens second clinic downtown', page_age: null, text: null }], page('blocked', 403))
+  assert.deepEqual([realTitle.proof, realTitle.signal_seen, isShown(realTitle)], ['listed', true, true])
+})
+
+// #1575, same-cohort repair. The strict rule above stays as it is. These cases are leads whose proof DOES state the claim and which the
+// rule still refused, because the claim's words were lost before they were compared: an amount written two ways, one verb in two
+// forms, a page stored with HTML entities. The page wording is copied from public proof pages named on #1571 (a funding news item, a
+// second funding item, a clinic's own announcement). The signal lines are written for these tests: the captured ones are only in the
+// staging database.
+test('#1575 an amount is one word however it is written: "$12 million" on the page proves a "$12M" round, and only that amount', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const said = 'has raised $12 million in a Series A funding round led by MMC'
+  const l = parseLeads(JSON.stringify({ leads: [lead({ company: 'LO:TECH', signal: 'Raised $12M Series A', signal_date: '2026-11-02', evidence_url: 'https://news.example/lotech-series-a', evidence_quote: said })] }), 1).leads[0]
+  const body = (sentence: string) => `<article><h1>London-based LO:TECH lands $12M Series A led by MMC</h1><p>London-based <a href="https://lo.example/">LO:TECH</a>, a capital markets firm built for round-the-clock and onchain markets, ${sentence}, with participation from existing investors.</p></article>`
+  const real = await checkLead(l, [], page(body(said)))
+  assert.deepEqual([real.proof, real.quote_on_page, real.signal_seen, isShown(real)], ['confirmed', true, true, true])
+  // controls: another amount is not this round, and a number that is not an amount is not one either
+  const other = 'has raised $120 million in a Series A funding round led by MMC'
+  assert.equal(isShown(await checkLead({ ...l, evidence_quote: other }, [], page(body(other)))), false, '$120 million is not $12M')
+  const months = 'has raised its Series A target over the last 12 months'
+  assert.equal(isShown(await checkLead({ ...l, evidence_quote: months }, [], page(body(months)))), false, '12 months is not $12M')
+})
+
+test('#1575 one verb is one word in every form ("to hire" and "hiring", "raise" and "raised"); the routine controls still fail', () => {
+  assert.equal(statesSignal('Hiring 40 engineers', 'Acme Robotics', 'Acme Robotics plans to hire 40 engineers this year'), true)
+  assert.equal(statesSignal('Seed raise of $5M', 'Seva Money', 'London-based fintech Seva Money raised $5 million in a seed round co-led by Blockwall and Revent'), true)
+  assert.equal(statesSignal('Opened a second office', 'Dental Care Group', 'We’re thrilled to announce that we’ve opened a second office – located just across the street'), true)
+  // controls: the same words about something else, and the review's routine text
+  assert.equal(statesSignal('Hiring 40 engineers', 'Acme Robotics', 'Acme Robotics engineers are available for hire'), false, 'no 40')
+  assert.equal(statesSignal('Seed raise of $5M', 'Seva Money', 'Seva Money plans to raise awareness of seed-stage fraud'), false, 'no amount')
+  assert.equal(statesSignal('Opening a second clinic', 'Northwind Dental', 'Northwind Dental clinic opening hours Monday to Friday'), false)
+  assert.equal(statesSignal('Opening a second clinic', 'Northwind Dental', 'Northwind Dental clinic reviews and opening hours'), false)
+})
+
+test('#1575 a page stored with HTML entities is read as the text a person sees: the quote and an accented company name are found', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  // the apostrophe is stored as &#x27; on the public page this line is copied from
+  const stored = '<p>Blockwall and Revent co-led the round. Seva&#x27;s remittance service is live in India and Mexico.</p><p>London-based fintech Seva Money raised $5 million in a seed round.</p>'
+  const short = parseLeads(JSON.stringify({ leads: [lead({ company: 'Seva Money', signal: 'Remittance service live in India and Mexico', signal_date: null, evidence_url: 'https://news.example/seva-seed', evidence_quote: 'Seva’s remittance service is live' })] }), 1).leads[0]
+  assert.equal((await checkLead(short, [], page(stored))).quote_on_page, true, 'a five-word quote across the apostrophe')
+  const accented = parseLeads(JSON.stringify({ leads: [lead({ company: 'Café Río Group', signal: 'Opening a second clinic', evidence_url: 'https://news.example/cafe-rio', evidence_quote: 'will open its second clinic in March' })] }), 1).leads[0]
+  const es = await checkLead(accented, [], page('<p>Caf&eacute; R&iacute;o Group will open its second clinic in March &ndash; the first opened in 2019.</p>'))
+  assert.deepEqual([es.proof, es.quote_on_page, isShown(es)], ['confirmed', true, true])
+  // control: decoding never turns escaped markup into a tag, and an unknown entity is left as written
+  const esc = await checkLead(accented, [], page('<p>Caf&eacute; R&iacute;o Group</p><p>&lt;p&gt;will open its second clinic in March&lt;/p&gt; &bogus;</p>'))
+  assert.deepEqual([esc.proof, esc.quote_on_page], ['confirmed', true])
+})
+
+// Review of #1575 at a2d8a45e: the event and its qualifier were still discardable. These are the review's own four cases, unchanged, on
+// the three paths a lead can take (the text Claude's reader returned, dazl's own read, an unread search result's title).
+test('#1575 the event and its qualifier are never set aside or outvoted: the review\'s four cases on the reader, dazl-read and unread-title paths', async () => {
+  const routine = 'Northwind Dental clinic Toronto Ontario at 14 Main Street, opening hours Monday to Friday.'
+  const cases = [
+    { id: 'short-hours-negative', signal: 'Opening a second clinic', quote: routine, want: false },
+    { id: 'address-hours-negative', signal: 'Opening a second clinic at 14 Main Street, open Monday to Friday', quote: routine, want: false },
+    { id: 'location-preface-negative', signal: 'Northwind Dental clinic Toronto Ontario, opening a second clinic.', quote: routine, want: false },
+    { id: 'announcement-positive', signal: 'Opening a second clinic', quote: 'Northwind Dental is opening a second clinic in Toronto.', want: true },
+  ]
+  for (const c of cases) for (const path of ['reader', 'dazl', 'title'] as const) {
+    const l = parseLeads(JSON.stringify({ leads: [lead({ signal: c.signal, evidence_quote: c.quote, evidence_url: 'https://northwind.example/news', signal_date: null })] }), 1).leads[0]
+    const seen = [{ url: l.evidence_url, title: c.quote, text: path === 'reader' ? c.quote : null, page_age: null }]
+    const fetcher = (async () => path === 'dazl' ? new Response(c.quote) : new Response('', { status: 403 })) as unknown as typeof fetch
+    const out = await checkLead(l, seen, fetcher)
+    assert.equal(isShown(out), c.want, `${c.id} ${path}`)
+    if (!c.want) assert.ok(out.claim_lacks.includes('second'), `${c.id} ${path}: the hold names the word the proof lacks`)
+  }
+})
+
+test('#1575 a claim is judged against the page\'s own sentence, read to its end: not the run\'s excerpt, and not the sentence after it', async () => {
+  const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+  const of = (o: Record<string, unknown>) => parseLeads(JSON.stringify({ leads: [lead({ signal_date: null, evidence_url: 'https://proof.example/page', ...o })] }), 1).leads[0]
+  const routine = 'Northwind Dental clinic opening hours Monday to Friday'
+  // detail appended to the claim never carries it (the first two were accepted at 0ec2bd93, the third at a2d8a45e)
+  for (const signal of ['Opening a second clinic, Monday to Friday', 'Opening a second clinic; open Monday to Friday', 'Opening a second clinic at 14 Main Street, open Monday to Friday', 'Opening a second clinic (Unit 6, 14 Main Street). The site lists its opening hours, Monday to Friday.']) {
+    const c = await checkLead(of({ signal, evidence_quote: routine }), [], page(`<h1>Northwind Dental</h1><p>${routine} at 14 Main Street. Call to book.</p>`))
+    assert.deepEqual([signal, c.quote_on_page, isShown(c)], [signal, true, false])
+  }
+  // the qualifier printed in the next sentence, or in another block, is not this sentence's word
+  for (const body of [`<h1>Northwind Dental</h1><p>${routine}. Second floor, 14 Main Street.</p>`, `<h1>Northwind Dental</h1><p>${routine}</p><p>Second opinions welcome</p>`]) {
+    const c = await checkLead(of({ signal: 'Opening a second clinic', evidence_quote: routine }), [], page(body))
+    assert.deepEqual([c.quote_on_page, c.claim_lacks, isShown(c)], [true, ['second'], false], body)
+  }
+  // words the run put in its excerpt that the page does not print are not evidence, even when six consecutive quoted words are on the page
+  const padded = await checkLead(of({ signal: 'Opening a second clinic', evidence_quote: `${routine} and will open its second clinic` }), [], page(`<h1>Northwind Dental</h1><p>${routine}.</p>`))
+  assert.deepEqual([padded.quote_on_page, padded.claim_lacks, isShown(padded)], [true, ['second'], false])
+  // a stored funding lead (staging, #1571): the line names the other investors, the stored quote stops before them, and the page's own
+  // sentence (copied from the public page) goes on to name them. Read to its end, that sentence states the whole line.
+  // (the line's "plus" and "with" are joining words; the page says "alongside" and "with participation from")
+  const quote = 'London-based LO:TECH, a capital markets firm built for round-the-clock and onchain markets, has raised $12 million in a Series A funding round led by MMC'
+  const line = 'Raised $12M Series A led by MMC, with existing investors Faction and 13 Books Capital, plus Atka'
+  const article = (rest: string) => `<article><h1>London-based LO:TECH lands $12M Series A led by MMC</h1><p>London-based <a href="https://lo.example/">LO:TECH</a>, a capital markets firm built for round-the-clock and onchain markets, has raised $12 million in a Series A funding round led by <a href="https://mmc.example/">MMC</a>${rest}</p></article>`
+  const whole = await checkLead(of({ company: 'LO:TECH', signal: line, evidence_quote: quote }), [], page(article(',\r\nwith participation from existing investors <a href="https://faction.example/">Faction</a> and 13 Books Capital,\r\nalongside Atka.')))   // the source wraps mid-sentence, as that page's does
+  assert.deepEqual([whole.proof, whole.quote_on_page, whole.claim_lacks, isShown(whole)], ['confirmed', true, [], true])
+  // the same line on a page whose sentence ends at the lead investor: the other investors are not proven, and the hold says which words
+  const cut = await checkLead(of({ company: 'LO:TECH', signal: line, evidence_quote: quote }), [], page(article('.')))
+  assert.deepEqual([cut.quote_on_page, isShown(cut)], [true, false])
+  assert.deepEqual(cut.claim_lacks, ['exist', 'investor', 'faction', '13', 'book', 'atka'])
+  // and the line that says only what the sentence says is shown
+  assert.equal(isShown(await checkLead(of({ company: 'LO:TECH', signal: 'Raised $12M Series A led by MMC', evidence_quote: quote }), [], page(article('.')))), true)
+})
+
+// Review of #1575 at 0db467b5: the same quoted words stood in two unrelated statements, and the words of both were pooled into one
+// piece of evidence. Each place the quote stands is its own evidence. The first two cases are the review's own, unchanged, on the
+// reader and dazl-read paths.
+test('#1575 a claim must be stated where the quote stands: statements that only share the quoted words are never pooled', async () => {
+  const q = 'Northwind Dental opening hours run Monday to Friday'
+  const cases = [
+    { id: 'two-unrelated-matched-statements', quote: q, parts: [`${q} for the clinic.`, `${q}; the second page has information.`], want: false },
+    { id: 'actual-event-completes-quote', quote: 'Northwind Dental issued a statement today', parts: ['Northwind Dental issued a statement today announcing it is opening a second clinic.'], want: true },
+    // the same two statements written as one sentence: a semicolon ends a statement too
+    { id: 'one-sentence-two-statements', quote: q, parts: [`${q} for the clinic; the second page has information.`], want: false },
+    // three places, none of which says it; and the words of the claim spread over places that each hold the quote
+    { id: 'three-places', quote: q, parts: [`${q}.`, `${q} at our clinic.`, `${q}, second floor.`], want: false },
+    // one of several places does say it: that place alone is the proof
+    { id: 'one-place-states-it', quote: 'Northwind Dental said today', parts: ['Northwind Dental said today that parking is free.', 'Northwind Dental said today it is opening a second clinic.'], want: true },
+    // a quote that itself runs through two statements is read as both, there and nowhere else
+    { id: 'quote-spans-two-statements', quote: 'has outgrown its site; Northwind Dental is opening a second clinic', parts: ['The practice has outgrown its site; Northwind Dental is opening a second clinic.'], want: true },
+  ]
+  for (const c of cases) for (const path of ['reader', 'dazl'] as const) {
+    const l = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Opening a second clinic', evidence_quote: c.quote, evidence_url: 'https://northwind.example/news', signal_date: null })] }), 1).leads[0]
+    const seen = [{ url: l.evidence_url, title: 'Northwind Dental', text: path === 'reader' ? c.parts.join('\n') : null, page_age: null }]
+    const fetcher = (async () => new Response(c.parts.map(x => `<p>${x}</p>`).join(''))) as unknown as typeof fetch
+    const out = await checkLead(l, seen, fetcher)
+    assert.deepEqual([out.quote_on_page, isShown(out)], [true, c.want], `${c.id} ${path}: ${JSON.stringify(out.claim_lacks)}`)
+    if (!c.want) assert.ok(out.claim_lacks.length > 0, `${c.id} ${path}: the hold names what the nearest place lacks`)
+  }
 })

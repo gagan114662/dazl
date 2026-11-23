@@ -28,7 +28,7 @@ export interface DiscoveredLead {
   signal: string
   signal_date: string | null        // YYYY-MM-DD as printed on the proof page, or null
   evidence_url: string              // the page that shows the signal
-  evidence_quote: string | null     // a short exact quote from that page
+  evidence_quote: string | null     // the sentence on that page that states the signal, word for word
   person: string | null
   title: string | null
   person_source_url: string | null  // the page that names the person
@@ -54,10 +54,12 @@ How to work:
 - For each candidate, open the page that proves the signal. Use the date printed on that page for the event. A company's own page often announces something without a date: then look for a dated page about the same event and use that as the proof. If no page prints a date, set signal_date to null; never estimate one. For a job posting use the date it was posted. For a news item or press release that is itself the announcement, its printed publication date is the date.
 - A lead with a dated proof page is worth far more to the seller than one without. Prefer companies whose signal you can date, and spend a search on dating a strong candidate before adding an undated one.
 - evidence_url must be a page you opened or one that appeared in your search results, and the company's name must be on it.
+- evidence_quote is the sentence on the proof page that states the event itself, copied word for word, 300 characters at most. A line that only describes the company (its services, its address, its opening hours) is not a quote for the event. Write signal as one short line that says what that sentence says, keeping the sentence's own words for what happened and its numbers and names. Leave out of signal any detail the proof page does not state.
 - The proof page must be about this one company: a single job posting, one news item, a press release, the company's own page. A search-results page, a job-board listing or a directory that shows many companies is not proof, even when the company appears in it. When a listing page shows a promising company, open that company's own posting or careers page and use that as the proof; if you cannot reach one, leave the company out.
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
 - Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give a LinkedIn URL only when a page links it. If you cannot find a person, leave the person fields null and still return the lead.
 - Give an email address only when a page prints it for this company or this person, and give that page's URL. Never build an address from a name or a pattern.
+- The email must be the named person's own work address. A shared inbox (info@, sales@, hello@, contact@, reception@, founders@ and the like) is not a contact: leave email null rather than give one.
 - The company's website domain should be its own site, not a directory or news site. If you are not sure, set it to null.
 - Never invent a company, a person, a date, a quote or a URL. Every URL you return must be one you saw in a search result or opened.
 - Different companies are worth more than several items about one company. Aim for the number of leads asked for, but return fewer good ones over more weak ones.
