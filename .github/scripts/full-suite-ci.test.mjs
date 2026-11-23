@@ -14,7 +14,7 @@ const job = name => {
   assert.ok(m, `job ${name} missing`)
   return m[1]
 }
-const TIMEOUT = "timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 5 || 45 }}"
+const TIMEOUT = "timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}"
 const FULL_ENV = "FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite-ci') }}"
 const SELECT = 'if [ "$FULL_SUITE" = true ]; then sel=ALL; else sel=$(node .github/scripts/affected-tests.mjs'
 

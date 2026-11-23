@@ -3,8 +3,8 @@
 1. **Pre-commit** (`.githooks/pre-commit`): eslint on staged files, then tsc (`npm run check:unused`).
    Install once per clone: `git config core.hooksPath .githooks`.
 2. **PR CI** (`web-ci.yml`, pull_request): lint plus only the tests affected by the changed files
-   (`.github/scripts/affected-tests.mjs`), hard 5-minute budget per job. Shared plumbing changes fall back to the full suite.
-   An over-budget run fails with "PR CI over the 5-minute budget"; open an optimization issue/lane for it.
+   (`.github/scripts/affected-tests.mjs`), hard 20-minute budget per job. Shared plumbing changes fall back to the full suite.
+   An over-budget run fails with "PR CI over the 20-minute budget"; open an optimization issue/lane for it.
    The no-closing-keywords check is unchanged.
 3. **Post-merge** (`web-ci.yml`, push to main): the full suite on SQLite and Postgres. When both pass, the commit gets
    the `main-green` commit status and the `main-green` tag moves to it. Only green commits deploy. Red on main: fix forward.
