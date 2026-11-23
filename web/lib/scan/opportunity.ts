@@ -11,7 +11,7 @@
 import { companyTied } from '../people/company-tie.ts'
 import { onlyNameOnly, recommendedPerson, HISTORICAL_CONNECTORS, type PersonContact } from '../people/rank.ts'
 import { leadPerson } from '../people/lead-person.ts'
-import { discoverApprove, discoverContact, discoverMissing, isDiscoverLead } from '../discover/card.ts'
+import { discoverApprove, discoverContact, discoverLinkedIn, discoverMissing, discoverProofHold, discoverSite, isDiscoverLead } from '../discover/card.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -81,7 +81,7 @@ export function identityOf(l: { id?: string; contact: string | null }, rows: { c
 // How far the card's contact is established, for the compact lead card: the same identity facts the opportunity card
 // uses (identityOf, the cited-email rule, domainReviewFor), reduced to a state and one plain line. Nothing is upgraded:
 // anything short of the cited page, the site's own page, or the user's own website check reads as unconfirmed.
-export type ContactIdentity = { state: 'cited' | 'fact' | 'user_confirmed' | 'unconfirmed' | 'conflict' | 'none'; text: string }
+export type ContactIdentity = { state: 'cited' | 'fact' | 'user_confirmed' | 'identified' | 'unconfirmed' | 'conflict' | 'none'; text: string }
 export function contactIdentity(l: CardLead): ContactIdentity {
   const rows = l.enrichments ?? []
   const ident = identityOf(l, rows)
@@ -89,6 +89,11 @@ export function contactIdentity(l: CardLead): ContactIdentity {
   const review = domainReviewFor({ id: l.id ?? '', contact: l.contact }, rows)
   if (PUBLISHED_EMAIL_RE.test((l.contact ?? '').trim().toLowerCase()) && pc?.source === 'lead' && review.state !== 'required') return { state: 'cited', text: 'address printed on the cited page' }
   if (ident?.state === 'conflict') return { state: 'conflict', text: ident.text }
+  // #1571: a lead from the Claude discovery lane has no site-crawl record. Its website is the one the run stored on the lead, the same
+  // value Details and the Website link show, so the card must not say none was identified. Identified is all it is: found by the search,
+  // not confirmed as the company's own, and never one of the established states. No stored host name: not identified, as before.
+  const found = !ident && isDiscoverLead(l as { source_kind?: string | null }) ? discoverSite(l.company_domain) : null
+  if (found) return { state: 'identified', text: `Website identified: ${found}. Not confirmed as the company's own site` }
   if (!ident) return { state: 'none', text: "the company's own website was not identified" }
   if (ident.state === 'user_confirmed') return { state: 'user_confirmed', text: ident.text }
   if (ident.state === 'fact' && review.state !== 'required') return { state: 'fact', text: ident.text }
@@ -103,9 +108,12 @@ export function opportunityCard(l: CardLead, buyerRoles = '', now: Date = new Da
     const c = discoverContact(d as never), approve = discoverApprove(d as never), missing = discoverMissing({ ...d, name: d.name ?? '', confidence: d.confidence ?? null } as never)
     const who = c?.person ? { name: c.person.name, title: c.person.title, link: c.person.linkedin, identity: c.person.source ? 'named on a public page' : 'named in the run' } : null
     if (!c?.email) missing.push('a published email address')
+    const hold = discoverProofHold(d as never), reach = discoverLinkedIn(d as never)
     const next = l.quarantined_at ? 'None: quarantined.' : l.review_reason ? 'Check the source yourself before using this lead.'
       : approve.ok ? `Draft a first message${who ? ` to ${who.name}` : ''} introducing your offer; mention the event only as context.`
-      : who?.link ? `Message ${who.name} on LinkedIn yourself: open their profile and mention the event only as context.` : who ? `Find a way to reach ${who.name}.` : 'Find the person to contact before reaching out.'
+      // #1579: the same rule as the "Message on LinkedIn" button (discoverLinkedIn). A proof hold (no date, a required check, not a fit)
+      // is the next step in its own words; "Message ... on LinkedIn" is said only when that button is on the card.
+      : hold ? hold : reach ? `Message ${reach.name} on LinkedIn yourself: open their profile and mention the event only as context.` : who ? `Find a way to reach ${who.name}.` : 'Find the person to contact before reaching out.'
     return {
       whyThisBusiness: l.why?.trim() || 'Found for your request.',
       whyNow: { claim: l.signal, date: l.event_date, dateNote: l.event_date ? (d.date_status === 'verified' ? `${l.event_date}, printed on the proof page` : `${l.event_date}, the day the page was published`) : 'event date unknown', source: l.source_url, quote: l.evidence_excerpt },

@@ -22,6 +22,7 @@ import { contactsFromEnrichments, peopleSourceText, roleContradicted, type Conta
 import type { SiteIdentity } from './currency.ts'
 
 export const NO_BUYER = 'No buyer named yet'
+const DISCOVER_VIA = 'named on a public page'
 export interface LeadPerson { name: string; title: string; linkedin: string | null; source: string | null; via: string; current: boolean }
 
 const PROFILE = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\/[A-Za-z0-9\-_%]{3,100}\/?$/
@@ -62,7 +63,7 @@ function discoverPerson(rows: unknown): LeadPerson | null {
   if (!NAME.test(name) || (name.split(' ').filter(Boolean).length < 2 && !NO_SPACE_NAME.test(name))) return null
   const li = mine.find(r => r.kind === 'linkedin' && typeof r.value === 'string' && PROFILE.test(r.value as string))
   const source = typeof p.source_url === 'string' && SOURCE.test(p.source_url) ? p.source_url : null
-  return { name, title, linkedin: li ? li.value as string : null, source, via: 'named on a public page', current: true }
+  return { name, title, linkedin: li ? li.value as string : null, source, via: DISCOVER_VIA, current: false }
 }
 
 export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date.now(), site: SiteIdentity | null = null): LeadPerson | null {
@@ -94,3 +95,8 @@ export function leadPerson(rows: unknown, icpText: unknown, nowMs: number = Date
 export function leadPersonLine(p: LeadPerson | null): string {
   return p ? `${p.name} · ${p.title}` : NO_BUYER
 }
+
+// The words in brackets after the person on a lead row (#1579). "verified current" only for a person read on the company's own confirmed
+// website within the currency window (lib/people/currency.ts). A person the discovery lane found is named on a public page: nothing
+// checked that they hold the role today, so the row says so, as Details does ("None verified as current").
+export const personBasis = (p: LeadPerson): string => p.current ? 'verified current' : p.via === DISCOVER_VIA ? `${DISCOVER_VIA}, not verified as current` : 'search result, not verified as current'

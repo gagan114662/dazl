@@ -17,7 +17,7 @@ import { previewSplit, type PreviewLead } from '@/lib/journey'
 import ResearchReview, { asResearchBlock } from './research-review'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import { identityOf } from '@/lib/scan/opportunity'
-import { leadPerson, NO_BUYER } from '@/lib/people/lead-person'
+import { leadPerson, personBasis, NO_BUYER } from '@/lib/people/lead-person'
 import { calendarDay } from '@/lib/day'
 import { sourceName, stateText } from '@/lib/source-progress-copy'
 import type { First5View } from '@/lib/scan/first5'
@@ -538,7 +538,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                         {f5Live || l.provisional || !ready ? <Pill tone="peach">checking</Pill> : readyIds.has(l.id) ? <Pill tone="mint">ready to contact</Pill> : <Pill tone="grey">needs research</Pill>}</div>
                       <p className="text-sm text-[var(--ink-2)] mt-1 line-clamp-2 break-words">{l.signal}</p>
                       {!f5Live && !l.provisional && first?.leads && (() => { const row = fullRow(l.id); const p = row ? buyerOf(row) : null
-                        return p ? <p className="text-sm mt-1.5" data-testid="first-lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a></> : null}<span className="text-xs text-[var(--ink-3)]"> ({p.current ? 'verified current' : 'search result, not verified as current'})</span></p>
+                        return p ? <p className="text-sm mt-1.5" data-testid="first-lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow">LinkedIn</a></> : p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow">source</a></> : null}<span className="text-xs text-[var(--ink-3)]"> ({personBasis(p)})</span></p>
                           : <p className="text-sm mt-1.5 text-[var(--ink-2)]" data-testid="first-lead-person" data-empty="true">{NO_BUYER} · <a className="underline" href={`/app/leads?job_id=${first.id}`}>Find contact</a></p> })()}
                       {!f5Live && ready && !readyIds.has(l.id) && <p className="text-xs mt-1.5 text-[var(--ink-2)]" data-testid="lead-gap">To contact: {gapOf(l.id)}</p>}
                       {!f5Live && ready && readyIds.has(l.id) && l.fit_pct != null && <p className="text-xs mt-1.5 text-[var(--ink-2)]">fit {l.fit_pct}%</p>}
