@@ -39,19 +39,34 @@ export function discoverSources(l: { source_url?: string | null; enrichments?: {
 // The person and the published email a discovery lead carries, with the pages they came from. These are the rows the run stored
 // (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
 export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null }
-type Row = { kind: string; connector?: string; value?: string; source_url?: string | null }
+type Row = { kind: string; connector?: string; value?: string; source_url?: string | null; retrieved_at?: number | null }
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
   const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
-  const p = rows.find(r => r.kind === 'person' && r.value), e = rows.find(r => r.kind === 'email' && r.value && r.source_url && EMAIL.test(r.value.trim().toLowerCase()))
+  const p = rows.find(r => r.kind === 'person' && r.value), e = discoverRecipient(rows)
   const li = rows.find(r => r.kind === 'linkedin' && r.value)
   let person: DiscoverContact['person'] = null
   if (p) {
     const i = p.value!.indexOf(', ')
     person = { name: (i < 0 ? p.value! : p.value!.slice(0, i)).trim(), title: i < 0 ? null : p.value!.slice(i + 2).trim() || null, linkedin: li?.value ?? null, source: p.source_url ?? null }
   } else if ((l.name ?? '').trim()) person = { name: l.name!.trim(), title: null, linkedin: li?.value ?? null, source: null }
-  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null }
+  return { person, email: e }
+}
+// The ONE published address of a discovery lead. Every reader uses this and nothing else: the card, the card's recipient hold and the
+// draft the server writes (lib/outreach/service.ts), so the address shown is the address written to. (Review of #1578: the card took
+// the first row it was handed and the server the earliest stored; with two addresses they could differ.)
+// Which one: among the run's own email rows that are an address and name the page that prints it, the earliest stored; stored at the
+// same instant, the address first in order. A row that is not an address, or names no page, is not a published address.
+// The choice never asks whether the address may be written to. A chosen address that is suppressed, personal or off the company's
+// site holds the lead; it is never passed over for the next one.
+export function discoverRecipient(rows: Row[]): { address: string; source: string } | null {
+  const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
+  const c = rows.filter(r => r.connector === 'discover' && r.kind === 'email' && !!r.source_url)
+    .map(r => ({ address: (r.value ?? '').trim().toLowerCase(), source: r.source_url!, at: r.retrieved_at ?? Number.MAX_SAFE_INTEGER }))
+    .filter(r => EMAIL.test(r.address))
+    .sort((a, b) => a.at - b.at || order(a.address, b.address) || order(a.source, b.source))
+  return c.length ? { address: c[0].address, source: c[0].source } : null
 }
 // The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
 // A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's

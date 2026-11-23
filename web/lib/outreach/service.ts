@@ -17,7 +17,7 @@ import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
-import { emailOnCompanySite, signalStale } from '../discover/card.ts'
+import { discoverRecipient, emailOnCompanySite, signalStale } from '../discover/card.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -323,10 +323,13 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // (a personal mailbox, the do-not-contact list), so Approve is never on for an address the server would refuse. null: not refused,
 // or the lead has no published address. 'unreadable': the address or the list could not be read (review of #1578). That is never
 // "not refused": the card keeps Approve off and says so, and the failure is recorded for the operator instead of being dropped.
+// The discovery lead's one published address, chosen by the rule the card uses (lib/discover/card.ts discoverRecipient) from this
+// workspace's own rows: the refusal below and the draft both read it here, so neither can pick another address than the card shows.
+const discoverPublished = (db: Database.Database, tenantId: string, leadId: string): { address: string; source: string } | null =>
+  discoverRecipient(db.prepare("SELECT connector, kind, value, source_url, retrieved_at FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email'").all(tenantId, leadId) as { connector: string; kind: string; value: string; source_url: string | null; retrieved_at: number | null }[])
 export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
   try {
-    const row = db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string } | undefined
-    const to = norm(row?.value ?? '')
+    const to = norm(discoverPublished(db, tenantId, leadId)?.address ?? '')
     if (!EMAIL_RE.test(to)) return null
     return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
   } catch (e) {
@@ -340,17 +343,17 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
   if (!state?.event_date || signalStale(state.event_date)) throw new OutreachError('lead_currentness_unconfirmed')
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
-  const row = db.prepare("SELECT value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email' ORDER BY retrieved_at, id LIMIT 1").get(tenantId, leadId) as { value: string; source_url: string } | undefined
-  const to = norm(row?.value ?? '')
+  const row = discoverPublished(db, tenantId, leadId)
+  const to = norm(row?.address ?? '')
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   if (classifyPurpose(to).purpose === 'non-sales') throw new OutreachError('not_sales_contact')
-  if (!emailOnCompanySite(to, row!.source_url, state?.company_domain ?? null)) throw new OutreachError('domain_unconfirmed')
+  if (!emailOnCompanySite(to, row!.source, state?.company_domain ?? null)) throw new OutreachError('domain_unconfirmed')
   if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db, tenantId, to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
-  return { lead, to, addressUrl: row!.source_url, test }
+  return { lead, to, addressUrl: row!.source, test }
 }
 
 function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
