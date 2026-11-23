@@ -6,7 +6,7 @@
 // <leads.json>: an array of { id?, company, signal, source_url, evidence_excerpt } as a discovery lead is stored, for example
 //   SELECT substr(id,1,8) AS id, company, signal, source_url, evidence_excerpt FROM leads WHERE source_kind = 'discover' ORDER BY retrieved_at
 // Keep that file outside the repository: it holds lead data and the repository is public.
-// Default: does the stored quote state the lead's claim (the rule alone, no network).
+// Default: does the stored quote state the lead's signal line (the rule alone, no network).
 // --read: dazl also reads each proof page now and the line says whether the lead would be shown. A stored lead keeps neither the text
 //   the run's reader returned nor its search results, so this replays the "read by dazl" path only; a page that has changed or that
 //   refuses dazl reads differently from the day of the run.
@@ -38,16 +38,15 @@ for (const [i, r] of rows.entries()) {
   const w = check.signalWordsIn(signal, company, quote ?? '')
   const states = !!quote && check.statesSignal(signal, company, quote)
   if (states) stated++
-  // the claim is the line's first statement where this copy of check.ts has that rule, else the whole line
-  const first = (check as Partial<Check>).leadStatement
-  const c = (first ? check.signalWordsIn(first(signal, company), company, quote ?? '') : w) as { want: number; found: number; missing?: string[] }
-  let line = !quote ? 'no quote stored' : `${states ? 'quote states the claim' : 'quote does NOT state the claim'}: ${c.found} of ${c.want} claim words${c.missing?.length ? `, lacks: ${c.missing.join(', ')}` : ''}${first ? ` (whole line ${w.found} of ${w.want})` : ''}`
+  const lacks = (w as { missing?: string[] }).missing
+  let line = !quote ? 'no quote stored' : `stored quote ${states ? 'states the line' : 'does NOT state the line'}: ${w.found} of ${w.want} words${lacks?.length ? `, lacks: ${lacks.join(', ')}` : ''}`
   if (read) {
     const lead: DiscoveredLead = { company, domain: null, signal, signal_date: null, evidence_url: String(r.source_url ?? ''), evidence_quote: quote, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '' }
     const c = await check.checkLead(lead, [])
     if (check.isShown(c)) shown++
-    line += `; page ${c.proof}${c.proof === 'confirmed' ? `, quote ${c.quote_on_page ? 'on' : 'not on'} the page` : ''}; ${check.isShown(c) ? 'SHOWN' : 'review'}`
+    const pageLacks = (c as { claim_lacks?: string[] }).claim_lacks
+    line += `; page ${c.proof}${c.proof === 'confirmed' ? `, quote ${c.quote_on_page ? 'on' : 'not on'} the page` : ''}${c.quote_on_page && pageLacks?.length ? `, its sentence lacks: ${pageLacks.join(', ')}` : ''}; ${check.isShown(c) ? 'SHOWN' : 'review'}`
   }
   console.log(`${String(i + 1).padStart(2)}. ${(r.id ?? '').padEnd(8)} ${company.slice(0, 36).padEnd(36)} ${line}`)
 }
-console.log(`\nquote states the claim: ${stated} of ${rows.length}${read ? `; shown after dazl's own read of the page: ${shown} of ${rows.length}` : ''}`)
+console.log(`\nstored quote states the line: ${stated} of ${rows.length}${read ? `; shown after dazl's own read of the page: ${shown} of ${rows.length}` : ''}`)
