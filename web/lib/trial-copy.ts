@@ -94,11 +94,13 @@ export function trialRefusalNotice(reason: unknown, here: string, account: { ver
 
 // What POST /api/scan's 402 trial_unavailable (with its admission reason) says on the Leads page, in plain words: never the raw error id.
 // The money allowance (account_total_cap) is called the free trial allowance; every refusal ends with the one next step, the account's own key.
-// The sign-up page's plan line (#1095): the free trial scans come with Google sign-in, never promised to the email path.
+// The sign-up page's plan line (#1095, #1428): free beta, what a search is, and the free first search, which comes with
+// Google sign-in and is never promised to the email path. Shown only where a trial can really be admitted.
+const BETA_LINE = 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell.'
 export function signUpPlanLine(trialFunded: boolean): string {
   return trialFunded
-    ? 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.'
-    : 'Free plan: 50 scans a month with your own AI key. Upgrade any time.'
+    ? `${BETA_LINE} Sign in with Google (or link it later) and your first search is free: no card and no key.`
+    : `${BETA_LINE} On this site a search runs on your own Anthropic key, which you add in Settings.`
 }
 
 export function trialRefusedCopy(reason: unknown): string {

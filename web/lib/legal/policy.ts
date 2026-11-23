@@ -5,12 +5,12 @@
 // This file is deliberately import-free (it is bundled into public pages): the values are copied here and the test
 // compares them with the real constants.
 //
-// Status: DRAFT. Nothing here is a legal conclusion. Statements describe what the software does today. Anything that
-// needs the owner or counsel (legal entity, contact, governing law, liability, which laws apply, retention periods not
-// yet chosen) is a visible bracketed NEEDS OWNER / NEEDS COUNSEL marker, never an invented term. The draft label stays
-// until the owner and qualified counsel approve the final text.
+// Status: both texts are final. The privacy policy was finished for publication on the owner's instruction (2026-11-22).
+// The terms are the plain-English free-beta terms the owner approved on 2026-11-23 (#1428, decision recorded on #1579):
+// their wording is hers, so change a sentence only on a new owner decision. Neither text carries a draft label or a
+// bracketed placeholder (test/legal-policy.test.ts).
 
-export const POLICY_STATUS = 'draft' as const   // the terms of service; the privacy policy below was finished for publication on the owner's instruction (2026-11-22)
+export const POLICY_STATUS = 'final' as const   // the terms of service
 export const PRIVACY_STATUS = 'final' as const
 // The published privacy policy states these as facts, so production must run with them. They are off by default in the code:
 // set them on the production host before the policy is deployed (test/legal-policy.test.ts holds the text to this list).
@@ -19,23 +19,25 @@ export const PRIVACY_REQUIRES_ENV = {
   AUDIT_RETENTION_DAYS: '365',      // the audit trail is deleted after 365 days
   DAZL_TRACE_CAPTURE: '',           // unset: no debug copies of scans are kept
 } as const
-export const DRAFT_NOTICE = 'DRAFT - not yet approved by the site owner or reviewed by a lawyer. The statements below describe how the software behaves today; bracketed items are open decisions. Not legal advice.'
+// The one sentence about price, used by the terms and by the homepage's free-beta card, so the two cannot differ.
+export const FREE_BETA_TERMS = "dazl is free during the beta. We don't charge you anything. We'll give at least 30 days' notice by email before any paid plan starts, and nothing will be charged without you choosing a plan."
 
-// Owner-supplied facts that are not in the code. Each stays a visible placeholder until the owner provides it.
+// Owner-supplied facts that are not in the code.
 // legalName, companyRegistration and privacyContact: owner-confirmed 2026-11-06 (#535) and checked against the
 // Ajman Free Zone licence and Commercial Registry. Only document-verified fields are used here.
 // NEEDS COUNSEL: the licence activity is 'Management Consultancies'; counsel to confirm it covers operating dazl.
 export const OWNER_PLACEHOLDERS = {
   legalName: 'Mathematricks - F.Z.E',
   companyRegistration: 'a Free Zone Establishment with limited liability in the Ajman Free Zone, United Arab Emirates (licence and registration no. 47839, first issued 23 July 2025; authorized capital AED 100,000), with its premises at Office C1-1F-SF11592, Ajman Free Zone C1 Building, Ajman, United Arab Emirates',
-  lastUpdated: '22 November 2026',
+  lastUpdated: '22 November 2026',        // the privacy policy
+  termsLastUpdated: '23 November 2026',   // the terms of service
   privacyContact: 'privacy@dazl.ai',
   systemMailProvider: 'Resend',   // production's SYSTEM_MAIL_SMTP_URL host is smtp.resend.com (checked 2026-11-22)
 } as const
 
 // Facts held to the code by test/legal-policy.test.ts. The comment on each names its source.
 export const FACTS = {
-  freeScansPerMonth: 50,                 // lib/plans.ts PLAN_LIMITS.free.scansPerMonth
+  freeScansPerMonth: 50,                 // lib/plans.ts PLAN_LIMITS.free.scansPerMonth (the terms no longer state it: free beta, #1428)
   revokedSessionRetainDays: 30,          // lib/sessions.ts SESSION_RETAIN_S
   systemMailOutboxRetainHours: 24,       // lib/system-mail.ts OUTBOX_RETAIN_S
   accountHistoryFlag: 'ACCOUNT_RETENTION_ENABLED', // lib/account-retention.ts: sessions/outbox reaping is off unless '1'
@@ -270,25 +272,32 @@ export const PRIVACY: Section[] = [
 
 export const TERMS: Section[] = [
   { heading: 'Agreement', paragraphs: [
-    `Last updated: ${P.lastUpdated}. These terms are between you and ${P.legalName}, ${P.companyRegistration}. [NEEDS COUNSEL: how acceptance is recorded at sign-up.]`,
+    `Last updated: ${P.termsLastUpdated}. These terms are between you and ${P.legalName}, ${P.companyRegistration}. dazl is a product of ${P.legalName}.`,
+    'By creating an account you agree to these Terms and to the Privacy Policy.',
   ] },
   { heading: 'The service', paragraphs: [
     'dazl finds prospects from public sources, shows the source for each one, and drafts outreach with AI models. You are the sender of the messages you approve and send, and you are responsible for them.',
-    'Autopilot, if you turn it on, sends first-touch emails from your Gmail without asking you each time, within the daily limits you set and only after your first sends were approved by you. You can pause it at any time, and pausing stops sends before the next send; a send already handed to Gmail cannot be recalled. [NEEDS OWNER: the autopilot consent text users accepted still says \'Pausing stops sends immediately\' - an overpromise next to this behavior; changing an accepted consent text is a consent-version decision, not copy repair.]',
+    'Autopilot is not available during the beta. Every message is reviewed and sent by you.',
   ] },
   { heading: 'AI-generated content', paragraphs: [
-    'Lead scores, summaries and drafts are produced by AI models and can be wrong. Check the cited source and the draft before you send. dazl does not add an AI-generated label to prospect messages: dazl adds your name, your mailing address and an unsubscribe link to your draft. [NEEDS COUNSEL: whether any recipient jurisdiction requires such a disclosure.]',
+    'Lead scores, summaries and drafts are produced by AI models and can be wrong. Check the cited source and the draft before you send. dazl does not add an AI-generated label to prospect messages: dazl adds your name, your mailing address and an unsubscribe link to your draft. You are responsible for any disclosure the law where your recipient lives requires.',
   ] },
   { heading: 'Acceptable use', paragraphs: [
     'No spam, no purchased lists, no messages to people who asked to stop, no illegal or deceptive content. You must comply with the anti-spam and privacy laws that apply to you and your recipients, for example CASL in Canada, CAN-SPAM in the US, and PECR and GDPR in the UK and EU.',
   ] },
-  { heading: 'Your keys and connected accounts', paragraphs: [
-    `If you connect your own ${ai}, ${enrich} or CRM account, usage on it is billed to you by that provider under your agreement with them. Cost figures dazl shows for those accounts are estimates.`,
+  { heading: 'Your key', paragraphs: [
+    'If you connect your own Anthropic key, usage is billed to you by Anthropic. Cost figures dazl shows for that usage are estimates.',
   ] },
   { heading: 'Plans and billing', paragraphs: [
-    `The free plan includes ${FACTS.freeScansPerMonth} scans a month with your own AI key. Payments are processed by Stripe. [NEEDS OWNER: paid plan prices, renewal, refunds and cancellation terms.]`,
+    FREE_BETA_TERMS,
   ] },
   { heading: 'Liability and termination', paragraphs: [
-    '[NEEDS COUNSEL: warranty disclaimer, limitation of liability, indemnity, termination, governing law and venue.]',
+    'During the beta the service is provided "as is", with no warranties.',
+    'Our liability to you is capped at the greater of the amounts you paid us in the last 12 months or US$100.',
+    'You indemnify us for the messages you send.',
+    `You can close your account at any time by writing to ${P.privacyContact}. We can suspend accounts that break the Acceptable use rules above.`,
+  ] },
+  { heading: 'Governing law', paragraphs: [
+    'These terms are governed by the laws of Ontario, Canada. Disputes go to the courts in Toronto.',
   ] },
 ]

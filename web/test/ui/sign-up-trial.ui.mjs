@@ -23,8 +23,8 @@ try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.spli
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 
 // #1095: the trial scans come with Google sign-in (lib/trial-copy.ts signUpPlanLine)
-const TRIAL_LINE = /Sign in with Google \(or link it later\) for 3 free trial scans first/
-const FALLBACK_LINE = /Free plan: 50 scans a month with your own AI key\. Upgrade any time\./
+const TRIAL_LINE = /Sign in with Google \(or link it later\) and your first search is free: no card and no key\./
+const FALLBACK_LINE = /On this site a search runs on your own Anthropic key, which you add in Settings\./
 
 async function withServer(env, fn) {
   const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
