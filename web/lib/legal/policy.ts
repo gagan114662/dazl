@@ -9,6 +9,10 @@
 // The terms are the plain-English free-beta terms the owner approved on 2026-11-23 (#1428, decision recorded on #1579):
 // their wording is hers, so change a sentence only on a new owner decision. Neither text carries a draft label or a
 // bracketed placeholder (test/legal-policy.test.ts).
+// #1428 (owner decision on #1428 and #1579, 2026-11-23): the privacy policy names only the providers the service uses in
+// its launch configuration (Claude only, send-only Gmail, no autopilot, no billing). A provider the code can still call
+// behind an operator switch carries `off` in API_HOSTS below and is NOT named in the text; switch one on and the text
+// must name it first (test/legal-policy.test.ts holds both directions).
 
 export const POLICY_STATUS = 'final' as const   // the terms of service
 export const PRIVACY_STATUS = 'final' as const
@@ -18,6 +22,12 @@ export const PRIVACY_REQUIRES_ENV = {
   ACCOUNT_RETENTION_ENABLED: '1',   // signed-out sessions deleted after 30 days, undelivered account email after 24 hours
   AUDIT_RETENTION_DAYS: '365',      // the audit trail is deleted after 365 days
   DAZL_TRACE_CAPTURE: '',           // unset: no debug copies of scans are kept
+  // #1428: unset, so the providers the policy does not name are never called
+  TINYFISH_ENABLED: '',             // lib/search/tinyfish.ts tinyfishEnabled: TinyFish search and fetch
+  DAZL_PAID_VENDORS: '',            // lib/paid-vendors.ts: OpenAI, Apollo, People Data Labs, ZeroBounce, Jina
+  DAZL_DISCOVER_LANE: '',           // lib/scan/runner.ts laneSwitchedOn: '0' would run the older engine (TinyFish, Jina, key enrichment)
+  BILLING_AVAILABLE: '',            // lib/beta.ts: Stripe checkout
+  AUTOPILOT_AVAILABLE: '',          // lib/beta.ts: sending without a person's approval
 } as const
 // The one sentence about price, used by the terms and by the homepage's free-beta card, so the two cannot differ.
 export const FREE_BETA_TERMS = "dazl is free during the beta. We don't charge you anything. We'll give at least 30 days' notice by email before any paid plan starts, and nothing will be charged without you choosing a plan."
@@ -29,7 +39,7 @@ export const FREE_BETA_TERMS = "dazl is free during the beta. We don't charge yo
 export const OWNER_PLACEHOLDERS = {
   legalName: 'Mathematricks - F.Z.E',
   companyRegistration: 'a Free Zone Establishment with limited liability in the Ajman Free Zone, United Arab Emirates (licence and registration no. 47839, first issued 23 July 2025; authorized capital AED 100,000), with its premises at Office C1-1F-SF11592, Ajman Free Zone C1 Building, Ajman, United Arab Emirates',
-  lastUpdated: '22 November 2026',        // the privacy policy
+  lastUpdated: '23 November 2026',        // the privacy policy
   termsLastUpdated: '23 November 2026',   // the terms of service
   privacyContact: 'privacy@dazl.ai',
   systemMailProvider: 'Resend',   // production's SYSTEM_MAIL_SMTP_URL host is smtp.resend.com (checked 2026-11-22)
@@ -49,32 +59,36 @@ export const FACTS = {
   traceCaptureFlag: 'DAZL_TRACE_CAPTURE', // lib/evals/capture.ts traceCaptureConfig: off unless '1'
   // lib/tenant/lifecycle.ts ALWAYS_RETAINED: kept after account deletion whatever the deletion policy
   retainedAfterDeletion: ['audit_events', 'evidence_purge_audit', 'onboarding_audit'],
-  aiVendors: { anthropic: 'Anthropic', openai: 'OpenAI' }, // lib/llm/vendors.ts VENDORS
-  enrichmentProviders: { 'enrich:apollo': 'Apollo', 'enrich:pdl': 'People Data Labs' }, // lib/enrich/index.ts
+  // lib/llm/vendors.ts VENDORS. The policy names Anthropic only: an OpenAI key is not offered and never used (lib/paid-vendors.ts usableVendor).
+  aiVendors: { anthropic: 'Anthropic', openai: 'OpenAI' },
+  // lib/enrich/index.ts. Not named in the policy: saved keys are used only by the older engine or a Pro-plan import (#1428).
+  enrichmentProviders: { 'enrich:apollo': 'Apollo', 'enrich:pdl': 'People Data Labs' },
   crmProviders: { hubspot: 'HubSpot', pipedrive: 'Pipedrive', webhook: 'an HTTPS webhook you control' }, // lib/crm/index.ts
   gmailSendScope: 'https://www.googleapis.com/auth/gmail.send',     // lib/gmail/oauth.ts GMAIL_SEND_SCOPE
-  gmailReadScope: 'https://www.googleapis.com/auth/gmail.readonly', // lib/gmail/oauth.ts GMAIL_READ_SCOPE (optional)
+  gmailReadScope: 'https://www.googleapis.com/auth/gmail.readonly', // lib/gmail/oauth.ts GMAIL_READ_SCOPE: never in the default grant; the policy says dazl does not ask for it (#1428, #1603)
   emailGuessFlag: 'EMAIL_GUESS_ENABLED', // lib/people/email-pattern.ts: off unless '1'; candidates stay 'unverified', unread by outreach
-  hostingProvider: 'AWS (EC2, region us-east-2)', // reviewer-verified production instance metadata, 2026-11-04 (#613)
+  hostingProvider: 'Amazon Web Services (region us-east-2)', // reviewer-verified production instance metadata, 2026-11-04 (#613); backups: ops/backup (#1080)
 } as const
 
 // Every third-party API host the code calls (test/legal-policy.test.ts scans lib/ and app/ for api-style hosts and
 // fails on one missing here), with who receives the data and why.
 export type HostRole = 'provider' | 'customer_provider' | 'public_source'
-export const API_HOSTS: Record<string, { name: string; role: HostRole }> = {
+// off: the operator switch (PRIVACY_REQUIRES_ENV) that must be set before the code calls this host. Production leaves it
+// unset, so the policy text does not name the provider (#1428).
+export const API_HOSTS: Record<string, { name: string; role: HostRole; off?: keyof typeof PRIVACY_REQUIRES_ENV }> = {
   'accounts.google.com': { name: 'Google', role: 'provider' },
   'oauth2.googleapis.com': { name: 'Google', role: 'provider' },
   'www.googleapis.com': { name: 'Google', role: 'provider' },
   'gmail.googleapis.com': { name: 'Google', role: 'provider' },
-  'api.stripe.com': { name: 'Stripe', role: 'provider' },
+  'api.stripe.com': { name: 'Stripe', role: 'provider', off: 'BILLING_AVAILABLE' },
   'api.anthropic.com': { name: 'Anthropic', role: 'provider' },
-  'api.openai.com': { name: 'OpenAI', role: 'customer_provider' },
-  'api.search.tinyfish.ai': { name: 'TinyFish', role: 'provider' },
-  'api.fetch.tinyfish.ai': { name: 'TinyFish', role: 'provider' },
-  'r.jina.ai': { name: 'Jina AI (Reader)', role: 'provider' },
-  'api.apollo.io': { name: 'Apollo', role: 'customer_provider' },
-  'api.peopledatalabs.com': { name: 'People Data Labs', role: 'customer_provider' },
-  'api.zerobounce.net': { name: 'ZeroBounce', role: 'provider' }, // #899: mailbox check of a guessed US work address; only with EMAIL_GUESS_ENABLED and an operator key
+  'api.openai.com': { name: 'OpenAI', role: 'customer_provider', off: 'DAZL_PAID_VENDORS' },
+  'api.search.tinyfish.ai': { name: 'TinyFish', role: 'provider', off: 'TINYFISH_ENABLED' },
+  'api.fetch.tinyfish.ai': { name: 'TinyFish', role: 'provider', off: 'TINYFISH_ENABLED' },
+  'r.jina.ai': { name: 'Jina AI (Reader)', role: 'provider', off: 'DAZL_DISCOVER_LANE' },
+  'api.apollo.io': { name: 'Apollo', role: 'customer_provider', off: 'DAZL_PAID_VENDORS' },
+  'api.peopledatalabs.com': { name: 'People Data Labs', role: 'customer_provider', off: 'DAZL_PAID_VENDORS' },
+  'api.zerobounce.net': { name: 'ZeroBounce', role: 'provider', off: 'DAZL_PAID_VENDORS' }, // #899: mailbox check of a guessed US work address; only with EMAIL_GUESS_ENABLED and an operator key
   'api.telegram.org': { name: 'Telegram', role: 'provider' }, // #1088: operator alerts only, and only when OPS_ALERT_WEBHOOK_URL is a Telegram bot URL: the scrubbed error summary (lib/ops/errors.ts alertText), never customer content
   'api.hubapi.com': { name: 'HubSpot', role: 'customer_provider' },
   'api.pipedrive.com': { name: 'Pipedrive', role: 'customer_provider' },
@@ -203,8 +217,6 @@ export const PUBLIC_SOURCES: Record<string, string> = {
 export interface Section { heading: string; paragraphs: string[] }
 
 const list = (xs: readonly string[]) => xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`
-const ai = list(Object.values(FACTS.aiVendors))
-const enrich = list(Object.values(FACTS.enrichmentProviders))
 const crm = list(Object.values(FACTS.crmProviders))
 const P = OWNER_PLACEHOLDERS
 
@@ -213,26 +225,25 @@ export const PRIVACY: Section[] = [
     `Last updated: ${P.lastUpdated}. ${P.legalName}, ${P.companyRegistration} ("dazl", "we"), operates dazl.ai. Privacy questions and requests: ${P.privacyContact}.`,
   ] },
   { heading: 'What we collect about you (customers)', paragraphs: [
-    'Account details: your name, email address, optional business name, and a salted scrypt hash of your password (never the password itself). If you sign in with Google, the email address and account identifier Google returns.',
+    'Account details: your name, email address, optional business name, and a salted scrypt hash of your password (never the password itself). If you sign in with Google, the name, email address and account identifier Google returns.',
     'Session records: a hash of each sign-in token, a coarse device label such as "Chrome on macOS" (the raw browser header is not stored), and when the session was last used.',
-    `Credentials you give us: AI provider keys, enrichment and CRM keys, your Gmail authorization, and any social-site session you save for the optional advanced connector. These are stored encrypted (AES-256-GCM, with a key held only in the server environment); the secrets themselves are never included in a data export.`,
-    'Your business profile, the prospects your searches find, the drafts and messages you send, and replies dazl reads (see Gmail below).',
+    `Credentials you give us: your Anthropic key, any enrichment or CRM keys you save, your Gmail authorization, and any social-site session you save for the optional advanced connector. These are stored encrypted (AES-256-GCM, with a key held only in the server environment); the secrets themselves are never included in a data export.`,
+    'Your business profile, the prospects your searches find, and the drafts and messages you send.',
   ] },
   { heading: 'What we hold about prospects', paragraphs: [
     'dazl finds businesses and business contacts from public sources: company websites, job boards, SEC filings, official business registers, GitHub, news and community sites. Each lead keeps the link to the page it came from.',
-    `Where you connect your own ${enrich} account, contact details those providers return under your key are added to your leads. With the optional advanced connector you can save your own signed-in session for X, Reddit, Instagram, Facebook, Xiaohongshu or Bilibili; dazl stores it encrypted, and a dazl worker uses it to read those sites as you, only for the searches you run. LinkedIn is handled differently: it is read only in your own browser by the dazl Connect extension (below), and dazl's servers hold no LinkedIn session.`,
-    `When ${FACTS.emailGuessFlag} is turned on, dazl works out a company's address format from personal addresses it publishes on its own site and prepares candidate addresses for people listed there. Those candidates are stored apart from your leads, marked unverified, and are never emailed or used as a recipient. A format is also learned from addresses your own workspace already holds as confirmed (published on a company's own site, or found on your own key), and only for a buyer whose own address the company's site does not print is an address built from it shown to you, labelled "guessed, unverified" (or "guessed, verified" after a successful mailbox check), with the confirmed addresses it was learned from. When a ZeroBounce key is configured, a candidate for a company whose own site states a US address may be sent to ZeroBounce to check whether the mailbox accepts mail (no email is sent to it); only an explicit "valid" answer is recorded as verified, and a catch-all domain never is. The same check may run on a work address that Apollo or People Data Labs found for a US person on your own key but did not verify, when you click Find work email; it is then shown as checked only on an explicit "valid". An address dazl worked out from the pattern in addresses your workspace already holds has not been checked: we never send to it, and we do not offer it for copying until a mailbox check has verified it. Guessed addresses are for US companies only.`,
+    `With the optional advanced connector you can save your own signed-in session for X, Reddit, Instagram, Facebook, Xiaohongshu or Bilibili; dazl stores it encrypted, and a dazl worker uses it to read those sites as you, only for the searches you run. LinkedIn is handled differently: it is read only in your own browser by the dazl Connect extension (below), and dazl's servers hold no LinkedIn session.`,
+    'A contact\'s email address is shown only when dazl found that address published on a public page, and the lead keeps the link to that page. dazl does not build or guess an email address from a person\'s name; addresses that earlier versions prepared that way are not shown, never emailed and never used as a recipient.',
     'When dazl could not read a page itself and verified a lead against a copy of its text, that copy is kept with the lead and expires after ' + `${FACTS.evidenceCopyRetainDays} days.`,
-    'Prospect records your searches find - leads, enrichments, drafts and scans - belong to the customer whose search found them: tenant scoping, pinned by the isolation tests, serves them only to that workspace, and no route serves one customer\'s leads to another. Separately, when an email address becomes a verified dazl signup, activation or payment, dazl processes that exact address across workspaces: it drops the address from every customer\'s autopilot candidates, stops that address\'s pending automated sequences, follow-ups and held first touches in every customer\'s workspace, starts the contacting customer\'s own onboarding path for it where that customer has opted in, and refuses automated sends to it. The contacting customer sees only a generic policy stop: the conversion kind (signup, activation or payment) does not appear in their stop reasons, lists or data exports. Proof previews emailed to a prospect are bound to the recipient address until claimed. No prospect names, companies or leads cross workspaces.',
+    'Prospect records your searches find - leads, enrichments, drafts and scans - belong to the customer whose search found them: tenant scoping, pinned by the isolation tests, serves them only to that workspace, and no route serves one customer\'s leads to another. Separately, when an email address becomes a verified dazl signup, activation or payment, dazl processes that exact address across workspaces: queued messages to that address that were waiting to go out without a further approval are stopped in every customer\'s workspace, and the contacting customer\'s own onboarding path starts for it where that customer has opted in. The contacting customer sees only a generic policy stop: the conversion kind (signup, activation or payment) does not appear in their stop reasons, lists or data exports. Proof previews emailed to a prospect are bound to the recipient address until claimed. No prospect names, companies or leads cross workspaces.',
     'For your own account data, dazl decides how it is used and is responsible for it. For the prospect records in your workspace, you decide what to search for and whom to contact, and dazl handles those records on your instructions. You are responsible for having a lawful reason to contact the people you find.',
   ] },
   { heading: 'How we use it', paragraphs: [
-    'To run your account, find and score prospects, draft outreach, send the messages you approve (or that autopilot sends under the limits you turned on), keep the service secure, and bill you.',
-    `Page text about prospects and your business profile are sent to the AI model provider (${ai}) whose key the request runs on to score leads and write drafts. If the free trial is enabled, trial scans run on dazl's own Anthropic key; everything else runs on the key you saved.`,
+    'To run your account, find and score prospects, draft outreach, send the messages you approve, and keep the service secure.',
+    'Your search request, your business profile and page text about prospects are sent to Anthropic, whose Claude models find and score leads (including the web searches and page reads the model makes for your search) and write drafts. If the free trial is enabled, trial scans run on dazl\'s own Anthropic key; everything else runs on the Anthropic key you saved.',
   ] },
   { heading: 'Gmail', paragraphs: [
-    'Outreach is sent from your own Gmail account. Connecting it grants send access only (gmail.send).',
-    'Reading replies is a separate, optional grant (gmail.readonly). With it, dazl reads the new text of replies in threads it started for you (quoted history is dropped), classifies each reply by rules, and stores the sender, the Gmail message and thread identifiers, a 200-character excerpt, the classification and the received time, shown in your Inbox. It also searches a bounded, consent-disclosed window of mailer-daemon and postmaster delivery-failure notices beyond its own threads and keeps only notices matched to a recorded send; an unmatched notice leaves only its message and thread identifiers, received time and classification. Stored reply records are not deleted automatically today; turning reading off stops future reads and follow-ups but does not delete what is already stored, and deleting your account deletes them with your other workspace data, unless the deletion request asks to keep named tables (sign-in and payment credentials are always erased; the append-only audit records listed under Retention always stay). Stored reply records are kept while your account exists. dazl reads nothing without this consent.',
+    'Outreach is sent from your own Gmail account, and only the messages you approve. Connecting it grants send access only (gmail.send). dazl does not ask for access to read your mailbox and does not read your replies.',
     'dazl\'s use and transfer to any other app of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.',
   ] },
   { heading: 'dazl Connect browser extension', paragraphs: [
@@ -242,8 +253,8 @@ export const PRIVACY: Section[] = [
     'To stop: pause or disconnect in dazl Settings, choose "Forget this browser" in the extension, or remove the extension.',
   ] },
   { heading: 'Service providers', paragraphs: [
-    `Google (sign-in and Gmail), Stripe (payments; card details are entered at Stripe, not on dazl), Anthropic (AI models, and the free trial when it is enabled), TinyFish (web search and page fetching), Jina AI Reader (reading public pages), and ZeroBounce (checking whether a prepared work address accepts mail; only while the address-format feature below is on and an operator key is set, at most its free monthly allowance for this dazl service). Hosting: ${FACTS.hostingProvider}. Account emails such as password resets are sent through ${P.systemMailProvider}.`,
-    `Providers you choose and connect with your own account or key: ${ai} (AI models), ${enrich} (contact enrichment), and ${crm} (lead export to your CRM). Their use of the data is governed by your agreement with them.`,
+    `Google (sign-in, and sending the messages you approve from your Gmail), Anthropic (AI models, including the web searches and page reads its models make for your searches, and the free trial when it is enabled), Cloudflare (the dazl.ai domain name service, and routing of email sent to our dazl.ai addresses), and PostHog (product analytics: which steps of dazl an account reaches, such as signing up, connecting Gmail, starting a search and sending a message, with counts such as how many leads a search showed; never the names or email addresses of prospects). Hosting and backups: ${FACTS.hostingProvider}. Account emails such as password resets are sent through ${P.systemMailProvider}.`,
+    `Providers you choose and connect with your own account or key: Anthropic (AI models, on your own key), and ${crm} (lead export to your CRM, only when you connect one in Settings). Their use of the data is governed by your agreement with them.`,
     'Public sources dazl queries receive the search terms it sends - a company or industry name, for the Norwegian business register and UK Companies House a place and industry filter, and for SEC EDGAR a city, state and date range (a term can be personal data when it names a person, such as the name or address of a sole trader) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, the Norwegian business register (Brønnøysundregistrene), careers pages on company websites, Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), public job feeds such as We Work Remotely, and, to find a company\'s own website, Wikidata (the company name) OpenStreetMap\'s Nominatim search (the company name and the requested place) and, as a last step, DuckDuckGo\'s HTML search (the company name and the requested place).',
     'Error reports, if an error-monitoring service or an operator alert channel (for example a Telegram bot the operator owns) is configured, carry only the error type, code locations and a request id: never messages, account identifiers, request bodies or personal data. The server\'s own error log keeps the fuller scrubbed record, including the scrubbed message.',
     'We do not sell personal information, and we do not share it for advertising. We pass it only to the service providers listed here, to do the jobs described.',
@@ -263,8 +274,8 @@ export const PRIVACY: Section[] = [
     `You can ask to access, correct or delete your data at ${P.privacyContact}. Depending on where you live, you may also have the right to restrict or object to how we use your data, to receive a copy in a portable format, and to complain to your data protection authority.`,
   ] },
   { heading: 'Outbound email and opting out', paragraphs: [
-    'Every outreach message dazl sends to a prospect (first touch, sequence step, follow-up or re-open) ends with the sender\'s name, a mailing address and an unsubscribe link, and carries a one-click List-Unsubscribe header. dazl refuses to send to a prospect until the sender has saved a name and a mailing address.',
-    'An unsubscribe works at once, with no login: the address is added to that sender\'s opt-out list, any drafts or approved messages to it are skipped, and follow-up sequences to it stop. It is never emailed again by that sender through dazl. A bounce is handled the same way.',
+    'Every outreach message sent to a prospect through dazl ends with the sender\'s name, a mailing address and an unsubscribe link, and carries a one-click List-Unsubscribe header. dazl refuses to send to a prospect until the sender has saved a name and a mailing address.',
+    'An unsubscribe works at once, with no login: the address is added to that sender\'s opt-out list, and any drafts or approved messages to it are skipped. It is never emailed again by that sender through dazl. A bounce is handled the same way.',
     'If you received a message through dazl and want your data removed from the sender\'s workspace, ask the sender, or contact us at ' + `${P.privacyContact}.`,
     'You are responsible for following the email and privacy laws that apply to you and to the people you contact, such as CAN-SPAM, CASL, PECR and GDPR. The features above help with that; they do not make a message compliant by themselves.',
   ] },
