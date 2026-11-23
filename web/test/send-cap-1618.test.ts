@@ -102,4 +102,9 @@ test('#1618 the send itself checks the same cap, and the page says how many were
   assert.match(page, /`Sent \$\{cap\} today, more tomorrow to keep your Gmail safe\.`/)
   assert.match(page, /j\.error === 'daily_cap' && Number\.isInteger\(j\.cap\) \? sendCapNote\(j\.cap\)/)
   assert.doesNotMatch(page, /Daily sending limit reached/)
+  // Settings shows the same cap and the same day's count, not a fixed 20 over 24 hours
+  assert.match(src('app/api/outreach/settings/route.ts'), /daily_cap: today\.cap, sent_today: today\.sent_today,/)
+  const panel = src('app/app/settings/gmail-panel.tsx')
+  assert.match(panel, /Sent today: \{s\.sent_today \?\? s\.sent_24h\} of \{s\.daily_cap\}\. The count starts again at midnight Toronto time\./)
+  assert.doesNotMatch(panel, /Sent in the last 24 hours/)
 })
