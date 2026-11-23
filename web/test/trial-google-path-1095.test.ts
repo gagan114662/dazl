@@ -3,8 +3,10 @@
 // comes back to the same page, and the return address can only ever be a dazl app page. Pure functions; no network.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { TRIAL_SCANS_PER_ACCOUNT } from '../lib/scan/trial.ts'
 import { TRIAL_REFUSALS } from '../lib/billing/trial-budget.ts'
-import { trialRefusalNotice, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, noticeAccount, signUpPlanLine } from '../lib/trial-copy.ts'
+import { trialRefusalNotice, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, noticeAccount, signUpPlanLine, SIGN_UP_GOOGLE_CAPTION } from '../lib/trial-copy.ts'
 import { estimateRun, estimatePayerLine } from '../lib/scan/price-estimate.ts'
 import { safeNext, linkGoogleHref, googleLinkResultCopy, GOOGLE_LINK_RESULTS } from '../lib/google-link.ts'
 
@@ -98,14 +100,22 @@ test('#1095: when the account cannot be read, google_required still offers Link 
   assert.deepEqual(noticeAccount({ verified: false, google: false }, null), { verified: false, google: false, fresh: true })
 })
 
-test('#1095: sign-up says the free trial scans come with Google sign-in, never promised to the email path', () => {
+test('#1095 / #1648: sign-up says the first search is free on both paths, and one caption says what Google adds', () => {
   const on = signUpPlanLine(true)
   // #1428: free beta wording, "search" defined, and no key implied where the free first search can run. (Was
   // 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.')
-  assert.equal(on, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Sign in with Google (or link it later) and your first search is free: no card and no key.')
+  assert.equal(on, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own.')
   assert.doesNotMatch(on, /New accounts may get 3 trial scans/)
   // Where no free search can run, the line says what a search needs here and promises no free one.
   const off = signUpPlanLine(false)
   assert.equal(off, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. On this site a search runs on your own Anthropic key, which you add in Settings.')
   assert.doesNotMatch(off, /first search is free/)
+  // #1648: the page told two stories (intro: Google or link it later; caption: needs Google sign-in). One rule now, the one
+  // the code enforces since #1630: a first free search on either path, up to TRIAL_SCANS_PER_ACCOUNT with Google.
+  assert.doesNotMatch(on, /link it later|needs Google/)
+  assert.equal(TRIAL_SCANS_PER_ACCOUNT, 3)
+  assert.equal(SIGN_UP_GOOGLE_CAPTION, 'With Google you can run up to three free searches.')
+  const form = readFileSync(new URL('../app/sign-up/sign-up-form.tsx', import.meta.url), 'utf8')
+  assert.match(form, /\{trialFunded \? SIGN_UP_GOOGLE_CAPTION : ''\}/)
+  assert.doesNotMatch(form, /needs Google sign-in/)
 })

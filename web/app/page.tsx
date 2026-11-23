@@ -53,7 +53,7 @@ export default function Home() {
         <h1 className="lp-h1">Your website in.<br />Verified leads out.</h1>
         <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">Paste your website. dazl finds businesses that need what you sell right now, shows you the proof, and drafts the email from your Gmail.</p>
         <p className="text-sm font-semibold mt-4" data-testid="hero-contrast">Proof behind every lead, not a database dump: each lead links to the page that shows why they need you now.</p>
-        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">Made for any business, anywhere: paste your website and dazl drafts who buys from you. What it finds depends on the public evidence available for your market.</p>
+        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">Made for any business, anywhere: paste your website, and dazl works out who buys from you and drafts the outreach. What it finds depends on the public evidence available for your market.</p>
         <div className="flex flex-wrap gap-3 mt-8 justify-center">
           <a href="/api/auth/google" className="btn-primary btn-lg" data-testid="hero-cta">Start free</a>
           <a href="#how" className="btn-ghost btn-lg">See how it works</a>

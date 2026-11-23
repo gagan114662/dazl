@@ -65,7 +65,7 @@ try {
     await demo.scrollIntoViewIfNeeded(); await page.waitForTimeout(600)
     // Any business, any country: five very different businesses to pick from; picking one replays the run for it.
     assert.deepEqual(await page.getByTestId('demo-chips').getByRole('button').allTextContents(), ['Dental · New York', 'B2B SaaS · London', 'Marketing agency · Toronto', 'Commercial real estate · Gurugram', 'Logistics · Dubai'])
-    assert.equal(await page.getByTestId('hero-any').innerText(), 'Made for any business, anywhere: paste your website and dazl drafts who buys from you. What it finds depends on the public evidence available for your market.')
+    assert.equal(await page.getByTestId('hero-any').innerText(), 'Made for any business, anywhere: paste your website, and dazl works out who buys from you and drafts the outreach. What it finds depends on the public evidence available for your market.')
     await page.getByTestId('demo-chips').getByRole('button', { name: 'Logistics · Dubai' }).click()
     assert.equal(await page.getByTestId('demo-scenario').getAttribute('data-scenario'), 'logistics-dubai')
     assert.equal(await page.getByTestId('demo-chips').getByRole('button', { name: 'Logistics · Dubai' }).getAttribute('aria-pressed'), 'true')

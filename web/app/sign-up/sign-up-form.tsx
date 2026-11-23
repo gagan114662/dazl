@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
-import { signUpPlanLine } from '@/lib/trial-copy'
+import { SIGN_UP_GOOGLE_CAPTION, signUpPlanLine } from '@/lib/trial-copy'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
 
 // sentWithoutScript / errorWithoutScript (#1116): the outcome of a NATIVE post of this form (it was submitted before or
@@ -68,7 +68,7 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
         <ClaimContextBanner business={claim.business} action="Create your account" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>
         {/* Said only where a free first search can really run (#1428); the spacing stays the same either way. */}
-        <p className="text-xs text-[#555] text-center mt-2 mb-4">{trialFunded ? 'The free first search needs Google sign-in.' : ''}</p>
+        <p className="text-xs text-[#555] text-center mt-2 mb-4">{trialFunded ? SIGN_UP_GOOGLE_CAPTION : ''}</p>
         <div className="flex items-center gap-3 text-[#6b6b6b] text-xs mb-4"><span className="h-px flex-1 bg-black/5" />or use email<span className="h-px flex-1 bg-black/5" /></div>
         {error && <p role="alert" className="text-[#111] text-sm mb-4 text-center bg-[#f4f4f4] border border-black/40 rounded-lg px-3 py-2">{error}</p>}
         {/* action (#1116): before or without the script, the browser posts the form to the same route the script calls, which
@@ -88,7 +88,7 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
           </label>
           <div className="flex flex-col gap-1">
             <label className="flex flex-col gap-1 text-sm text-[#333]">Password
-              <input name="password" type="password" required minLength={10} autoComplete="new-password"
+              <input name="password" type="password" required minLength={10} placeholder="At least 10 characters" autoComplete="new-password"
                 aria-describedby="signup-password-rules" className="field" />
             </label>
             <p id="signup-password-rules" className="text-xs text-[#555]">Use at least 10 characters, including a letter and a number.</p>
