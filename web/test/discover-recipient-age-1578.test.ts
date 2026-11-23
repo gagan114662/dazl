@@ -15,7 +15,7 @@ import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { discoverContact, discoverLine, discoverRecipient, discoverSources, SIGNAL_MAX_AGE_DAYS } from '../lib/discover/card.ts'
-import { approve as approveMessage, approveBlockReason, createDraft, discoverRecipientRefusal, OutreachError, saveSettings, sendBlockReason, sendMessage, suppress, TEST_INBOX } from '../lib/outreach/service.ts'
+import { approve as approveMessage, approveBlockReason, createDraft, createDraftWithWords, discoverRecipientRefusal, OutreachError, saveSettings, sendBlockReason, sendMessage, suppress, TEST_INBOX } from '../lib/outreach/service.ts'
 import { completeOAuth, startOAuth } from '../lib/gmail/oauth.ts'
 import { historyCampaigns, listCampaignsNow } from '../lib/outreach/campaigns.ts'
 import { campaignDetail } from '../lib/outreach/campaign-detail.ts'
@@ -26,6 +26,7 @@ import { findContactForConfirmedLead } from '../lib/scan/find-contact.ts'
 import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { setDomainReview } from '../lib/scan/domain-review-action.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { listLeads } from '../lib/scan/store.ts'
 import type { Get } from '../lib/connectors/sitecrawl.ts'
 import { currentnessHeld, discoverSignalHeld } from '../lib/outreach/currentness.ts'
 import { CRAWLED_NOTE_TAIL, detailsContact, leadCardSummary } from '../lib/scan/lead-card.ts'
@@ -33,14 +34,21 @@ import { campaignStatus } from '../lib/run-status.ts'
 import { readyItems } from '../lib/ready-card.ts'
 
 const SITE = 'https://northwind-dental.example/contact'
-function fixture(o: { date?: string | null; kind?: string } = {}) {
+function fixture(o: { date?: string | null; kind?: string; before?: (db: Database.Database, id: string) => void } = {}) {
   process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
   const db = new Database(':memory:'); migrateAllSqlite(db)
   const id = 'b'.repeat(24)
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j1', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j1', 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', 'https://news.example/northwind', 85, 'Northwind Dental will open its second clinic', ?, 'verified', 85, 4, 4, 'expanding', ?, 'northwind-dental.example')").run(id, o.date === undefined ? '2026-10-14' : o.date, o.kind ?? 'discover')
+  o.before?.(db, id)   // the store takes leads only while the search runs, and a finished search cannot run again
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
   return { db, id }
+}
+// a second lead in the same search: a copy of the first with these columns changed
+const second = (patch: Record<string, unknown>) => (db: Database.Database, id: string) => {
+  const r: Record<string, unknown> = { ...(db.prepare('SELECT * FROM leads WHERE id = ?').get(id) as Record<string, unknown>), id: 'c'.repeat(24), ...patch }
+  const cols = Object.keys(r).filter(k => r[k] !== null)
+  db.prepare(`INSERT INTO leads (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map(k => r[k]))
 }
 const email = (db: Database.Database, id: string, value: string, at: number, o: { tenant?: string; source?: string } = {}) =>
   addEnrichment(db, o.tenant ?? 'T', id, { connector: 'discover', kind: 'email', value, label: 'published on a public page', confidence: null, source_url: o.source ?? SITE, source_date: '2026-11-22', retrieved_at: at })
@@ -312,21 +320,24 @@ test('#1571 (review of #1578) a stored signal date that does not read as a day i
 // address on the same lead. The state below is reached with the product's own steps: the lead is in review, the user confirms it, runs
 // "Find contact" (canned pages, no network), then checks the website.
 const html = (b: string) => `<html><body>${b}</body></html>`
-const PAGES: Record<string, string> = {
+const pagesWith = (contactPage: string): Record<string, string> => ({
   'news.example/northwind': html('Northwind Dental will open its second clinic. <a href="https://northwind-dental.example">Northwind Dental</a>'),
   'news.example/robots.txt': '', 'northwind-dental.example/robots.txt': '',
   'northwind-dental.example/': html('Northwind Dental home <a href="/contact-us">Contact us</a>'),
-  'northwind-dental.example/contact-us': html('Northwind Dental. Email: hello@northwind-dental.example'),
-}
-const cannedGet: Get = async url => { const u = new URL(url); const p = PAGES[`${u.hostname.replace(/^www\./, '')}${u.pathname}`]; return p === undefined ? { status: 404, body: '', finalUrl: url } : { status: 200, body: p, finalUrl: url } }
+  'northwind-dental.example/contact-us': html(contactPage),
+})
+const cannedGet = (pages: Record<string, string>): Get => async url => { const u = new URL(url); const p = pages[`${u.hostname.replace(/^www\./, '')}${u.pathname}`]; return p === undefined ? { status: 404, body: '', finalUrl: url } : { status: 200, body: p, finalUrl: url } }
+type Made = { db: Database.Database; id: string }
 // A lead taken through those steps. own: the address its own run published (null: none). checked: the user also made the website check.
-async function crawled(o: { own?: string | null; checked?: boolean; kind?: string } = {}) {
-  const { db, id } = fixture({ kind: o.kind })
+// crawl false: confirmed, "Find contact" not run. contactPage: what the company's contact page prints.
+async function crawled(o: { own?: string | null; checked?: boolean; kind?: string; date?: string | null; crawl?: boolean; contactPage?: string } = {}): Promise<Made> {
+  const { db, id } = fixture({ kind: o.kind, date: o.date })
   if (o.own !== null && o.kind === undefined) email(db, id, o.own ?? 'bob@northwind-dental.example', Math.floor(NOW / 1000) - 3600)
   db.prepare("UPDATE scan_jobs SET attempts = 1, candidates = 1, dropped = 0 WHERE id = 'j1'").run()
   db.prepare("UPDATE leads SET review_reason = 'source_review_required' WHERE id = ?").run(id)
   assert.equal(await confirmLeadReview(sqliteDb(db), 'T', id, Math.floor(NOW / 1000)), true)
-  const found = await findContactForConfirmedLead(db, 'T', id, { get: cannedGet, gapMs: 0, env: {} }) as { status: string; contacts: number }
+  if (o.crawl === false) return { db, id }
+  const found = await findContactForConfirmedLead(db, 'T', id, { get: cannedGet(pagesWith(o.contactPage ?? 'Northwind Dental. Email: hello@northwind-dental.example')), gapMs: 0, env: {} }) as { status: string; contacts: number }
   assert.deepEqual([found.status, found.contacts], ['done', 1], 'the crawl stored one address')
   const before = row(db, id)
   const rv = domainReviewFor(before as never, before.enrichments as never)
@@ -334,7 +345,15 @@ async function crawled(o: { own?: string | null; checked?: boolean; kind?: strin
   if (o.checked) setDomainReview(db, 'T', id, 'confirm', rv.binding ?? undefined, NOW)
   return { db, id }
 }
-const CRAWLED_NOTE = `A website crawl found hello@northwind-dental.example. ${CRAWLED_NOTE_TAIL}`
+const noteFor = (address: string) => `A website crawl found ${address}. ${CRAWLED_NOTE_TAIL}`
+const CRAWLED_NOTE = noteFor('hello@northwind-dental.example')
+// the two functions a draft nobody asked for is made with: calibration's (createDraft without `manual`) and autopilot's (createDraftWithWords)
+const refused = (f: () => string) => { try { return { to: f() } } catch (e) { if (e instanceof OutreachError) return { code: e.code }; throw e } }
+const sentTo = (db: Database.Database, mid: string) => (db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(mid) as { to_email: string }).to_email
+const automatic: [string, (x: Made) => { to?: string; code?: string }][] = [
+  ['createDraft without manual', x => refused(() => sentTo(x.db, createDraft(x.db, 'T', x.id, 'Fit-out Co')))],
+  ['createDraftWithWords', x => refused(() => sentTo(x.db, createDraftWithWords(x.db, 'T', x.id, 'Fit-out Co').id))],
+]
 
 test('#1571 (review of #1578) after a real "Find contact" on a discovery lead, nothing beside its draft action names the crawled address: Details, route and status follow the published one', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
@@ -352,15 +371,6 @@ test('#1571 (review of #1578) after a real "Find contact" on a discovery lead, n
   assert.deepEqual(detailsContact(r as never), { contact: null, draftTo: null, alsoCrawled: 'hello@northwind-dental.example', crawledNote: CRAWLED_NOTE }, 'no second contact and no second draft button; the crawled address is said as what it is')
   // and the draft a person asks for goes where the card says
   assert.deepEqual(draft(db, id), { to: 'bob@northwind-dental.example' })
-
-  // Third review (3fa0629d): the sentence said "Drafts for this lead go only to the address its own proof run published". That was false
-  // for a draft nobody asked for. The sentence now claims only Approve, and says the rest. Its last clause and the behaviour it describes
-  // are held together here. This does NOT approve that behaviour: it is the open question P2-a (one recipient rule for automatic drafts
-  // too), awaiting the coordinating reviewer. Whoever changes that rule changes the sentence in the same commit, or this fails.
-  assert.match(CRAWLED_NOTE_TAIL, /^Approve on this card never drafts to it, only to an address this lead's own proof run published\. A draft made automatically \(autopilot\) may still use it\.$/)
-  const auto = await crawled({ checked: true })
-  const nobodyAsked = auto.db.prepare('SELECT to_email FROM outreach_messages WHERE id = ?').get(createDraft(auto.db, 'T', auto.id, 'Fit-out Co')) as { to_email: string }
-  assert.equal(nobodyAsked.to_email, 'hello@northwind-dental.example', 'OPEN (P2-a): a draft made without a person asking still uses the crawled address, as the sentence says')
 
   // the crawl stored the very address Approve drafts to: there is no second address, so nothing is said about one
   const same = await crawled({ checked: true, own: 'hello@northwind-dental.example' })
@@ -387,10 +397,49 @@ test('#1571 (review of #1578) after a real "Find contact" on a discovery lead, n
   assert.equal(detailsContact(or as never).contact?.email, 'alice@northwind-dental.example')
 })
 
+// Third review (3fa0629d): the sentence said "Drafts for this lead go only to the address its own proof run published", false for a draft
+// nobody asked for. Fourth review (ed0e7d15): its replacement said such a draft "may still use it" in states where the server refuses that
+// draft. Each half of the sentence is held against the server here, in every state the reviews reached, with the product's own steps.
+// This does NOT approve what an automatic draft does: that is the open question P2-a (one recipient rule for automatic drafts too),
+// awaiting the coordinating reviewer. Whoever changes that rule changes the sentence in the same commit, or this fails.
+test('#1571 (review of #1578) the Details sentence about a crawled address is true in every state: Approve never drafts to it, and a draft nobody asked for uses it only where its own checks pass', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  assert.equal(CRAWLED_NOTE_TAIL, "Approve on this card never drafts to it, only to an address this lead's own proof run published. A draft made automatically (autopilot) may still use it, but only where that draft passes its own checks.")
+  const HELLO = 'hello@northwind-dental.example', PRESS = 'press@northwind-dental.example', STALE = SIGNAL + YEAR + DAY
+  const after = (f: (x: Made) => void, o: Parameters<typeof crawled>[0] = { checked: true }) => async () => { const x = await crawled(o); f(x); return x }
+  // [state, how it is reached, the clock, the crawled address Details names, what a draft nobody asked for does, what Approve's draft does]
+  const states: [string, () => Promise<Made>, number, string, { to?: string; code?: string }, { to?: string; code?: string }][] = [
+    ['fresh, website checked', () => crawled({ checked: true }), NOW, HELLO, { to: HELLO }, { to: 'bob@northwind-dental.example' }],
+    ['website not yet checked', () => crawled(), NOW, HELLO, { code: 'domain_unconfirmed' }, { to: 'bob@northwind-dental.example' }],
+    ['signal more than a year old', () => crawled({ checked: true }), STALE, HELLO, { code: 'lead_currentness_unconfirmed' }, { code: 'lead_currentness_unconfirmed' }],
+    ['undated signal', () => crawled({ checked: true, date: null }), NOW, HELLO, { code: 'lead_currentness_unconfirmed' }, { code: 'lead_currentness_unconfirmed' }],
+    ['the crawl stored a press inbox', () => crawled({ checked: true, contactPage: `Northwind Dental. Press: ${PRESS}` }), NOW, PRESS, { code: 'not_sales_contact' }, { to: 'bob@northwind-dental.example' }],
+    ['the crawled address is on the do-not-contact list', after(x => { suppress(x.db, 'T', HELLO, 'manual') }), NOW, HELLO, { code: 'suppressed' }, { to: 'bob@northwind-dental.example' }],
+    ['the lead was rejected', after(x => { x.db.prepare("UPDATE leads SET quarantined_at = 1, quarantine_reason = 'Rejected' WHERE id = ?").run(x.id) }), NOW, HELLO, { code: 'lead_quarantined' }, { code: 'lead_quarantined' }],
+    ['the lead\'s own address is on the do-not-contact list', after(x => { suppress(x.db, 'T', 'bob@northwind-dental.example', 'manual') }), NOW, HELLO, { to: HELLO }, { code: 'suppressed' }],
+  ]
+  for (const [state, build, ms, crawledAddress, auto, asked] of states) {
+    for (const [fn, make] of automatic) {
+      t.mock.timers.setTime(NOW); const x = await build(); t.mock.timers.setTime(ms)
+      assert.equal(detailsContact(row(x.db, x.id) as never).crawledNote, noteFor(crawledAddress), `${state}: the sentence, naming the crawled address`)
+      const got = make(x)
+      assert.deepEqual(got, auto, `${state}, ${fn}`)
+      // "may still use it, but only where that draft passes its own checks": it goes to the named address, or a check refuses it. Nowhere else.
+      assert.ok(got.to === undefined || got.to === crawledAddress, `${state}, ${fn}: no third address`)
+    }
+    t.mock.timers.setTime(NOW); const y = await build(); t.mock.timers.setTime(ms)
+    const mine = draft(y.db, y.id)
+    assert.deepEqual(mine, asked, `${state}: the draft a person asks for`)
+    assert.notEqual((mine as { to?: string }).to, crawledAddress, `${state}: Approve never drafts to the crawled address`)
+  }
+})
+
 // Third review (3fa0629d): the page's side of that was pinned by one declaration line; a page that printed the crawled address again, hid
 // the website check, or dropped the sentence passed every test. The contact part of Details is now a component, and this renders it
-// (react-dom/server, in its own process because .tsx needs a loader) from the rows the product's own steps leave behind.
-function renderDetails(rows: Record<string, unknown>): Record<string, string> {
+// (react-dom/server, in its own process because .tsx needs a loader) from the rows the lead list reads after the product's own steps.
+// Fourth review (ed0e7d15): which handler each button calls, with what, and whose messages are shown, were held by nothing.
+type Rendered = Record<string, { html: string; clicks: string[] }>
+function renderDetails(rows: Record<string, unknown>): Rendered {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/tsx-loader.mjs', './test/helpers/details-contact-render.mts'],
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000, input: JSON.stringify(rows) })
@@ -398,28 +447,44 @@ function renderDetails(rows: Record<string, unknown>): Record<string, string> {
   assert.equal(r.status, 0, r.stdout + r.stderr)
   const line = r.stdout.split('\n').find(x => x.startsWith('DETAILS-CONTACT-MARKUP '))
   assert.ok(line, r.stdout + r.stderr)
-  return JSON.parse(line.slice('DETAILS-CONTACT-MARKUP '.length)) as Record<string, string>
+  return JSON.parse(line.slice('DETAILS-CONTACT-MARKUP '.length)) as Rendered
 }
 const words = (h: string) => h.replace(/<[^>]+>/g, ' ').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim()
 const withoutNote = (h: string) => h.replace(/<span[^>]*data-testid="also-crawled"[^>]*>[^<]*<\/span>/, '')
+// What the lead list hands the page for a lead (app/api/leads/route.ts): the list's own projection of the row (listLeads), the enrichment
+// projection, the server's recipient verdict, and whether the shared gate holds it now.
+const listed = (x: Made) => {
+  const l = (listLeads(x.db, 'T', 'j1') as { id: string }[]).find(r => r.id === x.id)
+  assert.ok(l, 'the lead list returns this lead')
+  return { ...l, enrichments: enrichmentsForLeads(x.db, 'T', [x.id])[x.id] ?? [], recipient_refused: discoverRecipientRefusal(x.db, 'T', x.id), currentness_held: currentnessHeld(x.db, 'T', x.id) }
+}
 
 test('#1571 (review of #1578) the Details a person reads, rendered from real rows: a discovery lead gets no crawled contact line and no second draft button, and keeps the website check', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
-  // what the lead list hands the page for a lead: its row and whether the shared gate holds it now
-  const view = (x: { db: Database.Database; id: string }) => ({ ...row(x.db, x.id), currentness_held: currentnessHeld(x.db, 'T', x.id) })
+  const ID = 'b'.repeat(24)
+  const unchecked = await crawled(), olderChecked = await crawled({ checked: true, kind: 'news' })
+  const binding = domainReviewFor(listed(unchecked) as never, listed(unchecked).enrichments as never).binding
+  assert.equal(typeof binding === 'string' && binding.length > 0, true, 'the website check is bound to what was crawled')
   const rows: Record<string, unknown> = {
-    unchecked: view(await crawled()),
-    checked: view(await crawled({ checked: true })),
-    same: view(await crawled({ checked: true, own: 'hello@northwind-dental.example' })),
-    none: view(await crawled({ checked: true, own: null })),
-    older: view(await crawled({ checked: true, kind: 'news' })),
-    olderUnchecked: view(await crawled({ kind: 'news' })),
+    unchecked: { l: listed(unchecked) },
+    uncheckedMessages: { l: listed(unchecked), reviewMsg: 'RM website check saved', contactMsg: 'CM looked: nothing found' },
+    checked: { l: listed(await crawled({ checked: true })) },
+    same: { l: listed(await crawled({ checked: true, own: 'hello@northwind-dental.example' })) },
+    none: { l: listed(await crawled({ checked: true, own: null })) },
+    notCrawled: { l: listed(await crawled({ crawl: false })), reviewMsg: 'RM website check saved', contactMsg: 'CM looked: nothing found' },
+    older: { l: listed(olderChecked) },
+    olderUnchecked: { l: listed(await crawled({ kind: 'news' })) },
+    olderDrafted: { l: listed(olderChecked), drafted: 'Draft created - review it in Outreach' },
+    // the one row not wholly as the list returns it: the same older-engine lead with the list's "held" flag set, to read the review button
+    olderHeld: { l: { ...listed(olderChecked), currentness_held: true } },
+    olderNotCrawled: { l: listed(await crawled({ crawl: false, kind: 'news' })), reviewMsg: 'RM website check saved', contactMsg: 'CM looked: nothing found' },
   }
   const stale = await crawled({ checked: true })
   t.mock.timers.setTime(SIGNAL + YEAR + DAY)
-  rows.stale = view(stale)
-  assert.equal((rows.stale as { currentness_held: boolean }).currentness_held, true)
-  const out = renderDetails(rows)
+  rows.stale = { l: listed(stale) }
+  assert.equal((rows.stale as { l: { currentness_held: boolean } }).l.currentness_held, true)
+  const got = renderDetails(rows)
+  const out = Object.fromEntries(Object.entries(got).map(([k, v]) => [k, v.html])), clicks = Object.fromEntries(Object.entries(got).map(([k, v]) => [k, v.clicks]))
 
   for (const k of ['unchecked', 'checked', 'none', 'stale']) {
     assert.match(out[k], /data-testid="also-crawled"/, k)
@@ -444,9 +509,32 @@ test('#1571 (review of #1578) the Details a person reads, rendered from real row
   assert.doesNotMatch(out.olderUnchecked, /Draft email/, 'held by the website check, as before')
   assert.doesNotMatch(out.older + out.olderUnchecked, /also-crawled|A website crawl found/)
 
-  // the Leads page renders that component for every lead and keeps no contact logic of its own
+  // every button calls the page's handler for what it says, for this lead, with the website check bound to what was crawled
+  const confirm = `This website is the right company => ${JSON.stringify([['domainReview', [ID, 'confirm', binding]]])}`
+  const withdraw = `withdraw => ${JSON.stringify([['domainReview', [ID, 'withdraw']]])}`
+  const find = `Look for a published contact on the company website => ${JSON.stringify([['findContact', [ID]]])}`
+  assert.deepEqual(clicks.unchecked, [confirm])
+  assert.deepEqual(clicks.checked, [withdraw])
+  assert.deepEqual(clicks.stale, [withdraw])
+  assert.deepEqual(clicks.olderUnchecked, [confirm])
+  assert.deepEqual(clicks.older, [withdraw, `Draft email => ${JSON.stringify([['approveLead', [ID]]])}`])
+  assert.deepEqual(clicks.olderHeld, [withdraw, `I reviewed the source - use for drafting (not consent) => ${JSON.stringify([['confirmReview', [ID]]])}`], 'a held lead is offered the review, not a draft')
+  assert.deepEqual(clicks.olderDrafted, [withdraw], 'once drafted, the message stands in place of the button')
+  assert.match(out.olderDrafted, /Draft created - review it in Outreach/)
+  assert.deepEqual(clicks.olderNotCrawled, [find])
+  assert.deepEqual(clicks.notCrawled, [find], 'a confirmed discovery lead no crawl has read can still be searched')
+  // each message beside the control it belongs to
+  assert.match(words(out.uncheckedMessages), /RM website check saved/); assert.doesNotMatch(out.uncheckedMessages, /CM looked/)
+  for (const k of ['notCrawled', 'olderNotCrawled']) { assert.match(words(out[k]), /CM looked: nothing found/, k); assert.doesNotMatch(out[k], /RM website check saved/, k) }
+
+  // The Leads page renders that component, once, for every lead, and that part of Details holds nothing else. This is a check of the
+  // page's source, not of the page running: the page as a whole is rendered only by the browser tests (web/test/ui).
   const page = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
-  assert.ok(page.includes('<DetailsContact l={l} reviewMsg={reviewMsg[l.id]} contactMsg={contactMsg[l.id]} drafted={drafted[l.id]} onDomainReview={domainReview} onFindContact={findContact} onConfirmReview={confirmReview} onApprove={id => void approveLead(id)} />'))
+  const WIRING = '<DetailsContact l={l} reviewMsg={reviewMsg[l.id]} contactMsg={contactMsg[l.id]} drafted={drafted[l.id]} onDomainReview={domainReview} onFindContact={findContact} onConfirmReview={confirmReview} onApprove={id => void approveLead(id)} />'
+  const from = '<DiscoveredVia l={l} />', to = '{crmOn && <CrmPush leadId={l.id} />}'
+  assert.deepEqual([page.split(to).length - 1, page.split('<DetailsContact').length - 1], [1, 1])
+  assert.deepEqual(page.slice(page.lastIndexOf(from, page.indexOf(to)) + from.length, page.indexOf(to)).split('\n').map(s => s.trim()).filter(Boolean),
+    ['{/* The contact part of Details is its own component so a test can render it from a real row (third review of #1578). */}', WIRING], 'between the source link and the CRM button: the component, unconditionally, and nothing beside it')
   for (const own of ['publishedContact(', 'publishedEmail(', 'detailsContact(', 'domainReviewFor(', 'pickCrawledEmail(']) assert.equal(page.includes(own), false, `the page has no ${own}...) of its own`)
 })
 
@@ -490,17 +578,19 @@ test('#1571 (review of #1578) "held only by its date" counts a lead once and onl
   assert.deepEqual([currentnessHeld(c.db, 'T', c.id), currentnessHeld(c.db, 'T', c.id, new Date(NOW)), discoverSignalHeld(c.db, 'T', c.id, new Date(NOW))], [true, false, false])
 })
 
-test('#1571 (review of #1578) the test-fixture exemption is kept: a test message to the approved test inbox on the designated test workspace is not held by its lead\'s age at approve; any other message is', t => {
+test('#1571 (review of #1578) the test-fixture exemption is kept: a test message to the approved test inbox on the designated test workspace is not held by its lead\'s age at approve or at send; any other message is', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW })
   const saved = process.env.OUTREACH_TEST_TENANT_ID
+  const STALE = SIGNAL + YEAR + DAY
+  const make = () => { const { db, id } = fixture(); email(db, id, TEST_INBOX, 1)
+    db.prepare("INSERT INTO sequence_settings (tenant_id, test_addresses) VALUES ('T', ?)").run(JSON.stringify([TEST_INBOX]))
+    return { db, id, mid: createDraft(db, 'T', id, 'Fit-out Co', { manual: true }) } }
   try {
     process.env.OUTREACH_TEST_TENANT_ID = 'T'
-    const { db, id } = fixture(); email(db, id, TEST_INBOX, 1)
-    db.prepare("INSERT INTO sequence_settings (tenant_id, test_addresses) VALUES ('T', ?)").run(JSON.stringify([TEST_INBOX]))
-    const mid = createDraft(db, 'T', id, 'Fit-out Co', { manual: true })
+    const { db, id, mid } = make()
     assert.equal((db.prepare('SELECT test FROM outreach_messages WHERE id = ?').get(mid) as { test: number }).test, 1, 'a fixture message')
     assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), null)
-    t.mock.timers.setTime(SIGNAL + YEAR + DAY)
+    t.mock.timers.setTime(STALE)
     assert.equal(currentnessHeld(db, 'T', id), true, 'the lead itself is past the year')
     assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), null, 'the fixture exemption still applies')
     // controls: the same message without the designation, and an ordinary message on the designated workspace
@@ -509,5 +599,59 @@ test('#1571 (review of #1578) the test-fixture exemption is kept: a test message
     process.env.OUTREACH_TEST_TENANT_ID = 'T'
     db.prepare('UPDATE outreach_messages SET test = 0 WHERE id = ?').run(mid)
     assert.equal(approveBlockReason(db, 'T', mid, { skipAccount: true }), 'lead_currentness_unconfirmed')
+
+    // Fourth review: the same exemption at send was held by nothing. A fixture message is approved for real and handed to the (stubbed)
+    // provider while its lead is past the year; nothing leaves this process. An ordinary message in that state is refused: the test above
+    // ("a genuinely approved, sendable message is refused at approve and at send").
+    t.mock.timers.setTime(NOW)
+    const b = make()
+    const master = Buffer.from(process.env.DAZL_MASTER_KEY!, 'base64')
+    saveSettings(b.db, 'T', { sender_name: 'Pat Smith', postal_address: '1 King St W, Toronto ON M5H 1A1, Canada' } as never)
+    const state = new URL(startOAuth(b.db, 'T', { env, now: Math.floor(NOW / 1000) })).searchParams.get('state')!
+    await completeOAuth(b.db, 'T', 'code', state, { env, master, now: Math.floor(NOW / 1000), fetchImpl: (async () => json({ refresh_token: 'rt-secret-123', scope: 'openid email https://www.googleapis.com/auth/gmail.send', id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
+    const handed: string[] = []
+    t.mock.timers.setTime(STALE)
+    assert.equal(currentnessHeld(b.db, 'T', b.id), true)
+    approveMessage(b.db, 'T', b.mid)
+    assert.equal(await sendMessage(b.db, 'T', b.mid, { env, master, now: Math.floor(STALE / 1000), baseUrl: 'https://app.test', fetchImpl: tokenOk, sendFn: async (_token: string, raw: string) => { handed.push(raw); return { id: 'gm1' } } } as never), 'sent')
+    assert.equal(handed.length, 1, 'the fixture message reached the stubbed provider once')
   } finally { if (saved === undefined) delete process.env.OUTREACH_TEST_TENANT_ID; else process.env.OUTREACH_TEST_TENANT_ID = saved }
+})
+
+// Fourth review (ed0e7d15): Home's checklist in searches that mix leads, its plural wording and its links were held by nothing, and one
+// mix fell through to "no lead has passed the source check yet" beside a lead Campaigns counts as source-checked.
+test('#1571 (review of #1578) Home\'s checklist says a date hold as what it is in mixed searches too, with the step that can still change something', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW })
+  type C = { id: string; status: string; query: string; qualification: Record<string, number>; contact: object; outreach: object }
+  const camp = (id: string, q: Record<string, number>): C => ({ id, status: 'done', query: `search ${id}`, qualification: { rejected: 0, sourceChecked: 0, confirmedByYou: 0, needsReview: 0, research: 0, held: 0, heldResearch: 0, unverified: 0, ...q }, contact: { withContact: 0, readyWithContact: 0, draftable: 0 }, outreach: { drafts: 0, approved: 0, sent: 0 } })
+  const home = (camps: unknown[]) => { const x = readyItems({ profile: { sells: 'fit-outs', website: 'https://fitout.example', business_name: 'Fit-out Co', buyer: { summary: 'clinics', who: ['owner'] } }, usage: null, outreach: null,
+    jobs: (camps as C[]).map(c => ({ id: c.id, status: 'done', error: null, query: c.query, csv_domain: null, created_at: 1, lead_count: 1 })), totals: { searches: camps.length, finished: camps.length }, messages: [], campaigns: camps } as never).find(i => i.id === 'qualified')!
+    return [x.state, x.detail, x.fix?.label ?? null, x.fix?.href ?? null] }
+  const DATE1 = "1 lead in this search is held by its signal's date (none, or more than a year old) - no review changes a date. "
+  const DATE2 = "2 leads in this search are held by their signals' dates (none, or more than a year old) - no review changes a date. "
+  // the counts as Campaigns returns them: a date-held lead is source-checked, held, and marked heldDateOnly
+  assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1 })]), ['todo', DATE1 + 'Search again for a newer signal', 'Change the search', '/app/leads?q=search%20a'])
+  assert.deepEqual(home([camp('a', { sourceChecked: 2, held: 2, heldDateOnly: 2 })]), ['todo', DATE2 + 'Search again for a newer signal', 'Change the search', '/app/leads?q=search%20a'])
+  // an unverified lead in the same search can still be checked: the date is said, and that step is the one offered
+  assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1, unverified: 1 })]), ['todo', DATE1 + 'Check the 1 unverified lead in this search against its source', 'Review leads', '/app/leads?job_id=a'])
+  assert.deepEqual(home([camp('a', { sourceChecked: 2, held: 2, heldDateOnly: 2, unverified: 2 })]), ['todo', DATE2 + 'Check the 2 unverified leads in this search against their sources', 'Review leads', '/app/leads?job_id=a'])
+  // a lead a review CAN release comes first, in the same search (counted alone) or in another one
+  assert.deepEqual(home([camp('a', { sourceChecked: 2, held: 2, heldDateOnly: 1 })]), ['todo', '1 lead in this search needs your review - open the list to see why each was held', 'Review leads', '/app/leads?job_id=a'])
+  assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1 }), camp('b', { sourceChecked: 1, held: 1 })]), ['todo', '1 lead in this search needs your review - open the list to see why each was held', 'Review leads', '/app/leads?job_id=b'])
+  // a qualified lead anywhere: the step is done, whatever else is held
+  assert.deepEqual(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1 }), camp('b', { sourceChecked: 1 })]).slice(0, 2), ['done', '1 source-checked or confirmed by you'])
+  // research-only leads in an older search do not hide the date hold of the newest
+  assert.equal(home([camp('a', { sourceChecked: 1, held: 1, heldDateOnly: 1 }), camp('b', { research: 2 })])[1], DATE1 + 'Search again for a newer signal')
+
+  // and from the real store: one search holding a stale discovery lead and an unverified lead of the older engine
+  const ms = SIGNAL + YEAR + DAY
+  const { db, id } = fixture({ before: second({ source_kind: 'news', confidence: null, company: 'Harbour Dental', source_url: 'https://news.example/harbour' }) })
+  email(db, id, 'dana@northwind-dental.example', 1)
+  db.prepare("UPDATE scan_jobs SET candidates = 2, dropped = 0 WHERE id = 'j1'").run()
+  t.mock.timers.setTime(ms)
+  const card = (await listCampaignsNow(db, 'T', 10, new Date(ms)))[0] as unknown as { qualification: Record<string, number>; next: { label: string } }
+  assert.deepEqual([card.qualification.sourceChecked, card.qualification.unverified, card.qualification.held, card.qualification.heldDateOnly], [1, 1, 1, 1])
+  assert.equal(card.next.label, 'Check 1 unverified lead against their sources')
+  const api = campaignStatus(card as never, db.prepare("SELECT * FROM scan_jobs WHERE id = 'j1'").get() as never)
+  assert.deepEqual(home([api]), ['todo', DATE1 + 'Check the 1 unverified lead in this search against its source', 'Review leads', '/app/leads?job_id=j1'])
 })

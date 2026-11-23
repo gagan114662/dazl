@@ -94,8 +94,11 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   // checking its source, so "search again" would be the wrong advice while one is sitting right there.
   const researchCamp = reviewCamp ? null : first(c => researchOf(c) > 0 && (c.qualification.unverified ?? 0) === 0)
   // The same for leads held only by their signal's date: said as what it is, with the one step that can change it - a new search.
-  const dateCamp = reviewCamp ? null : first(c => dateOnlyOf(c) > 0 && (c.qualification.unverified ?? 0) === 0)
-  const dateN = dateCamp ? dateOnlyOf(dateCamp) : 0, dateQ = dateCamp?.query?.trim()
+  // A search that also has an unverified lead is not skipped (fourth review of #1578: it fell through to "no lead has passed the source
+  // check yet" beside a lead Campaigns counts as source-checked). The date hold is said either way; the step offered is checking the
+  // unverified lead when there is one, else a new search.
+  const dateCamp = reviewCamp ? null : first(c => dateOnlyOf(c) > 0)
+  const dateN = dateCamp ? dateOnlyOf(dateCamp) : 0, dateQ = dateCamp?.query?.trim(), dateUnv = dateCamp?.qualification.unverified ?? 0
   const linkCamp = reviewCamp ?? researchCamp ?? first(c => c.status === 'done')
   // The count and the link describe the SAME set (#352 review of #647): the leads of the one search the link opens.
   const reviewN = reviewCamp ? reviewable(reviewCamp) : 0
@@ -105,7 +108,7 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
     : !campsComplete ? unknown('qualified', 'Qualified lead', campGap)
     : noSearchYet ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: 'comes from your first search', fix: null }
     : reviewN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${reviewN} lead${reviewN === 1 ? '' : 's'} in this search ${reviewN === 1 ? 'needs' : 'need'} your review - open the list to see why each was held`, fix: { href: href(reviewCamp)!, label: 'Review leads' } }
-    : dateN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${dateN} lead${dateN === 1 ? '' : 's'} in this search ${dateN === 1 ? 'is' : 'are'} held by ${dateN === 1 ? "its signal's" : "their signals'"} date (none, or more than a year old) - no review changes a date. Search again for a newer signal`, fix: { href: dateQ ? `/app/leads?q=${encodeURIComponent(dateQ)}` : '/app/leads', label: 'Change the search' } }
+    : dateN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${dateN} lead${dateN === 1 ? '' : 's'} in this search ${dateN === 1 ? 'is' : 'are'} held by ${dateN === 1 ? "its signal's date" : "their signals' dates"} (none, or more than a year old) - no review changes a date. ${dateUnv > 0 ? `Check the ${dateUnv} unverified lead${dateUnv === 1 ? '' : 's'} in this search against ${dateUnv === 1 ? 'its source' : 'their sources'}` : 'Search again for a newer signal'}`, fix: dateUnv > 0 ? { href: href(dateCamp)!, label: 'Review leads' } : { href: dateQ ? `/app/leads?q=${encodeURIComponent(dateQ)}` : '/app/leads', label: 'Change the search' } }
     : researchN > 0 ? { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: `${researchN} lead${researchN === 1 ? '' : 's'} in this search ${researchN === 1 ? 'is' : 'are'} research only - checking ${researchN === 1 ? 'it' : 'them'} cannot make ${researchN === 1 ? 'it' : 'them'} ready. Search again with a different signal or source`, fix: { href: researchQ ? `/app/leads?q=${encodeURIComponent(researchQ)}` : '/app/leads', label: 'Change the search' } }
     : { id: 'qualified', label: 'Qualified lead', state: 'todo', detail: 'no lead has passed the source check yet', fix: linkCamp ? { href: href(linkCamp)!, label: 'Review leads' } : null }
   const contactCamp = first(c => ready(c) > 0)

@@ -150,8 +150,11 @@ function statusOf(l: CardLead, personShown: boolean, titlesRuledOut: boolean): {
 // (discoverRecipient) and to nothing else. It does NOT say every draft does: a draft made without a person asking (autopilot,
 // calibration) still follows the older engine's rule and can use the crawled address (lib/outreach/service.ts createDraft, the
 // non-manual path), so the sentence says that too. If that rule changes, this sentence changes with it; a test holds the two together.
+// Fourth review: "may still use it" alone was shown where the server refuses that automatic draft (signal past a year or undated, a
+// restricted inbox, the address on the do-not-contact list, the lead rejected, the website not yet checked). The clause is conditional
+// on that draft's own checks, which is what the server does in every one of those states.
 // No note when the crawl stored the very address Approve drafts to: there is no second address to tell apart.
-export const CRAWLED_NOTE_TAIL = "Approve on this card never drafts to it, only to an address this lead's own proof run published. A draft made automatically (autopilot) may still use it."
+export const CRAWLED_NOTE_TAIL = "Approve on this card never drafts to it, only to an address this lead's own proof run published. A draft made automatically (autopilot) may still use it, but only where that draft passes its own checks."
 export function detailsContact(l: PublishedEmailLead & { source_kind?: string | null }): { contact: PublishedContact | null; draftTo: string | null; alsoCrawled: string | null; crawledNote: string | null } {
   if (!isDiscoverLead(l)) return { contact: publishedContact(l), draftTo: publishedEmail(l), alsoCrawled: null, crawledNote: null }
   const alsoCrawled = pickCrawledEmail(l.enrichments)?.value.trim().toLowerCase() || null

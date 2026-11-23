@@ -1,6 +1,6 @@
 'use client'
 // The contact part of a lead's Details: the contact line, the website check, the contact-search note, and Details' own draft button.
-// In its own file so that what a person reads there can be rendered, in a test, from a real lead-list row (third review of #1578: the
+// In its own file so that what a person reads there can be rendered, in a test, from the rows the lead list reads after the product's own steps (third review of #1578: the
 // page's side of the fix was pinned by one declaration line, and a page that printed the crawled address again passed every test).
 // Markup moved from the Leads page unchanged; the page passes in its handlers and this lead's messages.
 // What it shows as the contact and whether it offers a draft come from one tested function (lib/scan/lead-card.ts detailsContact). On a
