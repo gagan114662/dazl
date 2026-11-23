@@ -205,7 +205,7 @@ test('export route: a discovery lead exports the person and the published addres
   const P = 'Best Person (research candidate, not verified as current)'
   assert.deepEqual([by('FullCo')['Contact'], by('FullCo')[P], by('FullCo')['Best Person Title'], by('FullCo')['Best Person Profile or Source'], by('FullCo')['Contact Name']],
     ['dana@fullco.example', 'Dana Reyes', 'Head of Sales', 'https://www.linkedin.com/in/dana-reyes', 'Dana Reyes'], 'the discovery lead exports what its card shows')
-  assert.match(by('FullCo')['Best Person Found Via'], /fullco\.example\/team/, 'the page that names the person is said')
+  assert.equal(by('FullCo')['Best Person Found Via'], 'recorded source: https://fullco.example/team', 'the recorded source is given as that, not as the page that names the person')
   assert.deepEqual([by('BareCo')['Contact'], by('BareCo')[P]], ['', ''], 'a discovery lead with nothing stored stays empty')
   assert.deepEqual([by('OldEngineCo')['Contact'], by('OldEngineCo')[P]], ['', ''], 'a lead from another engine is unchanged')
   setUser({ id: 'B', business_name: 'Other' })

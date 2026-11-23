@@ -33,7 +33,8 @@ export async function discoverExportFields(db: Db, tenantId: string, rows: Row[]
       f.best_person = c.person.name
       f.best_person_title = c.person.title ?? ''
       f.best_person_link = c.person.linkedin ?? c.person.source ?? ''
-      f.best_person_found_via = c.person.source ? `named on ${c.person.source}` : ''
+      // the stored source is the page that names the person when the run gave one, else the lead's proof page: say only that it is the recorded source
+      f.best_person_found_via = c.person.source ? `recorded source: ${c.person.source}` : ''
     }
     out.set(r.lead_id, f)
   }
