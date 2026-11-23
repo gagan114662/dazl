@@ -2,7 +2,7 @@
 // Pure and read-only. It never loosens a gate: a lead enters the preview only when every existing check already passed
 // (identity confirmed or not in doubt, a dated source whose day the cited source proves (day_verified), inside the requested window, not held, rejected or in
 // review). Everything else is counted separately as "needs review / research" and never adds to the opportunity count.
-import { discoverApprove, isDiscoverLead } from './discover/card.ts'
+import { discoverApprove, discoverLinkedIn, isDiscoverLead } from './discover/card.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { domainReviewFor } from './outreach/domain-review.ts'
 import { publishedEmail } from './outreach/published-email.ts'
@@ -51,8 +51,9 @@ export function previewSplit(leads: PreviewLead[]): PreviewSplit {
       else if (h?.state === 'rejected') out.rejected.push(l)
       else out.research.push({ lead: l, cause: h?.cause ?? 'unsupported' })
     }
-    // a discovery-lane lead is contact-ready exactly when its Approve would be on (lib/discover/card.ts discoverApprove)
-    else out.opportunities.push({ ...l, contactReady: isDiscoverLead(l as { source_kind?: string | null }) ? discoverApprove(l as never).ok : !!publishedEmail(l) })
+    // a discovery-lane lead is contact-ready when its Approve would be on (the person's own address), or when the named person's own
+    // LinkedIn profile is known (owner decision 2026-11-23; lib/discover/card.ts discoverLinkedIn)
+    else out.opportunities.push({ ...l, contactReady: isDiscoverLead(l as { source_kind?: string | null }) ? discoverApprove(l as never).ok || !!discoverLinkedIn(l as never) : !!publishedEmail(l) })
   }
   return out
 }
@@ -63,6 +64,7 @@ export interface JourneyInput {
   jobs: JourneyJob[] | null                                                // null: could not load
   leads: PreviewLead[] | null                                              // the current play's leads; null: not loaded / failed
   drafts: { drafts: number; approved: number } | null                      // the SAME campaign's unsent emails; null: unknown
+  watches?: PlayRun[] | null                                               // the account's repeating plays (GET /api/watch); null or absent: not read
 }
 export type Stage = 'unknown' | 'no_profile' | 'no_play' | 'running' | 'failed' | 'zero' | 'all_held' | 'research_only' | 'useful'
 export interface Journey { stage: Stage; play: JourneyJob | null; split: PreviewSplit | null; action: { label: string; href: string } | null; line: string }
@@ -70,16 +72,25 @@ export interface Journey { stage: Stage; play: JourneyJob | null; split: Preview
 const own = (j: JourneyJob) => !!j.query && !j.csv_domain && !j.test_only
 const ACTIVE = new Set(['pending', 'running', 'enriching'])
 
-export function currentPlay(jobs: JourneyJob[]): JourneyJob | null {
+// A repeating play and its own last run (a watch row: lib/watch.ts listWatches' last_job_id, the run the Plays page links to).
+export interface PlayRun { query: string; last_job_id?: string | null }
+// The search Home shows. A search that is running wins; otherwise the newest own search. #1579: when that newest search has the sentence
+// of a repeating play (the match Home's play card already makes, lib/play-card.ts playPace) and is a later hand-run search, Home showed
+// the play but linked to the hand-run search while Plays linked to the play's own last run. Home now shows that run, the same one as Plays.
+// A play that has not run, or whose last run is not among `jobs`, changes nothing.
+export function currentPlay(jobs: JourneyJob[], plays?: PlayRun[] | null): JourneyJob | null {
   const mine = jobs.filter(own).sort((a, b) => b.created_at - a.created_at)
-  return mine.find(j => ACTIVE.has(j.status)) ?? mine[0] ?? null
+  const newest = mine.find(j => ACTIVE.has(j.status)) ?? mine[0] ?? null
+  if (!newest || ACTIVE.has(newest.status)) return newest
+  const play = plays?.find(p => p.query.trim() === (newest.query ?? '').trim())
+  return (play?.last_job_id && mine.find(j => j.id === play.last_job_id)) || newest
 }
 
 export function journey(i: JourneyInput): Journey {
   const base = { play: null, split: null }
   if (!i.profile || !i.jobs) return { ...base, stage: 'unknown', action: null, line: 'Could not load your account. Reload to retry.' }
   if (!i.profile.sells && !i.profile.website && !i.profile.buyer) return { ...base, stage: 'no_profile', action: { label: 'Tell dazl about your business', href: '/app?setup=site' }, line: 'Start with your website.' }
-  const play = currentPlay(i.jobs)
+  const play = currentPlay(i.jobs, i.watches)
   if (!play) return { ...base, stage: 'no_play', action: { label: 'Find your first leads', href: '/app/leads' }, line: 'Describe who you want to reach.' }
   const leadsHref = `/app/leads?job_id=${play.id}`
   if (ACTIVE.has(play.status)) return { ...base, play, stage: 'running', action: { label: 'See progress', href: leadsHref }, line: play.status === 'pending' ? 'Your play is queued.' : play.status === 'enriching' ? 'Your play is finishing.' : 'Your play is searching now.' }

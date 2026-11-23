@@ -8,14 +8,15 @@ import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage 
 export const ENRICH_MODEL = process.env.DAZL_DISCOVER_ENRICH_MODEL?.trim() || 'claude-haiku-5-5'
 // US$ per million tokens for the default small model, and per web search.
 const PRICE = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, search: 0.01 }
-const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_ENRICH_SEARCHES || 3)
+const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_ENRICH_SEARCHES || 4)
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_ENRICH_FETCHES || 2)
 
-const SYSTEM = `You are given one company and what a seller wants to sell to it. Find two things on the open web:
+const SYSTEM = `You are given one company and what a seller wants to sell to it. Find these on the open web:
 1. the company's own website domain;
-2. the person at that company the seller should contact: the owner, founder or the leader of the team that would buy this. Give a name and title only when a page prints them, with that page's URL. Give a LinkedIn URL only when a page or a search result shows it for that person at that company.
+2. the person at that company the seller should contact: the owner, founder or the leader of the team that would buy this. Give a name and title only when a page prints them, with that page's URL. If the request says "Person already found", keep that person and do not look for another.
 
-3. an email address for that person or the company, only if a page prints it, with that page's URL. Never build one from a name.
+3. that person's own LinkedIn profile. Search for the person's full name with the company name and the word LinkedIn. Give the profile address (it contains /in/) only when a search result or a page shows it with this same name and this company. A company page (/company/) is not a profile. Never build or guess a profile address.
+4. that person's own work email address, only if a page prints it, with that page's URL. A shared inbox (info@, sales@, hello@, contact@, reception@ and the like) is not a contact: leave email null rather than give one. Never build an address from a name.
 
 The company's own website (team, about, leadership, contact pages), a press release or a news item that names the person are good sources. Make sure the person works at THIS company: the same name at another company is a wrong answer. If you cannot find a person, say so with nulls. Never guess a name, a title or a URL.
 
@@ -29,6 +30,25 @@ const host = (v: unknown): string | null => {
   const s = str(v, 253).toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/?#].*$/, '').replace(/^www\./, '')
   return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(s) ? s : null
 }
+// A person's own profile: a LinkedIn host and a path /in/<name>. A company page, a post or a search page is not one.
+const isProfileUrl = (url: string): boolean => { try { const u = new URL(url); return /(^|\.)linkedin\.com$/.test(u.hostname) && /^\/in\/[^/]{2,}\/?$/.test(u.pathname) } catch { return false } }
+const profileKey = (url: string): string | null => { try { const u = new URL(url); return isProfileUrl(url) ? decodeURIComponent(u.pathname).toLowerCase().replace(/\/$/, '') : null } catch { return null } }
+// The same person: the same first and last name, ignoring case, accents, spacing, a title (Dr.) and middle names or initials.
+const nameParts = (n: string | null): string[] => (n ?? '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\b(?:dr|mr|mrs|ms|prof)\.?\s/g, ' ').match(/[a-z]{2,}/g) ?? []
+export const samePerson = (a: string | null, b: string | null): boolean => { const x = nameParts(a), y = nameParts(b); return x.length >= 2 && y.length >= 2 && x[0] === y[0] && x[x.length - 1] === y[y.length - 1] }
+// #1037: a profile address is kept only when the run saw it (a search result or a page it opened). One it never saw may be made up.
+// `seen` is what THIS lead's lookup saw, never the whole batch's: a same-named person at another company must not lend their profile.
+// The result's own title must also carry the person's first and last name (review of #1596).
+export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>): Enriched {
+  if (!e.linkedin_url) return e
+  const want = profileKey(e.linkedin_url), who = nameParts(e.person)
+  for (const [url, page] of seen) {
+    if (!want || profileKey(url) !== want) continue
+    const title = nameParts(page.title)
+    if (who.length >= 2 && title.includes(who[0]) && title.includes(who[who.length - 1])) return e
+  }
+  return { ...e, linkedin_url: null }
+}
 export function parseEnriched(text: string): Enriched {
   const none = { domain: null, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null }
   const m = /<json>([\s\S]*?)<\/json>/.exec(text)
@@ -40,19 +60,26 @@ export function parseEnriched(text: string): Enriched {
   const mail = publishedEmail(o.email, o.email_source_url)
   if (person && !source) return { ...none, ...mail, domain: host(o.domain) }
   return { ...mail, domain: host(o.domain), person, title: person ? str(o.title, 150) || null : null, person_source_url: source,
-    linkedin_url: person && linkedin && /(^|\.)linkedin\.com$/.test(new URL(linkedin).hostname) ? linkedin : null }
+    linkedin_url: person && linkedin && isProfileUrl(linkedin) ? linkedin : null }
 }
 
-export const needsEnrichment = (l: DiscoveredLead): boolean => !l.person || !l.domain || !l.email
+// #1037: a named person with no LinkedIn profile still needs the pass
+export const needsEnrichment = (l: DiscoveredLead): boolean => !l.person || !l.domain || !l.email || !l.linkedin_url
 export function mergeEnriched(l: DiscoveredLead, e: Enriched): DiscoveredLead {
-  const person = l.person ? {} : { person: e.person, title: e.title, person_source_url: e.person_source_url, linkedin_url: l.linkedin_url ?? e.linkedin_url }
+  // the first pass's person is never replaced; a profile found for that SAME person fills an empty one (#1037)
+  const person = l.person ? (!l.linkedin_url && e.linkedin_url && samePerson(l.person, e.person) ? { linkedin_url: e.linkedin_url } : {})
+    : { person: e.person, title: e.title, person_source_url: e.person_source_url, linkedin_url: l.linkedin_url ?? e.linkedin_url }
   return { ...l, domain: l.domain ?? e.domain, ...person, ...(l.email ? {} : { email: e.email, email_source_url: e.email_source_url }) }
 }
 
 const usdOf = (u: Omit<DiscoverUsage, 'usd'>) => Math.round(((u.input_tokens * PRICE.input + u.output_tokens * PRICE.output + u.cache_read_tokens * PRICE.cacheRead + u.cache_write_tokens * PRICE.cacheWrite) / 1e6 + u.searches * PRICE.search) * 10000) / 10000
 
-async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string | null, seen: Map<string, SeenPage>, usage: Omit<DiscoverUsage, 'usd'>, signal?: AbortSignal): Promise<Enriched> {
-  const user = [`Company: ${lead.company}`, lead.domain ? `Website: ${lead.domain}` : '', `What we know: ${lead.signal}`, `Where we read it: ${lead.evidence_url}`, offer ? `The seller sells: ${str(offer, 400)}` : ''].filter(Boolean).join('\n')
+export const enrichRequest = (lead: DiscoveredLead, offer: string | null): string => [`Company: ${lead.company}`, lead.domain ? `Website: ${lead.domain}` : '', `What we know: ${lead.signal}`, `Where we read it: ${lead.evidence_url}`,
+  lead.person ? `Person already found: ${[lead.person, lead.title].filter(Boolean).join(', ')}` : '', offer ? `The seller sells: ${str(offer, 400)}` : ''].filter(Boolean).join('\n')
+
+async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string | null, allSeen: Map<string, SeenPage>, usage: Omit<DiscoverUsage, 'usd'>, signal?: AbortSignal): Promise<Enriched> {
+  const user = enrichRequest(lead, offer)
+  const seen = new Map<string, SeenPage>()   // this lookup's own results: the profile check reads these only
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: user }]
   let text = ''
   for (let turn = 0; turn < 3; turn++) {
@@ -81,7 +108,8 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
     if (res.stop_reason !== 'pause_turn') break
     messages.push({ role: 'assistant', content: res.content as Anthropic.ContentBlockParam[] })
   }
-  return parseEnriched(text)
+  for (const [url, page] of seen) if (!allSeen.has(url) || page.text) allSeen.set(url, page)
+  return keepSeenProfile(parseEnriched(text), seen)
 }
 
 // Fills the empty person and website fields of the leads that need it. A lead whose call fails is returned unchanged.
@@ -97,7 +125,7 @@ export async function enrichLeads(leads: DiscoveredLead[], o: { offer?: string |
       const { l, i } = todo[k]
       try {
         const merged = mergeEnriched(l, await enrichOne(client, l, o.offer ?? null, seen, usage, deps.signal))
-        if (merged.person !== l.person || merged.domain !== l.domain) enriched++
+        if (merged.person !== l.person || merged.domain !== l.domain || merged.linkedin_url !== l.linkedin_url) enriched++
         out[i] = merged
       } catch { /* this lead stays as the first pass left it */ }
     }

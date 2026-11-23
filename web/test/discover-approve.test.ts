@@ -67,7 +67,7 @@ test('Approve creates a draft for the published address; autopilot and calibrati
   assert.equal(code(() => createDraft(db, 'OTHER', id, 'x', { manual: true })), 'not_found', 'another workspace cannot draft to this lead')
   // the same rules at the server, whatever the page shows
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j2', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
-  const cases = [{ date: null }, { domain: 'someone-else.example' }, { to: 'privacy@northwind-dental.example' }, { src: 'https://directory.example/northwind' }, { to: 'sam@northwind-dental.example', src: 'https://northwind-dental.example/team' }].map((o: { date?: string | null; domain?: string | null; to?: string; src?: string }) => {
+  const cases = [{ date: null }, { domain: 'someone-else.example' }, { to: 'privacy@northwind-dental.example' }, { src: 'https://directory.example/northwind' }, { to: 'dana.ruiz@northwind-dental.example', src: 'https://northwind-dental.example/team' }].map((o: { date?: string | null; domain?: string | null; to?: string; src?: string }) => {
     const lid = randomBytes(12).toString('hex')
     db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j2', 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', ?, 85, 'Northwind Dental will open its second clinic', ?, 'verified', 85, 4, 4, 'expanding', 'discover', ?)").run(lid, `https://news.example/${lid}`, o.date === undefined ? '2026-10-14' : o.date, o.domain === undefined ? 'northwind-dental.example' : o.domain)
     return { lid, to: o.to ?? email.value, src: o.src ?? email.source_url }
@@ -90,4 +90,91 @@ test('Details does not say "no published contact" beside a published address (#1
   const base = { contact: null, source_url: 'https://news.example/northwind', evidence_excerpt: 'x', confidence: 85, company_domain: 'northwind-dental.example' }
   assert.equal(contactSearchNote({ ...base, enrichments: [email] } as never), null)
   assert.match(contactSearchNote({ ...base, enrichments: [person] } as never) ?? '', /No published contact stored/)
+})
+
+// #1250, owner decision 2026-11-23: a shared inbox (sales@, info@, reception@, founders@ ...) is not a contact. On production that day
+// 12 leads carried 4 addresses and 3 were shared inboxes, each shown as the lead's contact and counted as one.
+test('#1250: a shared inbox is never a discovery lead\'s contact; the person\'s own address is', () => {
+  for (const local of ['info', 'sales', 'reception', 'founders', 'hello', 'contact', 'front-desk', 'Info']) {
+    const shared = { ...email, value: `${local}@northwind-dental.example` }
+    const c = leadCardSummary(lead([person, linkedin, shared]) as never)
+    assert.equal(c.contact, 'Dana Ruiz, Practice Owner', `${local}@ is not shown as the contact`)
+    assert.deepEqual(c.approve, { ok: false, reason: 'Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact. Reach them through their LinkedIn profile.' }, `${local}@ cannot be approved`)
+    assert.deepEqual(leadCardSummary(lead([person, shared]) as never).approve, { ok: false, reason: 'Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact.' })
+  }
+  const both = leadCardSummary(lead([person, linkedin, { ...email, value: 'info@northwind-dental.example' }, email]) as never)
+  assert.equal(both.contact, 'Dana Ruiz, Practice Owner - dana@northwind-dental.example', 'the person\'s own address is the contact, wherever the shared one is listed')
+  assert.deepEqual(both.approve, { ok: true })
+})
+
+test('#1250 at the server and in the counts: a shared inbox is not drafted to and not counted; the person\'s own address is', async () => {
+  const { listCampaigns } = await import('../lib/outreach/campaigns.ts')
+  process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j1', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
+  const mk = (id: string) => db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j1', 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', ?, 85, 'Northwind Dental will open its second clinic', '2026-10-14', 'verified', 85, 4, 4, 'expanding', 'discover', 'northwind-dental.example')").run(id, `https://news.example/${id}`)
+  const shared = 'c'.repeat(24), own = 'd'.repeat(24)
+  mk(shared); mk(own)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
+  const now = Math.floor(Date.now() / 1000)
+  const add = (lead: string, value: string, at: number) => addEnrichment(db, 'T', lead, { ...email, value, confidence: null, source_date: '2026-11-22', retrieved_at: at })
+  add(shared, 'info@northwind-dental.example', now)
+  add(own, 'reception@northwind-dental.example', now)      // stored first
+  add(own, 'dana@northwind-dental.example', now + 1)
+  const code = (fn: () => unknown) => { try { fn(); return 'created' } catch (e) { if (e instanceof OutreachError) return e.code; throw e } }
+  assert.equal(code(() => createDraft(db, 'T', shared, 'Fit-out Co', { manual: true })), 'no_email_contact', 'a shared inbox is nothing to draft to')
+  assert.equal(code(() => createDraft(db, 'T', own, 'Fit-out Co', { manual: true })), 'created')
+  assert.equal((db.prepare("SELECT to_email FROM outreach_messages WHERE tenant_id = 'T' AND lead_id = ?").get(own) as { to_email: string }).to_email, 'dana@northwind-dental.example', 'the person\'s own address, not the shared inbox stored before it')
+  assert.equal(listCampaigns(db, 'T').find(c => c.id === 'j1')!.contact.withContact, 1, 'Campaigns counts the lead with a real address only')
+})
+
+// Review of #1596: after a shared inbox is skipped, the next stored address may be another employee's. The contact is the named
+// person's own address (owner rule 2026-11-23), read by one function at the card, the server and the counts.
+test('#1250: an address that does not carry the named person\'s name is not their contact, on the card or at the server', async () => {
+  const other = { ...email, value: 'sam.patel@northwind-dental.example' }
+  const c = leadCardSummary(lead([person, linkedin, { ...email, value: 'info@northwind-dental.example' }, other]) as never)
+  assert.equal(c.contact, 'Dana Ruiz, Practice Owner', 'another employee\'s address is not shown as Dana\'s')
+  assert.deepEqual(c.approve, { ok: false, reason: 'The published address does not carry this person\'s name, so it is not known to be theirs. Reach them through their LinkedIn profile.' })
+  for (const mine of ['dana@northwind-dental.example', 'dana.ruiz@northwind-dental.example', 'druiz@northwind-dental.example', 'ruiz@northwind-dental.example', 'd.ruiz+sales@northwind-dental.example'])
+    assert.deepEqual(leadCardSummary(lead([person, other, { ...email, value: mine }]) as never).approve, { ok: true }, `${mine} is Dana Ruiz's own address`)
+  process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j1', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
+  const id = 'e'.repeat(24)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j1', 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', 'https://news.example/n', 85, 'Northwind Dental will open its second clinic', '2026-10-14', 'verified', 85, 4, 4, 'expanding', 'discover', 'northwind-dental.example')").run(id)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()
+  const now = Math.floor(Date.now() / 1000)
+  addEnrichment(db, 'T', id, { ...person, confidence: null, source_date: '2026-11-22', retrieved_at: now })
+  addEnrichment(db, 'T', id, { ...email, value: 'info@northwind-dental.example', confidence: null, source_date: '2026-11-22', retrieved_at: now })
+  addEnrichment(db, 'T', id, { ...other, confidence: null, source_date: '2026-11-22', retrieved_at: now + 1 })
+  const code = (fn: () => unknown) => { try { fn(); return 'created' } catch (e) { if (e instanceof OutreachError) return e.code; throw e } }
+  assert.equal(code(() => createDraft(db, 'T', id, 'Fit-out Co', { manual: true })), 'no_email_contact', 'the server does not draft to another employee\'s address')
+  const { listCampaigns } = await import('../lib/outreach/campaigns.ts')
+  assert.equal(listCampaigns(db, 'T').find(x => x.id === 'j1')!.contact.withContact, 0, 'and it is not counted as a contact')
+})
+
+// Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
+// email is published. The first step is a LinkedIn message the user sends themselves; nothing is automated.
+test('a lead with a named person and their LinkedIn profile is ready to reach on LinkedIn when no personal email is published', async () => {
+  const { discoverLinkedIn } = await import('../lib/discover/card.ts')
+  const { previewSplit } = await import('../lib/journey.ts')
+  const c = leadCardSummary(lead([person, linkedin]) as never)
+  assert.deepEqual(c.linkedin, { name: 'Dana Ruiz', profile: 'https://www.linkedin.com/in/dana-ruiz/' }, 'the card offers the profile as the way to reach them')
+  assert.equal(c.approve.ok, false, 'Approve (an email draft) stays off: there is no address to draft to')
+  // every proof rule still applies, and it must be a person's profile
+  const li = (e: unknown[], o: Record<string, unknown> = {}) => discoverLinkedIn(lead(e, o) as never)
+  assert.equal(li([person, linkedin], { review_reason: 'source_review_required' }), null, 'an unconfirmed proof page is reviewed first')
+  assert.equal(li([person, linkedin], { event_date: null }), null, 'an undated signal is not ready')
+  assert.equal(li([person, linkedin], { quarantined_at: 1 }), null)
+  assert.equal(li([person, linkedin], { gate_held: true }), null)
+  assert.equal(li([person, { ...linkedin, value: 'https://www.linkedin.com/company/northwind-dental/' }]), null, 'a company page is not the person\'s profile')
+  assert.equal(li([linkedin], { name: '' }), null, 'a profile with no named person is not a contact')
+  assert.equal(li([person]), null)
+  // with the person's own address too, email stays the route and the card does not offer both as the first step
+  assert.equal(leadCardSummary(lead([person, linkedin, email]) as never).approve.ok, true)
+  // Home counts it as contact-ready
+  const split = previewSplit([lead([person, linkedin]) as never, lead([person]) as never])
+  assert.deepEqual(split.opportunities.map(o => o.contactReady), [true, false], 'ready with a profile; not ready with a name alone')
 })

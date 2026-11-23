@@ -4,7 +4,7 @@
 import type { ResearchCause } from './lead-state.ts'
 export interface PlayIcp { summary?: string; who?: string[]; industries?: string[]; where?: string[]; sizes?: string[]; signals?: string[]; exclude?: string[]; window_days?: number }
 // #1042: auto = the first play's automatic repeat, which runs every day; skipped = a run the free plan's daily cap skipped
-export interface PlayWatch { query: string; active: boolean; next_run_at: number | null; paused_reason: string | null; auto?: boolean; skipped?: { at: number; next_run_at: number | null } | null }
+export interface PlayWatch { query: string; active: boolean; next_run_at: number | null; paused_reason: string | null; last_job_id?: string | null; auto?: boolean; skipped?: { at: number; next_run_at: number | null } | null }
 
 // #1042: Home's line about a run the free plan's daily cap skipped. Taken from the account's live first-play repeat
 // whatever Home's play card shows: the skip happens BECAUSE another search ran that day, and that search (usually a

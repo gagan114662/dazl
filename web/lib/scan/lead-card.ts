@@ -3,7 +3,7 @@
 // "Approve" creates a draft for review (POST /api/outreach), which never sends; createDraft re-checks every gate on the
 // server. approveState mirrors the conditions under which the existing "Draft email" button appears, plus the window
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
-import { discoverApprove, discoverContact, isDiscoverLead } from '../discover/card.ts'
+import { discoverApprove, discoverContact, discoverLinkedIn, isDiscoverLead } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { classifyPurpose, publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -33,6 +33,8 @@ export interface LeadCardSummary {
   sourceHost: string
   date: string
   approve: ApproveState
+  // The person's own LinkedIn profile, when the lead is ready to be reached there (lib/discover/card.ts discoverLinkedIn); null otherwise.
+  linkedin: { name: string; profile: string } | null
 }
 
 const firstSentence = (s: string) => {
@@ -45,6 +47,9 @@ export function approveState(l: CardLead): ApproveState {
   // a discovery-lane lead: approvable when its proof was confirmed and a public page prints an email for it
   if (isDiscoverLead(l as { source_kind?: string | null })) {
     const a = discoverApprove(l as never)
+    // a press, support or privacy inbox keeps its own wording, as before the contact became the named person's own address
+    if (!a.ok && a.reason.startsWith('The published address does not carry') && (l.enrichments ?? []).some(e => (e as { connector?: string }).connector === 'discover' && e.kind === 'email' && classifyPurpose(String((e as { value?: string }).value ?? '').trim().toLowerCase()).purpose === 'non-sales'))
+      return { ok: false, reason: 'The published address is a press, support or privacy inbox, not a sales contact.' }
     const to = a.ok ? discoverContact(l as never)?.email?.address ?? '' : ''
     if (a.ok && classifyPurpose(to).purpose === 'non-sales') return { ok: false, reason: 'The published address is a press, support or privacy inbox, not a sales contact.' }
     if (a.ok && deliverabilityBlocked(to, l.enrichments ?? [])) return { ok: false, reason: 'This address cannot receive mail (invalid domain or a failed mailbox check).' }
@@ -117,6 +122,7 @@ export function leadCardSummary(l: CardLead & { name?: string; published_at?: st
     sourceHost,
     date: cardDate(l.event_date, l.published_at, { dayVerified: l.day_verified === true, windowMissed: l.window_missed === true }),
     approve: approveState(l),
+    linkedin: discoverLinkedIn(l as never),
   }
 }
 

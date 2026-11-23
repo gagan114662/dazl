@@ -51,8 +51,10 @@ export default function Journey() {
     void get('/api/watch').then(w => setWatches(Array.isArray(w?.watches) ? w.watches : null))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const base: JourneyInput = { profile: profile && profile !== 'failed' ? profile : null, jobs: Array.isArray(jobs) ? jobs : null, leads: null, drafts: null }
-  const playId = base.profile && base.jobs ? journey(base).play?.id ?? null : null
+  // #1579: the plays are part of choosing the run shown (a repeating play shows its own last run, as on Plays), so nothing is chosen
+  // or read for a run until that list has answered; a list that could not be read (null) leaves the newest search, as before.
+  const base: JourneyInput = { profile: profile && profile !== 'failed' ? profile : null, jobs: Array.isArray(jobs) ? jobs : null, leads: null, drafts: null, watches: watches === 'loading' ? null : watches }
+  const playId = base.profile && base.jobs && watches !== 'loading' ? journey(base).play?.id ?? null : null
   const playStatus = base.jobs?.find(j => j.id === playId)?.status
   const playDone = playStatus === 'done'
   const playActive = playStatus === 'pending' || playStatus === 'running' || playStatus === 'enriching'
@@ -95,14 +97,14 @@ export default function Journey() {
     })
   }, [playId, playDone]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (profile === null || jobs === null) return <div className="card p-6 text-sm text-[var(--ink-2)]" data-testid="journey-loading">Loading...</div>
+  if (profile === null || jobs === null || watches === 'loading') return <div className="card p-6 text-sm text-[var(--ink-2)]" data-testid="journey-loading">Loading...</div>
   const j = journey({ ...base, leads, drafts })
   const p = profile !== 'failed' ? profile : null
   const buyer = p?.buyer ?? null
 
   const icp = playIcp?.icp && j.play && playIcp.query === j.play.query ? playIcp.icp : null
-  const pace = j.play && watches !== 'loading' ? playPace(j.play, watches) : null
-  const skipLine = watches !== 'loading' ? skipNoticeLine(watches) : null
+  const pace = j.play ? playPace(j.play, watches) : null   // the plays list has answered by here (the loading return above)
+  const skipLine = skipNoticeLine(watches)
   const pills = icp ? constraintPills(icp) : []
   const opp = j.split?.opportunities.length ?? null, held = j.split?.review.length ?? null, researchN = j.split?.research.length ?? 0
   const stat = (v: number | null) => v === null ? (j.stage === 'unknown' || j.stage === 'useful' || j.stage === 'all_held' || j.stage === 'research_only' ? '?' : '0') : String(v)

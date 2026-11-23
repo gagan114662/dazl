@@ -1,3 +1,4 @@
+import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
 // What a lead from the Claude discovery lane says about itself on its card: how sure dazl is, and plainly what is missing
 // (launch brief, Step 3: a missing date, person or website lowers confidence and is said; it never hides the lead).
 export interface DiscoverCardLead {
@@ -38,20 +39,26 @@ export function discoverSources(l: { source_url?: string | null; enrichments?: {
 
 // The person and the published email a discovery lead carries, with the pages they came from. These are the rows the run stored
 // (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
-export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null }
+// email: the person's or company's own published address. A shared inbox (info@, sales@ ...) is never one (#1250); sharedInbox says one was published.
+export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null; sharedInbox: boolean; otherAddress: boolean }
 type Row = { kind: string; connector?: string; value?: string; source_url?: string | null }
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
   const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
-  const p = rows.find(r => r.kind === 'person' && r.value), e = rows.find(r => r.kind === 'email' && r.value && r.source_url && EMAIL.test(r.value.trim().toLowerCase()))
+  const mails = rows.filter(r => r.kind === 'email' && r.value && r.source_url && EMAIL.test(r.value.trim().toLowerCase()))
+  const p = rows.find(r => r.kind === 'person' && r.value)
   const li = rows.find(r => r.kind === 'linkedin' && r.value)
   let person: DiscoverContact['person'] = null
   if (p) {
     const i = p.value!.indexOf(', ')
     person = { name: (i < 0 ? p.value! : p.value!.slice(0, i)).trim(), title: i < 0 ? null : p.value!.slice(i + 2).trim() || null, linkedin: li?.value ?? null, source: p.source_url ?? null }
   } else if ((l.name ?? '').trim()) person = { name: l.name!.trim(), title: null, linkedin: li?.value ?? null, source: null }
-  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null }
+  // The contact is the named person's OWN address: not a shared inbox, and carrying their name (dana@, dana.ruiz@, druiz@ ...). Another
+  // employee's address stored beside it is not this person's (review of #1596); otherAddress says one was published.
+  const own = (r: Row) => !isGenericInbox(r.value) && !!person && nameBound(r.value!.trim().toLowerCase().split('@')[0], person.name)
+  const e = mails.find(own)
+  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
 }
 // The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
 // A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's
@@ -64,16 +71,35 @@ export function emailOnCompanySite(email: string, sourceUrl: string | null | und
   if (!email.includes('@')) return false
   try { const u = new URL(sourceUrl ?? ''); return (u.protocol === 'https:' || u.protocol === 'http:') && under(bare(u.hostname)) } catch { return false }
 }
+// What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, not graded a fit.
+// One list, read by Approve (email) and by the LinkedIn route below.
+type ProofLead = { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
+export function discoverProofHold(l: ProofLead): string | null {
+  if (l.quarantined_at) return 'Rejected. Undo to use it again.'
+  if (l.gate_held) return 'A required check has not passed. Research only.'
+  if (l.review_reason) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
+  if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
+  if (l.fit === 0 && l.intent === null) return 'Graded as not a fit for your profile.'
+  return null
+}
+// Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
+// email is published. The user sends the first message on LinkedIn themselves; dazl opens the profile and automates nothing.
+// Null unless every proof rule passes, a person is named, and the stored link is a person's profile (/in/<name>), never a company page.
+const PROFILE = /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/in\/[^/?#]{2,}\/?(?:[?#].*)?$/i
+export function discoverLinkedIn(l: ProofLead & { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { name: string; profile: string } | null {
+  if (!isDiscoverLead(l) || discoverProofHold(l)) return null
+  const p = discoverContact(l)?.person
+  return p?.name && p.linkedin && PROFILE.test(p.linkedin.trim()) ? { name: p.name, profile: p.linkedin.trim() } : null
+}
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
 // Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
 // (lib/scan/lead-card.ts), which already has them.
 export function discoverApprove(l: { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; company_domain?: string | null; fit?: number | null; intent?: number | null; source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { ok: true } | { ok: false; reason: string } {
-  if (l.quarantined_at) return { ok: false, reason: 'Rejected. Undo to use it again.' }
-  if (l.gate_held) return { ok: false, reason: 'A required check has not passed. Research only.' }
-  if (l.review_reason) return { ok: false, reason: 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.' }
-  if (!l.event_date) return { ok: false, reason: 'The signal has no date, so its timing is unknown. Open the proof to check it.' }
-  if (l.fit === 0 && l.intent === null) return { ok: false, reason: 'Graded as not a fit for your profile.' }
+  const held = discoverProofHold(l)
+  if (held) return { ok: false, reason: held }
   const c = discoverContact(l)
+  if (!c?.email && c?.otherAddress) return { ok: false, reason: `The published address does not carry this person's name, so it is not known to be theirs.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
+  if (!c?.email && c?.sharedInbox) return { ok: false, reason: `Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
   if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address was not found on the company\'s own website, only on another site.' }
   return { ok: true }
