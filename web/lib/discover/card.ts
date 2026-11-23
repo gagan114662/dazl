@@ -15,7 +15,7 @@ export function discoverMissing(l: DiscoverCardLead): string[] {
   if (!l.event_date) missing.push('a date for the signal')
   else if (l.date_status !== 'verified') missing.push(l.timing_note ? 'a date printed on the page (the date shown is when the page was published)' : 'the date confirmed on the page')
   if (!l.name.trim() && !(l.enrichments ?? []).some(e => e.kind === 'person')) missing.push('a named person')
-  if (!l.company_domain) missing.push('the company website')
+  if (!discoverSite(l.company_domain)) missing.push('the company website')
   return missing
 }
 export function discoverLine(l: DiscoverCardLead): string {
@@ -64,6 +64,11 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
 // A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's
 // publication, and nothing shows the company put it there (review of #1574).
 const bare = (h: string) => h.toLowerCase().replace(/^www\./, '')
+// The website a discovery lead carries, as a bare host name: the value the run stored on the lead (company_domain), which Details and
+// the Website link show. null when none is stored or the stored value is not a host name. Identified by the search; nothing here says
+// the site is the company's own.
+const HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
+export const discoverSite = (domain: string | null | undefined): string | null => { const h = bare((domain ?? '').trim()); return HOST.test(h) ? h : null }
 export function emailOnCompanySite(email: string, sourceUrl: string | null | undefined, companyDomain: string | null | undefined): boolean {
   const site = bare((companyDomain ?? '').trim())
   if (!site) return false
