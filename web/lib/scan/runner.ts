@@ -7,7 +7,7 @@ import { enrichLeads } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
 import { enqueuePostEngagement } from '../linkedin-tasks/engagers.ts'
 import { enqueueLanePeople, type LaneLead } from '../linkedin-tasks/lane-people.ts'
-import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget, unmarkCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
 import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provider-policy.ts'
 import { counterpartySignal } from './counterparty.ts'
@@ -1489,6 +1489,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     dropped: {},
   }
   ledger.record(source, 'ok')
+  // #1579 (production, 2026-11-23): a request accepted as company-first and answered here is the lane's scan. Left marked, every page, the
+  // leads API and the spreadsheet hold its leads for the older rollout's final checks, which this lane never runs: 7 and 5 paid leads, none shown.
+  if (hasCompanyFirstBudget(job.run_budget)) db.prepare("UPDATE scan_jobs SET run_budget = ? WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?").run(unmarkCompanyFirstBudget(job.run_budget ?? null), job.id, job.user_id, job.attempts)
   if (!finish(db, job, 'done', null, out, checked.length, ledger)) return 'failed'
   // What the lead row has no column for at insert time: the lane's tag, the company's own website, and the person with the page that names them.
   const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
