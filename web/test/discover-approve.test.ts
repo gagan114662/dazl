@@ -11,6 +11,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { addEnrichment } from '../lib/connectors/store.ts'
 import { leadPerson } from '../lib/people/lead-person.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
+import { contactSearchNote } from '../lib/outreach/published-email.ts'
 import { createDraft, discoverRecipientRefusal, OutreachError } from '../lib/outreach/service.ts'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 
@@ -121,4 +122,10 @@ test('#1578 route seam: GET /api/leads marks an unreadable recipient check and t
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /# pass 1/); assert.match(r.stdout, /# fail 0/)
+})
+
+test('Details does not say "no published contact" beside a published address (#1571)', () => {
+  const base = { contact: null, source_url: 'https://news.example/northwind', evidence_excerpt: 'x', confidence: 85, company_domain: 'northwind-dental.example' }
+  assert.equal(contactSearchNote({ ...base, enrichments: [email] } as never), null)
+  assert.match(contactSearchNote({ ...base, enrichments: [person] } as never) ?? '', /No published contact stored/)
 })
