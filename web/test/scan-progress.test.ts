@@ -481,7 +481,7 @@ test('runJob: company path CONTROL - the same fixture with no failure runs all t
 test('runJob: the TinyFish daily-allowance gate still returns the distinct cap outcome (not a spend refusal, no vendor call)', async () => {
   const { tfSearch, tfFetch, migrateTinyfish, resetTinyfishState } = await import('../lib/search/tinyfish.ts')
   const Database = (await import('better-sqlite3')).default
-  const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_SEARCHES_PER_SCAN: '5', TINYFISH_TENANT_DAILY: '1' } // one search a day per tenant
+  const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_ENABLED: '1', TINYFISH_SEARCHES_PER_SCAN: '5', TINYFISH_TENANT_DAILY: '1' } // one search a day per tenant
   const noCall = (async () => { throw new Error('the vendor must not be called once the daily gate is tripped') }) as unknown as typeof fetch
   const okCall = (async () => new Response('{"results":[]}', { status: 200 })) as unknown as typeof fetch
   const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState()
@@ -489,7 +489,7 @@ test('runJob: the TinyFish daily-allowance gate still returns the distinct cap o
   assert.equal(first.ok, true, 'the first search uses the daily allowance')
   const s = await tfSearch(db, 't1', 'ohio payroll hiring again', {}, { searches: 1 }, { env, fetchImpl: noCall, now: 1_800_000_000 })
   assert.deepEqual(s, { ok: false, reason: 'cap' }, 'the daily-allowance gate is unchanged: a distinct cap outcome, never a SpendRefused')
-  const envF = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_TENANT_DAILY: '0' } // fetch room = tenantDaily - used(searches) <= 0 after the search above
+  const envF = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_ENABLED: '1', TINYFISH_TENANT_DAILY: '0' } // fetch room = tenantDaily - used(searches) <= 0 after the search above
   const f = await tfFetch(db, 't1', ['https://ex.com/x'], { fetches: 0 }, { env: { ...envF, TINYFISH_TENANT_DAILY: '1' }, fetchImpl: noCall, now: 1_800_000_000 })
   assert.deepEqual(f, { ok: false, reason: 'cap' }, 'the fetch daily-allowance gate is unchanged')
 })
@@ -595,7 +595,7 @@ test('REGRESSION: TinyFish search 200 with {} / no results array is a failed sea
   const { tfSearch, migrateTinyfish, resetTinyfishState } = await import('../lib/search/tinyfish.ts')
   const { SearchTrace, summarizeTrace } = await import('../lib/search/trace.ts')
   const Database = (await import('better-sqlite3')).default
-  const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_SEARCHES_PER_SCAN: '5', TINYFISH_TENANT_DAILY: '50' }
+  const env = { TINYFISH_API_KEY: 'tf-secret-xyz', TINYFISH_ENABLED: '1', TINYFISH_SEARCHES_PER_SCAN: '5', TINYFISH_TENANT_DAILY: '50' }
   const res = (text: string) => (async () => new Response(text, { status: 200 })) as unknown as typeof fetch
   for (const [body, ok] of [['{}', false], ['null', false], ['<html>captcha</html>', false], ['{"results":"x"}', false], ['{"results":[]}', true]] as const) {
     const db = new Database(':memory:'); migrateTinyfish(db); resetTinyfishState(); const trace = new SearchTrace()

@@ -241,7 +241,7 @@ bothEngines('#1167 the SEO index check (a tenant path outside the runner, cron o
   await resetTinyfishState(db)
   let sent = 0
   const f = (async () => { sent++; return new Response(JSON.stringify({ results: [{ url: 'https://acme.com/', title: 't', snippet: 'a long enough snippet for the test', date: '2027-01-01' }] }), { status: 200 }) }) as unknown as typeof fetch
-  const env = { TINYFISH_API_KEY: 'tf-key', DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01' }
+  const env = { TINYFISH_API_KEY: 'tf-key', TINYFISH_ENABLED: '1', DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01' }
   await withEnv({ DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: '0.01', DAZL_OWNER_DAY_MAX_USD: '0.5' }, async () => {
     for (const t of [A, B]) { await saveDomain(db, t, 'acme.com'); await addKeyword(db, t, 'crm'); await addKeyword(db, t, 'sales tool') }
     const out = await runIndexChecks(db, A, { env, fetchImpl: f })

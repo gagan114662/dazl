@@ -1,6 +1,6 @@
 # TinyFish search backend
 
-Scans use TinyFish Search and Fetch when the operator sets `TINYFISH_API_KEY`. Otherwise (or on any TinyFish error, cap or empty result) scans use the provider's built-in web search on the tenant's own key, as before.
+TinyFish is off by default (owner rule, #1435: Claude only). Scans use TinyFish Search and Fetch only when the operator sets `TINYFISH_API_KEY` and also `TINYFISH_ENABLED=1`; a key alone never turns it on. Otherwise (or on any TinyFish error, cap or empty result) scans use the provider's built-in web search on the tenant's own key, as before.
 
 - Key: env var only, read on the server, sent only in the `X-API-Key` header to api.search.tinyfish.ai and api.fetch.tinyfish.ai. Never logged, stored in the DB or sent to the browser.
 - Flow: the tenant's model writes up to 3 queries, TinyFish searches (last 12 months), fetches up to 8 pages as markdown, the model turns that into candidates (URL, verbatim quote, date), and the existing verifier re-fetches and checks each one.

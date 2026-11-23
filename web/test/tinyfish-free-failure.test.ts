@@ -24,7 +24,7 @@ const FAILS: [string, () => Response][] = [
 for (const kind of ['fetch', 'search'] as const) for (const [name, ans] of FAILS) {
   test(`free TinyFish ${kind}, ${name}: a failed result, the scan may continue, nothing left reserved`, async () => {
     const s = await setup()
-    const env = { TINYFISH_API_KEY: 'k' }, f = (async () => ans()) as unknown as typeof fetch
+    const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, f = (async () => ans()) as unknown as typeof fetch
     const out = await runWithScanSpend(s.ctx(), async () => {
       const r = kind === 'fetch' ? await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env, fetchImpl: f, now: T0 }) : await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env, fetchImpl: f, now: T0 })
       // Same context as the failed call (Hermes-PC review: a NEW context hid a rejected-attempt mark): the attempt records neither maybe-billed nor a provider rejection, and the next paid call is still admitted.
@@ -41,7 +41,7 @@ for (const kind of ['fetch', 'search'] as const) for (const [name, ans] of FAILS
 }
 test('a PRICED TinyFish call that fails keeps the fail-closed rule (maybe billed, stays reserved, attempt stops paying)', async () => {
   const s = await setup()
-  const env = { TINYFISH_API_KEY: 'k', DAZL_SCAN_PRICE_TINYFISH_FETCH_USD: '0.01' }
+  const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', DAZL_SCAN_PRICE_TINYFISH_FETCH_USD: '0.01' }
   const f = (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch
   const out = await runWithScanSpend(s.ctx(), async () => { await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env, fetchImpl: f, now: T0 }); return spendAttemptUncertain() })
   assert.equal(out, true)
@@ -50,13 +50,13 @@ test('a PRICED TinyFish call that fails keeps the fail-closed rule (maybe billed
 test('a free TinyFish call answered 402 (billing error) is still maybe billed', async () => {
   const s = await setup()
   const f = (async () => new Response('{}', { status: 402 })) as unknown as typeof fetch
-  const out = await runWithScanSpend(s.ctx(), async () => { await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }); return spendAttemptUncertain() })
+  const out = await runWithScanSpend(s.ctx(), async () => { await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, fetchImpl: f, now: T0 }); return spendAttemptUncertain() })
   assert.equal(out, true)
 })
 test('a free TinyFish call that SUCCEEDS is unchanged: settled at $0', async () => {
   const s = await setup()
   const f = (async () => new Response(JSON.stringify({ results: [] }), { status: 200 })) as unknown as typeof fetch
-  await runWithScanSpend(s.ctx(), () => tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }))
+  await runWithScanSpend(s.ctx(), () => tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, fetchImpl: f, now: T0 }))
   const c = await scanSpendCalls(s.db, s.id, 'A'); assert.equal(c[0].status, 'settled'); assert.equal(c[0].actual_usd, 0)
 })
 test('research engine only (rateIsWait): a 429 on a free call is a wait, not a rejection (Hermes 15 Nov 03:35): settled at $0, nothing recorded', async () => {
@@ -64,7 +64,7 @@ test('research engine only (rateIsWait): a 429 on a free call is a wait, not a r
     const s = await setup()
     const f = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch
     const out = await runWithScanSpend(s.ctx(), async () => {
-      const deps = { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0, rateIsWait: true }
+      const deps = { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, fetchImpl: f, now: T0, rateIsWait: true }
       const r = call === 'search' ? await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, deps) : await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, deps)
       return { r, rej: spendAttemptRejected(), unc: spendAttemptUncertain() }
     })
@@ -77,7 +77,7 @@ test('documented rejections (401/403/429) on a free call keep their own handling
   for (const status of [401, 403, 429]) {
     const s = await setup()
     const f = (async () => new Response('{}', { status })) as unknown as typeof fetch
-    const out = await runWithScanSpend(s.ctx(), async () => { await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env: { TINYFISH_API_KEY: 'k' }, fetchImpl: f, now: T0 }); return { rej: spendAttemptRejected(), unc: spendAttemptUncertain() } })
+    const out = await runWithScanSpend(s.ctx(), async () => { await tfFetch(s.db, 'A', ['https://a.example/x'], { fetches: 0 }, { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1' }, fetchImpl: f, now: T0 }); return { rej: spendAttemptRejected(), unc: spendAttemptUncertain() } })
     assert.equal(out.rej, status, String(status)); assert.equal(out.unc, false)
   }
 })
@@ -88,7 +88,7 @@ test('rateIsWait never lifts a PRICED call\'s 429 or a free call\'s 401/403: tho
     if (price) process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD = price
     try {
       const f = (async () => new Response('{}', { status })) as unknown as typeof fetch
-      const out = await runWithScanSpend(s.ctx(), async () => { await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k', ...(price ? { DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: price } : {}) }, fetchImpl: f, now: T0, rateIsWait: true }); return spendAttemptRejected() })
+      const out = await runWithScanSpend(s.ctx(), async () => { await tfSearch(s.db, 'A', 'q', {}, { searches: 0 }, { env: { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', ...(price ? { DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD: price } : {}) }, fetchImpl: f, now: T0, rateIsWait: true }); return spendAttemptRejected() })
       assert.equal(out, status, `${status}${price ? ' priced' : ' free'}`)
     } finally { delete process.env.DAZL_SCAN_PRICE_TINYFISH_SEARCH_USD }
   }

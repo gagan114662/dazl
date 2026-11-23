@@ -19,7 +19,7 @@ import { PG_URL, pgSkip, freshSchema } from './helpers/pg-test.ts'
 
 const A = 'a'.repeat(32), B = 'b'.repeat(32)
 const master = randomBytes(32)
-const env = (over: Record<string, string> = {}) => ({ TINYFISH_API_KEY: 'tf-test', TINYFISH_PER_MINUTE: '1000', ...over })
+const env = (over: Record<string, string> = {}) => ({ TINYFISH_API_KEY: 'tf-test', TINYFISH_ENABLED: '1', TINYFISH_PER_MINUTE: '1000', ...over })
 function stubFetch() {
   const calls: string[] = []
   const f = (async (u: string | URL, init?: RequestInit) => {

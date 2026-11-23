@@ -41,7 +41,7 @@ export interface ReportParts {
   // reason is preserved too - the record keeps BOTH, never only the code's priority winner. When finish()'s
   // authoritative terminal overrides (accounting_failed / accounting_uncertain / provider rejection) replace the
   // staged classification, code is the FINAL job error and the staged one is kept as superseded_stop_code.
-  stop?: { code: string; spend_refusal_reason: string | null; superseded_refusal_reason?: string | null; superseded_stop_code?: string | null } | null
+  stop?: { code: string; spend_refusal_reason: string | null; superseded_refusal_reason?: string | null; superseded_stop_code?: string | null; room?: { left_usd: number; needed_usd: number } | null } | null
   // #1205 (review F2): a source that was not used, why, and what to change, in the same plain words as its progress row ("'Europe' is a region. ...").
   source_skips?: { source: string; status: string; reason: string }[]
 }

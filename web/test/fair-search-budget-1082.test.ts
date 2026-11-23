@@ -17,7 +17,7 @@ const okFetch = (async (u: string, init?: RequestInit) => {
   return new Response(JSON.stringify({ results: urls.map(url => ({ url, title: 't', text: 'x'.repeat(50) })) }), { status: 200 })
 }) as unknown as typeof fetch
 // global 30 fetch units, 10 per scan; tenant cap high so only the platform share binds
-const ENV = { TINYFISH_API_KEY: 'k', TINYFISH_FETCHES_PER_SCAN: '10', TINYFISH_SEARCHES_PER_SCAN: '2', TINYFISH_TENANT_DAILY: '1000', TINYFISH_GLOBAL_FETCH_DAILY: '30', TINYFISH_GLOBAL_SEARCH_DAILY: '6', TINYFISH_PER_MINUTE: '1000' }
+const ENV = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', TINYFISH_FETCHES_PER_SCAN: '10', TINYFISH_SEARCHES_PER_SCAN: '2', TINYFISH_TENANT_DAILY: '1000', TINYFISH_GLOBAL_FETCH_DAILY: '30', TINYFISH_GLOBAL_SEARCH_DAILY: '6', TINYFISH_PER_MINUTE: '1000' }
 const urls = (n: number, p = 'a') => Array.from({ length: n }, (_, i) => `https://${p}${i}.example/page`)
 const fetchUnits = async (db: Db, tenant: string, n: number, env: Record<string, string> = ENV, now = NOON, trace?: SearchTrace) => {
   const r = await tfFetch(db, tenant, urls(n, tenant), { fetches: 0 }, { env, now, fetchImpl: okFetch, trace })

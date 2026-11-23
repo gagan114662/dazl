@@ -33,7 +33,7 @@ function setup(icp: unknown) {
   return { db, job }
 }
 const ICP = { summary: 's', who: ['HR manager', 'Head of People'], industries: [], sizes: [], where: ['Chicago, Illinois'], signals: [], exclude: [], country: 'US', language: 'en' }
-const env = { TINYFISH_API_KEY: 'k', TINYFISH_TENANT_DAILY: '50' }
+const env = { TINYFISH_API_KEY: 'k', TINYFISH_ENABLED: '1', TINYFISH_TENANT_DAILY: '50' }
 
 test('stores matching people as labelled person enrichments with the profile URL; sends the buyer market', async () => {
   const { db, job } = setup(ICP)

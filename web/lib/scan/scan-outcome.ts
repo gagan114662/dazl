@@ -1,4 +1,5 @@
 import { enrichState } from './enrichment.ts'
+import { CLAUDE_KEY_REQUIRED_COPY } from '../error-copy.ts'
 
 // What a past scan ended as, read only from what the scan job row records (status, error and the counts the runner
 // writes when it finishes), with one next step each. Used by the Leads history, the Home plays and the campaign page so
@@ -20,7 +21,9 @@ export type ScanOutcomeKind = 'running' | 'enriching' | 'leads' | 'review_only' 
 // accounts_for_failed_source (#1157): this outcome already says which source failed and why the run still stopped the way it did
 // (the allowance, or a clean zero from the other source). A view that would otherwise replace a 'stopped' outcome with
 // "Failed - <source> had an error" (lib/scan/first5.ts) must show this one as it is.
-export interface ScanOutcome { kind: ScanOutcomeKind; label: string; detail?: string; next: { text: string; href: string } | null; accounts_for_failed_source?: true }
+// says_what_to_do (#1435): a search that never started (no Anthropic key, too little budget left, free searches not available). Its
+// label and detail are the whole message, with the next step in them; the current-job view shows them as they are (outcomeOwnCopy).
+export interface ScanOutcome { kind: ScanOutcomeKind; label: string; detail?: string; next: { text: string; href: string } | null; accounts_for_failed_source?: true; says_what_to_do?: true }
 export interface ScanRecord {
   id: string; status: string; error: string | null; funded_by?: string | null
   candidates?: number | null; verified?: number | null; needs_review?: number | null; dropped?: number | null; lead_count?: number | null
@@ -36,6 +39,9 @@ export interface ScanRecord {
   // From the run report's stop block, when recorded: the exact spend-refusal reason that caused the stop. NULL means
   // not recorded (legacy rows) - never proof of any particular reason.
   stop_refusal_reason?: string | null
+  // #1435, from the same stop block: what was left under the tightest limit and the least a search needs, when the search did not
+  // start for lack of budget. Omitted or null when not recorded.
+  stop_room?: { left_usd: number; needed_usd: number } | null
   // What the scan recorded as spent (scan_jobs.spend_reserved_usd), read successfully. Omitted (or null) when it could not be read: then no
   // claim about charges is made. Only a trial stop reads it (trialStopped).
   spend_usd?: number | string | null
@@ -94,7 +100,7 @@ const PARTIAL_KINDS: ScanOutcomeKind[] = ['leads', 'review_only', 'all_dropped',
 // naming the source that never ran. null for every other outcome: that view keeps its own copy. Reads the status payload's `outcome`.
 export function outcomeOwnCopy(o: unknown): string | null {
   const x = o && typeof o === 'object' ? o as Partial<ScanOutcome> : null
-  if (!x || x.accounts_for_failed_source !== true || typeof x.label !== 'string' || !x.label) return null
+  if (!x || (x.accounts_for_failed_source !== true && x.says_what_to_do !== true) || typeof x.label !== 'string' || !x.label) return null
   return typeof x.detail === 'string' && x.detail ? `${x.label}. ${x.detail}` : x.label
 }
 
@@ -115,6 +121,13 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
         // Only the typed report provenance (the run report's stop.spend_refusal_reason) may name a specific numeric
         // control. A legacy budget_stopped row kept no reason: never claim a limit refused, never advise changing one.
         const r = j.stop_refusal_reason ?? null
+        // #1435: the search did not start because too little was left under a limit. Says how much, under which limit, and what a search needs.
+        const room = j.stop_room, amount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
+        if (room && typeof room === 'object' && amount(room.left_usd) && amount(room.needed_usd)) {
+          const limit = r === 'over_limit' ? "this run's spending limit" : r === 'owner_pool_limit' ? "the account's day or month spending limit" : r === 'trial_budget_reached' ? "this free scan's spending limit" : "this run's spending cap"
+          return { kind: 'stopped', says_what_to_do: true, label: 'Not started - too little budget was left for a search', detail: `A search needs at least ${usd(room.needed_usd)} to start, and ${usd(room.left_usd)} was left under ${limit}. No search was run, so nothing was concluded about whether leads exist.`,
+            next: r === 'over_limit' ? { text: 'Run it again with a larger budget', href: NEW_SCAN } : r === 'trial_budget_reached' ? { text: 'Add your own Anthropic key in Settings', href: '/app/settings' } : { text: 'Try again later', href: NEW_SCAN } }
+        }
         if (r === 'trial_budget_reached')   // TRIAL_BUDGET_REASON (trial-budget.ts); a free scan searches the web only in fixed-price calls
           return { kind: 'stopped', label: 'This free scan found no companies within its spending limit', detail: 'A free scan searches the web only in ways whose cost is fixed in advance, so this does not show that no company matches.', next: { text: 'Try a broader search', href: NEW_SCAN } }
         if (r === 'over_limit')   // the run's OWN max_usd guard refused (only exists when the run set one): the per-run remedy is true
@@ -158,9 +171,11 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
         return sourcesFailed(j) ? { ...o, kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error; ${counted}` } : o }
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }
       case 'cancelled': return { kind: 'stopped', label: 'Cancelled', next: { text: 'Start a new scan', href: NEW_SCAN } }
+      // #1435: dazl finds leads with Claude only, so a search needs an Anthropic key. Nothing ran in its place.
+      case 'claude_key_required': return { kind: 'failed', says_what_to_do: true, label: 'Not started - this workspace has no Anthropic key', detail: CLAUDE_KEY_REQUIRED_COPY, next: { text: 'Add your Anthropic key in Settings', href: '/app/settings' } }
       case 'key_unreadable': case 'no_api_key': return { kind: 'failed', label: 'Failed - your AI key could not be used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
       case 'trial_key_invalid': return TRIAL_KEY
-      case 'trial_unavailable': return { kind: 'failed', label: 'Not started - free scans are not available right now', next: { text: 'Try again later', href: NEW_SCAN } }
+      case 'trial_unavailable': return { kind: 'failed', says_what_to_do: true, label: 'Not started - free scans are not available right now', detail: 'No search was run. Add your own Anthropic key in Settings to run a search.', next: { text: 'Try again later', href: NEW_SCAN } }
       case 'key_rejected':
         return j.funded_by === 'trial' ? TRIAL_KEY
           : { kind: 'failed', label: 'Failed - the AI provider rejected the key this scan used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
