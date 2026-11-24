@@ -291,6 +291,7 @@ const splitPosted = (value: string): [string, string | null] => {
 }
 const evidenceTitle = (value: string): string => splitPosted(value.replace(/^Unconfirmed: /, '').replace(/^Open (?:sales )?role on its careers page: /, ''))[0].trim().toLowerCase()
 const boardOf = (connector: string): string => connector.replace(/^signals:/, '').replace(/-gtm$/, '')
+const REPOST_DATES_SHOWN = 5
 export function withRepostHistory<T extends { connector: string; kind: string; value: string; label: string; source_url?: string }>(rows: T[], board: GtmHiring['board'] | 'careers', existing: ExistingEvidenceRow[]): T[] {
   const mine = board === 'careers' ? 'signals:careers-gtm' : `signals:${board}-gtm`
   return rows.map(r => {
@@ -309,7 +310,10 @@ export function withRepostHistory<T extends { connector: string; kind: string; v
       const dates = [...new Set(priors.map(e => splitPosted(e.value)[1]))].sort()
       const firstSeen = new Date(Math.min(...priors.map(e => e.retrieved_at)) * 1000).toISOString().slice(0, 10)
       // The qualifier leads: label truncation (200) can only drop the parenthetical detail, never the honest qualifier itself.
-      notes.push(`repost vs continued listing unknown, not renewed demand (board previously dated ${dates.join(', ')}, first seen ${firstSeen})`)
+      // #1667: a posting rescanned many times has many earlier dates. The list is capped so the note keeps its end ("first seen ...")
+      // instead of being cut mid-sentence by the 200-character label limit.
+      const shown = dates.length > REPOST_DATES_SHOWN ? `${dates.slice(0, REPOST_DATES_SHOWN).join(', ')}, and more dates` : dates.join(', ')
+      notes.push(`repost vs continued listing unknown, not renewed demand (board previously dated ${shown}, first seen ${firstSeen})`)
     }
     const otherBoards = [...new Set(existing.filter(e => (e.kind === 'hiring' || e.kind === 'hiring-role') && boardOf(e.connector) !== board && !sameAs.includes(boardOf(e.connector)) && evidenceTitle(e.value) === t).map(e => boardOf(e.connector)))].sort()
     if (otherBoards.length) notes.push(`same posting unknown (also listed on ${otherBoards.join(', ')})`)
