@@ -15,6 +15,8 @@ export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: numb
 export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; judge?: SignalJudge | null; now?: Date }
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
+// What the people pass has cost at most on the benchmark; a second search pass must leave room for it under the run's ceiling.
+const PEOPLE_PASS_USD = 0.15
 // What one lead costs in the people pass at most in the ordinary case (lib/discover/enrich.ts): 4 web searches at US$0.01 each, plus the
 // small model's tokens. Not a strict ceiling: a call the server pauses and resumes can search again (up to 12 searches, US$0.12).
 // That rare case is covered by the gap between what a run may spend (80% of its reservation) and the reservation itself.
@@ -36,12 +38,8 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   const pages = first.seen.map(p => p.url)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note
-  // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget after
-  // what the people pass needs for the leads found so far. It used to hold back a flat US$0.15 for the people pass whatever was
-  // found, so a free search (US$0.60) that found nothing for US$0.25 to US$0.29 stopped there with half its money unspent: staging,
-  // 2026-11-24, two of four weak prompts returned no lead at all, their notes saying the search "ran out of searches".
-  const peopleNeeds = Math.min(budget.enrichLeads ?? 12, leads.filter(l => l.proof !== 'gone' && needsEnrichment(l)).length) * PEOPLE_LEAD_USD
-  if (leads.filter(isShown).length < want && first.stop !== 'refusal' && usage.usd + first.usage.usd + peopleNeeds <= budget.maxUsd + 1e-9) {
+  // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
+  if (leads.filter(isShown).length < want && first.stop !== 'refusal' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
