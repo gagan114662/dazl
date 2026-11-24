@@ -1509,6 +1509,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required' })),
     dropped: {},
   }
+  // #1579: the lane's own account goes into the saved run report, so a search that returns nothing says why (which budget it ran
+  // with, how it stopped, and the engine's one-sentence note) instead of only "0 candidates".
+  ledger.report({ discover: { stop: run.stop, note: run.note, budget: small ? (room < DISCOVER_SMALL_MIN_USD ? 'smallest' : 'small') : 'full', searches: run.searches, requests: run.requests, passes: run.passes, returned: run.leads.length, shown: shown.length, usd: run.usd } })
   ledger.record(source, 'ok')
   // #1579 (production, 2026-11-23): a request accepted as company-first and answered here is the lane's scan. Left marked, every page, the
   // leads API and the spreadsheet hold its leads for the older rollout's final checks, which this lane never runs: 7 and 5 paid leads, none shown.

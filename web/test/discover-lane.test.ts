@@ -84,12 +84,24 @@ test('a request with its own lower limit gets the smaller search budget and neve
   const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor', runBudget: JSON.stringify({ max_usd: 1 }) })
   const job = claimKeyedJob(db, id)
   const asked: Record<string, unknown>[] = []
-  const empty: DiscoverResult = { leads: [], seen: [], usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.2 }, stop: 'end_turn', model: 'm', note: null }
+  const empty: DiscoverResult = { leads: [], seen: [], usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.2 }, stop: 'end_turn', model: 'm', note: 'I ran out of searches before finding a dated expansion.' }
   assert.equal(await runJob(db, job!, { master, discover: true, enrichImpl: null, discoverImpl: async input => { asked.push(input as unknown as Record<string, unknown>); return empty } }), 'done')
   assert.deepEqual([asked[0].maxSearches, asked[0].maxFetches], [10, 8], 'US$1 of room is less than a full run: the smaller budget')
   const spend = db.prepare('SELECT reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id = ?').all(id) as { reserve_usd: number; actual_usd: number }[]
   assert.equal(spend.length, 1)
   assert.ok(spend[0].reserve_usd <= 1 && spend[0].actual_usd === 0.4, JSON.stringify(spend))   // two passes: the first found nothing
+  // #1579 (production job 1569fa9c, 2026-11-24): a search that returned nothing saved no reason. The run report now carries the lane's
+  // own account: the budget it ran with, how it stopped, what it returned and the engine's note.
+  const saved = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(id) as { report: string } | undefined
+  assert.ok(saved, 'the run report was written')
+  const told = (JSON.parse(saved.report) as { discover?: Record<string, unknown> }).discover
+  assert.ok(told, 'the report has the discovery lane\'s account')
+  assert.equal(told.budget, 'small')
+  assert.equal(told.stop, 'end_turn')
+  assert.equal(told.returned, 0)
+  assert.equal(told.shown, 0)
+  assert.equal(typeof told.searches, 'number')
+  assert.match(String(told.note), /ran out of searches/)
 })
 
 test('a request limited to US$0.30 gets the smallest budget: five searches, no second pass', async () => {

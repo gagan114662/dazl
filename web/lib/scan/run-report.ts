@@ -44,6 +44,9 @@ export interface ReportParts {
   stop?: { code: string; spend_refusal_reason: string | null; superseded_refusal_reason?: string | null; superseded_stop_code?: string | null; room?: { left_usd: number; needed_usd: number } | null } | null
   // #1205 (review F2): a source that was not used, why, and what to change, in the same plain words as its progress row ("'Europe' is a region. ...").
   source_skips?: { source: string; status: string; reason: string }[]
+  // The Claude discovery lane's own account of its run (#1579, production job 1569fa9c: 0 leads and nothing saved to say why):
+  // how it stopped, the budget it ran with, what it returned and the one sentence it gives when it found fewer leads than asked.
+  discover?: { stop: string; note: string | null; budget: 'full' | 'small' | 'smallest'; searches: number; requests: number; passes: number; returned: number; shown: number; usd: number } | null
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
@@ -97,6 +100,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     ...(p.native_web_search ? { native_web_search: p.native_web_search } : {}),
     source_skips: (p.source_skips ?? []).slice(0, 20).map(x => ({ source: cut(x.source, 80), status: cut(x.status, 120), reason: cut(x.reason, 300) })),
     capacity: p.capacity ?? null,
+    ...(p.discover ? { discover: { ...p.discover, stop: cut(p.discover.stop, 40), note: p.discover.note === null ? null : cut(p.discover.note, 300) } } : {}),
     ...(p.funding_source_rejects ? { funding_source_rejects: p.funding_source_rejects } : {}),
     truncated: { urls: Math.max(0, (p.urls?.length ?? 0) - MAX_URLS), candidates: Math.max(0, fates.length - MAX_CANDIDATES) },
   }
