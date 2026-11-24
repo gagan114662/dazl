@@ -127,12 +127,15 @@ try {
   // #1679: with reply reading on, nothing is said about it being unavailable; with a send-only Gmail connection (reading off) the
   // section says sequences are not available and what still works, and never points at a step the account cannot take.
   assert.equal(await page.getByTestId('sequences-need-reading').count(), 0, 'reading on: no notice')
+  assert.ok(await page.getByRole('button', { name: /Create 3-step sequence/ }).count() > 0, 'reading on: a draft offers a sequence')
   readingOff = true
   await page.goto(`${base}/app/outreach`, { waitUntil: 'networkidle' })
   await page.getByRole('heading', { name: 'Cold sequences' }).waitFor()
   const needReading = page.getByTestId('sequences-need-reading'); await needReading.waitFor()
   assert.match(await needReading.innerText(), /^Follow-up sequences are not available for your account: dazl connects to Gmail send-only and does not read replies/)
   assert.match(await needReading.innerText(), /Nothing is sent automatically\. You can still approve and send each email yourself\.$/)
+  assert.equal(await page.getByRole('button', { name: /Create 3-step sequence/ }).count(), 0, 'reading off: no draft offers a sequence that could never be approved')
+  assert.ok(await page.getByRole('button', { name: 'Approve' }).count() > 0, 'each email can still be approved and sent by hand')
   const outreachText = await page.locator('main').innerText()
   assert.doesNotMatch(outreachText, /Reply reading must stay connected|Enable reply reading in Settings/)
   await shot('outreach-sequences-send-only')
