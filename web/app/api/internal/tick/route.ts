@@ -109,7 +109,8 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
         // verified leads (#448). Every send runs within every autopilot and send check; the lease is kept alive
         // between its messages.
         stage = 'first_touch'
-        const dr = classifyWork(await drainFirstTouch(db, tenantId, { businessName: firstTouchSet.get(tenantId) ?? '' }))
+        // #1666: the drain's own holds (Gmail to connect or reconnect, the tenant's switch) are holds here too, as for runAutopilot below
+        const dr = classifyWork(await drainFirstTouch(db, tenantId, { businessName: firstTouchSet.get(tenantId) ?? '' }), DRAIN_HOLD_REASONS)
         await progress(tenantId, 'first_touch', dr)
         if (dr.outcome === 'failure') continue
         const ap = await runAutopilot(db, tenantId, firstTouchSet.get(tenantId) ?? '', { keep: () => lease.keep() })
