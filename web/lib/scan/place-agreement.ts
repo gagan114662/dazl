@@ -275,7 +275,8 @@ const MORE_NON_US_CITIES = ['calgary', 'ottawa', 'edmonton', 'winnipeg', 'missis
   'kuala lumpur', 'taipei', 'karachi', 'lahore', 'dhaka', 'lima', 'kyiv', 'kiev', 'bucharest', 'krakow', 'hanoi', 'montréal', 'québec city', 'zürich', 'münchen', 'köln', 'são paulo', 'bogotá', 'kraków']
 // Also first names or ordinary words: only the capitalised form names the city.
 const NON_US_CAPITAL_ONLY = new Set([...CAPITAL_ONLY, ...BARE_CAPITAL_ONLY, 'sydney', 'perth', 'adelaide', 'lima', 'manila', 'muscat'])
-const NON_US_CITY_NAMES = [...new Set([...Object.keys(WORLD_CITIES).filter(c => WORLD_CITIES[c].country !== 'united states'), ...METROS.flat(), ...UK_CITIES, ...MORE_NON_US_CITIES])].filter(c => !NEVER_BARE.has(c))
+// US_CITY_STATE holds exactly the WORLD_CITIES entries that are in the United States.
+const NON_US_CITY_NAMES = [...new Set([...Object.keys(WORLD_CITIES).filter(c => !(c in US_CITY_STATE)),...METROS.flat(), ...UK_CITIES, ...MORE_NON_US_CITIES])].filter(c => !NEVER_BARE.has(c))
 const NON_US_CITY = new RegExp(`(?<![\\p{L}\\d])(${NON_US_CITY_NAMES.sort((a, b) => b.length - a.length).map(c => esc(c.normalize('NFC')).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}\\d])`, 'giu')
 export function nonUsCityMentions(text: string): { place: string; at: number; end: number }[] {
   const out: { place: string; at: number; end: number }[] = []
