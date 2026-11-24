@@ -50,22 +50,37 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
   return { ...e, linkedin_url: null }
 }
 // Staging, 2026-11-24 (16 leads looked up on five prompts): every lookup saw LinkedIn profile results, yet 4 came back with no profile
-// and 2 with one the rule above refused. When the lookup ends with a named person and no profile, dazl reads the results itself: a
-// profile result whose title carries the person's first and last name AND the company's own name is that person's profile. It must be
-// the only such result (two different profiles for one name at one company are left for a person to settle), and a company whose
-// name has no word of its own ("The Group", "Services Inc") is never matched this way.
-const COMPANY_FILLER = new Set(['the', 'and', 'inc', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'company', 'group', 'holdings', 'gmbh', 'plc', 'pty', 'llp', 'services', 'solutions', 'international', 'global', 'partners', 'associates', 'consulting', 'technologies', 'systems', 'enterprises'])
-const fold = (s: string | null | undefined): string => (s ?? '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-export const companyWords = (company: string | null | undefined): string[] => (fold(company).match(/[a-z0-9]{3,}/g) ?? []).filter(w => !COMPANY_FILLER.has(w)).slice(0, 2)
+// and 2 with one the rule above refused. When the lookup ends with a named person and no profile, dazl reads the results itself. A
+// LinkedIn result title reads "Name - headline | LinkedIn"; a result is this person's profile only when all of these hold (review of
+// PR #1692: each closes a way to attach someone else's profile):
+//   - the title STARTS with the person's first and last name (a headline that merely mentions them, "Assistant to Dana Ruiz", is someone else);
+//   - after the name, the company's own name stands as a phrase, its words adjacent and in order, and ends there or at a separator
+//     (so "Smith Roofing" is not found in "John Smith - Roofing Contractor", nor "Quanta" in "Quanta Services", nor "Sim" in "Sim Racing");
+//   - nothing just before it says the job is over ("ex", "former", "previously");
+//   - it is the only such profile among the results (two are left for a person to settle).
+// A company whose name has no word of its own ("The Group", "Services Inc") is never matched. Bracketed text in a company name
+// ("Lightsprint (YC P26)") is not part of the name.
+const COMPANY_FILLER = ['the', 'and', 'inc', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'company', 'group', 'holdings', 'gmbh', 'plc', 'pty', 'llp', 'services', 'solutions', 'international', 'global', 'partners', 'associates', 'consulting', 'technologies', 'systems', 'enterprises']
+const fold = (s: string | null | undefined): string => (s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+export const companyWords = (company: string | null | undefined): string[] => (fold(company).replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').match(/[a-z0-9]{3,}/g) ?? []).filter(w => !COMPANY_FILLER.includes(w)).slice(0, 2)
+const OVER = /\b(?:ex|former|formerly|previously|past)\b/
 export function pickSeenProfile(person: string | null, company: string | null, seen: ReadonlyMap<string, SeenPage>): string | null {
   const who = nameParts(person), firm = companyWords(company)
   if (who.length < 2 || !firm.length) return null
+  // the company's words as one phrase, then only filler (Inc, Group ...) before the title ends or a separator follows
+  const phrase = new RegExp(`(?:^|[^a-z0-9])(${firm.join('[^a-z0-9]+')})(?:[^a-z0-9]+(?:${COMPANY_FILLER.join('|')}))*[^a-z0-9]*(?=$|[|,;·•(/]|\\s[-–—]\\s)`)
   const found = new Map<string, string>()
   for (const [url, page] of seen) {
     const key = profileKey(url)
     if (!key) continue
-    const title = fold(page.title), names = nameParts(page.title), words: string[] = title.match(/[a-z0-9]{3,}/g) ?? []
-    if (names.includes(who[0]) && names.includes(who[who.length - 1]) && firm.every(w => words.includes(w))) found.set(key, url)
+    const title = fold(page.title).replace(/\s*[|\-–—]\s*linkedin\s*$/, '')
+    const cut = title.search(/\s[-–—|]\s|\|/)
+    if (cut < 0) continue
+    const owner = nameParts(title.slice(0, cut))
+    if (owner.length < 2 || owner[0] !== who[0] || owner[owner.length - 1] !== who[who.length - 1]) continue
+    const rest = title.slice(cut), m = phrase.exec(rest)
+    if (!m || OVER.test(rest.slice(Math.max(0, m.index - 40), m.index + 1))) continue
+    found.set(key, url)
   }
   return found.size === 1 ? [...found.values()][0] : null
 }
