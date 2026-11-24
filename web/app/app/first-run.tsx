@@ -26,6 +26,7 @@ import { icpLoss, normalizeIcp } from '@/lib/scan/icp'
 import ManualNativeTargetReview from './manual-native-target-review'
 import { trackClient } from '@/lib/analytics/track-client'
 import { acceptedTarget, buildManualNativeTarget, targetFields, type AcceptedTarget, type TargetFields } from './manual-native-target'
+import posthog from 'posthog-js'
 
 const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
 
@@ -332,6 +333,10 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         return setError('Claude Web Search requires your own Anthropic key in Settings and cannot use the free trial. Nothing started.')
       }
       if (r.ok && j.job_id) {
+        posthog.capture('scan_started', {
+          first_play: stay,
+          claude_web_search: useClaudeSearch,
+        })
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
         if (stay || useClaudeSearch) { if (useClaudeSearch) setStep('ready'); setFirst({ id: j.job_id, status: 'pending', leads: null, f5: null, query: sentence.trim(), claudeSearch: useClaudeSearch, ...(effectiveTarget ? {reviewedTarget:effectiveTarget} : {}) }); return }
         router.push(`/app/leads?job_id=${encodeURIComponent(j.job_id)}`); return

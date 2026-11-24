@@ -11,6 +11,7 @@
 // The body is at most MAX_BODY bytes (frames are dropped until it fits). At most MAX_PER_PAGE reports per page load
 // and each distinct error once, so a render loop cannot flood the endpoint; a failed send is dropped silently. A missing
 // JavaScript chunk is not reported: after a deploy it is expected and lib/chunk-recovery.ts handles it.
+import posthog from 'posthog-js'
 import { isChunkLoadError } from './chunk-recovery.ts'
 export type ClientErrorKind = 'boundary' | 'error' | 'unhandledrejection'
 export interface ClientFrame { file: string; line: number; col: number }
@@ -69,6 +70,11 @@ export function reportClientError(kind: ClientErrorKind, err: unknown, w: Win = 
     const body = clientReport(kind, err, w.location.pathname, loadedScripts(w))
     if (state.sent >= MAX_PER_PAGE || state.seen.has(body)) return false // the same report again is not resent
     state.seen.add(body); state.sent++
+    // Next.js boundaries handle render errors before the SDK's unhandled-error autocapture sees them.
+    // Window errors and unhandled rejections remain SDK-autocaptured to avoid duplicate exceptions.
+    if (kind === 'boundary' && err instanceof Error) {
+      try { posthog.captureException(err) } catch { /* error reporting must not interrupt recovery */ }
+    }
     void w.fetch('/api/client-errors', { method: 'POST', body, keepalive: true, headers: { 'content-type': 'application/json' } }).catch(() => {})
     return true
   } catch { return false }

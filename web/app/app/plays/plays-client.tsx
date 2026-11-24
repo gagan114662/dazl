@@ -8,6 +8,7 @@ import { newLabel, readSeen, runEnded, runNowMessage, RUN_POLL_MAX, RUN_POLL_MS,
 import { runNewLabel } from '@/lib/run-new-label'
 import { Icon } from '../ui/icons'
 import { Pill, type Tone } from '../ui/bits'
+import posthog from 'posthog-js'
 
 // Plays: the searches you saved to repeat, with who each looks for, the signal, schedule, last and next run (to the
 // minute), status and pause/resume/delete. Results stay in Leads: each play links to its last run there and lists all its
@@ -104,6 +105,7 @@ export default function PlaysClient() {
     setRan(x => ({ ...x, [k]: runNowMessage(r?.status ?? 0, j) }))
     setBusy(null)
     if (r?.status === 202 && j && 'job_id' in j && /^[0-9a-f]{24}$/.test(j.job_id)) {
+      posthog.capture('play_run_started', { play_kind: p.kind })
       // the route already dispatched the scan; follow it so the page shows its new leads when it ends
       follow(j.job_id)
       load()

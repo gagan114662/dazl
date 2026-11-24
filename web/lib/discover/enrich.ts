@@ -3,6 +3,7 @@
 // own people. It runs on the small model, in parallel, and only fills fields that are empty. It never changes the signal,
 // its date or its proof, and never replaces a person the first pass already found.
 import Anthropic from '@anthropic-ai/sdk'
+import { anthropicPostHogOptions, createAnthropicClient } from '../posthog-ai.ts'
 import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage } from './agent.ts'
 
 export const ENRICH_MODEL = process.env.DAZL_DISCOVER_ENRICH_MODEL?.trim() || 'claude-haiku-5-5'
@@ -148,6 +149,7 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
         { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: MAX_FETCHES, max_content_tokens: 4000 },
       ],
       messages,
+      ...anthropicPostHogOptions(),
     }, { signal }).finalMessage()
     usage.requests++
     usage.input_tokens += res.usage.input_tokens ?? 0
@@ -177,7 +179,7 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
 
 // Fills the empty person and website fields of the leads that need it. A lead whose call fails is returned unchanged.
 export async function enrichLeads(leads: DiscoveredLead[], o: { offer?: string | null; maxLeads?: number }, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal }, concurrency = 4): Promise<{ leads: DiscoveredLead[]; usage: DiscoverUsage; seen: SeenPage[]; enriched: number }> {
-  const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 2 })
+  const client = createAnthropicClient({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 2 })
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   const seen = new Map<string, SeenPage>()
   const out = [...leads]

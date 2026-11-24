@@ -1,6 +1,11 @@
 'use client'
 import { useEffect } from 'react'
+import posthog from 'posthog-js'
 import { shouldRestoreMainFocus } from '@/lib/main-focus'
+
+const posthogConfigured = Boolean(
+  process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN && process.env.NEXT_PUBLIC_POSTHOG_HOST,
+)
 
 // #673: keeps keyboard focus on the /app layout's <main> (the skip link target) once the "Skip to content" link (or anything
 // inside <main>) had it. Focus otherwise falls back to BODY when React swaps the focused node: a loading view
@@ -8,7 +13,21 @@ import { shouldRestoreMainFocus } from '@/lib/main-focus'
 // restart from the top of the document. Only a REMOVED focused node counts: a deliberate blur, a click on empty
 // space (pointer press) or Tab past the last control leave the node in place, and focus is not pulled back.
 
-export default function MainFocus() {
+export default function MainFocus({ actorId, email }: { actorId?: string; email?: string }) {
+  useEffect(() => {
+    if (!posthogConfigured || !actorId || !email) return
+
+    posthog.identify(actorId, { email })
+
+    const resetOnSignOut = (event: SubmitEvent) => {
+      if (event.target instanceof HTMLFormElement && new URL(event.target.action).pathname === '/api/auth/signout') {
+        posthog.reset()
+      }
+    }
+    document.addEventListener('submit', resetOnSignOut)
+    return () => document.removeEventListener('submit', resetOnSignOut)
+  }, [actorId, email])
+
   useEffect(() => {
     const main = () => document.getElementById('main')
     const inMain = (n: EventTarget | null): n is Element => n instanceof Element && !!n.closest('#main')

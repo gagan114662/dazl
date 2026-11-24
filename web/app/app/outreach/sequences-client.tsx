@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
 import { holdCopy, kindCopy, reasonCopy } from '@/lib/ops/scheduler-copy'
+import posthog from 'posthog-js'
 
 type Step = { step: number; subject: string; body: string; status: string }
 type Sequence = { currentness_held?: boolean; id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; evidence_state?: 'machine' | 'human' | 'unverified'; steps: Step[] }
@@ -53,6 +54,7 @@ export default function SequencesClient() {
       const r=await fetch(target,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
       const j=await r.json()
       if (!r.ok) {setNote(COPY[j.error]??(j.code==='autopilot_unavailable'?String(j.error):`Could not complete this action (${j.error ?? r.status}).`));return}
+      if (body.action === 'approve') posthog.capture('outreach_sequence_approved')
       setEdit(null);await load()
       setNote(body.action==='approve'?'All three steps approved. Send step 1 above when ready. Steps 2 and 3 then run on schedule unless a reply, bounce or opt-out stops them.': 'Saved.')
       window.dispatchEvent(new Event('sequences-updated'))

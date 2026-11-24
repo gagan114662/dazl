@@ -5,6 +5,7 @@ import { connection } from 'next/server'
 import { redirect } from 'next/navigation'
 import { getDb } from '@/lib/db/client'
 import { checkSessionWithin } from '@/lib/auth-gate'
+import { getSessionUser } from '@/lib/auth-db'
 import Nav from './nav'
 import { NAV_TOGGLE_ID } from './nav-toggle'
 import MainFocus from './main-focus'
@@ -24,7 +25,11 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+export default async function AppLayout({ children }: { children: React.ReactNode }) {
+  await connection()
+  const token = (await cookies()).get('dazl_session')?.value
+  const user = await getSessionUser(token)
+
   return (
     <div className="app-ui flex flex-col md:flex-row h-screen">
       {/* CSS-only collapsing nav: a checkbox toggles the menu below md; a slim sidebar from md up */}
@@ -57,7 +62,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <AuthGate>{children}</AuthGate>
         </Suspense>
       </main>
-      <MainFocus />
+      <MainFocus actorId={user?.actorId} email={user?.email} />
       {/* #1463: client-side waits (a held soft navigation, a client-rendered fallback): same one-recovery-then-Reload rule */}
       <StallWatch />
     </div>

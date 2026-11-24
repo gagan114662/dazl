@@ -5,6 +5,7 @@
 // A record is a claim with its proof attached (evidence_url, signal_date). lib/discover/check.ts then reads the proof page
 // itself and labels the record; it never hides one.
 import Anthropic from '@anthropic-ai/sdk'
+import { anthropicPostHogOptions, createAnthropicClient } from '../posthog-ai.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || 'claude-opus-5-5'
 // US$ per million tokens for the default model, and per web search. Used only to report what a run cost.
@@ -136,7 +137,7 @@ export function userMessage(input: DiscoverInput, today: string, max: number): s
 
 export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal }): Promise<DiscoverResult> {
   const max = Math.min(Math.max(input.maxLeads ?? 10, 1), 20)
-  const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 2 })
+  const client = createAnthropicClient({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 2 })
   const today = (input.today ?? new Date()).toISOString().slice(0, 10)
   const user = userMessage(input, today, max)
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
@@ -157,6 +158,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
       ],
       messages,
+      ...anthropicPostHogOptions(),
     }, { signal: deps.signal }).finalMessage()
     usage.requests++
     usage.input_tokens += res.usage.input_tokens ?? 0

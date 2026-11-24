@@ -23,6 +23,7 @@ import type { Provider } from './provider.ts'
 import { guardProvider, PooledGuard, SpendAccountingFailed, SpendRefused } from './spend-guard.ts'
 import { accountLimits, ownerLimits, sharedPool } from './spend-pool.ts'
 import { runWithAccountSpend, type AccountSpendCtx } from '../scan/spend-cap.ts'
+import { withAiObservability } from '../posthog-ai.ts'
 
 export function ownerGuarded(d: DbLike, ownerId: string, p: Provider, env: Record<string, string | undefined> = process.env, purpose?: 'icp_preview'): Provider {
   const limits = ownerLimits(ownerId, env)
@@ -38,9 +39,9 @@ export function ownerGuarded(d: DbLike, ownerId: string, p: Provider, env: Recor
 export function inAccount(ctx: AccountSpendCtx, p: Provider): Provider {
   return {
     ...p,
-    research: (k, prompt, f) => runWithAccountSpend(ctx, () => p.research(k, prompt, f)),
-    ...(p.complete ? { complete: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.complete!(k, prompt, f, max)) } : {}),
-    ...(p.completeDetailed ? { completeDetailed: (k, prompt, f, max) => runWithAccountSpend(ctx, () => p.completeDetailed!(k, prompt, f, max)) } : {}),
+    research: (k, prompt, f) => withAiObservability({ distinctId: ctx.tenantId, sessionId: null }, () => runWithAccountSpend(ctx, () => p.research(k, prompt, f))),
+    ...(p.complete ? { complete: (k, prompt, f, max) => withAiObservability({ distinctId: ctx.tenantId, sessionId: null }, () => runWithAccountSpend(ctx, () => p.complete!(k, prompt, f, max))) } : {}),
+    ...(p.completeDetailed ? { completeDetailed: (k, prompt, f, max) => withAiObservability({ distinctId: ctx.tenantId, sessionId: null }, () => runWithAccountSpend(ctx, () => p.completeDetailed!(k, prompt, f, max))) } : {}),
   }
 }
 export const spendRefused = (e: unknown): e is SpendRefused => e instanceof SpendRefused

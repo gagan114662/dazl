@@ -5,6 +5,7 @@ import { previewSplit, type PreviewLead } from '@/lib/journey'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
 import SenderInline from '../sender-inline'
 import { Avatar, Pill } from '../ui/bits'
+import posthog from 'posthog-js'
 
 // After the first lead cards: review them one at a time and start outreach, the way Pancake asks you to approve each lead
 // before it writes. Approve is the existing draft action (POST /api/outreach { lead_id }), so every server check still
@@ -59,6 +60,7 @@ export default function FirstReview({ jobId }: { jobId: string }) {
       // A draft that already exists is this lead done, not an error (another tab, or the drafts read was unavailable).
       // Any other refusal is shown on the card; the lead stays where it is.
       if (!r.ok && j.code !== 'already_drafted') return setErr(j.error || 'Could not create the draft.')
+      if (r.ok) posthog.capture('lead_draft_created', { source: 'first_review' })
       setVerdict(v => ({ ...v, [id]: 'approved' })); setAt(n => nextOpen(n))
     } catch { setErr('Could not reach the server. Try again.') } finally { setBusy(false) }
   }

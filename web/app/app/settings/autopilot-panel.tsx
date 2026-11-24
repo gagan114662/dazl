@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
+import posthog from 'posthog-js'
 
 interface St { enabled: boolean; paused: boolean; pause_reason: string | null; consent_current: boolean; daily_cap: number }
 interface Info { available: boolean; unavailable_text?: string; state: St; consent: { version: string; text: string[] }; warmup: number; max_daily: number; audit: { action: string; detail: string | null; created_at: number }[] }
@@ -13,9 +14,11 @@ export default function AutopilotPanel() {
   const [cap, setCap] = useState(20)
   const [msg, setMsg] = useState('')
   async function load() { const r = await fetch('/api/outreach/autopilot'); if (r.ok) setI(await r.json()) }
-  useEffect(() => { void load() }, [])
-  async function act(body: object) {
+  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/set-state-in-effect -- setI runs only after the fetch resolves
+  async function act(body: { action?: string; version?: string; attestations?: string[]; daily_cap?: number }) {
     const r = await fetch('/api/outreach/autopilot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    if (r.ok && body.action === 'enable') posthog.capture('autopilot_enabled')
+    if (r.ok && body.action === 'disable') posthog.capture('autopilot_disabled')
     setMsg(r.ok ? '' : (await r.json()).error || 'Something went wrong'); void load()
   }
   if (!i) return null

@@ -8,6 +8,7 @@ import SequencesClient from './sequences-client'
 import SendReadiness from './send-readiness'
 import { forScan, isJobId } from '@/lib/outreach/scan-drafts'
 import Caveat from '@/app/app/caveat'
+import posthog from 'posthog-js'
 
 interface Msg { lead_id: string; send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
@@ -70,7 +71,7 @@ export default function OutreachClient() {
 
   async function createSequence(id:string) {
     setCreating(true);setNote('Preparing template sequence...')
-    try {const r=await fetch('/api/outreach/sequences',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create',message_id:id})});const j=await r.json(); if(!r.ok) setNote(ERR[j.error] ?? `Could not create sequence (${j.error}).`); else {await load();window.location.reload()}} catch {setNote('Could not reach the server. Refresh before retrying.')} finally {setCreating(false)}
+    try {const r=await fetch('/api/outreach/sequences',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'create',message_id:id})});const j=await r.json(); if(!r.ok) setNote(ERR[j.error] ?? `Could not create sequence (${j.error}).`); else {posthog.capture('outreach_sequence_created');await load();window.location.reload()}} catch {setNote('Could not reach the server. Refresh before retrying.')} finally {setCreating(false)}
   }
 
   async function polish(id: string) {
@@ -88,6 +89,8 @@ export default function OutreachClient() {
     const j = await r.json()
     if (!r.ok) setNote(j.error === 'daily_cap' && Number.isInteger(j.cap) ? sendCapNote(j.cap) : ERR[j.error] || 'That did not work')
     else if (j.result === 'uncertain') setNote('Gmail did not confirm the send. Check your Sent folder, then choose whether it went out.')
+    else if (action === 'approve') posthog.capture('outreach_message_approved')
+    else if (action === 'send') posthog.capture('outreach_message_sent')
     void load()
   }
   async function save(id: string) {

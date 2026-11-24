@@ -11,6 +11,8 @@ export async function register() {
   // #1463: a blocked event loop (a long synchronous scan step) holds every page; say so in the journal with the scans running
   const { installLoopStallWatch } = await import('./lib/ops/loop-stall.ts')
   installLoopStallWatch()
+  const { registerPostHogLogShutdown } = await import('./lib/posthog-logs.ts')
+  registerPostHogLogShutdown()
 }
 
 // Every uncaught error from a route handler, page or server action (lib/ops/request-error.ts).

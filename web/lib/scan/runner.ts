@@ -13,6 +13,8 @@ import { qaClaudeOnlyJob, qaPinnedLocalJob, QA_SPEND_MAX_USD } from './qa-provid
 import { counterpartySignal } from './counterparty.ts'
 import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
+import { withAiObservability } from '../posthog-ai.ts'
+import { emitPostHogLog } from '../posthog-logs.ts'
 import type Database from 'better-sqlite3'
 import { defaultVendor, readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
@@ -1385,10 +1387,24 @@ export function companyFirstTargetStep(distinct: number, target: number, isFundi
 }
 
 export async function runJob(db: Database.Database, job: Job, deps: RunDeps = {}): Promise<'done' | 'failed' | 'retry'> {
-  const capture = beginScanTrace(job, deps)
-  if (!capture) return runJobUntraced(db, job, deps)
-  let outcome = 'threw'
-  try { const r = await runJobUntraced(db, job, capture.deps); outcome = r; return r } finally { await capture.finish(outcome) }
+  emitPostHogLog('scan job started', {
+    operation: 'scan_job',
+    attempt: job.attempts,
+    is_trial: job.funded_by === 'trial',
+  })
+  return withAiObservability({ distinctId: job.user_id, sessionId: `scan:${job.id}` }, async () => {
+    const capture = beginScanTrace(job, deps)
+    if (!capture) {
+      const outcome = await runJobUntraced(db, job, deps)
+      emitPostHogLog('scan job finished', { operation: 'scan_job', outcome })
+      return outcome
+    }
+    let outcome = 'threw'
+    try { const r = await runJobUntraced(db, job, capture.deps); outcome = r; return r } finally {
+      await capture.finish(outcome)
+      emitPostHogLog('scan job finished', { operation: 'scan_job', outcome })
+    }
+  })
 }
 
 // The hard per-scan spend cap (lib/scan/spend-cap.ts, #377/#533): the whole attempt, post-finish enrichment included, runs

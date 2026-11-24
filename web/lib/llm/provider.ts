@@ -1,4 +1,5 @@
 import type { Vendor } from './vendors.ts'
+import { captureAiGeneration } from '../posthog-ai.ts'
 
 // A research call: the model searches the web and answers. Each vendor's own
 // web-search tool is used, so the cost lands on the tenant's own key.
@@ -134,6 +135,7 @@ export function anthropicModel(model: string): Provider {
 
 async function anthropicCompletion(requested: string, apiKey: string, prompt: string, fetchImpl: typeof fetch, maxTokens: number): Promise<DetailedCompletion> {
     const hold = await reserveScanSpend('llm.anthropic', () => modelCostUsd(requested, prompt, maxTokens))
+    const startedAt = Date.now()
     let json: Record<string, unknown>
     try {
       json = await post(
@@ -152,6 +154,12 @@ async function anthropicCompletion(requested: string, apiKey: string, prompt: st
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(u.cache_read_input_tokens), cache_creation_input_tokens: num(u.cache_creation_input_tokens) }),
       ...(typeof json.stop_reason === 'string' ? { stop: json.stop_reason } : {}),
     }
+    captureAiGeneration({
+      provider: 'anthropic', model: out.model ?? requested, prompt, completion: out.text,
+      inputTokens: out.usage?.input_tokens, outputTokens: out.usage?.output_tokens,
+      cacheReadInputTokens: out.usage?.cache_read_input_tokens, cacheCreationInputTokens: out.usage?.cache_creation_input_tokens,
+      maxTokens, latency: (Date.now() - startedAt) / 1000, stopReason: out.stop,
+    })
     await settleScanSpend(hold, out)
     return out
 }
@@ -171,6 +179,7 @@ export const openaiProvider: Provider = {
   async completeDetailed(apiKey, prompt, fetchImpl = fetch, maxTokens = 16): Promise<DetailedCompletion> {
     const requested = openaiProvider.configuredModel!()
     const hold = await reserveScanSpend('llm.openai', () => modelCostUsd(requested, prompt, maxTokens))
+    const startedAt = Date.now()
     let json: Record<string, unknown>
     try { json = await post('https://api.openai.com/v1/responses', { authorization: `Bearer ${apiKey}` }, { model: requested, input: prompt, max_output_tokens: maxTokens }, fetchImpl) }
     catch (e) { if (e instanceof ProviderError && e.charge !== 'uncertain') { await hold?.settle(null); if (e.charge === 'rejected') hold?.rejected(e.status ?? 0) } else hold?.uncertain(); throw e }
@@ -186,6 +195,12 @@ export const openaiProvider: Provider = {
       usage: usageOf({ input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(det.cached_tokens) }),
       ...(json.status === 'incomplete' && typeof (json.incomplete_details as Obj | null)?.reason === 'string' ? { stop: (json.incomplete_details as Obj).reason as string } : {}),
     }
+    captureAiGeneration({
+      provider: 'openai', model: out.model ?? requested, prompt, completion: out.text,
+      inputTokens: out.usage?.input_tokens, outputTokens: out.usage?.output_tokens,
+      cacheReadInputTokens: out.usage?.cache_read_input_tokens, maxTokens,
+      latency: (Date.now() - startedAt) / 1000, stopReason: out.stop,
+    })
     await settleScanSpend(hold, out)
     return out
   },

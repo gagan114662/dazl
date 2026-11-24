@@ -1,4 +1,5 @@
 import { LLM_TIMEOUT_MS } from './provider.ts'
+import { captureAiGeneration } from '../posthog-ai.ts'
 import { CLAUDE_SEARCH_MODEL, claudeSearchMaxUses, CLAUDE_SEARCH_MAX_OUTPUT, USD_PER_SEARCH, MICROS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchUsageDiagnostic, type ClaudeUsageSnapshot, type ClaudeUsageCounter } from './claude-web-search-estimate.ts'
 export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_MAX_CALLS, CLAUDE_COMPANY_FIRST_MAX_USES, COMPANY_FIRST_MAX_PUBLISHER_READS, claudeSearchMaxUses, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
 
@@ -280,6 +281,7 @@ export async function runClaudeWebSearch(
   const alive = () => { clearTimeout(stallTimer); stallTimer = setTimeout(() => stall.abort(), CLAUDE_SEARCH_STALL_MS) }
   const signal = AbortSignal.any([stall.signal, AbortSignal.timeout(CLAUDE_SEARCH_TIMEOUT_MS)])
   alive()
+  const startedAt = Date.now()
   try {
     r = await fetchImpl(MESSAGE, {
       // The estimate/parser only support standard rates; the API default can select legacy Priority.
@@ -394,6 +396,13 @@ export async function runClaudeWebSearch(
   }
   const textCandidates = policy === 'company_first' && citedUrls.length
     ? parseTextCandidates(content.map(obj).filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text as string).join('').slice(0, 65_536)) : []
+  captureAiGeneration({
+    provider: 'anthropic', model: typeof root.model === 'string' ? root.model : CLAUDE_SEARCH_MODEL, prompt,
+    completion: content.map(obj).filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text as string).join(''),
+    inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadInputTokens: usage.cacheReadTokens,
+    cacheCreationInputTokens: usage.cacheWrite5mTokens + usage.cacheWrite1hTokens, maxTokens: CLAUDE_SEARCH_MAX_OUTPUT,
+    latency: (Date.now() - startedAt) / 1000, stopReason: stop,
+  })
   return { preferredPublisherUrls: [...preferred], ...(textCandidates.length ? { textCandidates } : {}), ...(buyerSources.size ? { buyerSourceUrls: [...buyerSources] } : {}), outcome: !citedUrls.length ? 'unavailable' : nonArrayBlocks > 0 || stop !== 'end_turn' ? 'partial' : 'ok', citedUrls, stop, usage, estimate,
     evidenceDiagnostic: { stop, result_blocks: resultBlocks, non_array_result_blocks: nonArrayBlocks, empty_result_blocks: emptyBlocks, malformed_result_blocks: malformedBlocks, result_errors: resultErrors, result_entries: resultEntries, safe_urls: citedUrls.length },
   }
