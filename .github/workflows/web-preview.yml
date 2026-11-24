@@ -128,6 +128,10 @@ jobs:
           mkdir -p preview/ready-card preview/readiness/1280 preview/readiness/390
           SHOTS=preview/ready-card node test/ui/ready-card.ui.mjs | tee /tmp/rc.out
           ! grep -q '^NOT RUN' /tmp/rc.out
+          # #1679: the Outreach page with reply reading on and off (the sequences notice). No workflow ran this file before.
+          mkdir -p preview/review-drafts
+          SHOTS=preview/review-drafts node test/ui/review-drafts.ui.mjs | tee /tmp/rdr.out
+          ! grep -q '^NOT RUN' /tmp/rdr.out
           WIDTH=1280 SHOTS=preview/readiness/1280 node test/ui/readiness.ui.mjs | tee /tmp/rd.out
           ! grep -q '^NOT RUN' /tmp/rd.out
           WIDTH=390 SHOTS=preview/readiness/390 node test/ui/readiness.ui.mjs | tee /tmp/rd-mobile.out
