@@ -45,7 +45,10 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
   for (const [url, page] of seen) {
     if (!want || profileKey(url) !== want) continue
     const title = nameParts(page.title)
-    if (who.length >= 2 && title.includes(who[0]) && title.includes(who[who.length - 1])) return e
+    // Staging, 2026-11-24: the model chose the right profile for "Rob Rooney" and it was refused because its title reads "Robert Rooney".
+    // The first name may be the short or the long form of the title's (one starts the other, three letters or more); the last name is exact.
+    const first = (t: string) => t === who[0] || (Math.min(t.length, who[0].length) >= 3 && (t.startsWith(who[0]) || who[0].startsWith(t)))
+    if (who.length >= 2 && title.some(first) && title.includes(who[who.length - 1])) return e
   }
   return { ...e, linkedin_url: null }
 }

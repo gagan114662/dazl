@@ -3,7 +3,7 @@
 // fool: attaching someone else's profile is worse than attaching none (the cases below come from the independent review of PR #1692).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { companyWords, pickSeenProfile } from '../lib/discover/enrich.ts'
+import { companyWords, keepSeenProfile, pickSeenProfile } from '../lib/discover/enrich.ts'
 import type { SeenPage } from '../lib/discover/agent.ts'
 
 const seen = (rows: [url: string, title: string | null][]): Map<string, SeenPage> => new Map(rows.map(([url, title]) => [url, { url, title, page_age: null, text: null }]))
@@ -59,4 +59,18 @@ test('the company\'s own words: filler and bracketed text are not part of the na
   assert.deepEqual(companyWords('Lightsprint (YC P26)'), ['lightsprint'])
   assert.deepEqual([companyWords('Sim'), companyWords('Violet Labs'), companyWords('StackedSP')], [['sim'], ['violet', 'labs'], ['stackedsp']])
   assert.equal(pickSeenProfile('Dana Ruiz', 'The Group Inc.', one('Dana Ruiz - Owner - The Group Inc | LinkedIn')), null)
+})
+
+// Staging, 2026-11-24: of 5 lookups that ended with no profile, one was a real loss. The model chose the right profile for "Rob Rooney";
+// its result title read "Robert Rooney - London, England, United Kingdom", and the keep rule wanted the first name letter for letter.
+test('a profile the model chose is kept when the result\'s title gives the long or short form of the first name', () => {
+  const e = (person: string, url: string) => ({ domain: null, person, title: null, person_source_url: 'https://x.example/team', linkedin_url: url, email: null, email_source_url: null })
+  const url = 'https://www.linkedin.com/in/robert-rooney-b710992/'
+  const s = seen([[url, 'Robert Rooney - London, England, United Kingdom'], ['https://www.linkedin.com/in/ben-helps-5871909/', 'Ben Helps - Hyperlayer']])
+  assert.equal(keepSeenProfile(e('Rob Rooney', url), s).linkedin_url, url, 'Rob and Robert are one first name')
+  assert.equal(keepSeenProfile(e('Robert Rooney', url), seen([[url, 'Rob Rooney - Hyperlayer']])).linkedin_url, url, 'and the other way round')
+  assert.equal(keepSeenProfile(e('Rob Rooney', url), seen([[url, 'Ro Rooney - Hyperlayer']])).linkedin_url, null, 'two letters are not a name')
+  assert.equal(keepSeenProfile(e('Rob Rooney', url), seen([[url, 'Robert Mooney - Hyperlayer']])).linkedin_url, null, 'the last name is exact')
+  assert.equal(keepSeenProfile(e('Rob Rooney', url), seen([[url, 'Ben Rooney - Hyperlayer']])).linkedin_url, null, 'a different first name')
+  assert.equal(keepSeenProfile(e('Rob Rooney', 'https://www.linkedin.com/in/someone-else/'), s).linkedin_url, null, 'a profile the lookup never saw is still refused')
 })
