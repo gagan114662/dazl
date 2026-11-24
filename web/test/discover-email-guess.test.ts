@@ -44,7 +44,7 @@ function stubHome(pages: Record<string, string>, read: string[] = []) {
 function setup() {
   const db = new Database(':memory:')
   migrateAllSqlite(db)
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j1', 'T', 'b', 'i', 'l', 'done', 'Dental clinics in Austin opening a new location', 'Clinic fit-out contractor')").run()
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j1', 'T', 'b', 'i', 'l', 'running', 'Dental clinics in Austin opening a new location', 'Clinic fit-out contractor')").run()   // 'running': the store only takes a lead while its search runs
   return db
 }
 let seq = 0
@@ -109,9 +109,12 @@ test('a person can approve the guessed address, and the draft never says a page 
   process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
   const db = setup()
   const id = addLead(db)
+  const other = addLead(db, { company: 'Elsewhere Dental' })
+  const printed = addLead(db, { company: 'Printed Dental', email: { value: 'dana.ruiz@other-mail.example', source_url: `https://${SITE}/contact` } })
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j1'").run()   // the search has finished
   const code = (fn: () => unknown) => { try { fn(); return 'created' } catch (e) { if (e instanceof OutreachError) return e.code; throw e } }
   assert.equal(code(() => createDraft(db, 'T', id, 'Fit-out Co', { manual: true })), 'no_email_contact', 'before the check: nothing to draft to')
-  await guessDiscoverEmails(db, 'T', 'j1', { env: ON, where: WHERE, readHome: stubHome({ [HOME]: US_HOME }), verifier: stubVerifier({ [`dana.ruiz@${SITE}`]: 'deliverable' }, []) })
+  await guessDiscoverEmails(db, 'T', 'j1', { env: ON, where: WHERE, leadIds: [id], readHome: stubHome({ [HOME]: US_HOME }), verifier: stubVerifier({ [`dana.ruiz@${SITE}`]: 'deliverable' }, []) })
   assert.equal(code(() => createDraft(db, 'T', id, 'Fit-out Co', { manual: true })), 'created')
   const draft = db.prepare("SELECT to_email, body FROM outreach_messages WHERE tenant_id = 'T' AND lead_id = ?").get(id) as { to_email: string; body: string }
   assert.equal(draft.to_email, `dana.ruiz@${SITE}`)
@@ -119,12 +122,10 @@ test('a person can approve the guessed address, and the draft never says a page 
   assert.ok(!draft.body.includes(HOME), 'the homepage is not cited as where the address came from')
   assert.ok(draft.body.includes(`https://news.example/${id}`), 'it cites the page the signal was read on')
   // the same row at another company's domain is nobody's contact: only its own domain can place a guessed address (the homepage is not a page that prints it)
-  const other = addLead(db, { company: 'Elsewhere Dental' })
   addEnrichment(db, 'T', other, { connector: 'discover', kind: 'email', value: 'dana.ruiz@other-mail.example', label: GUESSED_VERIFIED_LABEL, confidence: null, source_url: HOME, source_date: RECENT, retrieved_at: 1 })
   assert.equal(code(() => createDraft(db, 'T', other, 'Fit-out Co', { manual: true })), 'domain_unconfirmed')
   assert.equal(stateOf(db, other), 'no_contact')
   // ...while a PUBLISHED address at another domain, printed on the company's own site, still counts as before
-  const printed = addLead(db, { company: 'Printed Dental', email: { value: 'dana.ruiz@other-mail.example', source_url: `https://${SITE}/contact` } })
   assert.equal(stateOf(db, printed), 'ready_email')
   assert.equal(discoverContact({ source_kind: 'discover', name: 'Dana Ruiz', enrichments: stored(db, printed) })?.email?.provenance, 'published')
 })
@@ -263,7 +264,7 @@ test('leads that are never guessed for: an address of their own already, a first
   const rejected = addLead(db, { company: 'Rejected Dental' })
   db.prepare('UPDATE leads SET quarantined_at = 1 WHERE id = ?').run(rejected)
   // another workspace's search, same company: never read for this workspace
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j9', 'OTHER', 'b', 'i', 'l', 'done', 'q', 's')").run()
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j9', 'OTHER', 'b', 'i', 'l', 'running', 'q', 's')").run()
   addLead(db, { company: 'Other Tenant Dental', job: 'j9' })
   const run = await guessDiscoverEmails(db, 'T', 'j1', { env: ON, where: WHERE, readHome: stubHome({ [HOME]: US_HOME }, read), verifier: stubVerifier({ [`dana.ruiz@${SITE}`]: 'deliverable' }, asked) })
   assert.deepEqual(asked, [])
