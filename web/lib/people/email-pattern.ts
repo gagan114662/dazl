@@ -289,7 +289,8 @@ export function usEvidence(homeText: string | undefined, where: string[] = []): 
 //   - any sign of another country on the homepage means NOT US: a UK postcode, a phone number with a dialling code other than +1, or
 //     another country's name, in an address (countriesIn, read across the page's separators) or anywhere in the text
 //     (countryMentions: "offices in Germany and Austin", "Toronto, Canada. Book today.", "Mumbai, India · Contact us");
-//   - so does a Canadian province ("Guelph, ON", "serving all of Ontario": Canada shares +1 and a province needs no postal code here)
+//   - so does a Canadian postal code anywhere ("Guelph ON N1H 1A1": no comma or province needed) and a Canadian province ("Guelph, ON",
+//     "Laval QC H7N", "Kelowna, B.C.", "serving all of Ontario": Canada shares +1 and a province needs no postal code here)
 //     and a well-known city outside the US named anywhere ("Austin, TX 78701 · London · Berlin"). The city list cannot be complete;
 //   - a name that is also a US town is let through only when it is itself written as a US address whose ZIP code belongs to the state
 //     ("Vienna, VA 22180", "Ontario, CA 91761", "Lebanon, PA 17042"). A second, bare mention on the same page still refuses;
@@ -297,6 +298,9 @@ export function usEvidence(homeText: string | undefined, where: string[] = []): 
 // A wrong "not US" (a first name Jordan, "Turkey Hill", "Birmingham, Alabama" without a ZIP) is accepted; a wrong "US" is not.
 // The older engine's callers keep usEvidence as it was; nothing of theirs changes.
 const UK_POSTCODE = /\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/
+// A Canadian postal code anywhere in the text, with or without a comma or a province before it ("Guelph ON N1H 1A1" is Canada Post's
+// own format). The letters are the ones Canada Post uses (no D, F, I, O, Q, U; no W or Z first).
+const CA_POSTAL_CODE = /(?<![A-Za-z\d])[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][ -]?\d[ABCEGHJ-NPRSTV-Z]\d(?![A-Za-z\d])/
 // A phone number, not "+30% revenue" or "+25 years": "+", a dialling code that does not start with 1, then at least six more digits
 // joined only by spaces, dots, hyphens, slashes or brackets ("+44 (0)20 7946 0000", "+7 495 555 01 00", "+49-30-5550-1000").
 const FOREIGN_PHONE = /(?<![\p{L}\d])\+\s?\(?[2-9]\d{0,2}\)?(?:[\s./(-]{0,2}\d\)?){6,12}(?![\d%])/u
@@ -315,6 +319,7 @@ export function usOnlyEvidence(homeText: string | undefined, where: string[] = [
   const base = usEvidence(homeText, where)
   if (!base.us || !homeText) return base
   if (UK_POSTCODE.test(homeText)) return { us: false, reason: 'homepage states a UK postcode' }
+  if (CA_POSTAL_CODE.test(homeText)) return { us: false, reason: 'homepage states a Canadian postal code' }
   if (FOREIGN_PHONE.test(homeText)) return { us: false, reason: 'homepage gives a phone number outside the US' }
   const text = homeText.normalize('NFC')
   // the name is a US town when it is itself the city of a US address: ", ST 12345" follows it and the ZIP code belongs to the state

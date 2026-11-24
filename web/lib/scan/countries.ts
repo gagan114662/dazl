@@ -387,13 +387,22 @@ export function countryMentions(text: string): CountryMention[] {
 // Provinces and territories CA_PROV does not name. Kept apart from it so regionOf does not start reading "Yukon, OK" as Canada.
 const CA_PROV_SCAN_ONLY = ['yukon', 'nunavut', 'northwest territories', 'newfoundland']
 const CA_PROV_NAME_SCAN = new RegExp(`(?<![a-z0-9_])(${[...Object.keys(CA_PROV).filter(k => k.length > 3), ...CA_PROV_SCAN_ONLY].sort((a, b) => b.length - a.length).map(n => n.replace(/ /g, ' +')).join('|')})(?![a-z0-9_])`, 'g')
-// A province code counts only in capitals and straight after a comma ("Guelph, ON"): none of them is a US state's code.
-const CA_PROV_CODE_SCAN = new RegExp(`,\\s*(${Object.keys(CA_PROV).filter(k => k.length === 2).map(k => k.toUpperCase()).join('|')})(?![\\p{L}\\d])`, 'gu')
-// Every Canadian province or territory the text names: its full name anywhere, in any case ("Serving all of Ontario"), or its
-// two-letter code after a comma. `code` tells the two apart: a full name can also be a US town ("Ontario, CA 91761"), a code cannot.
+// A province code counts only in capitals: straight after a comma ("Guelph, ON"), or, as Canada Post writes an address, after a
+// capitalised town with no comma when a postal code (or its first half), a separator or the end of the text follows
+// ("Guelph ON N1H 1A1", "Laval QC H7N", "Regina SK"). None of them is a US state's code.
+const CA_CODES = Object.keys(CA_PROV).filter(k => k.length === 2).map(k => k.toUpperCase()).join('|')
+const CA_PROV_CODE_SCAN = new RegExp(`,\\s*(${CA_CODES})(?![\\p{L}\\d])`, 'gu')
+const AFTER_TOWN = `(?<![\\p{L}\\d])\\p{Lu}[\\p{L}'.-]*[ \\t]+`
+const CA_PROV_BARE_CODE_SCAN = new RegExp(`${AFTER_TOWN}(${CA_CODES})(?=[ \\t,]+[A-Z]\\d[A-Z](?!\\p{L})|\\s*$|[ \\t]*[.;,·•|)\\n\\r])`, 'gu')
+// The written abbreviations ("Kelowna, B.C.", "Waterloo, Ont."), spelled as here, after a comma or a capitalised town.
+const CA_PROV_ABBR_SCAN = new RegExp(`(?:,\\s*|${AFTER_TOWN})(B\\.\\s?C\\.|Ont\\.|Que\\.|Alta\\.|Sask\\.|Man\\.|P\\.\\s?E\\.\\s?I\\.|PEI|N\\.\\s?S\\.|N\\.\\s?B\\.|N\\.\\s?L\\.|N\\.\\s?W\\.\\s?T\\.|Nfld\\.)(?![\\p{L}\\d])`, 'gu')
+// Every Canadian province or territory the text names: its full name anywhere, in any case ("Serving all of Ontario"), its two-letter
+// code, or its written abbreviation. `code` tells them apart: a full name can also be a US town ("Ontario, CA 91761"), a code or an
+// abbreviation cannot.
 export function canadianProvinceMentions(text: string): { place: string; at: number; end: number; code: boolean }[] {
   const out: { place: string; at: number; end: number; code: boolean }[] = []
   for (const m of foldInPlace(text).matchAll(CA_PROV_NAME_SCAN)) out.push({ place: text.slice(m.index, m.index + m[1].length), at: m.index, end: m.index + m[1].length, code: false })
-  for (const m of text.matchAll(CA_PROV_CODE_SCAN)) { const at = m.index + m[0].length - m[1].length; out.push({ place: m[1], at, end: at + 2, code: true }) }
+  for (const scan of [CA_PROV_CODE_SCAN, CA_PROV_BARE_CODE_SCAN, CA_PROV_ABBR_SCAN])
+    for (const m of text.matchAll(scan)) { const at = m.index + m[0].length - m[1].length; out.push({ place: m[1], at, end: at + m[1].length, code: true }) }
   return out.sort((a, b) => a.at - b.at)
 }

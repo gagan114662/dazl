@@ -154,6 +154,11 @@ test('not in the United States, or country unknown: nothing is checked and nothi
     ['a country followed by more text', { [HOME]: `${US_HOME} We also see patients in Toronto, Canada. Book today.` }, WHERE],
     ['a country that is also a US town\'s name, not at the end of the page', { [HOME]: 'Northwind Dental. Austin, TX 78701 · Mumbai, India · Contact us' }, WHERE],
     ['a phone number outside the US with a one-digit dialling code', { [HOME]: `${US_HOME} Second desk: +7 495 555 01 00` }, WHERE],
+    // third review of #1691: a Canadian address as Canada Post writes it (no comma before the province), and written province abbreviations
+    ['a US address beside a Canadian address with no comma before the province', { [HOME]: `${US_HOME} Canadian office: 55 Wyndham St N, Guelph ON N1H 1A1` }, WHERE],
+    ['a US address beside a second Canadian address with no comma', { [HOME]: `${US_HOME} Second clinic: 12 Bernard Ave, Kelowna BC V1Y 6N2` }, WHERE],
+    ['a US address beside a town and a dotted province abbreviation', { [HOME]: `${US_HOME} Also in Kelowna, B.C.` }, WHERE],
+    ['a US address beside a town and a long province abbreviation', { [HOME]: `${US_HOME} Also in Waterloo, Ont.` }, WHERE],
   ]
   for (const [what, pages, where] of cases) {
     const db = setup(), asked: string[] = []
@@ -198,6 +203,21 @@ test('the step\'s reading of a homepage: another country, a Canadian province or
     [`${US_HOME} Second clinic: Guelph, ON`, /Canadian province: ON/],
     [`${US_HOME} Serving all of Ontario and Quebec`, /Canadian province: Ontario/],
     [`${US_HOME} Flights to the Yukon`, /Canadian province: Yukon/],
+    // Canada Post's own format has no comma between town and province: the postal code alone refuses, wherever it stands
+    [`${US_HOME} Canadian office: 55 Wyndham St N, Guelph ON N1H 1A1`, /Canadian postal code/],
+    [`${US_HOME} Markham ON L3R 0B8`, /Canadian postal code/],
+    [`${US_HOME} Second clinic: 12 Bernard Ave, Kelowna BC V1Y 6N2`, /Canadian postal code/],
+    [`${US_HOME} Regina SK S4P-3Y2`, /Canadian postal code/],
+    [`${US_HOME} Postal code H7N 4Z9 for parcels`, /Canadian postal code/],
+    // ...and so does the province code with half a postal code, or none, after a town with no comma
+    [`${US_HOME} Laval QC H7N`, /Canadian province: QC/],
+    [`${US_HOME} Clinics in Regina SK. Book online`, /Canadian province: SK/],
+    [`${US_HOME} Second clinic in Markham ON`, /Canadian province: ON/],
+    // written abbreviations
+    [`${US_HOME} Also in Kelowna, B.C.`, /Canadian province: B\.C\./],
+    [`${US_HOME} Also in Waterloo, Ont.`, /Canadian province: Ont\./],
+    [`${US_HOME} Labs in Laval, Que. and Red Deer, Alta. and Regina Sask.`, /Canadian province: Que\./],
+    [`${US_HOME} Charlottetown, P.E.I. and Halifax N.S.`, /Canadian province: P\.E\.I\./],
     // a country anywhere in the text, not only where an address writes it
     ['We have offices in Germany and Austin. 500 Congress Ave, Austin, TX 78701', /names DE/],
     [`${US_HOME} We also see patients in Toronto, Canada. Book today.`, /names CA/],
@@ -228,12 +248,16 @@ test('the step\'s reading of a homepage: another country, a Canadian province or
     'Harbour Smiles, 9 Euclid Ave, Ontario, CA 91761', 'Harbour Smiles, 3 Central Ave, Albuquerque, NM 87102, New Mexico',
     // words that only look like a country: lower-case "turkey", "china" and "chile", a unit, a US state's name
     `${US_HOME} We serve turkey on fine china with green chile. 16 GB of photos. Second office in Georgia.`,
+    // not a Canadian postal code or province: a part number, a ZIP+4, "on" and "man" as words, a province code that no town precedes
+    `${US_HOME} Part A1B2C34 in stock. Mail to Austin, TX 78701-1234. Sign on today, man. We are ON it and open at 9 AM.`,
   ]
   for (const text of yes) { const r = usOnlyEvidence(text, WHERE); assert.equal(r.us, true, `${text} -> ${r.us ? '' : r.reason}`) }
   // the scans themselves: where in the text, which country, and whether the name is also a US town's
   assert.deepEqual(countryMentions('Offices in Germany and Lebanon, PA 17042').map(m => [m.code, m.at, m.ambiguous]), [['DE', 11, false], ['LB', 23, true]])
   assert.deepEqual(countryMentions('New Mexico, Papua New Guinea, new jersey, turkey').map(m => m.code), ['PG'])
   assert.deepEqual(canadianProvinceMentions('Guelph, ON and british columbia; go on, in ON mode').map(m => [m.place, m.code]), [['ON', true], ['british columbia', false]])
+  assert.deepEqual(canadianProvinceMentions('Laval QC H7N, Kelowna B.C. and Waterloo, Ont. then Regina SK').map(m => [m.place, m.code]), [['QC', true], ['B.C.', true], ['Ont.', true], ['SK', true]])
+  assert.deepEqual(canadianProvinceMentions('Go ON with it. We are ON it, man. Since 400 B.C. and on. Call ON 5 May'), [], 'a province code or abbreviation needs a town before it and an address end after it')
   assert.deepEqual(nonUsCityMentions('From new delhi to Derby, by way of bath and a derby hat').map(m => m.place), ['new delhi', 'Derby'])
   assert.deepEqual(nonUsCityMentions('Dallas, Chicago and New York'), [], 'US cities are not read')
 })
