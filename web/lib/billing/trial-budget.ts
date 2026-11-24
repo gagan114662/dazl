@@ -180,7 +180,8 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 
 // #1095 (owner, 2026-11-23: "let password users run free scans"): an account made with a password runs its FIRST search free
 // without Google. This narrows the Google guard, on purpose, and only this far:
-//   - scans only, and only PASSWORD_TRIAL_SCANS (1) of them; the second free scan, and every free website read, still needs Google
+//   - only PASSWORD_TRIAL_SCANS (1) scan, and the website reads that come before it in onboarding (2026-11-24); the second free scan,
+//     and any website read after that one scan is used, still needs Google
 //     (refused google_required, which the screens answer with Link Google). The first search counts toward the usual three.
 //   - the address must be confirmed (users.email_verified_at): a sign-up made where dazl can send mail cannot sign in before that.
 //   - one per mailbox: a +tag alias, or a Gmail address that differs only by dots or googlemail.com, of a mailbox that already drew
@@ -289,8 +290,10 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet,
     if (req === 'google_account' && stagingTrialWithoutGoogle(user.email, env)) continue
     const check = TRIAL_REQUIREMENT_CHECKS[req]
     if (yield* t.get(check.sql, [user.id])) continue
-    // #1095: without Google, a confirmed password account still runs its first scan (see PASSWORD_TRIAL_SCANS); nothing else
-    if (!(req === 'google_account' && scan && passwordTrialOn(env) && (yield* passwordPathOpen(t, user)))) return check.refusal
+    // #1095: without Google, a confirmed password account still runs its first scan (see PASSWORD_TRIAL_SCANS), and the website
+    // read that comes before it in onboarding (owner, 2026-11-24: free website reads for every new account). Once that one scan
+    // is used, the attempts check below asks for Google, for a read as for a scan.
+    if (!(req === 'google_account' && passwordTrialOn(env) && (yield* passwordPathOpen(t, user)))) return check.refusal
     attemptsCap = PASSWORD_TRIAL_SCANS
   }
   const domain = emailDomain(user.email)
