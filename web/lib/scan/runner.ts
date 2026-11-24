@@ -1503,11 +1503,15 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   assertOwned(db, job)
   const checked = run.leads.filter(l => l.evidence_url.length <= 500)
   const now = Math.floor(Date.now() / 1000)
-  const shown = checked.filter(isShown), unconfirmed = checked.filter(l => !isShown(l))
+  // Quest's lead score on production, 2026-11-24 (job 7e5605365113): 2 of 6 listed leads had a dead proof link (a 404, a job board's
+  // "Job not found"). A proof page that is gone (lib/discover/check.ts 'gone') proves nothing and cannot be reviewed either: such a
+  // lead is dropped and counted, never listed. Every other unconfirmed lead still goes to the person's review.
+  const gone = checked.filter(l => l.proof === 'gone'), live = checked.filter(l => l.proof !== 'gone')
+  const shown = live.filter(isShown), unconfirmed = live.filter(l => !isShown(l))
   const out: VerifyOutcome = {
     leads: shown.map(l => discoveredLead(l, now)),
     review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required' })),
-    dropped: {},
+    dropped: gone.length ? { page_not_found: gone.length } : {},   // the Leads page's words for it: "page no longer exists"
   }
   // #1579: the lane's own account goes into the saved run report, so a search that returns nothing says why (which budget it ran
   // with, how it stopped, and the engine's one-sentence note) instead of only "0 candidates".

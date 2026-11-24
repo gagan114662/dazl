@@ -187,3 +187,35 @@ test('a hiring request answered by the lane is not held by the old sales-hiring 
   db.prepare("UPDATE leads SET source_kind = NULL WHERE id = ?").run(rows[0].id)
   assert.equal(requiredGateHeld(db, 'T', rows[0].id), 'sales_hiring_check_failed', 'an old-engine lead with no recorded pass stays held')
 })
+
+// Quest's lead score on production, 2026-11-24 (job 7e5605365113): 2 of 6 listed leads had a dead proof link (a 404, and a job
+// board's "Job not found"). They were labelled, but still listed for the person to review, with a link that proves nothing.
+test('a lead whose proof page is gone is dropped and counted, never listed; the others are kept', async () => {
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor' })
+  const job = claimKeyedJob(db, id)
+  assert.ok(job)
+  const canned: DiscoverResult = {
+    leads: [
+      lead({}),
+      lead({ company: 'Gone Dental', domain: null, signal: 'Hiring a clinic manager', signal_date: null, evidence_url: 'https://jobs.example/gone-dental/1', evidence_quote: 'Gone Dental is hiring a clinic manager', person: null, title: null, person_source_url: null, confidence: 'medium' }),
+    ],
+    seen: [
+      { url: 'https://news.example/northwind', title: 'Northwind Dental', page_age: null, text: 'On 14 October 2026 Northwind Dental will open its second clinic downtown.' },
+      { url: 'https://jobs.example/gone-dental/1', title: 'Gone Dental', page_age: null, text: 'Gone Dental. Job not found.' },
+    ],
+    usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
+  }
+  let calls = 0
+  const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch
+  assert.equal(await runJob(db, job!, { master, fetchImpl: blocked, discover: true, enrichImpl: null, discoverImpl: async () => (++calls === 1 ? canned : { ...canned, leads: [], seen: [] }) }), 'done')
+  const leads = listLeads(db, 'T', id, 50, false) as (Record<string, unknown> & { company: string })[]
+  assert.deepEqual(leads.map(l => l.company), ['Northwind Dental'], 'the lead with the dead proof link is not listed, for review or otherwise')
+  const j = db.prepare('SELECT status, verified, needs_review, drop_reasons FROM scan_jobs WHERE id = ?').get(id) as { status: string; verified: number; needs_review: number; drop_reasons: string | null }
+  assert.deepEqual([j.status, j.verified, j.needs_review], ['done', 1, 0])
+  assert.equal((JSON.parse(j.drop_reasons ?? '{}') as Record<string, number>).page_not_found, 1, 'counted as dropped, with the reason the Leads page already words as "page no longer exists"')
+})
