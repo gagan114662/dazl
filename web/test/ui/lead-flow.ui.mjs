@@ -96,7 +96,7 @@ try {
   await shot('after-approve')
   await tab('approved').click()
   const approvedCards = await cards().allTextContents()
-  assert.equal(approvedCards.length, 1); assert.match(approvedCards[0], /Bright DentalApproved/, 'the approved card is under Approved, marked Approved')
+  assert.equal(approvedCards.length, 1); assert.match(approvedCards[0], /Bright Dental Approved/, 'the approved card is under Approved, marked Approved')
   await tab('review').click()
   // 3. Reject -> leaves the list, Undo brings it back.
   const maple = card('Maple Family Dentistry')
