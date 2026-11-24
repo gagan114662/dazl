@@ -137,18 +137,18 @@ export function trialDayStart(day: number): number {
   for (const h of [4, 5]) { const s = day * 86400 + h * 3600; if (trialDay(s) === day && trialDay(s - 1) === day - 1) return s }
   return day * 86400 + 5 * 3600
 }
-// #1621 (owner): on launch day, Friday 2026-11-27 Toronto time, the shared daily allowance is $40; from midnight it is the
-// configured DAZL_TRIAL_GLOBAL_DAILY_USD again, with nothing to switch by hand. DAZL_TRIAL_GLOBAL_DAILY_BY_DATE replaces the list
-// ("2026-11-27=40,2026-12-04=25"; set it to "off" for no special days). A date applies only where the trial is configured.
-export const LAUNCH_DAY_CAPS: Readonly<Record<string, number>> = { '2026-11-27': 40 }
+// #1621 (owner): on launch day, Friday 2026-11-27 Toronto time, the shared daily allowance of $13.33 is $40; from midnight it is
+// $13.33 again, with nothing to switch by hand. The built-in rule lifts exactly that configured amount (LAUNCH_DAY.fromUsd) and no
+// other: a deployment (or a test) configured with any other DAZL_TRIAL_GLOBAL_DAILY_USD keeps its own ceiling on that date too.
+// DAZL_TRIAL_GLOBAL_DAILY_BY_DATE replaces the rule with dates that apply whatever the configured amount
+// ("2026-11-27=40,2026-12-04=25"; set it to "off" for no special days).
+export const LAUNCH_DAY = { date: '2026-11-27', fromUsd: 13.33, toUsd: 40 } as const
 export function globalDailyCapUsd(baseUsd: number, day: number, env: Record<string, string | undefined> = process.env): number {
+  const date = new Date(day * 86_400_000).toISOString().slice(0, 10)
   const raw = env.DAZL_TRIAL_GLOBAL_DAILY_BY_DATE
-  let byDate: Record<string, number> = LAUNCH_DAY_CAPS
-  if (raw !== undefined) {
-    byDate = {}
-    for (const part of raw.split(',')) { const [d, v] = part.split('=').map(x => x.trim()); const n = positive(v); if (/^\d{4}-\d{2}-\d{2}$/.test(d ?? '') && n) byDate[d] = n }
-  }
-  return byDate[new Date(day * 86_400_000).toISOString().slice(0, 10)] ?? baseUsd
+  if (raw === undefined) return date === LAUNCH_DAY.date && Math.abs(baseUsd - LAUNCH_DAY.fromUsd) < 1e-9 ? LAUNCH_DAY.toUsd : baseUsd
+  for (const part of raw.split(',')) { const [d, v] = part.split('=').map(x => x.trim()); const n = positive(v); if (d === date && /^\d{4}-\d{2}-\d{2}$/.test(d) && n) return n }
+  return baseUsd
 }
 
 // The reason a free-trial scan stopped at its budget (scan_jobs.error) and why its leads are in review (leads.review_reason).
