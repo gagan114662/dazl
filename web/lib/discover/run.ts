@@ -17,7 +17,9 @@ export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
 // What the people pass has cost at most on the benchmark; a second search pass must leave room for it under the run's ceiling.
 const PEOPLE_PASS_USD = 0.15
-// The most one lead can cost in the people pass (lib/discover/enrich.ts): 4 web searches at US$0.01 each, plus the small model's tokens.
+// What one lead costs in the people pass at most in the ordinary case (lib/discover/enrich.ts): 4 web searches at US$0.01 each, plus the
+// small model's tokens. Not a strict ceiling: a call the server pauses and resumes can search again (up to 12 searches, US$0.12).
+// That rare case is covered by the gap between what a run may spend (80% of its reservation) and the reservation itself.
 const PEOPLE_LEAD_USD = 0.045
 
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
