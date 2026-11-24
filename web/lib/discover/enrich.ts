@@ -49,6 +49,26 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
   }
   return { ...e, linkedin_url: null }
 }
+// Staging, 2026-11-24 (16 leads looked up on five prompts): every lookup saw LinkedIn profile results, yet 4 came back with no profile
+// and 2 with one the rule above refused. When the lookup ends with a named person and no profile, dazl reads the results itself: a
+// profile result whose title carries the person's first and last name AND the company's own name is that person's profile. It must be
+// the only such result (two different profiles for one name at one company are left for a person to settle), and a company whose
+// name has no word of its own ("The Group", "Services Inc") is never matched this way.
+const COMPANY_FILLER = new Set(['the', 'and', 'inc', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'company', 'group', 'holdings', 'gmbh', 'plc', 'pty', 'llp', 'services', 'solutions', 'international', 'global', 'partners', 'associates', 'consulting', 'technologies', 'systems', 'enterprises'])
+const fold = (s: string | null | undefined): string => (s ?? '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+export const companyWords = (company: string | null | undefined): string[] => (fold(company).match(/[a-z0-9]{3,}/g) ?? []).filter(w => !COMPANY_FILLER.has(w)).slice(0, 2)
+export function pickSeenProfile(person: string | null, company: string | null, seen: ReadonlyMap<string, SeenPage>): string | null {
+  const who = nameParts(person), firm = companyWords(company)
+  if (who.length < 2 || !firm.length) return null
+  const found = new Map<string, string>()
+  for (const [url, page] of seen) {
+    const key = profileKey(url)
+    if (!key) continue
+    const title = fold(page.title), names = nameParts(page.title), words: string[] = title.match(/[a-z0-9]{3,}/g) ?? []
+    if (names.includes(who[0]) && names.includes(who[who.length - 1]) && firm.every(w => words.includes(w))) found.set(key, url)
+  }
+  return found.size === 1 ? [...found.values()][0] : null
+}
 // The first pass's own profile address is held to the same rule (review of #1596): no named person, or an address the run did not see
 // for that person, and it is dropped so the people pass looks for the real one.
 export function dropUnseenProfile<T extends DiscoveredLead>(l: T, seen: readonly SeenPage[]): T {
@@ -116,7 +136,12 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
     messages.push({ role: 'assistant', content: res.content as Anthropic.ContentBlockParam[] })
   }
   for (const [url, page] of seen) if (!allSeen.has(url) || page.text) allSeen.set(url, page)
-  return keepSeenProfile(parseEnriched(text), seen)
+  const kept = keepSeenProfile(parseEnriched(text), seen)
+  if (kept.linkedin_url) return kept
+  // no profile from the model, or one the rule refused: the results themselves may still show this person's profile at this company
+  const who = kept.person ?? lead.person
+  const own = pickSeenProfile(who, lead.company, seen)
+  return own ? { ...kept, person: who, linkedin_url: own } : kept
 }
 
 // Fills the empty person and website fields of the leads that need it. A lead whose call fails is returned unchanged.
