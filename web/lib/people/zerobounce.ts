@@ -17,7 +17,8 @@ export const ZEROBOUNCE_URL = 'https://api.zerobounce.net/v2/validate'
 // ZeroBounce's own validation timeout (3-60 s; at the limit it answers unknown / greylisted), and our transport abort above it.
 export const ZEROBOUNCE_VALIDATE_TIMEOUT_S = 10
 const ABORT_MS = 15_000
-// The free monthly allowance this adapter is capped at (operator setting EMAIL_VERIFY_MONTHLY_CAP can only lower it).
+// The free monthly allowance: the default monthly cap, and its ceiling unless the operator names 'zerobounce' in DAZL_PAID_VENDORS
+// (owner decision 2026-11-24: paid checks for the discovery lane's guessed addresses; lib/people/email-pattern.ts verifyMonthlyCap).
 export const ZEROBOUNCE_FREE_MONTHLY = 100
 
 export class VerifierError extends Error {

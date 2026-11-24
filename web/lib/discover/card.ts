@@ -41,7 +41,9 @@ export function discoverSources(l: { source_url?: string | null; name?: string |
   // or a colleague's stored beside it, and a person's profile (/in/...), never a company page.
   const c = discoverContact({ source_kind: 'discover', name: l.name, enrichments: l.enrichments })
   if (c?.person?.source) out.push({ field: 'person', label: 'Person', url: c.person.source })
-  if (c?.email) out.push({ field: 'email', label: 'Email', url: c.email.source })
+  // A published address links the page that prints it. A guessed one links the company's homepage as what it is: where the company's
+  // US address was read, never a page that prints the address.
+  if (c?.email) out.push({ field: 'email', label: c.email.provenance === 'guessed_verified' ? GUESSED_EMAIL_SOURCE_LABEL : 'Email', url: c.email.source })
   const profile = c?.person?.linkedin?.trim()
   if (profile && PROFILE.test(profile)) out.push({ field: 'linkedin', label: 'LinkedIn', url: profile })
   return out
@@ -50,8 +52,20 @@ export function discoverSources(l: { source_url?: string | null; name?: string |
 // The person and the published email a discovery lead carries, with the pages they came from. These are the rows the run stored
 // (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
 // email: the person's or company's own published address. A shared inbox (info@, sales@ ...) is never one (#1250); sharedInbox says one was published.
-export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null; sharedInbox: boolean; otherAddress: boolean }
-type Row = { kind: string; connector?: string; value?: string; source_url?: string | null }
+// provenance: 'published' = a public page prints the address (source is that page). 'guessed_verified' = dazl built it from the person's
+// name at the company's own domain and a mailbox check answered that the mailbox exists (owner decision 2026-11-24, on DECISIONS
+// 2026-10-26: US recipients only, a catch-all domain never counts). Its source is the company homepage whose US address was the basis;
+// no page prints the address, and nothing may say one does.
+export type EmailProvenance = 'published' | 'guessed_verified'
+export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string; provenance: EmailProvenance } | null; sharedInbox: boolean; otherAddress: boolean }
+type Row = { kind: string; connector?: string; value?: string; source_url?: string | null; label?: string | null }
+// THE label of a guessed, mailbox-checked address's stored row: the one mark every reader tells it from a published address by.
+export const GUESSED_VERIFIED_LABEL = 'guessed from the company\'s address pattern, mailbox checked'
+// The words beside the address wherever it is shown (the lead card, the spreadsheet).
+export const GUESSED_VERIFIED_SHORT = 'guessed, mailbox checked'
+const GUESSED_EMAIL_SOURCE_LABEL = 'Email (guessed, mailbox checked; this page is the company\'s US address, not a page that prints the email)'
+// The address as a page or a spreadsheet cell shows it: a guessed one always carries its words.
+export const shownAddress = (e: { address: string; provenance: EmailProvenance }): string => e.provenance === 'guessed_verified' ? `${e.address} (${GUESSED_VERIFIED_SHORT})` : e.address
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
@@ -70,8 +84,10 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   // The contact is the named person's OWN address: not a shared inbox, and carrying their name (dana@, dana.ruiz@, druiz@ ...). Another
   // employee's address stored beside it is not this person's (review of #1596); otherAddress says one was published.
   const own = (r: Row) => !isGenericInbox(r.value) && !!person && nameBound(r.value!.trim().toLowerCase().split('@')[0], person.name)
-  const e = mails.find(own)
-  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
+  // a published address of theirs comes before a guessed one
+  const guessed = (r: Row) => r.label === GUESSED_VERIFIED_LABEL
+  const e = mails.find(r => own(r) && !guessed(r)) ?? mails.find(own)
+  return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url!, provenance: guessed(e) ? 'guessed_verified' : 'published' } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
 }
 // The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
 // A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's
@@ -86,6 +102,7 @@ export const discoverSite = (domain: string | null | undefined): string | null =
 // mailbox and counts wherever it was found (a job board, a press release); the card shows the page it was found on. An address at any
 // other domain counts only when the company's own website prints it. This replaces the review-of-#1574 rule that a company-domain
 // address found only on another site was refused. Whether the address is the PERSON's is discoverContact's rule, above.
+// A guessed address has no page that prints it, so only its own domain can count: its source is passed as null (contactOnCompanySite, below; lib/outreach/service.ts).
 export function emailOnCompanySite(email: string, sourceUrl: string | null | undefined, companyDomain: string | null | undefined): boolean {
   const site = bare((companyDomain ?? '').trim())
   if (!site || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/.test(site)) return false
@@ -94,6 +111,8 @@ export function emailOnCompanySite(email: string, sourceUrl: string | null | und
   if (under(bare(email.trim().toLowerCase().split('@').pop() ?? ''))) return true
   try { const u = new URL(sourceUrl ?? ''); return (u.protocol === 'https:' || u.protocol === 'http:') && under(bare(u.hostname)) } catch { return false }
 }
+const contactOnCompanySite = (e: NonNullable<DiscoverContact['email']>, companyDomain: string | null | undefined): boolean =>
+  emailOnCompanySite(e.address, e.provenance === 'guessed_verified' ? null : e.source, companyDomain)
 // A signal older than this is history, not a reason to write now: the lead keeps its card and its proof, and it is not ready (#1578).
 export const SIGNAL_MAX_AGE_DAYS = 365
 export const signalStale = (eventDate: string | null | undefined, now: Date = new Date()): boolean => {
@@ -133,7 +152,7 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (!c?.email && c?.otherAddress) return { ok: false, reason: `The published address does not carry this person's name, so it is not known to be theirs.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
   if (!c?.email && c?.sharedInbox) return { ok: false, reason: `Only a shared inbox (such as info@ or sales@) is published for this lead, and that is not a contact.${c.person?.linkedin ? ' Reach them through their LinkedIn profile.' : ''}` }
   if (!c?.email) return { ok: false, reason: c?.person?.linkedin ? 'No email address is published for this lead. Reach them through their LinkedIn profile.' : 'No email address is published for this lead yet.' }
-  if (!emailOnCompanySite(c.email.address, c.email.source, l.company_domain)) return { ok: false, reason: 'The address is not at the company\'s own domain and was not found on the company\'s own website, only on another site.' }
+  if (!contactOnCompanySite(c.email, l.company_domain)) return { ok: false, reason: 'The address is not at the company\'s own domain and was not found on the company\'s own website, only on another site.' }
   // the server's own verdict on the address (lib/outreach/service.ts discoverRecipientRefusal), sent with the lead: a personal mailbox
   // (a free webmail address, even one the company's site prints) or an address on the workspace's do-not-contact list
   if (l.recipient_refused === 'personal_email') return { ok: false, reason: 'The published address is a personal mailbox (free webmail), not a company address.' }
@@ -149,7 +168,7 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
 //   rejected        the user rejected it
 //   review          its proof page is not confirmed: the user can check it under Needs your review
 //   research        something no check by the user can lift holds it (no date, not graded a fit, a required check)
-//   ready_email     Approve is on: a draft email to the named person's own published address
+//   ready_email     Approve is on: a draft email to the named person's own address (published, or guessed and mailbox checked)
 //   ready_linkedin  the named person's own LinkedIn profile is known (no own address)
 //   no_contact      the proof is fine, but nobody can be reached yet
 // "Ready" and "with a contact" mean ready_email or ready_linkedin and nothing else (discoverReady).

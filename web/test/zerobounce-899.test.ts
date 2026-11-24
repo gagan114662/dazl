@@ -39,12 +39,23 @@ test('#899 env: no ZEROBOUNCE_API_KEY = no verifier (today\'s behaviour); a key 
   assert.equal(verifierFromEnv({ ZEROBOUNCE_API_KEY: 'k' })?.name, 'zerobounce')
 })
 
-test('#899 monthly cap: default and ceiling = the free allowance; the setting can only lower it; garbage = no check', () => {
-  assert.equal(ZEROBOUNCE_FREE_MONTHLY, 100)
-  assert.equal(verifyMonthlyCap({}), 100)
-  assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '40' }), 40)
-  assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '5000' }), 100, 'never past the free tier')
-  for (const bad of ['-1', '1e3', 'ten', '2.5']) assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: bad }), 0, bad)
+// Owner decision 2026-11-24: the free allowance stays the default, and the ceiling while 'zerobounce' is not named in DAZL_PAID_VENDORS.
+// Only with the vendor named there does the operator's own number stand (bounded).
+test('#899 monthly cap: default = the free allowance; without the paid switch the setting can only lower it; with it the operator\'s number stands; garbage = no check', () => {
+  const had = process.env.DAZL_PAID_VENDORS
+  delete process.env.DAZL_PAID_VENDORS   // the switch falls back to the process's own setting: this test decides it
+  try {
+    assert.equal(ZEROBOUNCE_FREE_MONTHLY, 100)
+    assert.equal(verifyMonthlyCap({}), 100)
+    assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '40' }), 40)
+    assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '5000' }), 100, 'not named as a paid vendor: never past the free allowance')
+    assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '5000', DAZL_PAID_VENDORS: 'apollo,pdl' }), 100, 'another vendor named: still the free allowance')
+    assert.equal(verifyMonthlyCap({ DAZL_PAID_VENDORS: 'zerobounce' }), 100, 'naming the vendor alone buys nothing: the default is still 100')
+    assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '5000', DAZL_PAID_VENDORS: 'zerobounce' }), 5000, 'named: the operator\'s own number')
+    assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '40', DAZL_PAID_VENDORS: 'zerobounce' }), 40)
+    assert.equal(verifyMonthlyCap({ EMAIL_VERIFY_MONTHLY_CAP: '999999', DAZL_PAID_VENDORS: 'zerobounce' }), 100000, 'bounded even when paid')
+    for (const bad of ['-1', '1e3', 'ten', '2.5']) for (const paid of [{}, { DAZL_PAID_VENDORS: 'zerobounce' }]) assert.equal(verifyMonthlyCap({ ...paid, EMAIL_VERIFY_MONTHLY_CAP: bad }), 0, bad)
+  } finally { if (had === undefined) delete process.env.DAZL_PAID_VENDORS; else process.env.DAZL_PAID_VENDORS = had }
 })
 
 // #1036 / #1250: the crawl writes no guessed row any more; guessed rows an earlier release left at rest are what the scan runner's

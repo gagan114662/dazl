@@ -84,6 +84,7 @@ import { scanEnded, scanStarted } from '../ops/loop-stall.ts'
 import { badgeComplaintLeads, collectCompetitorComplaints, type ComplaintItem } from '../signals/competitor-reddit.ts'
 import { finishUndatedLeads } from './structured-date.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
+import { guessDiscoverEmails, type MailboxVerifier } from '../people/email-pattern.ts'
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
@@ -1344,6 +1345,9 @@ export interface RunDeps {
   discover?: boolean
   discoverImpl?: typeof discoverLeads   // the loop itself, replaceable in tests
   enrichImpl?: typeof enrichLeads | null   // its second pass for people and websites; null switches it off
+  // The lane's guessed-address step (guessLaneEmails, below), replaceable in tests: the mailbox verifier (null: none configured), dazl's
+  // own read of a company homepage, and the settings it reads. Absent: the configured verifier, the guarded page fetch, process.env.
+  emailGuess?: { verifier?: MailboxVerifier | null; readHome?: (url: string, signal?: AbortSignal) => Promise<string | null>; env?: Record<string, string | undefined> }
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
   // trace: records this run's model calls and verifier page fetches (lib/evals/capture.ts, DAZL_TRACE_CAPTURE); absent = no recording.
   trace?: import('../evals/trace.ts').TraceRecorder
@@ -1456,7 +1460,34 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+// Owner decision 2026-11-24 (#1250 contact gate; DECISIONS 2026-10-26 still holds: US recipients only, a catch-all domain never counts):
+// after the lane's search has finished and its leads are stored, a lead that names a person and has a website but no address of that
+// person's own gets a guessed address checked by the mailbox verifier (lib/people/email-pattern.ts guessDiscoverEmails, which holds
+// every switch, cap and rule). It runs after finish(), so the search's status, counts and spend are already final: whatever happens
+// here - a slow provider, an error, the deadline - the result stands. One deadline for the whole step; a search that was cancelled or
+// taken over asks nothing more of the provider.
+const DISCOVER_GUESS_BUDGET_MS = 60_000
+async function guessLaneEmails(db: Database.Database, job: Job, leadIds: string[], where: string[], d: RunDeps['emailGuess']): Promise<void> {
+  if (!leadIds.length) return
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), DISCOVER_GUESS_BUDGET_MS)
+  try {
+    const r = await guessDiscoverEmails(db, job.user_id, job.id, {
+      leadIds, where, signal: ctrl.signal, alive: () => postFinishAliveStrict(db, job),
+      // dazl's own free read of the homepage: public addresses only, no paid render
+      readHome: d?.readHome ?? (async (url, signal) => { const p = await fetchPageDetailed(url, async () => null, signal); return isFail(p) ? null : p.text }),
+      ...(d?.verifier !== undefined ? { verifier: d.verifier } : {}), ...(d?.env ? { env: d.env } : {}),
+    })
+    // What the step did, for the operator: counts only, never an address. A step that is switched off did nothing and records nothing.
+    if (!r.skipped) audit(db, { tenantId: job.user_id, connector: 'email_guess', jobId: job.id, lookup: 'discover leads', results: r.verified,
+      status: `checked ${r.checked} for ${r.leads} US lead${r.leads === 1 ? '' : 's'}${r.stopped ? `; stopped: ${r.stopped}` : ''}${r.capped ? '; cap reached' : ''}${r.aborted ? '; cut off' : ''}`.slice(0, 200) })
+  } catch (e) {
+    console.error('discover email guess failed', e instanceof Error ? e.message : 'error')
+    // its own status word, so the scan view's provider notices (lib/scan/provider-issues.ts) never read it as an enrichment provider's failure
+    try { audit(db, { tenantId: job.user_id, connector: 'email_guess', jobId: job.id, lookup: 'discover leads', status: 'email_guess_failed', results: 0 }) } catch { /* the search's own result stands */ }
+  } finally { clearTimeout(timer) }
+}
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null, emailGuess?: RunDeps['emailGuess']): Promise<'done' | 'failed'> {
   // What this run may still spend: the tightest of the job's own budget, the account's limits and the scan's cap. With room for a full
   // run it gets the full search budget; with less (a free-trial run, or a request that set its own lower limit) it gets the smaller
   // budget and reserves what there is; with too little for even that, the scan stops and says so.
@@ -1528,9 +1559,11 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
   const tag = db.prepare('UPDATE leads SET source_kind = ?, company_domain = COALESCE(?, company_domain) WHERE id = ?')
   const forLinkedIn: LaneLead[] = []
+  const guessable: string[] = []   // listed leads (shown or in review) whose proof page is still there
   for (const l of checked) {
     const row = rows.find(r => r.source_url === l.evidence_url && r.company === l.company.slice(0, 150))
     if (!row) continue
+    if (l.proof !== 'gone') guessable.push(row.id)
     if (isShown(l)) forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
@@ -1545,6 +1578,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   try { await enqueuePostEngagement(sqliteDb(db), job.user_id, job.id, [...checked.map(l => l.evidence_url), ...run.pages]) } catch { /* the scan's own leads stand */ }
   // ...and the company People page of a lead whose person has no LinkedIn profile yet (lib/linkedin-tasks/lane-people.ts)
   try { await enqueueLanePeople(sqliteDb(db), job.user_id, job.id, forLinkedIn) } catch { /* the scan's own leads stand */ }
+  // ...and last, a guessed and mailbox-checked address for a US lead's named person (guessLaneEmails, above). The place words are the
+  // request as typed and the saved profile's places: either naming another country means no guess at all.
+  await guessLaneEmails(db, job, guessable, [job.query ?? '', ...(profile?.where ?? [])], emailGuess)
   return 'done'
 }
 
@@ -1653,7 +1689,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         finish(db, job, 'failed', trial ? 'trial_unavailable' : 'claude_key_required', null, null, ledger)
         return 'failed'
       }
-      return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
+      return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null, deps.emailGuess)
     }
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null

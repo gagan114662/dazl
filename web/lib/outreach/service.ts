@@ -191,7 +191,9 @@ const id24 = () => randomBytes(12).toString('hex')
 
 interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null }
 
-export function draftTemplate(lead: Lead, businessName: string, positioning = '', addressUrl: string = lead.source_url): { subject: string; body: string } {
+// guessed: the address was built from the person's name and mailbox checked (a discovery lead, lib/discover/card.ts). No page prints it,
+// so the message never says one does: it cites the page the signal was read on and nothing about where the address came from.
+export function draftTemplate(lead: Lead, businessName: string, positioning = '', addressUrl: string = lead.source_url, guessed = false): { subject: string; body: string } {
   // Literal seller-authored context only: never infer an offer from a buyer signal.
   // Keep this template-only, so a useful offer does not require paid AI polishing.
   const offer = positioning.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600)
@@ -209,10 +211,10 @@ export function draftTemplate(lead: Lead, businessName: string, positioning = ''
   const cutAt = full.lastIndexOf(' ', 160)
   const quote = full.length <= 160 ? full : `${full.slice(0, cutAt > 80 ? cutAt : 160).trimEnd()}...`
   // Saved text: nothing is refetched at draft time, so the label says so.
-  const seen = quote && lead.source_url && lead.source_url !== addressUrl ? `\n\nSaved excerpt from this public page: "${quote}"\n${lead.source_url}` : ''
+  const seen = !guessed && quote && lead.source_url && lead.source_url !== addressUrl ? `\n\nSaved excerpt from this public page: "${quote}"\n${lead.source_url}` : ''
   return {
     subject: `Quick question for ${lead.company || lead.name}`.slice(0, 150),
-    body: `Hi ${who},\n\nI'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${addressUrl}${seen}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
+    body: `Hi ${who},\n\n${guessed ? `I'm writing after reading this public page about ${lead.company || 'your company'}:\n${lead.source_url}` : `I'm writing to the contact address published on ${lead.company || 'your company'}'s page:\n${addressUrl}`}${seen}\n\n${seller}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
   }
 }
 
@@ -327,7 +329,7 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // The address a discovery lead is drafted to: the named person's own, as the card decides it (lib/discover/card.ts discoverContact).
 // One read, used by the draft check and by the card's recipient verdict, so both judge the same address.
 const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null) =>
-  discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string }[] })?.email ?? null
+  discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, source_url, label FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string; label: string | null }[] })?.email ?? null
 export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
   try {
     const to = norm(discoverOwnEmail(db, tenantId, leadId, (db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as { name: string | null } | undefined)?.name ?? '')?.address ?? '')
@@ -348,18 +350,22 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   // and the address must be the named person's own, as the card decides it (lib/discover/card.ts discoverContact): one rule, read here too
   const mine = discoverOwnEmail(db, tenantId, leadId, lead.name)
   const row = mine ? { value: mine.address, source_url: mine.source } : undefined
+  // A guessed, mailbox-checked address (US leads only; the row the discovery lane's own step stored) is drafted to as a published one
+  // is, under every rule below. Nothing prints it, so only its own domain can place it at the company: the homepage it is stored with
+  // is not a page that shows it.
+  const guessed = mine?.provenance === 'guessed_verified'
   // a press, support or privacy inbox keeps its own refusal, as before
   if (!mine && (db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email'").all(tenantId, leadId) as { value: string }[]).some(r => classifyPurpose(norm(r.value)).purpose === 'non-sales')) throw new OutreachError('not_sales_contact')
   const to = norm(row?.value ?? '')
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
   if (classifyPurpose(to).purpose === 'non-sales') throw new OutreachError('not_sales_contact')
-  if (!emailOnCompanySite(to, row!.source_url, state?.company_domain ?? null)) throw new OutreachError('domain_unconfirmed')
+  if (!emailOnCompanySite(to, guessed ? null : row!.source_url, state?.company_domain ?? null)) throw new OutreachError('domain_unconfirmed')
   if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db, tenantId, to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
-  return { lead, to, addressUrl: row!.source_url, test }
+  return { lead, to, addressUrl: row!.source_url, test, guessed }
 }
 
 function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
@@ -421,7 +427,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string, ma
   const test = testRecipientApproved(db, tenantId, to) ? 1 : 0
   if (!recipientAllowed(db,tenantId,to)) throw new OutreachError('personal_email')
   if (isSuppressed(db, tenantId, to)) throw new OutreachError('suppressed')
-  return { lead, to, addressUrl, test }
+  return { lead, to, addressUrl, test, guessed: false }
 }
 
 // Read-only: why createDraft would refuse this lead right now (its error code), or null if it would accept it. Runs the
@@ -446,7 +452,7 @@ export function playOfferRow(db: Database.Database, tenantId: string, leadId: st
 }
 
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string, manual = false): string {
-  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId, manual)
+  const { lead, to, addressUrl, test, guessed } = draftChecks(db, tenantId, leadId, manual)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
   // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
   // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,
@@ -457,7 +463,7 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const r = draftOffer(play, tenant)
   if (r.refuse) throw new OutreachError(r.refuse)
   const positioning = r.offer ?? ''
-  const t = draftTemplate(lead, businessName, positioning, addressUrl)
+  const t = draftTemplate(lead, businessName, positioning, addressUrl, guessed)
   const id = id24()
   try {
     db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)

@@ -11,12 +11,21 @@
 // #1036 / #1250: the crawl (recordEmailGuesses) now records only addresses the company PRINTS on its own site (tier 'published');
 // no format is learned and no address is built from a name, flag on or off. The verifier reads only guessed rows earlier releases
 // left at rest.
+// Owner decision 2026-11-24 (#1250 contact gate: "published, or a pattern guess confirmed by a mailbox check"): for a lead of the
+// Claude discovery lane, guessDiscoverEmails (the end of this file) builds the named person's address at the company's own domain and
+// keeps it only on an explicit "deliverable" answer, for a company whose own homepage states a US address. That is the one path that
+// stores a guessed address as a contact, labelled as guessed and mailbox checked, never as published. It runs only with
+// EMAIL_GUESS_ENABLED=1 AND 'zerobounce' named in DAZL_PAID_VENDORS (the owner's one exception to "no paid service", lib/paid-vendors.ts).
 import type Database from 'better-sqlite3'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { VerifierError, zeroBounceVerifier, zeroBounceStagingFetch, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_STAGING_FAKE } from './zerobounce.ts'
 import { isStaging } from '../staging.ts'
+import { paidVendorOn, paidVendorOffNote } from '../paid-vendors.ts'
+import { addEnrichment } from '../connectors/store.ts'
+import { discoverContact, discoverSite, GUESSED_VERIFIED_LABEL } from '../discover/card.ts'
+import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
 
 export const emailGuessEnabled = (env: Record<string, string | undefined> = process.env) => env.EMAIL_GUESS_ENABLED === '1'
 
@@ -289,12 +298,17 @@ export function verifierFromEnv(env: Record<string, string | undefined> = proces
 }
 // The verifier's checks per calendar month (UTC) across every tenant of this database: the free allowance is the provider account's,
 // not a tenant's (a second deployment on the same key counts separately; the provider's own refusal stops it).
-// Default and ceiling: the provider's free allowance (ZeroBounce 100). EMAIL_VERIFY_MONTHLY_CAP can only lower it; anything that is
-// not a plain non-negative integer is 0 (no check). Never raised past the free tier: no setting buys checks (#899 decision).
+// Default: the provider's free allowance (ZeroBounce 100). Anything that is not a plain non-negative integer is 0 (no check).
+// The ceiling depends on the operator's paid switch (owner decision 2026-11-24, replacing #899's "no setting buys checks"):
+//   - 'zerobounce' NOT named in DAZL_PAID_VENDORS: EMAIL_VERIFY_MONTHLY_CAP can only lower the free allowance, never raise it;
+//   - 'zerobounce' named there: the operator's own number stands, up to VERIFY_MONTHLY_PAID_MAX. Unset, it is still 100: naming the
+//     vendor alone buys nothing.
+const VERIFY_MONTHLY_PAID_MAX = 100_000
 export function verifyMonthlyCap(env: Record<string, string | undefined> = process.env): number {
   const raw = env.EMAIL_VERIFY_MONTHLY_CAP
   if (raw === undefined || raw.trim() === '') return ZEROBOUNCE_FREE_MONTHLY
-  return /^\d{1,6}$/.test(raw.trim()) ? Math.min(Number(raw.trim()), ZEROBOUNCE_FREE_MONTHLY) : 0
+  if (!/^\d{1,6}$/.test(raw.trim())) return 0
+  return Math.min(Number(raw.trim()), paidVendorOn('zerobounce', env) ? VERIFY_MONTHLY_PAID_MAX : ZEROBOUNCE_FREE_MONTHLY)
 }
 // Per-tenant checks per UTC day. Default 0: no check runs unless a cap is set explicitly.
 export function verifyDailyCap(env: Record<string, string | undefined> = process.env): number {
@@ -501,4 +515,104 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   if (!pubWritten && !pubAll.length) return null
   const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
   return { format: null, confidence: null, candidates: 0, published: pubWritten, ambiguous: new Set(seenAll.filter(s => ambiguousLocals.has(s.address.split('@')[0])).map(s => s.address)).size }
+}
+
+// ---- the discovery lane: a guessed address, kept only when the mailbox check says the mailbox exists (owner decision 2026-11-24) ----
+// For each lead of one finished search that names a person (first and last name), has a company website and no address of that
+// person's own: read the company's own homepage (free, dazl's own fetch), and only when it states a US address (usEvidence: a Canadian
+// address, no address, or a request that names another country all mean "not US") build the person's address at that domain in FORMATS
+// order and ask the verifier, one address at a time, at most GUESS_MAX_CHECKS_PER_LEAD per lead, stopping at the first 'deliverable'.
+// Fail closed, in this order: EMAIL_GUESS_ENABLED=1, 'zerobounce' named in DAZL_PAID_VENDORS, a configured verifier, a daily cap above 0
+// (per workspace) and a monthly cap above 0. Every check is reserved (reserveVerifySlot) and written to the candidates ledger BEFORE
+// the provider is asked, so both caps hold if the call or the process dies.
+// What ends the lead: a catch-all domain (never verified, DECISIONS 2026-10-26), an unknown or refused answer, a failed call. Only an
+// 'undeliverable' answer moves on to the next format. What ends the whole step: a verifier stop (bad key, no credits, rate limit), a cap,
+// the search no longer being this attempt's (alive), or the caller's deadline (signal).
+// Never checked: a shared inbox or role local part, an address on the workspace's do-not-contact list, an address already in the ledger.
+// The stored row says what it is (GUESSED_VERIFIED_LABEL); its source is the homepage the US address was read on, which is not a page
+// that prints the address (lib/discover/card.ts shows it that way).
+const GUESS_MAX_CHECKS_PER_LEAD = 3
+export interface DiscoverGuessRun { leads: number; checked: number; verified: number; skipped: string | null; stopped?: string; capped?: boolean; aborted?: boolean }
+export async function guessDiscoverEmails(db: Database.Database, tenantId: string, jobId: string, opts: { readHome: (url: string, signal?: AbortSignal) => Promise<string | null>; verifier?: MailboxVerifier | null; env?: Record<string, string | undefined>; where?: string[]; leadIds?: string[]; now?: number; signal?: AbortSignal; alive?: () => boolean }): Promise<DiscoverGuessRun> {
+  const env = opts.env ?? process.env
+  const out: DiscoverGuessRun = { leads: 0, checked: 0, verified: 0, skipped: null }
+  if (!emailGuessEnabled(env)) return { ...out, skipped: 'EMAIL_GUESS_ENABLED is off' }
+  // the paid switch is read before any key (lib/paid-vendors.ts: every call site checks it first and says why it did not call)
+  if (!paidVendorOn('zerobounce', env)) return { ...out, skipped: paidVendorOffNote('zerobounce') }
+  const verifier = opts.verifier !== undefined ? opts.verifier : verifierFromEnv(env)
+  if (!verifier) return { ...out, skipped: 'no verifier configured' }
+  const dailyCap = verifyDailyCap(env)
+  if (dailyCap === 0) return { ...out, skipped: 'EMAIL_VERIFY_DAILY_CAP is 0' }
+  const monthCap = verifyMonthlyCap(env)
+  if (monthCap === 0) return { ...out, skipped: 'EMAIL_VERIFY_MONTHLY_CAP is 0' }
+  // the request names another country: nothing is read and nothing is asked
+  const placed = usEvidence(undefined, opts.where)
+  if (!placed.us && placed.reason.startsWith('scan geography names')) return { ...out, skipped: `not US: ${placed.reason}` }
+  migrateEmailGuess(db)
+  const vname = verifier.name.slice(0, 40)
+  const halted = () => !!opts.signal?.aborted || (!!opts.alive && !opts.alive())
+  const leads = db.prepare(`SELECT l.id, l.name, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    WHERE j.user_id = ? AND l.scan_job_id = ? AND l.source_kind = 'discover' AND l.quarantined_at IS NULL ORDER BY l.created_at, l.id`).all(tenantId, jobId) as { id: string; name: string | null; company_domain: string | null }[]
+  const stored = db.prepare("SELECT kind, connector, value, source_url, label FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id")
+  const claim = db.prepare(`INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, verification, verifier, checked_at, country_basis, tier, source_url)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 'guessed', ?) ON CONFLICT (lead_id, address) DO NOTHING`)
+  const settle = db.prepare("UPDATE email_candidates SET verification = ? WHERE tenant_id = ? AND lead_id = ? AND address = ? AND verification = 'pending'")
+  for (const l of leads) {
+    if (opts.leadIds && !opts.leadIds.includes(l.id)) continue
+    if (halted()) return { ...out, aborted: true }
+    const site = discoverSite(l.company_domain)
+    if (!site) continue
+    // the same reading of the stored rows as the lead card: the named person, and whether an address of their own is already there
+    const c = discoverContact({ source_kind: 'discover', name: l.name, enrichments: stored.all(tenantId, l.id) as { kind: string; connector: string; value: string; source_url: string | null; label: string | null }[] })
+    if (!c?.person || c.email) continue
+    const person = c.person.name
+    const name = splitName(person)
+    if (!name) continue
+    const homeUrl = `https://${site}/`
+    let homeText: string | null = null
+    try { homeText = await opts.readHome(homeUrl, opts.signal) } catch { /* unread: country unknown, which counts as not US */ }
+    if (halted()) return { ...out, aborted: true }
+    const us = usEvidence(homeText ?? undefined, opts.where)
+    if (!us.us) continue
+    const basis = us.basis
+    const candidates: { address: string; format: Format }[] = []
+    for (const format of FORMATS) {
+      const address = candidateAddress(name, site, format), local = localFor(format, name)
+      // the address must read as this person's own on the card (nameBound), and is never a shared or role inbox
+      if (address.length > 254 || isGenericInbox(address) || ROLE.test(local.replace(/[._-]/g, '')) || !nameBound(local, person) || candidates.some(x => x.address === address)) continue
+      candidates.push({ address, format })
+      if (candidates.length === GUESS_MAX_CHECKS_PER_LEAD) break
+    }
+    const blocked = suppressedOf(db, tenantId, candidates.map(x => x.address))
+    out.leads++
+    for (const cand of candidates) {
+      if (blocked.has(cand.address)) continue
+      if (halted()) return { ...out, aborted: true }
+      const nowS = Math.floor((opts.now ?? Date.now()) / 1000)
+      // The reservation (#849 inventory: every provider call is reserved before it is made): refused = no call.
+      try {
+        await reserveVerifySlot(db, { tenantId, verifier: vname, nowS, dailyCap, monthCap },
+          () => claim.run(tenantId, l.id, person.slice(0, 120), cand.address, cand.format, vname, nowS, basis, homeUrl.slice(0, 500)).changes === 1)
+      } catch (e) {
+        if (e instanceof VerifySlotRefused && e.reason === 'lost') continue // already in the ledger for this lead: never asked twice
+        if (!(e instanceof VerifySlotRefused)) throw e
+        return { ...out, capped: true } // a cap is reached: every later check would be refused the same way
+      }
+      let v: Verification = 'uncertain'
+      let stop: string | null = null
+      try { const a = await verifier.verify(cand.address, opts.signal); v = OUTCOME[a?.outcome] ?? 'uncertain' } catch (e) { v = 'uncertain'; if (e instanceof VerifierError && e.kind === 'stop') stop = e.message.slice(0, 160) }
+      settle.run(v, tenantId, l.id, cand.address)
+      out.checked++
+      // The account cannot check at all (bad key, no credits left, rate limit): no further request, for this lead or any other.
+      if (stop) return { ...out, stopped: stop }
+      if (v === 'verified') {
+        addEnrichment(db, tenantId, l.id, { connector: 'discover', kind: 'email', value: cand.address, label: GUESSED_VERIFIED_LABEL, confidence: null,
+          source_url: homeUrl.slice(0, 500), source_date: new Date(nowS * 1000).toISOString().slice(0, 10), retrieved_at: nowS })
+        out.verified++
+      }
+      // only "no such mailbox" says another format is worth asking about; a catch-all domain, an unknown or refused answer end the lead
+      if (v !== 'undeliverable') break
+    }
+  }
+  return out
 }

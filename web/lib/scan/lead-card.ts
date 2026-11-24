@@ -3,7 +3,7 @@
 // "Approve" creates a draft for review (POST /api/outreach), which never sends; createDraft re-checks every gate on the
 // server. approveState mirrors the conditions under which the existing "Draft email" button appears, plus the window
 // and timing holds, so the card never offers an action the server would refuse for those reasons.
-import { discoverApprove, discoverContact, discoverLinkedIn, isDiscoverLead } from '../discover/card.ts'
+import { discoverApprove, discoverContact, discoverLinkedIn, isDiscoverLead, shownAddress } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { classifyPurpose, publishedContact, publishedEmail } from '../outreach/published-email.ts'
 import { domainReviewFor } from '../outreach/domain-review.ts'
@@ -98,7 +98,9 @@ export function cardCounts(leads: { id: string; quarantined_at?: number | null }
 
 export function leadCardSummary(l: CardLead & { name?: string; published_at?: string | null; fit_rationale?: string | null }, buyerRoles = ''): LeadCardSummary {
   const card = opportunityCard(l, buyerRoles)
-  const email = publishedEmail(l) ?? discoverContact(l as never)?.email?.address ?? null
+  // a discovery lead's guessed address is shown with its words ("guessed, mailbox checked"), never as a published one
+  const own = discoverContact(l as never)?.email ?? null
+  const email = publishedEmail(l) ?? (own ? shownAddress(own) : null)
   const contact = card.who ? `${card.who.name}${card.who.title ? `, ${card.who.title}` : ''}${email ? ` - ${email}` : ''}` : email ?? (l.contact?.trim() || null)
   // #1037: why nobody is named, in the card's own words: every listed title ruled out, or no buyer the company's own site names
   const titlesRuledOut = card.missing.some(m => /every listed person has a past, negated or assistant-to title/.test(m))

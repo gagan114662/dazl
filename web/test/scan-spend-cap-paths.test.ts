@@ -65,7 +65,7 @@ const FREE: Record<string, string> = {
   'https://api.anthropic.com/v1/models': 'key check (model list): free',
   'https://api.openai.com/v1/models': 'key check (model list): free',
   'https://api.gdeltproject.org/api/v2/doc/doc': 'GDELT news search: free public API',
-  'https://api.zerobounce.net/v2/validate': 'ZeroBounce free tier only (#899 decision): a card-less free account, capped by dazl at the free monthly allowance (email_verify_usage ledger, lib/people/email-pattern.ts verifyMonthlyCap) and the per-tenant daily cap; never upgraded',
+  'https://api.zerobounce.net/v2/validate': 'ZeroBounce mailbox check: NOT on the scan spend cap. Every check is reserved by its own ledger first (lib/people/email-pattern.ts reserveVerifySlot: the per-tenant daily cap and the email_verify_usage monthly cap, verifyMonthlyCap). Inside the free monthly allowance by default (#899); a paid check (about 1 cent, owner decision 2026-11-24) only when the operator names zerobounce in DAZL_PAID_VENDORS and raises EMAIL_VERIFY_MONTHLY_CAP',
   'https://api.github.com/search/repositories': 'GitHub search: free, rate-limited',
   'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',
