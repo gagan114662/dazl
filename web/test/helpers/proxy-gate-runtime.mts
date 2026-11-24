@@ -68,3 +68,20 @@ test('#1463 proxy: the lookup never settles: fails closed at the 8s deadline', a
   failedClosed(r, 'deadline')
   assert.ok(Date.now() - t0 < 9500, 'answered at the deadline, not after')
 })
+
+// #1686 (review of PR #1688): the real proxy sends a page asked for on www to the site's own hostname, and leaves API calls alone.
+test('#1686 proxy: a page on www is redirected to the same path on the site\'s own hostname (308); an API call on www is not', async () => {
+  const { db, token } = await store(); setDb(db)
+  const before = process.env.PUBLIC_BASE_URL
+  process.env.PUBLIC_BASE_URL = 'https://dazl.test'
+  try {
+    const page = await proxy(new NextRequest('https://www.dazl.test/app/leads?job=1', { headers: { host: 'www.dazl.test', cookie: `dazl_session=${token}` } }))
+    assert.equal(page.status, 308)
+    assert.equal(page.headers.get('location'), 'https://dazl.test/app/leads?job=1')
+    assert.ok(!(page.headers.get('set-cookie') ?? '').includes('dazl_session'), 'the session cookie is not touched')
+    const api = await proxy(new NextRequest('https://www.dazl.test/api/usage', { headers: { host: 'www.dazl.test', cookie: `dazl_session=${token}` } }))
+    assert.equal(api.headers.get('location'), null, 'an API call is answered where it was sent')
+    const own = await proxy(new NextRequest('https://dazl.test/app/leads', { headers: { host: 'dazl.test', cookie: `dazl_session=${token}` } }))
+    assert.equal(passed(own), true, 'the site\'s own hostname is served as before')
+  } finally { if (before === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = before }
+})

@@ -23,10 +23,13 @@ export function sessionTokens(cookieHeader: string | null | undefined): string[]
 }
 
 // The Set-Cookie lines that remove the session cookie: its host-only form, its parent-domain form, or both. Where the site has no
-// parent-domain form (localhost, an IP address), there is only the host-only one.
+// parent-domain form (localhost, an IP address) every sign-in sets the one host-only cookie, so there is no "other form" to remove:
+// 'host' and 'domain' give nothing there (review of PR #1688: removing 'host' after a Google sign-in on localhost removed the very
+// session it had just set), and 'both' (signing out) gives the host-only line.
 export function expiredSessionCookies(base: string, which: 'host' | 'domain' | 'both'): string[] {
   const d = cookieDomain(base)
-  return [...(which !== 'domain' ? [`${SESSION_COOKIE}=; ${EXPIRED}`] : []), ...(d && which !== 'host' ? [`${SESSION_COOKIE}=; Domain=${d}; ${EXPIRED}`] : [])]
+  if (!d) return which === 'both' ? [`${SESSION_COOKIE}=; ${EXPIRED}`] : []
+  return [...(which !== 'domain' ? [`${SESSION_COOKIE}=; ${EXPIRED}`] : []), ...(which !== 'host' ? [`${SESSION_COOKIE}=; Domain=${d}; ${EXPIRED}`] : [])]
 }
 
 // Adds those lines to a response. Call it last: setting another cookie through the response's cookie API afterwards rewrites the

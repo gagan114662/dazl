@@ -6,6 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { expireSessionCookies, expiredSessionCookies, sessionTokens } from '../lib/session-cookie.ts'
+import { canonicalPageUrl } from '../lib/canonical-host.ts'
 
 test('#1686 every session the browser presents is seen, each once, whatever else is in the Cookie header', () => {
   assert.deepEqual(sessionTokens('dazl_session=aaa; theme=dark; dazl_session=bbb'), ['aaa', 'bbb'])
@@ -24,6 +25,10 @@ test('#1686 the cookie is removed in its host-only form and in its parent-domain
   assert.deepEqual(expiredSessionCookies('https://dazl.ai', 'domain'), [both[1]])
   // no parent-domain form on localhost or an IP address: nothing to remove there
   assert.deepEqual(expiredSessionCookies('http://localhost:3000', 'domain'), [])
+  // review of PR #1688: on localhost Google sign-in sets the host-only cookie itself, so removing "the host-only form" after it
+  // would remove the session just set
+  assert.deepEqual(expiredSessionCookies('http://localhost:3000', 'host'), [])
+  assert.deepEqual(expiredSessionCookies('http://127.0.0.1:3000', 'host'), [])
   assert.equal(expiredSessionCookies('http://127.0.0.1:3000', 'both').length, 1)
   const res = expireSessionCookies({ headers: new Headers({ 'set-cookie': 'other=1' }) }, 'https://dazl.ai', 'both')
   assert.equal(res.headers.getSetCookie().length, 3, 'added beside the cookies already on the response')
@@ -45,4 +50,20 @@ test('#1686 each way of signing in removes the other form of the cookie, and sig
   assert.match(out, /cookieStore\.delete\('dazl_session'\)/)
   assert.equal((out.match(/expireSessionCookies\([^\n]+, base, 'domain'\)/g) ?? []).length, 2)
   assert.match(src('sessions/revoke-all'), /keepCurrent \? NextResponse\.json\(\{ ok: true, revoked \}\) : expireSessionCookies\(/)
+})
+
+// Review of PR #1688: the site answers on www too, and a host-only cookie set on www is not removed by a sign-in on the bare hostname.
+test('#1686 a page asked for on www is sent to the same path on the site\'s own hostname; API calls and other hosts are left alone', () => {
+  const base = 'https://dazl.ai'
+  assert.equal(canonicalPageUrl('www.dazl.ai', '/sign-in?next=%2Fapp', 'GET', base), 'https://dazl.ai/sign-in?next=%2Fapp')
+  assert.equal(canonicalPageUrl('WWW.dazl.ai:443', '/', 'HEAD', base), 'https://dazl.ai/')
+  assert.equal(canonicalPageUrl('www.dazl.ai', '/app/leads', 'GET', base), 'https://dazl.ai/app/leads')
+  assert.equal(canonicalPageUrl('dazl.ai', '/sign-in', 'GET', base), null, 'already on the site\'s own hostname')
+  assert.equal(canonicalPageUrl('www.dazl.ai', '/api/auth/signin', 'POST', base), null, 'a page open on www still posts to its own origin')
+  assert.equal(canonicalPageUrl('www.dazl.ai', '/api/health', 'GET', base), null)
+  assert.equal(canonicalPageUrl('www.dazl.ai', '/_next/static/chunks/x.js', 'GET', base), null)
+  assert.equal(canonicalPageUrl('www.dazl.ai', '/sign-up', 'POST', base), null, 'only a page load is redirected')
+  assert.equal(canonicalPageUrl('www.evil.example', '/sign-in', 'GET', base), null, 'never to or from another site')
+  assert.equal(canonicalPageUrl('www.dazl.ai', '/sign-in', 'GET', undefined), null)
+  assert.equal(canonicalPageUrl(null, '/sign-in', 'GET', base), null)
 })
