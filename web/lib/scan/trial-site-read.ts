@@ -12,7 +12,8 @@ import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from '
 //     key, the wallet's money ceilings configured (trialWalletCaps - NOT the trial-scan config, so funding a read never
 //     turns trial scans on), Google sign-in, one trial per company domain, attempt and spend caps);
 //   - the deployment must set its own daily ceiling for these reads (DAZL_TRIAL_SITE_READS_PER_DAY); unset = off;
-//   - admission is ALLOWLIST-ONLY until a deliberate public launch: DAZL_TRIAL_SITE_READ_ALLOWLIST must name the
+//   - admission is by allowlist, or public (trialSiteReadsPublic below: the owner's launch decision of 2026-11-24, the
+//     allowlist set to the word `public`). Otherwise DAZL_TRIAL_SITE_READ_ALLOWLIST must name the
 //     accounts (comma-separated emails or user ids) that may be funded at all. Unset or empty = nobody is admitted,
 //     whatever the daily ceiling says, so setting the ceiling alone can never fund a new public signup (#409
 //     bounded activation: QA acceptance runs with the QA account listed; opening to the public is a code change,
@@ -70,6 +71,14 @@ export function trialSiteReadAllowlist(env: Record<string, string | undefined> =
   return entries.length ? new Set(entries) : null
 }
 
+// The public launch (owner, 2026-11-24: "On for everyone"): the allowlist set to the one word `public` admits every account the
+// trial would admit, under the same ceilings as a listed account (the deployment's reads per day, three per account per 30 days,
+// the per-network throttle, the wallet's money limits). Any other value is still a list of accounts; unset or empty is still nobody.
+export const TRIAL_SITE_READS_PUBLIC = 'public'
+export function trialSiteReadsPublic(env: Record<string, string | undefined> = process.env): boolean {
+  return (env.DAZL_TRIAL_SITE_READ_ALLOWLIST ?? '').trim().toLowerCase() === TRIAL_SITE_READS_PUBLIC
+}
+
 export interface SiteReadDeps { env?: Record<string, string | undefined>; limit?: (key: string, max: number, windowMs: number) => Promise<Limit>; refund?: (key: string, resetAt?: number) => Promise<boolean> }
 
 // Order (council on #444): nothing is counted or reserved for an account the trial would refuse anyway; the account's
@@ -90,7 +99,7 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   // The allowlist gates SPEND, not eligibility reporting: an ineligible account still hears its real reason above,
   // and an eligible account off the list stops here, before any counter or wallet slot is taken.
   const allow = trialSiteReadAllowlist(env)
-  if (!allow || (!allow.has(user.email.toLowerCase()) && !allow.has(user.id.toLowerCase()))) return { ok: false, reason: 'not_in_allowlist' }
+  if (!trialSiteReadsPublic(env) && (!allow || (!allow.has(user.email.toLowerCase()) && !allow.has(user.id.toLowerCase())))) return { ok: false, reason: 'not_in_allowlist' }
   // 2. The counters: the account's own reads first (an account at its cap stops here and burns nothing shared), then the
   //    network throttle, then the deployment-wide ceiling. A refusal gives back every slot this call took.
   const limit = deps.limit ?? rateLimit, refund = deps.refund ?? ((k: string, resetAt?: number) => refundRateLimit(k, undefined, Date.now(), resetAt))

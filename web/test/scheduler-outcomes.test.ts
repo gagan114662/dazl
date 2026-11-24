@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
 import { readFileSync } from 'node:fs'
-import { classifySync, classifyWork, finishRun, recordProgress, schedulerHealth, startRun, tenantFreshness, BLOCKED_AFTER_FAILURES, FAILURE_REASONS, HOLD_REASONS, type Outcome } from '../lib/ops/scheduler-runs.ts'
+import { classifySync, classifyWork, finishRun, recordProgress, schedulerHealth, startRun, tenantFreshness, BLOCKED_AFTER_FAILURES, FAILURE_REASONS, HOLD_REASONS, DRAIN_HOLD_REASONS, type Outcome } from '../lib/ops/scheduler-runs.ts'
 
 type Work = { started?: number; sent: number; skipped: number; stopped?: string }
 const idle = (stopped?: string): Work => ({ sent: 0, skipped: 0, ...(stopped ? { stopped } : {}) })
@@ -223,3 +223,17 @@ bothEngines('concurrent records for two tenants land in their own rows and both 
   assert.equal((await row(db, 'A', 'sequences')).last_outcome, 'failure'); assert.equal((await row(db, 'A', 'followups')).last_outcome, 'success'); assert.equal((await row(db, 'B', 'sequences')).last_outcome, 'hold')
   assert.deepEqual(await runRow(db, r), { attempted: 2, failed: 1 })
 }, { pgMax: 3 })
+
+// #1666 (Breken QA, 2026-11-23): a workspace whose Gmail must be reconnected had its first-touch drain recorded as a FAILURE,
+// because the tick classified drainFirstTouch's result with the default holds, which lack the mailbox reasons. Sending paused
+// correctly, but the scheduler's health data never showed why.
+test('#1666 first-touch drain: Gmail to connect or reconnect is recorded as a hold with its reason, not as a failure', () => {
+  for (const reason of ['gmail_reconnect_needed', 'gmail_not_connected']) {
+    assert.equal(out(classifyWork({ sent: 0, stopped: reason }, DRAIN_HOLD_REASONS)), `hold:${reason}`)
+    assert.equal(out(classifyWork({ sent: 0, stopped: reason })), `failure:${reason}`, 'the default holds do not cover the mailbox, which is why the tick must pass the drain\'s own')
+  }
+  // a real failure of the drain stays a failure
+  assert.equal(out(classifyWork({ sent: 0, stopped: 'uncertain_send' }, DRAIN_HOLD_REASONS)), 'failure:uncertain_send')
+  const tick = readFileSync(new URL('../app/api/internal/tick/route.ts', import.meta.url), 'utf8')
+  assert.match(tick, /classifyWork\(await drainFirstTouch\([^\n]*\), DRAIN_HOLD_REASONS\)/, 'the tick classifies the first-touch drain with the drain holds')
+})
