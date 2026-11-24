@@ -200,18 +200,23 @@ export function canonicalMailbox(email: string): string {
 }
 // OPERATOR SWITCH (#1579): DAZL_TRIAL_QA_EXEMPT names the acceptance tester's account(s), by exact address (comma-separated; an entry
 // with a * or without an @ is ignored; unset or empty = nobody, and nothing here changes for anyone). A listed account is not stopped by
-// the PER-ACCOUNT trial limits, for a free scan or a free website read: the Google sign-in (a confirmed address is still required, as
-// for every password account), one trial per company domain, the scan attempts, the account's dollar total, and the one-scan allowance
-// of a password account. What still binds it, unchanged: the trial must be configured (not_configured), the GLOBAL daily ceiling (the
-// money guard: its work reserves and settles in the same ledger and counts toward the day like anyone's, so the day's spend can never
-// pass DAZL_TRIAL_GLOBAL_DAILY_USD because of it), the per-scan reserve, and the per-network and per-deployment throttles.
-// Addresses are compared as mailboxes (canonicalMailbox): a +tag alias, or on Gmail a dotted or googlemail.com form, of a listed
-// address is the same mailbox and matches; nothing else does.
+// the limits that count one account or one network, for a free scan or a free website read:
+//   - here (refusal, trialScanAllowance): the Google sign-in (a confirmed address is still required, as for every password account),
+//     one trial per company domain, the scan attempts, the account's dollar total, the one-scan allowance of a password account;
+//   - lib/scan/trial.ts: the account's scan count and the per-network scans per day;
+//   - lib/scan/trial-site-read.ts: the account's three website reads per 30 days, the per-network reads per day, and the allowlist
+//     (a listed account counts as on it);
+//   - app/api/scan/route.ts: the plan's monthly scan quota.
+// What still binds it, unchanged: the trial must be configured (not_configured), the GLOBAL daily ceiling (the money guard: its work
+// reserves and settles in the same ledger and counts toward the day like anyone's, so the day's spend can never pass
+// DAZL_TRIAL_GLOBAL_DAILY_USD because of it), the per-scan reserve, the deployment's website reads per day, sign-in and confirmation.
+// The address is matched exactly (trimmed, lower case), as stagingTrialWithoutGoogle does: a +tag alias or a Gmail dot variant of a
+// listed address is another account and is NOT exempt.
 export function trialQaExempt(email: string, env: Record<string, string | undefined> = process.env): boolean {
   const raw = env.DAZL_TRIAL_QA_EXEMPT ?? ''
-  if (!raw.trim() || !email.includes('@')) return false
-  const me = canonicalMailbox(email)
-  return raw.split(',').map(x => x.trim().toLowerCase()).some(x => x.includes('@') && !x.includes('*') && canonicalMailbox(x) === me)
+  if (!raw.trim()) return false
+  const me = email.trim().toLowerCase()
+  return raw.split(',').map(x => x.trim().toLowerCase()).some(x => x.includes('@') && !x.includes('*') && x === me)
 }
 // The same, for a caller that holds only the account's id. No query at all while the switch is unset.
 export async function trialQaExemptAccount(db: Db, userId: string, env: Record<string, string | undefined> = process.env): Promise<boolean> {

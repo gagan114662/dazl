@@ -11,7 +11,8 @@ import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 import { admitTrialScan, settleTrialReservation, trialRefusal } from '../../lib/billing/trial-budget.ts'
-import { trialStatus } from '../../lib/scan/trial.ts'
+import { ipHash, trialStatus, TRIAL_SCANS_PER_IP_PER_DAY } from '../../lib/scan/trial.ts'
+import { PLAN_LIMITS } from '../../lib/plans.ts'
 import { POST } from '../../app/api/scan/route.ts'
 
 Object.assign(process.env, { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-trial-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
@@ -131,4 +132,39 @@ test('scan trial principal: founder only, its stored address decides; members an
   const ok = await start('10.9.0.2')
   assert.equal(ok.status, 202, JSON.stringify(ok))
   assert.equal(jobs(), 1)
+})
+
+// #1579: the operator's acceptance account (DAZL_TRIAL_QA_EXEMPT) through the real route. Each state refuses the account while it is
+// not listed (unset, or only a +tag variant listed) and starts its scan once it is, with the reservation written as for any scan.
+test('#1579 a listed account starts a scan past its attempts, its network\'s daily scans and the monthly quota; unlisted, each is refused as before', async () => {
+  const listed = async (v: string, ip: string) => {
+    process.env.DAZL_TRIAL_QA_EXEMPT = v
+    try { return await start(ip) } finally { delete process.env.DAZL_TRIAL_QA_EXEMPT }
+  }
+  const reserved = (db: Database.Database, job: string) => (db.prepare('SELECT count(*) AS n FROM trial_reservations WHERE job_id = ?').get(job) as { n: number }).n
+  // the three attempts used
+  const a = account('quest@tester.example')
+  for (let i = 0; i < 3; i++) { const r = await start(`10.5.0.${i + 1}`); assert.equal(r.status, 202, JSON.stringify(r)); await end(a.db, r.job_id!, 'failed', 'provider_error', 0.02) }
+  assert.deepEqual([(await start('10.5.0.9')).error, (await listed('quest+two@tester.example', '10.5.0.9')).error], ['trial_exhausted', 'trial_exhausted'])
+  const fourth = await listed(' Quest@Tester.example ,*@tester.example', '10.5.0.9')
+  assert.equal(fourth.status, 202, JSON.stringify(fourth))
+  assert.equal((a.db.prepare('SELECT funded_by FROM scan_jobs WHERE id = ?').get(fourth.job_id) as { funded_by: string }).funded_by, 'trial')
+  assert.equal(reserved(a.db, fourth.job_id!), 1, 'reserved in the ledger like any free scan')
+  // the network at its nine free scans today
+  const b = account('pat@netcap.example')
+  for (let i = 0; i < TRIAL_SCANS_PER_IP_PER_DAY; i++) b.db.prepare('INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, ?)').run('someone-else', `none${i}`, ipHash('10.6.0.1'))
+  const capped = await start('10.6.0.1')
+  assert.deepEqual([capped.status, capped.error], [402, 'trial_exhausted'])
+  const open = await listed('pat@netcap.example', '10.6.0.1')
+  assert.equal(open.status, 202, JSON.stringify(open))
+  assert.equal(reserved(b.db, open.job_id!), 1)
+  // the free plan's monthly scans used
+  const c = account('robin@quota.example')
+  const now = Math.floor(Date.now() / 1000), limit = PLAN_LIMITS.free.scansPerMonth!
+  for (let i = 0; i < limit; i++) c.db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, 'b', 'i', 'l', 'done', ?)").run(`month${i}`, c.id, now)
+  const full = await start('10.7.0.1')
+  assert.deepEqual([full.status, full.error], [402, 'quota_exceeded'])
+  const lifted = await listed('robin@quota.example', '10.7.0.1')
+  assert.equal(lifted.status, 202, JSON.stringify(lifted))
+  assert.equal(reserved(c.db, lifted.job_id!), 1)
 })

@@ -58,12 +58,13 @@ const dayStartS = (now: Date) => Math.floor(Date.UTC(now.getUTCFullYear(), now.g
 
 // The decision, given the two counts; ipUsed is only read when the account is under its cap.
 // exempt (#1579, DAZL_TRIAL_QA_EXEMPT in lib/billing/trial-budget.ts): the operator's acceptance account has no per-account count to
-// run out of, so it is never refused account_cap and its counter always shows the full allowance; the per-network throttle still applies.
+// run out of and is not held to its network's scans per day, so it is never refused account_cap or ip_throttle and its counter always
+// shows the full allowance. Admission (the day's spending ceiling) still decides whether its scan runs.
 function trialDecision(used: number, ipUsed: () => number, exempt = false): TrialState {
-  if (!exempt && used >= TRIAL_SCANS_PER_ACCOUNT) return { funded: false, reason: 'account_cap', used, remaining: 0 }
-  const remaining = exempt ? TRIAL_SCANS_PER_ACCOUNT : TRIAL_SCANS_PER_ACCOUNT - used
-  if (ipUsed() >= TRIAL_SCANS_PER_IP_PER_DAY) return { funded: false, reason: 'ip_throttle', used, remaining }
-  return { funded: true, used, remaining }
+  if (exempt) return { funded: true, used, remaining: TRIAL_SCANS_PER_ACCOUNT }
+  if (used >= TRIAL_SCANS_PER_ACCOUNT) return { funded: false, reason: 'account_cap', used, remaining: 0 }
+  if (ipUsed() >= TRIAL_SCANS_PER_IP_PER_DAY) return { funded: false, reason: 'ip_throttle', used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
+  return { funded: true, used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
 }
 
 // The exempt check for the synchronous store handle: the account's address is read from the same store. No query while the switch is
@@ -87,7 +88,7 @@ export async function readTrialStatus(db: Db, tenantId: string, ip: string, now 
   if (!operatorKey(env)) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
   const used = Number((await db.get<{ n: number }>(TRIAL_USED_SQL, [tenantId]))!.n)
   const exempt = await trialQaExemptAccount(db, tenantId, env)
-  const ipUsed = used >= TRIAL_SCANS_PER_ACCOUNT && !exempt ? 0 : Number((await db.get<{ n: number }>(TRIAL_IP_SQL, [ipHash(ip || 'unknown'), dayStartS(now)]))!.n)
+  const ipUsed = used >= TRIAL_SCANS_PER_ACCOUNT || exempt ? 0 : Number((await db.get<{ n: number }>(TRIAL_IP_SQL, [ipHash(ip || 'unknown'), dayStartS(now)]))!.n)
   const state = trialDecision(used, () => ipUsed, exempt)
   if (exempt) return state
   // #1095: an account without Google has one free scan, not three; the counter says so (admission enforces it, lib/billing/trial-budget.ts)

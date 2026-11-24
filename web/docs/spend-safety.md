@@ -20,10 +20,27 @@ says what that code does. It is not a pricing page and makes no billing claim.
 | Per-run (per play) `max_usd` | the scan's `run_budget` | that scan job's LLM calls | hard dollars, saved on the job row per call |
 | Trial scan reserve | `DAZL_TRIAL_SCAN_RESERVE_USD` | a trial scan's LLM and TinyFish steps | hard dollars (lib/billing/trial-budget.ts) |
 | Trial account total, global daily | `DAZL_TRIAL_ACCOUNT_TOTAL_USD`, `DAZL_TRIAL_GLOBAL_DAILY_USD` | trial admission | hard dollars, checked at admission |
-| Acceptance account (#1579) | `DAZL_TRIAL_QA_EXEMPT`: exact account addresses, comma-separated, no wildcards; unset = nobody | a listed account's free scans and website reads | lifts ONLY the per-account trial limits (Google sign-in, with a confirmed address still required; one trial per company domain; scan attempts; account total; three website reads per 30 days). The global daily ceiling, the per-scan reserve, the per-network throttles and the reads-per-day ceiling still apply, so a day's trial spend is bounded exactly as before (lib/billing/trial-budget.ts `trialQaExempt`) |
+| Acceptance account (#1579) | `DAZL_TRIAL_QA_EXEMPT`: exact account addresses, comma-separated, no wildcards; unset = nobody | a listed account's free scans and website reads | lifts the limits that count one account or one network; the global daily ceiling still bounds the day's trial spend exactly as before. See "The acceptance account" below (lib/billing/trial-budget.ts `trialQaExempt`) |
 | TinyFish counts | `searchesPerScan`, per tenant per day, global per day, per minute (lib/search/tinyfish.ts) | every TinyFish search/fetch | **count caps, not dollars** (priced only for trial scans) |
 | Apollo / PDL counts | `MAX_LEADS = 5`, `MAX_CONTACTS = 5` per scan (lib/enrich/index.ts); 50 companies per commenter batch | BYOK enrichment, one pass | **count caps, not dollars** |
 | Workspace enrichment credits | **no default limit**; per-workspace explicit limit (Settings > Enrichment, `tenant_spend_pools` periods `cla|clp` + `d|m`), else an operator-wide `DAZL_APOLLO_CREDITS_DAY` / `_MONTH`, `DAZL_PDL_CREDITS_DAY` / `_MONTH`, else unset = only the per-scan caps bind (usage still counted) | every Apollo org lookup and PDL person search, any pass, job, retry, restart or instance | **credits (counts), not dollars**, shared store (`tenant_spend_pools`, periods `cad:`/`cam:`/`cpd:`/`cpm:`; lib/enrich/credit-pool.ts) |
+
+**The acceptance account (#1579).** `DAZL_TRIAL_QA_EXEMPT` lists exact account addresses (comma-separated, trimmed, lower case; an
+entry with a `*` or without an `@` is ignored; a `+tag` or dotted variant of a listed address is another account and is not exempt).
+Unset or empty, nothing changes for anyone. For a listed account:
+
+- Lifted: the Google sign-in requirement (`google_required`), one trial per company domain (`domain_used`), the three scan
+  attempts (`attempts_cap`, `account_cap`), the account's dollar total (`account_total_cap`), a password account's one-scan
+  allowance, the per-network scans per day (`ip_throttle`, answered `trial_exhausted`), the plan's monthly scan quota on
+  `POST /api/scan` (`quota_exceeded`), the account's three website reads per 30 days (`site_reads_used`), the per-network website
+  reads per day, and the website-read allowlist when it is not `public` (the account counts as on it).
+- Kept, for the listed account as for everyone: the global daily spending ceiling (`DAZL_TRIAL_GLOBAL_DAILY_USD`,
+  `global_daily_cap`), the deployment's website reads per day (`DAZL_TRIAL_SITE_READS_PER_DAY`), the per-scan reserve, the ledger
+  (every scan and read reserves and settles as before), `not_configured`, sign-in, and a confirmed address.
+
+Operator notes: to switch it off, set the variable to empty and deploy; deleting the line does nothing, because the live process
+environment is carried forward. The listed account's spend counts toward the global day like anyone's, so heavy testing can use up
+the day's free room for real users.
 
 Every account has a day and a month limit (#846/#847). An account the operator named in either `_USERS` list keeps the
 PooledGuard path below (the runner's guard and `ownerGuarded`); its other window is the deployment default. Every other

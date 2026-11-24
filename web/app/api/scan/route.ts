@@ -30,7 +30,7 @@ import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '@/lib/people/firs
 import { limits as tinyfishLimits, tinyfishEnabled } from '@/lib/search/tinyfish'
 import { connectorStatus } from '@/lib/connectors/store'
 import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
-import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal } from '@/lib/billing/trial-budget'
+import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal, trialQaExempt } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
 import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
@@ -199,7 +199,10 @@ export async function POST(req: NextRequest) {
   // the plan from the shared store (the Stripe webhook writes it there); the count from where this route writes scans
   const plan = await readPlan(await getDb(), user.tenantId)
   const q = planQuota(plan, scansThisMonth(db, user.tenantId))
-  if (!q.allowed) {
+  // #1579: the operator's acceptance account (DAZL_TRIAL_QA_EXEMPT, lib/billing/trial-budget.ts) is not stopped by the plan's monthly
+  // scan count. Only the founder acting in its own workspace (trialPrincipal); no lookup at all while the switch is unset.
+  const quotaLifted = !!(process.env.DAZL_TRIAL_QA_EXEMPT ?? '').trim() && trialQaExempt((principal ?? await trialPrincipal(await getDb(), user))?.email ?? '')
+  if (!q.allowed && !quotaLifted) {
     return NextResponse.json({ error: 'quota_exceeded', plan: q.plan, used: q.used, limit: q.limit }, { status: 402 })
   }
   // Refusals that run nothing (over budget, stale estimate) come BEFORE any trial reservation: a refused request must not consume a keyless trial attempt or budget.
@@ -263,7 +266,7 @@ export async function POST(req: NextRequest) {
       if ((nativeSearch || companyFirst) && pickVendor(db, user.tenantId) !== 'anthropic') { refused = nativeKeyRefusal(); throw new AdmissionRefused() }
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
-      if (!q2.allowed) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
+      if (!q2.allowed && !quotaLifted) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
       if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, runBudget)
       if (websiteApproval && !recordQueuedWebsiteApproval(db, websiteApproval, jid)) {
