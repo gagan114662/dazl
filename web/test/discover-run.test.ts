@@ -62,10 +62,24 @@ test('the people pass: shown leads keep their place ahead of leads in review, th
     discover: async () => first,
     enrich: async (leads, o) => { sent.push({ companies: leads.map(l => l.company), maxLeads: o.maxLeads }); return { leads: leads.map(l => ({ ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://x.example/team' })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 3, usd: 0.03 }, seen: [], enriched: leads.length } } })
   assert.equal(run.passes, 1, 'no room for a second search pass at this budget')
-  assert.deepEqual(sent, [{ companies: ['A Co', 'B Co', 'Review Co'], maxLeads: 6 }], 'shown first, then the lead in review; never the one whose proof is gone')
+  assert.deepEqual(sent, [{ companies: ['A Co', 'B Co', 'Review Co'], maxLeads: 4 }], 'shown first, then the lead in review; never the one whose proof is gone. US$0.20 is left of US$0.50, which pays for 4 leads at the worst case, fewer than the limit of 6')
   const by = (c: string) => run.leads.find(l => l.company === c)!
   assert.equal(by('Gone Co').proof, 'gone')
   assert.equal(by('Gone Co').person, null)
   assert.equal(by('Review Co').person, 'Pat Lee')
   assert.equal(by('A Co').person, 'Pat Lee')
+})
+
+// Review of PR #1690: a run that has spent its ceiling starts no people pass, and one with a little left takes only what that pays for.
+test('the people pass never starts past the run\'s ceiling, and takes no more leads than the money left pays for', async () => {
+  const sent: (number | undefined)[] = []
+  const enrich = async (leads: DiscoveredLead[], o: { maxLeads?: number }) => { sent.push(o.maxLeads); return { leads, usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0, usd: 0 }, seen: [], enriched: 0 } }
+  const five = ['A Co', 'B Co', 'C Co', 'D Co', 'E Co'].map(n => lead(n))
+  // the smallest free search: US$0.24 to spend, US$0.23 already spent by the search
+  await runDiscovery({ query: 'q' }, { maxUsd: 0.24, enrichLeads: 2 }, { apiKey: 'k', fetch: never, judge: null, discover: async () => result(five, 0.23), enrich })
+  assert.deepEqual(sent, [], 'one cent left pays for no lead: no pass, so the run cannot settle past its reservation')
+  await runDiscovery({ query: 'q' }, { maxUsd: 0.24, enrichLeads: 2 }, { apiKey: 'k', fetch: never, judge: null, discover: async () => result(five, 0.19), enrich })
+  assert.deepEqual(sent, [1], 'five cents left pays for one lead')
+  await runDiscovery({ query: 'q' }, { maxUsd: 1, enrichLeads: 6 }, { apiKey: 'k', fetch: never, judge: null, discover: async () => result(five, 0.3), enrich })
+  assert.deepEqual(sent, [1, 6], 'with room to spare the run\'s own limit applies')
 })

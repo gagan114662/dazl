@@ -17,6 +17,8 @@ export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
 // What the people pass has cost at most on the benchmark; a second search pass must leave room for it under the run's ceiling.
 const PEOPLE_PASS_USD = 0.15
+// The most one lead can cost in the people pass (lib/discover/enrich.ts): 4 web searches at US$0.01 each, plus the small model's tokens.
+const PEOPLE_LEAD_USD = 0.045
 
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
   const discover = deps.discover ?? discoverLeads, enrich = deps.enrich === undefined ? enrichLeads : deps.enrich
@@ -54,9 +56,13 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   let enriched = 0
   const wants = (l: CheckedLead) => l.proof !== 'gone' && needsEnrichment(l)
   const todo = [...leads.filter(l => isShown(l) && wants(l)), ...leads.filter(l => !isShown(l) && wants(l))]
-  if (enrich && todo.length && usage.usd < budget.maxUsd) {
+  // Review of PR #1690: the pass was only checked once against the run's ceiling, before it started, so a run that had spent nearly
+  // all of it could still start a full pass and settle past its reservation (now more likely, with leads in review included). The
+  // number of leads the pass may take is what the money left can pay for at a lead's worst case.
+  const maxLeads = Math.min(budget.enrichLeads ?? 12, Math.floor((budget.maxUsd - usage.usd + 1e-9) / PEOPLE_LEAD_USD))
+  if (enrich && todo.length && maxLeads > 0) {
     try {
-      const e = await enrich(todo, { offer: input.offer ?? null, maxLeads: budget.enrichLeads ?? 12 }, api)
+      const e = await enrich(todo, { offer: input.offer ?? null, maxLeads }, api)
       add(e.usage)
       enriched = e.enriched
       const byCompany = new Map(e.leads.map(l => [l.company, l]))
