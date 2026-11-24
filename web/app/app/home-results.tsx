@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import type { HomeResults } from '@/lib/outreach/home-results'
 import type { HomeReady } from '@/lib/outreach/home-ready'
-import { holdWords, homeWindowHeading, homeWindowScope } from '@/lib/outreach/hold-words'
+import { holdWords, homeWindowHeading, homeWindowScope, latestLeadsCount } from '@/lib/outreach/hold-words'
 import { signalLabel } from '@/lib/outreach/signal-label'
 
 const REPLY_WORD: Record<string, string> = { positive: 'Interested', negative: 'Not interested', other: 'Replied', opt_out: 'Opted out', uncertain: 'Replied' }
@@ -72,7 +72,7 @@ export default function HomeResultsPanel() {
       {t.replied === null && <p className="text-sm mt-3" role="status" data-testid="reading-off">Gmail reply reading is off, so replies to these emails are unknown, not zero. <Link className="underline" href="/app/settings#gmail">Turn it on in Settings</Link>.</p>}
       {empty ? <p className="text-sm mt-3" data-testid="results-empty">Nothing yet in the last {r.window_days} days. <Link className="underline" href="/app/leads">Run your first play</Link> to find leads.</p> : <>
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
-          <div className="card p-4"><h3 className="text-sm font-semibold mb-2">Latest leads <span className="font-normal text-[var(--ink-3)]" data-testid="new-leads">({t.leads} new)</span></h3>
+          <div className="card p-4"><h3 className="text-sm font-semibold mb-2">Latest leads <span className="font-normal text-[var(--ink-3)]" data-testid="new-leads">{latestLeadsCount(t.leads, ready)}</span></h3>
             {r.latest_leads.length === 0 ? <p className="text-sm text-[var(--ink-3)]">No new leads in this period.</p>
               : <ul className="space-y-1 text-sm" data-testid="latest-leads">{r.latest_leads.map(l => <li key={l.id} className="min-w-0"><Link className="underline break-words" href={`/app/leads?job_id=${l.job_id}`}>{l.company}</Link> <span className="text-[var(--ink-3)]">{day(l.created_at)}</span></li>)}</ul>}
           </div>

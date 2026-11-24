@@ -32,7 +32,7 @@ test('#1036 review lane: no block for a rejected lead, a non-company row, an uns
 
 test('#1036 the Leads page renders that block on every "Needs your review" row, with the same component as a decided lead', () => {
   const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
-  const lane = src.slice(src.indexOf('{leads.filter(l => l.review_reason).map(l => ('), src.indexOf('data-testid="review-actions"'))
+  const lane = src.slice(src.indexOf('<div key={l.id} className="p-4 text-sm" data-testid="review-row">'), src.indexOf('data-testid="review-actions"'))
   assert.match(lane, /reviewLaneWorkEmailTargets\(l, icp && icp\.icp\.who\.length > 0 \? icp\.icp\.who\.join\('; '\) : ''\)/)
   assert.match(lane, /data-testid="review-work-email"><WorkEmail leadId=\{l\.id\} initial=\{workEmailInitial\(l\.id\)\} targets=\{t\} \/>/)
 })

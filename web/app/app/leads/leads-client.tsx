@@ -12,7 +12,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, costPerShownLead, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
-import { emptyLeadsMessage, readyRepeats, repeatingSearchesCopy, scanCountTags, scoreLabel, quoteNote, visibleReadyLeads, type CurrentScanSplit } from '@/lib/scan/leads-view'
+import { emptyLeadsMessage, lastRunNewLabel, readyRepeats, repeatingSearchesCopy, reviewListSplit, scanCountTags, scoreLabel, quoteNote, visibleReadyLeads, type CurrentScanSplit } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
 import { companySearchEligible, findContactOffered } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, onlyNameOnly, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
@@ -873,6 +873,7 @@ export default function LeadsClient() {
   }, [splitFor])
   const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
   const visibleLeads = visibleReadyLeads(leads, showSeen)
+  const reviewSplit = reviewListSplit(leads)
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
   // currentView is set only by a successful GET /api/leads for this job: until then there is no per-lead line at all
   const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads, showSeen, leadsRead: currentView !== null })
@@ -1193,13 +1194,13 @@ export default function LeadsClient() {
           <p className="text-gray-500 text-xs mb-2">These searches re-run on their own (your first play every day, a search you chose to watch once a week) and only show leads you have not seen. On your own AI key they count toward your monthly scans.{repeatingSearchesCopy(!!jobId).scope && <span data-testid="repeating-scope"> {repeatingSearchesCopy(!!jobId).scope}</span>}</p>
           {watches.map(w => (
             <div key={w.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 border-t border-white/5 first:border-t-0">
-              <span className="text-gray-200 min-w-0 flex-1 truncate" title={w.query}>{w.query}</span>
+              <span className="text-[#111] min-w-0 flex-1 truncate" title={w.query} data-testid="watch-query">{w.query}</span>
               {!w.active && <span className="text-yellow-500 text-xs">{w.paused_reason === 'no_key' ? 'Paused - the scan service key is missing' : w.paused_reason === 'quota' ? 'Paused - monthly scans are used up' : 'Paused'}</span>}
               {w.active && <span className="text-gray-500 text-xs" data-testid="watch-cadence">{w.auto ? 'every day' : 'weekly'}</span>}
               {w.active && w.next_run_at && <span className="text-gray-500 text-xs">next run {new Date(w.next_run_at * 1000).toLocaleDateString()}</span>}
               {w.last_status === 'running' || w.last_status === 'pending' ? <span className="text-gray-500 text-xs">running now</span> : null}
-              {w.last_job_id && w.new_leads > 0 && <a className="underline text-[#111] text-xs" href={`/app/leads?job_id=${w.last_job_id}`}>{w.new_leads} new</a>}
-              {w.last_job_id && w.new_leads === 0 && w.last_status === 'done' && <a className="underline text-gray-500 text-xs" href={`/app/leads?job_id=${w.last_job_id}`}>last run: nothing new</a>}
+              {w.last_job_id && w.new_leads > 0 && <a className="underline text-[#111] text-xs" href={`/app/leads?job_id=${w.last_job_id}`} data-testid="watch-new">{lastRunNewLabel(w.new_leads)}</a>}
+              {w.last_job_id && w.new_leads === 0 && w.last_status === 'done' && <a className="underline text-gray-500 text-xs" href={`/app/leads?job_id=${w.last_job_id}`}>{lastRunNewLabel(0)}</a>}
               {w.active
                 ? <button className="text-gray-500 hover:text-white text-xs" onClick={() => void watchReq({ action: 'pause', id: w.id })}>Pause</button>
                 : <button className="text-gray-500 hover:text-white text-xs" onClick={() => void watchReq({ action: 'resume', id: w.id })}>Resume</button>}
@@ -1361,7 +1362,7 @@ export default function LeadsClient() {
                   <div className="flex items-start gap-3 min-w-0">
                   <Avatar name={c.company} size={40} />
                   <div className="min-w-0 break-words">
-                    <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
+                    <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
                     <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
                     {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
@@ -1406,7 +1407,7 @@ export default function LeadsClient() {
             {l.sequence && <p className="text-xs text-[#555] mb-2">Sequence: {l.sequence.status} / {l.sequence.step} steps sent{l.sequence.next_due_at ? ` / next due ${new Date(l.sequence.next_due_at * 1000).toLocaleString()}` : ''}{l.sequence.stop_reason ? ` (${l.sequence.stop_reason === 'policy_stop' ? 'stopped by policy' : l.sequence.stop_reason})` : ''}</p>}
             {!l.quarantined_at && <p className="text-xs mb-1"><button className="underline text-[#555]" onClick={() => quarantine(l.id)}>Quarantine (wrong company or contacts)</button></p>}
 <div className="font-medium">{l.company_domain ? <a className="underline decoration-white/30 hover:decoration-white" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{l.company || l.name}</a> : (l.company || l.name)} <span className="text-gray-500">{scoreLabel(l.score, l.fit, l.intent, l.source_kind)}</span>
-              {!!l.watch_new && <span className="ml-2 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span>}
+              {!!l.watch_new && <>{' '}<span className="ml-1 text-[10px] uppercase tracking-wide text-green-300 border border-green-300/30 px-1 py-0.5">new</span></>}
               {l.stage === 'booked_call' && <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-300 border border-blue-300/30 px-1 py-0.5">booked call</span>}
               {l.fit != null && <span className="ml-2 text-xs font-normal text-gray-300 border border-white/15 px-1.5 py-0.5">fit {l.fit}/5 · intent {l.intent ?? '?'}/5{l.timing ? (l.timing === 'proof_backed' ? ' (timing proof-backed)' : ' (timing unconfirmed)') : ''} · action {l.action ?? '?'}/5</span>}
               {l.fit != null && l.icp_match && (() => {
@@ -1578,18 +1579,19 @@ export default function LeadsClient() {
           {showHidden ? 'Hide hidden leads' : `Show ${hiddenCount} hidden lead${hiddenCount === 1 ? '' : 's'} (low fit or ungraded)`}
         </button>
       )}
-      {leads.some(l => l.review_reason) && (
-        <>
-          {/* #352: when no row's action can make a lead usable (every one is Keep as research), this is research, not a review task - the copy never asks the user to check or confirm. */}
-          {leads.some(l => l.review_reason && reviewAction(l).label !== 'Keep as research') ? <>
+      {/* The count line's own split (lib/scan/leads-view.ts reviewListSplit): a lead a check can still make usable is listed under "Needs your review",
+          every other lead with a reason under "Research only" (#352: that copy never asks the user to check or confirm). A heading shows only with its rows. */}
+      {([['review', reviewSplit.review], ['research', reviewSplit.research]] as const).map(([part, rows]) => rows.length > 0 && (
+        <div key={part} data-testid={`${part}-list`}>
+          {part === 'review' ? <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
-          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked. Rows with only &quot;Keep as research&quot; have no verified, dated event, are someone else&apos;s customer, name a different place or a closed opening: checking them does not make them ready.</p>
+          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked.</p>
           </> : <>
           <h2 className="text-sm font-semibold mt-8 mb-2" data-testid="research-heading">Research only</h2>
           <p className="text-gray-500 text-xs mb-3" data-testid="research-intro">dazl could not verify a current, dated event of their own for these leads (no usable date, older than your time window, someone else&apos;s customer, a different place or a closed opening), so they will not be emailed, and checking their sources does not make them ready. Where dazl already searched other sources automatically, each row says so. To change the result, search again with a different signal or source.</p>
           </>}
           <div className="card divide-y divide-white/5">
-            {leads.filter(l => l.review_reason).map(l => (
+            {rows.map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <ReviewCompanyWebsite lead={l} />
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
@@ -1623,8 +1625,8 @@ export default function LeadsClient() {
               </div>
             ))}
           </div>
-        </>
-      )}
+        </div>
+      ))}
 
       {(monitors.length > 0 || query.trim().length >= 3) && (
         <div className="mt-6" data-testid="monitors">
