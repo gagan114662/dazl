@@ -12,7 +12,7 @@ import { createMonitor, runDueMonitors } from '../lib/monitors.ts'
 import { FIRST_PLAY_WINDOW_S, REPEAT_INTERVAL_S, repeatFirstPlays, repeatIcp } from '../lib/play-repeat.ts'
 import { MAIL_LIST_MAX, MAIL_WINDOW_S, composePlayRunMail, oneLine, sendPlayRunMails } from '../lib/play-mail.ts'
 import { isFirstPlayRepeat, trialPauseReason } from '../lib/play-funding.ts'
-import { admitTrialScan } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, trialDay } from '../lib/billing/trial-budget.ts'
 import { NEW_LIMIT, playNew, runPlayNow, seenThrough } from '../lib/play-now.ts'
 import { runEnded, runNowMessage } from '../lib/play-new-view.ts'
 import { noteOf, savedPlays } from '../lib/saved-plays.ts'
@@ -231,7 +231,7 @@ bothEngines('#1042 with the trial off, or for a hand-made watch, a keyless run p
 bothEngines('#1042 the trial caps decide: 3 searches per account, then the repeat pauses as "free searches used up"; the day\'s ceiling only delays it', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a.example')
   // two earlier trial searches of the account (the first play's own and one more): this run is the third and last
-  for (let i = 0; i < 2; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), A, Math.floor((NOW - 2 * DAY) / 86400), NOW - 2 * DAY])
+  for (let i = 0; i < 2; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), A, trialDay(NOW - 2 * DAY), NOW - 2 * DAY])
   assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 1, paused: 0, skipped: 0 })
   // the next week: the account's 3 free searches are spent; the run pauses with a reason, nothing reserved, no job
   for (const j of (await jobsOf(db, A)).filter(x => x.status !== 'done')) { await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [j.id]); await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [due + 600, j.id]) }
@@ -243,7 +243,7 @@ bothEngines('#1042 the trial caps decide: 3 searches per account, then the repea
   assert.match(p.status.label, /free searches are used up/)
   // B: the global daily ceiling is full: no run, no pause, the play stays due for a later tick
   const wb = await autoRepeat(db, B, 'b@b.example')
-  for (let i = 0; i < 34; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), uid(String.fromCharCode(100 + (i % 5))) + i, Math.floor(due / 86400), due])
+  for (let i = 0; i < 34; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), uid(String.fromCharCode(100 + (i % 5))) + i, trialDay(due), due])
   assert.deepEqual(await runDueWatches(db, { now: due, env: TRIAL_ENV }), { ran: 0, paused: 0, skipped: 0 })
   const rb = (await watchesOf(db, B))[0]
   assert.deepEqual([rb.id, Number(rb.active)], [wb, 1])
@@ -301,7 +301,7 @@ bothEngines('#1042 Find leads now on the keyless first-play repeat uses the same
   assert.deepEqual(await runPlayNow(db, C, 'watch', wc, CLICK, NO_TRIAL), { error: 'no_api_key' })
   assert.equal(await num(db, 'SELECT count(*) AS n FROM trial_reservations WHERE tenant_id IN (?, ?)', [B, C]), 0)
   // free searches used up: refused with its own answer
-  for (let i = 0; i < 3; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), C, Math.floor(NOW / 86400), NOW])
+  for (let i = 0; i < 3; i++) await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)', [id24(), C, trialDay(NOW), NOW])
   assert.deepEqual(await runPlayNow(db, C, 'watch', wc, CLICK, TRIAL_ENV), { error: 'trial_used' })
   assert.match(runNowMessage(402, { error: 'trial_used' }).text, /free searches are used up/)
 })
