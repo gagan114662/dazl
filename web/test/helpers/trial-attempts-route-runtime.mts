@@ -168,3 +168,53 @@ test('#1579 a listed account starts a scan past its attempts, its network\'s dai
   assert.equal(lifted.status, 202, JSON.stringify(lifted))
   assert.equal(reserved(c.db, lifted.job_id!), 1)
 })
+
+// Real route writer, shared store and shared network: exempt QA traffic must not throttle an unrelated account.
+const sharedAccount = (db: Database.Database, email: string) => {
+  const id = `shared${++n}`.padEnd(32, '0')
+  db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'Acme', 'x', 'y')").run(id, email)
+  db.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
+  db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Acme', 'personal', ?, 1)").run(id, id)
+  setUser({ id, business_name: 'Acme', email } as never)
+  return id
+}
+
+test('#1579 exempt scans do not exhaust another account on the same network; account records and reservations remain', async () => {
+  const { db, id } = account('quest@tester.example')
+  const ip = '198.51.100.61'
+  process.env.DAZL_TRIAL_QA_EXEMPT = ' Quest@Tester.example '
+  try {
+    for (let i = 0; i < TRIAL_SCANS_PER_IP_PER_DAY; i++) {
+      const r = await start(ip)
+      assert.equal(r.status, 202, JSON.stringify(r))
+      await end(db, r.job_id!, 'failed', 'provider_error', 0.02)
+    }
+    const fresh = sharedAccount(db, 'new@ordinary.example')
+    const r = await start(ip)
+    assert.equal(r.status, 202, `QA scans must not throttle a different account on the shared network: ${JSON.stringify(r)}`)
+    assert.equal((db.prepare('SELECT count(*) AS n FROM trial_scans WHERE tenant_id = ?').get(id) as { n: number }).n, TRIAL_SCANS_PER_IP_PER_DAY)
+    assert.equal((db.prepare('SELECT count(*) AS n FROM trial_reservations WHERE tenant_id = ?').get(id) as { n: number }).n, TRIAL_SCANS_PER_IP_PER_DAY)
+    assert.equal((db.prepare('SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ?').get(ipHash(ip)) as { n: number }).n, 1, 'only the ordinary scan consumes the network allowance')
+    assert.equal((db.prepare('SELECT count(*) AS n FROM trial_scans WHERE tenant_id = ? AND ip_hash = ?').get(fresh, ipHash(ip)) as { n: number }).n, 1)
+  } finally { delete process.env.DAZL_TRIAL_QA_EXEMPT }
+})
+
+test('#1579 ordinary scans still throttle the shared network when exemption is unset, unlisted, or a plus alias', async () => {
+  for (const listed of ['', 'somebody@else.example', 'person@account.example']) {
+    const { db } = account('person+alias@account.example')
+    const ip = '198.51.100.62'
+    process.env.DAZL_TRIAL_QA_EXEMPT = listed
+    try {
+      for (let i = 0; i < TRIAL_SCANS_PER_IP_PER_DAY; i++) {
+        if (i > 0) sharedAccount(db, `person@ordinary-${i}.example`)
+        const r = await start(ip)
+        assert.equal(r.status, 202, JSON.stringify(r))
+        await end(db, r.job_id!, 'failed', 'provider_error', 0.02)
+      }
+      sharedAccount(db, 'new@ordinary-fresh.example')
+      const r = await start(ip)
+      assert.deepEqual([r.status, r.error], [402, 'trial_exhausted'], `ordinary network ceiling remains for list ${listed}`)
+      assert.equal((db.prepare('SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ?').get(ipHash(ip)) as { n: number }).n, TRIAL_SCANS_PER_IP_PER_DAY)
+    } finally { delete process.env.DAZL_TRIAL_QA_EXEMPT }
+  }
+})

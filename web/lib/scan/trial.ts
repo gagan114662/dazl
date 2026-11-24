@@ -97,6 +97,9 @@ export async function readTrialStatus(db: Db, tenantId: string, ip: string, now 
   return used < allowance ? { ...state, remaining: Math.min(state.remaining, allowance - used) } : state
 }
 
-export function recordTrialScan(db: Database.Database, tenantId: string, jobId: string, ip: string): void {
-  db.prepare('INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, ?)').run(tenantId, jobId, ipHash(ip || 'unknown'))
+export function recordTrialScan(db: Database.Database, tenantId: string, jobId: string, ip: string, env: NodeJS.ProcessEnv = process.env): void {
+  // The acceptance account keeps its attempt and spend records, but never consumes another account's network allowance.
+  // An empty marker cannot match ipHash (a SHA-256 hex string); ordinary scans retain their real network hash.
+  const networkHash = qaExemptSync(db, tenantId, env) ? '' : ipHash(ip || 'unknown')
+  db.prepare('INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, ?)').run(tenantId, jobId, networkHash)
 }
