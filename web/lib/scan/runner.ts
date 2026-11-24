@@ -3,6 +3,7 @@ import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { discoverLeads, discoverProfileCarried } from '../discover/agent.ts'
 import { isShown, type CheckedLead } from '../discover/check.ts'
+import { QUALIFIER_REASON } from '../discover/qualifiers.ts'
 import { enrichLeads } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
 import { enqueuePostEngagement } from '../linkedin-tasks/engagers.ts'
@@ -1513,7 +1514,8 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const shown = live.filter(isShown), unconfirmed = live.filter(l => !isShown(l))
   const out: VerifyOutcome = {
     leads: shown.map(l => discoveredLead(l, now)),
-    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required' })),
+    // a lead held only because its page does not support something the request asks for carries the reason that names it
+    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: l.request_lacks.length ? QUALIFIER_REASON[l.request_lacks[0]] : 'source_review_required' })),
     dropped: gone.length ? { page_not_found: gone.length } : {},   // the Leads page's words for it: "page no longer exists"
   }
   // #1579: the lane's own account goes into the saved run report, so a search that returns nothing says why (which budget it ran

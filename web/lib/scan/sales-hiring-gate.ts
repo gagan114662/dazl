@@ -183,27 +183,13 @@ interface JobLike { id: string; user_id: string; query?: string | null; icp?: st
 // When the request asks for FUNDING, only a funding mention counts (an office opening is not a raise); otherwise any event beyond hiring does.
 // Event half. The sentence must be about THIS company (case-insensitive subject check), must affirm the event (not "did not raise", "plans to raise", "in talks"),
 // and, when the request names a funding STAGE, must be that stage ("Series A" never answers a seed request, "seed" never a Series A request).
-export type Stage = 'seed' | `series ${string}` | null
-// #1201 (Refs #1095): the stage and the funding ask are REQUIREMENTS, so they are read from the user's own words only. The model's profile
-// signals are matching / scoring vocabulary: a model "Series A" never overrides a user "Series B", and a seed signal the user never asked for
-// adds no funding gate. `icp` stays in the signature so callers keep compiling; it is deliberately not read here.
-export function requestedStage(query: string | null | undefined, _icp?: string | null): Stage {
-  void _icp
-  const t = query ?? ''
-  const series = /\bseries\s+([a-e])\b/i.exec(t)
-  if (/\bseed\b/i.test(t) && !series) return 'seed'
-  return series ? `series ${series[1].toLowerCase()}` : /\bseed\b/i.test(t) ? 'seed' : null
-}
+// The stage a request names and the stage a sentence states live in ./funding-stage.ts (pure), shared with the discovery lane's proof check.
+import { requestedStage, stageOk, type Stage } from './funding-stage.ts'
+export { requestedStage, stageOk }
+export type { Stage }
 const RAISE_VERB = /\b(?:rais(?:ed|es)|clos(?:ed|es)|secur(?:ed|es)|announc(?:ed|es)|land(?:ed|s)|complet(?:ed|es)|bagg?(?:ed|s)|receiv(?:ed|es)|won|gets|got|backed|funded|seed-funded|unveil(?:ed|s))\b/i
 const FUNDING_NEG = /\b(?:not|no|never|didn'?t|hasn'?t|haven'?t|wasn'?t|without|failed\s+to|unable\s+to|yet\s+to|den(?:y|ies|ied)|reject\w*|refut\w+|cancel\w*|withdr\w+|collaps\w+|fell\s+through|ruled?\s+out|untrue|false)\b/i
 const FUNDING_HYPO = /\b(?:(?:plans?|planned|planning|intends?|intending|intentions?|aims?|aiming|proposes?|proposed|considering|exploring|mulling|weighing|preparing|prepares?|prepared)\s+(?:for\s+|to\s+|of\s+|on\s+)?(?:(?:a|an|its|the|new|first|another|additional)\s+)*(?:\S+\s+){0,4}?(?:raise|raising|close|closing|secure|securing|round|seed|series|funding|financing|fundrais\w+|investment)|(?:to|will|shall|would|set\s+to|about\s+to|poised\s+to|slated\s+to|due\s+to|preparing\s+to|expected\s+to|likely\s+to|ready\s+to|going\s+to)\s+(?:raise|close|secure|announce|complete|finali[sz]e|land)|raising|closing|securing|finali[sz]\w+|negotiat\w+|pursuing|targeting|nearing|ongoing|in\s+the\s+process|open\s+round|if|unless|would|could|may|might|plans?\s+to|planning\s+to|hopes?\s+to|aims?\s+to|intends?\s+to|looking\s+to|seeking\s+to|in\s+talks|expects?\s+to|expected\s+to|reportedly|rumou?r\w*|allegedly)\b/i
-export function stageOk(clause: string, stage: Stage): boolean {
-  if (!stage) return true
-  const series = /\bseries\s+([a-z])\b|\b(?:growth|bridge)\s+(?:round|equity)\b/i.exec(clause)
-  if (stage === 'seed') return /\b(?:pre-?)?seed\b/i.test(clause) && !series
-  const letter = stage.slice(7)
-  return new RegExp(`\\bseries\\s+${letter}\\b`, 'i').test(clause) && !/\bseed\b/i.test(clause)
-}
 export const quoteShowsEvent = (excerpt: string | null, signal: string | null, fundingAsked = false, company?: string | null, stage: Stage = null): boolean => { void signal
   return clauses(excerpt ?? '').some(c => {
     if (!fundingAsked) { const i = c.search(/\b(?:open|launch|expan|announc)/i); return showsEventBeyondHiring(c) && !subjectIsOther(c.slice(0, Math.max(0, i)), company) }

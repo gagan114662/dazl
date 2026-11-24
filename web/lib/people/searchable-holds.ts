@@ -5,7 +5,9 @@
 // any reason not listed here (fail closed). trial_budget_reached is NOT listed: a free scan stopped by its budget can hold raw candidates
 // whose company was never checked under that reason (runner.ts finishTrialBudget), next to source-checked ones (holdTrialBudget).
 // Pure (no data layer): the Leads page uses the same rule to decide whether a held row shows a person line.
-export const SEARCHABLE_HOLDS: readonly string[] = ['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'outside_window', 'outside_window_undated', 'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date', 'no_event_evidence', 'no_sales_hiring_evidence', 'sales_hiring_check_failed', 'source_review_required', 'job_closed', 'research_unverified']
+export const SEARCHABLE_HOLDS: readonly string[] = ['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'outside_window', 'outside_window_undated', 'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_stale', 'event_date_future_date', 'no_event_evidence', 'no_sales_hiring_evidence', 'sales_hiring_check_failed', 'source_review_required', 'job_closed', 'research_unverified',
+  // the discovery lane's holds for something the request asks for that the proof page does not support: the company is still the named one
+  'request_role_unconfirmed', 'request_first_unconfirmed', 'request_stage_unconfirmed', 'request_window_unconfirmed']
 export const peopleSearchable = (reviewReason: string | null | undefined): boolean => reviewReason === null || reviewReason === undefined || SEARCHABLE_HOLDS.includes(reviewReason)
 // How many searches the pass could use on these rows: distinct companies among the rows it will read (a company name, not graded out
 // of the list (fit 0-1), ready or held under a searchable hold). The runner reserves a free-trial scan's searches from this count

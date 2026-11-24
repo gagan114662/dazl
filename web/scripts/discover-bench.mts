@@ -33,7 +33,7 @@ const privDir = opt('private-out')
 if (privDir) mkdirSync(path.resolve(privDir), { recursive: true })
 const privFile = privDir ? path.join(path.resolve(privDir), `${runStamp}.json`) : null
 
-interface Row { id: string; status: string; leads: number; shown: number; datedProof: number; printedDate: number; domain: number; named: number; email: number; dated: number; usd: number; secs: number; model: string; note: string }
+interface Row { id: string; status: string; leads: number; shown: number; requestHeld: number; datedProof: number; printedDate: number; domain: number; named: number; email: number; dated: number; usd: number; secs: number; model: string; note: string }
 const rows: Row[] = [], priv: Record<string, unknown> = {}
 for (const c of cases) {
   const t0 = Date.now()
@@ -42,14 +42,14 @@ for (const c of cases) {
     const leads = run.leads
     const r = { stop: run.stop, model: run.model, note: run.note, usage: { usd: run.usd, searches: run.searches, requests: run.requests, passes: run.passes, enriched: run.enriched } }
     const s = leads.filter(isShown)
-    rows.push({ id: c.id, status: r.stop, leads: leads.length, shown: s.length, datedProof: s.filter(l => l.date).length, printedDate: s.filter(l => l.date_source === 'page').length, domain: pct(s.filter(l => l.domain).length, s.length), named: pct(s.filter(l => l.person).length, s.length), email: pct(s.filter(l => l.email).length, s.length), dated: pct(s.filter(l => l.date).length, s.length), usd: r.usage.usd, secs: Math.round((Date.now() - t0) / 1000), model: r.model, note: r.note ?? '' })
+    rows.push({ id: c.id, status: r.stop, leads: leads.length, shown: s.length, requestHeld: leads.filter(l => l.request_lacks.length > 0).length, datedProof: s.filter(l => l.date).length, printedDate: s.filter(l => l.date_source === 'page').length, domain: pct(s.filter(l => l.domain).length, s.length), named: pct(s.filter(l => l.person).length, s.length), email: pct(s.filter(l => l.email).length, s.length), dated: pct(s.filter(l => l.date).length, s.length), usd: r.usage.usd, secs: Math.round((Date.now() - t0) / 1000), model: r.model, note: r.note ?? '' })
     priv[c.id] = { usage: r.usage, note: r.note, leads }
     if (privFile) writeFileSync(privFile, JSON.stringify(priv, null, 2))
   } catch (e) {
-    rows.push({ id: c.id, status: `error: ${String((e as Error)?.message ?? e).slice(0, 80)}`, leads: 0, shown: 0, datedProof: 0, printedDate: 0, domain: 0, named: 0, email: 0, dated: 0, usd: 0, secs: Math.round((Date.now() - t0) / 1000), model: '-', note: '' })
+    rows.push({ id: c.id, status: `error: ${String((e as Error)?.message ?? e).slice(0, 80)}`, leads: 0, shown: 0, requestHeld: 0, datedProof: 0, printedDate: 0, domain: 0, named: 0, email: 0, dated: 0, usd: 0, secs: Math.round((Date.now() - t0) / 1000), model: '-', note: '' })
   }
   const x = rows[rows.length - 1]
-  console.error(`${x.id}: ${x.status} leads=${x.leads} shown=${x.shown} dated_proof=${x.datedProof} named=${x.named}% usd=${x.usd.toFixed(3)} (${x.secs}s)`)
+  console.error(`${x.id}: ${x.status} leads=${x.leads} shown=${x.shown} held_for_request=${x.requestHeld} dated_proof=${x.datedProof} named=${x.named}% usd=${x.usd.toFixed(3)} (${x.secs}s)`)
 }
 
 const cols = ['prompt', 'status', 'leads', 'shown', 'dated proof', 'date on page', 'domain%', 'named%', 'email%', 'dated%', 'usd', 'secs']

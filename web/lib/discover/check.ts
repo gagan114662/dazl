@@ -1,6 +1,7 @@
 // Reads a lead's proof page ourselves and labels the lead. It never hides one (launch brief, Step 3): a page we could not
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
 import type { DiscoveredLead, SeenPage } from './agent.ts'
+import { hasQualifiers, inQualifierOrder, pageQualifiers, qualifierEvidence, qualifierRequirement, type QualifierKind, type RequestQualifiers } from './qualifiers.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -10,7 +11,7 @@ import type { DiscoveredLead, SeenPage } from './agent.ts'
 export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen' | 'gone'
 // date: the day shown for the signal. date_source says where it came from: 'page' = Claude read it on the proof page (date_on_page says whether
 // dazl also found it in the page text); 'index' = the proof page prints no date, so this is the day the search index dates the page itself.
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; signal_by?: 'claude' }
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; request_lacks: QualifierKind[]; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; signal_by?: 'claude' }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
 //   - a page whose text was read: the words the run quoted as evidence are in that text, and in one place where they stand the page's
@@ -21,7 +22,12 @@ export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_r
 // A date is never support. The day the search index gives a page, and a day-of-month number found somewhere on a page, only label
 // the lead (date, date_source, date_on_page): a recently indexed directory profile, or a company page that happens to print the
 // year and a number, says nothing about the signal (#1571, review of #1575). Such a lead goes to the user's review.
-export const isShown = (l: CheckedLead): boolean => (l.proof === 'confirmed' || l.proof === 'listed') && l.signal_seen
+// request_lacks: what the REQUEST asks for beyond the event (its role, a first hire, a funding stage, a time window) that the proof
+// does not support (qualify() below, lib/discover/qualifiers.ts). Production, 2026-11-24: "SaaS startups hiring their first
+// salesperson" listed six leads as confirmed and one met the request; the signal line was on each page, the qualifier was not. Such
+// a lead goes to the user's review under a reason that names the qualifier. Empty when the request has none or no request was given.
+const signalShown = (l: CheckedLead): boolean => (l.proof === 'confirmed' || l.proof === 'listed') && l.signal_seen
+export const isShown = (l: CheckedLead): boolean => signalShown(l) && l.request_lacks.length === 0
 
 // A page stores punctuation and accented letters as entities ("it&#x27;s", "caf&eacute;"); a person reads the character, and so does a quote
 // taken from the page. Decoded after the tags are gone and in one pass, so escaped markup stays text. An accented letter becomes its plain
@@ -183,7 +189,7 @@ export function relativeDay(body: string, now: Date): string | null {
   return d > 365 ? null : new Date(now.getTime() - d * 86_400_000).toISOString().slice(0, 10)
 }
 function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_age: string | null, now: Date): CheckedLead {
-  if (pageIsGone(body)) return { ...lead, ...dated(lead, page_age, now), proof: 'gone', proof_read_by: by, page_age, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
+  if (pageIsGone(body)) return { ...lead, ...dated(lead, page_age, now), proof: 'gone', proof_read_by: by, page_age, quote_on_page: false, signal_seen: false, claim_lacks: [], request_lacks: [], date_on_page: false }
   // A read page supports the signal when the quoted evidence is on it and, in ONE place where it stands, the page's own statements
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
@@ -191,7 +197,7 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   // the page's own printed age beats the search index's day, when the run gave no date (staging: 'Posted 4d ago' read as no date)
   const rel = lead.signal_date ? null : relativeDay(body, now)
   return { ...lead, ...(rel ? { date: rel, date_source: 'page' as const } : dated(lead, page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
-    quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: dayOnPage(lead.signal_date, body) }
+    quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, request_lacks: [], date_on_page: dayOnPage(lead.signal_date, body) }
 }
 
 // The quote is on the page, the page names the company, and the words alone did not settle it: Claude says whether the quoted text states
@@ -200,6 +206,29 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
   if (!ask || c.proof !== 'confirmed' || !c.quote_on_page || c.signal_seen) return c
   const said = quoteStatements(c.evidence_quote, body).slice(0, 4).map(s => s.slice(0, 600))
   try { return (await ask(c.signal, c.company, said)) ? { ...c, signal_seen: true, signal_by: 'claude' } : { ...c, signal_by: 'claude' } } catch { return c }
+}
+// The request's qualifiers against the proof, for a lead that would otherwise be shown (one bound for review anyway costs nothing).
+// A read page: words first (pageQualifiers). Role and first hire that the words leave open go to the small model in ONE call, and
+// only when nothing else already holds the lead. No asker, a call that fails or a reply that cannot be read leaves them unsupported:
+// the lead goes to the user's review, never to the confirmed list. A page nobody could read (`body` null): the search result's
+// title is all there is, so words alone decide and nothing is asked.
+export type AskQualifiers = (company: string, requirements: string[], statements: string[]) => Promise<boolean[]>
+export interface RequestCheck { q: RequestQualifiers; ask?: AskQualifiers }
+async function qualify(c: CheckedLead, body: string | null, title: string, request: RequestCheck | undefined, now: Date): Promise<CheckedLead> {
+  if (!request || !hasQualifiers(request.q) || !signalShown(c)) return c
+  const q = request.q
+  const page = body === null ? [title] : statements(body), quoted = body === null ? [title] : quoteStatements(c.evidence_quote, body)
+  const { unsupported, open } = pageQualifiers(q, c, page, quoted, now)
+  // something already holds a read page's lead: the open questions are not worth a call, and are not claimed as unsupported either
+  if (!open.length || (unsupported.length && body !== null)) return { ...c, request_lacks: inQualifierOrder(unsupported) }
+  let lacks: QualifierKind[] = open
+  if (body !== null && request.ask) {
+    try {
+      const said = await request.ask(c.company, open.map(k => qualifierRequirement(k, q)), qualifierEvidence(q, page, quoted))
+      lacks = open.filter((_, i) => said[i] !== true)
+    } catch { /* unanswered: they stay unsupported */ }
+  }
+  return { ...c, request_lacks: inQualifierOrder([...unsupported, ...lacks]) }
 }
 // The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
 // tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
@@ -272,33 +301,33 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }
-export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal): Promise<CheckedLead> {
+export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal, request?: RequestCheck): Promise<CheckedLead> {
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
-  if (hit?.text) return fromPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
+  if (hit?.text) return qualify(await fromPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now), hit.text, '', request, now)
   // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
-      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
+      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return qualify(await fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now), body, '', request, now) }
       // dazl asked and the address is gone: a search result's title does not bring it back
-      if (r.status === 404 || r.status === 410) return { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
+      if (r.status === 404 || r.status === 410) return { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], request_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
   const base = { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
   // An unread search result supports the signal when its own title states the signal line.
   const listed = !!hit && companyOnPage(lead.company, hit.title ?? ''), title = listed ? hit!.title ?? '' : ''
-  return { ...base, proof: listed ? 'listed' : 'unseen', signal_seen: listed && statesSignal(lead.signal, lead.company, title), claim_lacks: signalWordsIn(lead.signal, lead.company, title).missing }
+  return qualify({ ...base, proof: listed ? 'listed' : 'unseen', signal_seen: listed && statesSignal(lead.signal, lead.company, title), claim_lacks: signalWordsIn(lead.signal, lead.company, title).missing, request_lacks: [] }, null, title, request, now)
 }
 
-export async function checkLeads(leads: DiscoveredLead[], seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, concurrency = 4, ask?: AskSignal): Promise<CheckedLead[]> {
+export async function checkLeads(leads: DiscoveredLead[], seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, concurrency = 4, ask?: AskSignal, request?: RequestCheck): Promise<CheckedLead[]> {
   const out: CheckedLead[] = new Array(leads.length)
   let next = 0
   await Promise.all(Array.from({ length: Math.min(concurrency, leads.length) }, async () => {
-    for (let i = next++; i < leads.length; i = next++) out[i] = await checkLead(leads[i], seen, fetchImpl, undefined, undefined, ask)
+    for (let i = next++; i < leads.length; i = next++) out[i] = await checkLead(leads[i], seen, fetchImpl, undefined, undefined, ask, request)
   }))
   return out
 }

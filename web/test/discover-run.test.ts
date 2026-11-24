@@ -3,6 +3,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { runDiscovery } from '../lib/discover/run.ts'
 import type { DiscoverResult, DiscoveredLead } from '../lib/discover/agent.ts'
+import { isShown } from '../lib/discover/check.ts'
+import type { SignalJudge } from '../lib/discover/entail.ts'
 
 const lead = (company: string, o: Partial<DiscoveredLead> = {}): DiscoveredLead => ({ company, domain: null, signal: 'opening a new site', signal_date: '2026-10-14', evidence_url: `https://news.example/${company.toLowerCase().replace(/\W+/g, '-')}`, evidence_quote: `${company} said it is opening a new site`, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '', ...o })
 const result = (leads: DiscoveredLead[], usd: number, unseen: string[] = []): DiscoverResult => ({ leads, seen: leads.filter(l => !unseen.includes(l.company)).map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `On 14 October 2026 ${l.company} said it is opening a new site.` })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 1, usd }, stop: 'end_turn', model: 'm', note: null })
@@ -82,4 +84,30 @@ test('the people pass never starts past the run\'s ceiling, and takes no more le
   assert.deepEqual(sent, [1], 'five cents left pays for one lead')
   await runDiscovery({ query: 'q' }, { maxUsd: 1, enrichLeads: 6 }, { apiKey: 'k', fetch: never, judge: null, discover: async () => result(five, 0.3), enrich })
   assert.deepEqual(sent, [1, 6], 'with room to spare the run\'s own limit applies')
+})
+
+// Refs #1037, #1400. Production, 2026-11-24: "SaaS startups hiring their first salesperson" listed six leads as confirmed and one met
+// the request. The run now holds each lead's proof page to what the request asks for. Words settle it where they can; what they
+// leave open costs one small-model call for that lead, on the run's own judge, so the cost is in the run's total.
+test('a request with a qualifier: at most one qualifier call a lead, none where words settle it or the lead is not shown, and the cost is in the run', async () => {
+  const hiring = (company: string, sentence: string): DiscoveredLead => lead(company, { signal: 'Hiring an Account Executive', evidence_quote: `${company} ${sentence}` })
+  const leads = [hiring('A Co', 'is hiring its first Account Executive'), hiring('B Co', 'is hiring an Account Executive to join our sales team'), hiring('C Co', 'is hiring an Account Executive to grow the team'), hiring('Ghost Co', 'is hiring its first Account Executive')]
+  const first: DiscoverResult = { leads, seen: leads.filter(l => l.company !== 'Ghost Co').map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `On 14 October 2026 ${l.evidence_quote}.` })),
+    usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 1, usd: 0.3 }, stop: 'end_turn', model: 'm', note: null }
+  const asked: { company: string; requirements: string[] }[] = []
+  const usage = { requests: 0, usd: 0 }
+  const judge: SignalJudge = { usage, ask: async () => { throw new Error('the signal question is not needed here: every word of the signal line is on the page') },
+    askQualifiers: async (company, requirements) => { asked.push({ company, requirements }); usage.requests++; usage.usd = Math.round((usage.usd + 0.0005) * 10000) / 10000; return requirements.map(() => company === 'C Co') } }
+  const run = await runDiscovery({ query: 'SaaS startups hiring their first salesperson' }, { maxUsd: 1, wantShown: 2 }, { apiKey: 'k', fetch: never, discover: async () => first, enrich: null, judge })
+  const by = (c: string) => run.leads.find(l => l.company === c)!
+  assert.deepEqual(asked.map(a => [a.company, a.requirements.length]).sort(), [['B Co', 1], ['C Co', 1]], 'one call each for the two leads whose page does not say it in words; none for A Co (words) or Ghost Co (not shown anyway)')
+  assert.deepEqual([by('A Co').request_lacks, isShown(by('A Co'))], [[], true], 'the page says "first": confirmed by words')
+  assert.deepEqual([by('B Co').request_lacks, isShown(by('B Co'))], [['first'], false], 'the model says the page does not show a first hire: the person\'s review')
+  assert.deepEqual([by('C Co').request_lacks, isShown(by('C Co'))], [[], true], 'the model says it does')
+  assert.deepEqual([by('Ghost Co').proof, by('Ghost Co').request_lacks, isShown(by('Ghost Co'))], ['unseen', [], false], 'a lead already bound for review keeps its outcome')
+  assert.deepEqual([run.passes, run.requests, run.usd], [1, 3, 0.301], 'two shown is what was wanted: no second pass; the two calls are in the run\'s requests and cost')
+  // the same leads under a request with no qualifier: nothing is asked and all three read pages are shown, as before this check
+  asked.length = 0
+  const plain = await runDiscovery({ query: 'q' }, { maxUsd: 1, wantShown: 2 }, { apiKey: 'k', fetch: never, discover: async () => first, enrich: null, judge })
+  assert.deepEqual([asked.length, plain.leads.filter(isShown).map(l => l.company)], [0, ['A Co', 'B Co', 'C Co']])
 })

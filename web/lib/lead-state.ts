@@ -17,6 +17,8 @@ export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed
 //   - dazl could not read or check the page: quote_unconfirmed, blocked_by_site, needs_javascript, login_required, location_unconfirmed;
 //   - the evidence a person can affirm by reading the source: no_event_evidence, no_sales_hiring_evidence, source_review_required, self_description,
 //     trial_budget_reached (found before a free scan's checks ran out), legacy_currentness_review;
+//   - what the request asks for beyond the event, which the discovery lane did not find supported on the proof page and a person can read there
+//     (lib/discover/qualifiers.ts): request_role_unconfirmed, request_first_unconfirmed, request_stage_unconfirmed, request_window_unconfirmed;
 //   - a date a person can vouch for ("I checked the date - use it"): event_timing_unconfirmed, event_date_bad_date, event_date_future_date, event_date_stale;
 //   - research_unverified (written by the research engine, deleted in #1393; kept so rows it wrote still read right): the event's quote is literally on the cited page and the
 //     second model supported it, and the place and category passed the gate; what is not proven is the day on that page or a named decision-maker,
@@ -25,6 +27,7 @@ export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed
 export const REVIEWABLE: ReadonlySet<string> = new Set(['quote_unconfirmed', 'blocked_by_site', 'needs_javascript', 'login_required', 'location_unconfirmed',
   'no_event_evidence', 'no_sales_hiring_evidence', 'source_review_required', 'self_description', 'trial_budget_reached', 'legacy_currentness_review',
   'event_timing_unconfirmed', 'event_date_bad_date', 'event_date_future_date', 'event_date_stale', 'research_unverified',
+  'request_role_unconfirmed', 'request_first_unconfirmed', 'request_stage_unconfirmed', 'request_window_unconfirmed',
   'first_party_signal']) // #390: the tenant's own signed, consented event; the owner reviews it like any held lead (other gates still apply)
 // A REQUIRED check that could not run (lib/scan/held-state.ts requiredGateHeld): no confirmation clears it, only the check running again and passing.
 export const REQUIRED_GATE_REASONS: ReadonlySet<string> = new Set(['sales_hiring_check_failed'])

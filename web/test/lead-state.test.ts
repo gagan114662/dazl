@@ -7,6 +7,8 @@ import { readFileSync } from 'node:fs'
 import { reviewAction } from '../lib/scan/review-action.ts'
 import { REVIEWABLE, RESEARCH_REASONS, uncheckableCause } from '../lib/lead-state.ts'
 import { peopleSearchable } from '../lib/people/searchable-holds.ts'
+import { QUALIFIER_REASON } from '../lib/discover/qualifiers.ts'
+import { discoverState } from '../lib/discover/card.ts'
 import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 // Synthetic leads shaped like the two reported failures: an undated customer-mention and a blocked, undated page.
@@ -105,12 +107,33 @@ test('#352 inventory: every reason the Leads view labels is classified exactly o
 // #1267 review (Hermes-PC): the inventory above iterates the Leads view's LABELS, so a reason the code writes that has no label is invisible to it
 // (research_unverified shipped that way: "Not verified" on the card, never reviewable on Home, no person line). This one starts from the reasons
 // the code can WRITE. Add a new engine's reason here, and it must have a label, exactly one class, and a decision on the people pass.
-const WRITTEN_REASONS: Record<string, string> = { research_unverified: 'research_unverified' }   // written by the deleted research engine (#1393); old rows can still carry it
+const WRITTEN_REASONS: Record<string, string> = { research_unverified: 'research_unverified',   // written by the deleted research engine (#1393); old rows can still carry it
+  // written by the discovery lane (lib/scan/runner.ts runDiscoverLane) for a lead whose proof page does not support a qualifier of the request
+  ...QUALIFIER_REASON }
 test('#1267 every review reason the code writes has a Leads label, exactly one class, and a decision on the people pass', () => {
   for (const [what, r] of Object.entries(WRITTEN_REASONS)) {
     assert.ok(REVIEW_LABEL_KEYS.includes(r), `${what}: "${r}" has no label in the Leads view (the card would say only "Not verified")`)
     assert.equal(Number(REVIEWABLE.has(r)) + Number(RESEARCH_REASONS.has(r)), 1, `${what}: "${r}" must be in exactly one of REVIEWABLE / RESEARCH_REASONS`)
     assert.equal(peopleSearchable(r), true, `${what}: decide the people pass for "${r}"`)
+  }
+})
+
+// Refs #1037, #1400: a discovery lead whose proof page does not support something the request asks for (its role, a first hire, a
+// funding stage, a time window) is held under a reason that names it. Each is the person's to check: review, never research, and the
+// card says which qualifier in plain words and to check the source.
+test('a discovery lead held for a qualifier of the request is in review, and its label names the qualifier', () => {
+  const src = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  const label = (r: string) => new RegExp(`\\b${r}: '((?:[^'\\\\]|\\\\.)*)'`).exec(src)?.[1] ?? ''
+  const names: Record<keyof typeof QUALIFIER_REASON, RegExp> = { role: /\brole\b/, first: /\bfirst hire\b/, stage: /\bfunding stage\b/, window: /\btime window\b/ }
+  for (const [kind, reason] of Object.entries(QUALIFIER_REASON) as [keyof typeof QUALIFIER_REASON, string][]) {
+    assert.match(reason, /^request_[a-z]+_unconfirmed$/)
+    assert.match(label(reason), names[kind], `${reason}: the label names the qualifier`)
+    assert.match(label(reason), /check the source/, `${reason}: the label says what to do`)
+    assert.match(label(reason), /your request/, `${reason}: the label says the request asks for it`)
+    const held = { source_kind: 'discover', review_reason: reason, event_date: '2026-11-02', fit: 4, intent: 4, company_domain: 'brightloop.example', name: 'Dana Ruiz', enrichments: [] }
+    assert.equal(discoverState(held), 'review', `${reason}: the person can check it, so it is review`)
+    assert.equal(discoverState({ ...held, review_reason: null }) === 'review', false, 'the same lead with no hold is not in review')
+    assert.equal(reviewAction({ review_reason: reason, event_date: '2026-11-02' }, new Date('2026-11-10T12:00:00Z')).label, 'I checked the source - use it')
   }
 })
 

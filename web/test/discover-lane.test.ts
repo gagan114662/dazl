@@ -12,6 +12,7 @@ import { claimKeyedJob, discoverLaneEnabled, runJob } from '../lib/scan/runner.t
 import { enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { leadHoldReason, timingOptsFor } from '../lib/outreach/lead-hold.ts'
 import type { DiscoverResult, DiscoveredLead } from '../lib/discover/agent.ts'
+import { discoverState } from '../lib/discover/card.ts'
 
 const lead = (o: Partial<DiscoveredLead>): DiscoveredLead => ({ company: 'Northwind Dental', domain: 'northwind-dental.example', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://northwind-dental.example/team', linkedin_url: null, email: null, email_source_url: null, confidence: 'high', why: 'expanding', ...o })
 
@@ -186,6 +187,39 @@ test('a hiring request answered by the lane is not held by the old sales-hiring 
   // the gate still holds a lead of the older engine on the same request: no recorded pass, default deny
   db.prepare("UPDATE leads SET source_kind = NULL WHERE id = ?").run(rows[0].id)
   assert.equal(requiredGateHeld(db, 'T', rows[0].id), 'sales_hiring_check_failed', 'an old-engine lead with no recorded pass stays held')
+})
+
+// Refs #1037, #1400. Production, 2026-11-24: "SaaS startups hiring their first salesperson" listed six leads as confirmed; a second
+// reader found one whose page said it was a first sales hire. The lane now holds a lead whose proof page does not support what the
+// request asks for: it is stored for the person's review under a reason that names the qualifier, never dropped, never ready.
+test('a lead whose proof page does not say "first hire" for a first-salesperson request is stored for review under that reason', async () => {
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'SaaS startups hiring their first salesperson', seller: 'Outbound sales agency' })
+  const job = claimKeyedJob(db, id)
+  assert.ok(job)
+  const posting = (company: string, slug: string, sentence: string) => ({
+    lead: lead({ company, domain: `${slug}.example`, signal: 'Hiring an Account Executive', evidence_url: `https://${slug}.example/careers/account-executive`, evidence_quote: `${company} ${sentence}`, person: null, title: null, person_source_url: null }),
+    seen: { url: `https://${slug}.example/careers/account-executive`, title: 'Account Executive', page_age: null, text: `Posted 14 October 2026. ${company} ${sentence}.` } })
+  const team = posting('Brightloop', 'brightloop', 'is hiring an Account Executive to join our 12-person sales team')
+  const first = posting('Northwind Software', 'northwind-software', 'is hiring its first Account Executive')
+  const canned: DiscoverResult = { leads: [team.lead, first.lead], seen: [team.seen, first.seen],
+    usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null }
+  let n = 0
+  // every network call is refused, the small model's too: Brightloop's open question gets no answer, and no answer is not support
+  const result = await runJob(db, job!, { master, fetchImpl: (async () => new Response('no', { status: 403 })) as unknown as typeof fetch, discover: true,
+    discoverImpl: async () => n++ === 0 ? canned : { ...canned, leads: [], seen: [] }, enrichImpl: null })
+  assert.equal(result, 'done')
+  const rows = db.prepare('SELECT company, source_kind, review_reason, event_date, signal FROM leads WHERE scan_job_id = ? ORDER BY company').all(id) as { company: string; source_kind: string; review_reason: string | null; event_date: string | null; signal: string }[]
+  assert.deepEqual(rows.map(r => [r.company, r.source_kind, r.review_reason]), [['Brightloop', 'discover', 'request_first_unconfirmed'], ['Northwind Software', 'discover', null]], 'both are stored; only the one whose page says "first" is confirmed')
+  const j = db.prepare('SELECT status, candidates, verified, needs_review FROM scan_jobs WHERE id = ?').get(id) as { status: string; candidates: number; verified: number; needs_review: number }
+  assert.deepEqual([j.status, j.candidates, j.verified, j.needs_review], ['done', 2, 1, 1])
+  const held = rows[0]
+  assert.equal(discoverState({ source_kind: held.source_kind, review_reason: held.review_reason, event_date: held.event_date }), 'review', 'the person can check the source: it waits under Needs your review')
+  assert.equal(held.signal, 'Hiring an Account Executive', 'the lead is kept as found')
 })
 
 // Quest's lead score on production, 2026-11-24 (job 7e5605365113): 2 of 6 listed leads had a dead proof link (a 404, and a job

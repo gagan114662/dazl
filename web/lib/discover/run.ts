@@ -7,6 +7,7 @@
 import { discoverLeads, type DiscoverInput, type DiscoverUsage } from './agent.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
+import { requestQualifiers } from './qualifiers.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
@@ -34,7 +35,11 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   add(first.usage)
   // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
   const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
-  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
+  // What the request asks for beyond the event (a role, a first hire, a funding stage, a time window), read once from the person's
+  // own words (never from the saved profile) and checked against each proof page (lib/discover/qualifiers.ts). At most one more
+  // small-model call a lead, on the same judge, so its cost is in the run's total below.
+  const request = { q: requestQualifiers(input.query), ask: judge?.askQualifiers }
+  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask, request)
   const pages = first.seen.map(p => p.url)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note
@@ -45,7 +50,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       add(second.usage)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask, request)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
       passes = 2
       note = second.note ?? note
