@@ -158,7 +158,14 @@ const pageKey = (raw: string): string => { try { const u = new URL(raw); return 
 
 // A page that says its own content is gone: a short page whose words are a not-found or closed-posting notice. Long pages are never judged
 // this way (a live page may mention that another role was filled).
-const GONE = /\b(?:job|page|position|posting|listing|role|opening|vacancy)\s+(?:was\s+|is\s+|has\s+been\s+)?(?:not\s+found|no\s+longer\s+(?:available|open|active|accepting\s+applications)|closed|filled|removed|expired)\b|\b(?:404|page\s+not\s+found|not\s+found)\b|\bno\s+longer\s+(?:available|exists|accepting\s+applications)\b|\b(?:doesn't|does\s+not)\s+exist\b/i
+// Since a gone page's lead is dropped, not only labelled (lib/scan/runner.ts, review of PR #1687), the words must be a notice and not
+// ordinary text: a bare "404" is also a street number ("opening at 404 Yonge Street"), "not found" alone is also a sentence, and "the
+// CFO position has been filled" is the very news a new-leader search looks for. Those no longer count; "this position has been
+// filled" still does (TAKEN_DOWN below), as does an address that answers 404 or 410 (checkLead).
+// Second review: a bare "no longer available" or "does not exist" is also ordinary text ("the old Queen St clinic is no longer
+// available; the new one opens 3 Dec"), so those count only when the sentence is about a page, job or listing. A notice this
+// misses leaves its lead in review, which is the safe side.
+const GONE = /\b(?:job|page|position|posting|listing|role|opening|vacancy)\s+(?:was\s+|is\s+|has\s+been\s+)?(?:not\s+found|no\s+longer\s+(?:available|open|active|accepting\s+applications)|removed|expired)\b|\b(?:error\s+404|http\s+404|404\s+(?:error|not\s+found|page\s+not\s+found)|page\s+not\s+found)\b|^(?:404\s*[-:|]?\s*)?not\s+found\.?$|\b(?:page|job|posting|listing|position|role|vacancy)\b[^.!?]{0,60}\b(?:(?:doesn't|does\s+not)\s+exist|no\s+longer\s+exists)\b/i
 // A notice that THIS listing is gone, specific enough to trust on a long page too when it stands near the top (a job board keeps its
 // header, footer and "similar jobs" around the notice; Quest, staging 2026-11-23: a listing "recently taken down" was shown as proof).
 const TAKEN_DOWN = /\bthis\s+(?:job\s+)?(?:job|listing|posting|position|role|opening|vacancy|page)\s+(?:was|is|has\s+been)\s+(?:recently\s+)?(?:taken\s+down|removed|closed|filled|expired|deleted|unpublished)\b|\bthis\s+(?:job\s+)?(?:job|listing|posting|position|role)\s+(?:is\s+)?no\s+longer\s+(?:available|open|active|listed|accepting\s+applications)\b|\b(?:job|listing|posting)\s+not\s+found\b|\b(?:was|been)\s+recently\s+taken\s+down\b/i

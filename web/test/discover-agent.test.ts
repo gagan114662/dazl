@@ -472,6 +472,11 @@ test('a long page that says this listing was taken down is gone; a live page tha
     assert.equal(pageIsGone(`Northwind Dental careers. ${notice}${filler}`), true, notice)
   assert.equal(pageIsGone(`Account Executive at Northwind Dental. Posted 4d ago. The last person in this role was promoted, and that position is closed. We are hiring again.${filler}`), false)
   assert.equal(pageIsGone(`Northwind Dental is hiring an Account Executive.${filler} This job is no longer available.`), false, 'a notice far down the page (another listing\'s) does not mark this page gone')
+  // Review of PR #1687: a gone page's lead is now dropped, so ordinary words on a short page must not read as a notice
+  for (const live of ['Northwind Dental is opening a second clinic at 404 Yonge Street in March.', 'The permit for the new site was not found to conflict with zoning. Northwind Dental opens in May.', 'Harbour Freight said the chief operating officer position has been filled by Dana Ruiz, who starts in January.', 'The old branch is closed; the new opening is on King Street.', 'The old Queen St clinic is no longer available; the new one opens 3 Dec.', 'A second site does not exist yet: Northwind Dental opens it in March.'])
+    assert.equal(pageIsGone(live), false, live)
+  for (const notice of ['404 Not Found', 'Not Found', 'Error 404', '404 - Not Found.', 'Page not found', 'This position has been filled.', 'Job not found', 'The page you are looking for does not exist.'])
+    assert.equal(pageIsGone(notice), true, notice)
 })
 
 // Quest, staging rerun 2026-11-23: the proof page linked the named person's own LinkedIn profile and the lead showed none.

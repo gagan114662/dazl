@@ -84,12 +84,24 @@ test('a request with its own lower limit gets the smaller search budget and neve
   const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor', runBudget: JSON.stringify({ max_usd: 1 }) })
   const job = claimKeyedJob(db, id)
   const asked: Record<string, unknown>[] = []
-  const empty: DiscoverResult = { leads: [], seen: [], usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.2 }, stop: 'end_turn', model: 'm', note: null }
+  const empty: DiscoverResult = { leads: [], seen: [], usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.2 }, stop: 'end_turn', model: 'm', note: 'I ran out of searches before finding a dated expansion.' }
   assert.equal(await runJob(db, job!, { master, discover: true, enrichImpl: null, discoverImpl: async input => { asked.push(input as unknown as Record<string, unknown>); return empty } }), 'done')
   assert.deepEqual([asked[0].maxSearches, asked[0].maxFetches], [10, 8], 'US$1 of room is less than a full run: the smaller budget')
   const spend = db.prepare('SELECT reserve_usd, actual_usd FROM scan_spend_calls WHERE scan_job_id = ?').all(id) as { reserve_usd: number; actual_usd: number }[]
   assert.equal(spend.length, 1)
   assert.ok(spend[0].reserve_usd <= 1 && spend[0].actual_usd === 0.4, JSON.stringify(spend))   // two passes: the first found nothing
+  // #1579 (production job 1569fa9c, 2026-11-24): a search that returned nothing saved no reason. The run report now carries the lane's
+  // own account: the budget it ran with, how it stopped, what it returned and the engine's note.
+  const saved = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(id) as { report: string } | undefined
+  assert.ok(saved, 'the run report was written')
+  const told = (JSON.parse(saved.report) as { discover?: Record<string, unknown> }).discover
+  assert.ok(told, 'the report has the discovery lane\'s account')
+  assert.equal(told.budget, 'small')
+  assert.equal(told.stop, 'end_turn')
+  assert.equal(told.returned, 0)
+  assert.equal(told.shown, 0)
+  assert.equal(typeof told.searches, 'number')
+  assert.match(String(told.note), /ran out of searches/)
 })
 
 test('a request limited to US$0.30 gets the smallest budget: five searches, no second pass', async () => {
@@ -174,4 +186,36 @@ test('a hiring request answered by the lane is not held by the old sales-hiring 
   // the gate still holds a lead of the older engine on the same request: no recorded pass, default deny
   db.prepare("UPDATE leads SET source_kind = NULL WHERE id = ?").run(rows[0].id)
   assert.equal(requiredGateHeld(db, 'T', rows[0].id), 'sales_hiring_check_failed', 'an old-engine lead with no recorded pass stays held')
+})
+
+// Quest's lead score on production, 2026-11-24 (job 7e5605365113): 2 of 6 listed leads had a dead proof link (a 404, and a job
+// board's "Job not found"). They were labelled, but still listed for the person to review, with a link that proves nothing.
+test('a lead whose proof page is gone is dropped and counted, never listed; the others are kept', async () => {
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor' })
+  const job = claimKeyedJob(db, id)
+  assert.ok(job)
+  const canned: DiscoverResult = {
+    leads: [
+      lead({}),
+      lead({ company: 'Gone Dental', domain: null, signal: 'Hiring a clinic manager', signal_date: null, evidence_url: 'https://jobs.example/gone-dental/1', evidence_quote: 'Gone Dental is hiring a clinic manager', person: null, title: null, person_source_url: null, confidence: 'medium' }),
+    ],
+    seen: [
+      { url: 'https://news.example/northwind', title: 'Northwind Dental', page_age: null, text: 'On 14 October 2026 Northwind Dental will open its second clinic downtown.' },
+      { url: 'https://jobs.example/gone-dental/1', title: 'Gone Dental', page_age: null, text: 'Gone Dental. Job not found.' },
+    ],
+    usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
+  }
+  let calls = 0
+  const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch
+  assert.equal(await runJob(db, job!, { master, fetchImpl: blocked, discover: true, enrichImpl: null, discoverImpl: async () => (++calls === 1 ? canned : { ...canned, leads: [], seen: [] }) }), 'done')
+  const leads = listLeads(db, 'T', id, 50, false) as (Record<string, unknown> & { company: string })[]
+  assert.deepEqual(leads.map(l => l.company), ['Northwind Dental'], 'the lead with the dead proof link is not listed, for review or otherwise')
+  const j = db.prepare('SELECT status, verified, needs_review, drop_reasons FROM scan_jobs WHERE id = ?').get(id) as { status: string; verified: number; needs_review: number; drop_reasons: string | null }
+  assert.deepEqual([j.status, j.verified, j.needs_review], ['done', 1, 0])
+  assert.equal((JSON.parse(j.drop_reasons ?? '{}') as Record<string, number>).page_not_found, 1, 'counted as dropped, with the reason the Leads page already words as "page no longer exists"')
 })
