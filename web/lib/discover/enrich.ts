@@ -45,9 +45,53 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
   for (const [url, page] of seen) {
     if (!want || profileKey(url) !== want) continue
     const title = nameParts(page.title)
-    if (who.length >= 2 && title.includes(who[0]) && title.includes(who[who.length - 1])) return e
+    // Staging, 2026-11-24: the model chose the right profile for "Rob Hale" and it was refused because its title reads "Robert Hale".
+    // The first name may be the short or the long form of the title's (one starts the other, three letters or more); the last name is exact.
+    const first = (t: string) => t === who[0] || (Math.min(t.length, who[0].length) >= 3 && (t.startsWith(who[0]) || who[0].startsWith(t)))
+    if (who.length >= 2 && title.some(first) && title.includes(who[who.length - 1])) return e
   }
   return { ...e, linkedin_url: null }
+}
+// Staging, 2026-11-24 (16 leads looked up on five prompts): every lookup saw LinkedIn profile results, yet 4 came back with no profile
+// and 2 with one the rule above refused. When the lookup ends with a named person and no profile, dazl reads the results itself. A
+// LinkedIn result title reads "Name - headline | LinkedIn"; a result is this person's profile only when all of these hold (review of
+// PR #1692: each closes a way to attach someone else's profile):
+//   - the title STARTS with the person's first and last name (a headline that merely mentions them, "Assistant to Dana Ruiz", is someone else);
+//   - after the name, the company's name as written stands as a phrase, its words adjacent and in order, and ends there (or with Inc, LLC ...) or at a separator
+//     (so "Smith Roofing" is not found in "John Smith - Roofing Contractor", nor "Quanta" in "Quanta Services", nor "Sim" in "Sim Racing");
+//   - nothing just before it says the job is over ("ex", "former", "previously");
+//   - it is the only such profile among the results (two are left for a person to settle).
+// A company whose name has no word of its own ("The Group", "Services Inc") is never matched. Bracketed text in a company name
+// ("Brightsprint (YC P26)") is not part of the name.
+const COMPANY_FILLER = ['the', 'and', 'inc', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'company', 'group', 'holdings', 'gmbh', 'plc', 'pty', 'llp', 'services', 'solutions', 'international', 'global', 'partners', 'associates', 'consulting', 'technologies', 'systems', 'enterprises']
+const fold = (s: string | null | undefined): string => (s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+export const companyWords = (company: string | null | undefined): string[] => (fold(company).replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').match(/[a-z0-9]{3,}/g) ?? []).filter(w => !COMPANY_FILLER.includes(w)).slice(0, 2)
+const OVER = /\b(?:ex|former|formerly|previously|past)\b/
+const LEGAL_FORM = ['inc', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'gmbh', 'plc', 'pty', 'llp', 'co', 'company']
+export function pickSeenProfile(person: string | null, company: string | null, seen: ReadonlyMap<string, SeenPage>): string | null {
+  const who = nameParts(person), firm = companyWords(company)
+  if (who.length < 2 || !firm.length) return null
+  // the company's name as written (without bracketed text, a leading "the" or a trailing legal form), its words adjacent and in order;
+  // after it only a legal form (Inc, LLC ...) may stand before the title ends or a separator follows: "Quanta" is not "Quanta Services"
+  const name = fold(company).replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').match(/[a-z0-9]+/g) ?? []
+  while (name.length && LEGAL_FORM.includes(name[name.length - 1])) name.pop()
+  if (name[0] === 'the') name.shift()
+  if (!name.length) return null
+  const phrase = new RegExp(`(?:^|[^a-z0-9])(${name.join('[^a-z0-9]+')})(?:[^a-z0-9]+(?:${LEGAL_FORM.join('|')}))*[^a-z0-9]*(?=$|[|,;·•(/]|\\s[-–—]\\s)`)
+  const found = new Map<string, string>()
+  for (const [url, page] of seen) {
+    const key = profileKey(url)
+    if (!key) continue
+    const title = fold(page.title).replace(/\s*[|\-–—]\s*linkedin\s*$/, '')
+    const cut = title.search(/\s[-–—|]\s|\|/)
+    if (cut < 0) continue
+    const owner = nameParts(title.slice(0, cut))
+    if (owner.length < 2 || owner[0] !== who[0] || owner[owner.length - 1] !== who[who.length - 1]) continue
+    const rest = title.slice(cut), m = phrase.exec(rest)
+    if (!m || OVER.test(rest.slice(Math.max(0, m.index - 40), m.index + 1))) continue
+    found.set(key, url)
+  }
+  return found.size === 1 ? [...found.values()][0] : null
 }
 // The first pass's own profile address is held to the same rule (review of #1596): no named person, or an address the run did not see
 // for that person, and it is dropped so the people pass looks for the real one.
@@ -116,7 +160,12 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
     messages.push({ role: 'assistant', content: res.content as Anthropic.ContentBlockParam[] })
   }
   for (const [url, page] of seen) if (!allSeen.has(url) || page.text) allSeen.set(url, page)
-  return keepSeenProfile(parseEnriched(text), seen)
+  const kept = keepSeenProfile(parseEnriched(text), seen)
+  if (kept.linkedin_url) return kept
+  // no profile from the model, or one the rule refused: the results themselves may still show this person's profile at this company
+  const who = kept.person ?? lead.person
+  const own = pickSeenProfile(who, lead.company, seen)
+  return own ? { ...kept, person: who, linkedin_url: own } : kept
 }
 
 // Fills the empty person and website fields of the leads that need it. A lead whose call fails is returned unchanged.
