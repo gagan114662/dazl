@@ -19,10 +19,10 @@ test('the one profile result that starts with the person\'s name and states the 
   ])
   assert.equal(pickSeenProfile('Dana Ruiz', 'Northwind Dental', s), 'https://www.linkedin.com/in/dana-ruiz-4b1a2')
   assert.equal(pickSeenProfile('Dr. Dana M. Ruiz', 'Northwind Dental Inc.', s), 'https://www.linkedin.com/in/dana-ruiz-4b1a2', 'a title, a middle initial and a legal suffix do not matter')
-  for (const title of ['Lucy Hoag - Founder & CEO at Violet Labs | LinkedIn', 'Lucy Hoag – Violet Labs', 'Lucy Hoag - CEO, Violet Labs Inc. | LinkedIn', 'Lucy Hoag | Founder @ Violet Labs (YC W22) | LinkedIn'])
-    assert.equal(pickSeenProfile('Lucy Hoag', 'Violet Labs', one(title)), PROFILE, title)
-  assert.equal(pickSeenProfile('Emir Karabeg', 'Sim', one('Emir Karabeg - Co-Founder & CEO - Sim | LinkedIn')), PROFILE, 'a one-word company, stated as the company')
-  assert.equal(pickSeenProfile('Ben Ong', 'Lightsprint (YC P26)', one('Ben Ong - Co-Founder & CEO at Lightsprint | LinkedIn')), PROFILE, 'bracketed text is not part of the company name')
+  for (const title of ['Lena Hart - Founder & CEO at Indigo Labs | LinkedIn', 'Lena Hart – Indigo Labs', 'Lena Hart - CEO, Indigo Labs Inc. | LinkedIn', 'Lena Hart | Founder @ Indigo Labs (YC X20) | LinkedIn'])
+    assert.equal(pickSeenProfile('Lena Hart', 'Indigo Labs', one(title)), PROFILE, title)
+  assert.equal(pickSeenProfile('Emil Karan', 'Sim', one('Emil Karan - Co-Founder & CEO - Sim | LinkedIn')), PROFILE, 'a one-word company, stated as the company')
+  assert.equal(pickSeenProfile('Bo Lin', 'Brightsprint (YC P26)', one('Bo Lin - Co-Founder & CEO at Brightsprint | LinkedIn')), PROFILE, 'bracketed text is not part of the company name')
   assert.equal(pickSeenProfile('Dana Ruiz', 'Northwind Dental Group LLC', one('Dana Ruiz - Owner - Northwind Dental Group | LinkedIn')), PROFILE, 'the whole name as written, with or without its legal form')
   assert.equal(pickSeenProfile('Dana Ruiz', 'The Northwind Dental Company', one('Dana Ruiz - Owner at Northwind Dental | LinkedIn')), PROFILE)
 })
@@ -56,21 +56,21 @@ test('the company\'s own words: filler and bracketed text are not part of the na
   assert.deepEqual(companyWords('The Group Inc.'), [])
   assert.deepEqual(companyWords('Northwind Dental Group LLC'), ['northwind', 'dental'])
   assert.deepEqual(companyWords('Café Olmühle GmbH'), ['cafe', 'olmuhle'])
-  assert.deepEqual(companyWords('Lightsprint (YC P26)'), ['lightsprint'])
-  assert.deepEqual([companyWords('Sim'), companyWords('Violet Labs'), companyWords('StackedSP')], [['sim'], ['violet', 'labs'], ['stackedsp']])
+  assert.deepEqual(companyWords('Brightsprint (YC P26)'), ['brightsprint'])
+  assert.deepEqual([companyWords('Sim'), companyWords('Indigo Labs'), companyWords('StackedXY')], [['sim'], ['indigo', 'labs'], ['stackedxy']])
   assert.equal(pickSeenProfile('Dana Ruiz', 'The Group Inc.', one('Dana Ruiz - Owner - The Group Inc | LinkedIn')), null)
 })
 
-// Staging, 2026-11-24: of 5 lookups that ended with no profile, one was a real loss. The model chose the right profile for "Rob Rooney";
-// its result title read "Robert Rooney - London, England, United Kingdom", and the keep rule wanted the first name letter for letter.
+// Staging, 2026-11-24: of 5 lookups that ended with no profile, one was a real loss. The model chose the right profile for "Rob Hale";
+// its result title read "Robert Hale - Leeds, England, United Kingdom", and the keep rule wanted the first name letter for letter.
 test('a profile the model chose is kept when the result\'s title gives the long or short form of the first name', () => {
   const e = (person: string, url: string) => ({ domain: null, person, title: null, person_source_url: 'https://x.example/team', linkedin_url: url, email: null, email_source_url: null })
-  const url = 'https://www.linkedin.com/in/robert-rooney-b710992/'
-  const s = seen([[url, 'Robert Rooney - London, England, United Kingdom'], ['https://www.linkedin.com/in/ben-helps-5871909/', 'Ben Helps - Hyperlayer']])
-  assert.equal(keepSeenProfile(e('Rob Rooney', url), s).linkedin_url, url, 'Rob and Robert are one first name')
-  assert.equal(keepSeenProfile(e('Robert Rooney', url), seen([[url, 'Rob Rooney - Hyperlayer']])).linkedin_url, url, 'and the other way round')
-  assert.equal(keepSeenProfile(e('Rob Rooney', url), seen([[url, 'Ro Rooney - Hyperlayer']])).linkedin_url, null, 'two letters are not a name')
-  assert.equal(keepSeenProfile(e('Rob Rooney', url), seen([[url, 'Robert Mooney - Hyperlayer']])).linkedin_url, null, 'the last name is exact')
-  assert.equal(keepSeenProfile(e('Rob Rooney', url), seen([[url, 'Ben Rooney - Hyperlayer']])).linkedin_url, null, 'a different first name')
-  assert.equal(keepSeenProfile(e('Rob Rooney', 'https://www.linkedin.com/in/someone-else/'), s).linkedin_url, null, 'a profile the lookup never saw is still refused')
+  const url = 'https://www.linkedin.com/in/robert-hale-1a2b3/'
+  const s = seen([[url, 'Robert Hale - Leeds, England, United Kingdom'], ['https://www.linkedin.com/in/ben-wright-4c5d6/', 'Ben Wright - Northlayer']])
+  assert.equal(keepSeenProfile(e('Rob Hale', url), s).linkedin_url, url, 'Rob and Robert are one first name')
+  assert.equal(keepSeenProfile(e('Robert Hale', url), seen([[url, 'Rob Hale - Northlayer']])).linkedin_url, url, 'and the other way round')
+  assert.equal(keepSeenProfile(e('Rob Hale', url), seen([[url, 'Ro Hale - Northlayer']])).linkedin_url, null, 'two letters are not a name')
+  assert.equal(keepSeenProfile(e('Rob Hale', url), seen([[url, 'Robert Gale - Northlayer']])).linkedin_url, null, 'the last name is exact')
+  assert.equal(keepSeenProfile(e('Rob Hale', url), seen([[url, 'Ben Hale - Northlayer']])).linkedin_url, null, 'a different first name')
+  assert.equal(keepSeenProfile(e('Rob Hale', 'https://www.linkedin.com/in/someone-else/'), s).linkedin_url, null, 'a profile the lookup never saw is still refused')
 })

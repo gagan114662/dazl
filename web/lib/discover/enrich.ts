@@ -45,7 +45,7 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
   for (const [url, page] of seen) {
     if (!want || profileKey(url) !== want) continue
     const title = nameParts(page.title)
-    // Staging, 2026-11-24: the model chose the right profile for "Rob Rooney" and it was refused because its title reads "Robert Rooney".
+    // Staging, 2026-11-24: the model chose the right profile for "Rob Hale" and it was refused because its title reads "Robert Hale".
     // The first name may be the short or the long form of the title's (one starts the other, three letters or more); the last name is exact.
     const first = (t: string) => t === who[0] || (Math.min(t.length, who[0].length) >= 3 && (t.startsWith(who[0]) || who[0].startsWith(t)))
     if (who.length >= 2 && title.some(first) && title.includes(who[who.length - 1])) return e
@@ -62,7 +62,7 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
 //   - nothing just before it says the job is over ("ex", "former", "previously");
 //   - it is the only such profile among the results (two are left for a person to settle).
 // A company whose name has no word of its own ("The Group", "Services Inc") is never matched. Bracketed text in a company name
-// ("Lightsprint (YC P26)") is not part of the name.
+// ("Brightsprint (YC P26)") is not part of the name.
 const COMPANY_FILLER = ['the', 'and', 'inc', 'llc', 'ltd', 'limited', 'corp', 'corporation', 'company', 'group', 'holdings', 'gmbh', 'plc', 'pty', 'llp', 'services', 'solutions', 'international', 'global', 'partners', 'associates', 'consulting', 'technologies', 'systems', 'enterprises']
 const fold = (s: string | null | undefined): string => (s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
 export const companyWords = (company: string | null | undefined): string[] => (fold(company).replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').match(/[a-z0-9]{3,}/g) ?? []).filter(w => !COMPANY_FILLER.includes(w)).slice(0, 2)
