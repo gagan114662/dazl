@@ -46,9 +46,13 @@ export function keepSeenProfile(e: Enriched, seen: ReadonlyMap<string, SeenPage>
     if (!want || profileKey(url) !== want) continue
     const title = nameParts(page.title)
     // Staging, 2026-11-24: the model chose the right profile for "Rob Hale" and it was refused because its title reads "Robert Hale".
-    // The first name may be the short or the long form of the title's (one starts the other, three letters or more); the last name is exact.
-    const first = (t: string) => t === who[0] || (Math.min(t.length, who[0].length) >= 3 && (t.startsWith(who[0]) || who[0].startsWith(t)))
-    if (who.length >= 2 && title.some(first) && title.includes(who[who.length - 1])) return e
+    // Besides the exact first name anywhere in the title (the rule as it was), the profile owner's own first name, the first word of
+    // the title before its first separator, may be the short or the long form (one starts the other, three letters or more), with the
+    // same last name. Only that first word: a headline word such as "and" also starts "Andrew" (review of PR #1693).
+    const owner = nameParts((page.title ?? '').split(/\s[-–—|]\s|\|/)[0]), last = who[who.length - 1]
+    const exact = title.includes(who[0]) && title.includes(last)
+    const shortOrLong = owner.length >= 2 && owner[owner.length - 1] === last && Math.min(owner[0].length, who[0].length) >= 3 && (owner[0].startsWith(who[0]) || who[0].startsWith(owner[0]))
+    if (who.length >= 2 && (exact || shortOrLong)) return e
   }
   return { ...e, linkedin_url: null }
 }

@@ -78,4 +78,9 @@ test('a profile the model chose is kept when the result\'s title gives the long 
   assert.equal(keepSeenProfile(e('Rob Hale', url), seen([[url, 'Robert Gale - Northlayer']])).linkedin_url, null, 'the last name is exact')
   assert.equal(keepSeenProfile(e('Rob Hale', url), seen([[url, 'Ben Hale - Northlayer']])).linkedin_url, null, 'a different first name')
   assert.equal(keepSeenProfile(e('Rob Hale', 'https://www.linkedin.com/in/someone-else/'), s).linkedin_url, null, 'a profile the lookup never saw is still refused')
+  // review of PR #1693: the short/long form is read from the profile owner's own first name only, never from a headline word
+  const johns = 'https://www.linkedin.com/in/john-smith-77/'
+  assert.equal(keepSeenProfile(e('Andrew Smith', johns), seen([[johns, 'John Smith - Founder and CEO at Smith Roofing | LinkedIn']])).linkedin_url, null, '"and" starts "Andrew", but the profile is John\'s')
+  assert.equal(keepSeenProfile(e('Theo Smith', johns), seen([[johns, 'John Smith - Head of the Smith Roofing team']])).linkedin_url, null)
+  assert.equal(keepSeenProfile(e('John Smith', johns), seen([[johns, 'John Smith - Founder and CEO at Smith Roofing | LinkedIn']])).linkedin_url, johns, 'the exact name is kept as before')
 })
