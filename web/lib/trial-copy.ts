@@ -99,9 +99,14 @@ export function trialRefusalNotice(reason: unknown, here: string, account: { ver
 // the Google button (SIGN_UP_GOOGLE_CAPTION) says what Google adds. Shown only where a trial can really be admitted.
 export const SIGN_UP_GOOGLE_CAPTION = 'With Google you can run up to three free searches.'
 const BETA_LINE = 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell.'
-export function signUpPlanLine(trialFunded: boolean): string {
+// emailPath (review of #1653): whether an email sign-up can really run that first search here. It cannot when the password
+// first-search switch is off, or when this site cannot send the confirmation email (the account is then never confirmed and
+// the search answers google_required). Then the line promises the free search with Google only.
+export function signUpPlanLine(trialFunded: boolean, emailPath = true): string {
   return trialFunded
-    ? `${BETA_LINE} Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own.`
+    ? emailPath
+      ? `${BETA_LINE} Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own.`
+      : `${BETA_LINE} Your first search is free when you sign up with Google: no card, and no AI key of your own.`
     : `${BETA_LINE} On this site a search runs on your own Anthropic key, which you add in Settings.`
 }
 

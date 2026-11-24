@@ -69,6 +69,8 @@ try {
     DAZL_TRIAL_GLOBAL_DAILY_USD: '10',
     DAZL_TRIAL_TINYFISH_SEARCH_USD: '0',
     DAZL_TRIAL_TINYFISH_FETCH_USD: '0',
+    // review of #1653: the line promises an email sign-up a free search only where this site can send the confirmation email
+    SYSTEM_MAIL_SMTP_URL: 'smtp://fixture.invalid', SYSTEM_MAIL_FROM: 'fixture@example.test',
   }, async base => {
     const page = await b.newPage()
     await page.goto(`${base}/sign-up`, { waitUntil: 'networkidle' })

@@ -8,7 +8,7 @@ import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-ba
 
 // sentWithoutScript / errorWithoutScript (#1116): the outcome of a NATIVE post of this form (it was submitted before or
 // without its script; the route redirected back with a code). Rendered on the server, so they show with no script.
-export default function SignUpForm({ trialFunded, sentWithoutScript = false, errorWithoutScript = '' }: { trialFunded: boolean; sentWithoutScript?: boolean; errorWithoutScript?: string }) {
+export default function SignUpForm({ trialFunded, emailTrial = true, sentWithoutScript = false, errorWithoutScript = '' }: { trialFunded: boolean; /** an email sign-up can run its first search free here (the page reads it on the server) */ emailTrial?: boolean; sentWithoutScript?: boolean; errorWithoutScript?: string }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(errorWithoutScript)
@@ -63,7 +63,7 @@ export default function SignUpForm({ trialFunded, sentWithoutScript = false, err
         <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-6">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
         <p className="text-[#555] text-sm mb-6 text-center">
-          {signUpPlanLine(trialFunded)}
+          {signUpPlanLine(trialFunded, emailTrial)}
         </p>
         <ClaimContextBanner business={claim.business} action="Create your account" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>

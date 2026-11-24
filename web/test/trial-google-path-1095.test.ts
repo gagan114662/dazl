@@ -115,7 +115,16 @@ test('#1095 / #1648: sign-up says the first search is free on both paths, and on
   assert.doesNotMatch(on, /link it later|needs Google/)
   assert.equal(TRIAL_SCANS_PER_ACCOUNT, 3)
   assert.equal(SIGN_UP_GOOGLE_CAPTION, 'With Google you can run up to three free searches.')
+  // review of #1653: where an email sign-up cannot run a free search (the password switch off, or no mail to confirm the
+  // address, so the search answers google_required), the line promises the free search with Google only.
+  const googleOnly = signUpPlanLine(true, false)
+  assert.equal(googleOnly, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Your first search is free when you sign up with Google: no card, and no AI key of your own.')
+  assert.doesNotMatch(googleOnly, /with email/)
+  assert.equal(signUpPlanLine(false, false), off)
+  const page = readFileSync(new URL('../app/sign-up/page.tsx', import.meta.url), 'utf8')
+  assert.match(page, /emailTrial=\{passwordTrialOn\(\) && systemMailAvailable\(\)\}/)
   const form = readFileSync(new URL('../app/sign-up/sign-up-form.tsx', import.meta.url), 'utf8')
+  assert.match(form, /signUpPlanLine\(trialFunded, emailTrial\)/)
   assert.match(form, /\{trialFunded \? SIGN_UP_GOOGLE_CAPTION : ''\}/)
   assert.doesNotMatch(form, /needs Google sign-in/)
 })
