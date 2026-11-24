@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
+import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 import { CONSENT_NEEDED_NOTICE, performReplyAction, replyReadingState, type GmailStatus } from '@/lib/outreach/replies-view'
 
 interface Info { available: boolean; gmail_connected: boolean; gmail_status?: GmailStatus; consent: { version: string; text: string[]; accepted: boolean }; bounce_scan: { version: string; text: string[]; accepted: boolean }; read_granted: boolean; followups_enabled: boolean; autopilot_available?: boolean; autopilot_on: boolean; inbound: { from_email: string; excerpt: string; classification: string; received_at: number }[] }
@@ -40,12 +41,12 @@ export default function RepliesPanel() {
         <div className="text-sm space-y-2">
           <p className="text-[#555]">Gmail needs to be reconnected. dazl can&apos;t read replies or send until you reconnect.</p>
           <p className="text-[#555]">Reconnecting is send-only: dazl no longer asks Google for read access, so reply reading stays off afterwards.</p>
-          <a className="btn-primary inline-block" href="/api/gmail/connect">Reconnect Gmail</a>
+          <a className="btn-primary inline-block" href={GMAIL_EXPLAINER_PATH}>Reconnect Gmail</a>
         </div>
       ) : state === 'disconnected' ? (
         <div className="text-sm space-y-2">
           <p className="text-[#555]">Reply reading is not available for new Gmail connections: dazl connects send-only. Replies and delivery-failure notices arrive in your own Gmail inbox.</p>
-          <a className="btn-primary inline-block" href="/api/gmail/connect">Connect Gmail</a>
+          <a className="btn-primary inline-block" href={GMAIL_EXPLAINER_PATH}>Connect Gmail</a>
         </div>
       ) : state === 'read_scope_missing' ? (
         <div className="text-sm space-y-2">
