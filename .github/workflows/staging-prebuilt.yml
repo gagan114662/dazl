@@ -41,6 +41,9 @@ jobs:
           DAZL_ENV: staging
           PUBLIC_BASE_URL: https://staging.dazl.ai
           NEXT_TELEMETRY_DISABLED: '1'
+          # #1616: PostHog's project key is a public write-only token; the browser half of the funnel is off unless it is set at build
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
           SHA: ${{ github.sha }}
         run: |
           npm ci --no-audit --no-fund --loglevel=error

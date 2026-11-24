@@ -5,6 +5,7 @@ import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
+import { track } from '@/lib/analytics/track'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
@@ -17,6 +18,7 @@ export async function GET(req: NextRequest) {
   try {
     await completeOAuth(getScanDb(), user.tenantId, code, state)
     await audit(user, req, { action: 'credential.saved', resource: 'gmail' })
+    track('gmail_linked', user.tenantId)
     return back('connected')
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/gmail/callback', method: 'GET', tenantId: user.tenantId, requestId: requestIdOf(req) })

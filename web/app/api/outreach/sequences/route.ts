@@ -12,6 +12,7 @@ import { audit } from '@/lib/audit-route'
 import { autopilotAvailable, getState } from '@/lib/outreach/autopilot'
 import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 import { displayStopReason } from '@/lib/outreach/lifecycle'
+import { track } from '@/lib/analytics/track'
 
 export async function GET() {
   const user = await requireUser()
@@ -57,7 +58,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
     if (typeof b?.id !== 'string') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-    if (b.action === 'approve') approveSequence(db,user.tenantId,b.id,id => approve(db,user.tenantId,id,true))
+    if (b.action === 'approve') { approveSequence(db,user.tenantId,b.id,id => approve(db,user.tenantId,id,true)); track('approve_clicked', user.tenantId) }
     else if (b.action === 'edit' && typeof b.subject === 'string' && typeof b.body === 'string') editSequenceStep(db,user.tenantId,b.id,b.step,{ subject: b.subject, body: b.body })
     else if ((b.action === 'mark_sent' || b.action === 'retry') && Number.isInteger(b.step)) resolveSequenceUncertain(db,user.tenantId,b.id,b.step,b.action === 'mark_sent' ? 'sent' : 'retry')
     else if (b.action === 'stop') {

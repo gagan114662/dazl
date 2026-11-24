@@ -24,6 +24,7 @@ import type { First5View } from '@/lib/scan/first5'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { icpLoss, normalizeIcp } from '@/lib/scan/icp'
 import ManualNativeTargetReview from './manual-native-target-review'
+import { trackClient } from '@/lib/analytics/track-client'
 import { acceptedTarget, buildManualNativeTarget, targetFields, type AcceptedTarget, type TargetFields } from './manual-native-target'
 
 const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
@@ -165,6 +166,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
   // Watch the first play: its status every few seconds until it settles, then its ready leads (the same gates as Home).
   const firstId = first?.id ?? null, firstStatus = first?.status ?? null
+  useEffect(() => { if (firstId && first?.leads) trackClient('leads_shown', { count: first.leads.length, job_id: firstId }) }, [firstId, first?.leads])
   useEffect(() => {
     if (!firstId || !firstStatus) return
     if (firstStatus === 'done') {

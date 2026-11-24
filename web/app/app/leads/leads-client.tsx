@@ -71,6 +71,7 @@ import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
 import PlanViewCard from './plan-view'
 import { compileTargeting, planView } from '@/lib/scan/targeting'
+import { trackClient } from '@/lib/analytics/track-client'
 
 // Reject on the card is the existing reversible quarantine, with its own reason so the card can say "Rejected".
 // Reject asks for an optional reason (a preset or a few words); it is stored as "Rejected" or "Rejected: <reason>".
@@ -686,6 +687,7 @@ export default function LeadsClient() {
     const l = await fetch(`/api/leads?job_id=${jobId}${showHidden ? '&all=1' : ''}`)
     if (l.ok) {
       const j = await l.json()
+      if (Array.isArray(j.leads)) trackClient('leads_shown', { count: j.leads.length, job_id: jobId })
       setLeads(j.leads); setHeldView({ jobId: j.job_id, items: Array.isArray(j.held) ? j.held : [] }); setHiddenCount(j.hidden_count ?? 0); setWorkEmailPage(j.work_email ?? null)
       setResultView({ jobId, counts: j.company_first_counts ?? null, marked: j.company_first === true || j.company_first_counts != null, discover: j.discover_counts ?? null })
     }

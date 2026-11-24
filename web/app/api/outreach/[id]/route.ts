@@ -6,6 +6,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
+import { track } from '@/lib/analytics/track'
 
 const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_excluded: 422, lead_evidence_withdrawn: 409, recipient_provenance_missing: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
 
@@ -58,9 +59,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       const result = await sendMessage(db, g.user.tenantId, id)
       // the outcome only; the recipient, subject and body stay in the outreach store
       if (!already) await audit(g.user, req, { action: 'outreach.send', resource: 'message', id, summary: { outcome: result } })
+      if (!already && result === 'sent') track('email_sent', g.user.tenantId, { message_id: id })
       return NextResponse.json({ result })
     } else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     await audit(g.user, req, { action: `outreach.${action}`, resource: 'message', id })
+    if (action === 'approve') track('approve_clicked', g.user.tenantId, { message_id: id })
     return NextResponse.json({ ok: true })
   } catch (e) { return fail(e, g.user.tenantId) }
 }

@@ -113,6 +113,7 @@ import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 import { freshBoardPostings, orderByBoardDate, dateBoards } from '../company-first/board-postings.ts'
 import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
 import { boardOf } from '../sources/ats-board-api.ts'
+import { searchFinished } from '../analytics/funnel.ts'
 const HAIKU = 'claude-haiku-4-5'   // the request plan's model (moved from the deleted research engine, #1393)
 
 export interface Job { spend_reserved_usd?: number | null; id: string; user_id: string; business_name: string; industry: string; location: string; attempts: number; query?: string | null; icp?: string | null; sources?: string | null; funded_by?: string; seller?: string | null; watch_id?: string | null; csv_domain?: string | null; run_budget?: string | null }
@@ -809,7 +810,7 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
   const review = out?.review ?? []
   const dropped = out ? Object.values(out.dropped).reduce((a, b) => a + b, 0) : null
   // IMMEDIATE: the ownership read then the writes in one deferred transaction fail at once with SQLITE_BUSY (snapshot upgrade, busy_timeout does not apply) if another process committed in between.
-  return db.transaction((): boolean => {
+  const owned = db.transaction((): boolean => {
     const own = db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(job.id, job.attempts)
     if (!own) return false
     const ins = db.prepare(
@@ -828,6 +829,8 @@ function finish(db: Database.Database, job: Job, status: 'done' | 'failed' | 'pe
     ).run(status, error, candidates, status === 'done' ? leads.length : null, status === 'done' ? review.length : null, dropped, out ? JSON.stringify(out.dropped) : null, status, job.id)
     return true
   }).immediate()
+  if (owned && status === 'done') void searchFinished(sqliteDb(db), job.user_id, job.id, leads.length, review.length) // #1616: counts only
+  return owned
 }
 
 // The honest ways a scan can stop when its sources gave it nothing and the paid fallback cannot run. Sources that ran
