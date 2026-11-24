@@ -46,7 +46,7 @@ const LEADS = [lead(A, 'Bright Dental', { contact: 'hello@brightdental.example' 
 const msg = (lead_id, to_email, status = 'draft') => ({ id: lead_id.slice(0, 6) + 'm', lead_id, to_email, subject: `Hello ${to_email}`, body: 'Hi there', status, error: null, created_at: 1, sent_at: null, test: 0, evidence_state: 'machine', currentness_held: false, provenance: null, send_footer: null })
 // Another scan's draft is already in Outreach: it must not count for this scan, and the filter must hide it.
 const MSGS = [msg(OTHER, 'hello@elsewhere.example')]
-let leadsFail = false
+let leadsFail = false, readingOff = false
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -61,7 +61,7 @@ await ctx.route('**/*', async route => {
   if (u.pathname === '/api/leads' && u.searchParams.get('job_id') === JOB) return json({ job_id: JOB, status: 'done', hidden_count: 0, leads: LEADS })
   if (u.pathname === '/api/scan/jobs') return json({ jobs: [] })
   // A live cold sequence from ANOTHER scan: it must never appear in this scan's view.
-  if (u.pathname === '/api/outreach/sequences' && m === 'GET') return json({ sequences: [{ id: 's1', message_id: 'm-other', lead_id: OTHER, to_email: 'seq@elsewhere.example', status: 'active', stop_reason: null, evidence_state: 'machine', currentness_held: false, steps: [{ step: 1, subject: 'Step one', body: 'Hi', status: 'sent', due_at: 1, sent_at: 1 }] }], status: {}, test_addresses: [], campaigns: [] })
+  if (u.pathname === '/api/outreach/sequences' && m === 'GET') return json({ sequences: [{ id: 's1', message_id: 'm-other', lead_id: OTHER, to_email: 'seq@elsewhere.example', status: 'active', stop_reason: null, evidence_state: 'machine', currentness_held: false, steps: [{ step: 1, subject: 'Step one', body: 'Hi', status: 'sent', due_at: 1, sent_at: 1 }] }], status: {}, test_addresses: [], campaigns: [], gates: [{ id: 'gmail', ok: true, scope: 'tenant' }, { id: 'read_consent', ok: !readingOff, scope: 'tenant' }] })
   if (u.pathname === '/api/outreach' && m === 'GET') return json({ messages: MSGS })
   // The Leads bar reads this scan's own campaign record (every email of this scan's leads, no cap).
   if (u.pathname === `/api/campaigns/${JOB}`) return json({ job: { id: JOB }, leads: [], messages: MSGS.filter(x => LEADS.some(l => l.id === x.lead_id)) })
@@ -124,6 +124,19 @@ try {
   await page.getByRole('heading', { name: 'Cold sequences' }).waitFor()
   await page.getByText('seq@elsewhere.example').first().waitFor()
   assert.equal(await page.getByTestId('sequences-hidden').count(), 0, 'the full view keeps its sequences')
+  // #1679: with reply reading on, nothing is said about it being unavailable; with a send-only Gmail connection (reading off) the
+  // section says sequences are not available and what still works, and never points at a step the account cannot take.
+  assert.equal(await page.getByTestId('sequences-need-reading').count(), 0, 'reading on: no notice')
+  readingOff = true
+  await page.goto(`${base}/app/outreach`, { waitUntil: 'networkidle' })
+  await page.getByRole('heading', { name: 'Cold sequences' }).waitFor()
+  const needReading = page.getByTestId('sequences-need-reading'); await needReading.waitFor()
+  assert.match(await needReading.innerText(), /^Follow-up sequences are not available for your account: dazl connects to Gmail send-only and does not read replies/)
+  assert.match(await needReading.innerText(), /Nothing is sent automatically\. You can still approve and send each email yourself\.$/)
+  const outreachText = await page.locator('main').innerText()
+  assert.doesNotMatch(outreachText, /Reply reading must stay connected|Enable reply reading in Settings/)
+  await shot('outreach-sequences-send-only')
+  readingOff = false
   // The scan's leads cannot be read: fail closed, never another scan's emails under this scan's link.
   leadsFail = true
   await page.goto(`${base}/app/outreach?job_id=${JOB}`, { waitUntil: 'networkidle' })

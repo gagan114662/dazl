@@ -47,6 +47,8 @@ const SCENES = {
   midway: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: [camp(JOBS[0].id), camp(JOBS[1].id, { sc: 2, contacts: 1, ready: 1, draftable: 1 })], msgs: [] },
   quota: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [], used: 50 },
   campsfail: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: 'fail', msgs: [] },
+  // #1678: a password account with no key: step 2 offers two buttons (Link Google, Add key)
+  pwtrial: { profile: PROFILE, key: false, trial: { blocked: 'google_required' }, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   done: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 1), camps: [camp(JOBS[0].id, { sc: 2, contacts: 1, ready: 1, drafts: 1 })], msgs: [{ id: 'm1', lead_id: 'x', status: 'draft' }] },
 }
 const b = await chromium.launch()
@@ -66,7 +68,7 @@ async function open(sc, width, height) {
     if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
     if (p.startsWith('/api/campaigns/')) return json({ job: sc.jobs[0], leads: [], messages: [] })
     if (p === '/api/watch') return json({ watches: [] })
-    if (p === '/api/usage') return json({ plan: 'free', scans_used: sc.used ?? sc.jobs.length, scan_limit: 50, has_key: sc.key, trial: null })
+    if (p === '/api/usage') return json({ plan: 'free', scans_used: sc.used ?? sc.jobs.length, scan_limit: 50, has_key: sc.key, trial: sc.trial ?? null })
     if (p === '/api/settings/llm-key') return json({ keys: sc.key ? [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }] : [], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [{ platform: 'reddit', allowed: true, consent: false, connected: false, enabled: false }] })
     if (p === '/api/scan/sources') return json({ web_index: false, news: true, websites: true })
@@ -151,6 +153,21 @@ try {
     await card(page).waitFor()
     assert.deepEqual((await states(page)).slice(3, 6), ['qualified:unknown', 'contact:unknown', 'draft:unknown'])
     assert.deepEqual((await fixes(page)).slice(3, 6), ['', '', ''], 'nothing to press for a check that failed')
+    await ctx.close()
+    // 4b. #1678: the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
+    // nothing is pushed off the side of the page, and the card does not scroll inside itself.
+    ;({ ctx, page, writes } = await open(SCENES.pwtrial, w, h))
+    await card(page).waitFor()
+    const step = page.getByTestId('rc-search')
+    assert.equal(await step.locator('a').count(), 2, 'two ways forward on this step')
+    const text = await step.locator(':scope > div').boundingBox()
+    const buttons = await step.locator('a').evaluateAll(as => as.map(a => { const r = a.getBoundingClientRect(); return { top: r.top, right: r.right } }))
+    assert.ok(text.width >= 180, `${tag}: the step's title and detail have room to be read (${Math.round(text.width)}px wide)`)
+    if (tag === 'mobile') for (const bt of buttons) assert.ok(bt.top >= text.y + text.height - 1, 'mobile: each button sits under the text, not beside it')
+    for (const bt of buttons) assert.ok(bt.right <= w + 1, `${tag}: no button runs off the side`)
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), true, `${tag}: no sideways scroll`)
+    assert.equal(await card(page).evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1), true, `${tag}: the card does not scroll inside itself`)
+    await shot(page, `password-trial-${tag}`)
     await ctx.close()
     // 5. Everything done.
     ;({ ctx, page, writes } = await open(SCENES.done, w, h))
