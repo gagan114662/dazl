@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { addEnrichment } from '../lib/connectors/store.ts'
-import { guessDiscoverEmails, type MailboxVerifier, type VerifyAnswer } from '../lib/people/email-pattern.ts'
+import { guessDiscoverEmails, usOnlyEvidence, type MailboxVerifier, type VerifyAnswer } from '../lib/people/email-pattern.ts'
 import { VerifierError } from '../lib/people/zerobounce.ts'
 import { discoverContact, discoverSources, discoverState, GUESSED_VERIFIED_LABEL, GUESSED_VERIFIED_SHORT } from '../lib/discover/card.ts'
 import { discoverJobCounts, discoverStatesFromRows, discoverStoredSql, type DiscoverLeadRow, type DiscoverStoredRow } from '../lib/discover/state-db.ts'
@@ -136,6 +136,13 @@ test('not in the United States, or country unknown: nothing is checked and nothi
     ['a Canadian address beside a US one', { [HOME]: `${US_HOME} Also at 100 King St W, Toronto, ON M5X 1A9` }, WHERE],
     ['no address on the homepage', { [HOME]: 'Northwind Dental. Family dentistry since 1998. Book online.' }, WHERE],
     ['a homepage dazl could not read', {}, WHERE],
+    // review of #1691: a US office beside offices elsewhere, and addresses elsewhere that only look like "City, ST 12345"
+    ['a US office beside a London and a Berlin one', { [HOME]: 'Northwind Dental. Offices: New York, NY 10001 · London EC1A 1BB · Berlin' }, WHERE],
+    ['an Italian address that reads like Michigan', { [HOME]: 'Studio Northwind, Via Roma 1, Milano, MI 20121' }, WHERE],
+    ['an Italian address that reads like Pennsylvania', { [HOME]: 'Studio Northwind, Via Roma 1, Palermo, PA 90133' }, WHERE],
+    ['a German address that reads like Delaware', { [HOME]: 'Northwind Zahnmedizin, Unter den Linden 1, Berlin, DE 10115' }, WHERE],
+    ['a US address beside a phone number outside the US', { [HOME]: `${US_HOME} London desk: +44 20 7946 0000` }, WHERE],
+    ['a US address beside another country\'s name', { [HOME]: `${US_HOME} We also see patients in Toronto, Canada` }, WHERE],
     ['the request names Germany', { [HOME]: US_HOME }, ['Dental clinics in Germany']],
   ]
   for (const [what, pages, where] of cases) {
@@ -153,6 +160,21 @@ test('not in the United States, or country unknown: nothing is checked and nothi
   addLead(db)
   const run = await guessDiscoverEmails(db, 'T', 'j1', { env: ON, where: WHERE, readHome: async () => { throw new Error('socket hang up') }, verifier: stubVerifier({}, asked) })
   assert.deepEqual([asked.length, run.checked, run.leads], [0, 0, 0])
+})
+
+test('the step\'s reading of a homepage: a US address whose ZIP code is that state\'s, and no sign of any other country', () => {
+  for (const us of [US_HOME, 'Harbour Smiles, 12 Dock St, Portland, ME 04101', 'Acme Labs, 1 Market St, Wilmington, DE 19801', 'Offices: New York, NY 10001 and Austin, TX 78701', 'Call +1 512 555 0100. 500 Congress Ave, Austin, TX 78701-1234'])
+    assert.equal(usOnlyEvidence(us, WHERE).us, true, us)
+  const no: [string, RegExp][] = [
+    ['Offices: New York, NY 10001 · London EC1A 1BB · Berlin', /UK postcode/],
+    ['Via Roma 1, Milano, MI 20121', /ZIP code/], ['Via Roma 1, Palermo, PA 90133', /ZIP code/], ['Unter den Linden 1, Berlin, DE 10115', /ZIP code/],
+    [`${US_HOME} London desk: +44 20 7946 0000`, /phone number outside the US/],
+    [`${US_HOME} We also see patients in Toronto, Canada`, /names CA/],
+    ['100 King St W, Toronto, ON M5X 1A9', /Canadian/], ['Family dentistry since 1998', /no US address/],
+  ]
+  for (const [text, why] of no) { const r = usOnlyEvidence(text, WHERE); assert.equal(r.us, false, text); assert.match(r.us ? '' : r.reason, why, text) }
+  assert.equal(usOnlyEvidence(US_HOME, ['Dental clinics in Germany']).us, false)
+  assert.equal(usOnlyEvidence(undefined, WHERE).us, false)
 })
 
 test('a catch-all domain is never verified: one check, no row, and no second format', async () => {

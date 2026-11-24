@@ -1464,9 +1464,11 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
 // after the lane's search has finished and its leads are stored, a lead that names a person and has a website but no address of that
 // person's own gets a guessed address checked by the mailbox verifier (lib/people/email-pattern.ts guessDiscoverEmails, which holds
 // every switch, cap and rule). It runs after finish(), so the search's status, counts and spend are already final: whatever happens
-// here - a slow provider, an error, the deadline - the result stands. One deadline for the whole step; a search that was cancelled or
-// taken over asks nothing more of the provider.
-const DISCOVER_GUESS_BUDGET_MS = 60_000
+// here - a slow provider, an error, the deadline - the result stands. One short deadline for the WHOLE step (every homepage read and
+// every check together, not each one): the runner waits for it before its next job, so it may hold the runner 20 seconds at most; a
+// check in flight at the deadline is cut off and recorded as unanswered, never as verified. A search that was cancelled or taken over
+// asks nothing more of the provider.
+const DISCOVER_GUESS_BUDGET_MS = 20_000
 async function guessLaneEmails(db: Database.Database, job: Job, leadIds: string[], where: string[], d: RunDeps['emailGuess']): Promise<void> {
   if (!leadIds.length) return
   const ctrl = new AbortController()

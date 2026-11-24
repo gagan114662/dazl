@@ -283,6 +283,40 @@ export function usEvidence(homeText: string | undefined, where: string[] = []): 
   return { us: false, reason: 'no US address on the homepage: country unknown' }
 }
 
+// The stricter reading the discovery lane's guessed-address step uses (review of #1691). usEvidence alone accepts a homepage that lists
+// a US office beside offices elsewhere ("New York, NY 10001 · London EC1A 1BB · Berlin"), and reads "Milano, MI 20121", "Palermo, PA
+// 90133" or "Berlin, DE 10115" as Michigan, Pennsylvania and Delaware. Here, on top of usEvidence:
+//   - any sign of another country on the homepage means NOT US: a UK postcode, a phone number with a dialling code other than +1, or
+//     another country's name (countriesIn, read across the page's separators);
+//   - a "City, ST 12345" counts only when that ZIP code belongs to that state (the first three digits, ZIP3 below).
+// The older engine's callers keep usEvidence as it was; nothing of theirs changes.
+const UK_POSTCODE = /\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/
+const FOREIGN_DIAL = /\+[2-9]\d/
+// The three-digit ZIP prefixes of each state, as inclusive ranges. A state not listed here (a territory) is never accepted.
+const ZIP3: Record<string, [number, number][]> = {
+  AL: [[350, 369]], AK: [[995, 999]], AZ: [[850, 865]], AR: [[716, 729]], CA: [[900, 961]], CO: [[800, 816]], CT: [[60, 69]], DE: [[197, 199]],
+  DC: [[200, 205]], FL: [[320, 349]], GA: [[300, 319], [398, 399]], HI: [[967, 968]], ID: [[832, 838]], IL: [[600, 629]], IN: [[460, 479]],
+  IA: [[500, 528]], KS: [[660, 679]], KY: [[400, 427]], LA: [[700, 714]], ME: [[39, 49]], MD: [[206, 219]], MA: [[10, 27], [55, 55]],
+  MI: [[480, 499]], MN: [[550, 567]], MS: [[386, 397]], MO: [[630, 658]], MT: [[590, 599]], NE: [[680, 693]], NV: [[889, 898]], NH: [[30, 38]],
+  NJ: [[70, 89]], NM: [[870, 884]], NY: [[5, 5], [100, 149]], NC: [[270, 289]], ND: [[580, 588]], OH: [[430, 459]], OK: [[730, 749]],
+  OR: [[970, 979]], PA: [[150, 196]], RI: [[28, 29]], SC: [[290, 299]], SD: [[570, 577]], TN: [[370, 385]], TX: [[750, 799], [885, 885]],
+  UT: [[840, 847]], VT: [[50, 59]], VA: [[201, 201], [220, 246]], WA: [[980, 994]], WV: [[247, 268]], WI: [[530, 549]], WY: [[820, 831]],
+}
+const zipInState = (state: string, zip: string): boolean => { const p = Number(zip.slice(0, 3)); return (ZIP3[state] ?? []).some(([a, b]) => p >= a && p <= b) }
+export function usOnlyEvidence(homeText: string | undefined, where: string[] = []): { us: true; basis: string } | { us: false; reason: string } {
+  const base = usEvidence(homeText, where)
+  if (!base.us || !homeText) return base
+  if (UK_POSTCODE.test(homeText)) return { us: false, reason: 'homepage states a UK postcode' }
+  if (FOREIGN_DIAL.test(homeText)) return { us: false, reason: 'homepage gives a phone number outside the US' }
+  const named = [...new Set(countriesIn(homeText.replace(/[·•|;\n\r\t]+/g, ',')))].filter(c => c !== 'US')
+  if (named.length) return { us: false, reason: `homepage names ${named.join(', ')}` }
+  for (const m of homeText.matchAll(US_ZIP_ADDRESS)) {
+    const zip = /(\d{5})(?:-\d{4})?$/.exec(m[0])?.[1]
+    if (m[2] in US_STATES && zip && zipInState(m[2], zip)) return { us: true, basis: `homepage address: ${m[0]}`.slice(0, 160) }
+  }
+  return { us: false, reason: 'no US address whose ZIP code belongs to its state: country unknown' }
+}
+
 // ---- part 3: mailbox verification ----
 export const VERIFICATIONS = ['none', 'pending', 'verified', 'catch_all', 'undeliverable', 'uncertain', 'refused'] as const
 export type Verification = typeof VERIFICATIONS[number]
@@ -519,8 +553,9 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
 
 // ---- the discovery lane: a guessed address, kept only when the mailbox check says the mailbox exists (owner decision 2026-11-24) ----
 // For each lead of one finished search that names a person (first and last name), has a company website and no address of that
-// person's own: read the company's own homepage (free, dazl's own fetch), and only when it states a US address (usEvidence: a Canadian
-// address, no address, or a request that names another country all mean "not US") build the person's address at that domain in FORMATS
+// person's own: read the company's own homepage (free, dazl's own fetch), and only when it states a US address and no other country
+// (usOnlyEvidence: a Canadian or UK address, another country's name or phone code, a ZIP code that is not its state's, no address, or
+// a request that names another country all mean "not US") build the person's address at that domain in FORMATS
 // order and ask the verifier, one address at a time, at most GUESS_MAX_CHECKS_PER_LEAD per lead, stopping at the first 'deliverable'.
 // Fail closed, in this order: EMAIL_GUESS_ENABLED=1, 'zerobounce' named in DAZL_PAID_VENDORS, a configured verifier, a daily cap above 0
 // (per workspace) and a monthly cap above 0. Every check is reserved (reserveVerifySlot) and written to the candidates ledger BEFORE
@@ -572,7 +607,8 @@ export async function guessDiscoverEmails(db: Database.Database, tenantId: strin
     let homeText: string | null = null
     try { homeText = await opts.readHome(homeUrl, opts.signal) } catch { /* unread: country unknown, which counts as not US */ }
     if (halted()) return { ...out, aborted: true }
-    const us = usEvidence(homeText ?? undefined, opts.where)
+    // the strict reading: any other country on the homepage, or a ZIP code that is not that state's, means not US
+    const us = usOnlyEvidence(homeText ?? undefined, opts.where)
     if (!us.us) continue
     const basis = us.basis
     const candidates: { address: string; format: Format }[] = []
