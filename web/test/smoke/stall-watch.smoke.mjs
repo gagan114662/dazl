@@ -30,11 +30,16 @@ try {
   await ctx.addCookies([{ name: 'dazl_session', value: srv.token, url: base }])
   await ctx.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort())
   const page = await ctx.newPage()
-  const docs = [], writes = []
+  const docs = [], writes = [], reports = []
   page.on('request', r => {
     if (r.resourceType() === 'document') docs.push(new URL(r.url()).pathname)
     if (!['GET', 'HEAD'].includes(r.method())) writes.push(`${r.method()} ${new URL(r.url()).pathname}`)
+    // this check fails now and then with one POST /api/client-errors (three PRs on 2026-11-24): keep what the page reported
+    // (kind, error class, path and frames only: lib/client-error-report.ts) so the failure names the error
+    if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/client-errors') reports.push(String(r.postData() ?? '').slice(0, 1500))
   })
+  page.on('pageerror', e => reports.push(`pageerror: ${String(e?.stack ?? e).slice(0, 1500)}`))
+  page.on('console', m => { if (m.type() === 'error') reports.push(`console.error: ${m.text().slice(0, 500)}`) })
   const leadsLink = () => page.locator('aside').getByRole('link', { name: 'Leads', exact: true })
 
   // C (Qodo #1546): a plain same-origin anchor the router does not take over - a file download that leaves the URL unchanged -
@@ -83,7 +88,7 @@ try {
   if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/stall-watch-B.png` })
   assert.deepEqual(docs, [], 'B: no second automatic reload within the window')
   assert.equal(button, true, 'B: a visible Reload button')
-  assert.deepEqual(writes, [], 'nothing written')
+  assert.deepEqual(writes, [], `nothing written; the page reported: ${reports.join(' | ') || 'nothing captured'}`)
   console.log('\nA held soft navigation recovers once, then shows a Reload button.')
 } finally {
   await browser?.close(); proxy.close(); srv.stop()

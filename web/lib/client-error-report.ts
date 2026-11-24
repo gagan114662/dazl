@@ -74,13 +74,22 @@ export function reportClientError(kind: ClientErrorKind, err: unknown, w: Win = 
   } catch { return false }
 }
 
-let installed = false
-export function installClientErrorReporting(w: Win = globalThis as unknown as Win): void {
+// A page that is being left is not a page with an error: when the browser starts to load another document (a link, a reload, the
+// stall recovery in app/app/stall-watch.tsx), the requests still in flight are cancelled and their callers reject. Those rejections
+// were reported as errors, some of the time (web/test/smoke/stall-watch.smoke.mjs failed four times on 2026-11-24 with one such
+// POST). For LEAVING_MS after the page starts to unload, uncaught errors and rejections are not reported. A cancelled unload (the
+// person stays) is covered by the window ending; an error boundary still reports, since a boundary means the page rendered.
+export const LEAVING_MS = 5000
+let installed = false, leavingAt: number | null = null
+export function installClientErrorReporting(w: Win = globalThis as unknown as Win, now: () => number = Date.now): void {
   if (installed) return
   installed = true
-  w.addEventListener('error', (ev: ErrorEvent) => { reportClientError('error', ev.error ?? ev.message, w) })
-  w.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => { reportClientError('unhandledrejection', ev.reason, w) })
+  const leaving = () => leavingAt !== null && now() - leavingAt < LEAVING_MS
+  w.addEventListener('beforeunload', () => { leavingAt = now() })
+  w.addEventListener('pagehide', () => { leavingAt = now() })
+  w.addEventListener('error', (ev: ErrorEvent) => { if (!leaving()) reportClientError('error', ev.error ?? ev.message, w) })
+  w.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => { if (!leaving()) reportClientError('unhandledrejection', ev.reason, w) })
 }
 
 // tests only
-export function resetClientErrorReporting(): void { state.sent = 0; state.seen.clear(); installed = false }
+export function resetClientErrorReporting(): void { state.sent = 0; state.seen.clear(); installed = false; leavingAt = null }

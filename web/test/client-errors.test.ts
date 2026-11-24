@@ -11,7 +11,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 import { recordClientError } from '../lib/ops/client-errors.ts'
-import { MAX_BODY, clientFrames, clientReport, installClientErrorReporting, loadedScripts, reportClientError, resetClientErrorReporting } from '../lib/client-error-report.ts'
+import { LEAVING_MS, MAX_BODY, clientFrames, clientReport, installClientErrorReporting, loadedScripts, reportClientError, resetClientErrorReporting } from '../lib/client-error-report.ts'
 
 // The scripts a page loaded (browser side) and the bundles a build emitted (server side, a fake .next/static).
 const LOADED = new Set(['/_next/static/chunks/app/page-1a2b.js', '/_next/static/chunks/main.js'])
@@ -169,4 +169,37 @@ test('/api/client-errors through the real route file: same origin only, size lim
   assert.equal(r.error, undefined, String(r.error))
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /CLIENT_ERRORS_ROUTE_OK/)
+})
+
+// web/test/smoke/stall-watch.smoke.mjs failed four times on 2026-11-24 with one unexpected POST /api/client-errors: when the stall
+// recovery loads the page again, the requests still in flight are cancelled, and the rejection of one was reported as an error.
+test('a page that is being left reports no uncaught error or rejection; a page that stays reports again after the window', async () => {
+  resetClientErrorReporting()
+  const posts: string[] = []
+  const listeners: Record<string, (e: unknown) => void> = {}
+  let clock = 1_000_000
+  const w = {
+    location: { pathname: '/app/leads' },
+    fetch: (async (_url: string, init: RequestInit) => { posts.push(String(JSON.parse(String(init.body)).type)); return new Response(null, { status: 204 }) }) as unknown as typeof fetch,
+    addEventListener: (t: string, f: (e: never) => void) => { listeners[t] = f as (e: unknown) => void },
+  }
+  installClientErrorReporting(w, () => clock)
+  listeners.unhandledrejection({ reason: new TypeError('before leaving') })
+  assert.deepEqual(posts, ['TypeError'], 'an ordinary rejection is reported')
+  // the browser starts to load another document: the cancelled requests reject
+  listeners.beforeunload({})
+  clock += 50
+  listeners.unhandledrejection({ reason: new RangeError('Failed to fetch') })
+  listeners.error({ error: new SyntaxError('aborted') })
+  assert.deepEqual(posts, ['TypeError'], 'nothing is reported while the page is being left')
+  clock += 200
+  listeners.pagehide({})
+  clock += LEAVING_MS - 1
+  listeners.error({ error: new EvalError('still leaving') })
+  assert.deepEqual(posts, ['TypeError'])
+  // the unload was cancelled and the person stayed: reporting resumes once the window has passed
+  clock += 2
+  listeners.error({ error: new URIError('after staying') })
+  assert.deepEqual(posts, ['TypeError', 'URIError'])
+  resetClientErrorReporting()
 })
