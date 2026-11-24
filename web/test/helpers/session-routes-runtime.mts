@@ -20,6 +20,7 @@ setScanDb(raw)
 const sessions = await import('../../app/api/auth/sessions/route.ts')
 const revokeAll = await import('../../app/api/auth/sessions/revoke-all/route.ts')
 const reauth = await import('../../app/api/auth/reauth/route.ts')
+const signout = await import('../../app/api/auth/signout/route.ts')
 
 const req = (path: string, method: string, body?: unknown) => new NextRequest(`http://localhost${path}`, {
   method, headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost' }, body: body === undefined ? undefined : JSON.stringify(body) })
@@ -93,4 +94,20 @@ test('re-authentication: the right password makes only this session fresh; a wro
   assert.equal(authed(p2), old, "the account's other session is not made fresh")
   assert.deepEqual({ fresh: (await call(p1, () => reauth.GET())).body.fresh, method: (await call(p1, () => reauth.GET())).body.method }, { fresh: true, method: 'password' })
   console.log('REAUTH ok')
+})
+
+// #1686 (production, 2026-11-24): one browser held two accounts' sessions (two dazl_session cookies). Sign out ended one of them and
+// the browser stayed signed in as the other account. The real sign-out route now ends every session the browser presents.
+test('#1686 sign-out ends every session the browser presented, not only the first cookie', async () => {
+  await createPasswordUser(user('S1')); await createPasswordUser(user('S2'))
+  raw.prepare('UPDATE users SET email_verified_at = 1 WHERE id IN (?, ?)').run('S1', 'S2')
+  const first = await createSession('S1'), second = await createSession('S2'), elsewhere = await createSession('S2')
+  assert.ok(await getSessionUser(first)); assert.ok(await getSessionUser(second))
+  const jar = new Map([['dazl_session', first]])
+  const res = await withJar(jar, () => signout.POST(new Request('http://localhost/api/auth/signout', { method: 'POST', headers: { 'content-type': 'application/json', cookie: `dazl_session=${first}; dazl_session=${second}` } })))
+  assert.equal(res.status, 200)
+  assert.equal(await getSessionUser(first), null, 'the first cookie\'s session is ended')
+  assert.equal(await getSessionUser(second), null, 'and the second cookie\'s: the browser is not left signed in as the other account')
+  assert.ok(await getSessionUser(elsewhere), 'a session this browser did not present is untouched')
+  assert.equal(jar.has('dazl_session'), false, 'the cookie is removed')
 })

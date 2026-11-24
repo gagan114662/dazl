@@ -85,3 +85,31 @@ test('#1686 proxy: a page on www is redirected to the same path on the site\'s o
     assert.equal(passed(own), true, 'the site\'s own hostname is served as before')
   } finally { if (before === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = before }
 })
+
+// #1686: a browser carrying two sessions (an old parent-domain cookie beside a host-only one) has the old cookie removed on a page
+// load: one Set-Cookie line for dazl_session, the page asked for again, and never a second redirect.
+test('#1686 proxy: two sessions presented on a page load are answered with the removal of the old parent-domain cookie, once', async () => {
+  const { db, token } = await store(); setDb(db)
+  const other = await createSession('u1', db)
+  const before = process.env.PUBLIC_BASE_URL
+  process.env.PUBLIC_BASE_URL = 'https://dazl.test'
+  try {
+    const two = `dazl_session=${other}; dazl_session=${token}`
+    const r = await proxy(new NextRequest('https://dazl.test/app/leads?job=1', { headers: { host: 'dazl.test', cookie: two } }))
+    assert.equal(r.status, 307)
+    assert.equal(r.headers.get('location'), 'https://dazl.test/app/leads?job=1', 'the same page, asked for again')
+    const set = r.headers.getSetCookie()
+    assert.deepEqual(set.filter(c => c.startsWith('dazl_session=')), ['dazl_session=; Domain=.dazl.test; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Secure; SameSite=Lax'], 'exactly one line for the session cookie: the old form removed, the host-only one untouched')
+    assert.equal(set.filter(c => c.startsWith('dazl_session_fix=1')).length, 1)
+    // the browser comes back still carrying both (the old cookie could not be removed): served, not redirected again
+    const again = await proxy(new NextRequest('https://dazl.test/app/leads?job=1', { headers: { host: 'dazl.test', cookie: `${two}; dazl_session_fix=1` } }))
+    assert.notEqual(again.status, 307, 'no redirect loop')
+    // one session: served as before, nothing removed
+    const one = await proxy(new NextRequest('https://dazl.test/app/leads', { headers: { host: 'dazl.test', cookie: `dazl_session=${token}` } }))
+    assert.equal(passed(one), true)
+    assert.equal(one.headers.getSetCookie().filter(c => c.startsWith('dazl_session')).length, 0)
+    // an API call with two sessions is not redirected
+    const api = await proxy(new NextRequest('https://dazl.test/api/usage', { headers: { host: 'dazl.test', cookie: two } }))
+    assert.equal(api.headers.get('location'), null)
+  } finally { if (before === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = before }
+})

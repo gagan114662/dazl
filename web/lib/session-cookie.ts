@@ -1,13 +1,18 @@
-// The session cookie in the browser (#1686). Google sign-in sets dazl_session for the parent domain (lib/auth-google.ts cookieDomain:
-// the sign-in can start on www and finish on the apex), while a password sign-in or sign-up sets it for the host only. A browser
-// keeps those as two separate cookies, so one browser could hold two accounts' sessions at once: the app showed one account in one
-// place and the other elsewhere, and Sign out removed only the host-only one, leaving the person signed in as the other account.
-// The rule now: setting the cookie in one form removes the other form, and signing out removes both and ends every session the
-// browser presented.
+// The session cookie in the browser (#1686). Google sign-in used to set dazl_session for the parent domain (Domain=.dazl.ai) while a
+// password sign-in set it for the host only. A browser keeps those as two separate cookies, so one browser could hold two accounts'
+// sessions at once: the server read whichever came first, and Sign out removed only the host-only one.
+// The rule now:
+//   - every sign-in sets the host-only cookie (lib/auth-google-response.ts setSessionCookie no longer sets a Domain), so new
+//     sign-ins can only replace one another;
+//   - a browser still carrying a parent-domain cookie from before, next to a host-only one, has the old one removed on its next
+//     page load (proxy.ts), so the most recent sign-in is the one that stays;
+//   - Sign out ends every session the browser presented.
+// No response ever carries two Set-Cookie lines for dazl_session: Next merges the cookies a route sets by NAME and would keep one.
 import { cookieDomain } from './auth-google.ts'
 
 export const SESSION_COOKIE = 'dazl_session'
-const EXPIRED = 'Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Secure; SameSite=Lax'
+// set with the redirect that removes the old cookie, so a browser whose old cookie cannot be removed is not redirected again
+export const SESSION_FIX_COOKIE = 'dazl_session_fix'
 
 // Every dazl_session value in a Cookie header, in the order sent, each once.
 export function sessionTokens(cookieHeader: string | null | undefined): string[] {
@@ -22,19 +27,16 @@ export function sessionTokens(cookieHeader: string | null | undefined): string[]
   return out
 }
 
-// The Set-Cookie lines that remove the session cookie: its host-only form, its parent-domain form, or both. Where the site has no
-// parent-domain form (localhost, an IP address) every sign-in sets the one host-only cookie, so there is no "other form" to remove:
-// 'host' and 'domain' give nothing there (review of PR #1688: removing 'host' after a Google sign-in on localhost removed the very
-// session it had just set), and 'both' (signing out) gives the host-only line.
-export function expiredSessionCookies(base: string, which: 'host' | 'domain' | 'both'): string[] {
+// The Set-Cookie line that removes the parent-domain form of the session cookie, or null where the site has none (localhost, an IP address).
+export function oldDomainSessionExpiry(base: string): string | null {
   const d = cookieDomain(base)
-  if (!d) return which === 'both' ? [`${SESSION_COOKIE}=; ${EXPIRED}`] : []
-  return [...(which !== 'domain' ? [`${SESSION_COOKIE}=; ${EXPIRED}`] : []), ...(which !== 'host' ? [`${SESSION_COOKIE}=; Domain=${d}; ${EXPIRED}`] : [])]
+  return d ? `${SESSION_COOKIE}=; Domain=${d}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Secure; SameSite=Lax` : null
 }
 
-// Adds those lines to a response. Call it last: setting another cookie through the response's cookie API afterwards rewrites the
-// Set-Cookie headers and would drop these.
-export function expireSessionCookies<T extends { headers: Headers }>(res: T, base: string, which: 'host' | 'domain' | 'both'): T {
-  for (const c of expiredSessionCookies(base, which)) res.headers.append('set-cookie', c)
-  return res
+// Whether this page request should be answered with that removal: it carries more than one session, the site has a parent-domain
+// form to remove, and this browser was not already sent the removal in the last minute.
+export function shouldDropOldSessionCookie(cookieHeader: string | null | undefined, method: string, base: string | undefined): boolean {
+  if (!base || (method !== 'GET' && method !== 'HEAD')) return false
+  if (sessionTokens(cookieHeader).length < 2 || !oldDomainSessionExpiry(base)) return false
+  return !(cookieHeader ?? '').split(';').some(p => p.trim().startsWith(`${SESSION_FIX_COOKIE}=`))
 }

@@ -7,7 +7,6 @@ import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { revokeAllSessions } from '@/lib/sessions'
 import { audit } from '@/lib/audit-route'
-import { expireSessionCookies } from '@/lib/session-cookie'
 
 // Sign the account out everywhere else ({ keep_current: true }, the default) or everywhere, this session included.
 export async function POST(req: NextRequest) {
@@ -23,6 +22,5 @@ export async function POST(req: NextRequest) {
   if (!keepCurrent) store.delete('dazl_session')
   // in the account's own workspace (as session.revoked); signing out nothing records nothing
   if (revoked > 0) await audit({ tenantId: user.actorId, actorId: user.actorId }, req, { action: 'session.revoked_all', resource: 'session', summary: { sessions: revoked, kept_current: keepCurrent } })
-  // #1686: signing out everywhere removes the cookie in both its forms from this browser
-  return keepCurrent ? NextResponse.json({ ok: true, revoked }) : expireSessionCookies(NextResponse.json({ ok: true, revoked }), process.env.PUBLIC_BASE_URL || req.url, 'domain')
+  return NextResponse.json({ ok: true, revoked })
 }

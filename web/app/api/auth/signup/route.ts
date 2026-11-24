@@ -1,4 +1,3 @@
-import { expireSessionCookies } from '@/lib/session-cookie'
 import { NextRequest, NextResponse } from 'next/server'
 import { createHash, randomBytes, scryptSync } from 'crypto'
 import { cookies } from 'next/headers'
@@ -88,9 +87,8 @@ export async function POST(req: NextRequest) {
     // #416: a preview claim this browser is carrying from a Google attempt (the httpOnly intent cookie, which the page
     // cannot read) is resumed after a password sign-in too. Only an enum goes back; the claim route re-verifies the token.
     const resume = isClaimToken(req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value) ? { resume: 'preview' as const } : {}
-    // #1686: a parent-domain session cookie left by an earlier Google sign-in goes, so this browser holds one session
-    if (form) return expireSessionCookies(signUpFormRedirect(req, 'resume' in resume ? 'signed_in_claim' : 'signed_in'), process.env.PUBLIC_BASE_URL || req.url, 'domain')   // the session cookie is set above; the app (or the carried preview claim) opens
-    return expireSessionCookies(NextResponse.json({ ok: true, redirect: '/app', ...resume }), process.env.PUBLIC_BASE_URL || req.url, 'domain')
+    if (form) return signUpFormRedirect(req, 'resume' in resume ? 'signed_in_claim' : 'signed_in')   // the session cookie is set above; the app (or the carried preview claim) opens
+    return NextResponse.json({ ok: true, redirect: '/app', ...resume })
   } catch (e) {
     captureError(e, { source: 'route', where: '/api/auth/signup', method: 'POST', requestId: requestIdOf(req) })
     return fail('failed', { error: 'Something went wrong. Try again.' }, 500)

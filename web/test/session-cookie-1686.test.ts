@@ -1,11 +1,14 @@
 // #1686 (Quest, production, 2026-11-24): after a Google sign-in as one account and a password sign-in as another in the same browser,
 // Settings showed one account, the dashboard the other, and Sign out left the browser signed in. Production records showed no shared
-// data: each account owned only its own workspace. The cause was the cookie: Google sign-in sets dazl_session for the parent domain,
-// a password sign-in sets it for the host only, the browser keeps both, and Sign out removed only the host-only one.
+// data: each account owned only its own workspace. The cause was the cookie: Google sign-in set dazl_session for the parent domain,
+// a password sign-in set it for the host only, the browser kept both, and Sign out ended only one of the two sessions.
+// These are the pure rules; the real proxy and the real sign-out route are exercised in test/helpers/proxy-gate-runtime.mts and
+// test/helpers/session-routes-runtime.mts.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { expireSessionCookies, expiredSessionCookies, sessionTokens } from '../lib/session-cookie.ts'
+import { NextResponse } from 'next/server'
+import { SESSION_FIX_COOKIE, oldDomainSessionExpiry, sessionTokens, shouldDropOldSessionCookie } from '../lib/session-cookie.ts'
+import { setSessionCookie } from '../lib/auth-google-response.ts'
 import { canonicalPageUrl } from '../lib/canonical-host.ts'
 
 test('#1686 every session the browser presents is seen, each once, whatever else is in the Cookie header', () => {
@@ -16,43 +19,30 @@ test('#1686 every session the browser presents is seen, each once, whatever else
   assert.deepEqual(sessionTokens(''), [])
 })
 
-test('#1686 the cookie is removed in its host-only form and in its parent-domain form', () => {
-  const both = expiredSessionCookies('https://dazl.ai', 'both')
-  assert.equal(both.length, 2)
-  assert.match(both[0], /^dazl_session=; Path=\/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Secure; SameSite=Lax$/)
-  assert.match(both[1], /^dazl_session=; Domain=\.dazl\.ai; Path=\/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Secure; SameSite=Lax$/)
-  assert.deepEqual(expiredSessionCookies('https://dazl.ai', 'host'), [both[0]])
-  assert.deepEqual(expiredSessionCookies('https://dazl.ai', 'domain'), [both[1]])
-  // no parent-domain form on localhost or an IP address: nothing to remove there
-  assert.deepEqual(expiredSessionCookies('http://localhost:3000', 'domain'), [])
-  // review of PR #1688: on localhost Google sign-in sets the host-only cookie itself, so removing "the host-only form" after it
-  // would remove the session just set
-  assert.deepEqual(expiredSessionCookies('http://localhost:3000', 'host'), [])
-  assert.deepEqual(expiredSessionCookies('http://127.0.0.1:3000', 'host'), [])
-  assert.equal(expiredSessionCookies('http://127.0.0.1:3000', 'both').length, 1)
-  const res = expireSessionCookies({ headers: new Headers({ 'set-cookie': 'other=1' }) }, 'https://dazl.ai', 'both')
-  assert.equal(res.headers.getSetCookie().length, 3, 'added beside the cookies already on the response')
+test('#1686 Google sign-in sets the same host-only cookie a password sign-in sets: no Domain, so one replaces the other', () => {
+  const res = NextResponse.redirect('https://dazl.ai/app')
+  setSessionCookie(res, 'a'.repeat(64), 3600)
+  const lines = res.headers.getSetCookie().filter(c => c.startsWith('dazl_session='))
+  assert.equal(lines.length, 1)
+  assert.doesNotMatch(lines[0], /domain=/i, 'no parent-domain form any more')
+  assert.match(lines[0], /Path=\//i); assert.match(lines[0], /HttpOnly/i); assert.match(lines[0], /Secure/i); assert.match(lines[0], /SameSite=lax/i)
 })
 
-test('#1686 each way of signing in removes the other form of the cookie, and signing out removes both and ends every presented session', () => {
-  const src = (p: string) => readFileSync(new URL(`../app/api/auth/${p}/route.ts`, import.meta.url), 'utf8')
-  // a password sign-in or sign-up sets the host-only cookie and removes the parent-domain one
-  assert.match(src('signin'), /return expireSessionCookies\(NextResponse\.json\(\{ ok: true, redirect: '\/app', \.\.\.resume \}\), [^)]+, 'domain'\)/)
-  assert.equal((src('signup').match(/expireSessionCookies\([^\n]+, 'domain'\)/g) ?? []).length, 2, 'the script answer and the no-script form answer')
-  // Google sign-in sets the parent-domain cookie and removes the host-only one, as the last thing done to the response
-  const google = src('callback/google')
-  assert.match(google, /return expireSessionCookies\(res, base, 'host'\)\n\}/)
-  assert.ok(google.indexOf('setSessionCookie(res, base, session') < google.indexOf("expireSessionCookies(res, base, 'host')"))
-  // signing out: every presented session ends, the host-only cookie is deleted and the parent-domain one removed, on both answers
-  const out = src('signout')
-  assert.match(out, /sessionTokens\(req\?\.headers\.get\('cookie'\)\)/)
-  assert.match(out, /for \(const t of tokens\) await deleteSession\(t\)/)
-  assert.match(out, /cookieStore\.delete\('dazl_session'\)/)
-  assert.equal((out.match(/expireSessionCookies\([^\n]+, base, 'domain'\)/g) ?? []).length, 2)
-  assert.match(src('sessions/revoke-all'), /keepCurrent \? NextResponse\.json\(\{ ok: true, revoked \}\) : expireSessionCookies\(/)
+test('#1686 the old parent-domain cookie is removed by one line, only where there is one, and only when two sessions are presented', () => {
+  assert.equal(oldDomainSessionExpiry('https://dazl.ai'), 'dazl_session=; Domain=.dazl.ai; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Secure; SameSite=Lax')
+  assert.equal(oldDomainSessionExpiry('http://localhost:3000'), null, 'localhost has no parent-domain form')
+  assert.equal(oldDomainSessionExpiry('http://127.0.0.1:3000'), null)
+  const two = 'dazl_session=old; dazl_session=new'
+  assert.equal(shouldDropOldSessionCookie(two, 'GET', 'https://dazl.ai'), true)
+  assert.equal(shouldDropOldSessionCookie('dazl_session=only', 'GET', 'https://dazl.ai'), false, 'one session: nothing to remove')
+  assert.equal(shouldDropOldSessionCookie('dazl_session=x; dazl_session=x', 'GET', 'https://dazl.ai'), false, 'the same session twice is one session')
+  assert.equal(shouldDropOldSessionCookie(two, 'POST', 'https://dazl.ai'), false, 'only a page load is answered with a redirect')
+  assert.equal(shouldDropOldSessionCookie(two, 'GET', 'http://localhost:3000'), false)
+  assert.equal(shouldDropOldSessionCookie(two, 'GET', undefined), false)
+  assert.equal(shouldDropOldSessionCookie(`${two}; ${SESSION_FIX_COOKIE}=1`, 'GET', 'https://dazl.ai'), false, 'already sent the removal: never a second redirect, so no loop')
 })
 
-// Review of PR #1688: the site answers on www too, and a host-only cookie set on www is not removed by a sign-in on the bare hostname.
+// Review of PR #1688: the site answers on www too, and a host-only cookie set on www is not replaced by a sign-in on the bare hostname.
 test('#1686 a page asked for on www is sent to the same path on the site\'s own hostname; API calls and other hosts are left alone', () => {
   const base = 'https://dazl.ai'
   assert.equal(canonicalPageUrl('www.dazl.ai', '/sign-in?next=%2Fapp', 'GET', base), 'https://dazl.ai/sign-in?next=%2Fapp')
