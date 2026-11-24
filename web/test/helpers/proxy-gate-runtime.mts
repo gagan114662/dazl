@@ -5,12 +5,13 @@
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb, setDb, type Db } from '../../lib/db/client.ts'
 import { createPasswordUser, createSession } from '../../lib/auth-db.ts'
 import { resetStoreWarmForTest } from '../../lib/store-warm.ts'
 import { proxy } from '../../proxy.ts'
+import { setSessionCookie } from '../../lib/auth-google-response.ts'
 
 afterEach(() => { setDb(null); resetStoreWarmForTest() })
 
@@ -113,3 +114,14 @@ test('#1686 proxy: two sessions presented on a page load are answered with the r
     assert.equal(api.headers.get('location'), null)
   } finally { if (before === undefined) delete process.env.PUBLIC_BASE_URL; else process.env.PUBLIC_BASE_URL = before }
 })
+
+// (here, not in test/session-cookie-1686.test.ts: next/server loads only under this file's loader)
+test('#1686 Google sign-in sets the same host-only cookie a password sign-in sets: no Domain, so one replaces the other', () => {
+  const res = NextResponse.redirect('https://dazl.ai/app')
+  setSessionCookie(res, 'a'.repeat(64), 3600)
+  const lines = res.headers.getSetCookie().filter(c => c.startsWith('dazl_session='))
+  assert.equal(lines.length, 1)
+  assert.doesNotMatch(lines[0], /domain=/i, 'no parent-domain form any more')
+  assert.match(lines[0], /Path=\//i); assert.match(lines[0], /HttpOnly/i); assert.match(lines[0], /Secure/i); assert.match(lines[0], /SameSite=lax/i)
+})
+

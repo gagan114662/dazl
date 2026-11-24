@@ -6,9 +6,7 @@
 // test/helpers/session-routes-runtime.mts.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { NextResponse } from 'next/server'
 import { SESSION_FIX_COOKIE, oldDomainSessionExpiry, sessionTokens, shouldDropOldSessionCookie } from '../lib/session-cookie.ts'
-import { setSessionCookie } from '../lib/auth-google-response.ts'
 import { canonicalPageUrl } from '../lib/canonical-host.ts'
 
 test('#1686 every session the browser presents is seen, each once, whatever else is in the Cookie header', () => {
@@ -17,15 +15,6 @@ test('#1686 every session the browser presents is seen, each once, whatever else
   assert.deepEqual(sessionTokens('dazl_session_x=nope; xdazl_session=nope; dazl_session='), [])
   assert.deepEqual(sessionTokens(null), [])
   assert.deepEqual(sessionTokens(''), [])
-})
-
-test('#1686 Google sign-in sets the same host-only cookie a password sign-in sets: no Domain, so one replaces the other', () => {
-  const res = NextResponse.redirect('https://dazl.ai/app')
-  setSessionCookie(res, 'a'.repeat(64), 3600)
-  const lines = res.headers.getSetCookie().filter(c => c.startsWith('dazl_session='))
-  assert.equal(lines.length, 1)
-  assert.doesNotMatch(lines[0], /domain=/i, 'no parent-domain form any more')
-  assert.match(lines[0], /Path=\//i); assert.match(lines[0], /HttpOnly/i); assert.match(lines[0], /Secure/i); assert.match(lines[0], /SameSite=lax/i)
 })
 
 test('#1686 the old parent-domain cookie is removed by one line, only where there is one, and only when two sessions are presented', () => {
