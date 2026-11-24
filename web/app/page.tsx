@@ -3,8 +3,8 @@ import Link from 'next/link'
 import Banner from './banner'
 import LandingDemo from './landing-demo'
 
-import { SITE_BASE, SITE_TITLE, publicMeta } from '@/lib/site'
-import { FREE_BETA_TERMS, OWNER_PLACEHOLDERS } from '@/lib/legal/policy'
+import { SITE_BASE, SITE_TITLE, SUPPORT_EMAIL, publicMeta } from '@/lib/site'
+import { FREE_BETA_TERMS } from '@/lib/legal/policy'
 
 // Self-referencing canonical (Indexing audit finding: the homepage had none, so the
 // apex and www duplicates competed). Kept on the page, not the root layout, so child
@@ -53,7 +53,7 @@ export default function Home() {
         <h1 className="lp-h1">Your website in.<br />Verified leads out.</h1>
         <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">Paste your website. dazl finds businesses that need what you sell right now, shows you the proof, and drafts the email from your Gmail.</p>
         <p className="text-sm font-semibold mt-4" data-testid="hero-contrast">Proof behind every lead, not a database dump: each lead links to the page that shows why they need you now.</p>
-        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">Made for any business, anywhere: paste your website and dazl drafts who buys from you. What it finds depends on the public evidence available for your market.</p>
+        <p className="text-sm text-[var(--ink-2)] mt-1" data-testid="hero-any">Made for any business, anywhere: paste your website, and dazl works out who buys from you and drafts the outreach. What it finds depends on the public evidence available for your market.</p>
         <div className="flex flex-wrap gap-3 mt-8 justify-center">
           <a href="/api/auth/google" className="btn-primary btn-lg" data-testid="hero-cta">Start free</a>
           <a href="#how" className="btn-ghost btn-lg">See how it works</a>
@@ -108,7 +108,15 @@ export default function Home() {
       <footer className="mt-auto border-t border-[var(--line)]">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--ink-2)]">
           <span className="font-semibold text-[var(--ink)]">dazl</span>
-          <span>© 2026 dazl · <a href="/terms" className="hover:text-[var(--ink)]">Terms</a> · <a href="/privacy" className="hover:text-[var(--ink)]">Privacy</a> · <a href="/contact" className="hover:text-[var(--ink)]">Contact</a> · <a href={`mailto:${OWNER_PLACEHOLDERS.privacyContact}`} className="hover:text-[var(--ink)]">{OWNER_PLACEHOLDERS.privacyContact}</a> · <Link href="/sign-in" className="hover:text-[var(--ink)]">Sign in</Link></span>
+          {/* #1644: each item stays whole and the row wraps between items, so no link is left alone mid-sentence. #1650: support address. */}
+          <nav aria-label="Footer" className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span className="whitespace-nowrap">© 2026 dazl</span>
+            <a href="/terms" className="hover:text-[var(--ink)]">Terms</a>
+            <a href="/privacy" className="hover:text-[var(--ink)]">Privacy</a>
+            <a href="/contact" className="hover:text-[var(--ink)]">Contact</a>
+            <a href={`mailto:${SUPPORT_EMAIL}`} className="hover:text-[var(--ink)]">{SUPPORT_EMAIL}</a>
+            <Link href="/sign-in" className="whitespace-nowrap hover:text-[var(--ink)]">Sign in</Link>
+          </nav>
         </div>
       </footer>
     </main>

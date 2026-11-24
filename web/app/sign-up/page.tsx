@@ -1,5 +1,6 @@
 import { connection } from 'next/server'
-import { trialFundable } from '@/lib/billing/trial-budget'
+import { passwordTrialOn, trialFundable } from '@/lib/billing/trial-budget'
+import { systemMailAvailable } from '@/lib/system-mail'
 import SignUpForm from './sign-up-form'
 import { signUpFormError } from '@/lib/signup-form-fallback'
 
@@ -23,5 +24,6 @@ export const instant = false
 export default async function SignUp({ searchParams }: { searchParams: Promise<{ sent?: string | string[]; error?: string | string[] }> }) {
   await connection()
   const q = await searchParams
-  return <SignUpForm trialFunded={trialFundable()} sentWithoutScript={q.sent === '1'} errorWithoutScript={signUpFormError(q.error)} />
+  // review of #1653: an email sign-up is promised a free first search only where it can run one (the password switch on, and mail to confirm the address)
+  return <SignUpForm trialFunded={trialFundable()} emailTrial={passwordTrialOn() && systemMailAvailable()} sentWithoutScript={q.sent === '1'} errorWithoutScript={signUpFormError(q.error)} />
 }

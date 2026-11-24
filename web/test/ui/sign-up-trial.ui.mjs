@@ -23,7 +23,7 @@ try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.spli
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 
 // #1095: the trial scans come with Google sign-in (lib/trial-copy.ts signUpPlanLine)
-const TRIAL_LINE = /Sign in with Google \(or link it later\) and your first search is free: no card and no key\./
+const TRIAL_LINE = /Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own\./
 const FALLBACK_LINE = /On this site a search runs on your own Anthropic key, which you add in Settings\./
 
 async function withServer(env, fn) {
@@ -69,6 +69,8 @@ try {
     DAZL_TRIAL_GLOBAL_DAILY_USD: '10',
     DAZL_TRIAL_TINYFISH_SEARCH_USD: '0',
     DAZL_TRIAL_TINYFISH_FETCH_USD: '0',
+    // review of #1653: the line promises an email sign-up a free search only where this site can send the confirmation email
+    SYSTEM_MAIL_SMTP_URL: 'smtp://fixture.invalid', SYSTEM_MAIL_FROM: 'fixture@example.test',
   }, async base => {
     const page = await b.newPage()
     await page.goto(`${base}/sign-up`, { waitUntil: 'networkidle' })
