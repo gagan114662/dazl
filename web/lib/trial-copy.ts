@@ -94,12 +94,19 @@ export function trialRefusalNotice(reason: unknown, here: string, account: { ver
 
 // What POST /api/scan's 402 trial_unavailable (with its admission reason) says on the Leads page, in plain words: never the raw error id.
 // The money allowance (account_total_cap) is called the free trial allowance; every refusal ends with the one next step, the account's own key.
-// The sign-up page's plan line (#1095, #1428): free beta, what a search is, and the free first search, which comes with
-// Google sign-in and is never promised to the email path. Shown only where a trial can really be admitted.
+// The sign-up page's plan line (#1095, #1428, #1648): free beta, what a search is, and the free first search. Since #1630 a
+// confirmed password account gets one free search without Google, so the line promises it to both paths; the caption under
+// the Google button (SIGN_UP_GOOGLE_CAPTION) says what Google adds. Shown only where a trial can really be admitted.
+export const SIGN_UP_GOOGLE_CAPTION = 'With Google you can run up to three free searches.'
 const BETA_LINE = 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell.'
-export function signUpPlanLine(trialFunded: boolean): string {
+// emailPath (review of #1653): whether an email sign-up can really run that first search here. It cannot when the password
+// first-search switch is off, or when this site cannot send the confirmation email (the account is then never confirmed and
+// the search answers google_required). Then the line promises the free search with Google only.
+export function signUpPlanLine(trialFunded: boolean, emailPath = true): string {
   return trialFunded
-    ? `${BETA_LINE} Sign in with Google (or link it later) and your first search is free: no card and no key.`
+    ? emailPath
+      ? `${BETA_LINE} Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own.`
+      : `${BETA_LINE} Your first search is free when you sign up with Google: no card, and no AI key of your own.`
     : `${BETA_LINE} On this site a search runs on your own Anthropic key, which you add in Settings.`
 }
 

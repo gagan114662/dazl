@@ -5,6 +5,10 @@ import type { Metadata } from 'next'
 // Canonical host is the apex (https://dazl.ai), per docs/DEPLOY.md.
 export const SITE_BASE = process.env.PUBLIC_BASE_URL || 'https://dazl.ai'
 
+// #1650: product, bug and account questions. Data and privacy requests stay with the policy's address (lib/legal/policy.ts
+// OWNER_PLACEHOLDERS.privacyContact). Owner-confirmed as receiving mail on 2026-11-23 (#1428).
+export const SUPPORT_EMAIL = 'support@dazl.ai'
+
 export const SITE_TITLE = 'dazl - find leads with proof'
 export const SITE_DESCRIPTION = 'Say who you are looking for. dazl finds buyers showing intent and verifies each lead against its source.'
 

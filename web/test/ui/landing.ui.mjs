@@ -65,7 +65,7 @@ try {
     await demo.scrollIntoViewIfNeeded(); await page.waitForTimeout(600)
     // Any business, any country: five very different businesses to pick from; picking one replays the run for it.
     assert.deepEqual(await page.getByTestId('demo-chips').getByRole('button').allTextContents(), ['Dental · New York', 'B2B SaaS · London', 'Marketing agency · Toronto', 'Commercial real estate · Gurugram', 'Logistics · Dubai'])
-    assert.equal(await page.getByTestId('hero-any').innerText(), 'Made for any business, anywhere: paste your website and dazl drafts who buys from you. What it finds depends on the public evidence available for your market.')
+    assert.equal(await page.getByTestId('hero-any').innerText(), 'Made for any business, anywhere: paste your website, and dazl works out who buys from you and drafts the outreach. What it finds depends on the public evidence available for your market.')
     await page.getByTestId('demo-chips').getByRole('button', { name: 'Logistics · Dubai' }).click()
     assert.equal(await page.getByTestId('demo-scenario').getAttribute('data-scenario'), 'logistics-dubai')
     assert.equal(await page.getByTestId('demo-chips').getByRole('button', { name: 'Logistics · Dubai' }).getAttribute('aria-pressed'), 'true')
@@ -87,7 +87,7 @@ try {
     if (process.env.SHOTS) await page.getByTestId('proof').screenshot({ path: path.join(process.env.SHOTS, `${kind}-proof.png`) })
     assert.match(await page.locator('#pricing').innerText(), /Free during the beta[\s\S]*We don't charge you anything\.[\s\S]*You approve every one/)
     assert.doesNotMatch(await page.locator('#pricing').innerText(), /\$\d|Pro\b|own (AI )?key|Fair-use/i, 'free beta only (#1428)')
-    assert.match(await page.locator('footer').innerText(), /Terms[\s\S]*Privacy[\s\S]*Contact[\s\S]*privacy@dazl\.ai/)
+    assert.match(await page.locator('footer').innerText(), /Terms[\s\S]*Privacy[\s\S]*Contact[\s\S]*support@dazl\.ai/)
     // 4. Nothing of the old page.
     const all = await main.innerText()
     for (const gone of [/Illustration only/i, /site blocked/i, /BYOK/, /\bFIND\b|\bVERIFY\b/]) assert.doesNotMatch(all, gone, String(gone))

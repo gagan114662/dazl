@@ -1,8 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
+import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 
-interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number }
+interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; sent_today?: number }
 
 export default function GmailPanel() {
   const [s, setS] = useState<State | null>(null)
@@ -22,7 +23,7 @@ export default function GmailPanel() {
     setBooking(b => b || j.sender?.booking_url || '')
   }
   useEffect(() => {
-    void load()
+    void Promise.resolve().then(load) // after the effect, as the other panels load (react-hooks/set-state-in-effect)
     const q = new URLSearchParams(window.location.search).get('gmail')
     // Google's redirect lands at the top of Settings: bring this panel (and its next step) into view.
     // The sections above load on their own and can push it back down, so it keeps its place while they settle
@@ -38,8 +39,10 @@ export default function GmailPanel() {
         setTimeout(stop, 3000)
       }
     }
-    if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
-    else if (q) setMsg('Gmail was not connected. Try again.')
+    void Promise.resolve().then(() => {
+      if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
+      else if (q) setMsg('Gmail was not connected. Try again.')
+    })
   }, [])
 
   async function saveSender(e: React.FormEvent) {
@@ -63,7 +66,7 @@ export default function GmailPanel() {
           <div className="flex items-center justify-between">
             <span>{s.gmail.email} {s.gmail.status === 'active' ? '(connected)' : '(needs reconnecting)'}</span>
             <span className="flex gap-3">
-              {s.gmail.status !== 'active' && <a href="/api/gmail/connect" className="underline text-[#111]">Reconnect</a>}
+              {s.gmail.status !== 'active' && <a href={GMAIL_EXPLAINER_PATH} className="underline text-[#111]">Reconnect</a>}
               <button onClick={disconnect} className="underline text-[#111]">Disconnect</button>
             </span>
           </div>
@@ -73,7 +76,7 @@ export default function GmailPanel() {
         </div>
       ) : (
         <div className="mb-4">
-          <a href="/api/gmail/connect" className="inline-block btn-primary px-5 py-2 text-sm">Connect Gmail</a>
+          <a href={GMAIL_EXPLAINER_PATH} className="inline-block btn-primary px-5 py-2 text-sm">Connect Gmail</a>
           <p className="text-[#666] text-xs mt-2">Google will ask for permission to send email as you. dazl does not ask to read your mailbox.</p>
         </div>
       )}
@@ -83,7 +86,7 @@ export default function GmailPanel() {
         <input className={field} type="url" placeholder="Booking link, optional (https://cal.com/you or https://calendly.com/you) - included in automatic follow-ups" value={booking} maxLength={300} onChange={e => setBooking(e.target.value)} />
         <button className="btn-ghost px-5 py-2 text-sm w-fit">Save sender details</button>
       </form>
-      {s && <p className="text-[#666] text-xs mt-3">Sent in the last 24 hours: {s.sent_24h} of {s.daily_cap}.</p>}
+      {s && <p className="text-[#666] text-xs mt-3">Sent today: {s.sent_today ?? s.sent_24h} of {s.daily_cap}. The count starts again at midnight Toronto time.</p>}
       {msg && <p className="text-sm text-[#555] mt-2" role="status">{msg}{justConnected && <> <a className="underline text-[#111]" href="/app/outreach">Back to Outreach to send your approved emails</a></>}</p>}
     </div>
   )

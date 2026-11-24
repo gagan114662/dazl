@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import type { HomeResults } from '@/lib/outreach/home-results'
 import type { HomeReady } from '@/lib/outreach/home-ready'
-import { holdWords } from '@/lib/outreach/hold-words'
+import { holdWords, homeWindowHeading, homeWindowScope } from '@/lib/outreach/hold-words'
 import { signalLabel } from '@/lib/outreach/signal-label'
 
 const REPLY_WORD: Record<string, string> = { positive: 'Interested', negative: 'Not interested', other: 'Replied', opt_out: 'Opted out', uncertain: 'Replied' }
@@ -44,7 +44,8 @@ export default function HomeResultsPanel() {
     </Link>)
   return (
     <section className="mb-6" aria-labelledby="h-results" data-testid="home-results">
-      <h2 id="h-results" className="font-semibold mb-2">Last {r.window_days} days</h2>
+      <h2 id="h-results" className="font-semibold mb-1">{homeWindowHeading(r.window_days)}</h2>
+      <p className="text-xs text-[var(--ink-2)] mb-2" data-testid="results-scope">{homeWindowScope(r.window_days)}</p>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {/* The tile opens where its number is: the one scan holding every ready lead, else the list of scans (never a scan that
             shows fewer rows than the tile says). */}

@@ -8,7 +8,7 @@ import { READ_CONSENT_TEXT } from '../../lib/outreach/read-consent.ts'
 //      source + date), Approve and draft / Skip, "n of N";
 //   2. Approve is the existing draft action: one POST /api/outreach { lead_id } per approval; a server refusal is shown on
 //      the card and the lead stays; a lead the approve gate holds (no published email) says why and cannot be approved;
-//   3. then "Before your first email sends": Gmail with its read notice and a Connect link (/api/gmail/connect), and the
+//   3. then "Before your first email sends": Gmail with its read notice and a Connect link (/app/connect-gmail, the page before Google's screens), and the
 //      sender name + mailing address (the existing PUT /api/outreach/settings); "Review your N drafts" opens Outreach;
 //   4. nothing is sent; no horizontal overflow at 390px.
 // It prints: things typed before the first lead card and before the first draft, and seconds from sign-in to each.
@@ -174,7 +174,7 @@ async function run({ width, height, tag, drafted = [] }) {
   // #1603: the connect is send-only, so no reply-reading notice is shown beside it even if the API still sent one.
   assert.equal(await page.getByTestId('read-notice').count(), 0, 'no read notice beside the send-only connect')
   await page.getByTestId('setup-gmail').getByText(/dazl does not ask to read your mailbox/).waitFor()
-  assert.equal(await page.getByTestId('connect-gmail').getAttribute('href'), '/api/gmail/connect')
+  assert.equal(await page.getByTestId('connect-gmail').getAttribute('href'), '/app/connect-gmail') // #1603: the page before Google's warning
   await shot('6-setup')
   await type(page.getByPlaceholder('Your name, as recipients will see it'), 'Dana Okafor')
   await type(page.getByPlaceholder(/Mailing address/), '14 Leonard Street, London EC2A 4AY, UK')

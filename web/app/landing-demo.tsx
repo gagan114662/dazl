@@ -28,12 +28,12 @@ export default function LandingDemo() {
   const done = t >= LEADS_AT
   return (
     <div className="lp-demo" data-testid="landing-demo" data-step={t >= PLAY_AT ? 'live' : done ? 'leads' : t >= TYPE_END ? 'checks' : 'typing'} aria-label={EXAMPLES.real ? 'A dazl run: a website in, checks, leads found with their evidence, a saved search that runs again every day' : 'Illustrative example of a dazl run, with made-up companies and people: a website in, checks, leads found, a saved search that runs again every day'}>
-      {!EXAMPLES.real && <div className="text-xs font-medium text-[var(--ink-3)] mb-2 text-center" data-testid="demo-label">Illustrative example · made-up companies and people</div>}
+      {!EXAMPLES.real && <div className="text-sm font-medium text-[var(--ink-2)] mb-2 text-center" data-testid="demo-label">Illustrative example · made-up companies and people</div>}
       <div className="flex flex-wrap justify-center gap-1.5 mb-3" role="group" aria-label="Pick a business to see its run" data-testid="demo-chips">
         {EXAMPLES.scenarios.map((x, i) => <button key={x.id} type="button" className="chip text-xs" aria-pressed={i === sc} onClick={() => setRun({ t: still ? PLAY_AT : 0, sc: i })}>{x.chip}</button>)}
       </div>
       <div className="lp-card p-4 sm:p-5" data-testid="demo-scenario" data-scenario={S.id}>
-        <div className="text-xs font-medium text-[var(--ink-3)] mb-2">Your website</div>
+        <div className="text-xs font-medium text-[var(--ink-2)] mb-2">Your website</div>
         <div className="lp-url">{typed}<span className="lp-caret" aria-hidden /></div>
         <ul className="mt-4 grid sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
           {CHECKS.map((c, i) => {
@@ -48,7 +48,7 @@ export default function LandingDemo() {
       <div className={`lp-card mt-3 p-4 sm:p-5 lp-fade ${done ? 'lp-in' : ''}`}>
         <div className="flex items-center justify-between mb-3">
           <div className="font-semibold">3 leads ready</div>
-          <span className="text-xs text-[var(--ink-3)]">2 more set aside for you to check</span>
+          <span className="text-xs text-[var(--ink-2)]">2 more set aside for you to check</span>
         </div>
         <div className="grid gap-2">
           {LEADS.map((l, i) => (
@@ -63,7 +63,7 @@ export default function LandingDemo() {
                   <blockquote className="lp-quote mt-2">“{l.quote}”</blockquote>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-2 text-xs" data-testid="demo-evidence">
                     {l.url ? <a className="pill pill-plain" href={l.url} target="_blank" rel="noopener noreferrer nofollow">{l.source}</a> : <span className="pill pill-plain">{l.source}</span>}
-                    <span className="text-[var(--ink-3)]">{l.date}</span>
+                    <span className="text-[var(--ink-2)]">{l.date}</span>
                     <span className="pill pill-mint">✓ Company and date checked</span>
                   </div>
                   <div className="text-sm text-[var(--ink-2)] mt-1.5">{l.why}</div>

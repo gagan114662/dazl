@@ -69,7 +69,9 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   const [sizes, setSizes] = useState('')
   const [exclude, setExclude] = useState('')
   const [readFrom, setReadFrom] = useState('')
-  const [manual, setManual] = useState(false)   // #1571: the person chose "No website": nothing was read, the fields start empty
+  // #1571: the person chose "No website" and nothing was read, so the fields start empty. Only then: an account that comes back
+  // with a saved profile gets its saved answers in the fields, and the screen must not call them empty.
+  const [manual, setManual] = useState(false)
   const [ask, setAsk] = useState('')
   // True while the sentence is a suggestion (picked or prefilled), false once the user types their own. A suggestion is
   // replaced when the profile changes, so the box never keeps a sentence built from an older profile.
@@ -417,7 +419,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
               </form>
               <div className="mt-5 flex flex-col items-center gap-2 text-sm text-[var(--ink-2)]">
-                <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" disabled={busy} onClick={() => { setError(''); setManual(true); setStep('brain') }}>No website? Describe your business yourself</button>
+                <button type="button" className="min-h-11 px-2 hover:text-[var(--ink)]" disabled={busy} onClick={() => { setError(''); setManual(![sells, summary, who, industries, where, signals, sizes, exclude].some(v => v.trim())); setStep('brain') }}>No website? Describe your business yourself</button>
                 <button type="button" className="min-h-11 px-2 text-xs text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setReady('home')}>Skip setup and show all options</button>
               </div>
             </div>}

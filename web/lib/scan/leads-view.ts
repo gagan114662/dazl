@@ -1,4 +1,5 @@
 // Display decisions for the leads list, kept in lib so the copy is unit-testable.
+import { listQual, type ListQual } from '../run-status.ts'
 
 // The empty-list line. A finished scan can have zero visible leads while lower-fit
 // leads sit behind the "show lower-fit leads" toggle - say that instead of claiming
@@ -86,4 +87,31 @@ export function savedGradeWhy(l: { why?: string | null; fit?: number | null; int
 // search's setting.
 export function repeatingSearchesCopy(onSearchPage: boolean): { heading: string; scope: string | null } {
   return { heading: 'Your repeating searches (all searches)', scope: onSearchPage ? 'This list covers your whole account and is the same on every search. It is not a setting of the search open on this page.' : null }
+}
+
+// The count line above an older-engine search's leads (#1238/#1062/#1620). It used to print the funnel the scan RECORDED when it finished
+// (scan_jobs.candidates / verified / needs_review), while Campaigns, its card in the Leads history and Home count the saved leads as they
+// stand now. On production (d9fa0e71, scan 5a27e8cb) the header said "10 found, 5 need your review" beside Campaigns' "6 found, 1 needs
+// your review": 10 counted the 4 candidates the scan dropped, and 4 of the 5 reviews were reasons no check can resolve (research only).
+// With the scan's current split (`current`: GET /api/campaigns?view=history, historyCampaigns - the Campaigns card's own numbers) the
+// line says those numbers; the recorded dropped count stays, since dropped candidates were never saved as leads. Without it (the read
+// failed, or the scan is not in that list) the recorded funnel is shown and marked as recorded.
+export interface RecordedQuality { candidates: number; passed: number | null; needs_review: number | null; dropped: number | null }
+export interface CurrentScanSplit { discovery: { leads: number }; qualification: ListQual }
+export function scanCountTags(recorded: RecordedQuality, current?: CurrentScanSplit | null): { tags: string[]; needsReview: number; current: boolean } {
+  const dropped = `${recorded.dropped ?? 0} dropped`
+  const review = (n: number) => `${n} need${n === 1 ? 's' : ''} your review`
+  if (!current) {
+    const n = recorded.needs_review ?? 0
+    return { tags: [`${recorded.candidates} found`, `${recorded.passed ?? 0} source-checked`, review(n), dropped], needsReview: n, current: false }
+  }
+  const q = listQual(current.qualification)
+  const tags = [`${current.discovery.leads} found`, `${q.sourceChecked} source-checked`]
+  if (q.confirmedByYou > 0) tags.push(`${q.confirmedByYou} confirmed by you`)
+  tags.push(review(q.needsReview))
+  if (q.research > 0) tags.push(`${q.research} research only`)
+  if (q.unverified > 0) tags.push(`${q.unverified} unverified`)
+  if (q.rejected > 0) tags.push(`${q.rejected} rejected`)
+  tags.push(dropped)
+  return { tags, needsReview: q.needsReview, current: true }
 }

@@ -12,9 +12,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
 import { COST_PER_PASS_SCOPE, costPerShownLead, type CostPerVerificationPass } from '@/lib/scan/cost-per-verification-pass'
 import { buildSources } from '@/lib/sources/ui-sources'
-import { emptyLeadsMessage, readyRepeats, repeatingSearchesCopy, scoreLabel, quoteNote, visibleReadyLeads } from '@/lib/scan/leads-view'
+import { emptyLeadsMessage, readyRepeats, repeatingSearchesCopy, scanCountTags, scoreLabel, quoteNote, visibleReadyLeads, type CurrentScanSplit } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
-import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
+import { companySearchEligible, findContactOffered } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, onlyNameOnly, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
 import { identityOf } from '@/lib/scan/opportunity'
 import { leadPerson, personBasis, NO_BUYER, type LeadPerson } from '@/lib/people/lead-person'
@@ -43,7 +43,7 @@ import PageSignals from './page-signals'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import WorkEmail, { type WorkEmailInitial } from './work-email'
-import { siteSettled, targetKey, workEmailLeadEligible, workEmailTargets } from '@/lib/people/work-email-eligible'
+import { siteSettled, targetKey, workEmailOffered, workEmailTargets } from '@/lib/people/work-email-eligible'
 import VerificationFixture from './verification-fixture'
 import { leadCardDateLine } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
@@ -861,6 +861,19 @@ export default function LeadsClient() {
   const input = 'field'
   // #1238: repeats are collapsed only when something new remains (lib/scan/leads-view.ts visibleReadyLeads)
   const currentView = resultView?.jobId === jobId ? resultView : null
+  // #1238/#1062/#1620: an older-engine search's count line is its Campaigns card's split of the leads as they stand now (lib/scan/leads-view.ts
+  // scanCountTags), read from the same GET /api/campaigns?view=history as the Leads history. null split = not read: the recorded funnel, marked.
+  const [currentSplit, setCurrentSplit] = useState<{ jobId: string; split: CurrentScanSplit | null } | null>(null)
+  const splitFor = currentView && !currentView.discover && !currentView.marked && status === 'done' ? jobId : null
+  useEffect(() => {
+    if (!splitFor) return
+    let live = true
+    void fetch('/api/campaigns?view=history', { signal: AbortSignal.timeout(20000) }).then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+      .then(j => { const c = Array.isArray(j?.campaigns) ? (j.campaigns as (CurrentScanSplit & { id: string })[]).find(x => x.id === splitFor) : undefined; if (live) setCurrentSplit({ jobId: splitFor, split: c && c.discovery && c.qualification ? c : null }) })
+      .catch(() => { if (live) setCurrentSplit({ jobId: splitFor, split: null }) })
+    return () => { live = false }
+  }, [splitFor])
+  const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
   const visibleLeads = visibleReadyLeads(leads, showSeen)
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
   // currentView is set only by a successful GET /api/leads for this job: until then there is no per-lead line at all
@@ -1223,7 +1236,7 @@ export default function LeadsClient() {
           {/* #1238: a new-engine search is counted from its leads as they are now, each by its one state (lib/discover/card.ts), the same numbers as Home and Campaigns */}
           {currentView.discover
             ? <><span className="tag">{currentView.discover.found} found</span>{discoverCountParts(currentView.discover).map(part => <span key={part} className="tag" data-testid="discover-count">{part}</span>)}</>
-            : <><span className="tag">{quality.candidates} found</span><span className="tag">{quality.passed ?? 0} source-checked</span><span className="tag">{quality.needs_review ?? 0} need{(quality.needs_review ?? 0) === 1 ? 's' : ''} your review</span></>}<span className="tag">{quality.dropped ?? 0} dropped</span>
+            : countLine && <>{countLine.tags.map(t => <span key={t} className="tag" data-testid="scan-count">{t}</span>)}{!countLine.current && currentSplit?.jobId === jobId && <span className="text-[var(--ink-3)]" data-testid="scan-count-recorded">as recorded when the scan finished</span>}</>}{currentView.discover && <span className="tag">{quality.dropped ?? 0} dropped</span>}
           {Object.keys(quality.drop_reasons).length > 0 && <InfoTip label="Why leads were dropped">Dropped: {Object.entries(quality.drop_reasons).map(([k, n]) => `${n} ${REASON[k] ?? k}`).join(', ')}.</InfoTip>}
         </p>
       )}
@@ -1337,7 +1350,7 @@ export default function LeadsClient() {
               ? 'No leads passed the checks for review.'
               : status === 'done' && currentView?.marked && !currentView.counts
               ? 'Lead results could not be checked. Refresh to try again.'
-              : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? quality?.needs_review : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
+              : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? (currentView.discover ? quality?.needs_review : countLine?.needsReview) : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
@@ -1352,7 +1365,7 @@ export default function LeadsClient() {
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
-                    <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
+                    <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
                     {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
@@ -1441,7 +1454,7 @@ export default function LeadsClient() {
                     </div>
                   )}
                   {/* #1036: Find work email for the buyer-role people, only on a lead whose website is settled (lib/people/work-email-eligible.ts). */}
-                  {!l.quarantined_at && workEmailLeadEligible(l) && (() => {
+                  {!l.quarantined_at && workEmailOffered(l) && (() => {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)
                     if (!siteSettled(site)) return null
                     const who = icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''
@@ -1541,7 +1554,7 @@ export default function LeadsClient() {
                   </span> })()}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
                 {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
-                {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && (
+                {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && (
                   <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
                 )}
                 {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
