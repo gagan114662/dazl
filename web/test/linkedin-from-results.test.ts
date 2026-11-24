@@ -23,6 +23,8 @@ test('the one profile result that starts with the person\'s name and states the 
     assert.equal(pickSeenProfile('Lucy Hoag', 'Violet Labs', one(title)), PROFILE, title)
   assert.equal(pickSeenProfile('Emir Karabeg', 'Sim', one('Emir Karabeg - Co-Founder & CEO - Sim | LinkedIn')), PROFILE, 'a one-word company, stated as the company')
   assert.equal(pickSeenProfile('Ben Ong', 'Lightsprint (YC P26)', one('Ben Ong - Co-Founder & CEO at Lightsprint | LinkedIn')), PROFILE, 'bracketed text is not part of the company name')
+  assert.equal(pickSeenProfile('Dana Ruiz', 'Northwind Dental Group LLC', one('Dana Ruiz - Owner - Northwind Dental Group | LinkedIn')), PROFILE, 'the whole name as written, with or without its legal form')
+  assert.equal(pickSeenProfile('Dana Ruiz', 'The Northwind Dental Company', one('Dana Ruiz - Owner at Northwind Dental | LinkedIn')), PROFILE)
 })
 
 test('never someone else: a same-named person elsewhere, a headline that mentions the person, a former job, a longer company name', () => {
@@ -33,6 +35,7 @@ test('never someone else: a same-named person elsewhere, a headline that mention
   none('Dana Ruiz', 'Northwind Dental', 'Dana Ruiz - ex Northwind Dental | LinkedIn', 'a former job')
   none('Dana Ruiz', 'Northwind Dental', 'Dana Ruiz - Former Owner at Northwind Dental, now at Harbour | LinkedIn', 'a former job')
   none('Jane Doe', 'Quanta', 'Jane Doe - Engineer at Quanta Services | LinkedIn', 'another company whose name starts the same')
+  none('Dana Ruiz', 'Northwind Dental Group', 'Dana Ruiz - Owner - Northwind Dental Supply | LinkedIn', 'every word of the name, not only the first two')
   none('Sam Lee', 'Sim', 'Sam Lee - Sim Racing Coach | LinkedIn', 'a word that is not the company')
   none('Dana Ruiz', 'Northwind Dental', 'Dana Ruiz - Account Manager - Harbour Freight | LinkedIn', 'the name alone')
   none('Dana Ruiz', 'Northwind Dental', 'D. Ruiz - Owner - Northwind Dental | LinkedIn', 'an initial is not the first name')
