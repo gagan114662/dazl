@@ -128,6 +128,29 @@ test('the company\'s own site: one opening\'s page is a posting; a department\'s
   assert.equal(j.asked.length, 0)
 })
 
+// Staging, 2026-11-24 (head 1d398610): 3 of 7 hiring leads of one search were single postings on a many-employer job site that
+// prints no JobPosting data; the rule refused them all. The page shapes below are invented.
+test('a many-employer job site: one posting\'s page with the company at its top is a posting; a side column, a search or a company list is not', async () => {
+  const j = judge(), url = 'https://www.builtinaustin.com/job/account-executive/4012345'
+  const built = (title: string, top: string, rest = '') => `<html><head><title>${title}</title></head><body><nav><a href="/jobs">Jobs</a><a href="/companies">Companies</a></nav><main><h1>Account Executive</h1>${top}<p>You will sell a membership plan to employers.</p><button>Apply</button></main>${rest}</body></html>`
+  const at = (evidence_url: string, body: string) => checkLead(hiring({ evidence_url }), [], page(body), 12_000, NOW, j.ask)
+  const ours = await at(url, built('Account Executive - Northwind Dental | Built In Austin', '<a class="company-link" href="/company/northwind-dental">Northwind Dental</a>'))
+  assert.deepEqual([...state(ours), ours.signal_by], ['confirmed', true, true, true, 'posting'])
+  const byTop = await at(url, built('Account Executive | Built In Austin', '<div class="job-company"><span>Northwind Dental</span></div>'))
+  assert.equal(isShown(byTop), true, 'the company stands beside the heading, in the element that names the employer')
+  const column = `<p>${'About the role and the team. '.repeat(80)}</p><aside><h2>Similar jobs</h2><ul><li><a href="/job/sales-lead/4012399">Sales Lead</a> <span class="company-name">Northwind Dental</span></li></ul></aside>`
+  const theirs = await at(url, built('Account Executive - Harbour Labs | Built In Austin', '<a class="company-link" href="/company/harbour-labs">Harbour Labs</a>', column))
+  assert.deepEqual(state(theirs), ['confirmed', true, false, false], 'another employer\'s posting with the company in a "similar jobs" column')
+  const otherRole = await at(url, built('Office Manager - Northwind Dental | Built In Austin', '<a class="company-link" href="/company/northwind-dental">Northwind Dental</a>').replace('<h1>Account Executive</h1>', '<h1>Office Manager</h1><p>Works with every Account Executive.</p>'))
+  assert.equal(isShown(otherRole), false, 'the company\'s posting for another role')
+  const results = '<html><head><title>Account Executive jobs | Built In Austin</title></head><body><h1>Account Executive jobs</h1><ul><li><a href="/job/account-executive/4012345">Account Executive</a> <span class="company-name">Northwind Dental</span></li><li><a href="/job/account-executive/4012350">Account Executive</a> <span class="company-name">Harbour Labs</span></li></ul></body></html>'
+  assert.deepEqual(state(await at('https://www.builtinaustin.com/jobs?search=account+executive', results)), ['confirmed', true, false, false], 'the site\'s search results')
+  assert.deepEqual(state(await at('https://www.builtinaustin.com/companies', '<html><head><title>Companies | Built In Austin</title></head><body><h1>Companies</h1><ul><li>Northwind Dental: hiring an Account Executive</li><li>Harbour Labs</li></ul></body></html>')), ['confirmed', true, false, false], 'the site\'s list of companies')
+  assert.equal(j.asked.length, 0)
+  assert.deepEqual(postingAddress(new URL('https://builtin.com/job/account-executive/4012345')), { board: 'aggregator', host: 'builtin.com', org: null, id: '4012345' })
+  assert.equal(postingAddress(new URL('https://www.builtinaustin.com/company/northwind-dental/jobs')), null)
+})
+
 test('a posting that is gone is still gone', async () => {
   const c = await checkLead(hiring(), [], page('<html><head><title>Northwind Dental</title></head><body><h1>Job not found</h1><p>This job is no longer available. See all open roles at Northwind Dental.</p></body></html>'), 12_000, NOW, judge().ask)
   assert.deepEqual([c.proof, c.signal_seen, isShown(c)], ['gone', false, false])

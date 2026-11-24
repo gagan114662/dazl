@@ -7,7 +7,7 @@
 // Text as words: lower case, accents dropped, everything that is not a letter or a digit is one space.
 export const fold = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 
-export interface PostingAddress { board: 'greenhouse' | 'lever' | 'ashby' | 'other'; host: string; org: string | null; id: string }
+export interface PostingAddress { board: 'greenhouse' | 'lever' | 'ashby' | 'aggregator' | 'other'; host: string; org: string | null; id: string }
 const UUID = /^[0-9a-f-]{36}$/i
 // A page of a known board: null when the address is not on one; otherwise the single posting it is (with the organisation the address
 // carries, null when it carries none, and the posting's own id), or posting null for the board's list, search and every other page.
@@ -24,6 +24,9 @@ function boardPage(u: URL): { posting: PostingAddress | null } | null {
   if (under('teamtailor.com')) return other(s[0] === 'jobs' && /^\d+/.test(s[1] ?? ''), under('teamtailor.com'), s[1])
   if (under('bamboohr.com')) return other((s[0] === 'careers' || s[0] === 'jobs') && /^\d+$/.test(s[1] ?? ''), under('bamboohr.com'), s[1])
   if (under('myworkdayjobs.com')) { const i = s.indexOf('job'); return other(i >= 0 && i < s.length - 1, under('myworkdayjobs.com'), s[s.length - 1]) }
+  // A job site that prints MANY employers' postings, each on a page of its own with no organisation in the address and (measured on
+  // staging, 2026-11-24) no JobPosting data: /job/<slug>/<number>. Its search and company pages are board pages that are no posting.
+  if (/^builtin[a-z]*\.com$/.test(host)) return { posting: s.length === 3 && s[0] === 'job' && /^\d+$/.test(s[2]) ? { board: 'aggregator', host, org: null, id: s[2] } : null }
   // sites that are more than a job board: only their jobs pages are board pages
   if (host === 'ycombinator.com') return s[0] === 'jobs' || (s[0] === 'companies' && s[2] === 'jobs') ? other(s[0] === 'companies', s[1] ?? null, s[3]) : null
   if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) return s[0] === 'jobs' ? other(s[1] === 'view', null, s[2]) : null
@@ -97,6 +100,16 @@ function otherOpenings(html: string, at: URL, domain: string | null): number {
   return found.size
 }
 
+// The top of a posting on a many-employer site: from the start of the page to a little past its main heading, the text of the
+// headings there and of the elements marked as the company or employer (a class, an itemprop or a link to the company's page).
+// A "similar jobs" column further down the page is not in it.
+function topOfPosting(html: string): string[] {
+  const end = html.search(/<\/h1>/i)
+  if (end < 0) return []
+  const top = html.slice(0, end + 1500)
+  return [...inner(top, /<h[1-3]\b[^>]*>([\s\S]{0,400}?)<\/h[1-3]>/gi), ...inner(top, /<[a-z][a-z0-9]*\b[^>]*\b(?:class|itemprop|data-id|href)=["'][^"']*(?:company|employer|hiringOrganization)[^"']*["'][^>]*>((?:\s|<[^>]+>)*[^<]{1,200})/gi)]
+}
+
 // Could this page be a job posting at all: is it a page of a known board, a page on the company's own site, or a page that carries
 // JobPosting data? Only there does the posting rule govern a title-line lead. Anywhere else (a news site, a directory) such a lead
 // keeps the statement rules of check.ts, exactly as before.
@@ -133,18 +146,21 @@ export function postingPage(p: PostingPageInput): boolean {
   if (records.some(r => { const t = Date.parse(r.validThrough); return !Number.isNaN(t) && t + 86_400_000 < p.now.getTime() })) return false
   const name = companyName(p.company), named = (t: string): boolean => !!name && ` ${fold(t)} `.includes(` ${name} `)
   const titles = [p.pageTitle ?? '', ...(p.html ? [...inner(p.html, /<title\b[^>]*>([\s\S]{0,300}?)<\/title>/gi), ...inner(p.html, /<meta\b[^>]*property=["']og:title["'][^>]*content=["']([^"']{0,300})["']/gi)] : [])].filter(Boolean)
+  const q = ` ${fold(p.quote)} `
+  const heads = [...titles, ...(p.html ? inner(p.html, /<h1\b[^>]*>([\s\S]{0,400}?)<\/h1>/gi) : [])].map(h => ` ${fold(h)} `)
+  // the heading holds the title line, or is its opening words (a heading "Role" over a line "Role - Place"), two words at least
+  const headed = q.trim().length >= 2 && heads.some(h => h.includes(q) || (h.trim().includes(' ') && q.startsWith(h)))
   const at = postingAddress(p.url)
-  if (at) {
+  if (at?.board === 'aggregator') {
+    // a site that prints many employers' postings: the page's title or main heading must be the quoted title, and the company's full
+    // name must stand in the page's title or at the top of the posting (topOfPosting), never merely somewhere in the body
+    if (headed && (titles.some(named) || (!!p.html && topOfPosting(p.html).some(named)))) return true
+  } else if (at) {
     const org = at.org === null ? null : orgMatch(at.org, p.company, p.domain)
     if (org === 'whole' || titles.some(named) || (org === 'first' && named(p.text))) return true
   }
   if (records.length > 0 && new Set(records.map(r => fold(r.title))).size === 1 && records.every(r => named(r.org) || r.orgUrls.some(x => onDomain(hostOf(x), p.domain)))) return true
-  if (!onDomain(p.url.hostname, p.domain)) return false
-  const q = ` ${fold(p.quote)} `
-  if (q.trim().length < 2) return false
-  const heads = [...titles, ...(p.html ? inner(p.html, /<h1\b[^>]*>([\s\S]{0,400}?)<\/h1>/gi) : [])].map(h => ` ${fold(h)} `)
-  // the heading holds the title line, or is its opening words (a heading "Role" over a line "Role - Place"), two words at least
-  if (!heads.some(h => h.includes(q) || (h.trim().includes(' ') && q.startsWith(h)))) return false
+  if (!onDomain(p.url.hostname, p.domain) || !headed) return false
   const applies = p.html ? count(p.html, /<(?:a|button)\b[^>]*>(?:\s|<[^>]+>)*apply\b/gi) + count(p.html, /<input\b[^>]*\bvalue=["']apply\b/gi) : count(p.text, /^\s*apply\b.{0,30}$/gim)
   if (applies > 2) return false
   const few = !p.html || otherOpenings(p.html, p.url, p.domain) < 3
