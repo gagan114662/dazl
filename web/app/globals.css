@@ -209,6 +209,9 @@ body { font-size: 16px; line-height: 1.5; }
 /* Home's setup checklist (app/app/ready-card.tsx): one step per row. */
 .rc-grid { display: grid; gap: .5rem; }
 .rc-item { display: flex; gap: .75rem; align-items: center; padding: .7rem .8rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+/* #1678: at phone width a step with two buttons (Add key, Link Google) left its title a sliver of the row. There the text keeps the
+   row beside the number and the buttons go underneath. */
+@media (max-width: 639px) { .rc-item { flex-wrap: wrap; } .rc-item > div { flex: 1 1 calc(100% - 2.75rem); } }
 .rc-dot { width: 1.75rem; height: 1.75rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: .78rem; font-weight: 700; flex-shrink: 0; background: #f3eeea; color: var(--ink-3); }
 .rc-dot-done { background: var(--mint-bg); color: #17694a; }
 .rc-dot-next { background: var(--ink); color: #fff; }
