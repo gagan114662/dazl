@@ -22,8 +22,9 @@ function pages(dir, route) {
   return found
 }
 const routes = pages(path.join(root, 'app'), '/').sort()
-// renamed pages, as in app-pages.smoke.mjs; /pricing and /plans redirect to the homepage's #pricing section (#534)
-const REDIRECTS = { '/app/replies': '/app/social', '/pricing': '/', '/plans': '/' }
+// renamed pages, as in app-pages.smoke.mjs; /pricing and /plans redirect to the homepage's #pricing section (#534),
+// /about to its "How it works" section (#1428)
+const REDIRECTS = { '/app/replies': '/app/social', '/pricing': '/', '/plans': '/', '/about': '/' }
 const VIEWPORTS = { desktop: { width: 1280, height: 800 }, mobile: { width: 390, height: 844 } }
 const file = (route, vp) => `${route === '/' ? 'home' : route.slice(1).replaceAll('/', '_')}.${vp}.png`
 

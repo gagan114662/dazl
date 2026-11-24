@@ -2,19 +2,21 @@ import { autopilotAvailable } from '@/lib/outreach/autopilot'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { gmailStatus } from '@/lib/gmail/oauth'
-import { DAILY_CAP, getSettings, OutreachError, saveSettings, sentLast24h } from '@/lib/outreach/service'
+import { getSettings, OutreachError, saveSettings, sendCapToday, sentLast24h } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { accountSendCount } from '@/lib/outreach/send-budget'
 import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 
 // account_sent_24h is the whole rolling budget the daily cap is checked against (first touches, follow-ups, sequence steps,
-// re-opens); sent_24h is first touches only. Read-only.
+// re-opens); sent_24h is first touches only. #1618: daily_cap is this account's cap for a person's own sends (by its age) and
+// sent_today is everything sent since midnight in Toronto, which is what that cap is checked against. Read-only.
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  return NextResponse.json({ autopilot_available: autopilotAvailable(), gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: DAILY_CAP, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)) })
+  const today = sendCapToday(db, user.tenantId)
+  return NextResponse.json({ autopilot_available: autopilotAvailable(), gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: today.cap, sent_today: today.sent_today, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)) })
 }
 
 export async function PUT(req: NextRequest) {

@@ -5,7 +5,7 @@ import {currentnessHeld} from './currentness.ts'
 import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
-import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, tableExists } from './send-budget.ts'
+import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, manualSendCap, sendDayStart, tableExists } from './send-budget.ts'
 import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -574,6 +574,10 @@ export function sendFooter(body: string, s: Settings | undefined): string | null
   return composeBody(body, s, '[your unsubscribe link, added when sent]').slice(body.trim().length).trim()
 }
 
+// #1618: every send and in-flight claim of the account since midnight in Toronto, and the cap a person's own sends are held to.
+export const sentToday = (db: Database.Database, tenantId: string, now: number): number => accountSendCount(db, tenantId, now, sendDayStart(now))
+export const sendCapToday = (db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)) => ({ cap: manualSendCap(db, tenantId, now), sent_today: sentToday(db, tenantId, now) })
+
 export function sentLast24h(db: Database.Database, tenantId: string, d: Deps = {}): number {
   return (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND claimed_at >= ?").get(tenantId, nowS(d) - 86400) as { n: number }).n
 }
@@ -620,7 +624,7 @@ export function sendBlockReason(db: Database.Database, tenantId: string, id: str
   // skipAccount skips only the sender and Gmail checks; the shared daily cap is never skipped.
   if (!o.skipAccount && !getSettings(db, tenantId)) return 'sender_identity_missing'
   if (!o.skipAccount && !db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
-  if (accountSendCount(db, tenantId, now) + 1 > DAILY_CAP) return 'daily_cap'
+  if (sentToday(db, tenantId, now) + 1 > manualSendCap(db, tenantId, now)) return 'daily_cap'
   return null
 }
 
@@ -664,7 +668,9 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!settings) release('sender_identity_missing')
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
-  if (accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP) release('daily_cap') // this claim counts itself
+  // This claim counts itself. #1618: a person's own send is held to the cap for the account's age, counted per Toronto day.
+  // A send an automated caller authorizes (d.authorize: autopilot, the first-touch drain) keeps the fixed rolling-24h cap.
+  if (d.authorize ? accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP : sentToday(db, tenantId, nowS(d)) > manualSendCap(db, tenantId, nowS(d))) release('daily_cap')
 
   let token: string
   let tokenGen: string
