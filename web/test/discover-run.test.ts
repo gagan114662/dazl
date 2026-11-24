@@ -8,18 +8,18 @@ const lead = (company: string, o: Partial<DiscoveredLead> = {}): DiscoveredLead 
 const result = (leads: DiscoveredLead[], usd: number, unseen: string[] = []): DiscoverResult => ({ leads, seen: leads.filter(l => !unseen.includes(l.company)).map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `On 14 October 2026 ${l.company} said it is opening a new site.` })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 1, usd }, stop: 'end_turn', model: 'm', note: null })
 const never = (() => { throw new Error('no network in this test') }) as unknown as typeof fetch
 
-test('five shown leads on the first pass: no second pass; the people pass gets only shown leads that lack something', async () => {
+test('five shown leads on the first pass: no second pass; the people pass gets the shown leads that lack something, then the one in review', async () => {
   const calls: string[][] = []
   const names = ['A Co', 'B Co', 'C Co', 'D Co', 'E Co', 'Ghost Co']
   const run = await runDiscovery({ query: 'q' }, { maxUsd: 1 }, { apiKey: 'k', fetch: never,
     discover: async () => result(names.map(n => lead(n)), 0.3, ['Ghost Co']),
     enrich: async leads => { calls.push(leads.map(l => l.company)); return { leads: leads.map(l => ({ ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://x.example/team', email: 'pat@x.example', email_source_url: 'https://x.example/team' })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 5, usd: 0.05 }, seen: [], enriched: leads.length } } })
   assert.equal(run.passes, 1)
-  assert.deepEqual(calls, [['A Co', 'B Co', 'C Co', 'D Co', 'E Co']], 'the unshown lead is not worth a call')
+  assert.deepEqual(calls, [['A Co', 'B Co', 'C Co', 'D Co', 'E Co', 'Ghost Co']], 'shown leads first, then the lead that waits for review')
   assert.equal(run.usd, 0.35)
   assert.equal(run.leads.find(l => l.company === 'A Co')!.person, 'Pat Lee')
   assert.equal(run.leads.find(l => l.company === 'A Co')!.email, 'pat@x.example')
-  assert.equal(run.leads.find(l => l.company === 'Ghost Co')!.person, null)
+  assert.equal(run.leads.find(l => l.company === 'Ghost Co')!.person, 'Pat Lee', 'a lead in review gets its person too (owner, 2026-11-24)')
 })
 
 test('fewer than five shown: a second pass for different companies, when a pass of the same size still fits the budget', async () => {
@@ -49,4 +49,23 @@ test('#1037: a first-pass LinkedIn profile is kept only when the run saw it for 
   assert.equal(of('B Co').linkedin_url, null, 'an address the run never saw is dropped')
   assert.deepEqual([of('C Co').person, of('C Co').linkedin_url], ['Pat Lee', null], 'a profile that came with no person is not attached to the person found later')
   assert.ok(sent[0].every(u => u === null || u === 'https://www.linkedin.com/in/dana-ruiz-a/'), 'the people pass is asked to find the dropped ones')
+})
+
+// Owner, 2026-11-24, after the free-search benchmark on staging (39 leads, 10 of them in review with no people pass): leads that wait
+// for review get the people pass too, after the shown ones, and a lead whose proof page is gone gets none.
+test('the people pass: shown leads keep their place ahead of leads in review, the limit is passed on, and a gone proof page gets no call', async () => {
+  const sent: { companies: string[]; maxLeads: number | undefined }[] = []
+  const gone = lead('Gone Co')
+  const first: DiscoverResult = { ...result([lead('Review Co'), lead('A Co'), gone, lead('B Co')], 0.3, ['Review Co']) }
+  first.seen = first.seen.map(p => p.url === gone.evidence_url ? { ...p, text: 'Gone Co. Job not found.' } : p)
+  const run = await runDiscovery({ query: 'q' }, { maxUsd: 0.5, enrichLeads: 6 }, { apiKey: 'k', fetch: never, judge: null,
+    discover: async () => first,
+    enrich: async (leads, o) => { sent.push({ companies: leads.map(l => l.company), maxLeads: o.maxLeads }); return { leads: leads.map(l => ({ ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://x.example/team' })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 3, usd: 0.03 }, seen: [], enriched: leads.length } } })
+  assert.equal(run.passes, 1, 'no room for a second search pass at this budget')
+  assert.deepEqual(sent, [{ companies: ['A Co', 'B Co', 'Review Co'], maxLeads: 6 }], 'shown first, then the lead in review; never the one whose proof is gone')
+  const by = (c: string) => run.leads.find(l => l.company === c)!
+  assert.equal(by('Gone Co').proof, 'gone')
+  assert.equal(by('Gone Co').person, null)
+  assert.equal(by('Review Co').person, 'Pat Lee')
+  assert.equal(by('A Co').person, 'Pat Lee')
 })

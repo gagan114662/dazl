@@ -47,16 +47,20 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       note = second.note ?? note
     } catch { /* the first pass stands */ }
   }
-  // People, websites and published emails for the shown leads that lack them. Unshown leads are not worth the calls.
+  // People, websites and published emails for the leads that lack them: the shown ones first, then the ones that wait for the person's
+  // review (owner, 2026-11-24). A lead in review with no contact cannot be acted on once the person accepts it, and a free search at
+  // the launch budget returned 10 of 39 leads that way with no people pass at all (staging benchmark, `171d9102`). The pass takes
+  // the first `enrichLeads` of this list, so shown leads never lose their place. A lead whose proof page is gone gets no call.
   let enriched = 0
-  const todo = leads.filter(l => isShown(l) && needsEnrichment(l))
+  const wants = (l: CheckedLead) => l.proof !== 'gone' && needsEnrichment(l)
+  const todo = [...leads.filter(l => isShown(l) && wants(l)), ...leads.filter(l => !isShown(l) && wants(l))]
   if (enrich && todo.length && usage.usd < budget.maxUsd) {
     try {
       const e = await enrich(todo, { offer: input.offer ?? null, maxLeads: budget.enrichLeads ?? 12 }, api)
       add(e.usage)
       enriched = e.enriched
       const byCompany = new Map(e.leads.map(l => [l.company, l]))
-      leads = leads.map(l => { const m = byCompany.get(l.company); return m && isShown(l) ? { ...l, ...mergeEnriched(l, m) } : l })
+      leads = leads.map(l => { const m = byCompany.get(l.company); return m && l.proof !== 'gone' ? { ...l, ...mergeEnriched(l, m) } : l })
     } catch { /* the leads stay as found */ }
   }
   if (judge) add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
