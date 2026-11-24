@@ -4,9 +4,14 @@
 import type { ClientEvent, FunnelProps } from './track.ts'
 
 const seen = new Set<string>()
-export function trackClient(event: ClientEvent, props: FunnelProps = {}, w: { fetch: typeof fetch } | undefined = typeof window === 'undefined' ? undefined : window, key: string | undefined = process.env.NEXT_PUBLIC_POSTHOG_KEY): boolean {
+// Next inlines NEXT_PUBLIC_ variables at build; a bundle built without that (the UI tests' esbuild bundle) has no
+// `process` in the browser, so reading it must not throw.
+function buildKey(): string | undefined {
+  try { return process.env.NEXT_PUBLIC_POSTHOG_KEY } catch { return undefined }
+}
+export function trackClient(event: ClientEvent, props: FunnelProps = {}, w: { fetch: typeof fetch } | undefined = typeof window === 'undefined' ? undefined : window, key?: string): boolean {
   try {
-    if (!w || !key) return false
+    if (!w || !(key ?? buildKey())) return false
     const body = JSON.stringify({ event, props })
     if (seen.has(body) || seen.size >= 50) return false
     seen.add(body)

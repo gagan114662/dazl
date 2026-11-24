@@ -41,6 +41,7 @@ export const DEGRADED: Record<string, Degraded> = {
   checkout: 'closed', llmkey: 'closed', 'trial-site': 'closed', 'trial-site-ip': 'closed', 'trial-site-day': 'closed', 'first-party': 'closed', sync: 'closed', 'replies-refresh': 'closed', adv: 'closed', watch: 'closed',
   'play-run-now': 'closed', // #1042 Find leads now: queues a real scan on the account's key and monthly scans
   // low risk: the app's own data, or must keep working
+  track: 'local',            // #1616 funnel events from the browser: an allowlisted name and counts forwarded to PostHog, free, nothing stored
   'client-errors': 'local', unsub: 'local', 'confirm-lead': 'local', 'quarantine-lead': 'local', 'lead-feedback': 'local', 'domain-review': 'local',
   'warm-report': 'local', 'warm-import': 'local', replies: 'local', profile: 'local', calcom: 'local', 'calcom-cfg': 'local', 'first-party-cfg': 'local',
   invite: 'local', 'invite-accept': 'local', sessions: 'local',

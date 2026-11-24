@@ -45,6 +45,7 @@ export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' 
   'lib/scan/place-agreement.ts:REGION_BY_ALIAS': { share: 'constant', note: 'region alias lookup, filled once at load from the fixed country / state / province lists in the file, then only read' },
   'lib/scan/place-agreement.ts:NEEDS_CAPITALS': { share: 'constant', note: 'which of those aliases must be written in capitals (ON, NY, NSW), filled once at load beside REGION_BY_ALIAS, then only read' },
   'lib/evals/contract.ts:BY_VERSION': { share: 'safe to lose', note: 'evaluation contracts frozen in this process, for the same-version-same-content check; the contract hash is persisted with each result, so another instance re-freezes and compares' },
+  'lib/analytics/track-client.ts:seen': { share: 'safe to lose', note: 'browser-only (#1616): which funnel events this page load already sent, so each is sent once per page' },
   'lib/ops/emitted.ts:seen': { share: 'safe to lose', note: 'which bundles this build emitted' },
   'lib/outreach/reopen.ts:inFlight': { share: 'must share', note: 're-open sends running in this process; another instance cannot see them (row claim fences the send, this guards resolve)' },
   'lib/rate-limit.ts:local': { share: 'safe to lose', note: "per-process shadow, only for the low-risk 'local' kinds while the shared store fails; closed kinds refuse (#356, #400)" },
