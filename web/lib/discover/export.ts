@@ -1,13 +1,21 @@
 import type { Db } from '../db/client.ts'
-import { discoverContact, isDiscoverLead } from './card.ts'
+import { DISCOVER_STATE_LABEL, discoverContact, discoverDateProven, isDiscoverLead, type DiscoverState } from './card.ts'
+import { discoverStatesForDb } from './state-db.ts'
+import { eventDayVerified } from '../scan/scoreboard.ts'
 
 // The spreadsheet's person and contact columns for a discovery lead: what its card shows (discoverContact), read from the
 // same stored rows. Quest on staging 8132d324 (#1571): the card showed a published address and a named person, and every
 // Contact and Best Person cell in the download was empty, because the export only read the old engine's people rows.
 // Tenant-scoped on both sides, as bestPeople is: the row carries the tenant and its lead belongs to a scan that tenant owns.
-export interface DiscoverExportFields { contact?: string; name?: string; best_person?: string; best_person_title?: string; best_person_link?: string; best_person_found_via?: string }
-type Row = { lead_id: string; source_kind?: unknown; name?: unknown; contact?: unknown }
+// lead_status: the lead's ONE status in the Leads page's words (lib/discover/card.ts discoverState, read by the same reader every counter
+// uses, lib/discover/state-db.ts), so the file never disagrees with the page (#1238: the file had no status for these leads at all).
+// date_status: 'verified' exactly when the card's date pill says "verified on the cited source" (discoverDateProven); the stored column
+// says 'unverified' for every lead that was kept for review, whatever its page printed.
+export interface DiscoverExportFields { contact?: string; name?: string; best_person?: string; best_person_title?: string; best_person_link?: string; best_person_found_via?: string; lead_status?: string; date_status?: string }
+type Row = { lead_id: string; job_id?: unknown; source_kind?: unknown; name?: unknown; contact?: unknown; event_date?: unknown; event_date_proof?: unknown; signal?: unknown; signal_kind?: unknown }
 const CHUNK = 400
+const JOBS = 200
+const str = (v: unknown): string | null => typeof v === 'string' ? v : null
 export async function discoverExportFields(db: Db, tenantId: string, rows: Row[]): Promise<Map<string, DiscoverExportFields>> {
   const out = new Map<string, DiscoverExportFields>()
   const leads = rows.filter(r => isDiscoverLead({ source_kind: typeof r.source_kind === 'string' ? r.source_kind : null }))
@@ -23,10 +31,16 @@ export async function discoverExportFields(db: Db, tenantId: string, rows: Row[]
        ORDER BY e.insert_seq`, [tenantId, tenantId, ...ids])
     for (const e of enr) byLead.set(e.lead_id, [...(byLead.get(e.lead_id) ?? []), e])
   }
+  const states = new Map<string, DiscoverState>()
+  const jobIds = [...new Set(leads.map(r => str(r.job_id)).filter((j): j is string => !!j))]
+  for (let i = 0; i < jobIds.length; i += JOBS) for (const job of (await discoverStatesForDb(db, tenantId, jobIds.slice(i, i + JOBS))).values()) for (const [id, s] of job) states.set(id, s)
   for (const r of leads) {
     const c = discoverContact({ source_kind: 'discover', name: typeof r.name === 'string' ? r.name : null, enrichments: byLead.get(r.lead_id) ?? [] })
     if (!c) continue
     const f: DiscoverExportFields = {}
+    const state = states.get(r.lead_id), date = str(r.event_date)
+    f.lead_status = state ? DISCOVER_STATE_LABEL[state] : ''
+    f.date_status = discoverDateProven({ event_date: date, day_verified: eventDayVerified({ event_date: date, event_date_proof: str(r.event_date_proof), signal: str(r.signal), signal_kind: str(r.signal_kind) }) }) ? 'verified' : date ? 'unverified' : 'undated'
     if (c.email && !(typeof r.contact === 'string' && r.contact.trim())) f.contact = c.email.address
     if (c.person) {
       if (!(typeof r.name === 'string' && r.name.trim())) f.name = c.person.name

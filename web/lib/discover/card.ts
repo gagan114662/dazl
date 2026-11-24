@@ -5,16 +5,23 @@ import { isPersonName } from '../people/job-title-name.ts'
 export interface DiscoverCardLead {
   source_kind?: string | null; confidence: number | null; event_date: string | null; date_status?: string | null; timing_note?: string | null
   name: string; company_domain: string | null; enrichments?: { kind: string; connector?: string }[]
+  // the proof of the event day, as GET /api/leads sends it (lib/scan/scoreboard.ts eventDayVerified): what the card's date pill reads
+  day_verified?: boolean | null
 }
 export const isDiscoverLead = (l: { source_kind?: string | null }): boolean => l.source_kind === 'discover'
 export function discoverConfidence(l: Pick<DiscoverCardLead, 'confidence'>): 'high' | 'medium' | 'low' {
   const c = l.confidence ?? 0
   return c >= 80 ? 'high' : c >= 60 ? 'medium' : 'low'
 }
+// Is the date proven on the proof page? The SAME fact the card's date pill reads ("verified on the cited source", lib/scan/lead-card.ts
+// cardDate), so the pill, the "Missing:" line and the opportunity card cannot say two things about one date. The stored date_status
+// is not read: a lead kept for review is stored 'unverified' whatever its page printed, and one card said "verified on the cited
+// source" beside "Missing: the date confirmed on the page" (#1238).
+export const discoverDateProven = (l: { event_date?: string | null; day_verified?: boolean | null }): boolean => !!l.event_date && l.day_verified === true
 export function discoverMissing(l: DiscoverCardLead): string[] {
   const missing: string[] = []
   if (!l.event_date) missing.push('a date for the signal')
-  else if (l.date_status !== 'verified') missing.push(l.timing_note ? 'a date printed on the page (the date shown is when the page was published)' : 'the date confirmed on the page')
+  else if (!discoverDateProven(l)) missing.push(l.timing_note ? 'a date printed on the page (the date shown is when the page was published)' : 'the date confirmed on the page')
   if (!namesPerson(l)) missing.push('a named person')
   if (!discoverSite(l.company_domain)) missing.push('the company website')
   return missing
@@ -104,29 +111,52 @@ export const signalStale = (eventDate: string | null | undefined, now: Date = ne
 // What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, a signal more than
 // a year old, not graded a fit.
 // One list, read by Approve (email) and by the LinkedIn route below.
-type ProofLead = { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
-export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
-  if (l.quarantined_at) return 'Rejected. Undo to use it again.'
-  if (l.gate_held) return 'A required check has not passed. Research only.'
-  if (l.review_reason) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
-  if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
-  if (signalStale(l.event_date, now)) return 'The signal is more than a year old. It stays here as background; it is not a reason to write now.'
-  if (l.fit === 0 && l.intent === null) return 'Graded as not a fit for your profile.'
+// stored_intent: the grade as saved. GET /api/leads replaces `intent` with a display value (0 when the timing is not proven) and keeps
+// the saved one here; the saved one is what the draft check reads (lib/outreach/service.ts), so it is the one read whenever it is sent.
+type ProofLead = { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null; stored_intent?: number | null }
+// Which rule holds it, first one first. The words are below; a page that groups held leads by cause (lib/lead-state.ts heldState) reads
+// the code, so it never guesses the cause a second time (#1238: a signal older than a year was labelled "not a fit").
+export type DiscoverHoldCode = 'rejected' | 'gate' | 'review' | 'undated' | 'stale' | 'unfit'
+export function discoverProofHoldCode(l: ProofLead, now: Date = new Date()): DiscoverHoldCode | null {
+  if (l.quarantined_at) return 'rejected'
+  if (l.gate_held) return 'gate'
+  if (l.review_reason) return 'review'
+  if (!l.event_date) return 'undated'
+  if (signalStale(l.event_date, now)) return 'stale'
+  if (l.fit === 0 && (l.stored_intent !== undefined ? l.stored_intent : l.intent) === null) return 'unfit'
   return null
+}
+const HOLD_WORDS: Record<DiscoverHoldCode, string> = {
+  rejected: 'Rejected. Undo to use it again.',
+  gate: 'A required check has not passed. Research only.',
+  review: 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.',
+  undated: 'The signal has no date, so its timing is unknown. Open the proof to check it.',
+  stale: 'The signal is more than a year old. It stays here as background; it is not a reason to write now.',
+  unfit: 'Graded as not a fit for your profile.',
+}
+export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
+  const code = discoverProofHoldCode(l, now)
+  return code ? HOLD_WORDS[code] : null
 }
 // Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
 // email is published. The user sends the first message on LinkedIn themselves; dazl opens the profile and automates nothing.
 // Null unless every proof rule passes, a person is named, and the stored link is a person's profile (/in/<name>), never a company page.
+// #1238: and null when this person's own address is on the workspace's do-not-contact list, or that list could not be read. They asked
+// not to be contacted (or it is not known that they did not), so no page offers another way to reach them. An address refused for
+// another reason (a personal mailbox, a failed mailbox check) says nothing about the person, and their profile still counts.
 const PROFILE = /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/in\/[^/?#]{2,}\/?(?:[?#].*)?$/i
-export function discoverLinkedIn(l: ProofLead & { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { name: string; profile: string } | null {
+export function discoverLinkedIn(l: ProofLead & { source_kind?: string | null; name?: string | null; enrichments?: Row[]; recipient_refused?: string | null }): { name: string; profile: string } | null {
   if (!isDiscoverLead(l) || discoverProofHold(l)) return null
+  if (l.recipient_refused === 'suppressed' || l.recipient_refused === 'unreadable') return null
   const p = discoverContact(l)?.person
   return p?.name && p.linkedin && PROFILE.test(p.linkedin.trim()) ? { name: p.name, profile: p.linkedin.trim() } : null
 }
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
-// Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
-// (lib/scan/lead-card.ts), which already has them.
-export function discoverApprove(l: { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; company_domain?: string | null; fit?: number | null; intent?: number | null; source_kind?: string | null; name?: string | null; enrichments?: Row[]; recipient_refused?: string | null }, now: Date = new Date()): { ok: true } | { ok: false; reason: string } {
+// Same rules as lib/outreach/service.ts discoverDraftChecks. Everything about the ADDRESS that needs the server (a personal mailbox, the
+// do-not-contact list, a press / support / privacy inbox, a failed mailbox check) arrives as ONE verdict, recipient_refused
+// (lib/outreach/recipient-rule.ts recipientVerdict). Every page that counts a lead reads that same verdict (lib/discover/state-db.ts), so
+// a lead is never counted ready where its card refuses it (#1238).
+export function discoverApprove(l: ProofLead & { company_domain?: string | null; source_kind?: string | null; name?: string | null; enrichments?: Row[]; recipient_refused?: string | null }, now: Date = new Date()): { ok: true } | { ok: false; reason: string } {
   const held = discoverProofHold(l, now)
   if (held) return { ok: false, reason: held }
   const c = discoverContact(l)
@@ -139,6 +169,8 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
   if (l.recipient_refused === 'personal_email') return { ok: false, reason: 'The published address is a personal mailbox (free webmail), not a company address.' }
   // the check itself could not be read: not a refusal of the address, and not a pass
   if (l.recipient_refused === 'unreadable') return { ok: false, reason: 'dazl could not check this address just now, so Approve stays off. Reload the page to try again.' }
+  if (l.recipient_refused === 'not_sales') return { ok: false, reason: 'The published address is a press, support or privacy inbox, not a sales contact.' }
+  if (l.recipient_refused === 'undeliverable') return { ok: false, reason: 'This address cannot receive mail (invalid domain or a failed mailbox check).' }
   if (l.recipient_refused) return { ok: false, reason: 'This address is on your do-not-contact list.' }
   return { ok: true }
 }
@@ -153,13 +185,13 @@ export function discoverApprove(l: { quarantined_at?: number | null; gate_held?:
 //   ready_linkedin  the named person's own LinkedIn profile is known (no own address)
 //   no_contact      the proof is fine, but nobody can be reached yet
 // "Ready" and "with a contact" mean ready_email or ready_linkedin and nothing else (discoverReady).
-// stored_intent: the grade as saved. GET /api/leads replaces `intent` with a display value and keeps the saved one here; the saved one
-// is what the draft check reads (lib/outreach/service.ts), so it is the one used when both are present.
+// Its inputs are the lead row, the rows the run stored for it, and the server's verdict on its address (recipient_refused). A caller
+// that counts leads must hand over that verdict: lib/discover/state-db.ts makes it a required argument. The saved grade (stored_intent)
+// is read by the proof rule itself, so Approve, the LinkedIn route and this state read the same grade (the card used to read the
+// display value and could offer Approve on a lead this state called research).
 export type DiscoverState = 'rejected' | 'review' | 'research' | 'ready_email' | 'ready_linkedin' | 'no_contact'
-export type DiscoverStateLead = Parameters<typeof discoverApprove>[0] & { stored_intent?: number | null }
-const asSaved = (l: DiscoverStateLead): DiscoverStateLead => l.stored_intent !== undefined ? { ...l, intent: l.stored_intent } : l
-export function discoverState(lead: DiscoverStateLead): DiscoverState {
-  const l = asSaved(lead)
+export type DiscoverStateLead = Parameters<typeof discoverApprove>[0]
+export function discoverState(l: DiscoverStateLead): DiscoverState {
   if (l.quarantined_at) return 'rejected'
   const held = discoverProofHold(l)
   // Would the hold go away, or change, if the user confirmed the proof page? Then it is theirs to check. Otherwise no check lifts it.
@@ -179,7 +211,7 @@ export function discoverNotReady(lead: DiscoverStateLead): string | null {
   if (s === 'rejected') return 'rejected'
   if (s === 'review') return 'needs your review'
   if (s === 'no_contact') return 'no contact found yet'
-  const first = (discoverProofHold(asSaved(lead)) ?? '').split('. ')[0].replace(/\.$/, '')
+  const first = (discoverProofHold(lead) ?? '').split('. ')[0].replace(/\.$/, '')
   return first.charAt(0).toLowerCase() + first.slice(1)
 }
 // The counts every page shows for a search's discovery leads, and the one sentence that says them.

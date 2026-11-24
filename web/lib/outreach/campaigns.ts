@@ -12,7 +12,7 @@ import { discoverCounts, type DiscoverCounts } from '../discover/card.ts'
 import { DISCOVER_LEAD_COLUMNS, discoverNoTable, discoverStatesFromRows, discoverStatesOfDb, discoverStoredSql, type DiscoverStoredRow } from '../discover/state-db.ts'
 import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
-import { approveBlockReason, manualDraftBlockReason, sendBlockReason } from './service.ts'
+import { approveBlockReason, discoverRecipientRefusals, manualDraftBlockReason, sendBlockReason } from './service.ts'
 
 // One row per search (a scan job is a campaign, as in the Outreach analytics): discovery -> qualification -> contact ->
 // outreach -> sequence -> reply, and the single next action. Read-only and tenant-scoped: every count is limited to the
@@ -126,7 +126,8 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // left out of the older engine's rules, which `rows` and everything derived from it keep exactly as they were.
     let dStored: DiscoverStoredRow[] = []
     if (every.some(r => r.source_kind === 'discover')) try { dStored = db.prepare(discoverStoredSql(1)).all(tenantId, tenantId, j.id) as DiscoverStoredRow[] } catch (e) { dStored = discoverNoTable(e) }
-    const dStates = discoverStatesFromRows(every, dStored).get(j.id)
+    // with the verdict on each lead's address (a personal mailbox, the do-not-contact list, a failed mailbox check): the card's own answer
+    const dStates = discoverStatesFromRows(every, dStored, discoverRecipientRefusals(db, tenantId, every, dStored)).get(j.id)
     const dc = dStates ? discoverCounts(dStates.values()) : null
     const rows = dStates ? every.filter(r => !dStates.has(r.id)) : every
     const leads = every.length

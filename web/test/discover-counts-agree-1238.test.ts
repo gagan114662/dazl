@@ -11,7 +11,8 @@ import { sqliteDb } from '../lib/db/client.ts'
 import { addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { getJob, listLeads } from '../lib/scan/store.ts'
 import { discoverCountsLine, discoverState, type DiscoverCounts } from '../lib/discover/card.ts'
-import { discoverJobCounts } from '../lib/discover/state-db.ts'
+import { discoverJobCounts, discoverReadForDb } from '../lib/discover/state-db.ts'
+import { discoverRecipientRefusal } from '../lib/outreach/service.ts'
 import { previewSplit, journey, type PreviewLead } from '../lib/journey.ts'
 import { leadHoldReason, timingOptsFor } from '../lib/outreach/lead-hold.ts'
 import { historyCampaigns, listCampaigns } from '../lib/outreach/campaigns.ts'
@@ -22,7 +23,9 @@ import { leadCardSummary } from '../lib/scan/lead-card.ts'
 
 const T = 'A', J = 'a'.repeat(24)
 // What every page must report for the search below.
-const WANT: DiscoverCounts = { found: 9, ready: 2, ready_email: 1, ready_linkedin: 1, no_contact: 2, review: 2, research: 2, rejected: 1 }
+// The last three leads of build() carry an address a draft would be refused for. The counters used to read no such verdict and called
+// all three "ready by email" beside a card that said "Can't approve yet" (#1238, the status map of 2026-11-24).
+const WANT: DiscoverCounts = { found: 12, ready: 3, ready_email: 1, ready_linkedin: 2, no_contact: 4, review: 2, research: 2, rejected: 1 }
 
 function build() {
   const db = new Database(':memory:')
@@ -46,23 +49,38 @@ function build() {
   lead('undated', { date: null }); person('undated'); profile('undated')                // research: no date. The staging lead Home called ready and Campaigns called "with a contact"
   lead('unfit', { fit: 0, intent: null }); person('unfit'); ownEmail('unfit')           // research: not graded a fit
   lead('gone', { rejected: true }); person('gone'); ownEmail('gone')                    // rejected by the user
-  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 7, needs_review = 2, dropped = 0 WHERE id = ?").run(J)
+  // the person's own address, and a draft to it would be refused
+  lead('optout'); person('optout'); ownEmail('optout'); profile('optout')               // no contact: on the do-not-contact list, so their profile is not offered either
+  db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, 'dana.ruiz@optout.example', 'manual')").run(T)
+  lead('webmail'); person('webmail'); row('webmail', 'email', 'dana.ruiz@gmail.com'); profile('webmail')   // ready on LinkedIn: a free-webmail address is not drafted to; their profile still counts
+  lead('bounced'); person('bounced'); ownEmail('bounced')                               // no contact: a recorded failed mailbox check
+  addEnrichment(db, T, 'bounced', { connector: 'checker', kind: 'deliverability', value: 'dana.ruiz@bounced.example|rejected', label: 'x', confidence: null, source_url: 'https://bounced.example/team', source_date: '2026-11-22', retrieved_at: 2 })
+  db.prepare("UPDATE scan_jobs SET status = 'done', verified = 10, needs_review = 2, dropped = 0 WHERE id = ?").run(J)
   return db
 }
-// The search's leads as GET /api/leads hands them to the browser: the row, its stored rows, the saved grade beside the shown one.
+// The search's leads as GET /api/leads hands them to the browser: the row, its stored rows, the saved grade beside the shown one, and
+// the server's verdict on the address (here from the synchronous reader Home's tile uses; the test below holds it to the Db-layer one).
 function apiLeads(db: Database.Database) {
   const rows = listLeads(db, T, J, 500, true) as (PreviewLead & { intent: number | null })[]
   const enr = enrichmentsForLeads(db, T, rows.map(l => l.id))
-  return rows.map(l => ({ ...l, stored_intent: l.intent, gate_held: false, enrichments: enr[l.id] ?? [] })) as unknown as PreviewLead[]
+  return rows.map(l => ({ ...l, stored_intent: l.intent, gate_held: false, enrichments: enr[l.id] ?? [], recipient_refused: discoverRecipientRefusal(db, T, l.id) })) as unknown as PreviewLead[]
 }
 
 test('one search, every state: Home, the Leads header, the Campaigns list, past scans and the campaign page report the same numbers', async () => {
   const db = build()
   const leads = apiLeads(db)
-  assert.equal(leads.length, 9)
+  assert.equal(leads.length, 12)
 
   // The Leads page header (GET /api/leads discover_counts).
   assert.deepEqual(await discoverJobCounts(sqliteDb(db), T, J), WANT, 'Leads header')
+  // The verdict on each address: the Db-layer reader (the header, Campaigns, the campaign page, the list itself) and the synchronous
+  // one (Home's tile) give the same answer for every lead, and it is the card's reason.
+  const refused = (await discoverReadForDb(sqliteDb(db), T, [J])).refused
+  assert.deepEqual(Object.fromEntries(refused), { optout: 'suppressed', webmail: 'personal_email', bounced: 'undeliverable' })
+  for (const l of leads) assert.equal((l as { recipient_refused?: string | null }).recipient_refused ?? null, refused.get(l.id) ?? null, `${l.id}: both readers`)
+  const reason = (id: string) => { const a = leadCardSummary(leads.find(l => l.id === id) as never).approve; return a.ok ? 'ok' : a.reason }
+  assert.deepEqual([reason('optout'), reason('webmail'), reason('bounced')], ['This address is on your do-not-contact list.',
+    'The published address is a personal mailbox (free webmail), not a company address.', 'This address cannot receive mail (invalid domain or a failed mailbox check).'])
 
   // Home, the current search's card (lib/journey.ts previewSplit): "Leads ready", "need your review", "research only", "no contact yet".
   const split = previewSplit(leads)
@@ -83,7 +101,7 @@ test('one search, every state: Home, the Leads header, the Campaigns list, past 
   assert.equal(why.get('unfit'), 'graded as not a fit for your profile')
 
   // The Campaigns list (GET /api/campaigns).
-  const recorded = { id: J, status: 'done', error: null, query: 'q', candidates: 9, verified: 7, needs_review: 2, dropped: 0, lead_count: 9 }
+  const recorded = { id: J, status: 'done', error: null, query: 'q', candidates: 12, verified: 10, needs_review: 2, dropped: 0, lead_count: 12 }
   const card = campaignStatus(listCampaigns(db, T)[0], recorded as never)
   assert.deepEqual(card.qualification.discover, WANT, 'Campaigns list')
   assert.equal(card.discovery.leads, WANT.found)
@@ -91,7 +109,7 @@ test('one search, every state: Home, the Leads header, the Campaigns list, past 
     [WANT.ready, WANT.review, WANT.research, WANT.no_contact, WANT.rejected, 0, 0], 'Campaigns list: the same leads in the funnel\'s own columns')
   assert.equal(card.contact.withContact, WANT.ready, '"with a contact" means ready by email or on LinkedIn, nothing else')
   assert.equal(card.contact.readyWithContact, WANT.ready)
-  assert.deepEqual(qualificationLines(card.qualification, card.discovery.leads), ['2 ready (1 by email, 1 on LinkedIn)', '2 with no contact yet, 2 need your review, 2 research only, 1 rejected'])
+  assert.deepEqual(qualificationLines(card.qualification, card.discovery.leads), ['3 ready (1 by email, 2 on LinkedIn)', '4 with no contact yet, 2 need your review, 2 research only, 1 rejected'])
 
   // Leads > Past scans (GET /api/campaigns/history).
   const past = campaignStatus((await historyCampaigns(db, sqliteDb(db), T, [J]))[0], recorded as never)
@@ -105,7 +123,7 @@ test('one search, every state: Home, the Leads header, the Campaigns list, past 
   const page = currentRun(runStatusOf(recorded as never), q, 'q')
 
   // One sentence for the search, the same on all three.
-  const line = '9 leads found: 2 ready (1 by email, 1 on LinkedIn), 2 with no contact yet, 2 need your review, 2 research only, 1 rejected'
+  const line = '12 leads found: 3 ready (1 by email, 2 on LinkedIn), 4 with no contact yet, 2 need your review, 2 research only, 1 rejected'
   assert.equal(discoverCountsLine(WANT), line)
   assert.deepEqual([card.run?.label, past.run?.label, page.label], [line, line, line])
   assert.deepEqual([card.run?.tag, past.run?.tag, page.tag], ['Leads found', 'Leads found', 'Leads found'])
@@ -114,7 +132,8 @@ test('one search, every state: Home, the Leads header, the Campaigns list, past 
   const status = new Map(detail.leads.map(l => [l.id, leadStatus(l, []).text]))
   assert.deepEqual(Object.fromEntries(status), {
     email: 'Ready - approve it to draft an email', linkedin: 'Ready - message them on LinkedIn', nobody: 'No contact found yet', inbox: 'No contact found yet',
-    unsure: 'Needs your review', unsure2: 'Needs your review', undated: 'Research only - checking the source cannot make it ready', unfit: 'Research only - checking the source cannot make it ready', gone: 'Rejected' })
+    unsure: 'Needs your review', unsure2: 'Needs your review', undated: 'Research only - checking the source cannot make it ready', unfit: 'Research only - checking the source cannot make it ready', gone: 'Rejected',
+    optout: 'No contact found yet', webmail: 'Ready - message them on LinkedIn', bounced: 'No contact found yet' })
   for (const l of leads) {
     const s = discoverState(l as never), c = leadCardSummary(l as never)
     assert.equal(s, detail.leads.find(x => x.id === l.id)!.discover_state, `${l.id}: the server's state is the browser's state`)

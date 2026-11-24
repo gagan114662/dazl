@@ -7,6 +7,7 @@ import { requiredGateHeld } from '../scan/held-state.ts'
 import { eventDayVerified, surfaceStoredIntent, TIMING_REQUESTED } from '../scan/scoreboard.ts'
 import { jobWindowDays } from '../scan/window.ts'
 import { heldReason, type PreviewLead } from '../journey.ts'
+import { discoverRecipientRefusal } from './service.ts'
 
 export interface TimingOpts { windowDays: number | null; timingRequired: boolean }
 export const timingOptsFor = (job: { query: string | null; icp: string | null }): TimingOpts => {
@@ -17,6 +18,8 @@ export const timingOptsFor = (job: { query: string | null; icp: string | null })
 // null = ready; otherwise the first failing check's own words.
 export function leadHoldReason(db: Database.Database, tenantId: string, lead: Record<string, unknown> & { id: string }, enrichments: unknown[], timing: TimingOpts, at: Date): string | null {
   const row = { ...lead, stored_intent: lead.intent ?? null, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
-    window_held: leadWindowHeld(db, tenantId, lead.id, at), currentness_held: currentnessHeld(db, tenantId, lead.id, at), gate_held: requiredGateHeld(db, tenantId, lead.id) !== null }
+    window_held: leadWindowHeld(db, tenantId, lead.id, at), currentness_held: currentnessHeld(db, tenantId, lead.id, at), gate_held: requiredGateHeld(db, tenantId, lead.id) !== null,
+    // #1238: the verdict on a new-engine lead's address, as GET /api/leads sends it. Without it this tile counted a lead ready whose card refused it.
+    recipient_refused: lead.source_kind === 'discover' ? discoverRecipientRefusal(db, tenantId, lead.id) : null }
   return heldReason(row as unknown as PreviewLead)
 }

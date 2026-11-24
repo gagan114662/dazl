@@ -7,11 +7,11 @@
 // "widen the window" fix unless a dated lead was only too old. Unknown reasons fail closed to research.
 import { heldReason, NO_OWN_BUYER, type PreviewLead } from './journey.ts'
 import { reviewCanNameBuyer } from './people/buyer-reach.ts'
-import { discoverReady, discoverState, isDiscoverLead } from './discover/card.ts'
+import { discoverProofHoldCode, discoverReady, discoverState, isDiscoverLead } from './discover/card.ts'
 
 export type HeldState = 'review' | 'research' | 'rejected'
-// unfit, contact: discovery leads only (lib/discover/card.ts discoverState 'research' not for its date, and 'no_contact')
-export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need' | 'unfit' | 'contact'
+// stale, unfit, contact: discovery leads only (lib/discover/card.ts: the rule that holds a 'research' lead, and 'no_contact')
+export type ResearchCause = 'undated' | 'older' | 'stale' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need' | 'unfit' | 'contact'
 
 // A person's check of the source can turn these into a usable lead (#352: Home, the Leads view and the draft gate agree):
 //   - dazl could not read or check the page: quote_unconfirmed, blocked_by_site, needs_javascript, login_required, location_unconfirmed;
@@ -81,7 +81,11 @@ export function heldState(l: PreviewLead & { review_reason?: string | null }): {
     const s = discoverState(l as never)
     if (discoverReady(s)) return null
     if (s === 'rejected' || s === 'review') return { state: s, cause: null }
-    return { state: 'research', cause: s === 'no_contact' ? 'contact' : !l.event_date ? 'undated' : l.gate_held ? 'unsupported' : 'unfit' }
+    if (s === 'no_contact') return { state: 'research', cause: 'contact' }
+    // The rule that holds it, asked of the one list of rules (discoverProofHoldCode), never guessed again here: this used to fall through
+    // to 'unfit' for a signal older than a year, and Home said "graded as not a fit for your profile" about a lead its card held for its age (#1238).
+    const code = discoverProofHoldCode(l as never)
+    return { state: 'research', cause: code === 'undated' ? 'undated' : code === 'stale' ? 'stale' : code === 'unfit' ? 'unfit' : 'unsupported' }
   }
   const why = heldReason(l)
   if (!why) return null
@@ -104,19 +108,21 @@ export const CAUSE_TEXT: Record<ResearchCause, string> = {
   place: 'evidence names a different place', closed: 'the opening is closed', unsupported: 'evidence not verified',
   need: 'event day verified on the cited source; the rest of the lead is not confirmed yet',
   unfit: 'graded as not a fit for your profile', contact: 'proof found, but no contact found yet',
+  stale: 'the signal is more than a year old',
 }
 // Home's one-line reason under "Nothing ready - the leads found are research only". It used to say for every such play that none has
 // verified, dated evidence - false when a lead's day IS verified and only the rest of the lead is not (#1176 reader 2).
 export function researchHint(causes: ResearchCause[]): string {
   const need = causes.filter(c => c === 'need').length
   if (causes.length > 0 && causes.every(c => c === 'unfit')) return 'They were graded as not a fit for your profile, so reviewing them cannot make them ready.'
+  if (causes.length > 0 && causes.every(c => c === 'stale')) return 'Their signals are more than a year old, so reviewing them cannot make them ready.'
   if (need === 0) return 'None has verified, dated evidence of its own event, so reviewing them cannot make them ready.'
   return `${need === causes.length ? (need === 1 ? 'Its event day is' : 'Their event days are') : `For ${need} of them the event day is`} verified on the cited source, but the rest of the lead is not confirmed yet. Each lead's reason is below.`
 }
 // Home's "N research only" chip explains the WHOLE group in its InfoTip. It used to give one fixed list of reasons ("No verified, dated event, outside your
 // time window, or someone else's customer") for every lead in it - false for a lead whose day IS verified and that only the timing gate holds (#1176, the
 // prod live check of 66449147: Zayed Law and Ogletree Deakins under that sentence). It now names the causes the group really has, in the per-lead lines' own words.
-const CAUSE_ORDER: ResearchCause[] = ['need', 'undated', 'older', 'customer', 'place', 'closed', 'unsupported', 'unfit', 'contact']
+const CAUSE_ORDER: ResearchCause[] = ['need', 'undated', 'older', 'stale', 'customer', 'place', 'closed', 'unsupported', 'unfit', 'contact']
 export function researchTip(causes: ResearchCause[]): string {
   const n = new Map<ResearchCause, number>()
   for (const c of causes) n.set(c, (n.get(c) ?? 0) + 1)

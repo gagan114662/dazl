@@ -18,6 +18,8 @@ import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
 import { discoverContact, emailOnCompanySite, signalStale } from '../discover/card.ts'
+import { discoverRefusals, type DiscoverStoredRow } from '../discover/state-db.ts'
+import { addressAllowed, testInboxApproved, TEST_INBOX, INBOX_FIXTURE_DOMAIN, isInboxFixtureAddress, type RecipientRefusal } from './recipient-rule.ts'
 import { isGenericInbox } from './generic-inbox.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
@@ -34,35 +36,17 @@ import { onCompanySite, isFounderRoute, siteIdentity } from '../scan/site-contac
 export const DAILY_CAP = Math.min(ACCOUNT_SEND_CAP, Number(process.env.OUTREACH_DAILY_CAP || 20))
 export const SENDING_STALE_S = 10 * 60
 
-// Personal mailbox providers: a published address there is not a business contact.
-const CONSUMER = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.ca', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com'])
-
-// Off by default. Only the env-designated test tenant (OUTREACH_TEST_TENANT_ID) and this exact
-// inbox qualify. This is a code gate only, not evidence of user permission.
-export const TEST_INBOX = 'instinct114114@gmail.com'
+// Which mailboxes may be addressed at all (personal providers, the test tenant's one approved inbox, the inbox-fixture addresses) is a
+// pure rule in lib/outreach/recipient-rule.ts, shared with the Db-layer lead counters (lib/discover/state-db.ts). This module reads
+// the tenant's stored allowlist for it.
+export { TEST_INBOX, INBOX_FIXTURE_DOMAIN, isInboxFixtureAddress }
 export const testRecipientApproved = (db: Database.Database, tenantId: string, email: string): boolean =>
-  !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
-  norm(email) === TEST_INBOX && isAllowlistedTestRecipient(db,tenantId,email)
-// Synthetic recipients of the test-only inbox fixture (lib/outreach/inbox-fixture.ts, #369). The .invalid TLD cannot
-// resolve, and no draft, send, follow-up or sequence step may ever be addressed to one: recipientAllowed refuses them
-// (every follow-up and sequence path checks it), and draft and send refuse them first with their own code.
-export const INBOX_FIXTURE_DOMAIN = 'inbox-fixture.dazl.invalid'
-export const isInboxFixtureAddress = (email: string): boolean => {
-  const d = norm(email).split('@').pop() ?? ''
-  return d === INBOX_FIXTURE_DOMAIN || d.endsWith(`.${INBOX_FIXTURE_DOMAIN}`)
-}
-// The env-designated test tenant may address only the approved test inbox. Every send path
-// (draft, manual and autopilot send, follow-up, sequence step, re-open) runs this gate
-// synchronously before a send, so the restriction holds at each authoritative send boundary,
-// not only in the UI. A missing or malformed allowlist fails closed via testRecipientApproved:
-// nothing is addressable for that tenant. Other tenants are unaffected. Code gate only.
-const isDesignatedTestTenant = (tenantId: string): boolean =>
-  !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
-export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean => {
-  if (isInboxFixtureAddress(email)) return false
-  if (isDesignatedTestTenant(tenantId)) return testRecipientApproved(db, tenantId, email)
-  return !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
-}
+  testInboxApproved(tenantId, email, () => isAllowlistedTestRecipient(db,tenantId,email))
+// Every send path (draft, manual and autopilot send, follow-up, sequence step, re-open) runs this gate synchronously before a send,
+// so the restriction holds at each authoritative send boundary, not only in the UI. A missing or malformed allowlist fails closed:
+// nothing is addressable for the test tenant. Other tenants are unaffected. Code gate only.
+export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
+  addressAllowed(tenantId, email, () => isAllowlistedTestRecipient(db,tenantId,email))
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -320,23 +304,38 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // address is the one a public page prints (the run's own record, with that page), timing is the lead's own dated signal (an undated
 // lead is not drafted to), and the address must belong to the company's own website (lib/discover/card.ts emailOnCompanySite), else
 // the person confirms the website first. Nothing is sent by a draft; the person reviews it in Outreach.
-// The recipient rules for a discovery lead's published address, for the lead card: the SAME two refusals discoverDraftChecks makes
-// (a personal mailbox, the do-not-contact list), so Approve is never on for an address the server would refuse. null: not refused,
+// The recipient rules for a discovery lead's published address, for the lead card: the SAME four refusals discoverDraftChecks makes
+// (a personal mailbox, the do-not-contact list, a press / support / privacy inbox, a failed mailbox check), so Approve is never on for an address the server would refuse. null: not refused,
 // or the lead has no published address. 'unreadable': the address or the list could not be read (review of #1578). That is never
 // "not refused": the card keeps Approve off and says so, and the failure is recorded for the operator instead of being dropped.
 // The address a discovery lead is drafted to: the named person's own, as the card decides it (lib/discover/card.ts discoverContact).
-// One read, used by the draft check and by the card's recipient verdict, so both judge the same address.
+// The draft check's read. The recipient verdict below finds the same address by the same function over the same rows.
 const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null) =>
   discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string }[] })?.email ?? null
-export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
-  try {
-    const to = norm(discoverOwnEmail(db, tenantId, leadId, (db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as { name: string | null } | undefined)?.name ?? '')?.address ?? '')
-    if (!EMAIL_RE.test(to)) return null
-    return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
-  } catch (e) {
+// The verdict on the address of each of these leads, for a caller on the synchronous store that already holds the lead rows and their
+// stored rows (lib/discover/state-db.ts discoverStoredSql): the Campaigns list. The rule is discoverRefusals, the one the Db-layer
+// counters apply; only the two reads (the allowlist, the do-not-contact list) are this store's own. A read that fails is recorded,
+// and every lead with an address is then 'unreadable'.
+export function discoverRecipientRefusals(db: Database.Database, tenantId: string, rows: Parameters<typeof discoverRefusals>[0], stored: DiscoverStoredRow[]): Map<string, RecipientRefusal> {
+  try { return discoverRefusals(rows, stored, { allowed: to => recipientAllowed(db, tenantId, to), suppressed: to => isSuppressed(db, tenantId, to) }) } catch (e) {
     captureError(e, { source: 'route', where: '/api/leads', tenantId })
-    return 'unreadable'
+    return discoverRefusals(rows, stored, null)
   }
+}
+// The same for one lead, read here: Home's "Ready leads" tile and the checked list judge leads one at a time (lib/outreach/lead-hold.ts).
+export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): RecipientRefusal | null {
+  const read = (): { name: string; stored: DiscoverStoredRow[] } | null => {
+    try {
+      return { name: (db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as { name: string | null } | undefined)?.name ?? '',
+        stored: db.prepare("SELECT lead_id, kind, connector, value, source_url, retrieved_at FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND ((connector = 'discover' AND kind IN ('person', 'email', 'linkedin')) OR kind = 'deliverability') ORDER BY retrieved_at, id").all(tenantId, leadId) as DiscoverStoredRow[] }
+    } catch (e) {
+      captureError(e, { source: 'route', where: '/api/leads', tenantId })
+      return null
+    }
+  }
+  const lead = read()
+  if (!lead) return 'unreadable'
+  return discoverRecipientRefusals(db, tenantId, [{ id: leadId, name: lead.name, source_kind: 'discover' }], lead.stored).get(leadId) ?? null
 }
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')

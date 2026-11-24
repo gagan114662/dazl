@@ -303,3 +303,35 @@ test('#1037 confirming the website names the buyer only if the real buyer rule t
   assert.equal(rq({ at: Math.floor(Date.now() / 1000) - 200 * 86_400 }), 'research', 'confirmed site, stale bio: no review can name the buyer')
   assert.equal(rq({}), 'review', 'control: confirmed site, current bio')
 })
+
+// #1238 (status map of 2026-11-24): Home's play card labelled a new-engine lead whose signal is older than a year "graded as not a fit
+// for your profile". The cause was guessed from three facts that did not include the signal's age, while the card and Home's own tile
+// said "the signal is more than a year old". The cause is now the rule that holds the lead (lib/discover/card.ts discoverProofHoldCode).
+test('#1238 a new-engine lead held for an old signal says so on Home, never "not a fit"; a lead graded not a fit still says that', async () => {
+  const { CAUSE_TEXT, researchHint, researchTip } = await import('../lib/lead-state.ts')
+  const day = (ago: number) => new Date(Date.now() - ago * 86_400_000).toISOString().slice(0, 10)
+  const found = (o: Record<string, unknown> = {}) => ({ id: 'd1', source_kind: 'discover', name: 'Dana Ruiz', company: 'Northwind Dental', company_domain: 'northwind-dental.example', signal: 'Opening a second clinic',
+    source_url: 'https://news.example/northwind', evidence_excerpt: 'Northwind Dental will open its second clinic', event_date: day(30), date_status: 'verified', review_reason: null, fit: 4, intent: 4, why: 'expanding',
+    icp_match: null, contact: null, confidence: 85, enrichments: [], ...o }) as unknown as PreviewLead
+  const old = found({ event_date: day(400) })
+  const h = heldState(old)
+  assert.deepEqual(h, { state: 'research', cause: 'stale' })
+  assert.equal(CAUSE_TEXT.stale, 'the signal is more than a year old')
+  assert.equal(heldReason(old), 'the signal is more than a year old', 'Home\'s tile and the checked list: the same words')
+  for (const words of [CAUSE_TEXT[h!.cause!], researchTip([h!.cause!]), researchHint([h!.cause!]), researchHint(['stale', 'stale'])]) assert.doesNotMatch(words, /not a fit/i)
+  assert.match(researchTip(['stale']), /^1: The signal is more than a year old\./)
+  assert.equal(researchHint(['stale', 'stale']), 'Their signals are more than a year old, so reviewing them cannot make them ready.')
+  assert.deepEqual(previewSplit([old]).research.map(r => r.cause), ['stale'], 'the play card groups it by that cause')
+  // the grade as saved decides "not a fit": the list shows intent 0 for a lead whose saved intent is null, and both shapes say the same
+  for (const unfit of [found({ fit: 0, intent: null }), found({ fit: 0, intent: 0, stored_intent: null })]) {
+    assert.deepEqual(heldState(unfit), { state: 'research', cause: 'unfit' })
+    assert.equal(CAUSE_TEXT.unfit, 'graded as not a fit for your profile')
+    assert.equal(heldReason(unfit), 'graded as not a fit for your profile')
+  }
+  assert.equal(researchHint(['unfit', 'unfit']), 'They were graded as not a fit for your profile, so reviewing them cannot make them ready.')
+  // the other causes keep their words: no date, and proof with nobody to reach
+  assert.deepEqual(heldState(found({ event_date: null })), { state: 'research', cause: 'undated' })
+  assert.deepEqual(heldState(found()), { state: 'research', cause: 'contact' })
+  // an old signal on a lead that is also graded not a fit: the first rule that holds it is its age, on every page
+  assert.deepEqual(heldState(found({ event_date: day(400), fit: 0, intent: null })), { state: 'research', cause: 'stale' })
+})
