@@ -225,3 +225,39 @@ test('a lead with a named person and their LinkedIn profile is ready to reach on
   assert.deepEqual(split.opportunities.map(o => o.contactReady), [true], 'ready with a profile')
   assert.equal(split.noContact.length, 1, 'not ready with a name alone: counted as "no contact yet"')
 })
+
+// #1250 rule 1 (and #1183): the contact gate needs a NAMED person. A job title stored as the name ("Managing Partner") or a bare first
+// name is not one: the row already said "No buyer named yet" for these (lib/people/lead-person.ts) while the card called the same lead
+// ready. One rule now, read by the row, the card, the counts and the server's draft check.
+test('#1250: a job title stored as a name, or a bare first name, is not a named person: not ready by email or LinkedIn, no draft', async () => {
+  const { discoverState, discoverContact, discoverMissing } = await import('../lib/discover/card.ts')
+  const titleOnly = { ...person, value: 'Managing Partner, Practice Owner' }, firstOnly = { ...person, value: 'Dana, Practice Owner' }
+  const partnerMail = { ...email, value: 'partner@northwind-dental.example' }
+  for (const [p, name, mail] of [[titleOnly, 'Managing Partner', partnerMail], [firstOnly, 'Dana', email]] as const) {
+    assert.equal(leadPerson([p, linkedin, mail], ''), null, `${name}: the row names nobody`)
+    assert.equal(discoverContact(lead([p, linkedin, mail], { name }) as never)?.person, null, `${name}: the card names nobody`)
+    const c = leadCardSummary(lead([p, linkedin, mail], { name }) as never)
+    assert.equal(c.approve.ok, false, `${name}: Approve is off`)
+    assert.equal(c.linkedin, null, `${name}: no LinkedIn route`)
+    assert.equal(discoverState(lead([p, linkedin, mail], { name }) as never), 'no_contact')
+    assert.ok(discoverMissing(lead([p, linkedin, mail], { name }) as never).includes('a named person'), `${name}: the card says a named person is missing`)
+  }
+  // the lead's own name column is held to the same rule when no person row is stored
+  assert.equal(discoverState(lead([linkedin, partnerMail], { name: 'Managing Partner' }) as never), 'no_contact')
+  // real people keep their route: a role-like surname, an accented name, a name written without spaces
+  assert.equal(discoverState(lead([{ ...person, value: 'Joy Manager, Owner' }, linkedin], { name: 'Joy Manager' }) as never), 'ready_linkedin')
+  assert.equal(discoverState(lead([{ ...person, value: 'Zoë D\'Mello-Núñez, Owner' }, linkedin], { name: 'Zoë D\'Mello-Núñez' }) as never), 'ready_linkedin')
+  assert.equal(discoverState(lead([{ ...person, value: '山田太郎, Owner' }, linkedin], { name: '山田太郎' }) as never), 'ready_linkedin')
+  assert.equal(discoverState(lead([person, linkedin, email]) as never), 'ready_email')
+  // and the server refuses the draft whatever the page shows
+  const db = new Database(':memory:'); migrateAllSqlite(db)
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, seller) VALUES ('j', 'T', 'b', 'i', 'l', 'running', 'Dental clinics opening a new location', 'Clinic fit-out contractor')").run()
+  const id = randomBytes(12).toString('hex'), now = Math.floor(Date.now() / 1000)
+  db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, 'j', 'Managing Partner', 'Northwind Dental', 'Opening a second clinic', 'https://news.example/northwind', 85, 'Northwind Dental will open its second clinic', '2026-10-14', 'verified', 85, 4, 4, 'expanding', 'discover', 'northwind-dental.example')").run(id)
+  db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = 'j'").run()
+  for (const r of [titleOnly, partnerMail]) addEnrichment(db, 'T', id, { ...r, confidence: null, source_date: '2026-11-22', retrieved_at: now })
+  let code = 'created'
+  try { createDraft(db, 'T', id, 'Fit-out Co', { manual: true }) } catch (e) { if (!(e instanceof OutreachError)) throw e; code = e.code }
+  assert.notEqual(code, 'created', 'no draft to an address that is nobody\'s own')
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM outreach_messages WHERE lead_id = ?").get(id) as { n: number }).n, 0)
+})

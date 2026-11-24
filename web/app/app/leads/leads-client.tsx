@@ -14,7 +14,7 @@ import { COST_PER_PASS_SCOPE, costPerShownLead, type CostPerVerificationPass } f
 import { buildSources } from '@/lib/sources/ui-sources'
 import { emptyLeadsMessage, readyRepeats, repeatingSearchesCopy, scanCountTags, scoreLabel, quoteNote, visibleReadyLeads, type CurrentScanSplit } from '@/lib/scan/leads-view'
 import { eventTypeLabel } from '@/lib/events/labels'
-import { companySearchEligible } from '@/lib/scan/find-contact-eligible'
+import { companySearchEligible, findContactOffered } from '@/lib/scan/find-contact-eligible'
 import { contactsFromEnrichments, onlyNameOnly, peopleSourceText, type RankedPerson } from '@/lib/people/rank'
 import { identityOf } from '@/lib/scan/opportunity'
 import { leadPerson, personBasis, NO_BUYER, type LeadPerson } from '@/lib/people/lead-person'
@@ -43,7 +43,7 @@ import PageSignals from './page-signals'
 import SourceMetrics from './source-metrics'
 import { WarmConnections, WarmPath } from './warm-path'
 import WorkEmail, { type WorkEmailInitial } from './work-email'
-import { siteSettled, targetKey, workEmailLeadEligible, workEmailTargets } from '@/lib/people/work-email-eligible'
+import { siteSettled, targetKey, workEmailOffered, workEmailTargets } from '@/lib/people/work-email-eligible'
 import VerificationFixture from './verification-fixture'
 import { leadCardDateLine } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
@@ -1363,7 +1363,7 @@ export default function LeadsClient() {
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <span className="ml-2"><Pill tone="mint">new</Pill></span>}{l.quarantined_at && <span className="ml-2"><Pill tone="pink">Rejected</Pill></span>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <span className="ml-2"><Pill tone="mint">Approved</Pill></span>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
-                    <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
+                    <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
                     {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
@@ -1452,7 +1452,7 @@ export default function LeadsClient() {
                     </div>
                   )}
                   {/* #1036: Find work email for the buyer-role people, only on a lead whose website is settled (lib/people/work-email-eligible.ts). */}
-                  {!l.quarantined_at && workEmailLeadEligible(l) && (() => {
+                  {!l.quarantined_at && workEmailOffered(l) && (() => {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)
                     if (!siteSettled(site)) return null
                     const who = icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''
@@ -1552,7 +1552,7 @@ export default function LeadsClient() {
                   </span> })()}
                 {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
                 {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
-                {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && companySearchEligible(l) && (
+                {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && (
                   <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
                 )}
                 {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}

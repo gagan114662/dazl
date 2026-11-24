@@ -17,3 +17,14 @@ export function looksLikeJobTitle(name: string | null | undefined): boolean {
   if (words.length === 0) return false
   return words.every(w => ROLE_WORDS.has(w))
 }
+
+// A NAMED person, for the discovery lane's row, card, counts and draft check (#1250 rule 1, #1037): a full name in letters (two or more
+// words, or a script that writes a full name without spaces), and not a job title. A bare first name, a handle, an address or
+// "Managing Partner" names nobody. Pure, so the browser's card and the server read the same rule.
+const PERSON_NAME = /^[\p{L}][\p{L}\p{M} .'\u2019-]{1,79}$/u
+const NO_SPACE_NAME = /^[\p{Script=Han}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}\u30FC\u30FB]{2,20}$/u
+export function isPersonName(name: string | null | undefined): boolean {
+  if (typeof name !== 'string') return false
+  const n = name.replace(/\s+/g, ' ').trim()
+  return PERSON_NAME.test(n) && (n.split(' ').length >= 2 || NO_SPACE_NAME.test(n)) && !looksLikeJobTitle(n)
+}

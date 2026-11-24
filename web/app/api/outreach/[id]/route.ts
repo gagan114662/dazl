@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { approve, editDraft, OutreachError, resolveUncertain, sendMessage, skip } from '@/lib/outreach/service'
+import { approve, editDraft, OutreachError, resolveUncertain, sendCapToday, sendMessage, skip } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
@@ -18,8 +18,9 @@ async function guard(req: NextRequest, id: string, action: Action) {
   if (!/^[a-f0-9]{24}$/.test(id)) return { res: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
   return { user }
 }
-const fail = (e: unknown) => {
-  if (e instanceof OutreachError) return NextResponse.json({ error: e.code }, { status: STATUS[e.code] ?? 400 })
+// #1618: a refusal at the daily cap carries the cap, so the page can say how many were sent today.
+const fail = (e: unknown, tenantId?: string) => {
+  if (e instanceof OutreachError) return NextResponse.json({ error: e.code, ...(e.code === 'daily_cap' && tenantId ? { cap: sendCapToday(getScanDb(), tenantId).cap } : {}) }, { status: STATUS[e.code] ?? 400 })
   throw e
 }
 
@@ -61,5 +62,5 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     } else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     await audit(g.user, req, { action: `outreach.${action}`, resource: 'message', id })
     return NextResponse.json({ ok: true })
-  } catch (e) { return fail(e) }
+  } catch (e) { return fail(e, g.user.tenantId) }
 }
