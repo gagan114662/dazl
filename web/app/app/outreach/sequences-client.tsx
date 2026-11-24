@@ -11,7 +11,7 @@ const ago = (t: number) => { const m = Math.max(0, Math.round((Date.now() / 1000
 type AutoPolicy = { version: string; text: string[]; accepted: boolean; available?: boolean }
 type Data = { freshness?: Freshness; gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'configured_on'|'operator_off'|'kill_switch'|'paused'; sequences: Sequence[]; test_addresses: string[]; auto_policy?: AutoPolicy; status: Record<string,{status:string;step:number;next_due_at:number|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 // #1679: a new Gmail connection is send-only (#1603), so dazl cannot see replies and a sequence could never stop on one. The page said
-// "Reply reading must stay connected" and "Enable reply reading in Settings", which no new account can do. One sentence, the same everywhere.
+// that reply reading had to stay connected and to enable it in Settings, which no new account can do. One sentence, the same everywhere.
 const SEQUENCES_NEED_READING = 'Follow-up sequences are not available for your account: dazl connects to Gmail send-only and does not read replies, and a sequence has to stop when someone replies. Nothing is sent automatically. You can still approve and send each email yourself.'
 const COPY: Record<string,string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
