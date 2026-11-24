@@ -21,7 +21,7 @@ test('#1643 a browser form post is redirected; a scripted JSON call is not', () 
 
 test('#1643 the route uses that rule with a 303, after the session is deleted; the app button is still a form post to it', () => {
   const route = readFileSync(new URL('../app/api/auth/signout/route.ts', import.meta.url), 'utf8')
-  assert.match(route, /signoutRedirects\(req\.headers\)\) return NextResponse\.redirect\(new URL\(SIGNED_OUT_PATH, [^)]+\), 303\)/)
+  assert.match(route, /signoutRedirects\(req\.headers\)\) return expireSessionCookies\(NextResponse\.redirect\(new URL\(SIGNED_OUT_PATH, [^)]+\), 303\)/)
   assert.ok(route.indexOf('deleteSession(') < route.indexOf('signoutRedirects('), 'signed out first, then sent home')
   assert.ok(route.indexOf("cookieStore.delete('dazl_session')") < route.indexOf('signoutRedirects('))
   assert.match(readFileSync(new URL('../app/app/layout.tsx', import.meta.url), 'utf8'), /<form action="\/api\/auth\/signout" method="POST"/)

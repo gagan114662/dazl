@@ -1,3 +1,4 @@
+import { expireSessionCookies } from '@/lib/session-cookie'
 import { connection, NextRequest, type NextResponse } from 'next/server'
 import { createSession, getSessionUser, replacedSession, SESSION_TTL_S } from '@/lib/auth-db'
 import { FRESH_AUTH_S } from '@/lib/sessions'
@@ -96,5 +97,6 @@ export async function GET(req: NextRequest) {
   clearReturnCookie(res, base)
   if (ret === 'preview' && isClaimToken(claimToken)) setClaimCookie(res, claimToken)
   else clearClaimCookie(res)
-  return res
+  // #1686: a host-only session cookie left by an earlier password sign-in goes, so this browser holds one session (last: see the helper)
+  return expireSessionCookies(res, base, 'host')
 }
