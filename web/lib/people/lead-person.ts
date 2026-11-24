@@ -20,6 +20,7 @@
 // Order: rank order among the qualifying company-site people (the best title match first).
 import { contactsFromEnrichments, peopleSourceText, roleContradicted, type ContactEnrichment } from './rank.ts'
 import type { SiteIdentity } from './currency.ts'
+import { isPersonName } from './job-title-name.ts'
 
 export const NO_BUYER = 'No buyer named yet'
 const DISCOVER_VIA = 'named on a public page'
@@ -60,7 +61,7 @@ function discoverPerson(rows: unknown): LeadPerson | null {
   if (!p) return null
   const value = str(p.value, 300) ?? '', i = value.indexOf(', ')
   const name = tidy(i < 0 ? value : value.slice(0, i)), title = tidy(i < 0 ? '' : value.slice(i + 2)).slice(0, 120)
-  if (!NAME.test(name) || (name.split(' ').filter(Boolean).length < 2 && !NO_SPACE_NAME.test(name))) return null
+  if (!isPersonName(name)) return null   // one rule with the card (lib/discover/card.ts discoverContact): a full name, never a job title
   const li = mine.find(r => r.kind === 'linkedin' && typeof r.value === 'string' && PROFILE.test(r.value as string))
   const source = typeof p.source_url === 'string' && SOURCE.test(p.source_url) ? p.source_url : null
   return { name, title, linkedin: li ? li.value as string : null, source, via: DISCOVER_VIA, current: false }

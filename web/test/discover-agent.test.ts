@@ -138,6 +138,30 @@ test('the saved buyer profile, with its locations, goes to the engine beside the
   assert.ok(lines.includes('Buyer roles: Founder') && lines.includes('Leave out: banks'))
 })
 
+// Quest on production, 2026-11-24 (#1579): "Dental clinics in Toronto opening a new location" ran with the account's saved profile
+// "Toronto agencies hiring an SDR" beside it and found 0 leads, twice. A profile carried over from an earlier search is background;
+// the typed request decides who, where and which signal.
+test('a saved profile carried into a new typed request is background, never a filter on it (#1579)', async () => {
+  const { profileLines, userMessage } = await import('../lib/discover/agent.ts')
+  const saved = { summary: 'Toronto agencies hiring an SDR', who: ['Agency owner'], industries: ['Marketing agencies'], where: ['Toronto'], exclude: ['recruiters'] }
+  const carried = profileLines(saved, true)
+  assert.match(carried[0], /background/i)
+  assert.match(carried[0], /not a filter/i)
+  assert.ok(!carried.some(l => /only companies in these places/.test(l)), 'a carried profile never restricts the place')
+  assert.ok(carried.includes('Leave out: recruiters'), 'what the seller never wants is still left out')
+  // the profile the person reviewed for THIS search still narrows it, as before (#1571)
+  assert.equal(profileLines(saved)[0], "The seller's saved buyer profile:")
+  const msg = userMessage({ query: 'Dental clinics in Toronto opening a new location or expanding', profile: saved, profileCarried: true }, '2026-11-24', 10)
+  const lines = msg.split('\n')
+  const find = lines.findIndex(l => l.startsWith('Find: Dental clinics in Toronto'))
+  assert.ok(find >= 0)
+  assert.match(lines[find + 1], /^The request above is the whole search/)
+  assert.ok(lines.findIndex(l => /background/i.test(l)) > find)
+  // which jobs carry: an unreviewed profile on an ordinary search; not one reviewed for this search, not a saved play's repeat run
+  const { discoverProfileCarried } = await import('../lib/discover/agent.ts')
+  assert.deepEqual([discoverProfileCarried(3, null), discoverProfileCarried(null, null), discoverProfileCarried(0, null), discoverProfileCarried(3, 'w1')], [true, true, false, false])
+})
+
 test('an index day older than a year is not shown as the date of the signal (#1571)', async () => {
   const { checkLead } = await import('../lib/discover/check.ts')
   const lead = { company: 'Northwind Dental', domain: null, signal: 'Opening a second clinic', signal_date: null, evidence_url: 'https://northwind-dental.example/news', evidence_quote: '', person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '' }

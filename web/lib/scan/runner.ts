@@ -1,7 +1,7 @@
 import { runClaudeWebSearch, ClaudeSearchError, CLAUDE_SEARCH_MODEL, CLAUDE_COMPANY_FIRST_MAX_CALLS, COMPANY_FIRST_MAX_PUBLISHER_READS, type ClaudeSearchEstimate, type ClaudeSearchUsage } from '../llm/claude-web-search.ts'
 import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
-import { discoverLeads } from '../discover/agent.ts'
+import { discoverLeads, discoverProfileCarried } from '../discover/agent.ts'
 import { isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
@@ -1477,15 +1477,18 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   assertOwned(db, job)
   const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
   // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
-  const sells = db.prepare('SELECT offer, seller FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null } | undefined
+  const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
   const known = job.watch_id ? (db.prepare('SELECT DISTINCT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.watch_id = ? AND l.company <> ? ORDER BY l.created_at DESC LIMIT 80').all(job.user_id, job.watch_id, '') as { company: string }[]).map(r => r.company) : []
   // the buyer profile saved on this play (who, where, what to leave out) goes with the request
   const profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
+  // #1579: a profile the person reviewed for this search (icp_inferred 0), or a saved play's own on its repeat runs, narrows the request.
+  // One carried over unreviewed from an earlier search is background: the typed request decides who, where and which signal.
+  const profileCarried = discoverProfileCarried(sells?.icp_inferred, job.watch_id)
   let run: DiscoveryRun
   try {
     // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
-    run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile } : {}), ...(known.length ? { exclude: known } : {}) },
+    run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile, profileCarried } : {}), ...(known.length ? { exclude: known } : {}) },
       { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? (room < DISCOVER_SMALL_MIN_USD ? DISCOVER_TINY_BUDGET : DISCOVER_TRIAL_BUDGET) : {}) },
       { apiKey: key, fetch: fetchImpl, discover, enrich })
   } catch (e) {

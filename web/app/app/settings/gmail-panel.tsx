@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
 import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 
-interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number }
+interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; sent_today?: number }
 
 export default function GmailPanel() {
   const [s, setS] = useState<State | null>(null)
@@ -86,7 +86,7 @@ export default function GmailPanel() {
         <input className={field} type="url" placeholder="Booking link, optional (https://cal.com/you or https://calendly.com/you) - included in automatic follow-ups" value={booking} maxLength={300} onChange={e => setBooking(e.target.value)} />
         <button className="btn-ghost px-5 py-2 text-sm w-fit">Save sender details</button>
       </form>
-      {s && <p className="text-[#666] text-xs mt-3">Sent in the last 24 hours: {s.sent_24h} of {s.daily_cap}.</p>}
+      {s && <p className="text-[#666] text-xs mt-3">Sent today: {s.sent_today ?? s.sent_24h} of {s.daily_cap}. The count starts again at midnight Toronto time.</p>}
       {msg && <p className="text-sm text-[#555] mt-2" role="status">{msg}{justConnected && <> <a className="underline text-[#111]" href="/app/outreach">Back to Outreach to send your approved emails</a></>}</p>}
     </div>
   )
