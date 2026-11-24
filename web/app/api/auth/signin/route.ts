@@ -47,8 +47,12 @@ export async function POST(req: NextRequest) {
     if (confirmationPending(user)) {
       if (!systemMailAvailable()) return NextResponse.json({ error: 'Confirm your email first. We cannot email you a new link right now; try again later.', code: 'email_unverified' }, { status: 403 })
       const again = await rateLimit(`verify-send:${user.id}`, 3, 60 * 60 * 1000)
-      if (again.ok) await sendVerification(await getDb(), user.id).catch(e => captureError(e, { source: 'route', where: '/api/auth/signin:verify', method: 'POST', requestId: requestIdOf(req) }))
-      return NextResponse.json({ error: 'Confirm your email first: open the newest confirmation link sent to this address, then sign in again. If none has arrived, try again in a little while.', code: 'email_unverified' }, { status: 403 })
+      const sent = again.ok ? await sendVerification(await getDb(), user.id).catch(e => { captureError(e, { source: 'route', where: '/api/auth/signin:verify', method: 'POST', requestId: requestIdOf(req) }); return false }) : false
+      // #1647: this try sends a fresh link, and it said nothing about it, so a person waited for the first one (whose link the new one
+      // replaces). It now says a new link is on its way, or, past three an hour, that the newest one already sent is the one to open.
+      return NextResponse.json({ error: sent
+        ? 'Confirm your email first. We just sent a new confirmation link to this address: open that one (it replaces any earlier link), then sign in again. It usually arrives within a minute; check spam too.'
+        : 'Confirm your email first: open the newest confirmation link already sent to this address (earlier links no longer work), then sign in again. You can ask for a new link by signing in again in a little while.', code: 'email_unverified', resent: sent }, { status: 403 })
     }
 
     const token = await createPasswordSession(user, undefined, { device: deviceLabel(req.headers.get('user-agent')) })
