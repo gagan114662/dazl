@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Db } from '../db/client.ts'
-import { admitTrialSiteReadBudget, releaseTrialReservation, settleTrialSiteRead, trialPrincipal, trialRefusal, TRIAL_SITE_READ_RESERVE_USD, type TrialRefusal } from '../billing/trial-budget.ts'
+import { admitTrialSiteReadBudget, releaseTrialReservation, settleTrialSiteRead, trialPrincipal, trialQaExempt, trialRefusal, TRIAL_SITE_READ_RESERVE_USD, type TrialRefusal } from '../billing/trial-budget.ts'
 import { rateLimit, refundRateLimit, type Limit } from '../rate-limit.ts'
 import { captureError } from '../ops/errors.ts'
 import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from './trial.ts'
@@ -98,8 +98,12 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   if (why) return { ok: false, reason: why }
   // The allowlist gates SPEND, not eligibility reporting: an ineligible account still hears its real reason above,
   // and an eligible account off the list stops here, before any counter or wallet slot is taken.
+  // #1579: the operator's acceptance account (DAZL_TRIAL_QA_EXEMPT) counts as on the allowlist, and is not held to the account's own
+  // three reads per 30 days or its network's reads per day (below). The deployment's reads per day and the wallet's daily ceiling
+  // (step 3) still bind it.
+  const exempt = trialQaExempt(user.email, env)
   const allow = trialSiteReadAllowlist(env)
-  if (!trialSiteReadsPublic(env) && (!allow || (!allow.has(user.email.toLowerCase()) && !allow.has(user.id.toLowerCase())))) return { ok: false, reason: 'not_in_allowlist' }
+  if (!exempt && !trialSiteReadsPublic(env) && (!allow || (!allow.has(user.email.toLowerCase()) && !allow.has(user.id.toLowerCase())))) return { ok: false, reason: 'not_in_allowlist' }
   // 2. The counters: the account's own reads first (an account at its cap stops here and burns nothing shared), then the
   //    network throttle, then the deployment-wide ceiling. A refusal gives back every slot this call took.
   const limit = deps.limit ?? rateLimit, refund = deps.refund ?? ((k: string, resetAt?: number) => refundRateLimit(k, undefined, Date.now(), resetAt))
@@ -108,11 +112,11 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   const giveBack = async () => { for (const t of taken.splice(0)) await refund(t.key, t.resetAt).catch(e => captureError(e, { source: 'process', where: 'trial-site-read:refund', tenantId: user.id })) }
   const net = createHash('sha256').update(`site-read:${ip}`).digest('hex').slice(0, 24)
   const accountKey = `trial-site:${user.id}`
-  for (const [k, max, windowMs, reason] of [
+  for (const [k, max, windowMs, reason] of ([
     [accountKey, TRIAL_SITE_READS_PER_ACCOUNT, 30 * DAY_MS, 'site_reads_used'],
     [`trial-site-ip:${net}`, TRIAL_SITE_READS_PER_IP_PER_DAY, DAY_MS, 'ip_throttle'],
     ['trial-site-day:all', perDay, DAY_MS, 'site_reads_busy'],
-  ] as const) {
+  ] as const).filter(c => !exempt || c[3] === 'site_reads_busy')) {
     const r = await limit(k, max, windowMs)
     if (r.unavailable) { await giveBack(); return { ok: false, reason: 'limit_unavailable' } }
     taken.push({ key: k, resetAt: r.resetAt }) // counted whether or not it fit: a refused call still raised the window's count

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
-import { migrateTrialBudget, trialScanAllowance } from '../billing/trial-budget.ts'
+import { migrateTrialBudget, trialQaExempt, trialQaExemptAccount, trialScanAllowance } from '../billing/trial-budget.ts'
 
 // Free trial: a few scans per new account run on the server's shared operator key, so a new
 // user can see real results before adding their own AI key. Abuse limits sit on top:
@@ -57,30 +57,49 @@ const TRIAL_IP_SQL = 'SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ? AN
 const dayStartS = (now: Date) => Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000)
 
 // The decision, given the two counts; ipUsed is only read when the account is under its cap.
-function trialDecision(used: number, ipUsed: () => number): TrialState {
+// exempt (#1579, DAZL_TRIAL_QA_EXEMPT in lib/billing/trial-budget.ts): the operator's acceptance account has no per-account count to
+// run out of and is not held to its network's scans per day, so it is never refused account_cap or ip_throttle and its counter always
+// shows the full allowance. Admission (the day's spending ceiling) still decides whether its scan runs.
+function trialDecision(used: number, ipUsed: () => number, exempt = false): TrialState {
+  if (exempt) return { funded: true, used, remaining: TRIAL_SCANS_PER_ACCOUNT }
   if (used >= TRIAL_SCANS_PER_ACCOUNT) return { funded: false, reason: 'account_cap', used, remaining: 0 }
   if (ipUsed() >= TRIAL_SCANS_PER_IP_PER_DAY) return { funded: false, reason: 'ip_throttle', used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
   return { funded: true, used, remaining: TRIAL_SCANS_PER_ACCOUNT - used }
 }
 
-export function trialStatus(db: Database.Database, tenantId: string, ip: string, now = new Date()): TrialState {
-  if (!operatorKey()) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
+// The exempt check for the synchronous store handle: the account's address is read from the same store. No query while the switch is
+// unset; an account that cannot be read is not exempt.
+function qaExemptSync(db: Database.Database, tenantId: string, env: NodeJS.ProcessEnv): boolean {
+  if (!(env.DAZL_TRIAL_QA_EXEMPT ?? '').trim()) return false
+  try {
+    const email = (db.prepare('SELECT email FROM users WHERE id = ?').get(tenantId) as { email?: unknown } | undefined)?.email
+    return typeof email === 'string' && trialQaExempt(email, env)
+  } catch { return false }
+}
+
+export function trialStatus(db: Database.Database, tenantId: string, ip: string, now = new Date(), env: NodeJS.ProcessEnv = process.env): TrialState {
+  if (!operatorKey(env)) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
   const used = (db.prepare(TRIAL_USED_SQL).get(tenantId) as { n: number }).n
-  return trialDecision(used, () => (db.prepare(TRIAL_IP_SQL).get(ipHash(ip || 'unknown'), dayStartS(now)) as { n: number }).n)
+  return trialDecision(used, () => (db.prepare(TRIAL_IP_SQL).get(ipHash(ip || 'unknown'), dayStartS(now)) as { n: number }).n, qaExemptSync(db, tenantId, env))
 }
 
 // trialStatus on the Db layer (SQLite or Postgres): the same counts and the same decision.
 export async function readTrialStatus(db: Db, tenantId: string, ip: string, now = new Date(), env: NodeJS.ProcessEnv = process.env): Promise<TrialState> {
   if (!operatorKey(env)) return { funded: false, reason: 'not_configured', used: 0, remaining: 0 }
   const used = Number((await db.get<{ n: number }>(TRIAL_USED_SQL, [tenantId]))!.n)
-  const ipUsed = used >= TRIAL_SCANS_PER_ACCOUNT ? 0 : Number((await db.get<{ n: number }>(TRIAL_IP_SQL, [ipHash(ip || 'unknown'), dayStartS(now)]))!.n)
-  const state = trialDecision(used, () => ipUsed)
+  const exempt = await trialQaExemptAccount(db, tenantId, env)
+  const ipUsed = used >= TRIAL_SCANS_PER_ACCOUNT || exempt ? 0 : Number((await db.get<{ n: number }>(TRIAL_IP_SQL, [ipHash(ip || 'unknown'), dayStartS(now)]))!.n)
+  const state = trialDecision(used, () => ipUsed, exempt)
+  if (exempt) return state
   // #1095: an account without Google has one free scan, not three; the counter says so (admission enforces it, lib/billing/trial-budget.ts)
   // Past that one, nothing changes here: the refusal (google_required) and its Link Google step speak, as they did before.
   const allowance = state.remaining > 0 ? await trialScanAllowance(db, tenantId, env) : TRIAL_SCANS_PER_ACCOUNT
   return used < allowance ? { ...state, remaining: Math.min(state.remaining, allowance - used) } : state
 }
 
-export function recordTrialScan(db: Database.Database, tenantId: string, jobId: string, ip: string): void {
-  db.prepare('INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, ?)').run(tenantId, jobId, ipHash(ip || 'unknown'))
+export function recordTrialScan(db: Database.Database, tenantId: string, jobId: string, ip: string, env: NodeJS.ProcessEnv = process.env): void {
+  // The acceptance account keeps its attempt and spend records, but never consumes another account's network allowance.
+  // An empty marker cannot match ipHash (a SHA-256 hex string); ordinary scans retain their real network hash.
+  const networkHash = qaExemptSync(db, tenantId, env) ? '' : ipHash(ip || 'unknown')
+  db.prepare('INSERT INTO trial_scans (tenant_id, job_id, ip_hash) VALUES (?, ?, ?)').run(tenantId, jobId, networkHash)
 }
