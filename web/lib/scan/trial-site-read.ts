@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Db } from '../db/client.ts'
-import { admitTrialSiteReadBudget, releaseTrialReservation, settleTrialSiteRead, trialPrincipal, trialRefusal, TRIAL_SITE_READ_RESERVE_USD, type TrialRefusal } from '../billing/trial-budget.ts'
+import { admitTrialSiteReadBudget, releaseTrialReservation, settleTrialSiteRead, trialPrincipal, trialQaExempt, trialRefusal, TRIAL_SITE_READ_RESERVE_USD, type TrialRefusal } from '../billing/trial-budget.ts'
 import { rateLimit, refundRateLimit, type Limit } from '../rate-limit.ts'
 import { captureError } from '../ops/errors.ts'
 import { operatorKey, readTrialStatus, type OperatorKey, type TrialDeny } from './trial.ts'
@@ -108,11 +108,14 @@ export async function admitTrialSiteRead(db: Db, user: { id: string; email: stri
   const giveBack = async () => { for (const t of taken.splice(0)) await refund(t.key, t.resetAt).catch(e => captureError(e, { source: 'process', where: 'trial-site-read:refund', tenantId: user.id })) }
   const net = createHash('sha256').update(`site-read:${ip}`).digest('hex').slice(0, 24)
   const accountKey = `trial-site:${user.id}`
-  for (const [k, max, windowMs, reason] of [
+  // #1579: the operator's acceptance account (DAZL_TRIAL_QA_EXEMPT) is not held to the account's own three reads per 30 days; the
+  // network throttle, the deployment's reads per day and the wallet's daily ceiling (step 3) still bind it.
+  const exempt = trialQaExempt(user.email, env)
+  for (const [k, max, windowMs, reason] of ([
     [accountKey, TRIAL_SITE_READS_PER_ACCOUNT, 30 * DAY_MS, 'site_reads_used'],
     [`trial-site-ip:${net}`, TRIAL_SITE_READS_PER_IP_PER_DAY, DAY_MS, 'ip_throttle'],
     ['trial-site-day:all', perDay, DAY_MS, 'site_reads_busy'],
-  ] as const) {
+  ] as const).filter(c => !(exempt && c[0] === accountKey))) {
     const r = await limit(k, max, windowMs)
     if (r.unavailable) { await giveBack(); return { ok: false, reason: 'limit_unavailable' } }
     taken.push({ key: k, resetAt: r.resetAt }) // counted whether or not it fit: a refused call still raised the window's count

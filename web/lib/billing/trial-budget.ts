@@ -198,10 +198,32 @@ export function canonicalMailbox(email: string): string {
   const base = local.split('+')[0]
   return GMAIL.includes(domain) ? `${base.replaceAll('.', '')}@gmail.com` : `${base}@${domain}`
 }
+// OPERATOR SWITCH (#1579): DAZL_TRIAL_QA_EXEMPT names the acceptance tester's account(s), by exact address (comma-separated; an entry
+// with a * or without an @ is ignored; unset or empty = nobody, and nothing here changes for anyone). A listed account is not stopped by
+// the PER-ACCOUNT trial limits, for a free scan or a free website read: the Google sign-in (a confirmed address is still required, as
+// for every password account), one trial per company domain, the scan attempts, the account's dollar total, and the one-scan allowance
+// of a password account. What still binds it, unchanged: the trial must be configured (not_configured), the GLOBAL daily ceiling (the
+// money guard: its work reserves and settles in the same ledger and counts toward the day like anyone's, so the day's spend can never
+// pass DAZL_TRIAL_GLOBAL_DAILY_USD because of it), the per-scan reserve, and the per-network and per-deployment throttles.
+// Addresses are compared as mailboxes (canonicalMailbox): a +tag alias, or on Gmail a dotted or googlemail.com form, of a listed
+// address is the same mailbox and matches; nothing else does.
+export function trialQaExempt(email: string, env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env.DAZL_TRIAL_QA_EXEMPT ?? ''
+  if (!raw.trim() || !email.includes('@')) return false
+  const me = canonicalMailbox(email)
+  return raw.split(',').map(x => x.trim().toLowerCase()).some(x => x.includes('@') && !x.includes('*') && canonicalMailbox(x) === me)
+}
+// The same, for a caller that holds only the account's id. No query at all while the switch is unset.
+export async function trialQaExemptAccount(db: Db, userId: string, env: Record<string, string | undefined> = process.env): Promise<boolean> {
+  if (!(env.DAZL_TRIAL_QA_EXEMPT ?? '').trim()) return false
+  const u = await db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [userId])
+  return !!u && trialQaExempt(String(u.email), env)
+}
+const VERIFIED_SQL = 'SELECT 1 AS x FROM users WHERE id = ? AND email_verified_at IS NOT NULL'
 // Whether this account, which has no Google sign-in, may run a free scan on the password path: confirmed address, and no other
 // account of the same mailbox has drawn on the trial. (Company domains are held to one trial by the domain rule in refusal.)
 function* passwordPathOpen(t: Tx, user: { id: string; email: string }): TxBody<boolean> {
-  if (!(yield* t.get('SELECT 1 AS x FROM users WHERE id = ? AND email_verified_at IS NOT NULL', [user.id]))) return false
+  if (!(yield* t.get(VERIFIED_SQL, [user.id]))) return false
   const domain = emailDomain(user.email)
   if (!CONSUMER_DOMAINS.has(domain)) return true
   const me = canonicalMailbox(user.email)
@@ -217,7 +239,7 @@ function* passwordPathOpen(t: Tx, user: { id: string; email: string }): TxBody<b
 export async function trialScanAllowance(db: Db, userId: string, env: Record<string, string | undefined> = process.env): Promise<number> {
   if (await db.get(GOOGLE_SQL, [userId])) return TRIAL_SCANS_PER_ACCOUNT
   const u = await db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [userId])
-  if (u && stagingTrialWithoutGoogle(String(u.email), env)) return TRIAL_SCANS_PER_ACCOUNT
+  if (u && (stagingTrialWithoutGoogle(String(u.email), env) || trialQaExempt(String(u.email), env))) return TRIAL_SCANS_PER_ACCOUNT
   return passwordTrialOn(env) ? PASSWORD_TRIAL_SCANS : TRIAL_SCANS_PER_ACCOUNT
 }
 
@@ -286,10 +308,14 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
 function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env): TxBody<TrialRefusal | null> {
   let attemptsCap = TRIAL_SCANS_PER_ACCOUNT
+  // #1579: the operator's acceptance account (DAZL_TRIAL_QA_EXEMPT) skips the per-account checks below; the day's ceiling still binds it
+  const exempt = trialQaExempt(user.email, env)
   for (const req of TRIAL_REQUIRES) {
     if (req === 'google_account' && stagingTrialWithoutGoogle(user.email, env)) continue
     const check = TRIAL_REQUIREMENT_CHECKS[req]
     if (yield* t.get(check.sql, [user.id])) continue
+    // exempt: a confirmed address stands in for the Google sign-in; an unconfirmed one is refused below like any other
+    if (exempt && req === 'google_account' && (yield* t.get(VERIFIED_SQL, [user.id]))) continue
     // #1095: without Google, a confirmed password account still runs its first scan (see PASSWORD_TRIAL_SCANS), and the website
     // read that comes before it in onboarding (owner, 2026-11-24: free website reads for every new account). Once that one scan
     // is used, the attempts check below asks for Google, for a read as for a scan.
@@ -297,7 +323,7 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet,
     attemptsCap = PASSWORD_TRIAL_SCANS
   }
   const domain = emailDomain(user.email)
-  if (domain && !CONSUMER_DOMAINS.has(domain)) {
+  if (!exempt && domain && !CONSUMER_DOMAINS.has(domain)) {
     // Another account on this company domain already drew on the trial: a scan, or a website read (#409). A read is paid
     // trial work on dazl's key for that company, so it claims the company's one trial like a scan does; the trial then
     // belongs to the account that started it (its reads and scans), not to a colleague. Flagged for the owner in #444.
@@ -310,8 +336,8 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet,
   // a small tolerance for float sums (0.1 + 0.2), far below a cent
   // three admitted attempts that can cost dazl money per account, paid failures and cancellations included
   // (#1095: one without Google; past it the answer is to link Google, which opens the rest)
-  if (l.attempts >= attemptsCap) return attemptsCap < TRIAL_SCANS_PER_ACCOUNT ? 'google_required' : 'attempts_cap'
-  if (l.account + reserveUsd > caps.accountTotalUsd + 1e-9) return 'account_total_cap'
+  if (!exempt && l.attempts >= attemptsCap) return attemptsCap < TRIAL_SCANS_PER_ACCOUNT ? 'google_required' : 'attempts_cap'
+  if (!exempt && l.account + reserveUsd > caps.accountTotalUsd + 1e-9) return 'account_total_cap'
   if (l.today + reserveUsd > globalDailyCapUsd(caps.globalDailyUsd, day, env) + 1e-9) return 'global_daily_cap'
   return null
 }
@@ -380,6 +406,8 @@ export async function trialAllowanceLeft(db: Db, tenantId: string, o: { now?: nu
   if (!caps) return null
   const day = trialDay(o.now ?? Math.floor(Date.now() / 1000))
   try {
+    // #1579: the account total does not bind the operator's acceptance account, so there is no "left" to show: no line
+    if (await trialQaExemptAccount(db, tenantId, o.env ?? process.env)) return null
     const l = ledger(await db.all<LedgerRow>(LEDGER_SQL, [tenantId, day, day, trialDayStart(day), trialDayStart(day)]), tenantId, day)
     if (!Number.isFinite(l.account)) return null
     return { left_usd: Math.min(caps.accountTotalUsd, Math.max(0, caps.accountTotalUsd - l.account)), total_usd: caps.accountTotalUsd }
