@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { Db } from '../lib/db/client.ts'
-import { admitTrialScan, globalDailyCapUsd, LAUNCH_DAY_CAPS, trialDate, trialDay, trialDayStart } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, globalDailyCapUsd, LAUNCH_DAY, trialDate, trialDay, trialDayStart } from '../lib/billing/trial-budget.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const at = (iso: string) => Math.floor(Date.parse(iso) / 1000)
@@ -23,13 +23,15 @@ test('#1621 the day is the Toronto calendar day: it turns at Toronto midnight, w
 })
 
 test('#1621 the allowance for a day: $40 on launch day only, the configured amount on every other day', () => {
-  assert.deepEqual(LAUNCH_DAY_CAPS, { '2026-11-27': 40 })
+  assert.deepEqual(LAUNCH_DAY, { date: '2026-11-27', fromUsd: 13.33, toUsd: 40 })
   const cap = (iso: string, env: Record<string, string | undefined> = {}) => globalDailyCapUsd(13.33, trialDay(at(iso)), env)
   assert.equal(cap('2026-11-27T04:59:59Z'), 13.33, 'Thursday 11:59pm Toronto')
   assert.equal(cap('2026-11-27T05:00:00Z'), 40, 'Friday midnight Toronto')
   assert.equal(cap('2026-11-28T04:59:59Z'), 40, 'Friday 11:59pm Toronto')
   assert.equal(cap('2026-11-28T05:00:00Z'), 13.33, 'Saturday midnight Toronto: back by itself')
   assert.equal(cap('2027-11-27T17:00:00Z'), 13.33, 'not every year')
+  for (const other of [10, 0.5, 13.34, 100]) assert.equal(globalDailyCapUsd(other, trialDay(at('2026-11-27T17:00:00Z')), {}), other, 'only the $13.33 allowance is lifted: any other configured ceiling (a test, another deployment) is kept that day')
+  assert.equal(globalDailyCapUsd(10, trialDay(at('2026-11-27T17:00:00Z')), { DAZL_TRIAL_GLOBAL_DAILY_BY_DATE: '2026-11-27=40' }), 40, 'a date set by hand applies whatever the amount')
   assert.equal(cap('2026-11-27T17:00:00Z', { DAZL_TRIAL_GLOBAL_DAILY_BY_DATE: 'off' }), 13.33, 'switched off')
   assert.equal(cap('2026-12-04T17:00:00Z', { DAZL_TRIAL_GLOBAL_DAILY_BY_DATE: '2026-12-04=25, junk, 2026-12-05=-3' }), 25)
   assert.equal(cap('2026-12-05T17:00:00Z', { DAZL_TRIAL_GLOBAL_DAILY_BY_DATE: '2026-12-04=25, junk, 2026-12-05=-3' }), 13.33, 'a bad amount is ignored')
