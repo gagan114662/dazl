@@ -140,6 +140,9 @@ test('an unconfirmed account reaches no app route or page; confirming opens the 
   const early = await signIn(address, PW)
   assert.equal(early.status, 403); assert.equal(early.body.code, 'email_unverified'); assert.equal(early.token, undefined)
   assert.equal(links(address).length, 2, 'signing in sent a fresh link')
+  // #1647: and says so, instead of leaving the person waiting for the first link
+  assert.match(String(early.body.error), /We just sent a new confirmation link to this address/)
+  assert.equal((early.body as { resent?: boolean }).resent, true)
 
   // a session for the unconfirmed account (as an old sign-up made) reaches nothing: API routes, the page gate, /app
   const legacy = await createSession(id)
