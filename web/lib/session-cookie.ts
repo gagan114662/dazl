@@ -4,8 +4,10 @@
 // The rule now:
 //   - every sign-in sets the host-only cookie (lib/auth-google-response.ts setSessionCookie no longer sets a Domain), so new
 //     sign-ins can only replace one another;
-//   - a browser still carrying a parent-domain cookie from before, next to a host-only one, has the old one removed on its next
-//     page load (proxy.ts), so the most recent sign-in is the one that stays;
+//   - a browser still carrying a parent-domain cookie from before, next to a host-only one, has the parent-domain one removed on
+//     its next page load (proxy.ts). The host-only cookie is the one that stays: every sign-in from now on sets it, so it is the
+//     most recent sign-in, except in a browser that signed in with a password and then with Google BEFORE this change, which keeps
+//     the password account (or is asked to sign in once, if that session has ended);
 //   - Sign out ends every session the browser presented.
 // No response ever carries two Set-Cookie lines for dazl_session: Next merges the cookies a route sets by NAME and would keep one.
 import { cookieDomain } from './auth-google.ts'

@@ -38,7 +38,7 @@ export async function proxy(req: NextRequest) {
   }
 
   // #1686: two sessions in one browser (an old parent-domain cookie beside a host-only one): the old cookie is removed and the page
-  // asked for again, so the most recent sign-in is the one in use. One Set-Cookie line for dazl_session, never two (lib/session-cookie.ts).
+  // asked for again, so the host-only session, the one every sign-in now sets, is the one in use. One Set-Cookie line for dazl_session, never two (lib/session-cookie.ts).
   if (pathname.startsWith('/app') && shouldDropOldSessionCookie(req.headers.get('cookie'), req.method, process.env.PUBLIC_BASE_URL)) {
     const r = NextResponse.redirect(new URL(pathname + req.nextUrl.search, process.env.PUBLIC_BASE_URL), 307)
     r.headers.append('set-cookie', oldDomainSessionExpiry(process.env.PUBLIC_BASE_URL!)!)
