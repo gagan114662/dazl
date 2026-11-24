@@ -425,14 +425,14 @@ const HOMES = { [HOME]: US_HOME, 'https://ghost-dental.example/': 'Ghost Dental,
 
 test('the lane: after the search finishes, the shown US lead gets its checked address; the lead whose proof page is gone is never guessed for', async () => {
   const asked: string[] = [], read: string[] = []
-  const r = await laneRun({ env: ON, readHome: stubHome(HOMES, read), verifier: stubVerifier({ [`dana.ruiz@${SITE}`]: 'undeliverable', [`danaruiz@${SITE}`]: 'deliverable' }, asked) })
+  const r = await laneRun({ env: ON, readHome: stubHome(HOMES, read), verifier: stubVerifier({ [`dana.ruiz@${SITE}`]: 'undeliverable', [`danaruiz@${SITE}`]: 'deliverable', 'lee.okafor@ghost-dental.example': 'deliverable' }, asked) })
   assert.equal(r.result, 'done')
-  assert.deepEqual(r.leads.map(l => l.company).sort(), ['Ghost Dental', 'Northwind Dental'], 'both leads are stored')
+  assert.deepEqual(r.leads.map(l => l.company), ['Northwind Dental'], 'the lead whose proof page is gone is dropped by the search itself (#1687)')
   assert.deepEqual(asked, [`dana.ruiz@${SITE}`, `danaruiz@${SITE}`], 'only the lead whose proof page is still there')
-  assert.deepEqual(read, [HOME])
-  const nw = r.leads.find(l => l.company === 'Northwind Dental')!, ghost = r.leads.find(l => l.company === 'Ghost Dental')!
+  assert.deepEqual(read, [HOME], 'the dropped lead\'s homepage is not even read')
+  const nw = r.leads.find(l => l.company === 'Northwind Dental')!
   assert.deepEqual(emailRows(r.db, nw.id).map(e => [e.value, e.label, e.source_url]), [[`danaruiz@${SITE}`, GUESSED_VERIFIED_LABEL, HOME]])
-  assert.deepEqual(emailRows(r.db, ghost.id), [])
+  assert.deepEqual(r.db.prepare("SELECT value FROM lead_enrichments WHERE kind = 'email' AND value LIKE '%ghost-dental.example'").all(), [], 'no address anywhere for the dropped lead')
   assert.equal(usage(r.db), 2)
   assert.equal(discoverState({ ...(r.db.prepare('SELECT name, company_domain, review_reason, event_date, fit, intent, quarantined_at, source_kind FROM leads WHERE id = ?').get(nw.id) as Record<string, unknown>), gate_held: false, enrichments: stored(r.db, nw.id) } as never), 'ready_email')
   const note = r.db.prepare("SELECT status, results FROM connector_audit WHERE tenant_id = 'T' AND connector = 'email_guess'").get() as { status: string; results: number }
@@ -447,10 +447,10 @@ test('the lane: the search\'s own result (status, counts, spend) is the same wit
   const broken: MailboxVerifier = { get name(): string { throw new Error('verifier misconfigured') }, async verify() { throw new Error('unreachable') } }
   const threw = await laneRun({ env: ON, readHome: stubHome(HOMES), verifier: broken })
   assert.equal(asked.length, 1)
-  assert.deepEqual(off.scan.slice(0, 6), ['done', 'done', null, 2, 1, 1])
+  assert.deepEqual(off.scan.slice(0, 6), ['done', 'done', null, 2, 1, 0], 'two found, one shown; the one whose proof page is gone is dropped, not listed for review (#1687)')
   assert.deepEqual(on.scan, off.scan)
   assert.deepEqual(threw.scan, off.scan, 'a step that throws changes nothing about the finished search')
-  assert.equal(threw.leads.length, 2)
+  assert.equal(threw.leads.length, 1)
   const notes = (db: Database.Database) => (db.prepare("SELECT status FROM connector_audit WHERE tenant_id = 'T' AND connector = 'email_guess'").all() as { status: string }[]).map(r => r.status)
   assert.deepEqual(notes(threw.db), ['email_guess_failed'], 'the failure is recorded')
   assert.deepEqual(notes(off.db), [], 'switched off: nothing was done and nothing is recorded')
