@@ -139,8 +139,8 @@ try {
   // checked without it and the enriching outcome is checked on the campaign page and Home.
   JOBS = Object.values(ALL).filter(j => j !== ALL.enriching)
   await page.goto(`${base}/app/leads`, { waitUntil: 'networkidle' })
-  await page.getByText('Past scans').waitFor({ timeout: 15000 })
-  await page.getByText('Past scans').scrollIntoViewIfNeeded()
+  await page.getByRole('heading', { name: 'Past scans' }).waitFor({ timeout: 15000 })
+  await page.getByRole('heading', { name: 'Past scans' }).scrollIntoViewIfNeeded()
   await shot('history')
   if (!before) {
     const rows = await page.getByTestId('past-scan').evaluateAll(els => els.map(e => ({ q: e.querySelector('[data-testid=past-scan-title]')?.textContent.trim(), kind: e.dataset.outcome, text: e.textContent, detail: e.querySelector('[data-testid=outcome-detail]')?.textContent ?? null, next: e.querySelector('[data-testid=next-step]')?.textContent ?? null, href: e.querySelector('[data-testid=next-step]')?.getAttribute('href') ?? null })))

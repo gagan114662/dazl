@@ -148,6 +148,7 @@ await page.getByText("What's your website?").waitFor()
 assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example')
 await page.getByRole('button', { name: 'No website? Describe your business yourself' }).click()
 await page.getByText("Here's what we think you sell").waitFor()
+assert.equal(await page.getByText('these start empty').count(), 0, 'a saved profile is shown, so the screen does not say the fields start empty (#1571 wording is for an empty form only)')
 const val = l => page.getByLabel(l).inputValue()
 assert.deepEqual({ sells: await val('What you sell'), who: await val('Who buys it'), roles: await val('Buyer roles'), industries: await val('Industries'), where: await val('Where'), signals: await val('Signs they need you now'), sizes: await val('Company sizes'), skip: await val('Skip') },
   { sells: 'Online booking and reminders for dental practices', who: 'Group dental practices opening new offices', roles: 'Practice owners; COO', industries: 'Dental; Orthodontics', where: 'Austin, TX', signals: 'Opened a new location', sizes: '10-50 employees', skip: 'Dental schools' })
