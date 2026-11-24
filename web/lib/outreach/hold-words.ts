@@ -10,3 +10,8 @@ const WORDS: Record<string, [string, string]> = {   // [one, many]
   'held by the final checks': ['held by the final checks', 'held by the final checks'], 'final checks not finished': ['final checks not finished yet', 'final checks not finished yet'],
 }
 export const holdWords = (reason: string, count: number): string => (WORDS[reason] ?? [reason, reason])[count === 1 ? 0 : 1]
+
+// #1620: Home's "Last N days" tiles count every search of the account, one line per company. Beside one search's own numbers (its page,
+// its play card, the checklist) that read as a disagreement (Quest on prod, 2026-11-23: 7 against 2). The heading and one line say the scope.
+export const homeWindowHeading = (days: number): string => `Last ${days} days, all your searches`
+export const homeWindowScope = (days: number): string => `These numbers add up every search you ran in the last ${days} days, one count per company. A single search shows its own, smaller numbers on its page.`
