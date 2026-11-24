@@ -83,3 +83,23 @@ test('the people pass never starts past the run\'s ceiling, and takes no more le
   await runDiscovery({ query: 'q' }, { maxUsd: 1, enrichLeads: 6 }, { apiKey: 'k', fetch: never, judge: null, discover: async () => result(five, 0.3), enrich })
   assert.deepEqual(sent, [1, 6], 'with room to spare the run\'s own limit applies')
 })
+
+// Staging, 2026-11-24, free-search budget (US$0.60): two of four weak prompts returned nothing after spending US$0.25 and US$0.29,
+// their notes saying the search ran out of searches. A second pass fitted the money but a flat US$0.15 was held back for a people
+// pass that had no lead to look up.
+test('a search that found nothing uses the money left for a second pass; one that found leads keeps what their people pass needs', async () => {
+  const empty = (usd: number): DiscoverResult => result([], usd)
+  let calls = 0
+  const nothing = await runDiscovery({ query: 'q' }, { maxUsd: 0.6, enrichLeads: 6 }, { apiKey: 'k', fetch: never, judge: null, enrich: null,
+    discover: async () => (++calls === 1 ? empty(0.29) : result([lead('Late Co')], 0.29)) })
+  assert.deepEqual([nothing.passes, calls, nothing.leads.map(l => l.company)], [2, 2, ['Late Co']], 'US$0.29 spent, nothing found: a second pass of the same size fits US$0.60')
+  // three leads found: their people pass needs 3 x US$0.045, so a second pass of US$0.25 no longer fits US$0.60 (0.25 + 0.25 + 0.135)
+  calls = 0
+  const some = await runDiscovery({ query: 'q' }, { maxUsd: 0.6, enrichLeads: 6 }, { apiKey: 'k', fetch: never, judge: null, enrich: null,
+    discover: async () => { calls++; return result([lead('A Co'), lead('B Co'), lead('C Co')], 0.25) } })
+  assert.deepEqual([some.passes, calls], [1, 1], 'the leads already found keep the money their people pass needs')
+  // and a pass that does not fit at all is never started
+  calls = 0
+  const tight = await runDiscovery({ query: 'q' }, { maxUsd: 0.6, enrichLeads: 6 }, { apiKey: 'k', fetch: never, judge: null, enrich: null, discover: async () => { calls++; return empty(0.31) } })
+  assert.deepEqual([tight.passes, calls], [1, 1], 'US$0.31 twice is more than US$0.60')
+})
