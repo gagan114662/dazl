@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateKeys } from '../lib/llm/key-store.ts'
 import { pickVendor } from '../lib/scan/runner.ts'
+import { keyedModel } from '../lib/scan/estimate-request.ts'
+import { sqliteDb } from '../lib/db/client.ts'
+import { anthropicProvider, openaiProvider } from '../lib/llm/provider.ts'
 
 // #1665 (Breken QA, 2026-11-23): with OpenAI switched off (DAZL_PAID_VENDORS does not name it), a workspace whose NEWEST saved key
 // is an OpenAI key still had OpenAI picked by pickVendor, so the website profile scan, previewIcp, user-funded scans, follow-up step
@@ -40,4 +43,19 @@ test('#1665 pickVendor: the operator naming openai keeps the newest key, and ano
   const db = keys([['A', 'anthropic', 100], ['A', 'openai', 200], ['C', 'anthropic', 300]])
   assert.equal(withPaidVendors('openai', () => pickVendor(db, 'A')), 'openai')
   assert.equal(withPaidVendors(undefined, () => pickVendor(db, 'none')), null)
+})
+
+// #1665, second place (review of PR #1668): keyedModel names the model the estimate and the admission check price a run against. It read
+// the newest key unchecked, so with an Anthropic key and a newer OpenAI key it named the OpenAI model while the runner used Anthropic.
+test('#1665 keyedModel: OpenAI switched off, a newer OpenAI key beside an Anthropic key names the Anthropic model', async () => {
+  const db = sqliteDb(keys([['A', 'anthropic', 100], ['A', 'openai', 200]]))
+  assert.equal(await keyedModel(db, 'A', { DAZL_PAID_VENDORS: '' }), anthropicProvider.configuredModel!())
+  assert.equal(await keyedModel(db, 'A', { DAZL_PAID_VENDORS: 'apollo,pdl' }), anthropicProvider.configuredModel!())
+})
+
+test('#1665 keyedModel: OpenAI switched off, only an OpenAI key means no model; the operator naming openai keeps the newest key', async () => {
+  const db = sqliteDb(keys([['B', 'openai', 200], ['A', 'anthropic', 100], ['A', 'openai', 200]]))
+  assert.equal(await keyedModel(db, 'B', { DAZL_PAID_VENDORS: '' }), null)
+  assert.equal(await keyedModel(db, 'none', { DAZL_PAID_VENDORS: '' }), null)
+  assert.equal(await keyedModel(db, 'A', { DAZL_PAID_VENDORS: 'openai' }), openaiProvider.configuredModel!())
 })

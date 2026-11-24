@@ -11,6 +11,7 @@ import { HARD_CAP_USD, scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { accountLimits, ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
+import { usableVendor } from '../paid-vendors.ts'
 import { trialCaps, trialTinyfishPrices } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '../people/people-search.ts'
@@ -31,9 +32,12 @@ async function pools(db: Db, tenantId: string, now = Math.floor(Date.now() / 100
     return { day, month, unknown: false, unsettled }
   } catch { return { day: 0, month: 0, unknown: true, unsettled: false } }
 }
-// The model the tenant's own newest key would run (the runner's pickVendor choice), for the pre-launch limit check; null with no key.
-export async function keyedModel(db: Db, tenantId: string): Promise<string | null> {
-  const r = await db.get<{ vendor: string }>(`SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC${db.kind === 'sqlite' ? ', rowid DESC' : ''} LIMIT 1`, [tenantId]).catch(() => undefined)
+// The model the tenant's own key would run (the runner's pickVendor choice), for the pre-launch limit check; null with no usable key.
+// #1665: the same gate as pickVendor (lib/paid-vendors.ts usableVendor). It read the newest key unchecked, so a workspace with an
+// Anthropic key and a newer OpenAI key was estimated against the OpenAI model while the runner used the Anthropic key.
+export async function keyedModel(db: Db, tenantId: string, env: Record<string, string | undefined> = process.env): Promise<string | null> {
+  const rows = await db.all<{ vendor: string }>(`SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC${db.kind === 'sqlite' ? ', rowid DESC' : ''}`, [tenantId]).catch(() => [] as { vendor: string }[])
+  const r = usableVendor(rows, env)
   return r?.vendor === 'openai' ? openaiProvider.configuredModel!() : r?.vendor === 'anthropic' ? anthropicProvider.configuredModel!() : null
 }
 export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: string; hasOwnKey: boolean; /** why this keyless account would be refused a trial run now (the estimate route reads it; POST /api/scan refuses at confirm time on its own) */ trialRefusal?: string | null; trialUsed?: number | null; /** what is left of this trial account's dollar allowance (display only) */ trialAllowance?: { left_usd: number; total_usd: number } | null; enrichmentVendors: string[]; /** the model the run's own key would use (provider.configuredModel()), when known */ model?: string | null }): Promise<EstimateResult> {
