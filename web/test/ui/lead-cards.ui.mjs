@@ -184,7 +184,7 @@ try {
   await result.getByText(/Lakeside Smiles \(Wrong industry\) left the list\./).waitFor()
   assert.equal(await lakeside.count(), 0)
   await page.getByTestId('tab-rejected').click()
-  assert.match(await lakeside.textContent(), /^LSLakeside SmilesRejected[\s\S]*Rejected: Wrong industryiKept with its evidence; it will not be drafted, sent or exported\./)
+  assert.match(await lakeside.textContent(), /^LSLakeside Smiles Rejected[\s\S]*Rejected: Wrong industryiKept with its evidence; it will not be drafted, sent or exported\./)
   await shot('after-actions')
   await lakeside.getByRole('button', { name: 'Undo' }).click()
   await page.getByTestId('tab-review').click()

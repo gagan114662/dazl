@@ -1,5 +1,6 @@
 // Display decisions for the leads list, kept in lib so the copy is unit-testable.
 import { listQual, type ListQual } from '../run-status.ts'
+import { heldState } from '../lead-state.ts'
 
 // The empty-list line. A finished scan can have zero visible leads while lower-fit
 // leads sit behind the "show lower-fit leads" toggle - say that instead of claiming
@@ -115,3 +116,24 @@ export function scanCountTags(recorded: RecordedQuality, current?: CurrentScanSp
   tags.push(dropped)
   return { tags, needsReview: q.needsReview, current: true }
 }
+
+// The list under the cards: every lead that carries a review reason, split by the ONE verdict the count line above it, Campaigns and Home
+// count by (lib/lead-state.ts heldState: reviewIsActionable with the time window, a required check and the buyer; a new-engine lead by its
+// one state). Production (2026-11-24, an older-engine search): the chips said "1 needs your review, 4 research only" above ONE list headed
+// "Needs your review" holding all 5, because the list asked only "does any row have a confirm action" (lib/scan/review-action.ts, which
+// knows nothing of the buyer rule). review = a person's check can still make the lead usable; research = every other lead that carries a
+// reason (a rejected one included: it is never a review item).
+export function reviewListSplit<L extends { review_reason?: string | null }>(leads: readonly L[]): { review: L[]; research: L[] } {
+  const review: L[] = [], research: L[] = []
+  for (const l of leads) {
+    if (!l.review_reason) continue
+    if (heldState(l as never)?.state === 'review') review.push(l)
+    else research.push(l)
+  }
+  return { review, research }
+}
+
+// The repeating-searches box on Leads: the count beside a search is its LAST run's new leads (lib/watch.ts listWatches), while the Plays
+// page's pill adds up every finished run since the person last checked (lib/play-new-view.ts newLabel). Production (2026-11-24): "8 new
+// leads so far" on Plays beside a bare "4 new" here for the same play. Both are right; this one now says which run it counts.
+export const lastRunNewLabel = (n: number): string => n > 0 ? `last run: ${n} new` : 'last run: nothing new'
