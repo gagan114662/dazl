@@ -284,7 +284,7 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // The attempts counter is the account's trial SCANS only (ledger: a website read is money in the wallet, not an
 // attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
-function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env, scan = false): TxBody<TrialRefusal | null> {
+function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env): TxBody<TrialRefusal | null> {
   let attemptsCap = TRIAL_SCANS_PER_ACCOUNT
   for (const req of TRIAL_REQUIRES) {
     if (req === 'google_account' && stagingTrialWithoutGoogle(user.email, env)) continue
@@ -324,7 +324,7 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
     // every admission takes this row first (created by the first admission, so a freshly migrated store stays empty), so
     // two instances cannot both admit against the same remaining budget: the upsert locks the row until this commits
     yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
-    const why = yield* refusal(t, user, caps, day, caps.reserveUsd, o.env ?? process.env, true)
+    const why = yield* refusal(t, user, caps, day, caps.reserveUsd, o.env ?? process.env)
     if (why) return { ok: false, reason: why }
     const id = randomBytes(12).toString('hex')
     yield* t.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, ?, ?, ?)', [id, user.id, caps.reserveUsd, day, now])
@@ -368,7 +368,7 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   if (!caps) return 'not_configured'
   const day = trialDay(o.now ?? Math.floor(Date.now() / 1000))
   const reserveUsd = o.reserveUsd ?? (read ? TRIAL_SITE_READ_RESERVE_USD : (caps as TrialCaps).reserveUsd)
-  return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env, !read))
+  return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env))
 }
 
 // What is left of the account's trial dollar allowance, for the cost screen (read-only; admission and the caps are untouched): the account total
