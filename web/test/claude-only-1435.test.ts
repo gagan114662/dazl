@@ -143,9 +143,30 @@ test('the test switch still reaches the older engine: with the Claude search swi
   const job = claimKeyedJob(db, id)
   const asked: string[] = []
   const model = untouched(asked)
-  await runJob(db, job!, { master, discover: false, providers: { openai: model, anthropic: model } as never })
+  // #1665: an OpenAI key is a usable key only when the operator names openai; this test is about the engine switch, so it names it
+  const before = process.env.DAZL_PAID_VENDORS
+  process.env.DAZL_PAID_VENDORS = 'openai'
+  try {
+    await runJob(db, job!, { master, discover: false, providers: { openai: model, anthropic: model } as never })
+  } finally { if (before === undefined) delete process.env.DAZL_PAID_VENDORS; else process.env.DAZL_PAID_VENDORS = before }
   assert.notEqual(row(db, id).error, 'claude_key_required')
   assert.ok(asked.length > 0, 'the older engine ran, as the existing tests of it need')
+})
+
+test('#1665 the same request with OpenAI switched off: the OpenAI key is not used, no model is asked, and it ends asking for an Anthropic key', async () => {
+  const { db, master } = setup()
+  saveKey(db, 'T', 'openai', 'sk-openai-fixture', master)
+  const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location' })
+  const job = claimKeyedJob(db, id)
+  const asked: string[] = []
+  const model = untouched(asked)
+  const before = process.env.DAZL_PAID_VENDORS
+  delete process.env.DAZL_PAID_VENDORS
+  try {
+    assert.equal(await runJob(db, job!, { master, discover: false, providers: { openai: model, anthropic: model } as never }), 'failed')
+  } finally { if (before !== undefined) process.env.DAZL_PAID_VENDORS = before }
+  assert.deepEqual(asked, [], 'OpenAI was not asked anything')
+  assert.equal(row(db, id).error, 'claude_key_required')
 })
 
 // #1602: the free scan needs dazl's own Claude key and the three money limits, nothing from TinyFish. Before this, turning TinyFish off

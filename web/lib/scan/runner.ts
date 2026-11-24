@@ -14,7 +14,7 @@ import { counterpartySignal } from './counterparty.ts'
 import { closedJobEvidence } from './closed-job.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { readKey } from '../llm/key-store.ts'
+import { defaultVendor, readKey } from '../llm/key-store.ts'
 import { operatorKey, trialStatus } from './trial.ts'
 import { ProviderError, providers, anthropicModel, type Provider } from '../llm/provider.ts'
 import { buyerFitWorstCaseUsd } from './price-estimate.ts'
@@ -628,9 +628,10 @@ export function claimKeyedJob(db: Database.Database, jobId?: string, excludeTena
 
 function safeJson(t: string): unknown { try { return JSON.parse(t) } catch { return null } }
 
+// The vendor dazl may call for this workspace: its newest saved key that the operator allows (lib/paid-vendors.ts usableVendor). An
+// OpenAI key counts only when DAZL_PAID_VENDORS names 'openai' (#1665: this returned the newest key unchecked, so six paths called OpenAI).
 export function pickVendor(db: Database.Database, tenantId: string): Vendor | null {
-  const rows = db.prepare('SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC').all(tenantId) as { vendor: Vendor }[]
-  return rows[0]?.vendor ?? null
+  return defaultVendor(db, tenantId)
 }
 
 
@@ -1568,7 +1569,10 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     return 'failed'
   }
   if (!vendor || !key) {
-    finish(db, job, 'failed', 'no_api_key')
+    // #1665: a workspace whose only saved key is one dazl may not call (an OpenAI key with OpenAI switched off) has a key, just not a
+    // usable one. It ends with the reason the person can act on (add an Anthropic key), as it did when that key reached the lane check.
+    const hasUnusableKey = !vendor && job.funded_by !== 'trial' && !!db.prepare('SELECT 1 FROM tenant_llm_keys WHERE tenant_id = ? LIMIT 1').get(job.user_id)
+    finish(db, job, 'failed', hasUnusableKey ? 'claude_key_required' : 'no_api_key')
     return 'failed'
   }
   try {
