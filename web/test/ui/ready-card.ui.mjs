@@ -131,6 +131,21 @@ try {
       await page.waitForURL('**/app/settings#gmail')
     }
     assert.deepEqual(writes, []); await ctx.close()
+    // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
+    // nothing is pushed off the side of the page, and the card does not scroll inside itself.
+    ;({ ctx, page, writes } = await open(SCENES.pwtrial, w, h))
+    await card(page).waitFor()
+    const step = page.getByTestId('rc-search')
+    assert.equal(await step.locator('a').count(), 2, 'two ways forward on this step')
+    const text = await step.locator(':scope > div').boundingBox()
+    const buttons = await step.locator('a').evaluateAll(as => as.map(a => { const r = a.getBoundingClientRect(); return { top: r.top, right: r.right } }))
+    assert.ok(text.width >= 180, `${tag}: the step's title and detail have room to be read (${Math.round(text.width)}px wide)`)
+    if (tag === 'mobile') for (const bt of buttons) assert.ok(bt.top >= text.y + text.height - 1, 'mobile: each button sits under the text, not beside it')
+    for (const bt of buttons) assert.ok(bt.right <= w + 1, `${tag}: no button runs off the side`)
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), true, `${tag}: no sideways scroll`)
+    assert.equal(await card(page).evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1), true, `${tag}: the card does not scroll inside itself`)
+    await shot(page, `password-trial-${tag}`)
+    await ctx.close()
     if (tag !== 'desktop') continue
     // 3. Midway.
     ;({ ctx, page, writes } = await open(SCENES.midway, w, h))
@@ -153,21 +168,6 @@ try {
     await card(page).waitFor()
     assert.deepEqual((await states(page)).slice(3, 6), ['qualified:unknown', 'contact:unknown', 'draft:unknown'])
     assert.deepEqual((await fixes(page)).slice(3, 6), ['', '', ''], 'nothing to press for a check that failed')
-    await ctx.close()
-    // 4b. #1678: the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
-    // nothing is pushed off the side of the page, and the card does not scroll inside itself.
-    ;({ ctx, page, writes } = await open(SCENES.pwtrial, w, h))
-    await card(page).waitFor()
-    const step = page.getByTestId('rc-search')
-    assert.equal(await step.locator('a').count(), 2, 'two ways forward on this step')
-    const text = await step.locator(':scope > div').boundingBox()
-    const buttons = await step.locator('a').evaluateAll(as => as.map(a => { const r = a.getBoundingClientRect(); return { top: r.top, right: r.right } }))
-    assert.ok(text.width >= 180, `${tag}: the step's title and detail have room to be read (${Math.round(text.width)}px wide)`)
-    if (tag === 'mobile') for (const bt of buttons) assert.ok(bt.top >= text.y + text.height - 1, 'mobile: each button sits under the text, not beside it')
-    for (const bt of buttons) assert.ok(bt.right <= w + 1, `${tag}: no button runs off the side`)
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), true, `${tag}: no sideways scroll`)
-    assert.equal(await card(page).evaluate(el => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1), true, `${tag}: the card does not scroll inside itself`)
-    await shot(page, `password-trial-${tag}`)
     await ctx.close()
     // 5. Everything done.
     ;({ ctx, page, writes } = await open(SCENES.done, w, h))
