@@ -112,7 +112,13 @@ test('#1395 runJob: explicit sources (jobboards + careers) with a bad plan: the 
 // only paid API the plan may use) and the place is read as main read it.
 test('#1395 runJob: a non-Claude tenant keeps the job boards as before: no plan call, the Toronto postings are read', async () => {
   const { http, seen } = board()
-  const x = await runFixture({ ...fx(http, REAL, ['Toronto, Ontario'], 'CA', undefined), vendor: 'openai' })
+  // #1665: an OpenAI key is a usable key only where the operator names openai (DAZL_PAID_VENDORS); this test is about such a tenant
+  const before = process.env.DAZL_PAID_VENDORS
+  process.env.DAZL_PAID_VENDORS = 'openai'
+  const x = await (async () => {
+    try { return await runFixture({ ...fx(http, REAL, ['Toronto, Ontario'], 'CA', undefined), vendor: 'openai' }) }
+    finally { if (before === undefined) delete process.env.DAZL_PAID_VENDORS; else process.env.DAZL_PAID_VENDORS = before }
+  })()
   assert.ok(!x.calls.prompts.some(p => p.startsWith('You read one B2B prospecting request')), 'no plan call for a non-Claude tenant')
   assert.deepEqual(detailed(seen), [3, 4], `the Toronto postings were read as on main (got ${JSON.stringify(detailed(seen))})`)
   assert.ok(['ok', 'partial'].includes(boardsStatus(x) ?? ''), `the job boards ran: ${boardsStatus(x)}`)
