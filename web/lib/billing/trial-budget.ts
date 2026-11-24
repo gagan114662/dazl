@@ -180,7 +180,8 @@ export type Admission = { ok: true; reservation: string } | { ok: false; reason:
 
 // #1095 (owner, 2026-11-23: "let password users run free scans"): an account made with a password runs its FIRST search free
 // without Google. This narrows the Google guard, on purpose, and only this far:
-//   - scans only, and only PASSWORD_TRIAL_SCANS (1) of them; the second free scan, and every free website read, still needs Google
+//   - only PASSWORD_TRIAL_SCANS (1) scan, and the website reads that come before it in onboarding (2026-11-24); the second free scan,
+//     and any website read after that one scan is used, still needs Google
 //     (refused google_required, which the screens answer with Link Google). The first search counts toward the usual three.
 //   - the address must be confirmed (users.email_verified_at): a sign-up made where dazl can send mail cannot sign in before that.
 //   - one per mailbox: a +tag alias, or a Gmail address that differs only by dots or googlemail.com, of a mailbox that already drew
@@ -283,14 +284,16 @@ export function ledger(rows: LedgerRow[], tenantId: string, day: number): { acco
 // The attempts counter is the account's trial SCANS only (ledger: a website read is money in the wallet, not an
 // attempt), and it is checked for every kind: an account that used its three scan attempts gets no funded read either
 // (#409 "exhausted budget"), while reads never use up a scan attempt. Pinned by test/trial-admission-isolation.test.ts.
-function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env, scan = false): TxBody<TrialRefusal | null> {
+function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet, day: number, reserveUsd: number, env: Record<string, string | undefined> = process.env): TxBody<TrialRefusal | null> {
   let attemptsCap = TRIAL_SCANS_PER_ACCOUNT
   for (const req of TRIAL_REQUIRES) {
     if (req === 'google_account' && stagingTrialWithoutGoogle(user.email, env)) continue
     const check = TRIAL_REQUIREMENT_CHECKS[req]
     if (yield* t.get(check.sql, [user.id])) continue
-    // #1095: without Google, a confirmed password account still runs its first scan (see PASSWORD_TRIAL_SCANS); nothing else
-    if (!(req === 'google_account' && scan && passwordTrialOn(env) && (yield* passwordPathOpen(t, user)))) return check.refusal
+    // #1095: without Google, a confirmed password account still runs its first scan (see PASSWORD_TRIAL_SCANS), and the website
+    // read that comes before it in onboarding (owner, 2026-11-24: free website reads for every new account). Once that one scan
+    // is used, the attempts check below asks for Google, for a read as for a scan.
+    if (!(req === 'google_account' && passwordTrialOn(env) && (yield* passwordPathOpen(t, user)))) return check.refusal
     attemptsCap = PASSWORD_TRIAL_SCANS
   }
   const domain = emailDomain(user.email)
@@ -321,7 +324,7 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
     // every admission takes this row first (created by the first admission, so a freshly migrated store stays empty), so
     // two instances cannot both admit against the same remaining budget: the upsert locks the row until this commits
     yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
-    const why = yield* refusal(t, user, caps, day, caps.reserveUsd, o.env ?? process.env, true)
+    const why = yield* refusal(t, user, caps, day, caps.reserveUsd, o.env ?? process.env)
     if (why) return { ok: false, reason: why }
     const id = randomBytes(12).toString('hex')
     yield* t.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, ?, ?, ?)', [id, user.id, caps.reserveUsd, day, now])
@@ -365,7 +368,7 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   if (!caps) return 'not_configured'
   const day = trialDay(o.now ?? Math.floor(Date.now() / 1000))
   const reserveUsd = o.reserveUsd ?? (read ? TRIAL_SITE_READ_RESERVE_USD : (caps as TrialCaps).reserveUsd)
-  return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env, !read))
+  return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env))
 }
 
 // What is left of the account's trial dollar allowance, for the cost screen (read-only; admission and the caps are untouched): the account total

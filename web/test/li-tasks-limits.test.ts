@@ -198,5 +198,6 @@ bothEngines('a throttled (429/999) report pauses the account for a day, like a c
   assert.equal(await completeTask(db, 'A', t.id, { error: 'throttled' }, at(10) + 10), 'failed_recorded')
   const r = await nextTask(db, 'A', at(15), mid)
   assert.ok('wait' in r && r.wait === 'cooldown', JSON.stringify(r))
-  assert.ok((await extensionStatus(db, 'A')).stopped_until)
+  // read at the test's own clock: against the real clock this stopped passing once the fixed date above was a day in the past (2026-11-24 15:00 UTC)
+  assert.ok((await extensionStatus(db, 'A', at(15))).stopped_until)
 })

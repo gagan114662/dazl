@@ -63,14 +63,14 @@ export async function authExtensionToken(db: Db, token: unknown, now = nowS()): 
   await db.run('UPDATE li_ext_tokens SET last_used_at = ? WHERE tenant_id = ?', [now, m[1]])
   return m[1]
 }
-export async function extensionStatus(db: Db, tenantId: string): Promise<{ token: boolean; created_at: number | null; last_used_at: number | null; tz: string | null; paused: boolean; queued: number; read_today: number; open_min: number; close_min: number; today_close_min: number | null; stopped_until: number | null }> {
+export async function extensionStatus(db: Db, tenantId: string, now: number = nowS()): Promise<{ token: boolean; created_at: number | null; last_used_at: number | null; tz: string | null; paused: boolean; queued: number; read_today: number; open_min: number; close_min: number; today_close_min: number | null; stopped_until: number | null }> {
   const t = await db.get<{ created_at: number; last_used_at: number | null }>('SELECT created_at, last_used_at FROM li_ext_tokens WHERE tenant_id = ?', [tenantId])
   const g = await db.get<{ tz: string | null; paused: number; open_min: number; close_min: number; override_close_min: number | null; override_until: number | null; next_allowed_at: number }>('SELECT tz, paused, open_min, close_min, override_close_min, override_until, next_allowed_at FROM li_task_gate WHERE tenant_id = ?', [tenantId])
   const q = await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM li_tasks WHERE tenant_id = ? AND status = 'queued'", [tenantId])
-  const d = await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM li_tasks WHERE tenant_id = ? AND served_at IS NOT NULL AND served_at > ?', [tenantId, nowS() - 86_400])
+  const d = await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM li_tasks WHERE tenant_id = ? AND served_at IS NOT NULL AND served_at > ?', [tenantId, now - 86_400])
   return { token: !!t, created_at: t ? Number(t.created_at) : null, last_used_at: t?.last_used_at == null ? null : Number(t.last_used_at), tz: g?.tz ?? null, paused: Number(g?.paused ?? 0) === 1, open_min: Number(g?.open_min ?? LIMITS.openMin), close_min: Number(g?.close_min ?? LIMITS.closeMin),
-    today_close_min: g?.override_until != null && Number(g.override_until) >= nowS() ? Number(g.override_close_min) : null,
-    stopped_until: Number(g?.next_allowed_at ?? 0) - nowS() > LIMITS.maxGapS ? Number(g!.next_allowed_at) : null, queued: Number(q?.n ?? 0), read_today: Number(d?.n ?? 0) }
+    today_close_min: g?.override_until != null && Number(g.override_until) >= now ? Number(g.override_close_min) : null,
+    stopped_until: Number(g?.next_allowed_at ?? 0) - now > LIMITS.maxGapS ? Number(g!.next_allowed_at) : null, queued: Number(q?.n ?? 0), read_today: Number(d?.n ?? 0) }
 }
 
 export async function setTimezone(db: Db, tenantId: string, tz: unknown): Promise<boolean> {
