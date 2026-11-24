@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
-import { getJob, listLeads } from '../lib/scan/store.ts'
+import { getJob } from '../lib/scan/store.ts'
 import { DISCOVER_STATE_LABEL, discoverCounts, discoverReady, discoverState, type DiscoverState } from '../lib/discover/card.ts'
 import { discoverJobCounts, discoverReadForDb } from '../lib/discover/state-db.ts'
 import { discoverExportFields } from '../lib/discover/export.ts'
@@ -141,7 +141,8 @@ test('every combination of the stored facts: every page gives a new-engine lead 
   // day, the stored rows, and the verdict on the address from the same read the header's counts come from ---------------------------------
   const job = getJob(db, T, J) as { id: string; query: string | null; icp: string | null }
   const timing = timingOptsFor(job)
-  const stored = listLeads(db, T, J, 100_000, true) as (PreviewLead & { intent: number | null; name: string | null })[]
+  // the lead rows read whole: the list's own reader (lib/scan/store.ts listLeads) returns these columns and stops at 500 leads
+  const stored = db.prepare('SELECT l.* FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id = ?').all(T, J) as (PreviewLead & { intent: number | null; name: string | null })[]
   assert.equal(stored.length, combos.length)
   const enr: Record<string, unknown[]> = {}
   for (let i = 0; i < stored.length; i += 400) Object.assign(enr, enrichmentsForLeads(db, T, stored.slice(i, i + 400).map(l => l.id)))
