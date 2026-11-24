@@ -40,7 +40,11 @@ bothEngines('#1095 what the password path still refuses: unconfirmed address, we
   const unconfirmed = await user(db, 'una@gmail.com', { verified: false })
   assert.deepEqual(await admit(db, unconfirmed), { ok: false, reason: 'google_required' })
   const pw = await user(db, 'Pat.Smith@gmail.com')
-  assert.deepEqual(await admitTrialSiteReadBudget(db, pw, { env: ENV, now: NOW }), { ok: false, reason: 'google_required' }, 'a website read still needs Google')
+  // owner, 2026-11-24 (free website reads for every new account): the read that comes before the first search in onboarding is
+  // admitted for a confirmed password account; for an unconfirmed one, and with the switch off, it still needs Google
+  assert.equal((await admitTrialSiteReadBudget(db, pw, { env: ENV, now: NOW })).ok, true, 'a confirmed password account has its website read')
+  assert.deepEqual(await admitTrialSiteReadBudget(db, unconfirmed, { env: ENV, now: NOW }), { ok: false, reason: 'google_required' }, 'an unconfirmed address still needs Google for a read')
+  assert.deepEqual(await admitTrialSiteReadBudget(db, pw, { env: { ...ENV, DAZL_TRIAL_PASSWORD_FIRST_SCAN: '0' }, now: NOW }), { ok: false, reason: 'google_required' }, 'off switch: reads need Google too')
   assert.deepEqual(await admit(db, pw, { ...ENV, DAZL_TRIAL_PASSWORD_FIRST_SCAN: '0' }), { ok: false, reason: 'google_required' }, 'off switch')
   await run(db, pw, await admit(db, pw))
   for (const alias of ['patsmith+two@gmail.com', 'p.a.t.smith@googlemail.com'])

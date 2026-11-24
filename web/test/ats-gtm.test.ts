@@ -632,3 +632,21 @@ test('#533 AC4 dedupe: same posting id across stores is one opening; same title 
   // a row without a URL (board-listing audit) is never deduped by identity
   assert.doesNotMatch(withRepostHistory([{ ...row('')[0], source_url: 'https://jobs.lever.co/brightloop' }], 'lever', existing)[0].label, /same posting as/)
 })
+
+// #1667 (Breken QA, 2026-11-23): a posting rescanned many times listed every earlier date in its repost note; past 200 characters the
+// label was cut, so the note lost "first seen ..." and ended mid-sentence.
+test('#1667 repost note: many earlier dates are capped so the note still ends with the first-seen date', () => {
+  const day = (n: number) => `2026-08-${String(n).padStart(2, '0')}`
+  const firstSeenS = Date.parse('2026-08-02T09:00:00Z') / 1000
+  const existing = Array.from({ length: 12 }, (_, i) => ({ kind: 'hiring', connector: 'signals:greenhouse-gtm', value: `Account Executive - posted ${day(i + 1)}`, source_date: day(i + 1), retrieved_at: firstSeenS + i * 86_400 }))
+  const rows = [{ connector: 'signals:greenhouse-gtm', kind: 'hiring', value: 'Account Executive - posted 2026-10-16', label: 'Open sales role on its public job board' }]
+  const label = withRepostHistory(rows, 'greenhouse', existing)[0].label
+  assert.ok(label.length <= 200, `label is ${label.length} characters`)
+  assert.ok(label.endsWith('first seen 2026-08-02)'), label)
+  assert.match(label, /board previously dated 2026-08-01, 2026-08-02, 2026-08-03, 2026-08-04, 2026-08-05, and more dates, first seen 2026-08-02\)$/)
+  assert.match(label, /repost vs continued listing unknown, not renewed demand/)
+  // five or fewer earlier dates are listed in full, as before
+  const few = withRepostHistory(rows, 'greenhouse', existing.slice(0, 3))[0].label
+  assert.match(few, /board previously dated 2026-08-01, 2026-08-02, 2026-08-03, first seen 2026-08-02\)$/)
+  assert.doesNotMatch(few, /and more dates/)
+})

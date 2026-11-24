@@ -467,3 +467,23 @@ bothEngines('#444 R7: a refund after the window rolled does nothing; rateLimit r
   assert.equal(await refundRateLimit(key, db, t0 + win + 10, second.resetAt), true, 'a refund into its own window lands')
   assert.equal(Number((await db.get<{ c: number }>('SELECT count AS c FROM rate_limits WHERE key = ?', [key]))!.c), 0)
 })
+
+// Owner, 2026-11-24 ("On for everyone"): on production every new free account met "The free trial isn't available here right
+// now" at the first onboarding step, because the website read admitted listed accounts only. The allowlist set to the word
+// `public` admits any account the trial would admit, under the same ceilings.
+bothEngines('public launch: the allowlist set to "public" admits an eligible account that no list names; ineligible accounts and a missing daily ceiling are still refused', async ({ db }) => {
+  await withKey(OP, async () => {
+    const pub = { ...ENV, DAZL_TRIAL_SITE_READ_ALLOWLIST: ' Public ' } as Record<string, string | undefined>
+    const a = await user(db, uid(9100), 'launch-a@unlisted.example')
+    assert.equal((await admitTrialSiteRead(db, a, '203.0.113.201', { env: pub, limit: limiter() })).ok, true, 'not on any list, admitted')
+    // a list is still a list: the same account is refused when the value names other accounts
+    const b = await user(db, uid(9101), 'launch-b@unlisted2.example')
+    assert.deepEqual(await admitTrialSiteRead(db, b, '203.0.113.202', { env: { ...pub, DAZL_TRIAL_SITE_READ_ALLOWLIST: 'someone-else@example.test,public@example.test' }, limit: limiter() }), { ok: false, reason: 'not_in_allowlist' })
+    // eligibility is unchanged: an unconfirmed password account without Google still hears google_required
+    const noGoogle = await user(db, uid(9102), 'launch-c@unlisted3.example', false)
+    assert.deepEqual(await admitTrialSiteRead(db, noGoogle, '203.0.113.203', { env: pub, limit: limiter() }), { ok: false, reason: 'google_required' })
+    // the deployment's own daily ceiling is still required
+    const noCeiling = { ...pub }; delete noCeiling.DAZL_TRIAL_SITE_READS_PER_DAY
+    assert.deepEqual(await admitTrialSiteRead(db, b, '203.0.113.202', { env: noCeiling, limit: limiter() }), { ok: false, reason: 'not_configured' })
+  })
+})
