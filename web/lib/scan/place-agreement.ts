@@ -266,6 +266,26 @@ const BARE_CAPITAL_ONLY = new Set(['cologne'])
 const BARE_CITY = new RegExp(`(?<![\\p{L}])(${Object.keys(WORLD_CITIES).sort((a, b) => b.length - a.length).map(c => esc(c).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}])`, 'giu')
 const plain = (s: string) => clean(s).replace(/[,.]+/g, ' ').replace(/ +/g, ' ').trim()
 
+// ---- every city outside the United States a text names (the guessed-address step's US-only rule: lib/people/email-pattern.ts) ----
+// otherPlace skips a bare foreign city for a US request, because most have a US namesake. The guessed-address step wants the opposite:
+// any such name on a homepage ("Offices: Austin, TX 78701 · London · Berlin") means "not US" unless the caller can show the name is a US
+// town. This reads the lists above (WORLD_CITIES outside the United States, the METROS and UK_CITIES) plus the well-known cities they
+// lack. Those are kept apart, so no verdict of otherPlace or placeAgreement changes. Offsets index the text passed in.
+const MORE_NON_US_CITIES = ['calgary', 'ottawa', 'edmonton', 'winnipeg', 'mississauga', 'halifax', 'quebec city', 'saskatoon', 'perth', 'adelaide', 'sydney', 'manila', 'jakarta', 'bangkok',
+  'kuala lumpur', 'taipei', 'karachi', 'lahore', 'dhaka', 'lima', 'kyiv', 'kiev', 'bucharest', 'krakow', 'hanoi', 'montréal', 'québec city', 'zürich', 'münchen', 'köln', 'são paulo', 'bogotá', 'kraków']
+// Also first names or ordinary words: only the capitalised form names the city.
+const NON_US_CAPITAL_ONLY = new Set([...CAPITAL_ONLY, ...BARE_CAPITAL_ONLY, 'sydney', 'perth', 'adelaide', 'lima', 'manila', 'muscat'])
+const NON_US_CITY_NAMES = [...new Set([...Object.keys(WORLD_CITIES).filter(c => WORLD_CITIES[c].country !== 'united states'), ...METROS.flat(), ...UK_CITIES, ...MORE_NON_US_CITIES])].filter(c => !NEVER_BARE.has(c))
+const NON_US_CITY = new RegExp(`(?<![\\p{L}\\d])(${NON_US_CITY_NAMES.sort((a, b) => b.length - a.length).map(c => esc(c.normalize('NFC')).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}\\d])`, 'giu')
+export function nonUsCityMentions(text: string): { place: string; at: number; end: number }[] {
+  const out: { place: string; at: number; end: number }[] = []
+  for (const m of text.matchAll(NON_US_CITY)) {
+    if (NON_US_CAPITAL_ONLY.has(m[1].toLowerCase().replace(/\s+/g, ' ')) && !/^\p{Lu}/u.test(m[1])) continue
+    out.push({ place: m[1], at: m.index, end: m.index + m[1].length })
+  }
+  return out
+}
+
 interface Ask { cities: Map<string, Region | null>; regions: Region[] } // a city's region is null when the request does not say and the city is not listed
 function regionOf(name: string): Region | null {
   return REGION_BY_ALIAS.get(plain(name)) ?? REGION_BY_ALIAS.get(name.trim().toLowerCase()) ?? null

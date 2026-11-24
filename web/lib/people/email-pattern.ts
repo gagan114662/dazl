@@ -18,8 +18,8 @@
 // EMAIL_GUESS_ENABLED=1 AND 'zerobounce' named in DAZL_PAID_VENDORS (the owner's one exception to "no paid service", lib/paid-vendors.ts).
 import type Database from 'better-sqlite3'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
-import { US_STATES } from '../scan/place-agreement.ts'
-import { countriesIn } from '../scan/countries.ts'
+import { nonUsCityMentions, US_STATES } from '../scan/place-agreement.ts'
+import { canadianProvinceMentions, countriesIn, countryMentions } from '../scan/countries.ts'
 import { VerifierError, zeroBounceVerifier, zeroBounceStagingFetch, ZEROBOUNCE_FREE_MONTHLY, ZEROBOUNCE_STAGING_FAKE } from './zerobounce.ts'
 import { isStaging } from '../staging.ts'
 import { paidVendorOn, paidVendorOffNote } from '../paid-vendors.ts'
@@ -287,11 +287,19 @@ export function usEvidence(homeText: string | undefined, where: string[] = []): 
 // a US office beside offices elsewhere ("New York, NY 10001 · London EC1A 1BB · Berlin"), and reads "Milano, MI 20121", "Palermo, PA
 // 90133" or "Berlin, DE 10115" as Michigan, Pennsylvania and Delaware. Here, on top of usEvidence:
 //   - any sign of another country on the homepage means NOT US: a UK postcode, a phone number with a dialling code other than +1, or
-//     another country's name (countriesIn, read across the page's separators);
+//     another country's name, in an address (countriesIn, read across the page's separators) or anywhere in the text
+//     (countryMentions: "offices in Germany and Austin", "Toronto, Canada. Book today.", "Mumbai, India · Contact us");
+//   - so does a Canadian province ("Guelph, ON", "serving all of Ontario": Canada shares +1 and a province needs no postal code here)
+//     and a well-known city outside the US named anywhere ("Austin, TX 78701 · London · Berlin"). The city list cannot be complete;
+//   - a name that is also a US town is let through only when it is itself written as a US address whose ZIP code belongs to the state
+//     ("Vienna, VA 22180", "Ontario, CA 91761", "Lebanon, PA 17042"). A second, bare mention on the same page still refuses;
 //   - a "City, ST 12345" counts only when that ZIP code belongs to that state (the first three digits, ZIP3 below).
+// A wrong "not US" (a first name Jordan, "Turkey Hill", "Birmingham, Alabama" without a ZIP) is accepted; a wrong "US" is not.
 // The older engine's callers keep usEvidence as it was; nothing of theirs changes.
 const UK_POSTCODE = /\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/
-const FOREIGN_DIAL = /\+[2-9]\d/
+// A phone number, not "+30% revenue" or "+25 years": "+", a dialling code that does not start with 1, then at least six more digits
+// joined only by spaces, dots, hyphens, slashes or brackets ("+44 (0)20 7946 0000", "+7 495 555 01 00", "+49-30-5550-1000").
+const FOREIGN_PHONE = /(?<![\p{L}\d])\+\s?\(?[2-9]\d{0,2}\)?(?:[\s./(-]{0,2}\d\)?){6,12}(?![\d%])/u
 // The three-digit ZIP prefixes of each state, as inclusive ranges. A state not listed here (a territory) is never accepted.
 const ZIP3: Record<string, [number, number][]> = {
   AL: [[350, 369]], AK: [[995, 999]], AZ: [[850, 865]], AR: [[716, 729]], CA: [[900, 961]], CO: [[800, 816]], CT: [[60, 69]], DE: [[197, 199]],
@@ -307,9 +315,18 @@ export function usOnlyEvidence(homeText: string | undefined, where: string[] = [
   const base = usEvidence(homeText, where)
   if (!base.us || !homeText) return base
   if (UK_POSTCODE.test(homeText)) return { us: false, reason: 'homepage states a UK postcode' }
-  if (FOREIGN_DIAL.test(homeText)) return { us: false, reason: 'homepage gives a phone number outside the US' }
-  const named = [...new Set(countriesIn(homeText.replace(/[·•|;\n\r\t]+/g, ',')))].filter(c => c !== 'US')
+  if (FOREIGN_PHONE.test(homeText)) return { us: false, reason: 'homepage gives a phone number outside the US' }
+  const text = homeText.normalize('NFC')
+  // the name is a US town when it is itself the city of a US address: ", ST 12345" follows it and the ZIP code belongs to the state
+  const usTown = (end: number) => { const m = /^,\s*([A-Z]{2})\s+(\d{5})(?!\d)/.exec(text.slice(end, end + 24)); return !!m && m[1] in US_STATES && zipInState(m[1], m[2]) }
+  const codes = new Set(countriesIn(homeText.replace(/[·•|;\n\r\t]+/g, ',')))
+  for (const c of countryMentions(text)) if (!(c.ambiguous && usTown(c.end))) codes.add(c.code)
+  const named = [...codes].filter(c => c !== 'US')
   if (named.length) return { us: false, reason: `homepage names ${named.join(', ')}` }
+  const province = canadianProvinceMentions(text).find(p => p.code || !usTown(p.end))
+  if (province) return { us: false, reason: `homepage names a Canadian province: ${province.place}` }
+  const city = nonUsCityMentions(text).find(p => !usTown(p.end))
+  if (city) return { us: false, reason: `homepage names ${city.place}`.slice(0, 160) }
   for (const m of homeText.matchAll(US_ZIP_ADDRESS)) {
     const zip = /(\d{5})(?:-\d{4})?$/.exec(m[0])?.[1]
     if (m[2] in US_STATES && zip && zipInState(m[2], zip)) return { us: true, basis: `homepage address: ${m[0]}`.slice(0, 160) }
@@ -554,7 +571,8 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
 // ---- the discovery lane: a guessed address, kept only when the mailbox check says the mailbox exists (owner decision 2026-11-24) ----
 // For each lead of one finished search that names a person (first and last name), has a company website and no address of that
 // person's own: read the company's own homepage (free, dazl's own fetch), and only when it states a US address and no other country
-// (usOnlyEvidence: a Canadian or UK address, another country's name or phone code, a ZIP code that is not its state's, no address, or
+// (usOnlyEvidence: a Canadian or UK address, another country's name or phone number, a Canadian province or a well-known city outside
+// the US named anywhere in the text, a ZIP code that is not its state's, no address, or
 // a request that names another country all mean "not US") build the person's address at that domain in FORMATS
 // order and ask the verifier, one address at a time, at most GUESS_MAX_CHECKS_PER_LEAD per lead, stopping at the first 'deliverable'.
 // Fail closed, in this order: EMAIL_GUESS_ENABLED=1, 'zerobounce' named in DAZL_PAID_VENDORS, a configured verifier, a daily cap above 0

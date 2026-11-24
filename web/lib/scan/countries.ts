@@ -342,3 +342,58 @@ export function regionOf(segment: string): string | null {
 export const regionsIn = (text: string): string[] => [...new Set(text.split(',').map(regionOf).filter((x): x is string => !!x))]
 // A region implies its country: Ontario is Canada, New York is the United States, Scotland is the United Kingdom.
 export const countryOfRegion = (r: string): string => (r.startsWith('CA-') ? 'CA' : r.startsWith('GB-') ? 'GB' : 'US')
+
+// ---- whole-text mentions: the guessed-address step's US-only rule (lib/people/email-pattern.ts usOnlyEvidence) ----
+// countriesIn reads a country only where an address writes one (a whole comma segment, or a segment's last words). The two scans below
+// read EVERY whole-word mention in a page's text ("offices in Germany and Austin", "Toronto, Canada. Book today."), and are used only
+// where a wrong "not US" is acceptable and a missed country is not. Offsets index the text passed in (pass it NFC-normalised).
+// The text folded as `strip` folds it, but one character for one: accents off, lower case, every other character a space. A letter or
+// digit that does not fold to a-z / 0-9 becomes "_", which no name contains and which still counts as part of a word.
+function foldInPlace(text: string): string {
+  let out = ''
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    const f = ch <= '\u007f' ? ch.toLowerCase() : ch.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    out += f.length === 1 && /[a-z0-9']/.test(f) ? f : /[\p{L}\p{N}]/u.test(ch) ? '_' : ' '
+  }
+  return out
+}
+// Not scanned for (countriesIn still reads them in an address): "Jersey" (Jersey City; a Channel Islands address carries a JE postcode),
+// "Reunion" (a family reunion), and the abbreviations that are also units or technical terms (16 GB, RSA keys, DRC).
+const NO_SCAN = new Set(['jersey', 'reunion', 'gb', 'rsa', 'drc'])
+// Also a lower-case English word: only the capitalised form names the country (as for LAST_ONLY).
+const SCAN_CAPITAL_ONLY = new Set(['chile'])
+const SCAN_NAMES = [...BY_NAME.keys()].filter(n => !STATE_FORMS.has(n) && !NO_SCAN.has(n)).sort((a, b) => b.length - a.length)
+const COUNTRY_SCAN = new RegExp(`(?<![a-z0-9_])(${SCAN_NAMES.map(n => n.replace(/ /g, ' +')).join('|')})(?![a-z0-9_])`, 'g')
+interface CountryMention{ code: string; at: number; end: number; ambiguous: boolean }
+// Every country name or alias written anywhere in the text, as a whole word, the longest name first ("Northern Ireland" is the UK,
+// "Papua New Guinea" is not Guinea). `ambiguous`: the name is also a US place or an English word (LAST_ONLY). Those names, and "Chile",
+// count only when written with a capital first letter ("turkey", "china" do not); an abbreviation of three letters or fewer (US, UK,
+// UAE) only in capitals. "New Mexico" and "New Guinea" are never Mexico or Guinea.
+export function countryMentions(text: string): CountryMention[] {
+  const folded = foldInPlace(text), out: CountryMention[] = []
+  for (const m of folded.matchAll(COUNTRY_SCAN)) {
+    const name = m[1].replace(/ +/g, ' '), at = m.index, end = at + m[1].length, written = text.slice(at, end)
+    const code = BY_NAME.get(name)
+    if (!code) continue
+    const ambiguous = LAST_ONLY.has(name)
+    if (name.replace(/[^a-z]/g, '').length <= 3) { if (written !== written.toUpperCase()) continue }
+    else if ((ambiguous || SCAN_CAPITAL_ONLY.has(name)) && !/^\p{Lu}/u.test(written)) continue
+    if ((name === 'mexico' || name === 'guinea') && /(?<![a-z0-9_])new +$/.test(folded.slice(Math.max(0, at - 12), at))) continue
+    out.push({ code, at, end, ambiguous })
+  }
+  return out
+}
+// Provinces and territories CA_PROV does not name. Kept apart from it so regionOf does not start reading "Yukon, OK" as Canada.
+const CA_PROV_SCAN_ONLY = ['yukon', 'nunavut', 'northwest territories', 'newfoundland']
+const CA_PROV_NAME_SCAN = new RegExp(`(?<![a-z0-9_])(${[...Object.keys(CA_PROV).filter(k => k.length > 3), ...CA_PROV_SCAN_ONLY].sort((a, b) => b.length - a.length).map(n => n.replace(/ /g, ' +')).join('|')})(?![a-z0-9_])`, 'g')
+// A province code counts only in capitals and straight after a comma ("Guelph, ON"): none of them is a US state's code.
+const CA_PROV_CODE_SCAN = new RegExp(`,\\s*(${Object.keys(CA_PROV).filter(k => k.length === 2).map(k => k.toUpperCase()).join('|')})(?![\\p{L}\\d])`, 'gu')
+// Every Canadian province or territory the text names: its full name anywhere, in any case ("Serving all of Ontario"), or its
+// two-letter code after a comma. `code` tells the two apart: a full name can also be a US town ("Ontario, CA 91761"), a code cannot.
+export function canadianProvinceMentions(text: string): { place: string; at: number; end: number; code: boolean }[] {
+  const out: { place: string; at: number; end: number; code: boolean }[] = []
+  for (const m of foldInPlace(text).matchAll(CA_PROV_NAME_SCAN)) out.push({ place: text.slice(m.index, m.index + m[1].length), at: m.index, end: m.index + m[1].length, code: false })
+  for (const m of text.matchAll(CA_PROV_CODE_SCAN)) { const at = m.index + m[0].length - m[1].length; out.push({ place: m[1], at, end: at + 2, code: true }) }
+  return out.sort((a, b) => a.at - b.at)
+}

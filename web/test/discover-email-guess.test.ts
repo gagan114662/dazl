@@ -11,6 +11,8 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { addEnrichment } from '../lib/connectors/store.ts'
 import { guessDiscoverEmails, usOnlyEvidence, type MailboxVerifier, type VerifyAnswer } from '../lib/people/email-pattern.ts'
+import { canadianProvinceMentions, countryMentions } from '../lib/scan/countries.ts'
+import { nonUsCityMentions } from '../lib/scan/place-agreement.ts'
 import { VerifierError } from '../lib/people/zerobounce.ts'
 import { discoverContact, discoverSources, discoverState, GUESSED_VERIFIED_LABEL, GUESSED_VERIFIED_SHORT } from '../lib/discover/card.ts'
 import { discoverJobCounts, discoverStatesFromRows, discoverStoredSql, type DiscoverLeadRow, type DiscoverStoredRow } from '../lib/discover/state-db.ts'
@@ -144,6 +146,14 @@ test('not in the United States, or country unknown: nothing is checked and nothi
     ['a US address beside a phone number outside the US', { [HOME]: `${US_HOME} London desk: +44 20 7946 0000` }, WHERE],
     ['a US address beside another country\'s name', { [HOME]: `${US_HOME} We also see patients in Toronto, Canada` }, WHERE],
     ['the request names Germany', { [HOME]: US_HOME }, ['Dental clinics in Germany']],
+    // second review of #1691: another country, province or city named anywhere on the page, not only where an address writes it
+    ['a US office beside offices named by city only', { [HOME]: 'Northwind Dental. Offices: Austin, TX 78701 · London · Berlin' }, WHERE],
+    ['a US address beside a Canadian town and province code, no postal code', { [HOME]: `${US_HOME} Also in Toronto, ON` }, WHERE],
+    ['a US address beside a small Canadian town and province code', { [HOME]: `${US_HOME} Second clinic: Guelph, ON` }, WHERE],
+    ['a country named in the middle of a sentence', { [HOME]: 'Northwind Dental. We have offices in Germany and Austin. 500 Congress Ave, Austin, TX 78701' }, WHERE],
+    ['a country followed by more text', { [HOME]: `${US_HOME} We also see patients in Toronto, Canada. Book today.` }, WHERE],
+    ['a country that is also a US town\'s name, not at the end of the page', { [HOME]: 'Northwind Dental. Austin, TX 78701 · Mumbai, India · Contact us' }, WHERE],
+    ['a phone number outside the US with a one-digit dialling code', { [HOME]: `${US_HOME} Second desk: +7 495 555 01 00` }, WHERE],
   ]
   for (const [what, pages, where] of cases) {
     const db = setup(), asked: string[] = []
@@ -175,6 +185,57 @@ test('the step\'s reading of a homepage: a US address whose ZIP code is that sta
   for (const [text, why] of no) { const r = usOnlyEvidence(text, WHERE); assert.equal(r.us, false, text); assert.match(r.us ? '' : r.reason, why, text) }
   assert.equal(usOnlyEvidence(US_HOME, ['Dental clinics in Germany']).us, false)
   assert.equal(usOnlyEvidence(undefined, WHERE).us, false)
+})
+
+test('the step\'s reading of a homepage: another country, a Canadian province or a city outside the US named anywhere on it means not US', () => {
+  const no: [string, RegExp][] = [
+    // offices named by city only, beside a US address
+    ['Offices: Austin, TX 78701 · London · Berlin', /names London/],
+    [`${US_HOME} Studios in MONTRÉAL and são paulo`, /names MONTRÉAL/],
+    [`${US_HOME} Our Calgary team answers the phone`, /names Calgary/],
+    // Canada shares +1 and these carry no postal code
+    [`${US_HOME} Also in Toronto, ON`, /Canadian province: ON/],
+    [`${US_HOME} Second clinic: Guelph, ON`, /Canadian province: ON/],
+    [`${US_HOME} Serving all of Ontario and Quebec`, /Canadian province: Ontario/],
+    [`${US_HOME} Flights to the Yukon`, /Canadian province: Yukon/],
+    // a country anywhere in the text, not only where an address writes it
+    ['We have offices in Germany and Austin. 500 Congress Ave, Austin, TX 78701', /names DE/],
+    [`${US_HOME} We also see patients in Toronto, Canada. Book today.`, /names CA/],
+    ['Austin, TX 78701 · Mumbai, India · Contact us', /names IN/],
+    [`${US_HOME} Our team in Poland builds the product.`, /names PL/],
+    [`${US_HOME} Lab partners in the Côte d'Ivoire office help us`, /names CI$/],
+    [`${US_HOME} Offices across the U.K. and beyond`, /names GB$/],
+    [`${US_HOME} Clinics in Northern Ireland opening soon`, /names GB$/],
+    // a phone number outside the US, however it is punctuated
+    [`${US_HOME} Call +44 20 7946 0000`, /phone number outside the US/],
+    [`${US_HOME} Second desk: +7 495 555 01 00`, /phone number outside the US/],
+    [`${US_HOME} Tel +49-30-5550-1000`, /phone number outside the US/],
+    [`${US_HOME} Tel +44 (0)20 7946 0000`, /phone number outside the US/],
+    // a US town that shares a name is let through only as its own full address: a second, bare mention still refuses
+    ['Harbour Smiles, 2 Brattle St, Cambridge, MA 02139 · Cambridge · London', /names Cambridge/],
+    ['Offices: London Vienna, VA 22180', /names London/],
+    ['Harbour Smiles, 4 Cumberland St, Lebanon, PA 17042. Our lab is in Lebanon', /names LB/],
+    ['Harbour Smiles, 9 Euclid Ave, Ontario, CA 91761. Now in Ontario too', /Canadian province: Ontario/],
+    // the ZIP code after the shared name must be that state's
+    ['Harbour Smiles, 12 Dock St, Portland, ME 04101. Also at Vienna, VA 90210', /names Vienna/],
+  ]
+  for (const [text, why] of no) { const r = usOnlyEvidence(text, WHERE); assert.equal(r.us, false, text); assert.match(r.us ? '' : r.reason, why, text) }
+  const yes = [
+    // "+" before a number that is not a phone number
+    `${US_HOME} +30% revenue growth`, `${US_HOME} +25 years of experience`, `${US_HOME} 500+ 5 star reviews`, `${US_HOME} Rated 4.9 by 1,200+ patients`,
+    // US towns named after places elsewhere, written as full US addresses
+    'Harbour Smiles, 1 Maple Ave, Vienna, VA 22180', 'Harbour Smiles, 2 Brattle St, Cambridge, MA 02139', 'Harbour Smiles, 4 Cumberland St, Lebanon, PA 17042',
+    'Harbour Smiles, 9 Euclid Ave, Ontario, CA 91761', 'Harbour Smiles, 3 Central Ave, Albuquerque, NM 87102, New Mexico',
+    // words that only look like a country: lower-case "turkey", "china" and "chile", a unit, a US state's name
+    `${US_HOME} We serve turkey on fine china with green chile. 16 GB of photos. Second office in Georgia.`,
+  ]
+  for (const text of yes) { const r = usOnlyEvidence(text, WHERE); assert.equal(r.us, true, `${text} -> ${r.us ? '' : r.reason}`) }
+  // the scans themselves: where in the text, which country, and whether the name is also a US town's
+  assert.deepEqual(countryMentions('Offices in Germany and Lebanon, PA 17042').map(m => [m.code, m.at, m.ambiguous]), [['DE', 11, false], ['LB', 23, true]])
+  assert.deepEqual(countryMentions('New Mexico, Papua New Guinea, new jersey, turkey').map(m => m.code), ['PG'])
+  assert.deepEqual(canadianProvinceMentions('Guelph, ON and british columbia; go on, in ON mode').map(m => [m.place, m.code]), [['ON', true], ['british columbia', false]])
+  assert.deepEqual(nonUsCityMentions('From new delhi to Derby, by way of bath and a derby hat').map(m => m.place), ['new delhi', 'Derby'])
+  assert.deepEqual(nonUsCityMentions('Dallas, Chicago and New York'), [], 'US cities are not read')
 })
 
 test('a catch-all domain is never verified: one check, no row, and no second format', async () => {
