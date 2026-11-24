@@ -4,6 +4,8 @@ import { getDb } from '@/lib/db/client'
 import { checkSessionWithin } from '@/lib/auth-gate'
 import { warmStore } from '@/lib/store-warm'
 import { isServerActionProbe } from '@/lib/ops/server-action-probe'
+import { canonicalPageUrl } from '@/lib/canonical-host'
+import { SESSION_FIX_COOKIE, oldDomainSessionExpiry, shouldDropOldSessionCookie } from '@/lib/session-cookie'
 
 // Runs before /app pages and /api routes (Node runtime). Gives each request an id (lib/ops/request-log.ts), logs it
 // as one JSON line, and keeps /app behind a signed-in session. The session is looked up here, before any HTML is sent:
@@ -26,6 +28,25 @@ export async function proxy(req: NextRequest) {
   }
   // health probes run every few seconds: no log line for them, but they still get an id
   if (!pathname.startsWith('/api/health') && pathname !== '/api/ready') logRequest(requestLogLine(id, req.method, pathname))
+
+  // #1686: a page asked for on www goes to the same path on the site's own hostname, so a browser has one place for its session
+  const canonical = canonicalPageUrl(req.headers.get('host'), pathname + req.nextUrl.search, req.method, process.env.PUBLIC_BASE_URL)
+  if (canonical) {
+    const r = NextResponse.redirect(canonical, 308)
+    r.headers.set('x-request-id', id)
+    return r
+  }
+
+  // #1686: two sessions in one browser (an old parent-domain cookie beside a host-only one): the old cookie is removed and the page
+  // asked for again, so the host-only session, the one every sign-in now sets, is the one in use. One Set-Cookie line for dazl_session, never two (lib/session-cookie.ts).
+  if (pathname.startsWith('/app') && shouldDropOldSessionCookie(req.headers.get('cookie'), req.method, process.env.PUBLIC_BASE_URL)) {
+    const r = NextResponse.redirect(new URL(pathname + req.nextUrl.search, process.env.PUBLIC_BASE_URL), 307)
+    r.headers.append('set-cookie', oldDomainSessionExpiry(process.env.PUBLIC_BASE_URL!)!)
+    r.headers.append('set-cookie', `${SESSION_FIX_COOKIE}=1; Path=/; Max-Age=60; HttpOnly; Secure; SameSite=Lax`)
+    r.headers.set('cache-control', 'no-store')
+    r.headers.set('x-request-id', id)
+    return r
+  }
 
   if (pathname.startsWith('/app')) {
     const session = await signedIn(req.cookies.get('dazl_session')?.value)
@@ -64,4 +85,5 @@ const escapeHtml = (v: string) => v.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<
 // The third entry is lib/ops/server-action-probe.ts SERVER_ACTION_PROBE_MATCHER, written out: Next reads this object statically.
 const logLine = (l: Record<string, unknown>) => { try { console.log(JSON.stringify(l)) } catch { /* logging never breaks a request */ } }
 
-export const config = { matcher: ['/app/:path*', '/api/:path*', { source: '/:path*', has: [{ type: 'header', key: 'next-action' }] }] }
+// The fourth entry (#1686): every page asked for on a www host, so it can be sent to the site's own hostname (lib/canonical-host.ts).
+export const config = { matcher: ['/app/:path*', '/api/:path*', { source: '/:path*', has: [{ type: 'header', key: 'next-action' }] }, { source: '/((?!api/|_next/).*)', has: [{ type: 'host', value: 'www\\..*' }] }] }

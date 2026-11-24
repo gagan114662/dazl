@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
   if (ret === 'preview') claimToken = req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value ?? ''
   if (ret === 'preview') landing = isClaimToken(claimToken) ? '/preview/claim' : '/app' // lost intent cookie: safe landing, the link still works
   const res = redirectNoStore(new URL(landing, base))
-  setSessionCookie(res, base, session, SESSION_TTL_S)
+  setSessionCookie(res, session, SESSION_TTL_S)
   clearOauthCookie(res, base)
   clearReturnCookie(res, base)
   if (ret === 'preview' && isClaimToken(claimToken)) setClaimCookie(res, claimToken)

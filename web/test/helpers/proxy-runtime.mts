@@ -15,7 +15,7 @@ setRequestLogWriter(l => lines.push(l))
 const req = (path: string, headers: Record<string, string> = {}, method = 'GET') => new NextRequest(`https://dazl.test${path}`, { method, headers })
 
 test('proxy: a fresh request id per request, forwarded to the route and returned; one scrubbed JSON log line', async () => {
-  assert.deepEqual(config.matcher, ['/app/:path*', '/api/:path*', { source: '/:path*', has: [{ type: 'header', key: 'next-action' }] }])
+  assert.deepEqual(config.matcher, ['/app/:path*', '/api/:path*', { source: '/:path*', has: [{ type: 'header', key: 'next-action' }] }, { source: '/((?!api/|_next/).*)', has: [{ type: 'host', value: 'www\\..*' }] }])
   const res = await proxy(req('/api/leads?email=jane@example.com&t=secret', { 'x-request-id': 'evil-+1 415 555 0134', cookie: 'dazl_session=tok' }))
   const id = res.headers.get('x-request-id')!
   assert.ok(isRequestId(id), id) // never the caller's value

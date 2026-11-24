@@ -13,6 +13,6 @@ test('#1463 proxy fails closed on a failed or stalled session check, keeps the s
   { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 120000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
-  assert.match(r.stdout, /# pass 5\b/)
+  assert.match(r.stdout, /# pass 8\b/)   // the five #1463 cases and the three #1686 ones (www redirect, two sessions, the Google cookie)
   assert.match(r.stdout, /# fail 0\b/)
 })

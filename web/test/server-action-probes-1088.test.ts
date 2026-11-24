@@ -32,7 +32,8 @@ test('proxy.ts answers the probe first (before the session lookup) with a 400, a
   assert.ok(m, 'the matcher is one literal line')
   // the literal, read as JSON (single quotes and bare keys normalised): no evaluation of source text
   const literal = JSON.parse(m![1].replace(/'/g, '"').replace(/([{,]\s*)([a-z]+):/g, '$1"$2":'))
-  assert.deepEqual(literal, ['/app/:path*', '/api/:path*', SERVER_ACTION_PROBE_MATCHER])
+  // the fourth entry is #1686's: pages asked for on a www host (lib/canonical-host.ts)
+  assert.deepEqual(literal, ['/app/:path*', '/api/:path*', SERVER_ACTION_PROBE_MATCHER, { source: '/((?!api/|_next/).*)', has: [{ type: 'host', value: 'www\\..*' }] }])
 })
 // The behaviour itself (a real POST with Next-Action -> 400 on a production build, and an ordinary page still 200) is checked by
 // test/smoke/app-pages.smoke.mjs, which CI runs on the built app.

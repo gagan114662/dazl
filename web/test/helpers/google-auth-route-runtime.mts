@@ -102,7 +102,9 @@ test('staging callback: a full sign-in sets the session, clears the one-time coo
   const r = await callback.GET(req(`https://staging.dazl.ai/api/auth/callback/google?code=the-code&state=${state}`, `dazl_oauth=${cookie}`))
   assert.equal(r.headers.get('location'), 'https://staging.dazl.ai/app'); noStore(r)
   const [session, cleared] = r.headers.getSetCookie()
-  for (const a of [/^dazl_session=[0-9a-f]{64};/, /Path=\/;/, /Domain=\.?staging\.dazl\.ai/i, /Secure/, /HttpOnly/, /SameSite=lax/i]) assert.match(session, a)
+  for (const a of [/^dazl_session=[0-9a-f]{64};/, /Path=\/;/, /Secure/, /HttpOnly/, /SameSite=lax/i]) assert.match(session, a)
+  // #1686: the session cookie is host-only, like a password sign-in's, so the two replace one another; the one-time cookies above keep their Domain
+  assert.doesNotMatch(session, /Domain=/i)
   assert.match(cleared, /^dazl_oauth=;.*Max-Age=0/)
   const token = new URLSearchParams(calls.find(c => c.url.endsWith('/token'))!.body)
   assert.equal(token.get('client_id'), SID); assert.equal(token.get('client_secret'), SSEC)

@@ -101,7 +101,8 @@ test('the policies are public and linked from the home footer and sign-up', () =
     assert.match(src, /href="\/privacy"/)
   }
   // the auth proxy only guards /app and /api (its third matcher entry runs only for a request with a Next-Action header: a probe, answered 400, #1088); robots and the sitemap list both pages
-  assert.match(read('proxy.ts'), /matcher: \['\/app\/:path\*', '\/api\/:path\*', \{ source: '\/:path\*', has: \[\{ type: 'header', key: 'next-action' \}\] \}\] \}/)
+  // the fourth entry is #1686's: pages asked for on a www host are sent to the site's own hostname (lib/canonical-host.ts)
+  assert.match(read('proxy.ts'), /matcher: \['\/app\/:path\*', '\/api\/:path\*', \{ source: '\/:path\*', has: \[\{ type: 'header', key: 'next-action' \}\] \}, \{ source: '\/\(\(\?!api\/\|_next\/\)\.\*\)', has: \[\{ type: 'host', value: 'www\\\\\.\.\*' \}\] \}\] \}/)
   assert.match(read('app/robots.ts'), /allow: \['\/', '\/privacy', '\/terms'\]/)
   assert.match(read('app/sitemap.ts'), /'\/privacy', '\/terms'/)
 })

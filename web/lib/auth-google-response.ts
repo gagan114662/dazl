@@ -17,7 +17,9 @@ export function redirectNoStore(url: string | URL): NextResponse {
 export const setOauthCookie = (res: NextResponse, base: string, value: string) => res.cookies.set(OAUTH_COOKIE, value, cookieOpts(base, 600, '/api/auth'))
 // cleared with the attributes it was set with, so the browser drops that same cookie
 export const clearOauthCookie = (res: NextResponse, base: string) => res.cookies.set(OAUTH_COOKIE, '', cookieOpts(base, 0, '/api/auth'))
-export const setSessionCookie = (res: NextResponse, base: string, value: string, maxAge: number) => res.cookies.set('dazl_session', value, cookieOpts(base, maxAge, '/'))
+// #1686: host-only, like a password sign-in (app/api/auth/signin/route.ts), so the two can only replace one another. The sign-in
+// finishes on PUBLIC_BASE_URL's host and pages on www are sent there (lib/canonical-host.ts), so the session needs no parent domain.
+export const setSessionCookie = (res: NextResponse, value: string, maxAge: number) => res.cookies.set('dazl_session', value, { httpOnly: true, secure: true, sameSite: 'lax', maxAge, path: '/' })
 // What the callback does after Google: 'settings' (a re-authentication started there: sign in, land back there) or
 // 'link' (add this Google identity to the signed-in account). Only these two values are honoured.
 export const RETURN_COOKIE = 'dazl_return'
