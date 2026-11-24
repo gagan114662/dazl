@@ -77,7 +77,9 @@ export function pickSeenProfile(person: string | null, company: string | null, s
   while (name.length && LEGAL_FORM.includes(name[name.length - 1])) name.pop()
   if (name[0] === 'the') name.shift()
   if (!name.length) return null
-  const phrase = new RegExp(`(?:^|[^a-z0-9])(${name.join('[^a-z0-9]+')})(?:[^a-z0-9]+(?:${LEGAL_FORM.join('|')}))*[^a-z0-9]*(?=$|[|,;·•(/]|\\s[-–—]\\s)`)
+  // a one-word name must be introduced as the company ("at Sim", "@ Sim", or opening a part of the headline), not sit inside a phrase ("Racing Sim")
+  const lead = name.length === 1 ? '(?:(?:^|[^a-z0-9])at\\s+|@\\s*|[-–—|,;·•]\\s*)' : '(?:^|[^a-z0-9])'
+  const phrase = new RegExp(`${lead}(${name.join('[^a-z0-9]+')})(?:[^a-z0-9]+(?:${LEGAL_FORM.join('|')}))*[^a-z0-9]*(?=$|[|,;·•(/]|\\s[-–—]\\s)`)
   const found = new Map<string, string>()
   for (const [url, page] of seen) {
     const key = profileKey(url)
@@ -88,7 +90,8 @@ export function pickSeenProfile(person: string | null, company: string | null, s
     const owner = nameParts(title.slice(0, cut))
     if (owner.length < 2 || owner[0] !== who[0] || owner[owner.length - 1] !== who[who.length - 1]) continue
     const rest = title.slice(cut), m = phrase.exec(rest)
-    if (!m || OVER.test(rest.slice(Math.max(0, m.index - 40), m.index + 1))) continue
+    // a job that is over is not this company's person, whether it says so before the name ("ex Northwind") or after ("Northwind (former)")
+    if (!m || OVER.test(rest.slice(Math.max(0, m.index - 40), m.index + 1)) || OVER.test(rest.slice(m.index + m[0].length, m.index + m[0].length + 20))) continue
     found.set(key, url)
   }
   return found.size === 1 ? [...found.values()][0] : null
