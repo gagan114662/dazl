@@ -326,7 +326,9 @@ export function usOnlyEvidence(homeText: string | undefined, where: string[] = [
   const province = canadianProvinceMentions(text).find(p => p.code || !usTown(p.end))
   if (province) return { us: false, reason: `homepage names a Canadian province: ${province.place}` }
   const city = nonUsCityMentions(text).find(p => !usTown(p.end))
-  if (city) return { us: false, reason: `homepage names ${city.place}`.slice(0, 160) }
+  // "Berlin, DE 10115": written like a US address, but the ZIP code is not Delaware's, so the name is not shown to be a US town
+  const likeUs = !!city && /^,\s*[A-Z]{2}\s+\d{5}(?!\d)/.test(text.slice(city.end, city.end + 24))
+  if (city) return { us: false, reason: `homepage names ${city.place}${likeUs ? ' with a ZIP code that is not that state\'s' : ''}`.slice(0, 160) }
   for (const m of homeText.matchAll(US_ZIP_ADDRESS)) {
     const zip = /(\d{5})(?:-\d{4})?$/.exec(m[0])?.[1]
     if (m[2] in US_STATES && zip && zipInState(m[2], zip)) return { us: true, basis: `homepage address: ${m[0]}`.slice(0, 160) }
