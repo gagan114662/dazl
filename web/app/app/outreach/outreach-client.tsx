@@ -90,14 +90,29 @@ export default function OutreachClient() {
     else if (j.result === 'uncertain') setNote('Gmail did not confirm the send. Check your Sent folder, then choose whether it went out.')
     void load()
   }
+  // #1711: a refused save used to collapse into one generic note, so a blank subject looked like it had
+  // silently reverted. The API error code now names the field, shown under the editor; the edit stays open.
+  const [editError, setEditError] = useState<Record<string, string>>({})
+  const SAVE_ERR: Record<string, string> = {
+    bad_subject: 'The subject cannot be empty or longer than 150 characters. Nothing was saved; your last saved subject is still in place.',
+    bad_body: 'The message must be 20 to 3000 characters. Nothing was saved; your last saved message is still in place.',
+    not_editable: 'This message can no longer be edited.',
+    not_found: 'This message is no longer there. Reload the page.',
+  }
   async function save(id: string) {
     const e = edit[id]
     const r = await fetch(`/api/outreach/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(e) })
-    if (r.ok) { setEdit(({ [id]: _, ...rest }) => rest); void load() } else setNote('Subject or message is the wrong length')
+    if (r.ok) { setEdit(x => { const n = { ...x }; delete n[id]; return n }); setEditError(x => { const n = { ...x }; delete n[id]; return n }); void load() }
+    else { const j = await r.json().catch(() => null) as { error?: string } | null; setEditError(x => ({ ...x, [id]: SAVE_ERR[j?.error ?? ''] ?? 'That change could not be saved. Your last saved words are still in place.' })) }
   }
 
   const btn = 'btn-ghost text-xs px-3 py-1.5'
-  const shown = scan ? (scan.leadIds ? forScan(msgs, scan.leadIds) : []) : msgs
+  // #1711: skipped drafts used to stay in the list forever (there is no delete). They are hidden by default now.
+  const [showSkipped, setShowSkipped] = useState(false)
+  const base = scan ? (scan.leadIds ? forScan(msgs, scan.leadIds) : []) : msgs
+  // the toggle counts what this view can actually reveal: the scan-filtered list, not every scan's skipped
+  const skippedCount = base.filter(m => m.status === 'skipped').length
+  const shown = showSkipped ? base : base.filter(m => m.status !== 'skipped')
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
@@ -112,6 +127,7 @@ export default function OutreachClient() {
         <a className="underline" href="/app/outreach">{scan.leadIds === null ? 'show all emails' : 'Show all emails'}</a>{scan.leadIds === null ? '.' : ''} <a className="underline" href={`/app/leads?job_id=${scan.id}`}>Back to its leads</a></p>}
       {scan && playOffer !== undefined && <div className="mb-4" data-testid="outreach-play-offer"><PlayOfferCard jobId={scan.id} offer={playOffer} onChange={setPlayOffer} /></div>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
+      {loaded && !loadFailed && skippedCount > 0 && <label className="flex items-center gap-2 text-xs text-[#555] mb-4 cursor-pointer"><input type="checkbox" checked={showSkipped} onChange={x => setShowSkipped(x.target.checked)} /> Show skipped ({skippedCount})</label>}
       <div className="flex flex-col gap-3">
         {shown.map(m => {
           const e = edit[m.id]
@@ -127,6 +143,7 @@ export default function OutreachClient() {
                   <input className="bg-white border border-black/20 rounded px-3 py-2" value={e.subject} maxLength={150} onChange={x => setEdit({ ...edit, [m.id]: { ...e, subject: x.target.value } })} />
                   <textarea className="bg-white border border-black/20 rounded px-3 py-2" rows={9} value={e.body} maxLength={3000} onChange={x => setEdit({ ...edit, [m.id]: { ...e, body: x.target.value } })} />
                   <div className="flex gap-2"><button className={btn} onClick={() => save(m.id)}>Save</button><button className={btn} onClick={() => setEdit(({ [m.id]: _, ...rest }) => rest)}>Cancel</button></div>
+                  {editError[m.id] && <p className="text-xs text-[#111] border-l-2 border-[#111] pl-3" role="alert">{editError[m.id]}</p>}
                 </div>
               ) : (
                 <>

@@ -22,6 +22,10 @@ export default function OutcomesClient() {
   const [replies, setReplies] = useState<RepliesPage | null | 'failed'>(null)
   const get = (u: string) => fetch(u).then(r => r.ok ? r.json() : null).catch(() => null)
   useEffect(() => { void get('/api/scan/jobs').then(j => setJobs(Array.isArray(j?.jobs) ? j.jobs : 'failed')) }, [])
+  // #1711: drafts waiting account-wide. This page is scoped to one play, so "no drafts waiting" used to hide
+  // drafts from every other search; when this play has none, the section now says how many wait elsewhere.
+  const [accountWaiting, setAccountWaiting] = useState<number | null>(null)
+  useEffect(() => { void get('/api/outreach').then(j => setAccountWaiting(typeof j?.waiting_count === 'number' ? j.waiting_count : Array.isArray(j?.messages) ? j.messages.filter((m: { status: string }) => m.status === 'draft' || m.status === 'approved').length : null)) }, [])
   const list = Array.isArray(jobs) ? jobs : []
   const play = isJobId(asked) ? list.find(j => j.id === asked) ?? null : currentPlay(list)
   const id = play?.id ?? null
@@ -64,7 +68,7 @@ export default function OutcomesClient() {
     </Section>
 
     {/* Approved-but-unsent emails are listed here too (with zero drafts as well): they wait only for their send. */}
-    <Section title="Drafts to review" testid="outcomes-drafts" empty="No drafts waiting." state={o.drafts && o.approved ? o.drafts.length + o.approved.length : null} loading={loading} action={o.drafts?.length ? { label: `Review ${o.drafts.length} in Outreach`, href: outreachHref } : null}>
+    <Section title="Drafts to review" testid="outcomes-drafts" empty={accountWaiting && accountWaiting > 0 ? `No drafts waiting for this search. ${accountWaiting} waiting across all your searches.` : 'No drafts waiting.'} state={o.drafts && o.approved ? o.drafts.length + o.approved.length : null} loading={loading} action={o.drafts?.length ? { label: `Review ${o.drafts.length} in Outreach`, href: outreachHref } : accountWaiting && accountWaiting > 0 ? { label: 'Review in Outreach', href: '/app/outreach' } : null}>
       {o.drafts?.map(m => <Row key={m.id} name={m.to_email} sub={m.subject} right={<Pill tone="peach">Draft</Pill>} href={outreachHref} />)}
       {o.approved?.map(m => <Row key={m.id} name={m.to_email} sub={m.subject} right={<Pill tone="mint">Approved, not sent yet</Pill>} href={outreachHref} />)}
       {o.approved && o.approved.length > 0 && <p className="px-4 py-3 text-xs text-[var(--ink-2)]" data-testid="outcomes-approved">{o.approved.length} approved, not sent yet. {o.sent?.length ?? 0} sent.</p>}
