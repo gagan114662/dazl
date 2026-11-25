@@ -4,7 +4,7 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: no scan, no key check against a provider, nothing saved. It proves:
 //   1. a rejection the server reports (no acceptance of every saved key since) reads as a to-do that names no key, with
-//      "Replace key" (the key form in place); a later cancelled scan or saving one of two keys leaves it a to-do;
+//      no key form or replacement action; a later cancelled scan or saving one of two keys leaves it a to-do;
 //   2. the Lead sources row names only usable sources as usable and lists every other offered source as not available
 //      with its reason (server switch off, consent needed), with a one-click "Set up" link for the one a user can fix;
 //   3. while the key is refused no source is called usable; a platform this server does not offer is not listed;
@@ -71,17 +71,16 @@ try {
   await row('key').scrollIntoViewIfNeeded()
   await shot('readiness')
   if (process.env.BEFORE_ONLY !== '1') {
-    assert.match(await row('key').textContent(), /AI key - a scan stopped because the AI provider rejected its key, after your keys were last saved - save each of your keys again to confirm they work/)
+    assert.match(await row('key').textContent(), /AI key - a scan stopped because the provider rejected its key/)
     assert.doesNotMatch(await row('key').textContent(), /Anthropic|OpenAI|Ab12|Zz99/, 'no key is named: the record does not say which one')
     assert.equal(await row('key').getByText('✓').count(), 0, 'a refused key is not shown as fine')
     // While the latest scan says the key was refused, no source is called usable: the fix is the key.
-    assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '').replace(/Replace key$/, '')),
-      'a scan may not run until you save your AI key again. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
-    assert.equal(await row('sources').getByRole('link', { name: 'Replace key' }).getAttribute('href'), '/app/settings#model-key')
+    assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '')),
+      'a scan stopped because the provider rejected its key. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
+    assert.equal(await row('sources').getByRole('link').count(), 0)
     assert.doesNotMatch(await row('sources').textContent(), /Reddit/)
-    await row('key').getByRole('button', { name: 'Replace key' }).click()
-    await row('key').locator('input').first().waitFor()
-    await shot('replace-key-open')
+    assert.equal(await row('key').getByRole('button').count(), 0)
+    assert.equal(await row('key').locator('input').count(), 0)
     // A later cancelled scan and the newer OpenAI save alone are not acceptance of every key: still a to-do.
     JOBS.push(job('c', now - 20, { status: 'failed', error: 'cancelled', lead_count: 0 }))
     await page.reload({ waitUntil: 'networkidle' })
@@ -96,12 +95,12 @@ try {
     await row('sources').getByText('✓').waitFor({ timeout: 15000 })
     assert.equal(await row('key').getByText('✓').count(), 1)
     assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '').replace(/Set up$/, '')),
-      'a scan can use News articles, Company websites, X posts. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
+      'a scan can use News articles, X posts. After discovery: Company website enrichment (enrichment only). Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
     assert.equal(await row('sources').getByRole('link', { name: 'Set up' }).getAttribute('href'), '/app/settings#social')
     await row('sources').scrollIntoViewIfNeeded()
     await shot('sources-available')
   }
-  assert.deepEqual(writes, [], 'loading and opening the key form write nothing')
+  assert.deepEqual(writes, [], 'viewing the legacy rejection and source fixes writes nothing')
   console.log(process.env.BEFORE_ONLY === '1' ? 'screenshots taken (BEFORE_ONLY)' : 'readiness truth UI check passed: a rejected key is a to-do that names no key, kept through a cancelled scan and one key\'s save, cleared only when the server reports every key accepted again; only usable sources are named usable, the rest listed with reasons and a Set up link; no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

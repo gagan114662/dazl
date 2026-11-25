@@ -55,7 +55,6 @@ await ctx.route('**/*', async route => {
   if (p === '/api/settings/profile') { calls.pop(); realProfile.push(m); return route.continue() }
   if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: false, remaining: 0, cap: 3 } })
   if (p === '/api/scan/icp-from-url') return state.hasKey ? json({ icp: ICP, source: 'https://brightsmile.example/', sells: 'Online booking and reminders for dental practices' }) : json({ error: 'no_api_key' }, 400)
-  if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
   if (p === '/api/scan' && m === 'POST') {
     const body = JSON.parse(req.postData()); scanBodies.push(body)
     assert.ok(body.mode === undefined || body.mode === 'first5', 'production onboarding never posts a QA mode')
@@ -85,12 +84,16 @@ const back = async () => { await page.getByRole('button', { name: 'Back' }).clic
 const findLeads = async () => { await page.getByRole('button', { name: 'Find leads' }).click(); await page.waitForURL(/\/app\/leads\?job_id=/) }
 const PROFILE = { summary: ICP.summary, who: ICP.who, industries: ICP.industries, sizes: [], where: ['Ohio'], signals: ICP.signals, exclude: [] }
 
-// Scenario 1: website -> inline key -> profile -> plays; then Back, change Ohio to NYC, continue, Find leads.
+// Scenario 1: website -> unavailable read -> later available read -> profile -> plays; then Back, change Ohio to NYC, continue, Find leads.
 await page.goto(base + '/app', { waitUntil: 'networkidle' }); await shot('home')
 await page.getByText("What's your website?").waitFor()
-await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click(); await page.getByLabel('Your AI key').waitFor(); await shot('key-needed')
+await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click(); await page.getByText('The automatic read is unavailable. Describe your business yourself below.').waitFor(); await shot('read-unavailable')
 assert.ok(!calls.includes('POST /api/scan'), 'nothing is scanned before Find leads')
-await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
+assert.equal(await page.locator('#ai-key').count(), 0)
+assert.ok(await page.getByRole('button', { name: /describe your business yourself/i }).isVisible())
+assert.ok(!calls.includes('PUT /api/settings/llm-key'))
+state.hasKey = true
+await page.getByRole('button', { name: 'Read my site' }).click()
 // The read builds the brain, saves what it inferred and opens "Your brain is ready."; the profile stays editable.
 await page.getByTestId('ready-step').waitFor({ timeout: 15000 }); await shot('ready')
 const registryNote = page.getByTestId('ready-step').getByTestId('optional-registry-note')
@@ -197,7 +200,7 @@ state.oldFirstPlayServer = false
 await optIn.check()
 state.searchResponse = 'no-key'
 await submitReviewed()
-await page.getByRole('alert').filter({ hasText: 'cannot use the free trial' }).waitFor()
+await page.getByRole('alert').filter({ hasText: 'This QA search is unavailable' }).waitFor()
 assert.equal(await optIn.isChecked(), false)
 assert.equal(scanBodies.length, 2, 'key refusal does not submit a fallback')
 assert.deepEqual(scanBodies[1].budget, { web_search: 'anthropic_estimated_v1',target_review:'manual_v1' })

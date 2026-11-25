@@ -3,7 +3,6 @@ import { OptionalRegistryNote } from './optional-registry-note'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from './trial-refusal-notice'
 import { useRouter } from 'next/navigation'
-import KeyInline from './key-inline'
 import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
 import { knownErrorCopy } from '@/lib/error-copy'
 import InfoTip from './ui/info-tip'
@@ -13,7 +12,7 @@ import BrainGraph from './onboarding/brain-graph'
 import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
 import { siteKeyReason } from '@/lib/scan/site-read-copy'
-import { FREE_SEARCHES_USED_UP, trialCountText, trialSummary, type TrialBlock } from '@/lib/trial-copy'
+import { FREE_SEARCHES_USED_UP, trialCopy, trialCountText, trialSummary, type TrialBlock } from '@/lib/trial-copy'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import ResearchReview, { asResearchBlock } from './research-review'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
@@ -85,7 +84,6 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // kept verbatim through a reopen/edit/save, never silently dropped by the flat form.
   const [buyerRest, setBuyerRest] = useState<Record<string, unknown>>({})
   const [error, setError] = useState('')
-  const [needKey, setNeedKey] = useState(false)
   // #1095: a free-trial refusal (its reason) and the search it refused, shown as words with the way forward; the result
   // of a Google link this page started (?google=...).
   const [trialRefused, setTrialRefused] = useState<{ reason: unknown; query: string } | null>(null)
@@ -190,6 +188,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // Keyless with no trial searches: no path on the ready step may promise or start a search this account cannot run.
   const noPool = !hasKey && usage !== null && trialLeft === 0
   // Until usage answers (loading) or if it failed, the pool is unknown: no start path may fire either.
+  const next = usage?.trial ? trialCopy(usage.trial).next : { label: 'See your plan', href: '/app/settings#plan' }
   const poolUnknown = usage === null
 
   // Website only: dazl reads it, shows each inferred fact landing on the brain, saves the profile it inferred (the user
@@ -208,7 +207,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const j = await r.json().catch(() => ({}))
       if (!r.ok) {
         setStep('site')
-        if (j.error === 'no_api_key') { setNeedKey(true); return }
+        if (j.error === 'no_api_key') return setError('The automatic read is unavailable. Describe your business yourself below.')
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
       if (j.free === true) {
@@ -269,7 +268,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       <input type="checkbox" className="mt-1" checked={claudeSearch} disabled={busy}
         onChange={e => { setClaudeSearch(e.target.checked); setError('') }} data-testid="claude-search-opt-in" />
       <span><strong>Use Claude Web Search for this play</strong><br />
-        Uses your own Anthropic key, not your free trial. No paid third-party APIs.
+        This QA option cannot use the free trial.
         Target cost is under US$5; actual Anthropic charges can vary and may exceed that estimate.
       </span>
     </label>
@@ -330,7 +329,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         return setError('The server did not confirm the Claude Web Search policy. Check your scan history before trying again.')
       }
       if (useClaudeSearch && j.error === 'qa_search_requires_own_key') {
-        return setError('Claude Web Search requires your own Anthropic key in Settings and cannot use the free trial. Nothing started.')
+        return setError('This QA search is unavailable on this account. Nothing started.')
       }
       if (r.ok && j.job_id) {
         // From the ready screen the first play is watched in place; from the play step it opens its live progress.
@@ -341,7 +340,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       if (useClaudeSearch && (j.error === 'qa_isolation_unavailable' || j.error === 'qa_local_busy')) return setError(j.message || 'The Claude Web Search worker could not start. Nothing started.')
       // #1095: never the raw code; the reason in words and the way forward (Link Google for a password account)
       if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query: sentence.trim() }); return }
-      if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? FREE_SEARCHES_USED_UP : '') }
+      if (j.error === 'no_api_key' || j.error === 'trial_exhausted') return setError(j.error === 'trial_exhausted' ? FREE_SEARCHES_USED_UP : 'This search is unavailable. Check your search allowance in Settings.')
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
   }
@@ -414,7 +413,6 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               {error && <p className="text-sm mt-4 text-[var(--pink)]" role="alert">{error}</p>}
               {linkNote && <p className={`text-sm mt-4 ${linkNote.ok ? 'text-[var(--ink)]' : 'text-[var(--pink)]'}`} role="status" data-testid="google-link-note">{linkNote.text} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
               {linkNote && trialRefused && <div className="mt-4 text-left" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="site" text="Link Google to this account to read your site free (no card)." /></div>}
-              {needKey && !hasKey && <div className="mt-5 text-left card p-4"><KeyInline reason="Reading your site runs on Claude, with your own Anthropic key." onSaved={() => { setNeedKey(false); setTrialRefused(null); void loadUsage().then(() => readSite()) }} /></div>}
               <form onSubmit={readSite} className="mt-7 flex gap-2 rounded-2xl bg-white border border-[var(--line-2)] p-2 shadow-[0_12px_30px_-18px_rgba(42,10,36,.35)]">
                 <input className="flex-1 min-w-0 bg-transparent px-3 text-lg outline-none" aria-label="Your website" placeholder="yourcompany.com" maxLength={200} value={website} onChange={e => setWebsite(e.target.value)} />
                 <button className="btn-primary btn-lg" disabled={busy || website.trim().length < 4}>{busy ? 'Reading your site...' : 'Read my site'}</button>
@@ -443,15 +441,14 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
                 <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
-                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 && usage?.trial ? trialCountText(usage.trial) : hasKey ? 'Runs on your own AI key' : usage?.trial ? trialSummary(usage.trial).text : 'Searches run on your own Anthropic key'}</h2>
+                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 && usage?.trial ? trialCountText(usage.trial) : !hasKey && usage?.trial ? trialSummary(usage.trial).text : 'Your search plan'}</h2>
                   <ul className="mt-5 space-y-3 text-[15px]">
                     {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
                   </ul>
-                  {/* Keyless with no trial searches: the key form is up front, before any commitment - the CTA below
-                      does not promise a search this account cannot start (the server fails closed, but the button
-                      must not rely on that). A trial account (trialLeft > 0) keeps the plain CTA. */}
                   {poolUnknown && !first && <p className="mt-5 text-sm text-[var(--ink-2)]">Could not check your search allowance. <button type="button" className="underline" data-testid="usage-retry" onClick={() => void loadUsage()}>Try again</button></p>}
-                  {!hasKey && (needKey || noPool) && !poolUnknown && <div className="mt-5"><KeyInline reason="Searches run on Claude, with your own Anthropic key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} /></div>}
+                  {noPool && !trialRefused && (usage?.trial?.blocked === 'google_required'
+                    ? <TrialRefusalNotice reason="google_required" query={sentence} step="ready" />
+                    : <a href={next.href} className="mt-5 underline">{next.label}</a>)}
                   <div className="mt-auto pt-7">
                     {/* Submits the one sentence on the right (typed, or the top suggestion as shown there). */}
                     {!first ? (noPool || poolUnknown ? null
@@ -596,7 +593,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>}
         {/* #1095: a password account is told how to link Google (the free read's guard), never "sign in with Google" */}
         {freeRead && !hasKey && freeRead.trial === 'google_required' && <div className="mb-1" data-testid="site-read-trial-refusal"><TrialRefusalNotice reason="google_required" query="" step="site" text="Link Google to this account to read your site free (no card)." /></div>}
-        {freeRead && !hasKey && <KeyInline reason={freeRead.trial ? siteKeyReason(freeRead.trial) : 'The full automatic read runs on Claude, with your own Anthropic key.'} onSaved={() => { setFreeRead(null); void loadUsage().then(() => readSite()) }} />}
+        {freeRead && !hasKey && <p>{freeRead.trial ? siteKeyReason(freeRead.trial).split(' Add your own')[0].replace('Reading your site runs on Claude, with your own Anthropic key.', 'The automatic read is unavailable.') : 'Describe your business yourself below.'}</p>}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#666]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>
@@ -617,6 +614,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>
       </form>}
 
+      {step === 'ask' && noPool && !trialRefused && usage?.trial?.blocked === 'google_required' && <TrialRefusalNotice reason="google_required" query={ask} step="ask" />}
       {step === 'ask' && <form onSubmit={run} className="card px-5 py-8 sm:px-10 sm:py-10 flex flex-col gap-4 text-sm">
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-center"><label htmlFor="ask">Who do you want to find?</label></h2>
         {claudeSearchOption}
@@ -627,12 +625,12 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         <div className="flex flex-col gap-2" role="group" aria-label="Suggested plays">
           {plays.map(p => <button type="button" key={p} disabled={busy || !!trialRefused} onClick={() => { setAsk(p); setAskIsSuggestion(true); setLinkNote(null); void start(p) }} className="chip justify-between">{p}<Icon name="arrow" className="w-4 h-4 shrink-0 text-[var(--ink-3)]" /></button>)}
         </div>
-        {needKey && !hasKey && <KeyInline reason="Searches run on Claude, with your own Anthropic key." onSaved={() => { setNeedKey(false); setTrialRefused(null); setError(''); void loadUsage() }} />}
+        {noPool && !trialRefused && usage?.trial?.blocked !== 'google_required' && <a href={next.href} className="underline">{next.label}</a>}
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Back</button>
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Edit profile</button>
           <InfoTip label="The profile this search uses"><span aria-label="Search profile">Searched with your profile: {[profile.who.join(', '), profile.industries.join(', '), profile.where.length ? `in ${profile.where.join(', ')}` : 'any location', profile.sizes.join(', '), profile.exclude.length ? `skipping ${profile.exclude.join(', ')}` : ''].filter(Boolean).join(' · ')}.</span></InfoTip>
-          {!needKey && !hasKey && trialLeft > 0 && usage?.trial && <span className="pill pill-mint ml-auto" data-testid="trial-left">{trialCountText(usage.trial)}</span>}
+          {!hasKey && trialLeft > 0 && usage?.trial && <span className="pill pill-mint ml-auto" data-testid="trial-left">{trialCountText(usage.trial)}</span>}
         </div>
       </form>}
 

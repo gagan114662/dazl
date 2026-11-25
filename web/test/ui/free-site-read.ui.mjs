@@ -77,7 +77,8 @@ try {
       assert.equal(await card.getByRole('link', { name: 'source' }).count(), 2, 'each fact carries its source')
       assert.match(await page.locator('form', { has: page.getByTestId('free-site-read') }).innerText(), /No AI was used for this read/, 'honest no-AI copy')
       assert.equal(await page.getByLabel('What you sell').inputValue(), '', 'nothing inferred into the profile')
-      assert.ok(await page.getByText('The full automatic read runs on Claude, with your own Anthropic key.').isVisible(), 'key offered as an option, not a demand')
+      assert.ok(await page.getByText('Describe your business yourself below.').isVisible())
+      assert.equal(await page.locator('#ai-key').count(), 0)
       assert.deepEqual(writes.filter(w => !w.startsWith('POST /api/scan/icp-from-url')), [], 'the free read never auto-saves (its own read POST aside)')
     })
 

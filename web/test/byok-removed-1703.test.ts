@@ -12,6 +12,11 @@ const src = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'ut
 
 const BLOCKS = [null, 'not_configured', 'account_cap', 'attempts_cap', 'account_total_cap', 'ip_throttle', 'global_daily_cap', 'google_required', 'domain_used', 'a_reason_not_known_yet']
 
+test('#1703: first-run never mounts a key editor and the retained component cannot send a key', () => {
+  assert.equal(src('app/app/first-run.tsx').includes('<KeyInline'), false)
+  assert.equal(/fetch\(|<input\b|<form\b/.test(src('app/app/key-inline.tsx')), false)
+})
+
 test('#1703: no Settings trial line or next step asks for a key', () => {
   for (const blocked of BLOCKS) for (const funded of [true, false]) for (const remaining of [0, 1, 3]) {
     const c = trialCopy({ funded, remaining, cap: 3, blocked })

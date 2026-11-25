@@ -5,9 +5,9 @@
 // test/trial-site-read.test.ts; the trial path to the first lead card is test/ui/one-sentence.ui.mjs.) It proves:
 //   1. on a readable page, below the route's own rate limit, the free read always answers 200 - the page's own
 //      facts render with their sources (the floor);
-//   2. when the trial could not fund the read, the key form says the real reason (each refusal, read_failed included),
+//   2. when the trial could not fund the read, the profile screen says the real reason (each refusal, read_failed included),
 //      never a free-start promise, and the manual profile is right there;
-//   3. flag off / no trial path at all: the free read with the generic key line;
+//   3. flag off / no trial path at all: the free read with the manual profile;
 //   4. a funded read lands the editable draft (and saves it, as a keyed read does);
 //   5. an owner-side 429 spend_limit shows the money-cap copy, never the rate-cap fallback; 6. no overflow at 390px.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
@@ -38,27 +38,26 @@ const FREE = { free: true, site: 'ledgerline.example', source: 'https://ledgerli
   { kind: 'title', text: 'Ledgerline - books that close themselves', source: 'https://ledgerline.example/' },
   { kind: 'description', text: 'Monthly bookkeeping for busy founders, reconciled automatically.', source: 'https://ledgerline.example/' },
 ] }
-const OWN = 'Add your own Anthropic (Claude) key to read it, or describe your business yourself.'
 const CASES = [
-  ['not-configured', 'not_configured', `The free trial isn't available here right now. ${OWN}`],
-  ['reads-used', 'site_reads_used', `You have used your three free website reads for now; they come back together, 30 days after the first. ${OWN}`],
-  ['busy', 'site_reads_busy', `The free trial is busy right now. Try again later. ${OWN}`],
-  ['google', 'google_required', `Free website reads need a Google account: link Google to this account to read it free (no card). ${OWN}`],
-  ['domain-used', 'domain_used', `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${OWN}`],
-  ['attempts-cap', 'attempts_cap', `Your free trial is used up. ${OWN}`],
-  ['account-total-cap', 'account_total_cap', `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${OWN}`],
-  ['global-daily-cap', 'global_daily_cap', `The free trial is busy right now. Try again later. ${OWN}`],
-  ['ip-throttle', 'ip_throttle', `The free trial is busy right now. Try again later. ${OWN}`],
-  ['limit-unavailable', 'limit_unavailable', `The free trial is busy right now. Try again later. ${OWN}`],
-  ['workspace', 'workspace_not_eligible', `The free trial belongs to the account that created this workspace. ${OWN}`],
+  ['not-configured', 'not_configured', `The free trial isn't available here right now.`],
+  ['reads-used', 'site_reads_used', `You have used your three free website reads for now; they come back together, 30 days after the first.`],
+  ['busy', 'site_reads_busy', `The free trial is busy right now. Try again later.`],
+  ['google', 'google_required', `Free website reads need a Google account: link Google to this account to read it free (no card).`],
+  ['domain-used', 'domain_used', `Another account at your company's email domain has already started the free trial, and it belongs to that account.`],
+  ['attempts-cap', 'attempts_cap', `Your free trial is used up.`],
+  ['account-total-cap', 'account_total_cap', `Your free trial's spending allowance is used up (website reads on the trial count toward it).`],
+  ['global-daily-cap', 'global_daily_cap', `The free trial is busy right now. Try again later.`],
+  ['ip-throttle', 'ip_throttle', `The free trial is busy right now. Try again later.`],
+  ['limit-unavailable', 'limit_unavailable', `The free trial is busy right now. Try again later.`],
+  ['workspace', 'workspace_not_eligible', `The free trial belongs to the account that created this workspace.`],
   // The port's two new reasons: guard refused before any call (nothing used); the funded call failed (that read counted).
-  ['spend-unavailable', 'spend_unavailable', `The free trial could not fund this read just now; nothing was used up. Try again later. ${OWN}`],
+  ['spend-unavailable', 'spend_unavailable', `The free trial could not fund this read just now; nothing was used up. Try again later.`],
   ['read-failed', 'read_failed', `dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another, or describe your business yourself.`],
 ]
 const FUNDED = { icp: { summary: 'Founders at small agencies that want hands-off books.', who: ['Agency founders'], industries: ['Professional services'], sizes: ['1-10'], where: [], signals: ['Hiring a bookkeeper'], exclude: [] }, source: 'https://ledgerline.example/', sells: 'Hands-off monthly bookkeeping', funded: 'trial' }
 const b = await chromium.launch()
 async function open(width, height, answer, usage) {
-  const state = { saved: false } // a saved key flips has_key on later /api/usage reads
+  const state = { usageFailed: false, profile: { business_name: '', sells: '', website: '', buyer: null } }
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
@@ -69,16 +68,15 @@ async function open(width, height, answer, usage) {
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (m !== 'GET') writes.push(`${m} ${p}`)
     if (p === '/api/scan/icp-from-url') return json(answer.body, answer.status)
-    if (p === '/api/settings/profile' && m === 'GET') return json({ business_name: '', sells: '', website: '', buyer: null })
-    if (p === '/api/settings/profile' && m === 'POST') return json({ ok: true })
-    if (p === '/api/settings/llm-key' && m === 'PUT') { state.saved = true; return json({ ok: true }) }
+    if (p === '/api/settings/profile' && m === 'GET') return json(state.profile)
+    if (p === '/api/settings/profile' && m === 'POST') { state.profile = req.postDataJSON(); return json({ ok: true }) }
     if (p === '/api/usage') {
       if (usage === 'fail') {
         if (!state.usageFailed) { state.usageFailed = true; return json({ error: 'down' }, 500) }
         return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } })
       }
       const u = usage ?? { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: false, remaining: 0, cap: 3, blocked: 'not_configured' } }
-      return json(state.saved ? { ...u, has_key: true } : u)
+      return json(u)
     }
     if (p === '/api/scan/jobs') return json({ jobs: [] })
     return json({}, 404)
@@ -91,8 +89,32 @@ async function open(width, height, answer, usage) {
   return { ctx, page, writes }
 }
 try {
+  {
+    const trial = { funded: false, remaining: 2, cap: 3, used: 1, blocked: 'google_required' }
+    const { ctx, page, writes } = await open(390, 844, { status: 200, body: FUNDED }, { has_key: false, trial })
+    await page.getByTestId('ready-step').waitFor()
+    const first = 'My first saved search'
+    await page.getByTestId('first-ask').fill(first)
+    const link = page.getByRole('link', { name: 'Link Google', exact: true })
+    assert.equal(await link.getAttribute('href'), '/api/auth/google?link=1&next=%2Fapp')
+    if (process.env.SHOTS) await page.getByTestId('ready-plan').screenshot({ path: path.join(process.env.SHOTS, 'ready-google-mobile.png') })
+    await ctx.route('**/api/auth/google?**', route => route.fulfill({ status: 302, headers: { location: '/app?google=mismatch' } }))
+    await link.click()
+    await page.getByTestId('google-link-note').waitFor()
+    assert.equal(await page.getByTestId('first-ask').inputValue(), first)
+    const edited = 'A different search after returning'
+    await page.getByTestId('first-ask').fill(edited)
+    assert.equal(await link.getAttribute('href'), '/api/auth/google?link=1&next=%2Fapp')
+    await link.click()
+    await page.getByTestId('google-link-note').waitFor()
+    assert.equal(await page.getByTestId('first-ask').inputValue(), edited)
+    const pending = await page.evaluate(() => JSON.parse(sessionStorage.getItem('dazl_pending_search')))
+    assert.deepEqual([pending.query, pending.step], [edited, 'ready'])
+    assert.ok(!writes.includes('POST /api/scan'))
+    await ctx.close()
+  }
   for (const [width, height, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
-    // The floor + every refusal: 200, the page's own facts, the key form with the real reason. Only the read request.
+    // The floor + every refusal: 200, the page's own facts, the manual profile with the real reason. Only the read request.
     for (const [name, reason, text] of CASES) {
       const { ctx, page, writes } = await open(width, height, { status: 200, body: { ...FREE, trial: reason } })
       const panel = page.getByTestId('free-site-read')
@@ -100,19 +122,19 @@ try {
       assert.match(await panel.innerText(), /books that close themselves/, `${name}: the page's own facts render`)
       assert.match(await panel.innerText(), /reconciled automatically/, `${name}: the description fact renders`)
       const stepText = await page.getByTestId('free-site-read').locator('..').innerText()
-      assert.match(stepText, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').slice(0, 60)), `${name}: the real reason`)
+      assert.match(stepText, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${name}: the real reason`)
       assert.doesNotMatch(stepText, /free search|free scans? to start|3 free/i, `${name}: no free-start promise`)
-      assert.doesNotMatch(stepText, /yourself\.Your provider/, `${name}: a space between the reason and the provider line`)
+      assert.doesNotMatch(stepText, /add your own|save key|your AI key/i, `${name}: no key action`)
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${width}px`)
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`), fullPage: true })
       assert.deepEqual(writes, ['POST /api/scan/icp-from-url'], `${name}: only the one site-read request`)
       await ctx.close()
     }
-    // Flag off / no trial path: the free read with the generic key line, nothing trial-flavored.
+    // Flag off / no trial path: the free read with the manual profile, nothing trial-flavored.
     {
       const { ctx, page } = await open(width, height, { status: 200, body: FREE })
       await page.getByTestId('free-site-read').waitFor({ timeout: 15000 })
-      assert.match(await page.getByTestId('free-site-read').locator('..').innerText(), /The full automatic read runs on Claude, with your own Anthropic key\./, 'flag off: the generic key line')
+      assert.match(await page.getByTestId('free-site-read').locator('..').innerText(), /Describe your business yourself below\./, 'flag off: manual profile')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `flag-off-${tag}.png`), fullPage: true })
       await ctx.close()
     }
@@ -128,25 +150,23 @@ try {
       await ctx.close()
     }
     // A funded read by an account whose scan trial is spent lands on ready with no key and no trial searches left:
-    // the key form is up front and there is no bare 'Find my first leads' button to fail closed behind.
+    // the supported next step is shown and there is no bare 'Find my first leads' button to fail closed behind.
     {
-      const { ctx, page } = await open(width, height, { status: 200, body: FUNDED }, { plan: 'free', scans_used: 3, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 0, cap: 3, blocked: null } })
+      const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED }, { plan: 'free', scans_used: 3, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 0, cap: 3, blocked: null } })
       await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
       const plan = await page.getByTestId('ready-plan').innerText()
       assert.match(plan, /Free searches can't run right now\./, 'keyless, trial spent: the heading says so, in the shared trial line (#1704)')
       assert.doesNotMatch(plan, /free searches left/, 'keyless, trial spent: no count claimed')
-      assert.match(plan, /Searches run on Claude, with your own Anthropic key\./, 'keyless, trial spent: the key form is up front, before any commitment')
+      assert.match(plan, /Try again later/, 'the shared trial next step is shown')
       assert.equal(await page.getByTestId('ready-cta').count(), 0, 'keyless, trial spent: no bare Find-my-first-leads button')
       assert.equal(await page.getByTestId('first-play').count(), 3, 'three suggestion chips render')
       assert.ok(await page.getByTestId('first-play').first().isDisabled(), 'keyless, trial spent: suggestion chips cannot start a search either')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyless-${tag}.png`), fullPage: true })
-      // The key form is reachable on a phone (below the fold) and saving a key unblocks every start path without a reload.
-      await page.getByText('Searches run on Claude, with your own Anthropic key.').first().scrollIntoViewIfNeeded()
-      if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `ready-keyform-${tag}.png`) })
-      await page.getByLabel('Your AI key').fill('sk-ant-fixture-key-123')
-      await page.getByRole('button', { name: 'Save key' }).click()
-      await page.getByTestId('ready-cta').waitFor({ timeout: 15000 })
-      assert.ok(!(await page.getByTestId('first-play').first().isDisabled()), 'a saved key re-enables the suggestion chips')
+      const next = page.getByTestId('ready-plan').getByRole('link', { name: 'Try again later' })
+      await next.scrollIntoViewIfNeeded()
+      assert.equal(await next.getAttribute('href'), '/app/leads')
+      assert.equal(await page.locator('#ai-key').count(), 0)
+      assert.ok(!writes.includes('PUT /api/settings/llm-key'))
       await ctx.close()
     }
     // If /api/usage fails, the pool is unknown: no start path renders or fires (the CTA must not race a keyless submit).
@@ -179,7 +199,7 @@ try {
       await ctx.close()
     }
   }
-  console.log(`site trial UI check passed: free-read floor with facts for each of the ${CASES.length} reasons (incl. spend_unavailable and read_failed), flag-off generic line, funded draft lands and saves, keyless/no-trial ready shows the key form up front (key save unblocks without reload), usage-fail gates every start path (retry recovers), spend_limit money-cap copy, desktop + 390px`)
+  console.log(`site trial UI check passed: free-read floor with facts for each of the ${CASES.length} reasons (incl. spend_unavailable and read_failed), flag-off generic line, funded draft lands and saves, keyless/no-trial ready offers the trial next step without a key control, usage-fail gates every start path (retry recovers), spend_limit money-cap copy, desktop + 390px`)
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

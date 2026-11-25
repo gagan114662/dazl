@@ -52,7 +52,7 @@ const JOBS = [
   job('f', 'Cancelled search', now - 200, { status: 'failed', error: 'cancelled', lead_count: 0 }),
   job('d', null, now - 100, { csv_domain: 'acme.com' }),
 ]
-const state = { hasKey: false, sender: null, gmail: null, sent: 0, sourcesFail: false, news: false }
+const state = { remaining: 0, sender: null, gmail: null, sent: 0, sourcesFail: false, news: false }
 const writes = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: Number(process.env.WIDTH || 1280), height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
@@ -67,8 +67,7 @@ await ctx.route('**/*', async route => {
   // #1471: Home's "Your plays" is GET /api/plays (lib/workspace-plays.ts), here as the real route answers for these searches:
   // no watch or monitor, so each own search (not the CSV import) is a play that ran once, newest first
   if (p === '/api/plays') return json(oncePlaysAnswer(JOBS))
-  if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: true, remaining: 0, cap: 3 } })
-  if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
+  if (p === '/api/usage') return json({ plan: 'free', scans_used: 3, scan_limit: 10, has_key: false, trial: { funded: true, remaining: state.remaining, cap: 3 } })
   // No primary discovery source is configured: adding a key cannot repair that operator state.
   if (p === '/api/scan/sources') return state.sourcesFail ? json({ error: 'unavailable' }, 503) : json({ web_index: false, news: state.news, websites: false })
   if (p === '/api/outreach/settings' && m === 'GET') return json({ gmail: state.gmail, sender: state.sender, daily_cap: 20, sent_24h: Math.min(state.sent, 12), account_sent_24h: state.sent })
@@ -100,9 +99,9 @@ try {
   assert.match(await row('brain').textContent(), /Buyer profile \(who buys from you\) - not built yet/)
   assert.equal(await row('brain').getByRole('link', { name: 'Build' }).getAttribute('href'), '/app?setup=brain')
   assert.match(await row('play').textContent(), /First play - 5 searches written/)
-  assert.match(await row('key').textContent(), /AI key - needed for searches/)
-  assert.match(await row('sources').textContent(), /Lead sources - a scan cannot start until you add an AI key/)
-  assert.equal(await row('sources').getByRole('link', { name: 'Add key' }).getAttribute('href'), '/app/settings#model-key')
+  assert.match(await row('key').textContent(), /Search allowance - Free searches can't run right now/)
+  assert.match(await row('sources').textContent(), /Lead sources - Free searches can't run right now/)
+  assert.equal(await row('sources').getByRole('link', { name: 'Try again later' }).getAttribute('href'), '/app/leads')
   assert.match(await row('gmail').textContent(), /Gmail - not connected/)
   assert.equal(await row('gmail').getByRole('link', { name: 'Connect' }).getAttribute('href'), '/app/settings#gmail')
   assert.match(await row('sender').textContent(), /Sender name and mailing address - added to every email; required before sending/)
@@ -130,8 +129,11 @@ try {
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await row('site').getByText('✓').waitFor()
   assert.match(await row('site').textContent(), /Bright Smile Software - Online booking for dental practices \(brightsmile\.example\)/)
-  await row('key').getByRole('button', { name: 'Add key' }).click()
-  await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
+  assert.equal(await row('key').getByRole('button').count(), 0)
+  assert.equal(await page.locator('#ai-key').count(), 0)
+  state.remaining = 2
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('setup-details').evaluate(d => { d.open = true })
   await row('key').getByText('✓').waitFor()
   assert.equal(await row('sources').getByText('✓').count(),0)
   assert.match(await row('sources').textContent(), /no usable discovery source/)
@@ -154,7 +156,7 @@ try {
   await row('brain').getByText('✓').waitFor()
   await shot('after-fixes')
   assert.equal(await row('gmail').getByText('✓').count(), 0, 'Gmail stays a to-do until connected in Settings')
-  assert.deepEqual(writes, ['POST /api/settings/profile', 'PUT /api/settings/llm-key', 'PUT /api/outreach/settings', 'POST /api/settings/profile'])
+  assert.deepEqual(writes, ['POST /api/settings/profile', 'PUT /api/outreach/settings', 'POST /api/settings/profile'])
   assert.equal(await page.getByTestId('ready-progress').textContent(), '9 of 11 done')
 
   // Explicit simulated operator news availability, independent of adding the key. No actual source/config call.
