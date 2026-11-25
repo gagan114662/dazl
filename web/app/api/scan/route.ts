@@ -10,7 +10,9 @@ import { searchStarted } from '@/lib/analytics/funnel'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { MAX_QUERY, budgetedIcp, icpLoss, normalizeIcp } from '@/lib/scan/icp'
-import { carryAdmission } from '@/lib/scan/carry-exclusions'
+import { applyCarriedExclusions, carryAdmission } from '@/lib/scan/carry-exclusions'
+import { requestTarget } from '@/lib/scan/request-target'
+import { retainedReviewedTarget } from '@/lib/scan/request-target-history'
 import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { countActiveJobs, createJob, createQueryJob, pinAdmittedStrictJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
@@ -33,7 +35,7 @@ import { estimateForBody, keyedModel } from '@/lib/scan/estimate-request'
 import { admitTrialScan, linkTrialReservation, releaseTrialReservation, trialPrincipal, trialQaExempt } from '@/lib/billing/trial-budget'
 
 import { denied } from '@/lib/workspace-access'
-import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { readTenantOffer } from '@/lib/outreach/play-memory'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
@@ -98,7 +100,8 @@ export async function POST(req: NextRequest) {
     let tenant: string | null
     try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
     const e = effectiveOffer({ seller, query }, tenant)
-    const conflict = e.conflict ?? (icp && body?.reviewed === false ? carriedWorkspaceOfferConflict(query, user.business_name, seller, e.offer) : null)
+    const conflict = e.conflict ?? (!e.offer || e.source === 'request'
+      ? { stated: e.offer, recorded: '', incomplete: true as const } : null)
     if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated, saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}), ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
   }
 
@@ -116,7 +119,11 @@ export async function POST(req: NextRequest) {
   }
   // reviewed: false = the profile is carried exactly as stored (a saved business profile reused for a first scan):
   // nothing in it is confirmed or rejected by this request alone (applyReviewedDraft).
-  const effective = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed === true }) : icp
+  const reviewedProfile = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed === true }) : icp
+  const retained = body?.reviewed !== true && !manualTarget && await retainedReviewedTarget(getScanDb(), user.tenantId, query, reviewedProfile)
+  const fromQuery = query.length >= 3 && body?.reviewed !== true && !manualTarget && !retained
+  const projected = reviewedProfile ? requestTarget(query, reviewedProfile, !fromQuery) : null
+  const effective = projected && carry.stub ? applyCarriedExclusions(projected, carry.stub) : projected
   // Manual targeting is one play, not a fresh research decision. Do not resurrect
   // dismissed exact targets or silently launch against the changed scope.
   const target = (p: NonNullable<typeof icp>) => {
@@ -126,9 +133,10 @@ export async function POST(req: NextRequest) {
   if (manualTarget && icp && effective && JSON.stringify(target(icp)) !== JSON.stringify(target(effective))) {
     return NextResponse.json({ error: 'target_review_conflict', message: 'A target for this search conflicts with a previously dismissed research decision. Choose another target or update the saved research decision first. Nothing started.' }, { status: 409 })
   }
-  // Capture only explicit Add/Dismiss events, not inferred statuses or a profile's mere presence.
+  // Validate explicit Add/Dismiss events against the submitted review fields,
+  // before a new query replaces positive targeting. Projection is not a review.
   let decisions: ReturnType<typeof decisionRows>
-  try { decisions = decisionRows(body?.research_decisions, effective?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, effective ?? undefined) }
+  try { decisions = decisionRows(body?.research_decisions, reviewedProfile?.research, { tenant: user.tenantId, actor: user.actorId, job: '', now: Date.now() }, reviewedProfile ?? undefined) }
   catch { return NextResponse.json({ error: 'invalid_research_decisions' }, { status: 400 }) }
   const sized = effective ? budgetedIcp(effective) : null
   if (sized && !sized.ok) return NextResponse.json(sized.reason === 'holds_too_large' ? { error: 'holds_too_large', message: 'This profile leaves no room to keep the decisions you have not finished reviewing, so nothing was saved or started. Shorten the profile a little.' } : { error: 'profile_too_large', message: 'The profile is too large to store whole. Shorten it a little - nothing was truncated silently.' }, { status: 400 })
@@ -267,14 +275,14 @@ export async function POST(req: NextRequest) {
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed && !quotaLifted) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true, icpFromQuery: fromQuery, icpRetained: retained })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, runBudget)
       if (websiteApproval && !recordQueuedWebsiteApproval(db, websiteApproval, jid)) {
         refused = NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
         throw new AdmissionRefused()
       }
       // Rebuild IDs with the committed job anchor; no lossy profile projection can drop the source decisions.
-      if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, effective!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, effective ?? undefined))
+      if (decisions.length) captureSellerDecisions(db, decisionRows(body.research_decisions, reviewedProfile!.research, { tenant: user.tenantId, actor: user.actorId, job: jid, now: Date.now() }, reviewedProfile ?? undefined))
       // Kept with the job so the finished scan can show actual against what was confirmed.
       if (est.ok) db.prepare('UPDATE scan_jobs SET estimate = ? WHERE id = ?').run(JSON.stringify({ total: est.estimate.total, rows: est.estimate.rows, payer: est.estimate.payer, cap: est.estimate.cap, ack: est.estimate.ack, ...(est.estimate.trial_scan_cap_usd ? { trial_scan_cap_usd: est.estimate.trial_scan_cap_usd } : {}) }), jid)
       if (funded === 'trial') {

@@ -54,6 +54,8 @@ import { leadCardDateLine } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import EstimateConfirm from './estimate-confirm'
 import { directOfferRun, scanOfferConflict, offerReady, estimateFailureCopy } from './offer-preflight'
+import { requestTarget } from '@/lib/scan/request-target'
+import { normalizeIcp } from '@/lib/scan/icp'
 import { completeOffer, MAX_OFFER } from '@/lib/scan/play-offer-text'
 import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
@@ -985,10 +987,8 @@ export default function LeadsClient() {
   // changed their profile got the old play's profile and lost the new location). Only a profile reviewed for this same sentence repeats as it is.
   const sameSentence = !!icp?.query && icp.query.trim().toLowerCase() === query.trim().toLowerCase()
   const priorIcp = icp && sameSentence && (icp.source === 'user' || (icp.source === 'carried' && !savedBuyer)) ? icp.icp : null
-  // A first scan (no earlier play's profile to carry): run with the saved business profile instead of letting the
-  // server work out a new one, which silently discarded the review. The estimate step shows it before anything starts;
-  // Review profile first still builds a fresh one from the sentence.
-  const startIcp = priorIcp ?? savedBuyer ?? null
+  // New typed targets replace saved buyers before estimate; exact reviewed repeats retain their own target.
+  const startIcp = priorIcp ?? requestTarget(query.trim(), normalizeIcp(savedBuyer), false)
   // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
   // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
   const startReviewed = startIcp ? false : undefined
@@ -1101,7 +1101,7 @@ export default function LeadsClient() {
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
         {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
-          {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Use Review profile first to build a new one from your sentence.
+          {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses your current search, not your saved buyer:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Your saved offer stays the same. Use Review profile first to edit this search’s target.'}
         </p>}
         </div>
       </form>

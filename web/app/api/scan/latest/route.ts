@@ -13,5 +13,5 @@ export async function GET(req?: NextRequest) {
   const jobId = req?.nextUrl.searchParams.get('job_id') ?? null
   const job = jobId ? await jobQueryIcp(await getDb(), user.tenantId, jobId) : await latestQueryJob(await getDb(), user.tenantId)
   if (!job) return NextResponse.json({ query: null, icp: null, icp_source: null })
-  return NextResponse.json({ query: job.query, icp: shownIcp(job.icp), icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null })
+  return NextResponse.json({ query: job.query, icp: shownIcp(job.icp), icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : [0, 4].includes(job.icp_inferred ?? -1) ? 'user' : null })
 }

@@ -29,7 +29,7 @@ function account(email: string) {
   setUser({ id, business_name: 'Acme', email } as never)
   return { db, id }
 }
-const post = (ip: string) => POST(new NextRequest('http://localhost/api/scan', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': ip }, body: JSON.stringify({ query: Q }) }))
+const post = (ip: string) => POST(new NextRequest('http://localhost/api/scan', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': ip }, body: JSON.stringify({ query: Q, offer: 'Appointment booking software' }) }))
 // how the runner leaves a trial scan that ended: its attempt ran, reserved `spent` on paid steps, ended, and settled
 const end = async (db: Database.Database, job: string, status: 'failed' | 'done', error: string | null, spent: number) => {
   db.prepare("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ? AND status = 'pending'").run(job) // claimed

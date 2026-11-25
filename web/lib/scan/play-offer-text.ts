@@ -13,6 +13,7 @@
 // A conflict: the play's own request states an offer ("selling CRM setup to ...") that differs from (2). Then the play
 // has no effective offer until the tenant chooses one, and drafting for it is refused. A play's recorded context is
 // never rewritten except by that explicit choice for that play: an old play keeps the offer it was created with.
+import { hasSellerDescription } from './seller-description.ts'
 export const MAX_OFFER = 150
 
 // The ONLY read failure that may be treated as "this play has no offer of its own": a database from before per-play
@@ -628,6 +629,7 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   }
   // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
   if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
+  if (!stated && hasSellerDescription(play.query)) return { offer: null, source: 'conflict', conflict: { stated: null, recorded: base ?? '', ambiguous: true } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }
   if (stated) return { offer: stated, source: 'request', conflict: null }
   return { offer: null, source: 'none', conflict: null }

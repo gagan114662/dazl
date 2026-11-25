@@ -29,7 +29,7 @@ const fixture = (name: string, vars: Record<string, string>) =>
   Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{{${k}}}`, v), readFileSync(new URL(`../fixtures/stripe/${name}.json`, import.meta.url), 'utf8'))
 const sign = (body: string) => { const t = Math.floor(Date.now() / 1000); return `t=${t},v1=${createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET!).update(`${t}.${body}`).digest('hex')}` }
 const deliver = async (body: string) => (await webhook.POST(new NextRequest('https://dazl.test/api/billing/webhook', { method: 'POST', body, headers: { 'content-type': 'application/json', 'stripe-signature': sign(body) } }))).json()
-const startScan = () => scan.POST(new NextRequest('https://dazl.test/api/scan', { method: 'POST', body: JSON.stringify({ query: 'companies hiring sales reps in Toronto' }), headers: { 'content-type': 'application/json', host: 'dazl.test', origin: 'https://dazl.test' } }))
+const startScan = () => scan.POST(new NextRequest('https://dazl.test/api/scan', { method: 'POST', body: JSON.stringify({ query: 'companies hiring sales reps in Toronto', offer: 'Independent compliance consulting' }), headers: { 'content-type': 'application/json', host: 'dazl.test', origin: 'https://dazl.test' } }))
 const account = async () => (await (await usage.GET(new NextRequest('https://dazl.test/api/usage')))!.json()) as { plan: string; scans_used: number; scan_limit: number | null; billing_status: string | null }
 
 test('Stripe test mode: plan limits on the next scan follow checkout, a failed payment and the end of the subscription', async () => {

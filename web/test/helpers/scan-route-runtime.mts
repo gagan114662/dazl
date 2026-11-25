@@ -5,6 +5,7 @@ import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { flushAfter } from './status-route-next-server-shim.mjs'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setSellerLine } from './scan-route-auth-stub.ts'
 import { createQueryJob, migrateScan, reapStaleRunningJobs, STALE_RUNNING_S } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
@@ -26,7 +27,7 @@ function setup() {
 }
 // The route rate-limits per user (10 scans per hour, shared table), so every request comes from a fresh user with a key.
 function as(db: Database.Database) {
-  const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' }); return id
+  const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' }); return id
 }
 const post = (body: unknown) => POST(new NextRequest('http://localhost/api/scan', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': `10.0.0.${++n}` }, body: JSON.stringify(body) }))
 const rows = (db: Database.Database) => db.prepare('SELECT id, run_budget, status FROM scan_jobs').all() as { id: string; run_budget: string | null; status: string }[]
@@ -136,12 +137,12 @@ test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) 
   const r = await post({ query: Q, icp: REVIEWED, reviewed: true }); assert.equal(r.status, 202)
   const row = db.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
   assert.deepEqual(JSON.parse(row.icp), REVIEWED, 'stored as reviewed: nothing added, widened or split'); assert.equal(row.icp_inferred, 0, 'the explicit review event stores 0')
-  // The same profile WITHOUT the explicit review event is a raw carry: 3, never a review.
+  // A new typed target without a review replaces positive saved criteria; exclusions survive.
   const dbC = setup(); as(dbC)
   const rc = await post({ query: Q, icp: REVIEWED }); assert.equal(rc.status, 202)
   const carry = dbC.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
-  assert.deepEqual(JSON.parse(carry.icp), REVIEWED, 'carried whole either way')
-  assert.equal(carry.icp_inferred, 3, 'presence is not approval: omitted reviewed stays a raw carry')
+  assert.deepEqual(JSON.parse(carry.icp), { summary: Q, who: [], industries: [], sizes: [], where: [], signals: [], exclude: REVIEWED.exclude, request: Q }, 'new query owns targeting, including country, language and time window, not the unreviewed saved buyer')
+  assert.equal(carry.icp_inferred, 2, 'new request provenance is not a review or raw carry')
   const db2 = setup(); as(db2)
   assert.equal((await post({ query: Q })).status, 202)
   const none = db2.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string | null; icp_inferred: number | null }
@@ -153,17 +154,17 @@ test('explicit seller decision captured with real admission and rolled back on s
  const p={summary:'Clinic buyers',who:['clinic managers'],industries:[],sizes:[],where:[],signals:[],exclude:[],research:{v:1,site:'seller.example',offers:[{i:'booking',n:'Booking'}],hyps:[{i:'booking:persona:1',o:'booking',k:'persona',t:'clinic managers',s:'reviewed',u:null,q:null,at:null}],q:null,ans:null}}
  const decision={offer:'booking',hypothesis:'booking:persona:1',action:'confirm'}
  const db=setup();as(db)
- const r=await post({query:Q,offer:'Booking',icp:p,research_decisions:[decision]});assert.equal(r.status,202)
+ const r=await post({query:Q,offer:'Booking',icp:p,reviewed:true,research_decisions:[decision]});assert.equal(r.status,202)
  const j=await r.json();const row=db.prepare('SELECT tenant_id,actor_id,job_id,action,text FROM seller_decisions').get() as {tenant_id:string;actor_id:string;job_id:string;action:string;text:string}
  assert.equal(row.job_id,j.job_id);assert.equal(row.actor_id,row.tenant_id);assert.equal(row.action,'confirm');assert.equal(row.text,'clinic managers')
- const db2=setup();as(db2);assert.equal((await post({query:Q,offer:'Booking',icp:p})).status,202)
+ const db2=setup();as(db2);assert.equal((await post({query:Q,offer:'Booking',icp:p,reviewed:true})).status,202)
  assert.equal((db2.prepare('SELECT count(*) n FROM seller_decisions').get() as {n:number}).n,0)
  const db3=setup();as(db3)
  db3.exec("CREATE TRIGGER fail_decision BEFORE INSERT ON seller_decisions BEGIN SELECT RAISE(ABORT, 'fixture disk failure'); END")
- await assert.rejects(post({query:Q,offer:'Booking',icp:p,research_decisions:[decision]}),/fixture disk failure/)
+ await assert.rejects(post({query:Q,offer:'Booking',icp:p,reviewed:true,research_decisions:[decision]}),/fixture disk failure/)
  assert.equal(rows(db3).length,0,'job rolled back with decision failure')
  const db4=setup();as(db4)
- assert.equal((await post({query:Q,offer:'Booking',icp:p,research_decisions:[{...decision,action:'reject'}]})).status,400)
+ assert.equal((await post({query:Q,offer:'Booking',icp:p,reviewed:true,research_decisions:[{...decision,action:'reject'}]})).status,400)
  assert.equal(rows(db4).length,0,'inconsistent action/visible fields rejected before admission')
 })
 

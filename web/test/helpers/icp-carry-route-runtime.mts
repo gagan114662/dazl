@@ -1,8 +1,7 @@
-// The saved business profile carried into a FIRST scan (reviewed: false) is NOT a fresh review: presence in the
-// visible fields must not confirm a sourced statement, removal must not reject one, and the offer question is not
-// answered by the binding alone. Explicit rejections still strip their own text from the effective profile, explicit
-// Add/Dismiss events are still recorded, and the canonical fields (window_days, country, language) survive verbatim.
-// The default (reviewed) path is unchanged. Real /api/scan route, real DB, stubbed runner; no network, no provider.
+// A new typed target replaces saved positive buyer fields, never research decisions.
+// Explicit Add/Dismiss events are validated against the submitted review, not the
+// query projection. Reviewed exact repeats retain server-proven target authority.
+// Real /api/scan route, real DB, stubbed runner; no network or provider.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -52,7 +51,7 @@ const storedJob = (db: Database.Database, jobId: string) => {
 const hyp = (r: IcpResearch | undefined, text: string): ResearchedHyp => r!.hyps.find(h => h.t === text)!
 const done = (db: Database.Database) => { db.prepare("UPDATE scan_jobs SET status = 'running' WHERE status = 'pending'").run(); db.prepare("UPDATE scan_jobs SET status = 'done' WHERE status = 'running'").run() }
 
-test('POST /api/scan with reviewed: false carries the saved profile whole without implicit review; default path unchanged', async () => {
+test('POST /api/scan new typed buyer replaces saved positives without implicit research review; reviewed repeats persist', async () => {
   const db = new Database(':memory:')
   try {
     migrateScan(db); migrateMemory(db); migrateKeys(db); migratePlans(db); migrateSpendPools(db); migratePlatform(db)
@@ -69,19 +68,20 @@ test('POST /api/scan with reviewed: false carries the saved profile whole withou
       assert.equal(hyp(s1.icp.research, 'practice managers').s, 'sourced', 'carried as stored: field text did NOT confirm it')
     assert.equal(hyp(s1.icp.research, 'front-desk leads').s, 'sourced')
     assert.equal(hyp(s1.icp.research, 'dental influencers').s, 'rejected', 'the explicit rejection survives')
-    assert.deepEqual(s1.icp.who, ['practice managers'], 'rejection precedence still strips the dismissed text from the effective profile')
-    assert.equal(s1.icp.window_days, 180, 'canonical fields carry verbatim')
-    assert.equal(s1.icp.country, 'US')
-    assert.equal(s1.icp.language, 'en')
+    assert.deepEqual(s1.icp.who, [], 'new typed query must not inherit an old positive buyer role')
+    assert.equal(s1.icp.summary, 'dental practices in Ohio hiring front desk')
+    assert.equal(s1.icp.window_days, undefined, 'new typed query must not inherit the old time window')
+    assert.equal(s1.icp.country, undefined)
+    assert.equal(s1.icp.language, undefined)
     assert.equal(s1.icp.research!.ans, null, 'no offer answer is recorded from the binding alone')
     done(db) // the first scan finishes; only then can the repeat start
 
     // 1b. The raw carry is DURABLE: the job records it (icp_inferred = 3), /api/scan/latest reads it back as
     // 'carried', and the restored exact-sentence repeat - posted the way the client does from that source - still
     // confirms nothing and answers nothing. Only an explicit review event may ever promote.
-    assert.equal(s1.icp_inferred, 3, 'the stored job itself records the carry: a later reload cannot read it as reviewed')
+    assert.equal(s1.icp_inferred, 2, 'request-derived target is never recorded as reviewed')
     const latest = await (await latestGET()).json() as { query: string | null; icp: Icp | null; icp_source: string | null }
-    assert.equal(latest.icp_source, 'carried', 'the reload channel names the origin: carried, not user-reviewed')
+    assert.equal(latest.icp_source, 'request_only', 'the reload channel names the target origin, not user review')
     assert.deepEqual(latest.icp, s1.icp, 'the restored profile is the stored one, whole')
     const r1b = await POST(request({ query: 'dental practices in Ohio hiring front desk', icp: latest.icp, reviewed: false }))
     const b1b = await r1b.json() as { job_id?: string; error?: string }
@@ -91,9 +91,9 @@ test('POST /api/scan with reviewed: false carries the saved profile whole withou
     assert.equal(hyp(s1b.icp.research, 'front-desk leads').s, 'sourced')
     assert.equal(hyp(s1b.icp.research, 'dental influencers').s, 'rejected', 'the explicit rejection survives the repeat too')
     assert.equal(s1b.icp.research!.ans, null, 'the repeat still records no offer answer')
-    assert.equal(s1b.icp_inferred, 3, 'the repeat is durable raw carry again')
+    assert.equal(s1b.icp_inferred, 2, 'the repeat is still request-derived')
     const latest2 = await (await latestGET()).json() as { icp_source: string | null }
-    assert.equal(latest2.icp_source, 'carried', 'still carried after the repeat')
+    assert.equal(latest2.icp_source, 'request_only', 'still query-derived after the repeat')
 
     // 2. reviewed: false with an EXPLICIT reject event for a statement whose text sits in the fields: the event is
     // recorded with the job, and the effective profile drops the text (the decision, not the carry, is the review).
@@ -138,8 +138,8 @@ test('POST /api/scan with reviewed: false carries the saved profile whole withou
     assert.equal(hyp(s5.icp.research, 'practice managers').s, 'reviewed', 'a past explicit review is preserved, never demoted')
     assert.equal(hyp(s5.icp.research, 'front-desk leads').s, 'sourced', 'the repeat does not promote what the review left sourced')
     assert.equal(hyp(s5.icp.research, 'dental influencers').s, 'rejected', 'rejections survive the repeat')
-    assert.equal(s5.icp_inferred, 3, 'the repeat is a raw carry, durably')
-    assert.equal((await (await latestGET()).json() as { icp_source: string | null }).icp_source, 'carried')
+    assert.equal(s5.icp_inferred, 4, 'exact repeat retains server-proven review authority')
+    assert.equal((await (await latestGET()).json() as { icp_source: string | null }).icp_source, 'user')
 
     // 6. A CHANGED sentence with a prior profile still carries it (reviewed: false): decisions are never silently
     // discarded. The person sees the carry note in the UI; the server keeps every status.
@@ -151,6 +151,8 @@ test('POST /api/scan with reviewed: false carries the saved profile whole withou
     assert.equal(hyp(s6.icp.research, 'practice managers').s, 'reviewed', 'changed sentence: the review state carries whole')
     assert.equal(hyp(s6.icp.research, 'front-desk leads').s, 'sourced')
     assert.equal(hyp(s6.icp.research, 'dental influencers').s, 'rejected')
-    assert.equal(s6.icp_inferred, 3)
+    assert.equal(s6.icp_inferred, 2)
+    assert.equal(s6.icp.summary, 'orthodontist practices in Texas expanding to two offices')
+    assert.deepEqual(s6.icp.who, [], 'old reviewed buyer roles do not constrain a changed sentence')
   } finally { db.close() }
 })

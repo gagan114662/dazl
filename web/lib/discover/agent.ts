@@ -17,10 +17,10 @@ export interface DiscoverInput { query: string; offer?: string | null; today?: D
 // The customer's saved buyer profile for this play, in their own words. One they reviewed for THIS search narrows the request; the
 // request's own words win where they differ. One carried over unreviewed from an earlier search (profileCarried, #1579) is background
 // only: a new typed request for other buyers ran beside "Toronto agencies hiring an SDR" on production and found nothing, twice.
-export interface DiscoverProfile { summary?: string; who?: string[]; industries?: string[]; sizes?: string[]; where?: string[]; exclude?: string[] }
+export interface DiscoverProfile { summary?: string; who?: string[]; industries?: string[]; sizes?: string[]; where?: string[]; exclude?: string[]; carry_exclude?: string[] }
 // Whether a job's profile was carried into the search unreviewed (scan_jobs.icp_inferred: 0 = the person reviewed it for this search).
 // A saved play's repeat run keeps its own profile as the play's.
-export const discoverProfileCarried = (icpInferred: number | null | undefined, watchId: string | null | undefined): boolean => !watchId && icpInferred !== 0
+export const discoverProfileCarried = (icpInferred: number | null | undefined, watchId: string | null | undefined): boolean => !watchId && icpInferred !== 0 && icpInferred !== 4
 export const CARRIED_PROFILE_HEAD = "Background only, NOT a filter: the seller's usual buyers, saved from an earlier search. Use it only for what the request leaves unsaid, and ignore every part of it that differs from the request:"
 export function profileLines(p: DiscoverProfile | null | undefined, carried = false): string[] {
   if (!p) return []
@@ -134,6 +134,7 @@ export function userMessage(input: DiscoverInput, today: string, max: number): s
   return [`Today is ${today}.`, input.offer ? `The seller sells: ${str(input.offer, 600)}` : '', `Find: ${str(input.query, 1000)}`,
     input.profileCarried === true && profile.length ? 'The request above is the whole search: it decides who to look for, where, and which signal.' : '',
     ...profile,
+    input.profile?.carry_exclude?.length ? `Mandatory exclusions (apply even when the profile above is background): ${input.profile.carry_exclude.map(c => str(c, 200)).filter(Boolean).join('; ')}` : '',
     // a play that runs again: the companies it already found are not leads this time
     input.exclude?.length ? `Already found, do not return these companies again: ${input.exclude.slice(0, 80).map(c => str(c, 80)).filter(Boolean).join('; ')}` : '',
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
