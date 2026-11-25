@@ -1,5 +1,5 @@
 import { isRecruitingInbox } from '../recruiting-inbox.ts'
-import { discoverContact, discoverContactNote } from '../discover/card.ts'
+import { discoverContactNote, isPageProvenEmail } from '../discover/card.ts'
 import {contextRestriction,readContextLabel,type ContactContext} from './contact-context.ts'
 export const PUBLISHED_EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
 const address = (value: string | null) => value?.trim().toLowerCase() ?? ''
@@ -167,7 +167,7 @@ export function contactSearchNote(lead: PublishedEmailLead & { confidence?: numb
   if (publishedContact(lead)) return null
   if (lead.contact) return null
   // #1571: a discovery-lane lead's published address is its own record (connector 'discover'); with one, there is no "no contact" note
-  if (discoverContact({ ...lead, source_kind: 'discover' })?.email) return null
+  if (lead.enrichments?.some(isPageProvenEmail)) return null
   // #1579: the named person's LinkedIn profile is stored, so "no contact stored" would be untrue; what is missing is their own email
   const profileKnown = discoverContactNote(lead as never)
   if (profileKnown) return profileKnown

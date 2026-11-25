@@ -54,10 +54,21 @@ export interface DiscoverContact { person: { name: string; title: string | null;
 export const PAGE_PROVEN_EMAIL_LABEL = 'email verified on source page'
 type Row = { kind: string; connector?: string; value?: string; source_url?: string | null; label?: string | null }
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
+export function isPageProvenEmail(row: Row): boolean {
+  if (row.kind !== 'email' || row.connector !== 'discover' || row.label !== PAGE_PROVEN_EMAIL_LABEL
+    || !row.value || !row.source_url || !EMAIL.test(row.value.trim().toLowerCase())) return false
+  try {
+    const url = new URL(row.source_url)
+    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
   const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
-  const mails = rows.filter(r => r.kind === 'email' && r.label === PAGE_PROVEN_EMAIL_LABEL && r.value && r.source_url && /^https?:\/\//i.test(r.source_url) && EMAIL.test(r.value.trim().toLowerCase()))
+  const mails = rows.filter(isPageProvenEmail)
   const p = rows.find(r => r.kind === 'person' && r.value)
   const li = rows.find(r => r.kind === 'linkedin' && r.value)
   let person: DiscoverContact['person'] = null

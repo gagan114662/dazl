@@ -32,7 +32,7 @@ function build() {
     db.prepare(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, fit, intent, company_domain, source_kind, quarantined_at)
       VALUES (?, ?, ?, ?, 'hiring a first salesperson', ?, 85, 'is hiring its first salesperson', ?, ?, ?, ?, ?, 'discover', ?)`)
       .run(id, J, o.name ?? '', `Co ${id}`, `https://jobs.example/${id}`, o.review ?? null, o.date === undefined ? '2026-11-10' : o.date, o.fit === undefined ? 4 : o.fit, o.intent === undefined ? 4 : o.intent, `${id}.example`, o.rejected ? 5 : null)
-  const row = (id: string, kind: string, value: string, page = `https://${id}.example/team`) => addEnrichment(db, T, id, { connector: 'discover', kind, value, label: 'x', confidence: null, source_url: page, source_date: '2026-11-22', retrieved_at: 1 })
+  const row = (id: string, kind: string, value: string, page = `https://${id}.example/team`) => addEnrichment(db, T, id, { connector: 'discover', kind, value, label: kind === 'email' ? 'email verified on source page' : 'x', confidence: null, source_url: page, source_date: '2026-11-22', retrieved_at: 1 })
   const person = (id: string) => row(id, 'person', 'Dana Ruiz, Founder')
   const ownEmail = (id: string) => row(id, 'email', `dana.ruiz@${id}.example`)
   const profile = (id: string) => row(id, 'linkedin', 'https://www.linkedin.com/in/dana-ruiz/')
