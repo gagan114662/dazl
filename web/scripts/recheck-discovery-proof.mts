@@ -1,6 +1,7 @@
 // Use the configured DB_PATH or DATABASE_URL. With no --execute, report counts without writing lead holds.
 import { parseArgs } from 'node:util'
-import { getDb } from '../lib/db/client.ts'
+import Database from 'better-sqlite3'
+import { pgDb, sqliteDb } from '../lib/db/client.ts'
 import { recheckDiscoveryProof } from '../lib/proof-backfill.ts'
 
 const { values } = parseArgs({ options: {
@@ -8,14 +9,18 @@ const { values } = parseArgs({ options: {
 } })
 const tenant = values.tenant?.trim()
 const allTenants = values['all-tenants'] === true
-if (!!tenant === allTenants || (!process.env.DB_PATH && !process.env.DATABASE_URL)) {
+const databaseUrl = process.env.DATABASE_URL
+const dbPath = process.env.DB_PATH
+if (!!tenant === allTenants || (!dbPath && !databaseUrl)) {
   console.error('Pass either --tenant <workspace-id> or --all-tenants and set DB_PATH or DATABASE_URL.')
   process.exit(2)
 }
 
-const db = await getDb()
+const execute = values.execute === true
+const db = databaseUrl
+  ? pgDb({ connectionString: databaseUrl })
+  : sqliteDb(new Database(dbPath!, { readonly: !execute, fileMustExist: true }))
 try {
-  const execute = values.execute === true
   const workspaces = tenant ? [{ user_id: tenant }] : await db.all<{ user_id: string }>(
     `SELECT DISTINCT j.user_id FROM scan_jobs j JOIN leads l ON l.scan_job_id = j.id
      WHERE j.status = 'done' AND l.source_kind = 'discover' AND l.quarantined_at IS NULL AND l.evidence_purged_at IS NULL`,
