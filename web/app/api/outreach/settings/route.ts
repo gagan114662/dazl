@@ -2,6 +2,7 @@ import { autopilotAvailable } from '@/lib/outreach/autopilot'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { gmailStatus } from '@/lib/gmail/oauth'
+import { googleAppVerified } from '@/lib/auth-google-explainer'
 import { getSettings, OutreachError, saveSettings, sendCapToday, sentLast24h } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { accountSendCount } from '@/lib/outreach/send-budget'
@@ -16,7 +17,7 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
   const today = sendCapToday(db, user.tenantId)
-  return NextResponse.json({ autopilot_available: autopilotAvailable(), gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: today.cap, sent_today: today.sent_today, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)) })
+  return NextResponse.json({ autopilot_available: autopilotAvailable(), google_app_verified: googleAppVerified(), gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: today.cap, sent_today: today.sent_today, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)) })
 }
 
 export async function PUT(req: NextRequest) {
