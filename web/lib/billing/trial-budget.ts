@@ -44,6 +44,7 @@ import { randomBytes } from 'node:crypto'
 import { captureError } from '../ops/errors.ts'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { operatorKey, TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
+import { trialIdentity } from '../auth/email-identity.ts'
 
 export function migrateTrialBudget(db: Database.Database): void {
   db.exec(`
@@ -193,11 +194,8 @@ export const PASSWORD_TRIAL_SCANS = 1
 export const passwordTrialOn = (env: Record<string, string | undefined> = process.env) => !['0', 'off', 'false', 'no'].includes((env.DAZL_TRIAL_PASSWORD_FIRST_SCAN ?? '').trim().toLowerCase())
 const GMAIL = ['gmail.com', 'googlemail.com']
 // The mailbox an address delivers to, as far as dazl can tell without asking the provider: lower case, no +tag, and on Gmail no dots.
-export function canonicalMailbox(email: string): string {
-  const [local = '', domain = ''] = email.trim().toLowerCase().split('@')
-  const base = local.split('+')[0]
-  return GMAIL.includes(domain) ? `${base.replaceAll('.', '')}@gmail.com` : `${base}@${domain}`
-}
+// #1801: the definition lives in lib/auth/email-identity.ts (trialIdentity), shared and pinned by its own suite; this is the same function.
+export const canonicalMailbox = trialIdentity
 // OPERATOR SWITCH (#1579): DAZL_TRIAL_QA_EXEMPT names the acceptance tester's account(s), by exact address (comma-separated; an entry
 // with a * or without an @ is ignored; unset or empty = nobody, and nothing here changes for anyone). A listed account is not stopped by
 // the limits that count one account or one network, for a free scan or a free website read:
