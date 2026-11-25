@@ -88,3 +88,24 @@ async function checkDatedPosting(day: string, dates: string) {
   assert.equal(result.proof, 'confirmed')
   return result
 }
+
+for (const footer of [
+  'Updated Tuesday, November 24, 2026',
+  'Updated 3:15 PM ET, Nov. 24, 2026',
+  'Last Updated | November 24, 2026',
+]) {
+  test(`an opened page rejects the update timestamp "${footer}"`, async () => {
+    const result = await checkDatedPosting('2026-11-24', footer)
+
+    assert.equal(result.signal_seen, true)
+    assert.equal(result.date_on_page, false)
+    assert.equal(result.date, null)
+  })
+}
+
+test('a posting date still counts after an update timestamp in a separate sentence', async () => {
+  const result = await checkDatedPosting('2026-11-24', 'Updated Monday, November 23, 2026. Posted November 24, 2026.')
+
+  assert.equal(result.date_on_page, true)
+  assert.equal(result.date, '2026-11-24')
+})

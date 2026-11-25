@@ -113,10 +113,12 @@ export function quoteStatements(quote: string | null, page: string): string[] {
 export const quoteOnPage = (quote: string | null, page: string): boolean => quoteStatements(quote, page).length > 0
 
 // Match a complete date mention and exclude labels for edits and copyright notices.
+const EDIT_DATE_PREFIX = /(?:\b(?:updated|modified|copyright)\b|©)(?:\s+(?:on|at|as of))?[\s:(|·,–—-]*(?:(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\.?[\s,]+)?(?:\d{1,2}:\d{2}(?:\s*(?:a\.?m\.?|p\.?m\.?))?(?:\s+[a-z]{2,5})?[\s,]+)?[\s:(|·,–—-]*$/i
+
 export function dayOnPage(day: string | null, page: string): boolean {
   if (!day) return false
   return dateMentions(page).some(mention => mention.day === day &&
-    !/(?:\b(?:updated|modified|copyright)\b|©)(?:\s+(?:on|at|as of))?[\s:(–—-]*$/i.test(page.slice(Math.max(0, mention.index - 40), mention.index)))
+    !EDIT_DATE_PREFIX.test(page.slice(Math.max(0, mention.index - 40), mention.index)))
 }
 
 // The search index's age for a page ("69 days ago", "3 hours ago", "October 14, 2026", an ISO day) as a calendar day, or null.

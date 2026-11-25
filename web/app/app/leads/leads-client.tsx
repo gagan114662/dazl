@@ -874,7 +874,7 @@ export default function LeadsClient() {
     return () => { live = false }
   }, [splitFor])
   const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
-  const unconfirmedTiming = leads.filter(l => l.timing === 'unconfirmed' && !l.review_reason && !l.quarantined_at)
+  const unconfirmedTiming = leads.filter(l => l.timing === 'unconfirmed' && !l.review_reason && !l.quarantined_at && l.human_confirmed_at == null)
   const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
   const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
   const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)
