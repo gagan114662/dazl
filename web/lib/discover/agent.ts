@@ -7,6 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
+import { addLaunchRegionUsage, allowsLaunchLead, launchRegionMessage, LAUNCH_REGION_PROMPT, prepareLaunchRegion } from './launch-region.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
@@ -91,7 +92,7 @@ const host = (v: unknown): string | null => {
 
 // The model's final text -> lead records. Anything that is not a company with a signal and a proof URL is dropped here,
 // because without those three there is nothing to show or check.
-export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]; note: string | null } {
+export function parseLeads(text: string, max: number, allow?: (lead: Record<string, unknown>) => boolean): { leads: DiscoveredLead[]; note: string | null } {
   const m = /<json>([\s\S]*?)<\/json>/.exec(text)
   let raw: unknown
   try { raw = JSON.parse(m ? m[1] : text) } catch { return { leads: [], note: 'unreadable answer' } }
@@ -99,6 +100,7 @@ export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]
   const out: DiscoveredLead[] = [], seen = new Set<string>()
   for (const item of Array.isArray(o.leads) ? o.leads : []) {
     const l = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
+    if (allow && !allow(l)) continue
     const company = str(l.company, 150), signal = str(l.signal, 500), evidence_url = httpUrl(l.evidence_url)
     if (!company || !signal || !evidence_url) continue
     const key = company.toLowerCase()
@@ -134,14 +136,16 @@ export function userMessage(input: DiscoverInput, today: string, max: number): s
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
 }
 
-export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; searchBudget?: SearchBudget }): Promise<DiscoverResult> {
+export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; searchBudget?: SearchBudget; launchRegion?: typeof prepareLaunchRegion }): Promise<DiscoverResult> {
   const max = Math.min(Math.max(input.maxLeads ?? 10, 1), 20)
   if (DISCOVER_MODEL !== 'claude-sonnet-5-5') throw new Error('Discovery requires the supported Sonnet cost policy')
   const allowance = Math.min(searchAllowance(input.maxSearches), configuredSearchAllowance(MAX_SEARCHES))
   const searches = deps.searchBudget ?? createSearchBudget(allowance)
   const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 0 })
+  const launch = await (deps.launchRegion ?? prepareLaunchRegion)(client, input, deps.signal)
+  if (!launch.ok) return launch.result
   const today = (input.today ?? new Date()).toISOString().slice(0, 10)
-  const user = userMessage(input, today, max)
+  const user = launchRegionMessage(userMessage(input, today, max), launch.places)
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   let text = '', stop = 'unknown', model = DISCOVER_MODEL
@@ -154,7 +158,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       // Caching is what keeps this loop affordable: every search adds its results to the prompt, and without a cache point the whole
       // growing prompt is billed at full price on each step (measured: US$2.16 a prompt without it, US$0.41 with it).
       cache_control: { type: 'ephemeral' },
-      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: `${SYSTEM}\n${LAUNCH_REGION_PROMPT}`, cache_control: { type: 'ephemeral' } }],
       tools: [
         ...(reservation.allowance > 0 ? [{ type: 'web_search_20260209' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
@@ -187,6 +191,6 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
     if (stop !== 'pause_turn') break
     messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.BetaContentBlockParam[] })
   }
-  const parsed = stop === 'refusal' ? { leads: [], note: 'the model declined this request' } : parseLeads(text, max)
-  return { ...parsed, usage: { ...usage, usd: usd(usage) }, stop, model, seen: [...seen.values()] }
+  const parsed = stop === 'refusal' ? { leads: [], note: 'the model declined this request' } : parseLeads(text, max, lead => allowsLaunchLead(lead, launch.places))
+  return { ...parsed, usage: addLaunchRegionUsage({ ...usage, usd: usd(usage) }, launch.usage), stop, model, seen: [...seen.values()] }
 }

@@ -9,6 +9,7 @@ import { createSearchBudget, searchAllowance } from './search-budget.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
+import { isLaunchRegionStop, launchRegionForRun, launchRegionPages } from './launch-region.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
@@ -25,7 +26,7 @@ const PEOPLE_LEAD_USD = 0.045
 
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
   const discover = deps.discover ?? discoverLeads, enrich = deps.enrich === undefined ? enrichLeads : deps.enrich
-  const api = { apiKey: deps.apiKey, fetch: deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(searchAllowance(budget.maxSearches ?? input.maxSearches)) }
+  const api = { apiKey: deps.apiKey, fetch: deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(searchAllowance(budget.maxSearches ?? input.maxSearches)), launchRegion: launchRegionForRun() }
   const sized = { ...input, ...(budget.maxSearches !== undefined ? { maxSearches: budget.maxSearches } : {}), ...(budget.maxFetches ? { maxFetches: budget.maxFetches } : {}) }
   const want = budget.wantShown ?? 5
   const usage: Pick<DiscoverUsage, 'usd' | 'searches' | 'requests'> = { usd: 0, searches: 0, requests: 0 }
@@ -33,10 +34,13 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
 
   const first = await discover(sized, api)
   add(first.usage)
+  if (isLaunchRegionStop(first.stop)) {
+    return { ...usage, pages: [], leads: [], passes: 0, enriched: 0, stop: first.stop, model: first.model, note: first.note }
+  }
   // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
   const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
   let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
-  const pages = first.seen.map(p => p.url)
+  const pages = launchRegionPages(first)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note, accountingUncertain = judge?.usage.accountingUncertain === true
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
@@ -44,7 +48,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
-      pages.push(...second.seen.map(p => p.url))
+      pages.push(...launchRegionPages(second))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
       const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
