@@ -1,7 +1,7 @@
 // Launch coverage is decided from Claude's typed request plan before any web tools are offered.
 import type Anthropic from '@anthropic-ai/sdk'
 import { completionCost } from '../llm/spend-guard.ts'
-import { countriesIn } from '../scan/countries.ts'
+import { countriesIn, countryFromField, countryOfRegion, regionOf } from '../scan/countries.ts'
 import { groundedIn, parsePlan, planPrompt, PLAN_MAX_TOKENS, type PlanPlace } from '../scan/request-plan.ts'
 import type { DiscoverInput, DiscoverResult, DiscoverUsage, DiscoveredLead } from './agent.ts'
 
@@ -21,9 +21,27 @@ export function launchRegionSystemPrompt(system: string): string {
 
 function outsideLaunchCoverage(place: PlanPlace): boolean {
   if (!place.country || !LAUNCH_COUNTRIES.has(place.country)) return true
-  // The planner can group multiple locations under one country code. Check the text of that place as well.
-  const named = [place.text, ...place.text.split(/\s+(?:and|or)\s+|[&;/]/i)].flatMap(countriesIn)
-  return named.some(country => !LAUNCH_COUNTRIES.has(country))
+  const named = countriesIn(place.text)
+  if (named.some(country => !LAUNCH_COUNTRIES.has(country))) return true
+  // A grouped place's one country code cannot confirm every independently named target.
+  const groups = place.text.split(/\s+(?:and|or)\s+|[&;/]/i)
+  if (groups.length > 1) return groups.some(group => !confirmedLaunchPart(group))
+  const city = place.city?.trim().toLowerCase()
+  const region = place.region?.trim().toLowerCase()
+  const address = place.text.split(',').map(part => part.trim()).filter(Boolean)
+  return address.length > 1 && address.some(part => {
+    const text = part.toLowerCase()
+    return text !== city && text !== region && !confirmedLaunchPart(part)
+  })
+}
+
+function confirmedLaunchPart(text: string): boolean {
+  const direct = countryFromField(text)
+  if (direct) return LAUNCH_COUNTRIES.has(direct)
+  const region = regionOf(text)
+  if (region) return LAUNCH_COUNTRIES.has(countryOfRegion(region))
+  const countries = countriesIn(text)
+  return countries.length > 0 && countries.every(country => LAUNCH_COUNTRIES.has(country))
 }
 
 type LaunchRegion = { ok: true; places: PlanPlace[]; usage: DiscoverUsage } | { ok: false; result: DiscoverResult }
@@ -39,7 +57,7 @@ export async function prepareLaunchRegion(client: Anthropic, input: DiscoverInpu
     service_tier: 'standard_only',
     messages: [{
       role: 'user',
-      content: `${planPrompt(target)}\nThe request data is a JSON object. Read its query as the user's request, and consider profileLocations only if the query names no target geography. Copy places from the field values. Include every target geography, even a broad one like a continent or worldwide. For those, use null for country. Infer a city or region's country only when confident.`,
+      content: `${planPrompt(target)}\nThe request data is a JSON object. Read its query as the user's request, and consider profileLocations only if the query names no target geography. Copy places from the field values. Give every distinct target geography its own place, even a broad one like a continent or worldwide. For broad targets use null for country. Infer a city or region's country only when confident.`,
     }],
   }, { signal, maxRetries: 0 })
   const usage = {

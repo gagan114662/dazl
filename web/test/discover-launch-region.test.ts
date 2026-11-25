@@ -37,6 +37,8 @@ for (const [target, places] of [
   ['the UK', [{ text: 'UK', city: null, region: null, country: 'GB' }]],
   ['the US and UK', [{ text: 'US', city: null, region: null, country: 'US' }, { text: 'UK', city: null, region: null, country: 'GB' }]],
   ['the UK and US in one place', [{ text: 'UK and US', city: null, region: null, country: 'US' }]],
+  ['the US and Europe', [{ text: 'US and Europe', city: null, region: null, country: 'US' }]],
+  ['the US, Europe', [{ text: 'US, Europe', city: null, region: null, country: 'US' }]],
   ['Europe', [{ text: 'Europe', city: null, region: null, country: null }]],
 ] as const) {
   test(`the Claude plan stops a request for ${target} before web tools are offered`, async () => {
