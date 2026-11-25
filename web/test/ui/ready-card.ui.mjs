@@ -35,15 +35,14 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 const now = Math.floor(Date.now() / 1000)
-// #1772 render proof: the harness tenant's own rows, so Home server-renders the by-signal table and its
-// companies footnote: two names sharing one companyKey, one distinct company, one lead with no company name.
-{ const seedDb = new Database(DB)
-  const RJ = 'r'.repeat(24)
-  seedDb.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, 'u1', 'x', 'test', 'test', 'done', ?)").run(RJ, now - 86400)
-  const rlead = seedDb.prepare("INSERT INTO leads (id, scan_job_id, company, name, signal, source_url, signal_kind, created_at) VALUES (?, ?, ?, ?, 'hiring an SDR', 'https://news.example/a', 'hiring', ?)")
-  rlead.run('r1', RJ, 'Dup Inc', '', now - 3600); rlead.run('r2', RJ, 'Dup Ltd', '', now - 3500)
-  rlead.run('r3', RJ, 'Solo Co', '', now - 3400); rlead.run('r4', RJ, '', 'Pat', now - 3300)
-  seedDb.close() }
+// #1772 2g's /api/home/results answer: the by-signal footnote (tiles.leads 'N leads from M companies; K without a
+// company name') renders from this response - HomeResultsPanel is a client component and every /api/* call here is
+// stubbed, so the panel never reads the harness database. The numbers behind it (companyKey dedup, unnamed count)
+// come from lib/outreach/home-results.ts and are unit-tested in home-results-1040.test.ts: two names sharing one
+// companyKey, one distinct company, one lead with no company name.
+const RESULTS2G = { window_days: 30, since: now - 30 * 86400, reply_reading: true, tiles: { leads: 4, contacted: 0, replied: 0, interested: 0 }, by_signal: [{ signal: 'hiring', leads: 4, contacted: 0, replied: 0 }], companies: 2, unnamed_leads: 1,
+  latest_leads: [{ id: 'r1', company: 'Dup Inc', signal: 'hiring', job_id: 'a'.repeat(24), created_at: now - 3600 }, { id: 'r2', company: 'Dup Ltd', signal: 'hiring', job_id: 'a'.repeat(24), created_at: now - 3500 }, { id: 'r3', company: 'Solo Co', signal: 'hiring', job_id: 'b'.repeat(24), created_at: now - 3400 }, { id: 'r4', company: 'Unnamed company', signal: 'hiring', job_id: 'b'.repeat(24), created_at: now - 3300 }],
+  latest_replies: [] }
 const PROFILE = { business_name: 'Brightsmile', sells: 'Online booking and reminders for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices with 2-10 chairs that are expanding', who: ['Practice owner', 'Office manager'], industries: ['Dental'], sizes: ['2-10 chairs'], where: ['Brooklyn, NY', 'Queens, NY'], signals: ['new location'], exclude: ['DSOs'] } }
 const GMAIL = { email: 'dana@brightsmile.example', status: 'active' }, SENDER = { sender_name: 'Dana Smith', postal_address: '1 Main St, Brooklyn NY' }
 const job = (id, t, q) => ({ id: id.repeat(24), status: 'done', error: null, query: q, csv_domain: null, created_at: now - t * 86400, lead_count: 0, candidates: 2, verified: 0, needs_review: 0, dropped: 2, test_only: false })
@@ -60,6 +59,7 @@ const SCENES = {
   // #1678: a password account with no key: step 2 offers two buttons (Link Google, Add key)
   pwtrial: { profile: PROFILE, key: false, trial: { blocked: 'google_required' }, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   done: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 1), camps: [camp(JOBS[0].id, { sc: 2, contacts: 1, ready: 1, drafts: 1 })], msgs: [{ id: 'm1', lead_id: 'x', status: 'draft' }] },
+  withresults: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [], results: RESULTS2G },
 }
 // #1722: scenario 2c flips the sender mid-scene (filled in elsewhere); null = use the scene's own sender.
 let liveSender = null
@@ -85,6 +85,7 @@ async function open(sc, width, height) {
     if (p === '/api/scan/jobs') return json({ jobs: sc.jobs, totals: { searches: sc.jobs.length, finished: sc.jobs.length } })
     if (p === '/api/scan/latest') return json({ query: sc.jobs[0]?.query ?? null, icp: null, icp_source: null })
     if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
+    if (p === '/api/home/results') return sc.results ? json(sc.results) : json({}, 404)
     if (p.startsWith('/api/campaigns/')) return json({ job: sc.jobs[0], leads: [], messages: [] })
     if (p === '/api/watch') return json({ watches: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: sc.used ?? sc.jobs.length, scan_limit: 50, has_key: sc.key, trial: sc.trial ?? null })
@@ -221,8 +222,9 @@ try {
     assert.equal(await page.getByLabel('Your website').inputValue(), 'typed.example', 'a late seed never overwrites typed input')
     assert.deepEqual(writes, []); await ctx.close()
     // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
-    // leads with no company name - rendered on the real Home page (seeded above), at both widths.
-    ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
+    // leads with no company name - rendered on the real Home page from the stubbed /api/home/results answer
+    // (RESULTS2G), at both widths.
+    ;({ ctx, page, writes } = await open(SCENES.withresults, w, h))
     await card(page).waitFor()
     const foot = page.getByTestId('by-signal-companies')
     await foot.waitFor()
