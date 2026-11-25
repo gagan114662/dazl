@@ -9,8 +9,8 @@ const leads = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.m
 const checked = readFileSync(new URL('../app/app/leads/checked/checked-client.tsx', import.meta.url), 'utf8')
 
 test('the result approval hold includes the reason in visible text', () => {
-  assert.match(leads, /data-testid="approve-hold"[^>]*>[\s\S]*?<span[^>]*>\{c\.approve\.reason\}<\/span>/)
-  assert.match(leads, /data-testid="linkedin-ready"[^>]*>[\s\S]*?<span[^>]*>\{c\.approve\.reason\}<\/span>/)
+  assert.match(leads, /data-testid="approve-hold"[^>]*>[\s\S]*?<span[^>]*>\{approval\.reason\}<\/span>/)
+  assert.match(leads, /data-testid="linkedin-ready"[^>]*>[\s\S]*?<span[^>]*>\{approval\.reason\}<\/span>/)
 })
 
 test('campaign and CSV links wait for results or a resolved scan', () => {
@@ -30,7 +30,7 @@ test('campaign and CSV links wait for results or a resolved scan', () => {
 })
 
 test('hold copy states the reason and LinkedIn guidance is visible', () => {
-  assert.match(leads, /data-testid="approve-hold"[^>]*>Can&apos;t approve yet\. <span>\{c\.approve\.reason\}/)
+  assert.match(leads, /data-testid="approve-hold"[^>]*>Can&apos;t approve yet\. <span>\{approval\.reason\}/)
   assert.match(leads, /data-testid="linkedin-ready"[^>]*>[^<]*\{c\.linkedin\.name\}&apos;s profile and send the first message yourself\./)
 })
 
@@ -49,6 +49,7 @@ test('the ready response attaches details from the winning lead without crossing
     import { migrateAllSqlite } from './lib/db/sqlite-migrations.ts'
     import { addEnrichment } from './lib/connectors/store.ts'
     import { homeReady } from './lib/outreach/home-ready.ts'
+    import { PAGE_PROVEN_EMAIL_LABEL } from './lib/discover/card.ts'
     import { ownSiteBuyerRows } from './test/helpers/own-site-buyer.ts'
 
     const db = new Database(':memory:')
@@ -65,7 +66,7 @@ test('the ready response attaches details from the winning lead without crossing
       lead.run(id, id, company, domain, signal, 'https://' + domain + '/signal', date, at - age)
     }
     for (const [kind, value] of [['person', name + ', ' + title], ['email', email]]) {
-      addEnrichment(db, 'tenant', 'ready', { connector: 'discover', kind, value, label: null, confidence: null, source_url: 'https://' + domain + '/' + kind, source_date: date, retrieved_at: at })
+      addEnrichment(db, 'tenant', 'ready', { connector: 'discover', kind, value, label: kind === 'email' ? PAGE_PROVEN_EMAIL_LABEL : null, confidence: null, source_url: 'https://' + domain + '/' + kind, source_date: date, retrieved_at: at })
     }
     db.prepare("UPDATE scan_jobs SET status = 'done'").run()
     const result = await homeReady('tenant', at)
