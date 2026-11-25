@@ -35,6 +35,15 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 const now = Math.floor(Date.now() / 1000)
+// #1772 render proof: the harness tenant's own rows, so Home server-renders the by-signal table and its
+// companies footnote: two names sharing one companyKey, one distinct company, one lead with no company name.
+{ const seedDb = new Database(DB)
+  const RJ = 'r'.repeat(24)
+  seedDb.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, 'u1', 'x', 'test', 'test', 'done', ?)").run(RJ, now - 86400)
+  const rlead = seedDb.prepare("INSERT INTO leads (id, scan_job_id, company, name, signal, source_url, signal_kind, created_at) VALUES (?, ?, ?, ?, 'hiring an SDR', 'https://news.example/a', 'hiring', ?)")
+  rlead.run('r1', RJ, 'Dup Inc', '', now - 3600); rlead.run('r2', RJ, 'Dup Ltd', '', now - 3500)
+  rlead.run('r3', RJ, 'Solo Co', '', now - 3400); rlead.run('r4', RJ, '', 'Pat', now - 3300)
+  seedDb.close() }
 const PROFILE = { business_name: 'Brightsmile', sells: 'Online booking and reminders for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices with 2-10 chairs that are expanding', who: ['Practice owner', 'Office manager'], industries: ['Dental'], sizes: ['2-10 chairs'], where: ['Brooklyn, NY', 'Queens, NY'], signals: ['new location'], exclude: ['DSOs'] } }
 const GMAIL = { email: 'dana@brightsmile.example', status: 'active' }, SENDER = { sender_name: 'Dana Smith', postal_address: '1 Main St, Brooklyn NY' }
 const job = (id, t, q) => ({ id: id.repeat(24), status: 'done', error: null, query: q, csv_domain: null, created_at: now - t * 86400, lead_count: 0, candidates: 2, verified: 0, needs_review: 0, dropped: 2, test_only: false })
@@ -208,6 +217,15 @@ try {
     await page.getByLabel('Your website').fill('typed.example')
     await page.waitForTimeout(2000) // the delayed older read lands here
     assert.equal(await page.getByLabel('Your website').inputValue(), 'typed.example', 'a late seed never overwrites typed input')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
+    // leads with no company name - rendered on the real Home page (seeded above), at both widths.
+    ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
+    await card(page).waitFor()
+    const foot = page.getByTestId('by-signal-companies')
+    await foot.waitFor()
+    assert.equal((await foot.innerText()).trim(), '4 leads from 2 companies; 1 without a company name', `${tag}: the by-signal footnote`)
+    if (process.env.SHOTS) { await foot.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, `home-results-1772-${tag}.png`) }) }
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
     // nothing is pushed off the side of the page, and the card does not scroll inside itself.
