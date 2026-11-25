@@ -23,7 +23,7 @@ try { ({ chromium } = require('playwright')) } catch (e) { notRun(e.message.spli
 if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (run npm run build first)')
 
 // #1095: the trial scans come with Google sign-in (lib/trial-copy.ts signUpPlanLine)
-const TRIAL_LINE = /Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own\./
+const TRIAL_LINE = /Your first search is free, whether you sign up with Google or with email\. No card needed\./
 const FALLBACK_LINE = /On this site a search runs on your own Anthropic key, which you add in Settings\./
 
 async function withServer(env, fn) {
