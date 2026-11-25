@@ -77,7 +77,12 @@ async function open(sc, width, height) {
     if (u.origin !== base) return route.abort()
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-    if (m !== 'GET') { writes.push(`${m} ${p}`); return json({ error: 'not stubbed' }, 400) }
+    if (m !== 'GET') {
+      const body = req.postData() ?? ''
+      writes.push(`${m} ${p} ${body}`)
+      if (p === '/api/settings/profile') return json({ ok: true }) // 2h inspects the posted body; the save flow reads only .ok and .error
+      return json({ error: 'not stubbed' }, 400)
+    }
     if (p === '/api/settings/profile') {
       if (profileSlowFirst > 0) { const ms = profileSlowFirst; profileSlowFirst = 0; await new Promise(r => setTimeout(r, ms)) } // #1760 2e/2f: a slow mount read
       return json(sc.profile)
@@ -221,6 +226,28 @@ try {
     await page.waitForTimeout(2000) // the delayed older read lands here
     assert.equal(await page.getByLabel('Your website').inputValue(), 'typed.example', 'a late seed never overwrites typed input')
     assert.deepEqual(writes, []); await ctx.close()
+    // 2h. #1760 (Ziggy review on ae7767bbb): typing into one field before the saved profile loads must not keep
+    // the untouched website blank - the seed fills every field the user did not touch, and Save then posts the
+    // stored website, not an empty string that would erase it.
+    profileSlowFirst = 1500
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
+    await page.waitForTimeout(200) // the mount read is in flight, delayed
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // the wake's read starts and lands first
+    await card(page).waitFor()
+    await page.getByTestId('setup-details').locator('summary').click()
+    await page.getByTestId('ready-site').getByRole('button').click()
+    await page.getByLabel('What you sell').fill('Typed sells line')
+    await page.waitForTimeout(2000) // the delayed older read lands here
+    assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example', `${tag}: the untouched website still seeds when another field was typed`)
+    assert.equal(await page.getByLabel('What you sell').inputValue(), 'Typed sells line', `${tag}: the typed field keeps its input`)
+    await page.getByRole('button', { name: 'Save' }).click()
+    await page.waitForTimeout(400)
+    const saveCall = writes.find(x => x.startsWith('POST /api/settings/profile '))
+    assert.ok(saveCall, `${tag}: the save posted`)
+    const posted = JSON.parse(saveCall.slice('POST /api/settings/profile '.length))
+    assert.equal(posted.website, 'https://brightsmile.example', `${tag}: the POST keeps the stored website`)
+    assert.equal(posted.sells, 'Typed sells line', `${tag}: the POST keeps the typed sells`)
+    assert.deepEqual(writes.filter(x => !x.startsWith('POST /api/settings/profile')), []); await ctx.close()
     // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
     // leads with no company name - rendered on the real Home page from the stubbed /api/home/results answer
     // (RESULTS2G), at both widths.
