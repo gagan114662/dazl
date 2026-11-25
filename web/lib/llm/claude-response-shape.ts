@@ -16,3 +16,19 @@ export function projectedEnum<const T extends string>(p: Record<string, unknown>
   const state = absent(p, field), v = p[field]
   return state ?? (typeof v === 'string' ? options.find(option => option === v) ?? 'unrecognized' : 'malformed')
 }
+
+// Messages can omit cache counters on an uncached response. A positive or malformed
+// cache creation breakdown still needs its aggregate to account for the request.
+export function messageCacheTokens(usage: {
+  cache_read_input_tokens?: number | null
+  cache_creation_input_tokens?: number | null
+  cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } | null
+}): { read: number; written: number } | null {
+  const read = usage.cache_read_input_tokens ?? 0
+  const written = usage.cache_creation_input_tokens ?? 0
+  const split = usage.cache_creation
+  if (!count(read) || !count(written)) return null
+  if (split != null && (!count(split.ephemeral_5m_input_tokens) || !count(split.ephemeral_1h_input_tokens) ||
+      split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens !== written)) return null
+  return { read, written }
+}

@@ -13,10 +13,13 @@ export function configuredSearchAllowance(raw: string | undefined): number {
   if (!/^\d+$/.test(raw)) throw new Error('Native search allowance is invalid')
   return searchAllowance(Number(raw))
 }
+export class NativeSearchBudgetExhausted extends Error {
+  constructor() { super('Native search budget exhausted'); this.name = 'NativeSearchBudgetExhausted' }
+}
 export async function reserveNativeScanSearches(requested: number): Promise<SearchReservation | null> {
   if (!scanSpendContext()) return null
   const hold = await createSearchBudget().reserve(requested)
-  if (hold.allowance === 0) throw new Error('Native search budget exhausted')
+  if (hold.allowance === 0) throw new NativeSearchBudgetExhausted()
   return hold
 }
 export interface SearchReservation { allowance: number; settle(used: unknown): Promise<void> }

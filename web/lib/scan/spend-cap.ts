@@ -1,5 +1,5 @@
 import { qaClaudeOnlyTransport } from './qa-provider-policy.ts'
-import { scanSpendSchemaSql } from './spend-schema.ts'
+import { backfillNativeSearchCallsSql, scanSpendSchemaSql } from './spend-schema.ts'
 // Hard per-scan spend cap (#377 / #533 closure blocker 1). Every paid provider call a scan can make reserves its
 // worst-case cost against the scan's own durable ledger row BEFORE the request is sent, and is refused (nothing is
 // sent) when the reservation would pass the scan's cap. The cap is the owner's CAD 5 per paid scan.
@@ -568,5 +568,9 @@ export function migrateScanSpendCap(db: Database.Database): void {
   if (!has('spend_cap_usd')) db.exec(`ALTER TABLE scan_jobs ADD COLUMN spend_cap_usd REAL CHECK (spend_cap_usd IS NULL OR (spend_cap_usd > 0 AND spend_cap_usd <= ${STORE_CAP_BOUND_USD}))`)
   if (!has('spend_cap_reserved_usd')) db.exec('ALTER TABLE scan_jobs ADD COLUMN spend_cap_reserved_usd REAL NOT NULL DEFAULT 0 CHECK (spend_cap_reserved_usd >= 0)')
   if (!has('spend_cap_refusals')) db.exec('ALTER TABLE scan_jobs ADD COLUMN spend_cap_refusals INTEGER NOT NULL DEFAULT 0')
-  db.exec(scanSpendSchemaSql())
+  db.transaction(() => {
+    const nativeLedgerExists = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'scan_native_search_calls'").get()
+    db.exec(scanSpendSchemaSql())
+    if (!nativeLedgerExists) db.exec(backfillNativeSearchCallsSql)
+  }).immediate()
 }

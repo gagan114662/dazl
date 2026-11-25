@@ -23,13 +23,16 @@ CREATE TABLE IF NOT EXISTS scan_native_search_calls (
   used INTEGER CHECK (used IS NULL OR (used >= 0 AND used <= allowance))
 );
 CREATE INDEX IF NOT EXISTS scan_native_search_calls_job ON scan_native_search_calls(user_id,scan_job_id);
--- Previously dispatched searches have no trustworthy counter: retain the whole allowance.
+  `
+}
+
+// Previously dispatched searches have no trustworthy counter: retain the whole allowance
+// when introducing the native ledger. Later migrations leave new jobs' reservations alone.
+export const backfillNativeSearchCallsSql = `
 INSERT INTO scan_native_search_calls(id,user_id,scan_job_id,attempt,allowance,used)
 SELECT 'legacy:' || s.scan_job_id,s.user_id,s.scan_job_id,MAX(s.attempt),15,NULL
 FROM scan_spend_calls s
 WHERE s.kind = 'llm.anthropic.web_search' AND s.status <> 'refused'
   AND NOT EXISTS (SELECT 1 FROM scan_native_search_calls n WHERE n.scan_job_id = s.scan_job_id AND n.user_id = s.user_id)
 GROUP BY s.user_id,s.scan_job_id;
-
-  `
-}
+`
