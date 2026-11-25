@@ -35,10 +35,10 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 const ORIGINAL = {
   settings: [
     "Emails go out from your own Gmail. By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set. Connecting asks Google only for permission to send email as you. dazl does not ask to read your mailbox, so replies and delivery-failure notices arrive in your own Gmail inbox and are not shown in dazl. An account connected earlier with read access keeps it until it is disconnected or reconnected; reconnecting makes it send-only.",
-    "dazl reads public web pages for free. No paid lookup service is used and no outside API key is needed. Tier 0 channels need no setup. Session channels are optional and stay off until you accept the risk notice and connect your own account.",
-    "Session channels use your own logged-in session on a platform to find leads there. This breaks the terms of most of these platforms. They can limit or ban the account you use. Use a throwaway account, never your main one. You accept that risk yourself; dazl cannot protect your account.",
+    "dazl reads public web pages for free. Public sources need no setup and nothing else to sign up for. Signed-in sources are optional and stay off until you accept the risk notice and connect your own account.",
+    "Signed-in sources use your own logged-in session on a platform to find leads there. This breaks the terms of most of these platforms. They can limit or ban the account you use. Use a spare account you can afford to lose, never your main one. You accept that risk yourself; dazl cannot protect your account.",
     "Your session is encrypted, used only for your scans, rate limited, and logged below your scans in the lookup history. Leads from pages behind a login are never verified automatically. They go to needs review. Remove a session at any time.",
-    "What dazl remembers about how you sell. It shapes outreach drafts, follow-ups and lead scoring, on your own AI key (a few hundred extra tokens per call). Exclusions are hard rules: matching companies never reach your leads.",
+    "What dazl remembers about how you sell. It shapes outreach drafts, follow-ups and lead scoring. Exclusions are hard rules: matching companies never reach your leads.",
   ],
   outreach: [
     "Review each email, approve it, then send. Manual emails send only after your click. If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings). A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.",

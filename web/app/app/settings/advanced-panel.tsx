@@ -24,7 +24,7 @@ export default function AdvancedPanel() {
   function PasteForm(c: Channel, p: P) {
     return (
           <form method="post" className="flex flex-col gap-2" autoComplete="off" onSubmit={async e => { e.preventDefault(); if (await post({ action: 'save', platform: p.platform, session: session[p.platform] ?? '' })) setSession({ ...session, [p.platform]: '' }) }}>
-        <input className="field" type="password" autoComplete="off" placeholder="Paste the session cookie for the throwaway account" value={session[p.platform] ?? ''} onChange={e => setSession({ ...session, [p.platform]: e.target.value })} />
+        <input className="field" type="password" autoComplete="off" placeholder="Paste the sign-in cookie from your spare account" value={session[p.platform] ?? ''} onChange={e => setSession({ ...session, [p.platform]: e.target.value })} />
         <button className="btn-primary w-fit">Connect {c.name}</button>
       </form>
     )
@@ -35,10 +35,10 @@ export default function AdvancedPanel() {
         {p.supported === false ? (
           <p className="text-[#555]">Not available yet - dazl cannot read {c.name}{p.unsupported_reason ? `: ${p.unsupported_reason}` : ''}. Connecting a session is off for it.</p>
         ) : !p.allowed ? (
-          <p className="text-[#555]">Off on this server. The operator turns it on with ADVANCED_CONNECTORS.</p>
+          <p className="text-[#555]">Not available on dazl yet.</p>
         ) : !p.consent ? (
           <div className="flex flex-col gap-2">
-            <label className="flex gap-2 items-start"><input type="checkbox" checked={!!ack[p.platform]} onChange={e => setAck({ ...ack, [p.platform]: e.target.checked })} /><span>I understand this can violate {c.name}&apos;s terms and get my account banned, and I am using a throwaway account.</span></label>
+            <label className="flex gap-2 items-start"><input type="checkbox" checked={!!ack[p.platform]} onChange={e => setAck({ ...ack, [p.platform]: e.target.checked })} /><span>I understand this can violate {c.name}&apos;s terms and get my account banned, and I am using a spare account, not my main one.</span></label>
             <button disabled={!ack[p.platform]} onClick={() => post({ action: 'consent', platform: p.platform, accept: true, version: st!.version })} className="btn-primary w-fit disabled:opacity-40">Accept and continue</button>
           </div>
         ) : p.platform === 'linkedin' && (p.connected ? !!st!.linkedin_connect?.connected : true) ? (
@@ -61,8 +61,8 @@ export default function AdvancedPanel() {
   return (
     <div id="connectors" className="card p-6 mb-4 scroll-mt-6">
       <h2 className="font-semibold mb-1">Connectors</h2>
-      <Caveat className="text-[#555] text-sm mb-3" summary="dazl reads public web pages for free; optional session channels stay off until you accept the risk notice.">dazl reads public web pages for free. No paid lookup service is used and no outside API key is needed. Tier 0 channels need no setup. Session channels are optional and stay off until you accept the risk notice and connect your own account.</Caveat>
-      <Caveat className="text-[#555] text-sm mb-3" summary="Session channels break most platforms' terms and can get the account you use limited or banned - use a throwaway account, never your main one.">Session channels use your own logged-in session on a platform to find leads there. This breaks the terms of most of these platforms. They can limit or ban the account you use. Use a throwaway account, never your main one. You accept that risk yourself; dazl cannot protect your account.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-3" summary="dazl reads public web pages for free; optional signed-in sources stay off until you accept the risk notice.">dazl reads public web pages for free. Public sources need no setup and nothing else to sign up for. Signed-in sources are optional and stay off until you accept the risk notice and connect your own account.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-3" summary="Signed-in sources break most platforms' terms and can get the account you use limited or banned - use a spare account, never your main one.">Signed-in sources use your own logged-in session on a platform to find leads there. This breaks the terms of most of these platforms. They can limit or ban the account you use. Use a spare account you can afford to lose, never your main one. You accept that risk yourself; dazl cannot protect your account.</Caveat>
       <Caveat className="text-[#555] text-sm mb-4" summary="Your session is encrypted and used only for your scans; leads from pages behind a login always go to needs review.">Your session is encrypted, used only for your scans, rate limited, and logged below your scans in the lookup history. Leads from pages behind a login are never verified automatically. They go to needs review. Remove a session at any time.</Caveat>
       {([0, 1, 2] as const).map(t => (
         <div key={t} className="mt-5">
