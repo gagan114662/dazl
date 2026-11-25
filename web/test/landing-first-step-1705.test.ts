@@ -18,11 +18,12 @@ test('#1705: hero, steps and OG text describe the same single first step: say wh
   assert.match(page, /Say who you want to reach\./)
   // The meta/OG description is the same first step, not a third pitch, and it does not overclaim proof:
   // dazl does not open every source page (#1716), so it shows the dated public proof for each lead.
-  // Both the homepage (publicMeta argument) and the layout fallback set this wording explicitly; the
-  // shared SITE_DESCRIPTION default in lib/site.ts and the OG image in app/opengraph-image.tsx still
-  // carry the old wording and are outside this lane's allowed files.
+  // Both the homepage (publicMeta argument) and the layout fallback set this wording explicitly, and the
+  // OG image says the same (edited under Gagan's #1705 scope approval on PR #1731). The shared
+  // SITE_DESCRIPTION default in lib/site.ts still carries the old wording: outside the approved scope.
   const honest = /Say who you want to reach\. dazl finds buyers showing intent and shows the dated public proof for each lead\./
   assert.match(page, honest)
+  assert.match(read('app/opengraph-image.tsx'), honest)
   assert.match(page, /publicMeta\('\/', SITE_TITLE, LANDING_DESCRIPTION\)/)
   assert.match(layout, /description: LANDING_DESCRIPTION/)
   assert.doesNotMatch(page, /verifies each lead against its source/)
