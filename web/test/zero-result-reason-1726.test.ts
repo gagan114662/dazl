@@ -9,26 +9,44 @@ const base: ZeroResultInput = {
 }
 const result = (overrides: Partial<ZeroResultInput> = {}): ZeroResultReason => zeroResultReason({ ...base, ...overrides })
 
-test('recognizes a supported out-of-region stop', () => {
-  assert.equal(result({ stop: 'unsupported_region' }).code, 'unsupported_region')
+test('unsupported region copy', () => {
+  assert.deepEqual(result({ stop: 'unsupported_region' }), {
+    code: 'unsupported_region',
+    reason: 'dazl covers the US and Canada for now.',
+    nextStep: 'Search for companies in the US or Canada.',
+  })
 })
-test('recognizes a clearly non-commercial request', () => {
-  assert.equal(result({ offer: 'I need a poem for personal use, not a business.' }).code, 'non_saas_offer')
+test('non-commercial offer copy and action', () => {
+  assert.deepEqual(result({ offer: 'I need a poem for personal use, not a business.' }), {
+    code: 'non_saas_offer',
+    reason: "We couldn't find companies showing that signal for this kind of offer.",
+    nextStep: "Name the buyer and a clear sign they need you, like 'dentists in Ohio opening a second office'.",
+    action: { label: 'Edit search', href: '/app/leads' },
+  })
 })
-test('all discovered candidates filtered means the signal was too narrow', () => {
-  const got = result({ candidates: 3, rejected: 3 })
+test('narrow signal interpolates the candidate count', () => {
+  const got = result({ candidates: 7, rejected: 7 })
   assert.equal(got.code, 'signal_too_narrow')
-  assert.equal(got.nextStep, 'Try a wider location or remove one requirement, then search again.')
+  assert.equal(got.reason, 'We found 7 companies, but none passed the checks.')
+  assert.equal(got.nextStep, 'Try a wider area or drop one requirement.')
 })
-test('recognizes exhausted allowance and a budget stop', () => {
-  assert.equal(result({ searchesUsed: 5, searchAllowance: 5 }).code, 'budget_spent')
-  assert.equal(result({ stop: 'search_limit_reached' }).code, 'budget_spent')
-})
-test('ambiguous evidence and an unrecognized stop stay unknown, not a no-results claim', () => {
-  for (const got of [result(), result({ stop: 'provider_failed', candidates: 0 })]) {
-    assert.equal(got.code, 'unknown')
-    assert.doesNotMatch(got.reason, /found nothing|no results|nothing found/i)
+test('both exhausted allowance branches use approved budget copy', () => {
+  const expected = {
+    code: 'budget_spent',
+    reason: 'This search used all 15 of its web searches before finding a lead that passed.',
+    nextStep: 'Try a narrower request, like one city or one signal, and run it again.',
   }
+  assert.deepEqual(result({ searchesUsed: 5, searchAllowance: 5 }), expected)
+  assert.deepEqual(result({ stop: 'search_limit_reached' }), expected)
+})
+test('both unknown branches use approved copy', () => {
+  const expected = {
+    code: 'unknown',
+    reason: "We couldn't find leads for this search.",
+    nextStep: 'Try rewording it with a clear buyer and signal.',
+  }
+  assert.deepEqual(result(), expected)
+  assert.deepEqual(result({ stop: 'provider_failed', candidates: 0 }), expected)
 })
 test('always returns an object with one allowed code and no raw internal code in reason', () => {
   const inputs: ZeroResultInput[] = [base, { ...base, stop: 'unsupported_region' }, { ...base, stop: 'search_limit_reached' }, { ...base, candidates: 1, rejected: 1 }, { ...base, offer: 'I need a poem for personal use, not a business.' }]
