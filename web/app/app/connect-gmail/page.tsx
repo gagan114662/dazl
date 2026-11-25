@@ -15,6 +15,7 @@ export default async function ConnectGmailPage() {
         <div className="card p-5 mb-4" data-testid="gmail-explainer-warning">
           <p className="mb-3">{x.warning.lead}</p>
           <ol className="list-decimal pl-5 space-y-1 text-[#333]">{x.warning.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+          <p className="mt-3 text-[#555]" data-testid="gmail-verification-note">{'Where this stands: dazl is waiting on Google\'s review of its app, so this warning is expected for now. It is about dazl, not about your account, and the permission on the next screen is still only to send email.'}</p>
         </div>
       )}
       <div className="card p-5 mb-5">
