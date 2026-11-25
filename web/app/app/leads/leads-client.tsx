@@ -103,9 +103,19 @@ interface CommenterBatch { batch_id: string; context: string; total: number; not
 // LinkedIn or source link with its basis, or plainly "No buyer named yet" (children: what the row offers next to that text).
 const onlyNameOnlyRows = (rows: Parameters<typeof contactsFromEnrichments>[0] | undefined, roles: string): boolean => onlyNameOnly(contactsFromEnrichments(rows ?? [], roles))
 function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }) {
-  return p
-    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : null}{p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({personBasis(p)})</span></div>
-    : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+  if (!p) return <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+
+  const title = p.title.trim()
+  const missing = title ? (p.linkedin ? null : 'No LinkedIn profile found')
+    : p.linkedin ? 'No job title found' : 'No job title or LinkedIn profile found'
+  return <div className="text-sm mt-0.5" data-testid="lead-person">
+    <span className="font-medium">{p.name}</span>
+    {title && <span className="text-[var(--ink-2)]"> · {title}</span>}
+    {p.linkedin && <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></>}
+    {p.source && <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></>}
+    <span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({personBasis(p)})</span>
+    {missing && <span className="block text-[var(--ink-2)]">{missing}</span>}
+  </div>
 }
 
 function ReviewCompanyWebsite({ lead }: { lead: Lead }) {
