@@ -7,7 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
-import { addLaunchRegionUsage, allowsLaunchLead, launchRegionMessage, launchRegionSystemPrompt, prepareLaunchRegion } from './launch-region.ts'
+import { allowsLaunchLead, launchRegionSystemPrompt, readLaunchRegion } from './launch-region.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
@@ -136,16 +136,14 @@ export function userMessage(input: DiscoverInput, today: string, max: number): s
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
 }
 
-export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; searchBudget?: SearchBudget; launchRegion?: typeof prepareLaunchRegion }): Promise<DiscoverResult> {
+export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; searchBudget?: SearchBudget }): Promise<DiscoverResult> {
   const max = Math.min(Math.max(input.maxLeads ?? 10, 1), 20)
   if (DISCOVER_MODEL !== 'claude-sonnet-5-5') throw new Error('Discovery requires the supported Sonnet cost policy')
   const allowance = Math.min(searchAllowance(input.maxSearches), configuredSearchAllowance(MAX_SEARCHES))
   const searches = deps.searchBudget ?? createSearchBudget(allowance)
   const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 0 })
-  const launch = await (deps.launchRegion ?? prepareLaunchRegion)(client, input, deps.signal)
-  if (!launch.ok) return launch.result
   const today = (input.today ?? new Date()).toISOString().slice(0, 10)
-  const user = launchRegionMessage(userMessage(input, today, max), launch.places)
+  const user = userMessage(input, today, max)
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   let text = '', stop = 'unknown', model = DISCOVER_MODEL
@@ -191,6 +189,9 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
     if (stop !== 'pause_turn') break
     messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.BetaContentBlockParam[] })
   }
-  const parsed = stop === 'refusal' ? { leads: [], note: 'the model declined this request' } : parseLeads(text, max, lead => allowsLaunchLead(lead, launch.places))
-  return { ...parsed, usage: addLaunchRegionUsage({ ...usage, usd: usd(usage) }, launch.usage), stop, model, seen: [...seen.values()] }
+  const settled = { ...usage, usd: usd(usage) }
+  const launch = stop === 'refusal' ? null : readLaunchRegion(input, text)
+  if (launch && !launch.ok) return { leads: [], seen: [], usage: settled, stop: launch.stop, model, note: launch.note }
+  const parsed = launch ? parseLeads(text, max, lead => allowsLaunchLead(lead, launch.places)) : { leads: [], note: 'the model declined this request' }
+  return { ...parsed, usage: settled, stop, model, seen: [...seen.values()] }
 }

@@ -9,7 +9,7 @@ import { createSearchBudget, searchAllowance } from './search-budget.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
-import { isLaunchRegionStop, launchRegionForRun, launchRegionPages } from './launch-region.ts'
+import { isLaunchRegionStop, launchRegionPages } from './launch-region.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
@@ -26,7 +26,7 @@ const PEOPLE_LEAD_USD = 0.045
 
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
   const discover = deps.discover ?? discoverLeads, enrich = deps.enrich === undefined ? enrichLeads : deps.enrich
-  const api = { apiKey: deps.apiKey, fetch: deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(searchAllowance(budget.maxSearches ?? input.maxSearches)), launchRegion: launchRegionForRun() }
+  const api = { apiKey: deps.apiKey, fetch: deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(searchAllowance(budget.maxSearches ?? input.maxSearches)) }
   const sized = { ...input, ...(budget.maxSearches !== undefined ? { maxSearches: budget.maxSearches } : {}), ...(budget.maxFetches ? { maxFetches: budget.maxFetches } : {}) }
   const want = budget.wantShown ?? 5
   const usage: Pick<DiscoverUsage, 'usd' | 'searches' | 'requests'> = { usd: 0, searches: 0, requests: 0 }
