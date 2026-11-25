@@ -569,7 +569,7 @@ export function migrateScanSpendCap(db: Database.Database): void {
   if (!has('spend_cap_reserved_usd')) db.exec('ALTER TABLE scan_jobs ADD COLUMN spend_cap_reserved_usd REAL NOT NULL DEFAULT 0 CHECK (spend_cap_reserved_usd >= 0)')
   if (!has('spend_cap_refusals')) db.exec('ALTER TABLE scan_jobs ADD COLUMN spend_cap_refusals INTEGER NOT NULL DEFAULT 0')
   db.transaction(() => {
-    const nativeLedgerExists = db.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'scan_native_search_calls'").get()
+    const nativeLedgerExists = db.prepare('PRAGMA table_info(scan_native_search_calls)').all().length > 0
     db.exec(scanSpendSchemaSql())
     if (!nativeLedgerExists) db.exec(backfillNativeSearchCallsSql)
   }).immediate()
