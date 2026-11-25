@@ -13,7 +13,7 @@ test('#1700 the app shell is the visible height and clips, so only <main> scroll
   assert.ok(shell.includes('h-dvh'), 'visible height, not 100vh (taller than a phone\'s visible area)')
   assert.ok(!shell.includes('h-screen'))
   assert.ok(shell.includes('relative') && shell.includes('overflow-hidden'), 'absolutely positioned descendants cannot stretch the page')
-  assert.match(layout, /<main id="main"[^>]*className="flex-1 min-w-0 overflow-auto"/, '<main> stays the one scroller')
+  assert.match(layout, /<main id="main"[^>]*className="flex-1 min-w-0 overflow-auto( max-md:peer-checked:hidden)?"/, '<main> stays the one scroller')
 })
 test('#1700 the 100vh floor on html/body does not apply to the app shell', () => {
   assert.match(css, /html:has\(\.app-ui\), body:has\(\.app-ui\) \{ min-height: 0; \}/)
