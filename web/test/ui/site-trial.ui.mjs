@@ -5,7 +5,7 @@
 // test/trial-site-read.test.ts; the trial path to the first lead card is test/ui/one-sentence.ui.mjs.) It proves:
 //   1. on a readable page, below the route's own rate limit, the free read always answers 200 - the page's own
 //      facts render with their sources (the floor);
-//   2. when the trial could not fund the read, the profile screen says the real reason (each refusal, read_failed included),
+//   2. when the trial could not fund the read, the profile screen offers the manual path (each refusal, read_failed included),
 //      never a free-start promise, and the manual profile is right there;
 //   3. flag off / no trial path at all: the free read with the manual profile;
 //   4. a funded read lands the editable draft (and saves it, as a keyed read does);
@@ -39,20 +39,20 @@ const FREE = { free: true, site: 'ledgerline.example', source: 'https://ledgerli
   { kind: 'description', text: 'Monthly bookkeeping for busy founders, reconciled automatically.', source: 'https://ledgerline.example/' },
 ] }
 const CASES = [
-  ['not-configured', 'not_configured', `The free trial isn't available here right now.`],
-  ['reads-used', 'site_reads_used', `You have used your three free website reads for now; they come back together, 30 days after the first.`],
-  ['busy', 'site_reads_busy', `The free trial is busy right now. Try again later.`],
-  ['google', 'google_required', `Free website reads need a Google account: link Google to this account to read it free (no card).`],
-  ['domain-used', 'domain_used', `Another account at your company's email domain has already started the free trial, and it belongs to that account.`],
-  ['attempts-cap', 'attempts_cap', `Your free trial is used up.`],
-  ['account-total-cap', 'account_total_cap', `Your free trial's spending allowance is used up (website reads on the trial count toward it).`],
-  ['global-daily-cap', 'global_daily_cap', `The free trial is busy right now. Try again later.`],
-  ['ip-throttle', 'ip_throttle', `The free trial is busy right now. Try again later.`],
-  ['limit-unavailable', 'limit_unavailable', `The free trial is busy right now. Try again later.`],
-  ['workspace', 'workspace_not_eligible', `The free trial belongs to the account that created this workspace.`],
+  ['not-configured', 'not_configured'],
+  ['reads-used', 'site_reads_used'],
+  ['busy', 'site_reads_busy'],
+  ['google', 'google_required'],
+  ['domain-used', 'domain_used'],
+  ['attempts-cap', 'attempts_cap'],
+  ['account-total-cap', 'account_total_cap'],
+  ['global-daily-cap', 'global_daily_cap'],
+  ['ip-throttle', 'ip_throttle'],
+  ['limit-unavailable', 'limit_unavailable'],
+  ['workspace', 'workspace_not_eligible'],
   // The port's two new reasons: guard refused before any call (nothing used); the funded call failed (that read counted).
-  ['spend-unavailable', 'spend_unavailable', `The free trial could not fund this read just now; nothing was used up. Try again later.`],
-  ['read-failed', 'read_failed', `dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another, or describe your business yourself.`],
+  ['spend-unavailable', 'spend_unavailable'],
+  ['read-failed', 'read_failed'],
 ]
 const FUNDED = { icp: { summary: 'Founders at small agencies that want hands-off books.', who: ['Agency founders'], industries: ['Professional services'], sizes: ['1-10'], where: [], signals: ['Hiring a bookkeeper'], exclude: [] }, source: 'https://ledgerline.example/', sells: 'Hands-off monthly bookkeeping', funded: 'trial' }
 const b = await chromium.launch()
@@ -114,15 +114,17 @@ try {
     await ctx.close()
   }
   for (const [width, height, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
-    // The floor + every refusal: 200, the page's own facts, the manual profile with the real reason. Only the read request.
-    for (const [name, reason, text] of CASES) {
+    // The floor + every refusal: 200, the page's own facts, the manual profile fallback. Only the read request.
+    for (const [name, reason] of CASES) {
       const { ctx, page, writes } = await open(width, height, { status: 200, body: { ...FREE, trial: reason } })
       const panel = page.getByTestId('free-site-read')
       await panel.waitFor({ timeout: 15000 })
       assert.match(await panel.innerText(), /books that close themselves/, `${name}: the page's own facts render`)
       assert.match(await panel.innerText(), /reconciled automatically/, `${name}: the description fact renders`)
       const stepText = await page.getByTestId('free-site-read').locator('..').innerText()
-      assert.match(stepText, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${name}: the real reason`)
+      assert.ok(await page.getByText('The automatic read is unavailable. Describe your business yourself below.', { exact: true }).isVisible(), `${name}: a manual profile is available`)
+      assert.ok(await page.getByLabel('What you sell').isEditable())
+      if (reason === 'google_required') assert.ok(await page.getByTestId('site-read-trial-refusal').getByRole('link', { name: 'Link Google' }).isVisible())
       assert.doesNotMatch(stepText, /free search|free scans? to start|3 free/i, `${name}: no free-start promise`)
       assert.doesNotMatch(stepText, /add your own|save key|your AI key/i, `${name}: no key action`)
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${width}px`)

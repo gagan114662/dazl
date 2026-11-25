@@ -17,6 +17,12 @@ test('#1703: first-run never mounts a key editor and the retained component cann
   assert.equal(/fetch\(|<input\b|<form\b/.test(src('app/app/key-inline.tsx')), false)
 })
 
+test('#1703: a blocked automatic read offers the manual profile without parsing provider copy', () => {
+  const page = src('app/app/first-run.tsx')
+  assert.doesNotMatch(page, /siteKeyReason/)
+  assert.ok(page.includes('The automatic read is unavailable. Describe your business yourself below.'))
+})
+
 test('#1703: no Settings trial line or next step asks for a key', () => {
   for (const blocked of BLOCKS) for (const funded of [true, false]) for (const remaining of [0, 1, 3]) {
     const c = trialCopy({ funded, remaining, cap: 3, blocked })
