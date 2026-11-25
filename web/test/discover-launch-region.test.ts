@@ -11,7 +11,7 @@ const candidate = (company: string, country: string | null) => ({
 type Payload = { model: string; tools?: unknown; messages: unknown; system?: unknown }
 type Place = { text: string; city: string | null; region: string | null; country: string | null }
 
-function provider(places: Place[], leads: ReturnType<typeof candidate>[] = [], searches = 0) {
+function provider(places: Place[], leads: ReturnType<typeof candidate>[] = [], searches = 0, pauseWithPlan = false) {
   const requests: Payload[] = []
   const fetchImpl: typeof fetch = async (_input, init) => {
     const payload = JSON.parse(String(init?.body))
@@ -19,11 +19,13 @@ function provider(places: Place[], leads: ReturnType<typeof candidate>[] = [], s
     const reply = { id: 'msg_test', type: 'message', role: 'assistant', content: [], stop_reason: null, usage: USAGE }
     const plan = { offer: null, buyer_type: 'agencies', industry_code: null, places, signals: [], exclusions: [], language: 'en' }
     if (!payload.tools) return Response.json({ ...reply, model: 'claude-haiku-4-5', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(plan) }] })
+    const paused = pauseWithPlan && requests.length === 1
+    const output = !pauseWithPlan ? { request_plan: plan, leads } : paused ? { request_plan: plan, leads: [] } : { leads }
     const events = [
       { type: 'message_start', message: { ...reply, model: MODEL } },
-      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: JSON.stringify({ request_plan: plan, leads }) } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: JSON.stringify(output) } },
       { type: 'content_block_stop', index: 0 },
-      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { ...USAGE, server_tool_use: { web_search_requests: searches } } },
+      { type: 'message_delta', delta: { stop_reason: paused ? 'pause_turn' : 'end_turn' }, usage: { ...USAGE, server_tool_use: { web_search_requests: searches } } },
       { type: 'message_stop' },
     ]
     return new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } })
@@ -117,4 +119,21 @@ test('a search already reported by Claude stays accounted for when its plan is r
   assert.equal(run.stop, 'unsupported_search_region')
   assert.equal(run.searches, 1)
   assert.deepEqual([run.leads, run.pages], [[], []])
+})
+
+test('profile-only locations cannot override an explicitly typed destination', async () => {
+  const { fetchImpl } = provider([{ text: 'New York', city: null, region: 'New York', country: 'US' }], [candidate('Local', 'US')])
+  const run = await discoverLeads({ query: 'Find agencies hiring an SDR in Toronto', profile: { where: ['New York'] } }, { apiKey: 'test', fetch: fetchImpl })
+  assert.equal(run.stop, 'search_region_unconfirmed')
+  assert.deepEqual(run.leads, [])
+})
+
+test('a final response without a repeated plan uses the complete paused plan', async () => {
+  const { requests, fetchImpl } = provider([{ text: 'Canada', city: null, region: null, country: 'CA' }], [
+    candidate('Canadian', 'CA'), candidate('Outside', 'GB'),
+  ], 0, true)
+  const result = await discoverLeads({ query: 'Find agencies hiring an SDR in Canada' }, { apiKey: 'test', fetch: fetchImpl })
+  assert.equal(requests.length, 2)
+  assert.equal(result.usage.requests, 2)
+  assert.deepEqual(result.leads.map(lead => lead.company), ['Canadian'])
 })

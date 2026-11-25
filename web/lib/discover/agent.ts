@@ -147,6 +147,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   let text = '', stop = 'unknown', model = DISCOVER_MODEL
+  let retainedLaunch: ReturnType<typeof readLaunchRegion> | undefined
   const seen = new Map<string, SeenPage>()
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
     const reservation = await searches.reserve(allowance)
@@ -187,10 +188,11 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
     text = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text').map(b => b.text).join('')
     // The server-side tool loop paused: send the turn back unchanged and it resumes where it stopped.
     if (stop !== 'pause_turn') break
+    retainedLaunch = readLaunchRegion(input, text, retainedLaunch)
     messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.BetaContentBlockParam[] })
   }
   const settled = { ...usage, usd: usd(usage) }
-  const launch = stop === 'refusal' ? null : readLaunchRegion(input, text)
+  const launch = stop === 'refusal' ? null : readLaunchRegion(input, text, retainedLaunch)
   if (launch && !launch.ok) return { leads: [], seen: [], usage: settled, stop: launch.stop, model, note: launch.note }
   const parsed = launch ? parseLeads(text, max, lead => allowsLaunchLead(lead, launch.places)) : { leads: [], note: 'the model declined this request' }
   return { ...parsed, usage: settled, stop, model, seen: [...seen.values()] }
