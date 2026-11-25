@@ -146,3 +146,10 @@ export function editedBuyer(original: BuyerProfile, form: Record<BuyerLists | 's
   for (const k of LIST_FIELDS) out[k] = form[k] === showList(original[k]) ? original[k] : splitList(form[k])
   return out
 }
+
+// #1720: what Home read for ONE play (its leads, drafts, sent count) is kept with that play's id and handed out only for that
+// play. An earlier play's data, or an answer that arrives after the card moved to another play, is never shown for the play on
+// the card, so the title, the counts and the leads always describe the same play.
+export function playDataFor<T extends { id: string }>(playId: string | null, data: T | null): T | null {
+  return playId && data && data.id === playId ? data : null
+}

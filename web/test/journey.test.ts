@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { heldReason, journey, previewSplit, NO_OWN_BUYER, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
+import { heldReason, journey, playDataFor, previewSplit, NO_OWN_BUYER, type JourneyJob, type PreviewLead } from '../lib/journey.ts'
+import { readFileSync } from 'node:fs'
 import { ownSiteBuyerRows } from './helpers/own-site-buyer.ts'
 
 const lead = (o: Partial<PreviewLead> = {}): PreviewLead => ({
@@ -108,4 +109,42 @@ test('#1037 a lead held only for its buyer is research "the rest of the lead is 
   assert.equal(researchCause(l), 'need')
   assert.deepEqual(heldState(l), { state: 'research', cause: 'need' })
   assert.equal(holdWords(NO_OWN_BUYER, 1), "no buyer named on the company's own site")
+})
+
+// #1720: the Home Play card's title, link and leads all come from one play. Two one-off plays with different requests: the
+// card shows the newest one, and its link is that same job, never the other play's.
+test('#1720 two one-off plays: the card title (query) and its job id are the same play', () => {
+  const OLD = 'a'.repeat(24), NEW = 'b'.repeat(24)
+  const jobs = [job({ id: OLD, query: 'Marketing agencies hiring SDRs', created_at: 100 }), job({ id: NEW, query: 'Textile mills expanding', created_at: 200 })]
+  const j = journey({ profile: { sells: 'Outbound tools' }, jobs, leads: null, drafts: null, watches: [] })
+  assert.equal(j.play?.id, NEW)
+  assert.equal(j.play?.query, 'Textile mills expanding')
+  assert.match(j.action?.href ?? '', new RegExp(NEW))
+  assert.doesNotMatch(j.action?.href ?? '', new RegExp(OLD))
+})
+test('#1720 data read for one play is never shown for another play (stale answers included)', () => {
+  const A = 'a'.repeat(24), B = 'b'.repeat(24)
+  const readA = { id: A, leads: [lead({ id: 'la' })], drafts: { drafts: 2, approved: 1 }, sent: 3 }
+  const readB = { id: B, leads: [lead({ id: 'lb' })], drafts: null, sent: 0 }
+  assert.equal(playDataFor(A, readA), readA, 'the play the data was read for')
+  assert.equal(playDataFor(B, readA), null, 'the card moved to B: A\'s leads, drafts and sent count are not shown')
+  assert.equal(playDataFor(A, readB), null, 'and the reverse')
+  assert.equal(playDataFor(null, readA), null, 'no play on the card: nothing shown')
+  assert.equal(playDataFor(A, null), null)
+  // a late answer for A lands after the card moved to B: it is stored as A's, so B still shows none of it
+  let stored: typeof readA | typeof readB | null = readB
+  stored = readA
+  assert.equal(playDataFor(B, stored), null)
+  // and the journey for B built from that gate holds no leads (never A's leads under B's title)
+  const jobs = [job({ id: A, query: 'Marketing agencies hiring SDRs', created_at: 100 }), job({ id: B, query: 'Textile mills expanding', created_at: 200 })]
+  const shown = playDataFor(B, stored)
+  const j = journey({ profile: { sells: 'Outbound tools' }, jobs, leads: shown?.leads ?? null, drafts: shown?.drafts ?? null, watches: [] })
+  assert.equal(j.play?.id, B)
+  assert.equal(j.stage, 'unknown', 'leads for B not read yet: unknown, not A\'s result')
+})
+test('#1720 Home reads every play\'s data through the id gate and drops answers that arrive for a play no longer shown', () => {
+  const src = readFileSync(new URL('../app/app/journey.tsx', import.meta.url), 'utf8')
+  assert.match(src, /playDataFor\(playId, playData\)/)
+  assert.match(src, /return \(\) => \{ stale = true \}/)
+  assert.doesNotMatch(src, /useState<PreviewLead\[\] \| null>/, 'no untagged leads state that outlives a change of play')
 })

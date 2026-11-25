@@ -3,7 +3,7 @@ import { PlayOfferCard } from './play-offer'
 import type { PlayOffer } from '@/lib/scan/play-offer-text'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { editedBuyer, journey, playLeads, playLeadsUrl, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
+import { editedBuyer, journey, playDataFor, playLeads, playLeadsUrl, showList, type JourneyInput, type JourneyJob, type PreviewLead } from '@/lib/journey'
 import { scanCounts } from '@/lib/outreach/scan-drafts'
 import { constraintPills, PILLS_SHOWN, playName, playPace, skipNoticeLine, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
@@ -27,13 +27,13 @@ export default function Journey() {
   const [profile, setProfile] = useState<Profile | null | 'failed'>(null)
   const [jobs, setJobs] = useState<JourneyJob[] | null | 'failed'>(null)
   const [playIcp, setPlayIcp] = useState<{ query: string | null; icp: PlayIcp | null } | null>(null)
-  const [leads, setLeads] = useState<PreviewLead[] | null>(null)
-  const [drafts, setDrafts] = useState<{ drafts: number; approved: number } | null>(null)
+  // #1720: the leads, drafts and sent count read for ONE play, tagged with that play's id. They are shown only while that
+  // play is the one the card shows, so an earlier play's leads never sit under a newer play's title (or the reverse).
+  const [playData, setPlayData] = useState<{ id: string; leads: PreviewLead[] | null; drafts: { drafts: number; approved: number } | null; sent: number | null } | null>(null)
   const [editing, setEditing] = useState(false)
   const [capped, setCapped] = useState<string | null>(null)
   // 'loading' until read; null = the list could not be read (the schedule is then unknown, never "Ran once").
   const [watches, setWatches] = useState<PlayWatch[] | null | 'loading'>('loading')
-  const [sent, setSent] = useState<number | null>(null)
   const [morePills, setMorePills] = useState(false)
   // What the current play sells (its campaign record, lib/scan/play-offer.ts); undefined until read, null if unreadable.
   const [playOfferOf, setPlayOfferOf] = useState<{ id: string; offer: PlayOffer | null } | null>(null)
@@ -82,22 +82,27 @@ export default function Journey() {
   const playOffer = playOfferOf && playOfferOf.id === playId ? playOfferOf.offer : undefined
   useEffect(() => {
     if (!playId || !playDone) return
+    let stale = false   // #1720: the play changed while this read was out; its answer is dropped, never shown under another play
     // The play's own leads, and its own campaign record for drafts (never the account-wide Outreach list).
     void get(playLeadsUrl(playId)).then(j => {
+      if (stale) return
       const ls: PreviewLead[] | null = Array.isArray(j?.leads) ? playLeads(j.leads as PreviewLead[]) : null
-      setLeads(ls)
+      setPlayData({ id: playId, leads: ls, drafts: null, sent: null })
       if (!ls) return
       void get(`/api/campaigns/${playId}`).then(c => {
+        if (stale) return
         const ok = Array.isArray(c?.messages)
-        setDrafts(ok ? scanCounts(c.messages, ls.map(l => l.id)) : null)
         // Contacted = this play's emails that were sent (its own campaign record; unknown when it could not be read).
         const ids = new Set(ls.map(l => l.id))
-        setSent(ok ? (c.messages as { lead_id: string; status: string }[]).filter(m => ids.has(m.lead_id) && m.status === 'sent').length : null)
+        setPlayData({ id: playId, leads: ls, drafts: ok ? scanCounts(c.messages, ls.map(l => l.id)) : null, sent: ok ? (c.messages as { lead_id: string; status: string }[]).filter(m => ids.has(m.lead_id) && m.status === 'sent').length : null })
       })
     })
+    return () => { stale = true }
   }, [playId, playDone]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (profile === null || jobs === null || watches === 'loading') return <div className="card p-6 text-sm text-[var(--ink-2)]" data-testid="journey-loading">Loading...</div>
+  const shown = playDataFor(playId, playData)
+  const leads = shown?.leads ?? null, drafts = shown?.drafts ?? null, sent = shown?.sent ?? null
   const j = journey({ ...base, leads, drafts })
   const p = profile !== 'failed' ? profile : null
   const buyer = p?.buyer ?? null
