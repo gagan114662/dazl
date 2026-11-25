@@ -26,10 +26,17 @@ export function zeroResultReason(input: ZeroResultInput): ZeroResultReason {
       nextStep: 'Search for companies in the US or Canada.',
     }
   }
+  if (stop && /provider.?rate.?limited|rate.?limited|\b429\b|http.?429/.test(stop)) {
+    return {
+      code: 'unknown',
+      reason: 'The search service is busy.',
+      nextStep: 'Try again in a few minutes.',
+    }
+  }
   if (stop && /budget|limit|allowance|quota/.test(stop)) {
     return {
       code: 'budget_spent',
-      reason: 'This search used all 15 of its web searches before finding a lead that passed.',
+      reason: `This search used all ${input.searchesUsed} of its web searches before finding a lead that passed.`,
       nextStep: 'Try a narrower request, like one city or one signal, and run it again.',
     }
   }
@@ -43,7 +50,7 @@ export function zeroResultReason(input: ZeroResultInput): ZeroResultReason {
   if (input.searchesUsed >= input.searchAllowance) {
     return {
       code: 'budget_spent',
-      reason: 'This search used all 15 of its web searches before finding a lead that passed.',
+      reason: `This search used all ${input.searchesUsed} of its web searches before finding a lead that passed.`,
       nextStep: 'Try a narrower request, like one city or one signal, and run it again.',
     }
   }

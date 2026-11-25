@@ -30,16 +30,20 @@ test('narrow signal interpolates the candidate count', () => {
   assert.equal(got.reason, 'We found 7 companies, but none passed the checks.')
   assert.equal(got.nextStep, 'Try a wider area or drop one requirement.')
 })
-test('both exhausted allowance branches use approved budget copy', () => {
-  const expected = {
-    code: 'budget_spent',
-    reason: 'This search used all 15 of its web searches before finding a lead that passed.',
-    nextStep: 'Try a narrower request, like one city or one signal, and run it again.',
-  }
-  assert.deepEqual(result({ searchesUsed: 5, searchAllowance: 5 }), expected)
-  assert.deepEqual(result({ stop: 'search_limit_reached' }), expected)
+test('both exhausted allowance branches use the actual searches used', () => {
+  assert.equal(result({ searchesUsed: 5, searchAllowance: 5 }).code, 'budget_spent')
+  assert.match(result({ searchesUsed: 5, searchAllowance: 5 }).reason, /used all 5 of its web searches/)
+  assert.equal(result({ searchesUsed: 3, searchAllowance: 3 }).code, 'budget_spent')
+  assert.match(result({ searchesUsed: 3, searchAllowance: 3 }).reason, /used all 3 of its web searches/)
+  assert.equal(result({ searchesUsed: 5, searchAllowance: 5 }).nextStep, 'Try a narrower request, like one city or one signal, and run it again.')
 })
-test('both unknown branches use approved copy', () => {
+test('provider rate limiting with remaining allowance is unknown, not budget spent', () => {
+  const got = result({ stop: 'provider_rate_limited', searchesUsed: 2, searchAllowance: 5 })
+  assert.equal(got.code, 'unknown')
+  assert.equal(got.reason, 'The search service is busy.')
+  assert.equal(got.nextStep, 'Try again in a few minutes.')
+})
+test('both generic unknown branches use approved copy', () => {
   const expected = {
     code: 'unknown',
     reason: "We couldn't find leads for this search.",
@@ -49,11 +53,11 @@ test('both unknown branches use approved copy', () => {
   assert.deepEqual(result({ stop: 'provider_failed', candidates: 0 }), expected)
 })
 test('always returns an object with one allowed code and no raw internal code in reason', () => {
-  const inputs: ZeroResultInput[] = [base, { ...base, stop: 'unsupported_region' }, { ...base, stop: 'search_limit_reached' }, { ...base, candidates: 1, rejected: 1 }, { ...base, offer: 'I need a poem for personal use, not a business.' }]
+  const inputs: ZeroResultInput[] = [base, { ...base, stop: 'unsupported_region' }, { ...base, stop: 'search_limit_reached' }, { ...base, candidates: 1, rejected: 1 }, { ...base, offer: 'I need a poem for personal use, not a business.' }, { ...base, stop: 'provider_rate_limited', searchesUsed: 2, searchAllowance: 5 }]
   for (const input of inputs) {
     const got = zeroResultReason(input)
     assert.ok(got && typeof got === 'object')
     assert.ok(validCodes.includes(got.code))
-    assert.doesNotMatch(got.reason, /unsupported_region|non_saas_offer|signal_too_narrow|budget_spent|unknown/)
+    assert.doesNotMatch(got.reason, /unsupported_region|non_saas_offer|signal_too_narrow|budget_spent|unknown|provider_rate_limited/)
   }
 })
