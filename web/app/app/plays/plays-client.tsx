@@ -1,6 +1,6 @@
 'use client'
 import Link from 'next/link'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { dayOf, playsPageItems, type OncePlay, type PlaysAnswer, type SavedPlay } from '@/lib/saved-plays'
 import type { PlayRun, PlayRuns } from '@/lib/play-runs'
 import type { PlayNew } from '@/lib/play-now'
@@ -62,14 +62,22 @@ export default function PlaysClient() {
   // #1042: the started runs this page is following (one timer each), stopped when the page goes away
   const polls = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const alive = useRef(true)
+  const usageRequest = useRef(0)
+  const loadUsage = useCallback(async () => {
+    const request = ++usageRequest.current
+    const usage = await fetch('/api/usage').then(r => r.ok ? r.json() : null).catch(() => null)
+    if (alive.current && request === usageRequest.current && usage) {
+      setTrial(usage.has_key ? null : (usage.trial ?? null) as TrialBlock | null)
+    }
+  }, [])
   const loadOnMount = useRef(load)
   useEffect(() => {
     alive.current = true
     loadOnMount.current()
-    void fetch('/api/usage').then(r => r.ok ? r.json() : null).catch(() => null).then(j => { if (alive.current && j && !j.has_key && j.trial) setTrial(j.trial as TrialBlock) })
+    void loadUsage()
     const timers = polls.current
     return () => { alive.current = false; for (const t of timers.values()) clearTimeout(t); timers.clear() }
-  }, [])
+  }, [loadUsage])
   // Follows one started run with the read-only status read until it ends (bounded), then reloads the play and its new
   // leads, so "the new leads show here when this run finishes" holds while the page stays open.
   function follow(jobId: string, tries = 0) {
@@ -81,7 +89,11 @@ export default function PlaysClient() {
       const r = await fetch(`/api/scan/status?job_id=${jobId}&readonly=1`).catch(() => null)
       const j = r ? await r.json().catch(() => null) : null
       if (!alive.current) return
-      if (r && runEnded(r.status, j)) { load(); return }
+      if (r && runEnded(r.status, j)) {
+        load()
+        void loadUsage()
+        return
+      }
       if (tries + 1 < RUN_POLL_MAX) follow(jobId, tries + 1); else load()
     }, RUN_POLL_MS))
   }
@@ -111,6 +123,7 @@ export default function PlaysClient() {
       // the route already dispatched the scan; follow it so the page shows its new leads when it ends
       follow(j.job_id)
       load()
+      void loadUsage()
     }
   }
 
