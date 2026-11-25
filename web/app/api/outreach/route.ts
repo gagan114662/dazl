@@ -11,7 +11,7 @@ import { denied } from '@/lib/workspace-access'
 
 const MSG: Record<string, [number, string]> = {
   domain_unconfirmed: [409, 'Check that this website is the right company on Leads ("This website is the right company") before drafting. That check is not need, consent or a send approval.'],
-  seller_context_required: [422, 'Add your business name on the Home page ("What you sell") before creating a draft.'],
+  seller_context_required: [422, 'Add your company name in Business before creating a draft.'],
   offer_unreadable: [503, 'What this play sells could not be read just now, so nothing was drafted. Try again in a moment.'],
   offer_conflict: [409, 'This play\'s request names a different offer than the one it was created with. Choose what this play sells on its campaign page (or Home) before drafting.'],
   seller_offer_required: [422, 'Add a short description of what you offer (Memory or onboarding) before creating a draft. dazl will not invent one.'],
@@ -33,8 +33,12 @@ const MSG: Record<string, [number, string]> = {
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
+  const db = getScanDb()
+  // #1711 (Qodo review): the messages list is capped at the newest 200, so a waiting count filtered from it
+  // misses older drafts. The count is its own aggregate, independent of the list limit.
+  const waiting = db.prepare("SELECT COUNT(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('draft', 'approved')").get(user.tenantId) as { n: number }
   // autopilot_available: false during the beta (lib/outreach/autopilot.ts autopilotAvailable); the page then offers no autopilot
-  return NextResponse.json({ messages: listMessages(getScanDb(), user.tenantId), autopilot_available: autopilotAvailable() })
+  return NextResponse.json({ messages: listMessages(db, user.tenantId), waiting_count: waiting.n, autopilot_available: autopilotAvailable() })
 }
 
 export async function POST(req: NextRequest) {
@@ -51,7 +55,7 @@ export async function POST(req: NextRequest) {
     // so it happens only via an explicit click on POST /api/outreach/polish.
     return NextResponse.json({ id }, { status: 201 })
   } catch (e) {
-    if (e instanceof OutreachError) { const [s, m] = MSG[e.code] ?? [400, 'Could not create the draft']; return NextResponse.json({ error: m, code: e.code }, { status: s }) }
+    if (e instanceof OutreachError) { const [s, m] = MSG[e.code] ?? [400, 'Could not create the draft']; return NextResponse.json({ error: m, code: e.code, ...(e.code === 'seller_context_required' ? { fix_href: '/app/business' } : {}) }, { status: s }) }
     // Not a known business refusal (for example SQLITE_BUSY under a second writer). Fixed body, so the client always gets JSON.
     const f = draftFailure(e)
     captureError(e, { source: 'route', where: '/api/outreach', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) })
