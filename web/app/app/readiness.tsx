@@ -27,20 +27,21 @@ export default function Readiness() {
   const [site, setSite] = useState({ website: '', sells: '', business_name: '' })
   const [siteMsg, setSiteMsg] = useState('')
 
-  async function load() {
+  async function load(refreshSite = true) {
     // #1471: the plays are GET /api/plays, the same list the Plays page shows; each row's outcome comes from the jobs read
     const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput(), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
     const profile = next.profile
     setInput(next)
     setPlays(listed && Array.isArray(listed.plays) ? homePlays(listed.plays, jobs ?? null, next.campaigns) : null)
-    if (profile) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
+    // #1722: a wake re-read refreshes the status only - never the form state, so unsaved input survives.
+    if (profile && refreshSite) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
   }
   useEffect(() => {
     void load() // eslint-disable-line react-hooks/set-state-in-effect
     const refresh = () => void load()
     window.addEventListener('profile-updated', refresh) // the Home setup steps saved the business or buyer profile
     // #1722: the sender status can change in another tab (Outreach); re-read when this tab is used again.
-    const wake = () => { if (!document.hidden) void load() }
+    const wake = () => { if (!document.hidden) void load(false) }
     window.addEventListener('focus', wake)
     document.addEventListener('visibilitychange', wake)
     return () => { window.removeEventListener('profile-updated', refresh); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake) }
