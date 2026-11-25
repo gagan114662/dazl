@@ -106,7 +106,10 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   const by_signal = [...by.values()].sort((a, b) => b.replied - a.replied || b.contacted - a.contacted || b.leads - a.leads || a.signal.localeCompare(b.signal))
   const companyKeys = new Set<string>()
   let unnamed_leads = 0
-  for (const l of leadsShown) { const k = l.company ? companyKey(l.company) : ''; if (k) companyKeys.add(k); else unnamed_leads += 1 }
+  for (const l of leadsShown) { const name = (l.company ?? '').trim(); if (!name) { unnamed_leads += 1; continue }
+  // Only a name blank after trimming is 'without a company name': a real name whose key strips to empty
+  // (one made only of generic legal-form words) still names a company, keyed by the trimmed name itself.
+  companyKeys.add(companyKey(name) || name.toLowerCase()) }
   const companies = companyKeys.size
   const sum = (k: 'leads' | 'contacted' | 'replied') => by_signal.reduce((n, r) => n + r[k], 0)
   const latest_leads = leadsShown.slice(0, 5)
@@ -128,4 +131,4 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
 }
 
 // signalLabel lives in ./signal-label.ts (browser-safe: Home's client imports it; this module reads the scan store's gate).
-export { signalLabel } from './signal-label.ts'
+export { signalLabel, bySignalFootnote } from './signal-label.ts'
