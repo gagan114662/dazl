@@ -25,7 +25,21 @@ test('#1812: a full history list offers the older searches control', () => {
   assert.match(leads, /ready\.scans\.filter\(scan => !listed\.has\(scan\.job_id\)\)/)
 })
 
-test('#1812: opening the latest search keeps the workspace total visible', () => {
+test('#1812: the sidebar latest-search redirect keeps the workspace total visible', () => {
+  const sidebar = read('../app/app/nav.tsx').match(/href: '(\/app\/leads\?latest=1)', label: 'Leads'/)?.[1]
+  assert.ok(sidebar, 'sidebar Leads entry')
+  const redirect = leads.match(/else (if \(params\.get\('latest'\)[\s\S]*?\n      \})/)?.[1]
+  assert.ok(redirect, 'latest-search redirect')
+  const destinations: string[] = []
+  const id = 'a'.repeat(24)
+  new Function('params', 'jobs', 'window', redirect)(
+    new URL(sidebar, 'https://example.com').searchParams,
+    [{ id, status: 'done', lead_count: 1 }],
+    { location: { replace: (url: string) => destinations.push(url) } },
+  )
+  assert.deepEqual(destinations, [`/app/leads?job_id=${id}`])
+
+
   const effect = leads.match(/const \[ready, setReady\][\s\S]*?const \[pastJobs, setPastJobs\]/)?.[0]
   assert.ok(effect, 'workspace count read')
   assert.ok(!effect.includes('if (jobId) return'), 'a search deep link also loads the workspace counts')
