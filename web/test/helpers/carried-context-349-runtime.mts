@@ -8,6 +8,10 @@ import { setScanDb, setUser } from './tenant-route-db.ts'
 import { setSellerLine } from './scan-route-auth-stub.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../../lib/llm/key-store.ts'
+import { saveMemory } from '../../lib/memory.ts'
+import { readPlayOffer } from '../../lib/scan/play-offer.ts'
+import { draftOffer } from '../../lib/scan/play-offer-text.ts'
+import { readTenantOffer } from '../../lib/outreach/play-memory.ts'
 import { POST as ESTIMATE } from '../../app/api/scan/estimate/route.ts'
 import { POST as SCAN } from '../../app/api/scan/route.ts'
 
@@ -56,6 +60,22 @@ test('a fresh query preserves carried exclusions even when no buyer profile is s
   assert.equal(result.status, 202, JSON.stringify(result))
   const row = db.prepare('SELECT icp FROM scan_jobs WHERE id=? AND user_id=?').get(result.job_id, t) as { icp: string }
   assert.deepEqual(JSON.parse(row.icp).carry_exclude, ['Do not contact existing clients'])
+})
+
+test('a new play keeps the offer it took from Memory after the tenant changes it', async () => {
+  const t = tenant('')
+  saveMemory(db, t, { positioning: saved })
+  const estimate = await request(t, ESTIMATE, { query, icp: profile, reviewed: false })
+  assert.equal(estimate.status, 200, JSON.stringify(estimate))
+  const result = await request(t, SCAN, { query, icp: profile, reviewed: false, estimate_ack: estimate.estimate.ack })
+  assert.equal(result.status, 202, JSON.stringify(result))
+
+  saveMemory(db, t, { positioning: 'CRM setup and outbound sales consulting' })
+  const row = db.prepare('SELECT seller, offer, query FROM scan_jobs WHERE id=? AND user_id=?')
+    .get(result.job_id, t) as { seller: string | null; offer: string | null; query: string }
+  assert.deepEqual(await readPlayOffer(db, t, result.job_id), { offer: saved, source: 'recorded', conflict: null })
+  assert.equal(draftOffer(row, readTenantOffer(db, t)).offer, saved)
+  assert.equal(row.offer, null, 'using a saved offer does not record a user review')
 })
 
 test('a seller with no offer must choose before estimate or queue, not infer a product from buyers', async () => {

@@ -82,6 +82,8 @@ export async function POST(req: NextRequest) {
   // play. Without one, the play records the business profile's offer; a request that states a different offer is
   // refused until the caller chooses which one this play is for, before anything is queued or counted.
   const seller = await readSellerLine(await getDb(), user.tenantId)
+  let sellerSnapshot = seller
+  let inheritedOffer = ''
   const offerSupplied = body?.offer !== undefined && body?.offer !== null
   let offer = offerSupplied ? (completeOffer(body.offer) ?? '') : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
@@ -103,6 +105,9 @@ export async function POST(req: NextRequest) {
     const conflict = e.conflict ?? (!e.offer || e.source === 'request'
       ? { stated: e.offer, recorded: '', incomplete: true as const } : null)
     if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated, saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}), ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
+    inheritedOffer = e.offer ?? ''
+    // An offer from Memory needs the same creation snapshot as an offer from the business profile.
+    if (e.source === 'profile') sellerSnapshot = inheritedOffer
   }
 
   // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's
@@ -111,7 +116,7 @@ export async function POST(req: NextRequest) {
   // tenant's positioning/profile): a play that relies on the profile offer still gets the review semantics. The total
   // budget is enforced here, BEFORE anything is reserved, queued or counted: an oversized profile is refused whole,
   // never silently truncated (lib/scan/icp.ts budgetedIcp).
-  let bindOffer = offer
+  let bindOffer = offer || inheritedOffer
   if (icp && !bindOffer) {
     let tenantContext: string | null
     try { tenantContext = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
@@ -275,7 +280,7 @@ export async function POST(req: NextRequest) {
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed && !quotaLifted) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true, icpFromQuery: fromQuery, icpRetained: retained })
+      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller: sellerSnapshot, offer: offer || null, runBudget, icpReviewed: body?.reviewed === true, icpFromQuery: fromQuery, icpRetained: retained })
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, runBudget)
       if (websiteApproval && !recordQueuedWebsiteApproval(db, websiteApproval, jid)) {
         refused = NextResponse.json({ error: 'website_review_stale' }, { status: 409 })
