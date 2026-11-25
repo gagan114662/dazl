@@ -75,7 +75,11 @@ test('homepage approval wording matches the sending contract (#338, #1428): you 
   // AUTOPILOT_ENABLED=1, so the page says you approve every email and names no exception.
   // (These assertions used to require "unless you turn on Autopilot" in every approval claim.)
   assert.match(ap, /autopilotAvailable = \(env[^)]*\) => env\.AUTOPILOT_ENABLED === '1'/)
-  const claims = page.split(/(?<=[.!?'])\s+/).filter(x => /\byou approve\b/i.test(x))
+  // #1746: the Google OAuth footer line is exact required wording about API scope, pinned on its own below.
+  // Only that one exact sentence is lifted out; every other "you approve" sentence still has to match.
+  const GOOGLE_FOOTER = 'dazl uses Google APIs only to sign you in and to send emails you approve from your own Gmail. It does not generate images or any intimate content.'
+  assert.equal(page.split(GOOGLE_FOOTER).length - 1, 1, 'the exact Google footer sentence appears once')
+  const claims = page.replace(GOOGLE_FOOTER, '').split(/(?<=[.!?'])\s+/).filter(x => /\byou approve\b/i.test(x))
   assert.ok(claims.length >= 3, 'step 3, the proof strip and the free card all state it')
   for (const c of claims) assert.match(c, /You approve every (email|one)/, c)
   assert.match(page, /Every message is reviewed and sent by you, from your own Gmail\. Autopilot is not available during the beta\./)

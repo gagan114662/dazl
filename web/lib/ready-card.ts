@@ -1,6 +1,7 @@
 import { readinessRows, type ReadinessInput, type Row } from './readiness.ts'
 import { coreSources, socialSources } from './scan/source-availability.ts'
 import { linkGoogleHref } from './google-link.ts'
+import { trialCountText } from './trial-copy.ts'
 
 // Home's setup checklist toward the first useful result: business profile -> search can run -> first search ->
 // qualified lead -> contact -> draft -> sender setup. Read from the same tenant responses and rows as the full setup
@@ -39,13 +40,16 @@ export function readyItems(i: ReadinessInput): ReadyItem[] {
   // The account's scan allowance is checked first: adding a key does not get past a used-up allowance.
   const used = i.usage?.scans_used, limit = i.usage?.scan_limit
   const googleTrial = !i.usage?.has_key && i.usage?.trial?.blocked === 'google_required'
+  // #1704: on free searches the step says the count in the same words as Settings and Plays (lib/trial-copy.ts).
+  const trial = !i.usage?.has_key && i.usage?.trial?.funded ? i.usage.trial : null
+  const canRun = trial && (trial.remaining ?? 0) > 0 ? trialCountText({ ...trial, remaining: trial.remaining ?? 0 }) : key.detail
   const quotaUsed = typeof used === 'number' && typeof limit === 'number' && used >= limit
   const search: ReadyItem = quotaUsed ? { id: 'search', label: 'Search can run', state: 'todo', detail: `this month's scan allowance is used up (${used} of ${limit})`, fix: { href: '/app/settings#plan', label: 'See your plan' } }
     : key.state === 'unknown' || src.state === 'unknown' ? unknown('search', 'Search can run', key.state === 'unknown' ? key.detail : src.detail)
     // #1319: free trial scans wait only on Google sign-in: linking Google is the main way forward, the key the other one.
-    : key.state === 'todo' && googleTrial ? { id: 'search', label: 'Search can run', state: 'todo', detail: 'free trial searches need Google sign-in on this account (no card), or add your own AI key', fix: { href: linkGoogleHref('/app/leads'), label: 'Link Google (free trial)', primary: true }, alt: { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } }
+    : key.state === 'todo' && googleTrial ? { id: 'search', label: 'Search can run', state: 'todo', detail: 'free searches need Google sign-in on this account (no card)', fix: { href: linkGoogleHref('/app/leads'), label: 'Link Google (free trial)', primary: true }, alt: { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } }
     : key.state === 'todo' || src.state === 'todo' ? { id: 'search', label: 'Search can run', state: 'todo', detail: key.state === 'todo' ? key.detail : src.detail, fix: key.state === 'todo' ? { href: KEY_FIX, label: key.fix?.label ?? 'Add key' } : src.fix?.kind === 'link' ? {href:src.fix.href,label:src.fix.label} : null }
-    : { id: 'search', label: 'Search can run', state: 'done', detail: `${key.detail}. Sources: ${usable.join(', ')}`, fix: null }
+    : { id: 'search', label: 'Search can run', state: 'done', detail: `${canRun}. Sources: ${usable.join(', ')}`, fix: null }
 
   // 3. First search: a finished search of the account's own.
   const own = i.jobs?.filter(j => j.query && !j.csv_domain && !j.test_only) ?? []

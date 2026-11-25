@@ -213,3 +213,14 @@ test('#1043 Hermes c12ab77d: a hiring play only when a role, and nothing but a r
     ['just started hiring front-desk staff', 'Practice owner at companies hiring front-desk staff'], ['are currently actively hiring SDRs', 'Practice owner at companies hiring SDRs']] as [string, string, string?][])
     assert.deepEqual(q(s, [who ?? 'Practice owner']), [play], s)
 })
+
+test('#1722: an industry fallback buyer does not double "companies" in a hiring play', () => {
+  const plays = businessPlays({ buyer: icp({ who: [], industries: ['Marketing agencies'], where: ['Toronto'], signals: ['hiring SDRs'] }) }, [])
+  const q = plays.map(p => p.query)
+  assert.ok(q.some(x => /hiring SDRs/.test(x)), 'a hiring play exists')
+  assert.ok(!q.some(x => /companies at companies/i.test(x)), 'no "companies at companies" doubling')
+  assert.deepEqual(q, ['Marketing agencies in Toronto hiring SDRs'])
+  // a role buyer keeps the " at companies" qualifier
+  const role = businessPlays({ buyer: icp({ signals: ['hiring SDRs'] }) }, [])
+  assert.deepEqual(role.map(p => p.query), ['Practice owner at companies in Ohio hiring SDRs'])
+})

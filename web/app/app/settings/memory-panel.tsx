@@ -37,8 +37,8 @@ export default function MemoryPanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Memory</h2>
-      <Caveat className="text-[#555] text-sm mb-4" summary="What dazl remembers about how you sell, used on your own AI key; exclusions are hard rules.">What dazl remembers about how you sell. It shapes outreach drafts, follow-ups and lead scoring, on your own AI key (a few hundred extra tokens per call). Exclusions are hard rules: matching companies never reach your leads.</Caveat>
-      <label className="block text-xs text-gray-500 mb-1">Who you sell to (ICP)</label>
+      <Caveat className="text-[#555] text-sm mb-4" summary="What dazl remembers about how you sell; exclusions are hard rules.">What dazl remembers about how you sell. It shapes outreach drafts, follow-ups and lead scoring. Exclusions are hard rules: matching companies never reach your leads.</Caveat>
+      <label className="block text-xs text-gray-500 mb-1">Who you sell to</label>
       <textarea className="field w-full mb-2" rows={2} maxLength={600} value={m.icp} onChange={e => setM({ ...m, icp: e.target.value })} placeholder="e.g. Seed to Series B B2B SaaS, sales-led, 10-200 staff, North America" />
       <label className="block text-xs text-gray-500 mb-1">Your positioning</label>
       <textarea className="field w-full mb-2" rows={2} maxLength={600} value={m.positioning} onChange={e => setM({ ...m, positioning: e.target.value })} placeholder="e.g. We help sales teams find buyers who are already looking, without paid data tools" />

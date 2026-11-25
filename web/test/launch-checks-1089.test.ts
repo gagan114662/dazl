@@ -152,3 +152,20 @@ test('launch reporting: a healthy start raises nothing; a settled failure raises
     assert.equal(launch().length, 3); assert.equal(launch()[2], 'not ready for customers: deletion:not_configured')
   } finally { restore(); resetLaunchReport() }
 })
+
+// Qodo on #1754: a pending mail verification must not mask the other launch checks.
+test('launch reporting: an outbox failure while mail is pending still raises one record, and mail settling does not raise it again', async () => {
+  const raw = new Database(':memory:'); migrateAllSqlite(raw)
+  const got: ErrorRecord[] = []; const restore = setErrorSinks([r => got.push(r)])
+  let mail: MailCheck = { ok: false, reason: 'verify_pending', port: 465 }
+  const outbox = { ok: false, reason: 'stale', stored: 2, oldest_age_s: 9999 } as const
+  const probe = () => readiness({ db: async () => sqliteDb(raw), sqlite: () => raw, migrations: () => loadMigrations().map(m => m.version), mail: () => mail, deletion: () => ({ ok: true }), outbox: async () => outbox })
+  const launch = () => got.filter(r => r.where === 'readiness:launch').map(r => r.error.message)
+  try {
+    resetLaunchReport()
+    await probe(); await probe()
+    assert.deepEqual(launch(), ['not ready for customers: outbox:stale'], 'the outbox failure reports even though mail is pending')
+    mail = { ok: true, port: 465, verified_s_ago: 0 }; await probe()
+    assert.equal(launch().length, 1, 'mail settling does not report the same outbox failure again')
+  } finally { restore(); resetLaunchReport() }
+})

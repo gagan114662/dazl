@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react'
 import { dayOf, playsPageItems, type OncePlay, type PlaysAnswer, type SavedPlay } from '@/lib/saved-plays'
 import type { PlayRun, PlayRuns } from '@/lib/play-runs'
 import type { PlayNew } from '@/lib/play-now'
-import { newLabel, readSeen, runEnded, runNowMessage, RUN_POLL_MAX, RUN_POLL_MS, writeSeen, type RunNowAnswer } from '@/lib/play-new-view'
+import { newLabel, playStatusLabel, readSeen, runEnded, runNowMessage, RUN_POLL_MAX, RUN_POLL_MS, writeSeen, type RunNowAnswer } from '@/lib/play-new-view'
+import { trialSummary, type TrialBlock } from '@/lib/trial-copy'
 import { runNewLabel } from '@/lib/run-new-label'
 import { Icon } from '../ui/icons'
 import { Pill, type Tone } from '../ui/bits'
@@ -32,6 +33,8 @@ export default function PlaysClient() {
   const [fresh, setFresh] = useState<Record<string, Fresh | 'failed'>>({})
   const [openNew, setOpenNew] = useState<Record<string, boolean>>({})
   const [ran, setRan] = useState<Record<string, { ok: boolean; text: string }>>({})
+  // #1704: the account's free searches (GET /api/usage, null for an account on its own key), said as Settings and Home say them
+  const [trial, setTrial] = useState<TrialBlock | null>(null)
   async function toggleRuns(p: SavedPlay) {
     const k = keyOf(p)
     if (k in runs) { setRuns(r => { const rest = { ...r }; delete rest[k]; return rest }); return }
@@ -63,6 +66,7 @@ export default function PlaysClient() {
   useEffect(() => {
     alive.current = true
     loadOnMount.current()
+    void fetch('/api/usage').then(r => r.ok ? r.json() : null).catch(() => null).then(j => { if (alive.current && j && !j.has_key && j.trial) setTrial(j.trial as TrialBlock) })
     const timers = polls.current
     return () => { alive.current = false; for (const t of timers.values()) clearTimeout(t); timers.clear() }
   }, [])
@@ -119,7 +123,8 @@ export default function PlaysClient() {
     void loadNew(p)
   }
 
-  const items = answer === null || answer === 'failed' ? null : playsPageItems(answer)
+  const listed = answer === null || answer === 'failed' ? null : answer
+  const items = listed ? playsPageItems(listed) : null
   return (
     <div className="p-4 sm:p-8 max-w-5xl">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
@@ -129,6 +134,7 @@ export default function PlaysClient() {
         </div>
         <Link href="/app/leads" className="btn-primary btn-sm shrink-0" data-testid="new-play"><Icon name="plays" className="w-4 h-4" />New play</Link>
       </div>
+      {trial && <p className="text-sm mb-4 text-[var(--ink-2)]" data-testid="plays-trial">{trialSummary(trial).text}</p>}
       {err && <p className="text-sm mb-4 text-[#a3173f]" role="alert" data-testid="plays-error">{err}</p>}
       {/* A list that did not load is never shown as "no plays". */}
       {answer === 'failed' ? <p className="text-sm mb-4" role="alert" data-testid="plays-unavailable">Could not load your plays. Refresh to retry.</p>
@@ -155,7 +161,7 @@ export default function PlaysClient() {
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       {nf && hasNew && <Pill tone="mint" testid="play-new-count">{newLabel(nf.total, nf.checked)}</Pill>}
-                      <Pill tone={TONE[p.status.tone]} testid="play-status">{p.status.label}</Pill>
+                      <Pill tone={TONE[p.status.tone]} testid="play-status">{playStatusLabel(p, listed)}</Pill>
                     </div>
                   </div>
                   <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-x-4 gap-y-2 mt-4 text-sm">

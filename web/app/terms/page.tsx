@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import Link from 'next/link'
 import { SITE_BASE, publicMeta } from '@/lib/site'
 import { TERMS } from '@/lib/legal/policy'
 export const metadata: Metadata = { ...publicMeta('/terms', 'Terms of Service - dazl', 'The terms of service for using dazl.ai.'), alternates: { canonical: `${SITE_BASE}/terms` } }
@@ -7,6 +8,7 @@ export const metadata: Metadata = { ...publicMeta('/terms', 'Terms of Service - 
 export default function Terms() {
   return (
     <main id="main" className="max-w-2xl mx-auto px-6 py-16 text-[#555] text-sm leading-relaxed">
+      <nav aria-label="dazl" className="mb-6 flex gap-4 text-sm"><Link href="/" className="underline">dazl home</Link><Link href="/app" className="underline">Open the app</Link></nav>
       <h1 className="text-2xl font-semibold text-[#111] mb-4">Terms of Service</h1>
       {TERMS.map(s => (
         <section key={s.heading}>

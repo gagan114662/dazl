@@ -740,8 +740,8 @@ export async function runAutopilot(db: Database.Database, tenantId: string, busi
     // same policy judges the projected address (below) and the send gate judges the draft's real recipient.
     scopeSql = ` AND j.id IN (${audience.playIds.map(() => '?').join(', ')})`
       + (exclusions.emails.length ? ` AND (l.contact IS NULL OR lower(l.contact) NOT IN (${exclusions.emails.map(() => '?').join(', ')}))` : '')
-      + exclusions.domains.map(() => " AND (l.contact IS NULL OR lower(l.contact) NOT LIKE ? ESCAPE '\\')").join('')
-    scopeArgs = [...audience.playIds, ...exclusions.emails, ...exclusions.domains.map(like)]
+      + exclusions.domains.map(() => " AND (l.contact IS NULL OR (lower(l.contact) NOT LIKE ? ESCAPE '\\' AND lower(l.contact) NOT LIKE ? ESCAPE '\\'))").join('')
+    scopeArgs = [...audience.playIds, ...exclusions.emails, ...exclusions.domains.flatMap(d => [like(d), '%@%.' + d.trim().toLowerCase().replace(/[\\%_]/g, c => '\\' + c)])]
   }
   const leads = db.prepare(newLeadsSql(scopeSql)).all(tenantId, now - ENRICH_STALE_S, MIN_CONFIDENCE, tenantId, tenantId, tenantId, now - SKIP_ERROR_S, now - SKIP_RETRY_S, ...scopeArgs) as { id: string; contact: string }[]
 

@@ -9,6 +9,8 @@ on:
   # Manual run at an exact ref so a merged commit whose diff only touched release plumbing
   # can still carry the full required check set on its own SHA (checked_launch's gate).
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
 permissions:
   contents: read
 concurrency:
@@ -26,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
     # Gate 2: PRs get a hard 20-minute budget (affected tests only; 5 minutes cancelled most pull requests that touch a shared file, 2026-11-23); main runs the full suite (gate 3).
     # A reviewer-applied `full-suite-ci` label gives a PR the 45-minute ceiling AND forces ALL (#1099/#1273, Hermes F1).
     timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
@@ -115,7 +117,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
     services:
       postgres:

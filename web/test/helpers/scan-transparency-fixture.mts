@@ -61,17 +61,17 @@ d.prepare("INSERT INTO scan_jobs (id, user_id, status, business_name, industry, 
 d.prepare("INSERT INTO scan_model_calls (tenant_id, job_id, attempt, seq, stage, method, model_requested, model_served, input_tokens, output_tokens, outcome, prompt_chars) VALUES ('B', ?, 1, 1, 'scoring', 'completeDetailed', 'claude-sonnet-4-5', 'claude-sonnet-4-5', 50000, 5000, 'ok', 400)").run(JOB_B)
 audit(d, { tenantId: 'B', connector: 'enrich:apollo', jobId: JOB_B, lookup: 'org Secret', status: 'auth', results: 0 })
 
-// The 4 leads that passed verification in tenant A's scan (verified=4): the leads list must show
-// exactly these, so the page never pairs "across 4 leads" with an empty list. Timing stays
-// held/unconfirmed (no event_date proof seeded) - no date or intent is asserted beyond the record.
+// Tenant A's cost fixture needs four ready leads. Each seeded excerpt states the day
+// that its stored page-bound proof represents.
 const LEADS_A = [
   ['Northwind Dental', 'northwind-dental.test', 'Hiring an office manager', 'https://x.invalid/nw'],
   ['Bluepine Legal', 'bluepine-legal.test', 'Opening a second office', 'https://x.invalid/bp'],
   ['Kestrel Physio', 'kestrel-physio.test', 'Expanding to two locations', 'https://x.invalid/kp'],
   ['Harbor Optics', 'harbor-optics.test', 'New branch announced', 'https://x.invalid/ho'],
 ]
-const insLead = d.prepare("INSERT INTO leads(id,scan_job_id,company,company_domain,name,contact,signal,source_url,evidence_excerpt,confidence,score,fit,intent,action,why) VALUES(?,?,?,?,'Pat','pat@x.invalid',?,?,?,80,70,5,4,3,'Strong fit on the recorded signal.')")
-LEADS_A.forEach(([company, domain, signal, url], i) => insLead.run(`lead${i}`.padEnd(24, '0'), JOB_A, company, domain, signal, url, `${company}: ${signal}.`))
+const eventDay = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+const insLead = d.prepare("INSERT INTO leads(id,scan_job_id,company,company_domain,name,contact,signal,source_url,evidence_excerpt,event_date,event_date_proof,date_status,confidence,score,fit,intent,action,why) VALUES(?,?,?,?,'Pat','pat@x.invalid',?,?,?,?,'page_bound','verified',80,70,5,4,3,'Strong fit on the recorded signal.')")
+LEADS_A.forEach(([company, domain, signal, url], i) => insLead.run(`lead${i}`.padEnd(24, '0'), JOB_A, company, domain, signal, url, `${company}: ${signal} on ${eventDay}.`, eventDay))
 // Real lifecycle: leads land while the job runs, then the job completes.
 d.prepare("UPDATE scan_jobs SET status='done' WHERE id=?").run(JOB_A)
 

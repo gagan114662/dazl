@@ -50,7 +50,11 @@ export async function POST(req: NextRequest) {
 // Read-only confirmation details for the claim page (what am I about to claim?). Never consumes, never binds.
 // It returns the same stripped public artifact the token's own public page shows (offer + dated, sourced companies; no
 // contacts, no spend, no seller data), so the first screen after auth carries the prospect's proof, not a generic wizard.
+// #1673: this read is rate limited per IP like the write paths, so a link holder cannot hammer it unbounded.
 export async function GET(req: NextRequest) {
+  const rl = await rateLimit(`preview-claim-get:${clientIp(req)}`, 20, 10 * 60 * 1000)
+  if (rl.unavailable) return NextResponse.json({ error: 'Briefly unavailable. Try again in a moment.', code: 'limits_unavailable' }, { status: 503, headers: { 'Retry-After': String(UNAVAILABLE_RETRY_S) } })
+  if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.', code: 'too_many' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in', code: 'signed_out' }, { status: 401 })
   const token = req.nextUrl.searchParams.get('t') || req.cookies.get(PREVIEW_CLAIM_COOKIE)?.value || ''

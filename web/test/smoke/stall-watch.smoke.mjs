@@ -38,7 +38,9 @@ try {
     // (kind, error class, path and frames only: lib/client-error-report.ts) so the failure names the error
     if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/client-errors') reports.push(String(r.postData() ?? '').slice(0, 1500))
   })
-  page.on('pageerror', e => reports.push(`pageerror: ${String(e?.stack ?? e).slice(0, 1500)}`))
+  page.on('pageerror', e => {
+    reports.push(`pageerror: ${String(e?.stack ?? e).slice(0, 1500)}`)
+  })
   page.on('console', m => { if (m.type() === 'error') reports.push(`console.error: ${m.text().slice(0, 500)}`) })
   const leadsLink = () => page.locator('aside').getByRole('link', { name: 'Leads', exact: true })
 
@@ -47,9 +49,11 @@ try {
   await ctx.route('**/stall-test-download.csv', route => route.fulfill({ status: 200, headers: { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="x.csv"' }, body: 'a,b\n' }))
   await page.goto(base + '/app/settings', { waitUntil: 'domcontentloaded' })
   await leadsLink().waitFor()
+  // The Plan panel appears only after its client effect loads usage. Wait before changing React-owned DOM.
+  await page.locator('main').getByTestId('plan-panel').waitFor()
   await page.evaluate(() => { const a = document.createElement('a'); a.href = '/stall-test-download.csv'; a.textContent = 'Download CSV'; a.id = 'plain-download'; document.querySelector('main')?.prepend(a) })
   docs.length = 0
-  await page.click('#plain-download').catch(() => {})
+  await Promise.all([page.waitForEvent('download'), page.click('#plain-download')])
   await page.waitForTimeout(15000)
   const budget = await page.evaluate(() => sessionStorage.getItem('dazl-stall-reload'))
   const falseNotice = await page.locator('[role="alert"]').filter({ hasText: 'This is taking too long' }).count()

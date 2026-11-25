@@ -33,7 +33,9 @@ test('lead UI and CSV both expose date context alongside raw date fields', () =>
   assert.match(read('lib/scan/date-copy.ts'), /eventDateCopy\(l.event_date, l.date_status, l.timing, \{ dayVerified: l.day_verified, windowMissed: l.window_missed \}\)/)
   const route = read('app/api/leads/export/route.ts')
   assert.match(route, /key: 'date_status'/); assert.match(route, /key: 'date_context'/)
-  assert.match(route, /date_context: \(\(\) => .*eventDateCopy\(lead\.event_date/); assert.match(route, /windowMissed: timingUnconfirmedReason\(lead, o\) === 'out_of_window'/)
+  assert.match(route, /date_context: eventDateCopy\(eventDate, dateStatus, timing, \{ dayVerified, windowMissed: reason === 'out_of_window' \}\)/)
+  assert.match(route, /const reason = timingUnconfirmedReason\(lead, opts\)/)
+  assert.match(route, /const dayVerified = eventDayVerified\(lead\)/)
 })
 import { savedGradeWhy } from '../lib/scan/leads-view.ts'
 test('saved-grade copy never says "no saved grade" next to a saved fit/intent/action', () => {
@@ -42,6 +44,17 @@ test('saved-grade copy never says "no saved grade" next to a saved fit/intent/ac
   assert.match(g, /saved grade exists \(fit 4, intent 0, action 2\) but no written rationale/i); assert.doesNotMatch(g, /no saved grade/)
   assert.match(savedGradeWhy({ why: null, fit: null, intent: null, action: null }), /no saved grade/)
   assert.match(savedGradeWhy({ why: null, fit: null, intent: 0, action: null }), /intent 0/)
+})
+
+test('lead CSV uses the same timing rationale as the card instead of the raw model rationale', () => {
+  const route = readFileSync(new URL('../app/api/leads/export/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /why: savedGradeWhy\(/)
+  const why = 'Proof taken from the search-result text; page not opened'
+  const verified = savedGradeWhy({ why }, { timing: 'proof_backed' })
+  const unconfirmed = savedGradeWhy({ why }, { timing: 'unconfirmed', reason: 'no_proof' })
+  assert.match(verified, /^Event timing is verified against the cited source\./)
+  assert.match(unconfirmed, /^Event timing and current need are unconfirmed\./)
+  for (const rationale of [verified, unconfirmed]) assert.doesNotMatch(rationale, /page not opened/)
 })
 
 test('event day verified but recency window unresolved: never "claimed" or "association unconfirmed"; window and current need stay open', () => {

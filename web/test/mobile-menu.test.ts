@@ -37,13 +37,35 @@ test('Settings: the email field takes its own row on a phone and the button is f
   assert.match(panel, /<button className="btn-primary max-sm:w-full" disabled=\{!next\.trim\(\)\}/)
 })
 
-test('an open phone menu never takes more than about half the screen, so the page content stays visible under it', () => {
-  const layout = src('app/app/layout.tsx'), aside = layout.match(/<aside className="([^"]*)"/)?.[1] ?? ''
-  assert.ok(aside.split(' ').includes('max-md:max-h-[55svh]') && aside.split(' ').includes('max-md:overflow-auto'), aside)
+test('an open phone menu is the whole page body with ONE scroll, and the page behind it is hidden (#1771)', () => {
+  // #1771 (prod c31d6f9c, 390px): the menu opened as a capped band (max-h-55svh) with its own scroll above a second page scroll, so
+  // Settings and Sign out sat below the fold. Now the open menu takes all the height under the header, scrolls once inside itself,
+  // and <main> is not shown (so there is no second scroller and nothing behind it to scroll). Desktop sidebar unchanged.
+  const layout = src('app/app/layout.tsx'), aside = layout.match(/<aside className="([^"]*)"/)?.[1] ?? '', main = layout.match(/<main id="main"[^>]*className="([^"]*)"/)?.[1] ?? ''
+  const a = aside.split(' ')
+  assert.ok(!a.some(c => /^max-md:max-h-/.test(c)), `no height cap on the open menu: ${aside}`)
+  assert.ok(a.includes('max-md:flex-1') && a.includes('max-md:min-h-0') && a.includes('max-md:overflow-y-auto'), `the open menu fills the body and is the one scroller: ${aside}`)
+  assert.ok(a.includes('hidden') && a.includes('peer-checked:flex') && a.includes('md:flex'), `closed it is hidden, open it shows, from md up it is always shown: ${aside}`)
   assert.ok(aside.includes('md:w-60') && aside.includes('md:overflow-auto'), 'the desktop sidebar is unchanged')
+  assert.ok(main.split(' ').includes('max-md:peer-checked:hidden'), `<main> is hidden while the phone menu is open, so the page behind cannot scroll: ${main}`)
+  assert.ok(main.split(' ').includes('overflow-auto') && main.split(' ').includes('flex-1'), 'closed, <main> is still the one scroller')
+  // The Menu label stays in the header above the aside (never inside <main>), so the menu can always be closed.
+  assert.ok(layout.indexOf('htmlFor={NAV_TOGGLE_ID}') < layout.indexOf('<aside'), 'the Menu label comes before the menu')
+  // Settings (the nav) and Sign out live inside the one scrolling menu.
+  const asideBody = layout.slice(layout.indexOf('<aside'), layout.indexOf('</aside>'))
+  assert.match(asideBody, /<Nav \/>/); assert.match(asideBody, /api\/auth\/signout/)
 })
 
 test('Inbox: the explanatory note under the reply-rate heading is readable size (text-sm) on a phone and keeps its small size from sm up', () => {
   const panel = src('app/app/inbox/conversion-panel.tsx'), cls = panel.match(/<p className="([^"]*)">Sent emails only\./)?.[1] ?? ''
   assert.ok(cls.split(' ').includes('text-sm') && cls.split(' ').includes('sm:text-xs'), cls)
+})
+
+test('#1771 review: with the menu open <main> is hidden, so the skip link closes the menu first, in the client component that runs on every entry to the app', () => {
+  const focus = src('app/app/main-focus.tsx'), layout = src('app/app/layout.tsx')
+  assert.match(focus, /import \{ closeMobileMenu \} from '\.\/nav-toggle'/)
+  const click = focus.slice(focus.indexOf("closest('a.skip-link')"))
+  assert.ok(click.indexOf('closeMobileMenu(document)') > -1 && click.indexOf('closeMobileMenu(document)') < click.indexOf('requestAnimationFrame'), 'the menu is closed before the focus is moved')
+  assert.doesNotMatch(layout, /a\.skip-link/, 'no inline script in the layout: Next does not run it after a client-side navigation (router.push after sign-in)')
+  assert.match(layout, /<MainFocus \/>/)
 })

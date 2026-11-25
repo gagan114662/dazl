@@ -5,11 +5,11 @@
 // A record is a claim with its proof attached (evidence_url, signal_date). lib/discover/check.ts then reads the proof page
 // itself and labels the record; it never hides one.
 import Anthropic from '@anthropic-ai/sdk'
+import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
+import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
 
-export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || 'claude-opus-5-5'
-// US$ per million tokens for the default model, and per web search. Used only to report what a run cost.
-const PRICE = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5, search: 0.01 }
-const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_SEARCHES || 14)
+export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
+const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
@@ -134,9 +134,12 @@ export function userMessage(input: DiscoverInput, today: string, max: number): s
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
 }
 
-export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal }): Promise<DiscoverResult> {
+export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; searchBudget?: SearchBudget }): Promise<DiscoverResult> {
   const max = Math.min(Math.max(input.maxLeads ?? 10, 1), 20)
-  const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 2 })
+  if (DISCOVER_MODEL !== 'claude-sonnet-5-5') throw new Error('Discovery requires the supported Sonnet cost policy')
+  const allowance = Math.min(searchAllowance(input.maxSearches), configuredSearchAllowance(MAX_SEARCHES))
+  const searches = deps.searchBudget ?? createSearchBudget(allowance)
+  const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 0 })
   const today = (input.today ?? new Date()).toISOString().slice(0, 10)
   const user = userMessage(input, today, max)
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
@@ -144,20 +147,26 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   let text = '', stop = 'unknown', model = DISCOVER_MODEL
   const seen = new Map<string, SeenPage>()
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
+    const reservation = await searches.reserve(allowance)
     const res = await client.beta.messages.stream({
-      model: DISCOVER_MODEL, max_tokens: 16000,
-      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',   // a declined request is re-run on a fallback model in the same call
+      model: DISCOVER_MODEL, max_tokens: 16000, service_tier: 'standard_only',
       output_config: { effort: 'medium' },
       // Caching is what keeps this loop affordable: every search adds its results to the prompt, and without a cache point the whole
       // growing prompt is billed at full price on each step (measured: US$2.16 a prompt without it, US$0.41 with it).
       cache_control: { type: 'ephemeral' },
       system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
       tools: [
-        { type: 'web_search_20260209', name: 'web_search', max_uses: Math.max(1, input.maxSearches ?? MAX_SEARCHES) },
+        ...(reservation.allowance > 0 ? [{ type: 'web_search_20260209' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
       ],
       messages,
     }, { signal: deps.signal }).finalMessage()
+    if (![res.usage.input_tokens, res.usage.output_tokens, res.usage.cache_read_input_tokens, res.usage.cache_creation_input_tokens]
+      .every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)) {
+      throw new Error('Discovery usage is unavailable; reservation retained')
+    }
+    if (res.model !== DISCOVER_MODEL) throw new Error('Discovery served an unexpected model; reservation retained')
+    await reservation.settle(reservation.allowance === 0 ? 0 : res.usage.server_tool_use?.web_search_requests)
     usage.requests++
     usage.input_tokens += res.usage.input_tokens ?? 0
     usage.output_tokens += res.usage.output_tokens ?? 0

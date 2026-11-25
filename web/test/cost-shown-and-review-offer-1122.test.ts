@@ -32,7 +32,9 @@ test('#1122 (1) costPerShownLead: running, unrecorded cost and zero shown stay n
 })
 
 test('#1122 (1) the page renders the shown-lead count, not the verified counter', () => {
-  assert.match(page, /costPerShownLead\(\{ model_usd: cost\?\.actual\?\.model_usd \?\? null, scanEnded: status === 'done' \|\| status === 'failed', leads, showSeen, leadsRead: currentView !== null \}\)/)
+  assert.match(page, /costPerShownLead\(\{ model_usd: cost\?\.actual\?\.model_usd \?\? null, scanEnded: status === 'done' \|\| status === 'failed', leads: readyCandidates, showSeen, leadsRead: currentView !== null \}\)/)
+  assert.match(page, /visibleReadyLeads\(readyCandidates, showSeen\)/)
+  assert.match(page, /const readyCandidates = leads\.filter\(l => !unconfirmedIds\.has\(l\.id\)\)/)
   // PM 2026-11-22 (changed): no per-lead line at all when the model cost is not known
   assert.match(page, /\{cost\?\.per_verification_pass && perLead && perLead\.unavailable !== 'model cost not recorded' && \(status === 'done' \|\| status === 'failed'\) && \(/)
   // no hedge text for an unread list: none in the cost function's strings, none in the per-lead line

@@ -1,5 +1,7 @@
 import { connection } from 'next/server'
-import { passwordTrialOn, trialFundable } from '@/lib/billing/trial-budget'
+import { PASSWORD_TRIAL_SCANS, passwordTrialOn, trialFundable } from '@/lib/billing/trial-budget'
+import { TRIAL_SCANS_PER_ACCOUNT } from '@/lib/scan/trial'
+import { trialRuleLine } from '@/lib/trial-copy'
 import { systemMailAvailable } from '@/lib/system-mail'
 import SignUpForm from './sign-up-form'
 import { signUpFormError } from '@/lib/signup-form-fallback'
@@ -25,5 +27,7 @@ export default async function SignUp({ searchParams }: { searchParams: Promise<{
   await connection()
   const q = await searchParams
   // review of #1653: an email sign-up is promised a free first search only where it can run one (the password switch on, and mail to confirm the address)
-  return <SignUpForm trialFunded={trialFundable()} emailTrial={passwordTrialOn() && systemMailAvailable()} sentWithoutScript={q.sent === '1'} errorWithoutScript={signUpFormError(q.error)} />
+  // #1704: the free-search rule under the Google button, the same line /sign-in shows
+  const trialRule = trialRuleLine({ funded: trialFundable(), emailPath: passwordTrialOn() && systemMailAvailable(), cap: TRIAL_SCANS_PER_ACCOUNT, emailCap: PASSWORD_TRIAL_SCANS })
+  return <SignUpForm trialFunded={trialFundable()} emailTrial={passwordTrialOn() && systemMailAvailable()} trialRule={trialRule} sentWithoutScript={q.sent === '1'} errorWithoutScript={signUpFormError(q.error)} />
 }

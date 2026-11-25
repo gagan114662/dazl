@@ -146,10 +146,10 @@ try {
   // Held leads: Approve disabled, with the reason on the card.
   const lakeside = cards.filter({ hasText: 'Lakeside Smiles' })
   assert.equal(await lakeside.getByRole('button', { name: 'Approve' }).isDisabled(), true)
-  assert.match(await lakeside.textContent(), /No contact found yet[\s\S]*To approve: No published email address to draft to yet/)
+  assert.match(await lakeside.textContent(), /No contact found yet[\s\S]*Can't approve yet\. No published email address to draft to yet/)
   const old = cards.filter({ hasText: 'Old Town Dental' })
   assert.equal(await old.getByRole('button', { name: 'Approve' }).isDisabled(), true)
-  assert.match(await old.textContent(), /To approve: Outside the time window/)
+  assert.match(await old.textContent(), /Can't approve yet\. Outside the time window/)
 
   assert.deepEqual(writes, [], 'nothing written by loading the page')
   // First attempt fails: the button comes back for a retry. A double click while in flight sends one request.

@@ -4,6 +4,7 @@ import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { emailsInText } from '../outreach/published-email.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { fetchPageDetailed } from '../scan/fetch-page.ts'
+import { dateMentions } from '../scan/date-in-text.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -11,8 +12,8 @@ import { fetchPageDetailed } from '../scan/fetch-page.ts'
 // 'gone': the proof address answers 'not found', or the page it serves says the job or page no longer exists (staging 2026-11-23: a 404
 // and a 'Job not found' page were shown as verified proof). A page that is gone proves nothing, whatever a search result still says.
 export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen' | 'gone'
-// date: the day shown for the signal. date_source says where it came from: 'page' = Claude read it on the proof page (date_on_page says whether
-// dazl also found it in the page text); 'index' = the proof page prints no date, so this is the day the search index dates the page itself.
+// date_source distinguishes a date taken from an opened source from the search index's day for the page itself.
+// date_on_page records whether the exact calendar day was found in the proof page's text.
 export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; signal_by?: 'claude' }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
@@ -114,12 +115,13 @@ export function quoteStatements(quote: string | null, page: string): string[] {
 }
 export const quoteOnPage = (quote: string | null, page: string): boolean => quoteStatements(quote, page).length > 0
 
-// The day is on the page when its year is and either the ISO day or the day-of-month number is (pages print dates in many
-// styles and languages, so this is a weak check on purpose: it labels, it does not decide).
+// Match a complete date mention and exclude labels for edits and copyright notices.
+const EDIT_DATE_PREFIX = /(?:\b(?:updated|modified|copyright)\b|©)(?:\s+(?:on|at|as of))?[\s:(|·,–—-]*(?:(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\.?[\s,]+)?(?:\d{1,2}:\d{2}(?:\s*(?:a\.?m\.?|p\.?m\.?))?(?:\s+[a-z]{2,5})?[\s,]+)?[\s:(|·,–—-]*$/i
+
 export function dayOnPage(day: string | null, page: string): boolean {
   if (!day) return false
-  const [y, , d] = day.split('-')
-  return page.includes(day) || (page.includes(y) && new RegExp(`(^|\\D)0?${Number(d)}(\\D|$)`).test(page))
+  return dateMentions(page).some(mention => mention.day === day &&
+    !EDIT_DATE_PREFIX.test(page.slice(Math.max(0, mention.index - 40), mention.index)))
 }
 
 // The search index's age for a page ("69 days ago", "3 hours ago", "October 14, 2026", an ISO day) as a calendar day, or null.
@@ -136,8 +138,7 @@ export function pageAgeDay(age: string | null | undefined, now: Date = new Date(
   return Number.isNaN(t) || t > now.getTime() + 86_400_000 ? null : new Date(t).toISOString().slice(0, 10)
 }
 export const INDEX_DATE_MAX_AGE_DAYS = 365
-const dated = (lead: DiscoveredLead, page_age: string | null, now: Date): Pick<CheckedLead, 'date' | 'date_source'> => {
-  if (lead.signal_date) return { date: lead.signal_date, date_source: 'page' }
+const indexDate = (page_age: string | null, now: Date): Pick<CheckedLead, 'date' | 'date_source'> => {
   const d = pageAgeDay(page_age, now)
   // #1571: a search index dates a page by when it first saw it. For a long-lived page (a company's own site) that day can be years before
   // what the page says now, so an index day older than a year is not shown as the signal's date; the lead reads as missing a date instead.
@@ -222,15 +223,15 @@ export function relativeDay(body: string, now: Date): string | null {
   return d > 365 ? null : new Date(now.getTime() - d * 86_400_000).toISOString().slice(0, 10)
 }
 function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_age: string | null, now: Date): CheckedLead {
-  if (pageIsGone(body)) return { ...lead, ...dated(lead, page_age, now), proof: 'gone', proof_read_by: by, page_age, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
+  if (pageIsGone(body)) return { ...lead, ...indexDate(page_age, now), proof: 'gone', proof_read_by: by, page_age, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
   // A read page supports the signal when the quoted evidence is on it and, in ONE place where it stands, the page's own statements
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
   const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
-  // the page's own printed age beats the search index's day, when the run gave no date (staging: 'Posted 4d ago' read as no date)
-  const rel = lead.signal_date ? null : relativeDay(body, now)
-  return { ...lead, ...(rel ? { date: rel, date_source: 'page' as const } : dated(lead, page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
-    quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: dayOnPage(lead.signal_date, body) }
+  const statedDay = dayOnPage(lead.signal_date, body) ? lead.signal_date : null
+  const day = statedDay ?? relativeDay(body, now)
+  return { ...lead, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
+    quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
 }
 
 // The quote is on the page, the page names the company, and the words alone did not settle it: Claude says whether the quoted text states
@@ -296,7 +297,7 @@ export function profileOnPage(html: string, person: string): string | null {
 // read when it has one; otherwise the page is fetched once, and only when something is still missing.
 async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<CheckedLead> {
   if (c.proof !== 'confirmed') return c
-  const needDate = !c.signal_date && c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
+  const needDate = c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
   if (!needDate && !needProfile) return c
   let out = c
   if (needDate && u) { const posted = await postingDay(u, fetchImpl, timeoutMs, now); if (posted) out = { ...out, date: posted, date_source: 'page' } }
@@ -331,12 +332,12 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
         return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now)
       }
       // dazl asked and the address is gone: a search result's title does not bring it back
-      if (r.status === 404 || r.status === 410) return { ...lead, email: null, email_source_url: null, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
+      if (r.status === 404 || r.status === 410) return { ...lead, email: null, email_source_url: null, ...indexDate(hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
   lead = await checkEmailSource(lead, seen)
-  const base = { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
+  const base = { ...lead, ...indexDate(hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
   // An unread search result supports the signal when its own title states the signal line.
   const listed = !!hit && companyOnPage(lead.company, hit.title ?? ''), title = listed ? hit!.title ?? '' : ''
   return { ...base, proof: listed ? 'listed' : 'unseen', signal_seen: listed && statesSignal(lead.signal, lead.company, title), claim_lacks: signalWordsIn(lead.signal, lead.company, title).missing }
