@@ -4,20 +4,21 @@ import { pageIsGone } from './discover/check.ts'
 import { fetchPublicHtml } from './net/public-fetch.ts'
 import { htmlToText } from './scan/fetch-page.ts'
 
-type Lead = { id: string; source_url: string; name: string; review_reason: string | null; person_value: string | null }
+type Lead = { id: string; source_url: string; name: string; review_reason: string | null; person_value: string | null; human_confirmed_at: number | string | null }
 type Outcome = 'quarantined' | 'blocked' | 'unnamed'
 interface Options { tenantId: string; execute: boolean; readPage?: typeof fetchPublicHtml }
 const BATCH_SIZE = 50
 const ELIGIBLE = `FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
   WHERE j.user_id = ? AND j.status = 'done' AND l.source_kind = 'discover'
     AND l.quarantined_at IS NULL AND l.evidence_purged_at IS NULL`
-const LEAD = `SELECT l.id, l.source_url, l.name, l.review_reason,
+const LEAD = `SELECT l.id, l.source_url, l.name, l.review_reason, l.human_confirmed_at,
     (SELECT e.value FROM lead_enrichments e WHERE e.tenant_id = j.user_id
       AND e.lead_id = l.id AND e.connector = 'discover' AND e.kind = 'person'
       AND e.value <> '' ORDER BY e.retrieved_at, e.id LIMIT 1) AS person_value
   ${ELIGIBLE} AND l.id = ?`
 
 function reviewOutcome(lead: Lead, blocked: boolean): Exclude<Outcome, 'quarantined'> | null {
+  if (lead.human_confirmed_at !== null) return null
   if (lead.review_reason !== null && lead.review_reason !== 'blocked_by_site') return null
   const enrichments = lead.person_value ? [{ kind: 'person', connector: 'discover', value: lead.person_value }] : []
   const person = discoverContact({ source_kind: 'discover', name: lead.name, enrichments })?.person
@@ -65,7 +66,7 @@ export async function recheckDiscoveryProof(db: Db, { tenantId, execute, readPag
         if (!outcome) return null
         const reason = outcome === 'blocked' ? 'blocked_by_site' : NO_BUYER_NAMED
         const updated = yield* tx.run(
-          "UPDATE leads SET review_reason = ? WHERE id = ? AND quarantined_at IS NULL AND COALESCE(review_reason, '') = ? AND source_url = ?",
+          "UPDATE leads SET review_reason = ? WHERE id = ? AND quarantined_at IS NULL AND human_confirmed_at IS NULL AND COALESCE(review_reason, '') = ? AND source_url = ?",
           [reason, lead.id, lead.review_reason ?? '', lead.source_url],
         )
         return updated.changes === 1 ? outcome : null

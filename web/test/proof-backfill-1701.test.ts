@@ -44,6 +44,7 @@ test('a tenant backfill holds blocked and unnamed leads, quarantines dead proof,
     }
     insert.run('untouched', 'other-scan', 'Avery Lane', 'https://retail.example/dead')
     raw.exec("UPDATE scan_jobs SET status = 'done'")
+    raw.exec("UPDATE leads SET human_confirmed_at = 10 WHERE id = 'dead'")
     raw.exec(`INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at)
       VALUES ('person', 'enriched', 'workspace', 'discover', 'person', 'Avery Lane, Owner', 'https://retail.example/team', '2026-11-23', 1)`)
     const seen: string[] = []
@@ -86,6 +87,12 @@ test('a tenant backfill holds blocked and unnamed leads, quarantines dead proof,
     assert.deepEqual(await recheckDiscoveryProof(db, { ...options, execute: true }), { checked: 6, quarantined: 0, blocked: 0, unnamed: 0 })
     assert.equal(seen.includes('dead'), false)
     assert.deepEqual(rows(), after)
+    // A later human confirmation clears its proof hold even if the site still blocks an automated check.
+    raw.exec("UPDATE leads SET human_confirmed_at = 20, review_reason = NULL WHERE id = 'blocked'")
+    const confirmed = rows()
+    assert.deepEqual(await recheckDiscoveryProof(db, { ...options, execute: true }), { checked: 6, quarantined: 0, blocked: 0, unnamed: 0 })
+    assert.deepEqual(rows(), confirmed)
+    assert.equal(raw.prepare("SELECT human_confirmed_at FROM leads WHERE id = 'blocked'").pluck().get(), 20)
   } finally {
     raw.close()
     rmSync(dir, { recursive: true, force: true })
