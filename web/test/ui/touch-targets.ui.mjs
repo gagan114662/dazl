@@ -7,6 +7,8 @@
 // under the network fence, off-host browser requests aborted. Leads and Inbox get synthetic /api data from in-browser
 // stubs so their controls render; nothing is scanned, sent or billed.
 // Exit 1 on an undersized control. Missing playwright/build: NOT RUN, exit 2.
+import { mkdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { loadPlaywright, startServer } from '../smoke/harness.mjs'
 
 const MIN = 44
@@ -162,6 +164,8 @@ try {
       await page.locator(MARKERS['/app/settings']).first().waitFor({ state: 'visible', timeout: 15000 })
       await page.locator('label[for="navtoggle"]').click({ timeout: 15000 })
       await page.locator('nav[aria-label="Main"] a').first().waitFor({ state: 'visible', timeout: 15000 })
+      // Pixels of the open menu for the reviewer (CI keeps web/preview/menu-1771/*.png when the workflow uploads it); never decides pass or fail.
+      try { mkdirSync(new URL('../../preview/menu-1771/', import.meta.url), { recursive: true }); await page.screenshot({ path: fileURLToPath(new URL(`../../preview/menu-1771/menu-open-390x${height}.png`, import.meta.url)) }) } catch (e) { console.log(`     (no screenshot saved for ${tag}: ${String(e.message).split('\n')[0].slice(0, 120)})`) }
       const m = await page.evaluate(() => {
         const vis = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0 }
         const scrollers = [...document.querySelectorAll('body *')].filter(el => vis(el) && /(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 1).map(el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : ''))
