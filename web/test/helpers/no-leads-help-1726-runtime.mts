@@ -11,7 +11,7 @@ import { createElement as h } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { NoLeadsHelp, noLeadsHelp } from '../../app/app/leads/no-leads-help.tsx'
 
-const zeroMatch = { kind: 'zero_match' as const, label: 'Zero match', detail: null, next: { text: 'Widen the search', href: '/app/leads' } }
+const zeroMatch = { kind: 'zero_match' as const, label: 'Zero match', detail: undefined, next: { text: 'Widen the search', href: '/app/leads' } }
 const noneExtracted = { kind: 'none_extracted' as const, label: 'No candidates were extracted', detail: 'Two sources returned items, none matched as candidates.', next: { text: 'See what the scan read', href: '/app/leads?job=x' } }
 
 test('a zero-lead scan never shows the bare line alone: its reason and at least one action', () => {
@@ -34,13 +34,13 @@ test('with the query present: the outcome next step first, then one rerun of the
 })
 
 test('no next step and no query still leaves one honest action, never zero', () => {
-  const out = noLeadsHelp({ kind: 'failed', label: 'Failed', detail: null, next: null })
+  const out = noLeadsHelp({ kind: 'failed', label: 'Failed', detail: undefined, next: null })
   assert.deepEqual(out.actions, [{ text: 'Start a new search', href: '/app/leads' }])
 })
 
 test('a next step that already reruns this same query is not duplicated', () => {
   const q = 'roof replacement Calgary'
-  const out = noLeadsHelp({ kind: 'zero_match', label: 'Zero match', detail: null, next: { text: 'Widen the search', href: `/app/leads?q=${encodeURIComponent(q)}` } }, { query: q })
+  const out = noLeadsHelp({ kind: 'zero_match', label: 'Zero match', detail: undefined, next: { text: 'Widen the search', href: `/app/leads?q=${encodeURIComponent(q)}` } }, { query: q })
   assert.deepEqual(out.actions, [{ text: 'Widen the search', href: `/app/leads?q=${encodeURIComponent(q)}` }])
 })
 
