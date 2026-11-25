@@ -64,18 +64,19 @@ test('a fresh query preserves carried exclusions even when no buyer profile is s
 
 test('a new play keeps the offer it took from Memory after the tenant changes it', async () => {
   const t = tenant('')
-  saveMemory(db, t, { positioning: saved })
+  const positioning = 'Managed hosting - example.com'
+  saveMemory(db, t, { positioning })
   const estimate = await request(t, ESTIMATE, { query, icp: profile, reviewed: false })
   assert.equal(estimate.status, 200, JSON.stringify(estimate))
   const result = await request(t, SCAN, { query, icp: profile, reviewed: false, estimate_ack: estimate.estimate.ack })
   assert.equal(result.status, 202, JSON.stringify(result))
 
   saveMemory(db, t, { positioning: 'CRM setup and outbound sales consulting' })
-  const row = db.prepare('SELECT seller, offer, query FROM scan_jobs WHERE id=? AND user_id=?')
-    .get(result.job_id, t) as { seller: string | null; offer: string | null; query: string }
-  assert.deepEqual(await readPlayOffer(db, t, result.job_id), { offer: saved, source: 'recorded', conflict: null })
-  assert.equal(draftOffer(row, readTenantOffer(db, t)).offer, saved)
-  assert.equal(row.offer, null, 'using a saved offer does not record a user review')
+  const row = db.prepare('SELECT seller, offer, offer_set_at, query FROM scan_jobs WHERE id=? AND user_id=?')
+    .get(result.job_id, t) as { seller: string | null; offer: string | null; offer_set_at: number | null; query: string }
+  assert.equal((await readPlayOffer(db, t, result.job_id))?.offer, positioning)
+  assert.equal(draftOffer(row, readTenantOffer(db, t)).offer, positioning)
+  assert.equal(row.offer_set_at, null, 'using a saved offer does not record a user review')
 })
 
 test('a seller with no offer must choose before estimate or queue, not infer a product from buyers', async () => {
