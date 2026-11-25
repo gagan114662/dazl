@@ -16,6 +16,10 @@ test('#1700 the app shell is the visible height and clips, so only <main> scroll
   assert.match(layout, /<main id="main"[^>]*className="flex-1 min-w-0 overflow-auto"/, '<main> stays the one scroller')
 })
 test('#1700 the 100vh floor on html/body does not apply to the app shell', () => {
-  assert.match(css, /html:has\(\.app-ui\), body:has\(\.app-ui\) \{ min-height: 0; \}/)
+  assert.match(css, /html:has\(\.app-shell\), body:has\(\.app-shell\) \{ min-height: 0; \}/)
+  assert.doesNotMatch(css, /html:has\(\.app-ui\)/, '.app-ui is also on the public landing page and first-run overlay; only the signed-in shell may drop the floor')
+  assert.ok(shell.includes('app-shell'), 'the signed-in shell carries the class the selector keys on')
+  const landing = readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(landing, /\bapp-shell\b/, 'the public landing page keeps its 100vh floor')
   assert.match(css, /html, body \{[^}]*min-height: 100vh;/, 'public pages keep their floor')
 })
