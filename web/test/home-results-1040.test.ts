@@ -281,3 +281,19 @@ bothEngines('#1062: a company-first scan\'s held candidates are not new leads or
   assert.deepEqual(r.latest_leads.map(l => l.company), ['Plain Co'])
   assert.equal(r.by_signal.reduce((n, s) => n + s.leads, 0), 1, 'the by-signal rows add up to the tile')
 })
+
+bothEngines("#1772: the by-signal Leads total is also given as distinct companies, under the app's own company key", async ({ db }) => {
+  const J = 'j'.repeat(24)
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, 'x', 'test', 'test', 'running', ?)", [J, 'A', IN])
+  const lead = (id: string, company: string) => db.run(
+    "INSERT INTO leads (id, scan_job_id, company, name, signal, source_url, signal_kind, created_at, quarantined_at) VALUES (?, ?, ?, 'Pat', 'hiring an SDR', 'https://news.example/a', 'hiring', ?, NULL)",
+    [id, J, company, IN])
+  await lead('c1', 'Dup Inc'); await lead('c2', 'Dup Ltd')   // one company under companyKey
+  await lead('c3', 'Solo Co')
+  await lead('c4', '')                                        // a person lead with no company name
+  await lead('c5', '')
+  const r = await homeResults(db, 'A', NOW)
+  assert.equal(r.tiles.leads, 5, 'the by-signal Leads total still counts every shown lead')
+  assert.equal(r.companies, 2, 'distinct named companies under companyKey: Dup Inc and Dup Ltd are one')
+  assert.equal(r.unnamed_leads, 2, 'leads with no company name are not attributed to a company')
+})
