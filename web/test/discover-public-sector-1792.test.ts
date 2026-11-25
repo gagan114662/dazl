@@ -1,41 +1,32 @@
 import assert from 'node:assert/strict'
-import { registerHooks } from 'node:module'
+import { register } from 'node:module'
 import { test } from 'node:test'
 import type { DiscoverResult } from '../lib/discover/agent.ts'
 
 const reason = 'Municipal government body'
 const normalOffer = 'Accounting software for private companies'
 const governmentOffer = 'Accounting software for local governments'
-const calls: unknown[] = []
-const stubUrl = 'test:public-sector-1792'
-
-const hooks = registerHooks({
-  resolve(specifier, context, next) {
-    if (specifier === '../non-buyer.ts' && context.parentURL?.endsWith('/lib/discover/run.ts')) {
-      return { url: stubUrl, shortCircuit: true }
-    }
-    return next(specifier, context)
-  },
-  load(url, context, next) {
-    if (url !== stubUrl) return next(url, context)
-    return {
-      format: 'module',
-      shortCircuit: true,
-      source: `export function isPublicSectorBody(input) {
-        globalThis.__publicSector1792Calls.push(input)
-        return { nonBuyer: input.offer !== ${JSON.stringify(governmentOffer)}, reason: ${JSON.stringify(reason)} }
-      }`,
-    }
-  },
-})
-
-const globals = globalThis as typeof globalThis & { __publicSector1792Calls?: unknown[] }
-globals.__publicSector1792Calls = calls
-const { runDiscovery } = await import('../lib/discover/run.ts')
-hooks.deregister()
-
 const company = 'Town of Oakville'
 const domain = 'oakville.ca'
+const stub = `
+  export function isPublicSectorBody(input) {
+    if (input.company !== ${JSON.stringify(company)} || input.domain !== ${JSON.stringify(domain)}) {
+      throw new Error('Incorrect classifier input')
+    }
+    return { nonBuyer: input.offer !== ${JSON.stringify(governmentOffer)}, reason: ${JSON.stringify(reason)} }
+  }
+`
+const loader = `
+  export function resolve(specifier, context, next) {
+    if (specifier === '../non-buyer.ts' && context.parentURL?.endsWith('/lib/discover/run.ts')) {
+      return { url: ${JSON.stringify('data:text/javascript,' + encodeURIComponent(stub))}, shortCircuit: true }
+    }
+    return next(specifier, context)
+  }
+`
+register('data:text/javascript,' + encodeURIComponent(loader))
+const { runDiscovery } = await import('../lib/discover/run.ts')
+
 const url = 'https://www.oakville.ca/news/finance-system'
 const quote = 'Town of Oakville is replacing its finance system.'
 const result: DiscoverResult = {
@@ -60,12 +51,10 @@ test('drops the Town of Oakville from the kept leads for a normal offer and repo
   assert.deepEqual(outcome.leads, [])
   assert.deepEqual(outcome.pages, [])
   assert.equal(outcome.note, `Existing discovery note Public-sector leads excluded: ${reason}.`)
-  assert.deepEqual(calls.at(-1), { company, domain, offer: normalOffer })
 })
 
 test('keeps the Town of Oakville when the offer targets government', async () => {
   const outcome = await run(governmentOffer)
   assert.deepEqual(outcome.leads.map(lead => [lead.company, lead.proof, lead.signal_seen]), [[company, 'confirmed', true]])
   assert.equal(outcome.note, result.note)
-  assert.deepEqual(calls.at(-1), { company, domain, offer: governmentOffer })
 })
