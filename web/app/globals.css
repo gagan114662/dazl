@@ -19,6 +19,8 @@
 }
 
 html, body { background-color: #fff !important; color: var(--ink); min-height: 100vh; }
+/* #1700: the signed-in app shell is exactly the visible height and scrolls inside <main>; a 100vh floor taller than a phone's visible area made the page scroll as well */
+html:has(.app-ui), body:has(.app-ui) { min-height: 0; }
 body { font-size: 16px; line-height: 1.5; }
 
 .glow { background-color: #fff; }
