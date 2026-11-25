@@ -861,6 +861,7 @@ export default function LeadsClient() {
   const input = 'field'
   // #1238: repeats are collapsed only when something new remains (lib/scan/leads-view.ts visibleReadyLeads)
   const currentView = resultView?.jobId === jobId ? resultView : null
+  const showResultActions = !jobId || (currentView !== null && leads.length > 0) || (!statusError && (status === 'done' || status === 'failed'))
   // #1238/#1062/#1620: an older-engine search's count line is its Campaigns card's split of the leads as they stand now (lib/scan/leads-view.ts
   // scanCountTags), read from the same GET /api/campaigns?view=history as the Leads history. null split = not read: the recorded funnel, marked.
   const [currentSplit, setCurrentSplit] = useState<{ jobId: string; split: CurrentScanSplit | null } | null>(null)
@@ -889,7 +890,7 @@ export default function LeadsClient() {
           <h1 className="text-3xl font-bold tracking-tight">{jobId ? 'Leads' : 'Find leads'}</h1>
           <p className="text-[var(--ink-2)] text-sm mt-1">{jobId ? 'Approve the leads worth an email.' : 'Describe who you want to reach.'}<InfoTip>Companies matching your search, with the signal and source for each. Match is a heuristic - review fit yourself.</InfoTip></p>
         </div>
-        {(!scanActive || leads.length > 0) && <div className="flex gap-2 items-center">
+        {showResultActions && <div className="flex gap-2 items-center">
           {/* The scan being viewed as one campaign: its play, every lead's status, drafts and sends. */}
           {jobId && <a className="btn-ghost btn-sm" href={`/app/campaigns/${jobId}`} data-testid="campaign-page-link"><Icon name="campaigns" className="w-4 h-4" />Campaign page</a>}
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
@@ -1399,7 +1400,7 @@ export default function LeadsClient() {
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
-                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Email draft unavailable. <span>{c.approve.reason}</span></div>
+                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{c.approve.reason}</span></div>
                   : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. To approve: <span>{c.approve.reason}</span></div> : null}
               </div>
             })()}

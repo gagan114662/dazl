@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
 
 const leads = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
 const checked = readFileSync(new URL('../app/app/leads/checked/checked-client.tsx', import.meta.url), 'utf8')
@@ -12,8 +13,24 @@ test('the result approval hold includes the reason in visible text', () => {
   assert.match(leads, /data-testid="linkedin-ready"[^>]*>[\s\S]*?<span[^>]*>\{c\.approve\.reason\}<\/span>/)
 })
 
-test('an active scan with no results hides its campaign and CSV links', () => {
-  assert.match(leads, /\{\(!scanActive \|\| leads\.length > 0\) && <div[^>]*>[\s\S]*?Campaign page[\s\S]*?Download CSV[\s\S]*?<\/div>\}/)
+test('campaign and CSV links wait for results or a resolved scan', () => {
+  const gate = leads.match(/^\s*const showResultActions = (.+)$/m)?.[1]
+  assert.ok(gate)
+  assert.match(leads, /\{showResultActions && <div[^>]*>[\s\S]*?Campaign page[\s\S]*?Download CSV[\s\S]*?<\/div>\}/)
+  const visible = (status: string, overrides = {}) => runInNewContext(gate, {
+    jobId: 'scan', currentView: null, statusError: null, leads: [], status, ...overrides,
+  })
+  for (const status of ['loading', 'pending', 'running', 'enriching']) assert.equal(visible(status), false)
+  assert.equal(visible('loading', { statusError: 'unavailable' }), false)
+  assert.equal(visible('loading', { leads: [{}] }), false, 'results from the prior scan do not count')
+  assert.equal(visible('running', { currentView: {}, leads: [{}] }), true)
+  assert.equal(visible('done'), true)
+  assert.equal(visible('failed'), true)
+  assert.equal(visible('', { jobId: null }), true)
+})
+
+test('LinkedIn guidance is visible', () => {
+  assert.match(leads, /data-testid="linkedin-ready"[^>]*>[^<]*\{c\.linkedin\.name\}&apos;s profile and send the first message yourself\./)
 })
 
 test('ready rows show the returned signal, date, contact and email', () => {
