@@ -139,6 +139,8 @@ export default function Home() {
             <Link href="/sign-in" className="whitespace-nowrap hover:text-[var(--ink)]">Sign in</Link>
           </nav>
         </div>
+        {/* #1746: Google OAuth branding line, exact wording. */}
+        <p data-testid="footer-google-apis" className="max-w-6xl mx-auto px-4 sm:px-6 pb-8 text-sm text-[var(--ink-2)]">dazl uses Google APIs only to sign you in and to send emails you approve from your own Gmail. It does not generate images or any intimate content.</p>
       </footer>
     </main>
   )

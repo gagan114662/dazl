@@ -22,3 +22,9 @@ test('the privacy page links to that section from the top', () => {
   assert.match(src, /href="#google-user-data"/)
   assert.match(src, /id=\{[^}]*'google-user-data'/)
 })
+
+test('the homepage footer carries the exact Google APIs sentence, inside the footer', () => {
+  const src = readFileSync(join(root, 'app/page.tsx'), 'utf8')
+  const footer = src.slice(src.indexOf('<footer'), src.indexOf('</footer>'))
+  assert.ok(footer.includes('dazl uses Google APIs only to sign you in and to send emails you approve from your own Gmail. It does not generate images or any intimate content.'))
+})
