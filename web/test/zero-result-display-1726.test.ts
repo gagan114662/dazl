@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import { zeroResultReason } from '../lib/zero-result-reason.ts'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as jsxRuntime from 'react/jsx-runtime'
 import ts from 'typescript'
@@ -80,4 +81,26 @@ test('#1726: a working, failed or nonzero scan does not call the helper or show 
 test('#1726: a trial spending stop keeps the existing spending explanation', () => {
   const capped = { ...scan, error: 'trial_budget_reached' }
   assert.deepEqual(renderHelp(capped), { html: '', calls: [] })
+})
+
+const limitInput = {
+  query: scan.query, candidates: 0, rejected: 0, searchesUsed: 0, searchAllowance: Infinity,
+}
+
+test('#1726: monetary stops explain the spending limit', () => {
+  for (const stop of ['trial_budget_reached', 'budget_stopped', 'spend_cap_reached']) {
+    const result = zeroResultReason({ ...limitInput, stop })
+    assert.equal(result.code, 'budget_spent')
+    assert.equal(result.reason, 'This search reached its spending limit before finding a lead that passed.')
+  }
+})
+
+test('#1726: a search-count stop explains exhausted web searches', () => {
+  const result = zeroResultReason({
+    ...limitInput, stop: 'search_allowance_reached', searchesUsed: 5, searchAllowance: 5,
+  })
+  assert.equal(result.reason, 'This search used all 5 of its web searches before finding a lead that passed.')
+  assert.equal(zeroResultReason({ ...limitInput, stop: 'search_limit_reached' }).reason,
+    'This search reached its web search limit before finding a lead that passed.')
+  assert.equal(zeroResultReason({ ...limitInput, stop: 'quota_reached' }).code, 'unknown')
 })
