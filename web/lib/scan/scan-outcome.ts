@@ -116,6 +116,10 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
   const open = `/app/leads?job_id=${j.id}`
   if (j.status === 'failed') {
     switch (j.error) {
+      case 'unsupported_search_region':
+        return { kind: 'stopped', says_what_to_do: true, label: 'dazl covers the US and Canada for now. More regions soon.', next: { text: 'Start a new search', href: NEW_SCAN } }
+      case 'search_region_unconfirmed':
+        return { kind: 'stopped', says_what_to_do: true, label: 'dazl could not confirm the search location. Try again with a more specific location.', next: { text: 'Start a new search', href: NEW_SCAN } }
       case 'no_candidates': return sourcesFailed(j) ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source failed, so the empty result is not proof that nothing matches.', next: { text: 'Try again', href: NEW_SCAN } } : emptyResult(j, open)
       case 'budget_stopped': {
         // Only the typed report provenance (the run report's stop.spend_refusal_reason) may name a specific numeric

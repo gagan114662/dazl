@@ -5,6 +5,7 @@ import { discoverLeads, discoverProfileCarried } from '../discover/agent.ts'
 import { isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
+import { isLaunchRegionStop } from '../discover/launch-region.ts'
 import { enqueuePostEngagement } from '../linkedin-tasks/engagers.ts'
 import { enqueueLanePeople, type LaneLead } from '../linkedin-tasks/lane-people.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget, unmarkCompanyFirstBudget } from '../company-first/product-discovery.ts'
@@ -1504,6 +1505,12 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   }
   await hold?.settle(run.accountingUncertain ? null : run.usd)
   assertOwned(db, job)
+  if (isLaunchRegionStop(run.stop)) {
+    ledger.record(source, run.searches > 0 ? 'partial' : 'skipped_hold')
+    ledger.report({ discover: { stop: run.stop, note: run.note, budget: small ? (room < DISCOVER_SMALL_MIN_USD ? 'smallest' : 'small') : 'full', searches: run.searches, requests: run.requests, passes: run.passes, returned: 0, shown: 0, usd: run.usd } })
+    finish(db, job, 'failed', run.stop, null, 0, ledger)
+    return 'failed'
+  }
   const checked = run.leads.filter(l => l.evidence_url.length <= 500)
   const now = Math.floor(Date.now() / 1000)
   // Quest's lead score on production, 2026-11-24 (job 7e5605365113): 2 of 6 listed leads had a dead proof link (a 404, a job board's

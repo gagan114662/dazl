@@ -293,7 +293,7 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // kept any candidate, or whose candidate count was never recorded (null), keeps its place. Mirrored by lib/scan/trial.ts TRIAL_USED_SQL.
 const stoppedEmpty = (r: LedgerRow) => r.status === 'done' && r.error === TRIAL_BUDGET_REASON && r.candidates !== null && r.candidates !== undefined && Number(r.candidates) === 0
 export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && (stoppedEmpty(r) || (r.status === 'failed'
-  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')))
+  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain' || r.error === 'unsupported_search_region' || r.error === 'search_region_unconfirmed')))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {

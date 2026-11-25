@@ -51,7 +51,7 @@ export interface TrialState { funded: boolean; reason?: TrialDeny; used: number;
 const TRIAL_USED_SQL = `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j ON j.id = t.job_id
      LEFT JOIN trial_reservations r ON r.job_id = j.id AND r.tenant_id = t.tenant_id AND r.kind = 'scan'
      WHERE t.tenant_id = ? AND (j.status != 'failed' OR j.error = 'cancelled' OR COALESCE(j.spend_reserved_usd, 0) > 0)
-       AND NOT (j.status = 'failed' AND j.error = 'accounting_uncertain' AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)
+       AND NOT (j.status = 'failed' AND COALESCE(j.error, '') IN ('accounting_uncertain', 'unsupported_search_region', 'search_region_unconfirmed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)
        AND NOT (j.status = 'done' AND COALESCE(j.error, '') = 'trial_budget_reached' AND COALESCE(j.candidates, -1) = 0 AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)`
 const TRIAL_IP_SQL = 'SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ? AND created_at >= ?'
 const dayStartS = (now: Date) => Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000)
