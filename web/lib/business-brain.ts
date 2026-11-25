@@ -98,7 +98,11 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   //   "hiring" with no role ("Expanding team, hiring").
   // Cost, accepted: a mixed but positive signal ("hiring freeze lifted, now hiring SDRs", "raised funding, not hiring a
   // receptionist") makes no play. A free-form signal the compiler cannot enforce ("attended a trade show") makes none either.
-  const buyer = who[0] || (ind[0] ? `${ind[0]} companies` : '')
+  // #1722: an industry that already reads plural keeps its own wording (trailing 's' without 'ss' - the general
+  // rule, no word list), and only a role buyer gets the " at companies" qualifier: an industry names companies already.
+  const fromRole = !!who[0]
+  const ind0 = (ind[0] ?? '').toLowerCase()
+  const buyer = who[0] || (ind[0] ? (ind0.endsWith('s') && !ind0.endsWith('ss') ? ind[0] : `${ind[0]} companies`) : '')
   const NEGATING = /(?:n['\u2019]t\b|\bpre-|\b(?:not|never|no|nobody|none|nothing|zero|without|sans|lack(?:s|ing)?|fail(?:s|ed|ing|ure)?|fell through|fall(?:s|ing)? through|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|pass(?:es|ed|ing)? on|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?|downsiz(?:e|es|ed|ing)|lay(?:s|ing)? off|laid off|layoffs?|freez(?:e|es|ing)|froze|frozen|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|defer(?:s|red|ring)?|suspend(?:s|ed|ing)?|no longer|on hold|lost|los(?:e|es|ing)|ran out|run(?:s|ning)? out|yet to|before|prior to|fewer|less|few|barely|hardly|rarely|seldom|gave up|giv(?:e|es|ing) up|done|end(?:s|ed|ing)|reduc(?:e|es|ed|ing)|cut(?:s|ting)?|shr(?:ink|inks|ank|unk|inking)|slow(?:s|ed|ing)?|neither|nor|unlikely|impossible|unable|minimal|nil|zilch|postpon\w*|delay\w*|shelv\w*|scrap\w*|abandon\w*|discontinu\w*|terminat\w*|slash\w*|unsuccessful\w*)\b)/i
   const HIRING_NOUN = /^(?:slowdown|moratorium|ban|cap|cutbacks?|pullback|restrictions?|drought|embargo|lull|standstill|plans?|budget|freeze|pause)$/i
   const conds = (x: string) => planConditions(compileTargeting(x).root)
@@ -132,7 +136,7 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
   for (const h of sig.map(hiringRole).filter((x): x is string => !!x).slice(0, 2))
-    add(`${buyer ? `${buyer} at companies` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer} at companies` : 'Companies'}${place} hiring ${h}`)
+    add(`${buyer ? `${buyer}${fromRole ? ' at companies' : ''}` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer}${fromRole ? ' at companies' : ''}` : 'Companies'}${place} hiring ${h}`)
   // one play naming every competitor the scan's complaint collector reads (it reads the saved list up to its MAX_COMPETITORS, 5,
   // lib/signals/competitor-reddit.ts; pinned by test), so the play never leaves out a competitor whose complaints it surfaces
   const comps = list(competitors).slice(0, COMPLAINT_COMPETITORS)

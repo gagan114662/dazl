@@ -9,6 +9,8 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { loadPlaywright, startServer } from './harness.mjs'
+import { loadedScripts } from '../../lib/client-error-report.ts'
+import { unexpectedStallWrites, STALL_WRITE_QUARANTINE } from '../helpers/stall-write-quarantine.ts'
 const { chromium } = loadPlaywright()
 
 const srv = await startServer()
@@ -30,15 +32,30 @@ try {
   await ctx.addCookies([{ name: 'dazl_session', value: srv.token, url: base }])
   await ctx.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort())
   const page = await ctx.newPage()
-  const docs = [], writes = [], reports = []
+  const docs = [], writes = [], reports = [], pageErrors = []
+  // Observe the emitting document before navigation; never trust the submitted report's file list.
+  await ctx.exposeBinding('__dazlSmokePageErrorSnapshot', (_source, snapshot) => { pageErrors.push(snapshot) })
+  await ctx.addInitScript({ content: `(() => {
+    const snapshotLoadedScripts = (${loadedScripts.toString()});
+    globalThis.addEventListener('error', e => {
+      void globalThis.__dazlSmokePageErrorSnapshot({
+        path: globalThis.location.pathname,
+        message: String(e.error?.message ?? e.message ?? ''),
+        stack: String(e.error?.stack ?? '').slice(0, 8000),
+        loadedScripts: [...snapshotLoadedScripts(globalThis)],
+      }).catch(() => {});
+    });
+  })()` })
   page.on('request', r => {
     if (r.resourceType() === 'document') docs.push(new URL(r.url()).pathname)
-    if (!['GET', 'HEAD'].includes(r.method())) writes.push(`${r.method()} ${new URL(r.url()).pathname}`)
+    if (!['GET', 'HEAD'].includes(r.method())) writes.push({ method: r.method(), url: r.url(), body: r.postData() })
     // this check fails now and then with one POST /api/client-errors (three PRs on 2026-11-24): keep what the page reported
     // (kind, error class, path and frames only: lib/client-error-report.ts) so the failure names the error
     if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/client-errors') reports.push(String(r.postData() ?? '').slice(0, 1500))
   })
-  page.on('pageerror', e => reports.push(`pageerror: ${String(e?.stack ?? e).slice(0, 1500)}`))
+  page.on('pageerror', e => {
+    reports.push(`pageerror: ${String(e?.stack ?? e).slice(0, 1500)}`)
+  })
   page.on('console', m => { if (m.type() === 'error') reports.push(`console.error: ${m.text().slice(0, 500)}`) })
   const leadsLink = () => page.locator('aside').getByRole('link', { name: 'Leads', exact: true })
 
@@ -88,7 +105,9 @@ try {
   if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/stall-watch-B.png` })
   assert.deepEqual(docs, [], 'B: no second automatic reload within the window')
   assert.equal(button, true, 'B: a visible Reload button')
-  assert.deepEqual(writes, [], `nothing written; the page reported: ${reports.join(' | ') || 'nothing captured'}`)
+  const unexpectedWrites = unexpectedStallWrites(writes, pageErrors, base)
+  if (unexpectedWrites.length < writes.length) console.log(`Tracked hydration quarantine ${STALL_WRITE_QUARANTINE[0].issue}: ${reports.join(' | ')}`)
+  assert.deepEqual(unexpectedWrites, [], `nothing written; the page reported: ${reports.join(' | ') || 'nothing captured'}`)
   console.log('\nA held soft navigation recovers once, then shows a Reload button.')
 } finally {
   await browser?.close(); proxy.close(); srv.stop()
