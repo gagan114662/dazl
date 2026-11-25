@@ -39,8 +39,12 @@ bothEngines('an interrupted trial returns the allowance only when it saved no le
   assert.doesNotMatch(cost?.actual?.summary ?? '', /counted as billed/)
   assert.doesNotMatch((await readScanStatus(db, tenant.id, saved))?.outcome.detail ?? '', /returned to your trial allowance/i)
   const history = await historyJobs(db, tenant.id)
-  assert.equal(history.find(job => job.id === empty)?.spend_usd, 0)
-  assert.equal(history.find(job => job.id === saved)?.spend_usd, 0.2)
+  const emptyHistory = history.find(job => job.id === empty)
+  const savedHistory = history.find(job => job.id === saved)
+  assert.ok(emptyHistory && 'spend_usd' in emptyHistory)
+  assert.ok(savedHistory && 'spend_usd' in savedHistory)
+  assert.equal(emptyHistory.spend_usd, 0)
+  assert.equal(savedHistory.spend_usd, 0.2)
 
   // Keep outstanding provider spend visible to the platform after customer reimbursement.
   const row: LedgerRow = { tenant_id: tenant.id, kind: 'scan', reserve_usd: 0.30, day: trialDay(now), settled_at: now,
