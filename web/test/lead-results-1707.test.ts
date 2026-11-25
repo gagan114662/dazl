@@ -29,7 +29,8 @@ test('campaign and CSV links wait for results or a resolved scan', () => {
   assert.equal(visible('', { jobId: null }), true)
 })
 
-test('LinkedIn guidance is visible', () => {
+test('hold copy states the reason and LinkedIn guidance is visible', () => {
+  assert.match(leads, /data-testid="approve-hold"[^>]*>Can&apos;t approve yet\. <span>\{c\.approve\.reason\}/)
   assert.match(leads, /data-testid="linkedin-ready"[^>]*>[^<]*\{c\.linkedin\.name\}&apos;s profile and send the first message yourself\./)
 })
 
