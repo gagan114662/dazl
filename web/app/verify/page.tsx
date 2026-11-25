@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { verifyResult, verifyResultCopy, type VerifyResult } from './result'
+import { ResendConfirmation } from '../resend-confirmation'
 
 // Opened from the verification email. The token is in the #fragment, so it never reaches a server log.
 export default function Verify() {
