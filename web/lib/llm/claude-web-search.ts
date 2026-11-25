@@ -249,17 +249,25 @@ export async function runClaudeWebSearch(
   const countPayload = { model: CLAUDE_SEARCH_MODEL, messages: [{ role: 'user', content: prompt }] }
   const searches = await reserveNativeScanSearches(claudeSearchMaxUses(policy))
   const tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: searches?.allowance ?? claudeSearchMaxUses(policy) }]
-  let input: unknown
+  let hold: ClaudeSearchHold | null
+  let estimate: ClaudeSearchEstimate
   try {
-    const r = await fetchImpl(MESSAGE + '/count_tokens', { method: 'POST', headers, body: JSON.stringify(countPayload), signal: AbortSignal.timeout(20_000), redirect: 'error' })
-    if (r.status === 401 || r.status === 403) throw new ClaudeSearchError('key_rejected')
-    if (!r.ok) throw new ClaudeSearchError('count_failed')
-    input = obj(await r.json()).input_tokens
-  } catch (e) { if (e instanceof ClaudeSearchError) throw e; throw new ClaudeSearchError('count_failed') }
-  if (!count(input)) throw new ClaudeSearchError('count_failed')
-  const estimate = claudeSearchEstimate(input, policy)
-  const hold = await reserve(estimate)
-  if (!hold) throw new ClaudeSearchError('reservation_missing')
+    let input: unknown
+    try {
+      const r = await fetchImpl(MESSAGE + '/count_tokens', { method: 'POST', headers, body: JSON.stringify(countPayload), signal: AbortSignal.timeout(20_000), redirect: 'error' })
+      if (r.status === 401 || r.status === 403) throw new ClaudeSearchError('key_rejected')
+      if (!r.ok) throw new ClaudeSearchError('count_failed')
+      input = obj(await r.json()).input_tokens
+    } catch (e) { if (e instanceof ClaudeSearchError) throw e; throw new ClaudeSearchError('count_failed') }
+    if (!count(input)) throw new ClaudeSearchError('count_failed')
+    estimate = claudeSearchEstimate(input, policy)
+    hold = await reserve(estimate)
+    if (!hold) throw new ClaudeSearchError('reservation_missing')
+  } catch (e) {
+    // No Messages request was dispatched: this allowance is proven unused.
+    await searches?.settle(0)
+    throw e
+  }
   let r: Response
   const stall = new AbortController()
   let stallTimer: ReturnType<typeof setTimeout> | undefined
@@ -300,6 +308,7 @@ export async function runClaudeWebSearch(
     } catch { /* unreadable error still may have been billed */ }
     clearTimeout(stallTimer)
     if (limited) {
+      await searches?.settle(0)
       await hold.rejected(429)
       throw new ClaudeSearchError('rate_limited')
     }
@@ -321,11 +330,12 @@ export async function runClaudeWebSearch(
   const checked = checkUsage(json, true)
   if ('diagnostic' in checked) { await hold.uncertain(); throw new ClaudeSearchError('usage_uncertain', checked.diagnostic, rejectedUsage(json, checked.diagnostic)) }
   const { usage } = checked
-  await searches?.settle(usage.searches)
   // Known actual is always settled, even if it exceeded the soft estimate or violated the claimed output/tool limits.
   await hold.settle(usage.usd, usage)
-  if (usage.searches > claudeSearchMaxUses(policy) || usage.outputTokens > CLAUDE_SEARCH_MAX_OUTPUT)
+  if (usage.searches > (searches?.allowance ?? claudeSearchMaxUses(policy)))
     throw new ClaudeSearchError('provider_limit_violation')
+  await searches?.settle(usage.searches)
+  if (usage.outputTokens > CLAUDE_SEARCH_MAX_OUTPUT) throw new ClaudeSearchError('provider_limit_violation')
   const root = obj(json), content = arr(root.content)
   const rawStop = root.stop_reason
   const stop = rawStop === 'end_turn' || rawStop === 'pause_turn' || rawStop === 'max_tokens' ? rawStop : 'other'
