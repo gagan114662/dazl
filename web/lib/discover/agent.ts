@@ -7,7 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
-import { filterLaunchResults, LAUNCH_RETRY_INSTRUCTION, launchRegionSystemPrompt, readLaunchRegion } from './launch-region.ts'
+import { filterLaunchResults, LAUNCH_RETRY_INSTRUCTION, launchRegionSystemPrompt, launchSearchProfile, readLaunchRegion } from './launch-region.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
@@ -127,7 +127,7 @@ export function usd(u: Omit<DiscoverUsage, 'usd'>): number {
 
 // What the engine is asked, as one message. With a carried profile the request is named as the whole search before the background.
 export function userMessage(input: DiscoverInput, today: string, max: number): string {
-  const profile = profileLines(input.profile, input.profileCarried === true)
+  const profile = profileLines(launchSearchProfile(input), input.profileCarried === true)
   return [`Today is ${today}.`, input.offer ? `The seller sells: ${str(input.offer, 600)}` : '', `Find: ${str(input.query, 1000)}`,
     input.profileCarried === true && profile.length ? 'The request above is the whole search: it decides who to look for, where, and which signal.' : '',
     ...profile,

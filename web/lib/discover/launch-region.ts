@@ -1,6 +1,7 @@
 // Instruct Claude to resolve geography before tool use. Validate the returned plan and leads at the response boundary.
 import { countriesIn, countryFromField, countryOfRegion, regionOf, regionsIn } from '../scan/countries.ts'
 import { groundedIn, parsePlan, type PlanPlace, type RequestPlan } from '../scan/request-plan.ts'
+import { placeIn, placeSkipReason, worldCitiesIn } from '../sources/jobboards.ts'
 import type { DiscoverInput, DiscoverResult, DiscoveredLead } from './agent.ts'
 
 const LAUNCH_COUNTRIES = new Set(['US', 'CA'])
@@ -42,16 +43,38 @@ function launchPartCountries(text: string): string[] {
 type LaunchRegion = { ok: true; places: PlanPlace[] } | { ok: false; stop: string; note: string }
 const UNCONFIRMED_RESULT: LaunchRegion = { ok: false, stop: UNCONFIRMED, note: UNCONFIRMED_COPY }
 
+function namesDestination(query: string): boolean {
+  return Boolean(placeIn(query)) ||
+    worldCitiesIn(query).length > 0 ||
+    placeSkipReason(query) !== 'skipped_no_place'
+}
+
+export function launchSearchProfile(input: DiscoverInput): DiscoverInput['profile'] {
+  if (!input.profile?.where?.length || !namesDestination(input.query)) return input.profile
+  return { ...input.profile, where: undefined }
+}
+
 export function readLaunchRegion(input: DiscoverInput, reply: string, retained: LaunchRegion = UNCONFIRMED_RESULT): LaunchRegion {
   const tagged = /<json>([\s\S]*?)<\/json>/.exec(reply)
   let raw: unknown
   try { raw = JSON.parse(tagged ? tagged[1] : reply) } catch { return retained }
   if (!raw || typeof raw !== 'object' || !('request_plan' in raw)) return retained
   const plan = parsePlan(JSON.stringify(raw.request_plan))
-  const grounding = [input.query, ...(input.profileCarried ? [] : input.profile?.where ?? [])].join('\n')
-  if (!plan || !plan.places.every(place => groundedIn(grounding, place))) return UNCONFIRMED_RESULT
-  if (plan.places.some(outsideLaunchCoverage)) return { ok: false, stop: UNSUPPORTED, note: COVERAGE_COPY }
-  return { ok: true, places: plan.places }
+  if (!plan) return UNCONFIRMED_RESULT
+
+  const typed = plan.places.filter(place => groundedIn(input.query, place))
+  const profilePlaces = input.profile?.where ?? []
+  const groundedInProfile = (place: PlanPlace) => profilePlaces.some(location => groundedIn(location, place))
+  const useTyped = typed.length > 0 || (profilePlaces.length > 0 && namesDestination(input.query))
+  const places = useTyped ? typed : plan.places
+  if (useTyped) {
+    if (!typed.length || !plan.places.every(place => typed.includes(place) || groundedInProfile(place))) return UNCONFIRMED_RESULT
+  } else if (!plan.places.every(place => !input.profileCarried && groundedInProfile(place))) {
+    return UNCONFIRMED_RESULT
+  }
+
+  if (places.some(outsideLaunchCoverage)) return { ok: false, stop: UNSUPPORTED, note: COVERAGE_COPY }
+  return { ok: true, places }
 }
 
 export const launchOutcomeStop = (stop: string): string => stop === LAUNCH_RESULTS_REJECTED ? UNSUPPORTED : stop

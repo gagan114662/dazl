@@ -136,6 +136,26 @@ test('a carried profile cannot override an explicitly typed destination', async 
   assert.deepEqual(run.leads, [])
 })
 
+test('SDR in Toronto searches the typed destination and omits saved New York', async () => {
+  const query = 'SDR in Toronto'
+  const toronto = { text: 'Toronto', city: 'Toronto', region: null, country: 'CA' }
+  const newYork = { text: 'New York', city: null, region: 'New York', country: 'US' }
+  const { requests, fetchImpl } = provider([toronto, newYork], [
+    candidate('TypedDestination', 'CA', 'Toronto, Canada'),
+    candidate('SavedDestination', 'US', 'New York, United States'),
+  ])
+  const result = await discoverLeads({ query, profile: { where: ['New York'] } }, { apiKey: 'test', fetch: fetchImpl })
+  assert.equal(requests.length, 1)
+  assert.match(JSON.stringify(requests[0].messages), /Find: SDR in Toronto/)
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /New York/)
+  assert.deepEqual(result.leads.map(lead => lead.company), ['TypedDestination'])
+
+  const profileOnly = provider([newYork], [candidate('SavedDestination', 'US', 'New York, United States')])
+  const rejected = await discoverLeads({ query, profile: { where: ['New York'] } }, { apiKey: 'test', fetch: profileOnly.fetchImpl })
+  assert.equal(rejected.stop, 'search_region_unconfirmed')
+  assert.deepEqual(rejected.leads, [])
+})
+
 test('a final response without a repeated plan uses the complete paused plan', async () => {
   const { requests, fetchImpl } = provider([{ text: 'Canada', city: null, region: null, country: 'CA' }], [
     candidate('Canadian', 'CA'), candidate('Outside', 'GB'),
