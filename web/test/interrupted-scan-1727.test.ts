@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { admitTrialScan, ledger, linkTrialReservation, trialAllowanceLeft, trialDay, type LedgerRow } from '../lib/billing/trial-budget.ts'
+import { admitTrialScan, ledger, linkTrialReservation, settleTrialReservation, trialAllowanceLeft, trialDay, type LedgerRow } from '../lib/billing/trial-budget.ts'
 import { historyJobs } from '../lib/scan/history-jobs.ts'
 import { readScanStatus } from '../lib/scan/status-read-service.ts'
 import { createJob, reapStaleRunningJobs } from '../lib/scan/store-db.ts'
@@ -21,8 +21,11 @@ bothEngines('an interrupted trial returns the allowance only when it saved no le
     const id = await createJob(db, tenant.id, { business_name: 'Fixture', industry: 'industry', location: 'location' }, '{}')
     jobs.push(id)
     await linkTrialReservation(db, tenant.id, admitted.reservation, id)
-    await db.run("UPDATE scan_jobs SET funded_by = 'trial', status = 'running', claimed_at = ?, attempts = 1, spend_reserved_usd = 0.30, spend_cap_reserved_usd = 0.20, estimate = ? WHERE id = ?", [now - 3600, estimate, id])
-    await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES (?, ?, ?, 1, 'llm.anthropic', 0.20, 'reserved', ?)", [id, tenant.id, id, now - 3500])
+    // The zero-lead run's previous attempt settled before it was retried by a new worker.
+    const attempt = saved ? 1 : 2
+    if (attempt === 2) await settleTrialReservation(db, id, 1, now - 3800)
+    await db.run("UPDATE scan_jobs SET funded_by = 'trial', status = 'running', claimed_at = ?, attempts = ?, spend_reserved_usd = 0.30, spend_cap_reserved_usd = 0.20, estimate = ? WHERE id = ?", [now - 3600, attempt, estimate, id])
+    await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, status, created_at) VALUES (?, ?, ?, ?, 'llm.anthropic', 0.20, 'reserved', ?)", [id, tenant.id, id, attempt, now - 3500])
     if (saved) await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, ?, 'Fixture', 'Public signal', 'https://example.test/signal')", [id, id])
   }
 
@@ -30,6 +33,8 @@ bothEngines('an interrupted trial returns the allowance only when it saved no le
   assert.equal(await reapStaleRunningJobs(db, now), 2)
   assert.deepEqual(await trialAllowanceLeft(db, tenant.id, { env, now }), { left_usd: 0.8, total_usd: 1 })
   const [empty, saved] = jobs
+  await settleTrialReservation(db, empty, 1, now + 1)
+  assert.deepEqual(await trialAllowanceLeft(db, tenant.id, { env, now }), { left_usd: 0.8, total_usd: 1 })
   const status = await readScanStatus(db, tenant.id, empty)
   assert.equal(status?.error, 'accounting_uncertain')
   assert.match(status?.outcome.detail ?? '', /returned to your trial allowance/i)

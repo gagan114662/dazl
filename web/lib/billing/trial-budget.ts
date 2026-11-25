@@ -435,7 +435,10 @@ export async function interruptedTrialAllowanceRestored(db: Db, tenantId: string
 // and every guarded paid call: the reservation may now count as what the scan recorded instead of its full reserve.
 // Best effort: if this write fails, the reservation keeps counting in full (never less than it could spend).
 export async function settleTrialReservation(db: DbLike, jobId: string, attempt: number, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
-  try { await asDb(db).run('UPDATE trial_reservations SET settled_at = ?, settled_attempt = ? WHERE job_id = ?', [nowS, attempt, jobId]) }
+  try {
+    await asDb(db).run(`UPDATE trial_reservations SET settled_at = ?, settled_attempt = ?
+      WHERE job_id = ? AND (settled_attempt IS NULL OR settled_attempt <= ?)`, [nowS, attempt, jobId, attempt])
+  }
   catch (e) { captureError(e, { source: 'process', where: 'trial-budget:settleTrialReservation' }) } // stays at its full reserve; recorded (was silent on main)
 }
 
