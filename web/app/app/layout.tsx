@@ -25,8 +25,11 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
+  // #1700: ONE scroller. The shell is exactly the visible height (h-dvh: on a phone 100vh is taller than what shows, which made the
+  // page scroll too), and `relative overflow-hidden` makes it the containing block that clips absolutely positioned descendants,
+  // which otherwise escape <main>'s overflow and stretch the page behind it (two vertical scrollbars at 390px).
   return (
-    <div className="app-ui flex flex-col md:flex-row h-screen">
+    <div className="app-ui relative overflow-hidden flex flex-col md:flex-row h-dvh">
       {/* CSS-only collapsing nav: a checkbox toggles the menu below md; a slim sidebar from md up */}
       {/* #534: md:hidden keeps the invisible checkbox out of the desktop Tab order; its focus ring shows on the Menu label (globals.css) */}
       <input id={NAV_TOGGLE_ID} type="checkbox" className="peer sr-only md:hidden" aria-label="Menu" />
