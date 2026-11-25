@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { connection } from 'next/server'
 import { PASSWORD_TRIAL_SCANS, passwordTrialOn, trialFundable } from '@/lib/billing/trial-budget'
 import { TRIAL_SCANS_PER_ACCOUNT } from '@/lib/scan/trial'
@@ -7,9 +8,13 @@ import { SignInForm } from '../sign-up/sign-up-form'
 
 // #1704: the free-search rule under the Google button is the sign-up page's, read the same way at request time (whether a
 // trial can be admitted here, whether an email account gets its first search, and the allowance constants), so the two
-// pages never tell two stories. Rendered per request for the same reason as /sign-up (see app/sign-up/page.tsx).
-export const instant = false
-export default async function SignIn() {
+// pages never tell two stories. Only that line waits on the request (connection() inside its own Suspense, as app/reset
+// does): the form stays in the prerendered shell, so it is in the first HTML (no script needed) and the page's code is
+// fetched with the link prefetch, as before.
+async function TrialRule() {
   await connection()
-  return <SignInForm trialRule={trialRuleLine({ funded: trialFundable(), emailPath: passwordTrialOn() && systemMailAvailable(), cap: TRIAL_SCANS_PER_ACCOUNT, emailCap: PASSWORD_TRIAL_SCANS })} />
+  return trialRuleLine({ funded: trialFundable(), emailPath: passwordTrialOn() && systemMailAvailable(), cap: TRIAL_SCANS_PER_ACCOUNT, emailCap: PASSWORD_TRIAL_SCANS })
+}
+export default function SignIn() {
+  return <SignInForm trialRule={<Suspense fallback={null}><TrialRule /></Suspense>} />
 }

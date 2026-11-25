@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
@@ -110,23 +110,31 @@ export default function SignUpForm({ trialFunded, emailTrial = true, trialRule =
   )
 }
 
-// The sign-in form (app/sign-in/page.tsx renders it with the free-search rule it read on the server, #1704).
-export function SignInForm({ trialRule = '' }: { trialRule?: string }) {
+// What a return to /sign-in says: a Google sign-in outcome (?error=) or a finished password reset (?reset=1, which wins).
+const SIGN_IN_ERRORS: Record<string, string> = {
+  google_failed: 'Google sign-in did not work. Try again.', google_unavailable: 'Google sign-in is not available right now.',
+  google_email_unverified: 'Your Google email is not verified, so we cannot use it.',
+  google_email_exists: 'An account with this email already exists. Sign in with your password.', too_many: 'Too many attempts. Try again later.', unavailable: 'Sign-in is briefly unavailable. Try again in a moment.',
+}
+function signInNotice(search: string): string {
+  const q = new URLSearchParams(search)
+  if (q.get('reset') === '1') return 'Your password is changed and every device was signed out. Sign in with the new password.'
+  const e = q.get('error')
+  return e && Object.hasOwn(SIGN_IN_ERRORS, e) ? SIGN_IN_ERRORS[e] : ''
+}
+const noSubscribe = () => () => {}
+
+// The sign-in form. trialRule (#1704): the free-search rule line, read by app/sign-in/page.tsx at request time. The page's
+// own address is read as an external store (empty on the server) so the return notice needs no state set in an effect.
+export function SignInForm({ trialRule = '' }: { trialRule?: ReactNode }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const search = useSyncExternalStore(noSubscribe, () => window.location.search, () => '')
+  // null until the form is submitted: until then the address's notice shows; a submit replaces it, as before
+  const [submitError, setError] = useState<string | null>(null)
+  const error = submitError ?? signInNotice(search)
   const claim = useClaimContext()
-  useEffect(() => {
-    keepInvite()
-    const e = new URLSearchParams(window.location.search).get('error')
-    const m: Record<string, string> = {
-      google_failed: 'Google sign-in did not work. Try again.', google_unavailable: 'Google sign-in is not available right now.',
-      google_email_unverified: 'Your Google email is not verified, so we cannot use it.',
-      google_email_exists: 'An account with this email already exists. Sign in with your password.', too_many: 'Too many attempts. Try again later.', unavailable: 'Sign-in is briefly unavailable. Try again in a moment.',
-    }
-    if (e && m[e]) setError(m[e])
-    if (new URLSearchParams(window.location.search).get('reset') === '1') setError('Your password is changed and every device was signed out. Sign in with the new password.')
-  }, [])
+  useEffect(() => { keepInvite() }, [])
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()

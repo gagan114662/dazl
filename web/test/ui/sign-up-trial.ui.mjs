@@ -45,6 +45,10 @@ try {
     const text = await page.textContent('main')
     assert.match(text, FALLBACK_LINE, 'the no-trial fallback line shows')
     assert.doesNotMatch(text, TRIAL_LINE, 'no trial-scan promise when the trial is not configured')
+    assert.equal((await page.getByTestId('trial-rule').innerText()).trim(), '', '#1704: no free-search rule on /sign-up')
+    await page.goto(`${base}/sign-in`, { waitUntil: 'networkidle' })
+    assert.equal((await page.getByTestId('trial-rule').innerText()).trim(), '', '#1704: no free-search rule on /sign-in either')
+    await page.goto(`${base}/sign-up`, { waitUntil: 'networkidle' })
     if (process.env.SHOTS) { await page.setViewportSize({ width: 1440, height: 900 }); await page.screenshot({ path: path.join(process.env.SHOTS, 'sign-up-trial-off-desktop.png') }) }
     await page.close()
   })
@@ -77,6 +81,11 @@ try {
     const text = await page.textContent('main')
     assert.match(text, TRIAL_LINE, 'the trial-scan line shows only once a trial could really be admitted')
     assert.doesNotMatch(text, FALLBACK_LINE, 'not both lines at once')
+    // #1704: one rule line, read at request time, the same on /sign-up and /sign-in
+    const rule = (await page.getByTestId('trial-rule').innerText()).trim()
+    assert.equal(rule, 'With Google: up to 3 free searches. With email: 1 free search.', '/sign-up rule line')
+    await page.goto(`${base}/sign-in`, { waitUntil: 'networkidle' })
+    assert.equal((await page.getByTestId('trial-rule').innerText()).trim(), rule, '/sign-in says the same rule')
     await page.close()
   })
   console.log('sign-up trial-copy check passed: the trial-scan promise shows only when a trial is actually configured, never a fixed claim')
