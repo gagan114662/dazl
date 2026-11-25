@@ -9,8 +9,6 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { loadPlaywright, startServer } from './harness.mjs'
-import { loadedScripts } from '../../lib/client-error-report.ts'
-import { unexpectedStallWrites, STALL_WRITE_QUARANTINE } from '../helpers/stall-write-quarantine.ts'
 const { chromium } = loadPlaywright()
 
 const srv = await startServer()
@@ -32,23 +30,10 @@ try {
   await ctx.addCookies([{ name: 'dazl_session', value: srv.token, url: base }])
   await ctx.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort())
   const page = await ctx.newPage()
-  const docs = [], writes = [], reports = [], pageErrors = []
-  // Observe the emitting document before navigation; never trust the submitted report's file list.
-  await ctx.exposeBinding('__dazlSmokePageErrorSnapshot', (_source, snapshot) => { pageErrors.push(snapshot) })
-  await ctx.addInitScript({ content: `(() => {
-    const snapshotLoadedScripts = (${loadedScripts.toString()});
-    globalThis.addEventListener('error', e => {
-      void globalThis.__dazlSmokePageErrorSnapshot({
-        path: globalThis.location.pathname,
-        message: String(e.error?.message ?? e.message ?? ''),
-        stack: String(e.error?.stack ?? '').slice(0, 8000),
-        loadedScripts: [...snapshotLoadedScripts(globalThis)],
-      }).catch(() => {});
-    });
-  })()` })
+  const docs = [], writes = [], reports = []
   page.on('request', r => {
     if (r.resourceType() === 'document') docs.push(new URL(r.url()).pathname)
-    if (!['GET', 'HEAD'].includes(r.method())) writes.push({ method: r.method(), url: r.url(), body: r.postData() })
+    if (!['GET', 'HEAD'].includes(r.method())) writes.push(`${r.method()} ${new URL(r.url()).pathname}`)
     // this check fails now and then with one POST /api/client-errors (three PRs on 2026-11-24): keep what the page reported
     // (kind, error class, path and frames only: lib/client-error-report.ts) so the failure names the error
     if (r.method() === 'POST' && new URL(r.url()).pathname === '/api/client-errors') reports.push(String(r.postData() ?? '').slice(0, 1500))
@@ -64,9 +49,11 @@ try {
   await ctx.route('**/stall-test-download.csv', route => route.fulfill({ status: 200, headers: { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="x.csv"' }, body: 'a,b\n' }))
   await page.goto(base + '/app/settings', { waitUntil: 'domcontentloaded' })
   await leadsLink().waitFor()
+  // The Plan panel appears only after its client effect loads usage. Wait before changing React-owned DOM.
+  await page.locator('main').getByTestId('plan-panel').waitFor()
   await page.evaluate(() => { const a = document.createElement('a'); a.href = '/stall-test-download.csv'; a.textContent = 'Download CSV'; a.id = 'plain-download'; document.querySelector('main')?.prepend(a) })
   docs.length = 0
-  await page.click('#plain-download').catch(() => {})
+  await Promise.all([page.waitForEvent('download'), page.click('#plain-download')])
   await page.waitForTimeout(15000)
   const budget = await page.evaluate(() => sessionStorage.getItem('dazl-stall-reload'))
   const falseNotice = await page.locator('[role="alert"]').filter({ hasText: 'This is taking too long' }).count()
@@ -105,9 +92,7 @@ try {
   if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/stall-watch-B.png` })
   assert.deepEqual(docs, [], 'B: no second automatic reload within the window')
   assert.equal(button, true, 'B: a visible Reload button')
-  const unexpectedWrites = unexpectedStallWrites(writes, pageErrors, base)
-  if (unexpectedWrites.length < writes.length) console.log(`Tracked hydration quarantine ${STALL_WRITE_QUARANTINE[0].issue}: ${reports.join(' | ')}`)
-  assert.deepEqual(unexpectedWrites, [], `nothing written; the page reported: ${reports.join(' | ') || 'nothing captured'}`)
+  assert.deepEqual(writes, [], `nothing written; the page reported: ${reports.join(' | ') || 'nothing captured'}`)
   console.log('\nA held soft navigation recovers once, then shows a Reload button.')
 } finally {
   await browser?.close(); proxy.close(); srv.stop()
