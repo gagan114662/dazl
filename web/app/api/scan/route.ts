@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
   // refused until the caller chooses which one this play is for, before anything is queued or counted.
   const seller = await readSellerLine(await getDb(), user.tenantId)
   let inheritedOffer = ''
-  let recordedOffer = ''
+  let recordedOffer: string | null = null
   const offerSupplied = body?.offer !== undefined && body?.offer !== null
   let offer = offerSupplied ? (completeOffer(body.offer) ?? '') : ''
   if (offerSupplied && offer.length < 3) return NextResponse.json({ error: 'Say in a few words what you sell for this play' }, { status: 400 })
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
     if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated, saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}), ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
     inheritedOffer = e.offer ?? ''
     // Without a saved seller line, pin the effective offer separately from an explicit confirmation.
-    if (e.source === 'profile') recordedOffer = inheritedOffer
+    if (e.source === 'profile') recordedOffer = e.offer
   }
 
   // The reviewed draft corrects the stored research per offer (#379): confirmed/sourced statements for THIS play's
@@ -280,7 +280,12 @@ export async function POST(req: NextRequest) {
       if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
       const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
       if (!q2.allowed && !quotaLifted) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
-      if (query.length >= 3) createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller, offer: offer || null, inheritedOffer: recordedOffer || null, runBudget, icpReviewed: body?.reviewed === true, icpFromQuery: fromQuery, icpRetained: retained })
+      if (query.length >= 3) {
+        const snapshot = completeOffer(recordedOffer)
+        // Previously admitted short positioning is valid as a seller snapshot, below the offer field's review minimum.
+        const sellerSnapshot = snapshot ? seller : recordedOffer ?? seller
+        createQueryJob(db, user.tenantId, { id: jid, query, icp: sized ? sized.json : carry.stub, sources: sel ? JSON.stringify(sel) : null, seller: sellerSnapshot, offer: offer || null, inheritedOffer: snapshot, runBudget, icpReviewed: body?.reviewed === true, icpFromQuery: fromQuery, icpRetained: retained })
+      }
       else createJob(db, user.tenantId, { id: jid, business_name, industry, location }, runBudget)
       if (websiteApproval && !recordQueuedWebsiteApproval(db, websiteApproval, jid)) {
         refused = NextResponse.json({ error: 'website_review_stale' }, { status: 409 })

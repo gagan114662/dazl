@@ -62,9 +62,8 @@ test('a fresh query preserves carried exclusions even when no buyer profile is s
   assert.deepEqual(JSON.parse(row.icp).carry_exclude, ['Do not contact existing clients'])
 })
 
-test('a new play keeps the offer it took from Memory after the tenant changes it', async () => {
+for (const positioning of ['Managed hosting - example.com', 'AI']) test(`a new play keeps the Memory offer "${positioning}" after the tenant changes it`, async () => {
   const t = tenant('')
-  const positioning = 'Managed hosting - example.com'
   saveMemory(db, t, { positioning })
   const estimate = await request(t, ESTIMATE, { query, icp: profile, reviewed: false })
   assert.equal(estimate.status, 200, JSON.stringify(estimate))
@@ -74,7 +73,7 @@ test('a new play keeps the offer it took from Memory after the tenant changes it
   saveMemory(db, t, { positioning: 'CRM setup and outbound sales consulting' })
   const row = db.prepare('SELECT seller, offer, offer_set_at, query FROM scan_jobs WHERE id=? AND user_id=?')
     .get(result.job_id, t) as { seller: string | null; offer: string | null; offer_set_at: number | null; query: string }
-  assert.equal((await readPlayOffer(db, t, result.job_id))?.offer, positioning)
+  assert.deepEqual(await readPlayOffer(db, t, result.job_id), { offer: positioning, source: 'recorded', conflict: null })
   assert.equal(draftOffer(row, readTenantOffer(db, t)).offer, positioning)
   assert.equal(row.offer_set_at, null, 'using a saved offer does not record a user review')
 })
