@@ -203,6 +203,7 @@ try {
     await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // the wake's read starts and lands first
     await card(page).waitFor()
     await page.waitForTimeout(1200) // the delayed older read lands here
+    await page.getByTestId('setup-details').locator('summary').click() // the readiness panel lives in this drawer
     await page.getByTestId('ready-site').getByRole('button').click()
     assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example', 'the discarded older read still seeds the form')
     assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
@@ -213,6 +214,7 @@ try {
     await page.waitForTimeout(200)
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     await card(page).waitFor()
+    await page.getByTestId('setup-details').locator('summary').click()
     await page.getByTestId('ready-site').getByRole('button').click()
     await page.getByLabel('Your website').fill('typed.example')
     await page.waitForTimeout(2000) // the delayed older read lands here
