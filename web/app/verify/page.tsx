@@ -21,7 +21,12 @@ export default function Verify() {
         {state === 'done' && <p className="text-[#555] text-sm">Your email is confirmed. <a className="underline underline-offset-2" href="/sign-in">Sign in to dazl</a></p>}
         {(state === 'unusable' || state === 'uncertain' || state === 'limited') &&
           <p className="text-[#555] text-sm" role="status">{verifyResultCopy[state]} <a className="underline underline-offset-2" href="/sign-in">Sign in</a> to check whether your email is already confirmed. If it’s still pending, follow the sign-in instructions.</p>}
-        {state === 'none' && <p className="text-[#555] text-sm">Open the link from the email we sent you.</p>}
+        {state === 'none' && (
+          <>
+            <p className="text-[#555] text-sm">Open the link from the email we sent you.</p>
+            <ResendConfirmation />
+          </>
+        )}
       </div>
     </main>
   )
