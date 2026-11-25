@@ -51,7 +51,7 @@ test('a member acts in the workspace they chose, within their role, until remove
   assert.notEqual((await as(tb, () => exportRoute.GET(req('/api/leads/export?job_id=aaaaaaaaaaaaaaaaaaaaaaaa')))).status, 403)
   const launch = () => as(tb, () => scanRoute.POST(req('/api/scan', 'POST', { query: 'roofers in Ohio' })))
   assert.equal((await launch()).status, 403)
-  const putKey = () => as(tb, () => keyRoute.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', key: 'sk-ant-FIXTURE' })))
+  const putKey = () => as(tb, () => keyRoute.PUT())
   assert.equal((await putKey()).status, 403, 'the role check still comes before the route answers 410 (#1703)')
   assert.equal((raw.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = 'A'").get() as { n: number }).n, 1)
 
