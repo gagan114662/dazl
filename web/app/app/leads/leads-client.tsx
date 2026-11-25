@@ -111,7 +111,7 @@ type PersonLineProps = { p: LeadPerson | null; nameOnly?: boolean; children?: Re
 function PersonLine({ p, nameOnly, children, sourceLink }: PersonLineProps & { sourceLink?: ReactNode }) {
   if (!p) return <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
 
-  const title = p.title.trim()
+  const title = p.title?.trim() ?? ''
   const missing = title ? (p.linkedin ? null : 'No LinkedIn profile found')
     : p.linkedin ? 'No job title found' : 'No job title or LinkedIn profile found'
   return <div className="text-sm mt-0.5" data-testid="lead-person">
