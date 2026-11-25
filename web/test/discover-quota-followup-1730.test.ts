@@ -8,7 +8,7 @@ import { discoverLeads, type DiscoveredLead } from '../lib/discover/agent.ts'
 import { enrichLeads } from '../lib/discover/enrich.ts'
 import { createSearchBudget, type SearchBudget } from '../lib/discover/search-budget.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
-import { runClaudeWebSearch } from '../lib/llm/claude-web-search.ts'
+import { ClaudeSearchError, runClaudeWebSearch } from '../lib/llm/claude-web-search.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { migrateScanSpendCap, runWithScanSpend, scanCapConfig } from '../lib/scan/spend-cap.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
@@ -45,7 +45,7 @@ test('a native request stops with a typed quota exhaustion before token count or
     await inJob(() => createSearchBudget().reserve(15))
     const fetchImpl: typeof fetch = async () => assert.fail('an exhausted quota cannot dispatch')
     await assert.rejects(inJob(() => runClaudeWebSearch(key, 'Find buyers', () => null, fetchImpl)),
-      { name: 'NativeSearchBudgetExhausted' })
+      (error: unknown) => error instanceof ClaudeSearchError && error.code === 'search_quota_exhausted')
   } finally { db.close() }
 })
 
