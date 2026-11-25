@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
@@ -236,11 +236,10 @@ test('D: billing is off unless BILLING_AVAILABLE is exactly 1; the sentence is t
   assert.match(panel, /BILLING_BETA_TEXT/)
 })
 
-test('E: a new AI key is Anthropic (Claude) only; a saved OpenAI key is still listed and removable', () => {
-  const panel = src('app/app/settings/llm-key-panel.tsx')
-  assert.doesNotMatch(panel, /<option value="openai"/, 'OpenAI is not offered as a choice for a new key')
-  assert.match(panel, /Searches run on Claude/)
-  assert.match(panel, /k\.vendor === 'anthropic' \? 'Anthropic' : 'OpenAI'/, 'an already-saved OpenAI key is still shown')
+test('E: a new AI key is Anthropic (Claude) only; Settings has no key panel at all (#1703)', () => {
+  // #1703 removed the Settings key panel (its OpenAI and Anthropic key boxes): no key of any provider is asked for there.
+  assert.equal(existsSync(new URL('../app/app/settings/llm-key-panel.tsx', import.meta.url)), false)
+  assert.doesNotMatch(src('app/app/settings/page.tsx'), /LlmKeyPanel|llm-key-panel/)
   const inline = src('app/app/key-inline.tsx')
   assert.doesNotMatch(inline.replace(/^\s*\/\/.*$/gm, ''), /platform\.openai\.com|OpenAI/, 'nothing the user sees offers an OpenAI key')
   assert.match(inline, /Searches run on Claude/)

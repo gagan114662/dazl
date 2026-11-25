@@ -1,4 +1,3 @@
-import LlmKeyPanel from './llm-key-panel'
 import PlanPanel from './plan-panel'
 import AdvancedPanel from './advanced-panel'
 import LinkedInExtensionPanel from './linkedin-extension-panel'
@@ -24,7 +23,7 @@ import { can } from '@/lib/workspaces'
 import { billingAvailable } from '@/lib/beta'
 import { autopilotAvailable } from '@/lib/outreach/autopilot'
 
-const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['model-key', 'Model key'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
+const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
 // cacheComponents: the session read is request-time data, so it sits inside its own Suspense boundary (same pattern as
 // the claimed preview page).
@@ -39,7 +38,7 @@ async function SettingsBody() {
   return (
     <div className="p-8 max-w-2xl">
       <h1 className="text-2xl font-semibold tracking-tight mb-1">Settings</h1>
-      <p className="text-[#555] text-sm mb-4">Your plan, your team, your AI key and optional connectors.</p>
+      <p className="text-[#555] text-sm mb-4">Your plan, your team and optional connectors.</p>
       <nav aria-label="Settings sections" className="flex flex-wrap gap-x-5 mb-6 text-xs font-mono uppercase tracking-wider">
         {SECTIONS.filter(([id]) => id !== 'autopilot' || autopilotAvailable()).map(([id, label]) => <a key={id} href={`#${id}`} className="inline-flex items-center justify-center min-h-11 min-w-11 underline underline-offset-4 text-[#111]">{label}</a>)}
       </nav>
@@ -50,7 +49,6 @@ async function SettingsBody() {
       <div id="team" className="scroll-mt-6"><TeamPanel /></div>
       <div id="devices" className="scroll-mt-6"><SessionsPanel /></div>
       <div id="memory" className="scroll-mt-6"><MemoryPanel /></div>
-      <div id="model-key" className="scroll-mt-6"><LlmKeyPanel /></div>
       <UsagePanel />
       <LifecyclePanel />
       <CompetitorsPanel />

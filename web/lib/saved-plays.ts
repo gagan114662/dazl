@@ -22,9 +22,10 @@ export interface SavedPlay {
 
 // the reasons the scheduler pauses a play with (lib/watch.ts runDueWatches, lib/monitors.ts runDueMonitors)
 const PAUSED: Record<string, string> = {
-  no_key: 'Paused: no AI key to run it', no_api_key: 'Paused: no AI key to run it',
+  // #1703: the scheduler still writes no_key / no_api_key for a play with nothing to fund it; the label names no key
+  no_key: "Paused: this play can't run on your account right now", no_api_key: "Paused: this play can't run on your account right now",
   quota: "Paused: this month's scans are used up", quota_exceeded: "Paused: this month's scans are used up",
-  trial_used: 'Paused: your free searches are used up. Add your AI key in Settings to keep it running',
+  trial_used: 'Paused: your free searches are used up',
 }
 // #1042: one line under a play about how it repeats and the email after each run
 export const AUTO_NOTE = 'dazl set your first play to search again every day. Pause it any time.'

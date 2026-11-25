@@ -141,7 +141,8 @@ export function signUpPlanLine(trialFunded: boolean, emailPath = true): string {
     ? emailPath
       ? `${BETA_LINE} Your first search is free, whether you sign up with Google or with email. No card needed.`
       : `${BETA_LINE} Your first search is free when you sign up with Google. No card needed.`
-    : `${BETA_LINE} On this site a search runs on your own Anthropic key, which you add in Settings.`
+    // #1703: there is no key of your own to add; where no free search can run here, the line says only that
+    : `${BETA_LINE} Free searches aren't available on this site right now.`
 }
 
 // What POST /api/scan's 402 trial_unavailable (with its admission reason) says on the Leads page, in plain words: never the

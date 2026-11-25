@@ -52,7 +52,7 @@ test('a member acts in the workspace they chose, within their role, until remove
   const launch = () => as(tb, () => scanRoute.POST(req('/api/scan', 'POST', { query: 'roofers in Ohio' })))
   assert.equal((await launch()).status, 403)
   const putKey = () => as(tb, () => keyRoute.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', key: 'sk-ant-FIXTURE' })))
-  assert.equal((await putKey()).status, 403)
+  assert.equal((await putKey()).status, 403, 'the role check still comes before the route answers 410 (#1703)')
   assert.equal((raw.prepare("SELECT count(*) AS n FROM scan_jobs WHERE user_id = 'A'").get() as { n: number }).n, 1)
 
   // as an operator B may launch, but A's free trial is A's own: with no key in A, B's launch is refused for that

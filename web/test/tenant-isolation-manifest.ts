@@ -197,7 +197,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/enrichment', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/first-party', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/first-party', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
-  { path: 'settings/llm-key', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/tenant-route-reads-runtime.mts' }, role: 'read' },
+  // #1703: answers 410 and reads no tenant row, so it is swept as a session-scope route
+  { path: 'settings/llm-key', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/llm-key', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/llm-key', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
 
