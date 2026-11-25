@@ -125,8 +125,6 @@ export const NON_REQUEST_HOSTS: Record<string, string> = {
   'docs.tinyfish.ai': 'documentation link',
   'docs.peopledatalabs.com': 'documentation link',
   'docs.apollo.io': 'documentation link',
-  'console.anthropic.com': 'documentation link',
-  'platform.openai.com': 'documentation link',
   'platform.claude.com': 'documentation link',
   'www.gdeltproject.org': 'citation link GDELT terms require; the API host is api.gdeltproject.org',
   'blog.gdeltproject.org': 'documentation link in a comment',

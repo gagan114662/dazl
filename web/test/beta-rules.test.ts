@@ -242,7 +242,8 @@ test('E: a new AI key is Anthropic (Claude) only; Settings has no key panel at a
   assert.doesNotMatch(src('app/app/settings/page.tsx'), /LlmKeyPanel|llm-key-panel/)
   const inline = src('app/app/key-inline.tsx')
   assert.doesNotMatch(inline.replace(/^\s*\/\/.*$/gm, ''), /platform\.openai\.com|OpenAI/, 'nothing the user sees offers an OpenAI key')
-  assert.match(inline, /Searches run on Claude/)
+  assert.match(inline, /return null/, 'the retired editor displays no provider instructions')
+  assert.match(src('app/app/first-run.tsx'), /Describe your business yourself below\./, 'a blocked website read offers the manual profile instead')
   for (const p of ['app/app/first-run.tsx', 'app/app/readiness.tsx']) assert.doesNotMatch(src(p), /Anthropic or OpenAI key/, p)
 })
 
