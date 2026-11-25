@@ -10,7 +10,7 @@ import { bothEngines } from './helpers/engines.ts'
 
 const now = 1_800_000_000
 const tenant = { id: 'a'.repeat(32), email: 'owner@example.test' }
-const env = { DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10',
+const env = { NODE_ENV: 'test' as const, DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10',
   DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-fixture', TINYFISH_API_KEY: 'tf-fixture',
   DAZL_TRIAL_TINYFISH_SEARCH_USD: '0', DAZL_TRIAL_TINYFISH_FETCH_USD: '0' }
 const estimate = JSON.stringify({ payer: 'trial', total: { min: 0.10, max: 1 }, cap: null, rows: [], trial_scan_cap_usd: 1 })
