@@ -82,7 +82,9 @@ test('forgot password reveals nothing; a reset link works once and signs out eve
   await createPasswordUser({ id: 'R', email: 'rae@example.test', name: 'R', business_name: 'R', password_hash: 'h'.repeat(128), salt: 's'.repeat(32), requireConfirmation: true })
   const tr = await createSession('R')
   assert.deepEqual(await (await withJar(new Map([['dazl_session', tr]]), () => email.GET())).json(), { error: 'Not signed in' })
-  assert.equal((await withJar(new Map([['dazl_session', tr]]), () => sendVerification.POST(req('/api/auth/email/send-verification', {})))).status, 401)
+  // #1647: an unconfirmed account has no live session, so this reaches the public resend branch, which refuses an
+  // empty body with the same 400 as every malformed ask
+  assert.equal((await withJar(new Map([['dazl_session', tr]]), () => sendVerification.POST(req('/api/auth/email/send-verification', {})))).status, 400)
   assert.equal(await sendVerificationLink(await getDb(), 'R'), true)
   assert.equal((await verify.POST(req('/api/auth/verify', { token: link('R', 'verify')! }))).status, 200)
   assert.deepEqual(await (await withJar(new Map([['dazl_session', tr]]), () => email.GET())).json(), { email: 'rae@example.test', verified: true, google: false })

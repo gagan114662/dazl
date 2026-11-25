@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 test('#1647 resend confirmation: same answer for every address, capped, signed-in path unchanged (real routes, no network)', () => {
   const env = { ...process.env }; delete env.NODE_TEST_CONTEXT
-  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/workspace-session-loader.mjs', '--loader', './test/helpers/tsx-loader.mjs', '--test-reporter=tap', '--test', './test/helpers/resend-confirmation-1647-runtime.mts'],
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts', '--loader', './test/helpers/workspace-session-loader.mjs', '--loader', './test/helpers/auth-after-loader.mjs', '--loader', './test/helpers/tsx-loader.mjs', '--test-reporter=tap', '--test', './test/helpers/resend-confirmation-1647-runtime.mts'],
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 180000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)

@@ -16,6 +16,7 @@ import { createElement as h } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { NextRequest } from 'next/server'
 import { withJar } from './pg-session-headers.ts'
+import { settleAfter } from './next-server-after-shim.mjs'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { createPasswordUser, createSession } from '../../lib/auth-db.ts'
@@ -28,9 +29,10 @@ const { setTransportForTests } = await import('../../lib/system-mail.ts')
 const raw = new Database(':memory:')
 migrateAllSqlite(raw)
 setScanDb(raw)
-setTransportForTests(async m => {
+const outboxTransport = async (m: { to: string; subject: string; text: string }) => {
   raw.prepare('INSERT INTO system_mail_outbox (id,user_id,to_email,subject,body,created_at) VALUES (?,?,?,?,?,?)').run(crypto.randomUUID(), 'fixture', m.to, m.subject, m.text, Math.floor(Date.now() / 1000))
-})
+}
+setTransportForTests(outboxTransport)
 const send = await import('../../app/api/auth/email/send-verification/route.ts')
 
 let ip = 0
@@ -57,6 +59,7 @@ test('an unconfirmed account: the resend mails a fresh link and answers ok', asy
   const r = await resend('pending@example.test')
   assert.equal(r.status, 200)
   assert.deepEqual(r.body, { ok: true })
+  await settleAfter() // the send runs after the response
   const m = mails('pending@example.test')
   assert.equal(m.length, 1)
   assert.equal(m[0].subject, 'Confirm your email for dazl')
@@ -72,6 +75,7 @@ test('the answer never says whether the address has an account', async () => {
   assert.equal(confirmed.status, 200)
   assert.deepEqual(unknown.body, { ok: true })
   assert.deepEqual(confirmed.body, { ok: true })
+  await settleAfter() // the deferred sends ran (or did not) before the outbox is read
   assert.equal(mails('nobody@example.test').length, 0)
   assert.equal(mails('known@example.test').length, 0)
 })
@@ -96,6 +100,19 @@ test('resends are capped: one a minute per address (the second ask waits)', asyn
   assert.equal(again.status, 429)
   assert.equal(typeof again.body.error, 'string')
   assert.deepEqual(Object.keys(again.body), ['error'])
+})
+
+test('a failing mail never changes the answer: still 200 ok, nothing thrown at the caller', async () => {
+  setUser(null)
+  await existing('R5', 'smtpdown@example.test', false)
+  setTransportForTests(async () => { throw new Error('smtp down') })
+  try {
+    const r = await resend('smtpdown@example.test')
+    assert.equal(r.status, 200)
+    assert.deepEqual(r.body, { ok: true })
+    await settleAfter() // the deferred send fails into captureError, not the response
+  } finally { setTransportForTests(outboxTransport) }
+  assert.equal(mails('smtpdown@example.test').length, 0)
 })
 
 test('the signed-in path keeps its own behavior: the fresh link goes to the signed-in address', async () => {
