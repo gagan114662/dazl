@@ -283,10 +283,7 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
 // place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
 // failed after any paid step.
-// A scan that STOPPED AFTER AN INTERRUPTION (error accounting_uncertain: a paid step may already have been billed, so its results were
-// discarded) also gives its place back once its run has settled: the person got nothing, and the cost screen promises free scans, not
-// interrupted ones. The customer dollar allowance is restored when an interrupted scan saved no leads.
-// The platform's daily cost still includes the recorded spend so provider safety limits continue to bind.
+// A settled interruption gives the attempt back only if it saved no leads. Its spend remains on the account and platform totals.
 // The attempt rule is also applied by lib/scan/trial.ts TRIAL_USED_SQL (the first check and the usage counter), pinned equal
 // by test/trial-interrupted-attempt.test.ts, and a reaped (dead-worker) scan is settled by lib/billing/trial-reap.ts so it is released too.
 // A free scan that STOPPED AT ITS SPENDING LIMIT before it found any company (status done, error trial_budget_reached, candidates recorded as 0)
@@ -295,16 +292,16 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // kept any candidate, or whose candidate count was never recorded (null), keeps its place. Mirrored by lib/scan/trial.ts TRIAL_USED_SQL.
 const stoppedEmpty = (r: LedgerRow) => r.status === 'done' && r.error === TRIAL_BUDGET_REASON && r.candidates !== null && r.candidates !== undefined && Number(r.candidates) === 0
 export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && (stoppedEmpty(r) || (r.status === 'failed'
-  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')))
+  && (r.error === 'accounting_uncertain'
+    ? r.has_saved_leads === false || r.has_saved_leads === 0
+    : r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0)))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {
     // website reads are money in the wallet, not scan attempts
     if (r.tenant_id === tenantId && !isRead(r) && !releasedBeforeCost(r)) attempts++
     const cost = reservationCost(r)
-    const restored = !isRead(r) && settled(r) && r.status === 'failed' && r.error === 'accounting_uncertain'
-      && (r.has_saved_leads === false || r.has_saved_leads === 0)
-    if (r.tenant_id === tenantId && !restored) account += cost
+    if (r.tenant_id === tenantId) account += cost
     if (countsToday(r, day)) today += cost
   }
   return { account, today, attempts }
@@ -422,8 +419,8 @@ export async function trialAllowanceLeft(db: Db, tenantId: string, o: { now?: nu
   } catch { return null }
 }
 
-// The customer-facing outcome must only promise a refund if the current trial attempt settled without saved leads.
-export async function interruptedTrialAllowanceRestored(db: Db, tenantId: string, jobId: string): Promise<boolean> {
+// The customer-facing outcome must only promise an attempt refund if the current trial attempt settled without saved leads.
+export async function interruptedTrialAttemptRestored(db: Db, tenantId: string, jobId: string): Promise<boolean> {
   const row = await db.get(`SELECT 1 FROM trial_reservations r JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
     WHERE r.tenant_id = ? AND r.job_id = ? AND r.kind = 'scan'
       AND j.status = 'failed' AND j.error = 'accounting_uncertain' AND ${SETTLED_SQL} AND NOT ${HAS_SAVED_LEADS_SQL}`,

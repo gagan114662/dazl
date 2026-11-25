@@ -5,7 +5,7 @@ import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verific
 import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
 import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readHeldPaidSteps, readRefusedModelCalls, readLastActivity, readTrialScanCap, readUncertainHold } from './status-reads.ts'
-import { interruptedTrialAllowanceRestored, trialCaps } from '../billing/trial-budget.ts'
+import { interruptedTrialAttemptRestored, trialCaps } from '../billing/trial-budget.ts'
 import { clampToCap, compareActual, trialCapLine, trialScanCap, type RunEstimate } from './price-estimate.ts'
 import { readRunReportRows } from './run-report.ts'
 import { effectiveStatus, enrichState } from './enrichment.ts'
@@ -48,10 +48,10 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const progress = progressOf(source_runs, effectiveStatus(job))
   const saved = await readJobCost(db, tenantId, job.id)
   // Spend for the "Nothing was charged" claim is the job's one recorded cost (job-cost.ts, #1517): the cap ledger, or the run guard for a job from before it; never the two added, never 0 for an unreadable column.
-  const trial_allowance_restored = job.error === 'accounting_uncertain' && await interruptedTrialAllowanceRestored(db, tenantId, job.id)
-  const uncertainHold = job.error === 'accounting_uncertain' && !trial_allowance_restored ? await readUncertainHold(db, tenantId, job.id) : null
+  const trial_attempt_restored = job.error === 'accounting_uncertain' && await interruptedTrialAttemptRestored(db, tenantId, job.id)
+  const uncertainHold = job.error === 'accounting_uncertain' ? await readUncertainHold(db, tenantId, job.id) : null
   const uncertain_usd = uncertainHold?.usd ?? null, uncertain_steps = uncertainHold?.steps ?? null
-  const outcome = scanOutcome({ ...(job as object), uncertain_usd, uncertain_steps, trial_allowance_restored, spend_usd: trial_allowance_restored ? 0 : saved.read ? recordedJobCostUsd(saved.raw.run, saved.raw.cap) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
+  const outcome = scanOutcome({ ...(job as object), uncertain_usd, uncertain_steps, trial_attempt_restored, spend_usd: saved.read ? recordedJobCostUsd(saved.raw.run, saved.raw.cap) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.
@@ -73,9 +73,7 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
       const capUnknown = trial && trialCap === null
       const ended = job.status === 'done' || job.status === 'failed'
       const compared = ended ? compareActual(est, { inputTokens: model_usage.input_tokens, outputTokens: model_usage.output_tokens, tokensComplete: model_usage.tokens_complete, model: model_usage.served_models?.[0] ?? model_usage.requested_models?.[0] ?? null, searches: source_stats && source_stats.length ? source_stats.reduce((a, r) => a + (Number((r as { searches_attempted?: unknown }).searches_attempted) || 0), 0) : null, reservedUsd: saved.reserved_usd, requests: model_usage.requests_recorded ?? null, requestsWithTokens: model_usage.requests_with_reported_tokens ?? null, capReservedUsd: saved.cap_reserved_usd, finalUsd: saved.read ? recordedJobCostUsd(saved.raw.run, saved.raw.cap) : null, finalHeldSteps: await readHeldPaidSteps(db, tenantId, job.id), servedModels: model_usage.served_models ?? null, refusedBeforeSending: await readRefusedModelCalls(db, tenantId, job.id) }, trialCap) : null
-      const actual = compared && trial_allowance_restored ? {
-        ...compared, final_usd: 0, summary: 'Final cost to you $0.00. The reserved cost was returned to your trial allowance.',
-      } : compared
+      const actual = compared
       // Cost per verification pass: the scan's own verified counter as denominator, model cost as
       // numerator - hygiene spend per pass, NOT cost per usable lead and never a qualified-lead
       // claim. Unknowns (running, unrecorded cost or count, zero passes) stay named, never 0/Infinity.
