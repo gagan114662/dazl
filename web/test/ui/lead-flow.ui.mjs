@@ -88,7 +88,7 @@ try {
   assert.match(t, /Bright Dental just opened a second Ohio office and is hiring front-desk staff\./); assert.doesNotMatch(t, /More detail follows/, 'one line of why')
   assert.match(t, /daytondailynews\.example · claimed event date 12 Oct 2026/, 'source and date')
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isEnabled(), true); assert.equal(await bright.getByRole('button', { name: 'Reject' }).isEnabled(), true)
-  assert.equal(await card('Lakeside Smiles').getByRole('button', { name: 'Approve' }).isDisabled(), true)
+  assert.equal(await card('Lakeside Smiles').getByRole('button', { name: 'Approve', exact: true }).count(), 0)
   assert.equal(await card('Lakeside Smiles').getByTestId('approve-hold').isVisible(), true, 'a held lead says it cannot be approved yet; the reason is behind its (i)')
   const visibleText = await page.locator('main').innerText()
   for (const caveat of [/approving a card makes a draft/i, /Kept with its evidence/, /Reject this lead\?/, /To approve:/, /Cards shown below/]) assert.doesNotMatch(visibleText, caveat, `no caveat paragraph on screen: ${caveat}`)
