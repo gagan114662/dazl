@@ -23,11 +23,12 @@ const { migratePlatform } = await import('../../lib/db/platform-tables.ts')
 const { sqliteDb } = await import('../../lib/db/client.ts')
 const { withJar } = await import('./pg-session-headers.ts')
 
-const NOW = Date.UTC(2026, 9, 31)
+// from the current clock: a fixed date expires the proof (evidence + 90 days) under the route's real-clock validation
+const NOW = Date.now()
 const h = getAuthDb()
 migrateScan(h); migratePreviewClaim(h); migratePlatform(h)
 
-const issueFor = async (email: string) => {
+const issueFor = async (email: string, at: number = NOW) => {
   const jobId = createJob(h, 'seller1', { business_name: 'Seller Co', industry: 'x', location: 'y' })
   h.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(jobId)
   h.prepare("UPDATE scan_jobs SET seller = ? WHERE id = ?").run('Appointment reminders for physiotherapy clinics - https://prospect-clinicsoft.test/about', jobId)
@@ -35,7 +36,7 @@ const issueFor = async (email: string) => {
   h.prepare('INSERT INTO leads (id, scan_job_id, company, signal, source_url, evidence_excerpt, confidence, score, event_date, date_status, event_date_proof) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(randomBytes(6).toString('hex'), jobId, 'Northside Physio', 'Opened a second clinic', 'https://news.test/a1', 'We opened our second clinic this month.', 80, 70, day, 'unverified', 'page_bound')
   h.prepare("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?").run(NOW, jobId)
-  const r = await issuePreviewClaim(sqliteDb(h), MASTER, { runId: jobId, sellerTenantId: 'seller1', recipientEmail: email, business: 'Clinic Soft' }, NOW)
+  const r = await issuePreviewClaim(sqliteDb(h), MASTER, { runId: jobId, sellerTenantId: 'seller1', recipientEmail: email, business: 'Clinic Soft' }, at)
   if (!r || r.status !== 'issued') throw new Error('setup: ' + JSON.stringify(r))
   return r
 }
@@ -75,4 +76,18 @@ test('#1673: invalid tokens burn the same budget, so repeated guessing is capped
   const over = await get(session, junk, '10.9.8.1')
   assert.equal(over.status, 429, 'the 21st invalid call is refused like the valid ones')
   console.log('PREVIEW_CLAIM_GET_TOKEN_BUDGET_OK')
+})
+
+test('#1673: an expired token burns the same budget as a valid one (rule 4940748: valid, invalid and expired)', async () => {
+  await createPasswordUser({ id: 'B3', email: 'buyer3@example.test', name: 'B', business_name: 'B', password_hash: 'h', salt: 's' })
+  h.prepare("UPDATE users SET email_verified_at = 1 WHERE id = 'B3'").run()
+  const session = await createSession('B3')
+  // issued now, then aged past its expiry in the store (issuing an already-expired claim is held by the evidence gate)
+  const stale = await issueFor('buyer3@example.test')
+  h.prepare('UPDATE preview_claims SET expires_at = 1 WHERE id = ?').run(stale.id)
+  for (let i = 0; i < 20; i++) assert.equal((await get(session, stale.token, '10.9.9.1')).status, 410, `expired call ${i + 1} reads as expired`)
+  const over = await get(session, stale.token, '10.9.9.1')
+  assert.equal(over.status, 429, 'the 21st expired-token call is refused like the valid ones')
+  assert.equal((await over.json()).code, 'too_many')
+  console.log('PREVIEW_CLAIM_GET_EXPIRED_BUDGET_OK')
 })
