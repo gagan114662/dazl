@@ -7,14 +7,14 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
-import { filterLaunchResults, launchRegionSystemPrompt, readLaunchRegion } from './launch-region.ts'
+import { filterLaunchResults, LAUNCH_RETRY_INSTRUCTION, launchRegionSystemPrompt, readLaunchRegion } from './launch-region.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
-export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean }
+export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean; launchRegionRetry?: boolean }
 // The customer's saved buyer profile for this play, in their own words. One they reviewed for THIS search narrows the request; the
 // request's own words win where they differ. One carried over unreviewed from an earlier search (profileCarried, #1579) is background
 // only: a new typed request for other buyers ran beside "Toronto agencies hiring an SDR" on production and found nothing, twice.
@@ -132,6 +132,7 @@ export function userMessage(input: DiscoverInput, today: string, max: number): s
     input.profileCarried === true && profile.length ? 'The request above is the whole search: it decides who to look for, where, and which signal.' : '',
     ...profile,
     // a play that runs again: the companies it already found are not leads this time
+    input.launchRegionRetry ? LAUNCH_RETRY_INSTRUCTION : '',
     input.exclude?.length ? `Already found, do not return these companies again: ${input.exclude.slice(0, 80).map(c => str(c, 80)).filter(Boolean).join('; ')}` : '',
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
 }

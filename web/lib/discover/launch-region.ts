@@ -4,6 +4,8 @@ import { groundedIn, parsePlan, type PlanPlace, type RequestPlan } from '../scan
 import type { DiscoverInput, DiscoverResult, DiscoveredLead } from './agent.ts'
 
 const LAUNCH_COUNTRIES = new Set(['US', 'CA'])
+export const LAUNCH_RESULTS_REJECTED = 'launch_results_rejected'
+export const LAUNCH_RETRY_INSTRUCTION = 'Retry after the previous results failed the location filter. Target only the United States and Canada, within the original Find request. Return only leads with supported location evidence.'
 const UNSUPPORTED = 'unsupported_search_region'
 const UNCONFIRMED = 'search_region_unconfirmed'
 const COVERAGE_COPY = 'dazl covers the US and Canada for now. More regions soon.'
@@ -67,6 +69,8 @@ export function readLaunchRegion(input: DiscoverInput, reply: string, retained: 
   return { ok: true, places: plan.places }
 }
 
+export const launchOutcomeStop = (stop: string): string => stop === LAUNCH_RESULTS_REJECTED ? UNSUPPORTED : stop
+
 export const isLaunchRegionStop = (stop: string): boolean => stop === UNSUPPORTED || stop === UNCONFIRMED
 
 function allowsLaunchLead(lead: Record<string, unknown>, places: PlanPlace[]): boolean {
@@ -92,7 +96,7 @@ export function filterLaunchResults(text: string, max: number, places: PlanPlace
     rejected ||= !allowed
     return allowed
   })
-  if (rejected && parsed.leads.length === 0) return { ...parsed, stop: UNSUPPORTED, note: COVERAGE_COPY }
+  if (rejected && parsed.leads.length === 0) return { ...parsed, stop: LAUNCH_RESULTS_REJECTED, note: COVERAGE_COPY }
   return { ...parsed, stop: null }
 }
 

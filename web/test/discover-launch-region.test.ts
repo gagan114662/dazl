@@ -8,7 +8,7 @@ const MODEL = 'claude-sonnet-5-5'
 const candidate = (company: string, country: string | null, locationEvidence = country === 'US' ? 'United States' : country === 'CA' ? 'Canada' : country === 'GB' ? 'United Kingdom' : null) => ({
   company, country, location_evidence: locationEvidence, signal: 'hiring a sales development representative', evidence_url: `https://proof.example/${company.toLowerCase()}`,
 })
-type Payload = { model: string; tools?: unknown; messages: unknown; system?: unknown }
+type Payload = { model: string; tools?: unknown; messages: unknown; system?: unknown; max_tokens?: number }
 type Place = { text: string; city: string | null; region: string | null; country: string | null }
 
 function provider(places: Place[], leads: ReturnType<typeof candidate>[] = [], searches = 0, pauseWithPlan = false) {
@@ -138,14 +138,49 @@ test('a final response without a repeated plan uses the complete paused plan', a
   assert.deepEqual(result.leads.map(lead => lead.company), ['Canadian'])
 })
 
+test('all rejected leads trigger a US/CA retry with the remaining native search allowance', async () => {
+  const first = provider([], [candidate('Outside', 'GB')], 14)
+  const second = provider([], [candidate('Local', 'CA')], 1)
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (String(url).startsWith('https://proof.example/')) return new Response('Local is hiring a sales development representative.')
+    return (first.requests.length === 0 ? first.fetchImpl : second.fetchImpl)(url, init)
+  }
+  const run = await runDiscovery({ query: 'Find agencies hiring an SDR' }, { maxUsd: 1, maxSearches: 15 }, {
+    apiKey: 'test', fetch: fetchImpl, judge: null, enrich: null,
+  })
+  assert.equal(run.passes, 2)
+  assert.equal(run.requests, 2)
+  assert.equal(run.searches, 15)
+  assert.deepEqual(run.leads.map(lead => lead.company), ['Local'])
+  assert.notEqual(run.stop, 'unsupported_search_region')
+  assert.match(JSON.stringify(second.requests[0].messages), /retry.*United States and Canada/i)
+  assert.equal(second.requests[0].max_tokens, first.requests[0].max_tokens)
+  const search = (second.requests[0].tools as Array<{ name: string; max_uses: number }>).find(tool => tool.name === 'web_search')
+  assert.equal(search?.max_uses, 1)
+})
+
+for (const [limit, maxUsd] of [[14, 1], [15, 0.2]]) {
+  test(`the location retry stays within a ${limit}-search and $${maxUsd} budget`, async () => {
+    const { requests, fetchImpl } = provider([], [candidate('Outside', 'GB')], 14)
+    const run = await runDiscovery({ query: 'Find agencies hiring an SDR' }, { maxUsd, maxSearches: limit }, {
+      apiKey: 'test', fetch: fetchImpl, judge: null, enrich: null,
+    })
+    assert.equal(requests.length, 1)
+    assert.equal(run.searches, 14)
+    assert.equal(run.stop, 'unsupported_search_region')
+    assert.equal(run.note, 'dazl covers the US and Canada for now. More regions soon.')
+    assert.deepEqual(run.leads, [])
+  })
+}
+
 test('a London plan labelled US keeps no UK-evidence leads and returns the coverage message', async () => {
   const { requests, fetchImpl } = provider([{ text: 'London', city: 'London', region: null, country: 'US' }], [
     candidate('UKLead', 'GB'), candidate('MislabelledLead', 'US', 'London, United Kingdom'),
   ], 1)
   const run = await runDiscovery({ query: 'Find agencies hiring an SDR in London' }, { maxUsd: 1 }, { apiKey: 'test', fetch: fetchImpl })
-  assert.equal(requests.length, 1)
+  assert.equal(requests.length, 2)
   assert.equal(run.stop, 'unsupported_search_region')
   assert.equal(run.note, 'dazl covers the US and Canada for now. More regions soon.')
-  assert.equal(run.searches, 1)
+  assert.equal(run.searches, 2)
   assert.deepEqual([run.leads, run.pages], [[], []])
 })
