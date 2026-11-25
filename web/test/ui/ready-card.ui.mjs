@@ -42,6 +42,7 @@ const JOBS = [job('a', 1, 'London B2B SaaS startups hiring sales'), job('b', 2, 
 const camp = (id, o = {}) => ({ id, status: 'done', qualification: { sourceChecked: o.sc ?? 0, confirmedByYou: 0, needsReview: 0, unverified: 2, held: o.held ?? 0, rejected: 0 }, contact: { withContact: o.contacts ?? 0, readyWithContact: o.ready ?? 0, draftable: o.draftable ?? 0 }, outreach: { drafts: o.drafts ?? 0, approved: 0, sent: 0 } })
 const SCENES = {
   fresh: { profile: { ...PROFILE, buyer: null }, key: false, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
+  siteform: { profile: { ...PROFILE, business_name: '' }, key: true, gmail: GMAIL, sender: SENDER, jobs: [], camps: [], msgs: [] },
   manual: { profile: { ...PROFILE, website: undefined }, key: true, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   reviewed: { profile: PROFILE, key: true, gmail: GMAIL, sender: { sender_name: '', postal_address: '' }, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [] },
   midway: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: [camp(JOBS[0].id), camp(JOBS[1].id, { sc: 2, contacts: 1, ready: 1, draftable: 1 })], msgs: [] },
@@ -116,6 +117,17 @@ try {
     assert.match(siteRow ?? '', /Brightsmile - Online booking and reminders for dental practices/, 'readiness panel completes from the manual profile')
     assert.ok(!/missing website/.test(siteRow ?? ''), 'readiness panel: no website ask on the manual path')
     await shot(page, `manual-${tag}`)
+    assert.deepEqual(writes, []); await ctx.close()
+    // 1b. #1722: on tab return the sender status re-reads but the open business-details form keeps unsaved input.
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
+    await card(page).waitFor()
+    await page.getByTestId('setup-details').evaluate(d => { d.open = true })
+    await page.getByTestId('ready-site').getByRole('button', { name: 'Add' }).click()
+    const nameField = page.getByLabel('Business name')
+    await nameField.fill('Typed Unsaved Name')
+    await page.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')) })
+    await page.waitForTimeout(500)
+    assert.equal(await nameField.inputValue(), 'Typed Unsaved Name', 'unsaved form input survives the wake re-read')
     assert.deepEqual(writes, []); await ctx.close()
     // 2. The reviewed account.
     ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
