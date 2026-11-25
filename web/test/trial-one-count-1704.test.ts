@@ -34,7 +34,7 @@ test('#1704 one count: the shared summary says the number and the one noun', () 
 test('#1704 Settings > Plan renders the shared summary, and hides the plan quota while the account is on the trial', () => {
   const panel = shown('app/app/settings/plan-panel.tsx')
   assert.match(panel, /trialSummary\(u\.trial\)/)
-  assert.match(panel, /!u\.trial && <p[^>]*>\{usageLine\(u\)\}/, 'the "0 of 50 scans used" line is not shown next to the trial count')
+  assert.match(panel, /\(!u\.trial \|\| u\.plan === 'pro'\) && <p[^>]*>\{usageLine\(\{ \.\.\.u, trial: null \}\)\}/, 'the Free plan\'s "0 of 50 scans used" line is not shown next to the trial count; Pro keeps its unlimited line')
   assert.doesNotMatch(panel, /t\.next|#model-key/, 'no key step under the trial line')
 })
 

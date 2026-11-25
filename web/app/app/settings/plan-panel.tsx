@@ -63,9 +63,9 @@ export default function PlanPanel({ billingAvailable = false }: { billingAvailab
           : 'No confirmed subscription yet. If you just finished checkout it can take a minute to show here; refresh this page. Your plan stays as shown until Stripe confirms it.'}</p>}
       {back === 'cancelled' && <p className="text-sm text-[#555] mb-2" data-testid="billing-return">{`Checkout was not completed. Your plan is still ${u.plan === 'pro' ? 'Pro' : 'Free'}.`}</p>}
       {note && <p className="text-sm mb-2" data-testid="billing-status">{note}</p>}
-      {/* #1704: while the account is on its free searches the plan's monthly quota (which leaves them out) is not shown beside
-          them, so "0 of 50 used" never sits next to the free-search count. */}
-      {!u.trial && <p className="text-[#555] text-sm mb-4">{usageLine(u)}</p>}
+      {/* #1704: while a Free account is on its free searches its monthly quota (which leaves them out) is not shown beside
+          them, so "0 of 50 used" never sits next to the free-search count. Pro keeps its unlimited line, without the trial aside. */}
+      {(!u.trial || u.plan === 'pro') && <p className="text-[#555] text-sm mb-4" data-testid="plan-usage">{usageLine({ ...u, trial: null })}</p>}
       {/* The trial line follows the server's reason (lib/trial-copy.ts), the same words as Home and Plays: unavailable or throttled is never "used up". */}
       {u.trial && (() => { const t = trialSummary(u.trial); return (
         <p className="text-[#555] text-sm mb-4" data-testid="trial-status" data-state={t.state}>{t.text}</p>
