@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { approve, editDraft, OutreachError, resolveUncertain, sendCapToday, sendMessage, skip } from '@/lib/outreach/service'
+import { sendTestToSelf } from '@/lib/outreach/test-send'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { audit } from '@/lib/audit-route'
@@ -8,7 +9,7 @@ import { denied } from '@/lib/workspace-access'
 import type { Action } from '@/lib/workspaces'
 import { track } from '@/lib/analytics/track'
 
-const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_excluded: 422, lead_evidence_withdrawn: 409, recipient_provenance_missing: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, daily_cap: 429, gmail_rate_limited: 429 }
+const STATUS: Record<string, number> = { not_sales_contact: 422, lead_currentness_unconfirmed: 409, lead_ungraded: 409, lead_excluded: 422, lead_evidence_withdrawn: 409, recipient_provenance_missing: 409, domain_unconfirmed: 409, review_unreadable: 409, not_found: 404, already_sending: 409, already_uncertain: 409, not_approved: 409, not_a_draft: 409, not_editable: 409, not_skippable: 409, not_uncertain: 409, suppressed: 409, draft_changed: 409, daily_cap: 429, gmail_rate_limited: 429 }
 
 async function guard(req: NextRequest, id: string, action: Action) {
   const user = await requireUser()
@@ -38,7 +39,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   } catch (e) { return fail(e) }
 }
 
-// Actions: approve, skip, send, mark_sent, retry. One message per call, always a person's click.
+// Actions: approve, skip, send, test (to the user's own inbox), mark_sent, retry. One message per call, always a person's click.
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params
   const g = await guard(req, id, 'operate')
@@ -61,6 +62,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       if (!already) await audit(g.user, req, { action: 'outreach.send', resource: 'message', id, summary: { outcome: result } })
       if (!already && result === 'sent') track('email_sent', g.user.tenantId, { message_id: id })
       return NextResponse.json({ result })
+    }
+    else if (action === 'test') {
+      // #1709: the final email to the user's own Gmail address only (lib/outreach/test-send). The draft is untouched.
+      const no = denied(g.user, 'send'); if (no) return no
+      if (!(await rateLimit(`send:${g.user.tenantId}`, 60, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+      const to = await sendTestToSelf(db, g.user.tenantId, id)
+      await audit(g.user, req, { action: 'outreach.test_send', resource: 'message', id, summary: { outcome: 'sent' } })
+      return NextResponse.json({ result: 'test_sent', to })
     } else return NextResponse.json({ error: 'Bad request' }, { status: 400 })
     await audit(g.user, req, { action: `outreach.${action}`, resource: 'message', id })
     if (action === 'approve') track('approve_clicked', g.user.tenantId, { message_id: id })

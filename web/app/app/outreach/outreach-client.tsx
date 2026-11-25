@@ -16,6 +16,7 @@ const sendCapNote = (cap: number) => `Sent ${cap} today, more tomorrow to keep y
 const ERR: Record<string, string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   sender_identity_missing: 'Add your name and mailing address in the form at the top of this page first.',
+  draft_changed: 'This draft changed while the test was being prepared, so nothing was sent. Check the current words and try again.',
   gmail_not_connected: 'Connect Gmail in Settings first.',
   gmail_reconnect_needed: 'Gmail needs to be reconnected in Settings.',
   suppressed: 'This address unsubscribed, so it will not be emailed.',
@@ -28,6 +29,9 @@ const ERR: Record<string, string> = {
   domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
   lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
   already_sending: 'This message is already being sent.',
+  send_outcome_unknown: 'Gmail did not confirm that send. Check your inbox and Sent folder before trying again.',
+  gmail_unavailable: 'Gmail could not be reached just now. Nothing was sent. Try again in a minute.',
+  connection_replaced: 'The Gmail connection changed while sending. Nothing was sent. Check Settings, then try again.',
   already_uncertain: 'We could not confirm whether this was sent. Check your Gmail Sent folder, then choose below.',
 }
 
@@ -88,6 +92,7 @@ export default function OutreachClient() {
     const j = await r.json()
     if (!r.ok) setNote(j.error === 'daily_cap' && Number.isInteger(j.cap) ? sendCapNote(j.cap) : ERR[j.error] || 'That did not work')
     else if (j.result === 'uncertain') setNote('Gmail did not confirm the send. Check your Sent folder, then choose whether it went out.')
+    else if (j.result === 'test_sent') setNote(`Test sent to ${j.to} — the exact email, with the footer and unsubscribe link as the prospect would get them. This draft is unchanged.`)
     void load()
   }
   // #1711: a refused save used to collapse into one generic note, so a blank subject looked like it had
@@ -140,8 +145,9 @@ export default function OutreachClient() {
               {['draft','approved'].includes(m.status) && <Provenance value={m.provenance} />}
               {e ? (
                 <div className="flex flex-col gap-2">
-                  <input className="bg-white border border-black/20 rounded px-3 py-2" value={e.subject} maxLength={150} onChange={x => setEdit({ ...edit, [m.id]: { ...e, subject: x.target.value } })} />
-                  <textarea className="bg-white border border-black/20 rounded px-3 py-2" rows={9} value={e.body} maxLength={3000} onChange={x => setEdit({ ...edit, [m.id]: { ...e, body: x.target.value } })} />
+                  <div className="text-xs text-[#555]">To: {m.to_email} <span className="text-[#999]">(read-only — to check the final email first, save and use “Send test to me”; the test goes to your own inbox)</span></div>
+                  <input className="bg-white border border-black/20 rounded px-3 py-2" value={e.subject} maxLength={150} onChange={x => setEdit({ ...edit, [m.id]: { ...e, subject: x.target.value } })} aria-label="Subject" />
+                  <textarea className="bg-white border border-black/20 rounded px-3 py-2" rows={9} value={e.body} maxLength={3000} onChange={x => setEdit({ ...edit, [m.id]: { ...e, body: x.target.value } })} aria-label="Message" />
                   <div className="flex gap-2"><button className={btn} onClick={() => save(m.id)}>Save</button><button className={btn} onClick={() => setEdit(({ [m.id]: _, ...rest }) => rest)}>Cancel</button></div>
                   {editError[m.id] && <p className="text-xs text-[#111] border-l-2 border-[#111] pl-3" role="alert">{editError[m.id]}</p>}
                 </div>
@@ -156,6 +162,7 @@ export default function OutreachClient() {
                     {m.status === 'draft' && <button className={btn} title="Rewrites this draft with your own AI key - your provider bills you for the call" onClick={() => void polish(m.id)}>Rewrite with AI (uses your key)</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && !sequencesOff && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)} title="Creates editable templates without an AI call or provider charge">Create 3-step sequence (templates)</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
+                    {(m.status === 'draft' || m.status === 'approved') && <button className={btn} title="Send the exact final email, footer and unsubscribe link included, to your own connected Gmail address" onClick={() => act(m.id, 'test')}>Send test to me</button>}
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => act(m.id, 'skip')}>Skip</button>}
                     {m.status === 'uncertain' && <><button className={btn} onClick={() => act(m.id, 'mark_sent')}>It was sent</button><button className={btn} onClick={() => act(m.id, 'retry')}>It was not sent, allow retry</button></>}
                   </div>
