@@ -41,7 +41,8 @@ export function trialCopy(t: TrialBlock): TrialCopy {
     case 'google_required':
       return { state: 'ineligible', text: 'Free trial scans need Google sign-in on this account. Link Google to this account to use them (no card).', next: NOW }
     case 'domain_used':
-      return { state: 'ineligible', text: "Your company's email domain has already had its free trial.", next: SCAN }
+      // #1728: one trial per mail domain covers throwaway and shared domains too, so the domain is never called a company's
+      return { state: 'ineligible', text: "Another account with your email domain has already used the free trial.", next: SCAN }
     default:
       // A reason this screen does not know yet: say it cannot run now, never that scans were used.
       return { state: 'unavailable', text: "Free trial scans can't run right now.", next: SCAN }
@@ -53,7 +54,7 @@ export function trialCopy(t: TrialBlock): TrialCopy {
 type Next = 'link_google' | 'add_key' | 'tomorrow'
 export const TRIAL_REFUSAL_COPY: Record<TrialRefusal, { text: string; next: Next }> = {
   google_required: { text: 'Free scans need a Google account. Link Google to run this search free (no card).', next: 'link_google' },
-  domain_used: { text: "Your company's email domain has already had its free trial. Add your own AI key to keep scanning.", next: 'add_key' },
+  domain_used: { text: "Another account with your email domain has already used the free trial. Add your own AI key to keep scanning.", next: 'add_key' },
   attempts_cap: { text: 'You have used all your free trial scans. Add your own AI key to keep scanning.', next: 'add_key' },
   account_total_cap: { text: 'Your free trial allowance is used up. Add your own AI key to keep scanning.', next: 'add_key' },
   global_daily_cap: { text: "Today's free scans are fully booked. Try again tomorrow (it resets at midnight UTC), or add your own AI key to scan now.", next: 'tomorrow' },
@@ -115,7 +116,7 @@ export function trialRefusedCopy(reason: unknown): string {
   const head = r === 'account_total_cap' ? 'Your free trial allowance is used up.'
     : r === 'attempts_cap' ? `You have used all ${3} free trial scan attempts.`
     : r === 'global_daily_cap' ? "Today's free trial scans are fully booked. Try again tomorrow."
-    : r === 'domain_used' ? 'A free trial has already been used for your company.'
+    : r === 'domain_used' ? 'Another account with your email domain has already used the free trial.'
     : r === 'google_required' ? 'The free trial needs a Google sign-in.'
     : "Free trial scans can't run right now."
   return `${head} Add your AI key in Settings to keep scanning.`

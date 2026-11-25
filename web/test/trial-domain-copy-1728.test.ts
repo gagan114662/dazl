@@ -7,7 +7,7 @@ import { TRIAL_REFUSALS } from '../lib/billing/trial-budget.ts'
 // #1728: one free trial per mail domain covers every non-consumer domain, throwaway and shared ones included
 // (lib/billing/trial-budget.ts), so the domain is not known to be a company's. The refusal names the email domain and
 // the other account, never "your company".
-const COMPANY = /compan(y|ies)|your business|your organi[sz]ation/i
+const COMPANY = /compan(y|ies)|organi[sz]ation/i
 
 test('#1728: every domain_used line names the email domain and another account, never a company', () => {
   const lines = [

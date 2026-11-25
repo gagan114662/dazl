@@ -11,8 +11,9 @@ export function siteKeyReason(why: string | null): string {
   if (why === 'workspace_not_eligible') return `The free trial belongs to the account that created this workspace. ${own}`
   // #1095: a password account links Google to THIS account (first-run shows the Link Google step beside this text)
   if (why === 'google_required') return `Free website reads need a Google account: link Google to this account to read it free (no card). ${own}`
-  // Another account on the same company email domain started the trial: this account's own trial is not "used up".
-  if (why === 'domain_used') return `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${own}`
+  // Another account on the same email domain started the trial: this account's own trial is not "used up". #1728: the
+  // domain may be a throwaway or shared one (one trial per non-consumer domain), so it is never called a company's.
+  if (why === 'domain_used') return `Another account with your email domain has already started the free trial, and it belongs to that account. ${own}`
   // The money ceiling: website reads on the trial draw on the same allowance as scans (lib/trial-copy.ts says the same).
   if (why === 'account_total_cap') return `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${own}`
   if (why === 'attempts_cap' || why === 'account_cap') return `Your free trial is used up. ${own}`

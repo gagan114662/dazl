@@ -44,7 +44,7 @@ const CASES = [
   ['reads-used', 'site_reads_used', `You have used your three free website reads for now; they come back together, 30 days after the first. ${OWN}`],
   ['busy', 'site_reads_busy', `The free trial is busy right now. Try again later. ${OWN}`],
   ['google', 'google_required', `Free website reads need a Google account: link Google to this account to read it free (no card). ${OWN}`],
-  ['domain-used', 'domain_used', `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${OWN}`],
+  ['domain-used', 'domain_used', `Another account with your email domain has already started the free trial, and it belongs to that account. ${OWN}`],
   ['attempts-cap', 'attempts_cap', `Your free trial is used up. ${OWN}`],
   ['account-total-cap', 'account_total_cap', `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${OWN}`],
   ['global-daily-cap', 'global_daily_cap', `The free trial is busy right now. Try again later. ${OWN}`],

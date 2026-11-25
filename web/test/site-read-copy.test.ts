@@ -10,8 +10,8 @@ const OWN = 'Add your own Anthropic (Claude) key to read it, or describe your bu
 test('site read reason copy: each refusal says the real reason, the account count only after admitted reads, and always offers the key and the manual profile', () => {
   assert.equal(TRIAL_SITE_READS_PER_ACCOUNT, 3)
   assert.equal(siteKeyReason('site_reads_used'), `You have used your three free website reads for now; they come back together, 30 days after the first. ${OWN}`)
-  // domain_used is not "your trial is used up": another account on the company domain started it (council R3-3).
-  assert.equal(siteKeyReason('domain_used'), `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${OWN}`)
+  // domain_used is not "your trial is used up": another account on the same email domain started it (council R3-3; #1728: never "your company's").
+  assert.equal(siteKeyReason('domain_used'), `Another account with your email domain has already started the free trial, and it belongs to that account. ${OWN}`)
   assert.doesNotMatch(siteKeyReason('domain_used'), /used up/)
   assert.equal(siteKeyReason('not_configured'), `The free trial isn't available here right now. ${OWN}`)
   assert.equal(siteKeyReason('workspace_not_eligible'), `The free trial belongs to the account that created this workspace. ${OWN}`)
