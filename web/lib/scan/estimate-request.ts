@@ -9,8 +9,9 @@ import { estimateRun, type RunEstimate } from './price-estimate.ts'
 import { isFirst5NativeSearchRequest, isManualNativeTargetRequest, QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE, QA_SPEND_MAX_USD, isFirst5RequestMode, qaClaudeOnlyBudget, strictLocalTopologySupported } from './qa-provider-policy.ts'
 import { HARD_CAP_USD, scanCapConfig, scanModelPrice } from './spend-cap.ts'
 import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
-import { accountLimits, ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
+import { ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
+import { effectiveAccountLimits, qaNativeSpendBlocked } from '../llm/qa-account-cap.ts'
 import { usableVendor } from '../paid-vendors.ts'
 import { trialCaps, trialTinyfishPrices } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
@@ -79,7 +80,10 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   // Every other account's caps (#846/#847) are reserved at the transport (runner.ts runWithScanSpend: accountLimits(owner)). #1319: the
   // estimate shows the SAME day/month caps for every account, read from the same source (accountLimits), so the screen's numbers are
   // the ones that stop a run.
-  const named = ownerLimits(ctx.tenantId), caps = accountLimits(ctx.tenantId)
+  const named = ownerLimits(ctx.tenantId)
+  let caps
+  try { caps = await effectiveAccountLimits(ctx.db, ctx.tenantId) }
+  catch { return { ok: false, status: 503, error: 'spend_config_invalid', detail: 'The account spending limit could not be verified. Nothing was started.' } }
   // #1319: the job guard's per-scan cap (spend-cap.ts effectiveCapUsd). An unreadable cap refuses every paid call of the run, so nothing is priced.
   const scanCap = scanCapConfig()
   if (!scanCap.ok) return { ok: false, status: 503, error: 'spend_config_invalid', detail: 'The scan cap cannot be verified. Nothing was started.' }
@@ -90,6 +94,13 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   const laneOn = process.env.DAZL_DISCOVER_LANE !== '0' && typeof query === 'string' && query.trim().length >= 3 && (ctx.hasOwnKey ? /^claude/i.test(own ?? '') : (trialReserve ?? 0) >= 0.3)
   const laneRoom = Math.min(trialReserve ?? Infinity, typeof budget?.max_usd === 'number' ? budget.max_usd : Infinity)
   const discoverLane = !laneOn || laneRoom < 0.3 ? null : laneRoom < 0.75 ? 'tiny' as const : laneRoom < 1.5 ? 'small' as const : 'full' as const
+  if (!pool.unknown && pool.day < (caps.day ?? Infinity) && pool.month < (caps.month ?? Infinity) &&
+      (discoverLane || qaNativeWebSearch || companyFirst)) {
+    try {
+      if (await qaNativeSpendBlocked(ctx.db, ctx.tenantId)) return { ok: false, status: 503, error: 'qa_native_cost_unbounded',
+        message: 'This test account cannot safely start web research within its temporary daily budget. Nothing was started.' }
+    } catch { return { ok: false, status: 503, error: 'spend_config_invalid', message: 'The spending limit could not be verified. Nothing was started.' } }
+  }
   const estimate = estimateRun({
     discoverLane,
     budget, qaClaudeOnly, qaNativeWebSearch, companyFirst, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
