@@ -16,6 +16,8 @@ function withQuery(destination: string, params: Record<string, string | string[]
 }
 
 // Legacy path: /login now lives at /sign-in. Permanent redirect, query string preserved.
+export const instant = false
+
 export default async function LegacyLoginRedirect({
   searchParams,
 }: {

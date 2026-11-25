@@ -108,3 +108,12 @@ test('legacy auth redirects: real Next permanentRedirect preserves query values'
     rmSync(tempDir, { recursive: true, force: true })
   }
 })
+
+
+test('legacy auth redirects: each route exports exactly one instant opt-out', () => {
+  for (const { route } of LEGACY_ROUTES) {
+    const source = readFileSync(join(WEB_ROOT, route), 'utf8')
+    const occurrences = source.match(/instant\s*=\s*false/g) ?? []
+    assert.equal(occurrences.length, 1, `${route} must contain exactly one instant = false opt-out`)
+  }
+})
