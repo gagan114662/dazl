@@ -16,8 +16,9 @@ test('#1722 place and signal are one button when both open the same request', ()
 test('#1722 an industry that already names companies is not doubled', () => {
   const name = playName('x', { summary: '', industries: ['Marketing agencies'], where: ['Toronto'], signals: ['Hiring SDRs'] })
   assert.doesNotMatch(name, /agencies companies/i)
-  assert.equal(playName('x', { summary: '', industries: ['SaaS'], where: [], signals: [] }), 'Saas companies', 'an industry that does not name companies still gets the suffix')
-  assert.equal(playName('x', { summary: '', industries: ['Marketing agency'], where: [], signals: [] }), 'Marketing agency', 'a singular industry that names the business gets no suffix either')
+  assert.equal(playName('x', { summary: '', industries: ['SaaS'], where: [], signals: [] }), 'Saas', 'trailing-s industries keep their wording under the no-word-list rule')
+  assert.equal(playName('x', { summary: '', industries: ['Marketing agency'], where: [], signals: [] }), 'Marketing agency companies', 'a singular industry still gets the suffix')
+  assert.equal(playName('x', { summary: '', industries: ['Fitness'], where: [], signals: [] }), 'Fitness companies', 'a trailing-ss word is not read as plural')
 })
 
 test('#1722 Home sender readiness re-reads when the tab is used again', () => {

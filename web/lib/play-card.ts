@@ -34,8 +34,14 @@ export function playName(query: string | null, icp: PlayIcp | null): string {
   let who = (icp?.summary ?? '').split(/\s+(?:with|that|who|which|in|of)\s+|[,;:(-]/i)[0].trim()
   while (GENERIC.test(who)) who = who.replace(GENERIC, '')
   if (who.split(' ').length > 4) who = who.split(' ').slice(-3).join(' ')
-  // #1722: an industry that already names the companies ("marketing agencies") is not suffixed with " companies".
-  if (!who) { const ind = icp?.industries?.[0]?.trim(); who = ind ? (/(compan(?:y|ies)|businesses?|agenc(?:y|ies)|firms?|practices?|clinics?|shops?|stores?|studios?|salons?|restaurants?|hotels?|startups?)$/i.test(ind) ? ind : `${ind} companies`) : icp?.who?.[0] ?? '' }
+  // #1722: an industry that already reads plural or collective keeps its own wording; a singular industry is
+  // suffixed. General string rule per the no-niche policy (no industry word lists): trailing 's' without a
+  // trailing 'ss'. Same rule as the play-suggestions audience copy.
+  if (!who) {
+    const ind = icp?.industries?.[0]?.trim()
+    if (ind) { const l = ind.toLowerCase(); who = l.endsWith('s') && !l.endsWith('ss') ? ind : `${ind} companies` }
+    else who = icp?.who?.[0] ?? ''
+  }
   const sig = icp?.signals?.[0] ?? q
   const happening = SIGNALS.find(([re]) => re.test(sig))?.[1] ?? ''
   const name = [place, who.toLowerCase(), happening].filter(Boolean).join(' ')

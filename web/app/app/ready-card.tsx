@@ -1,6 +1,6 @@
 'use client'
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { readyComplete, readyItems, type ReadyItem } from '@/lib/ready-card'
 import { loadReadinessInput } from './readiness-input'
 
@@ -8,9 +8,11 @@ import { loadReadinessInput } from './readiness-input'
 // to its fix (secondary: Home keeps one primary action; the next step is marked by its dark dot). Read-only; gone once
 // every step is done.
 export default function ReadyCard() {
+  const seqRef = useRef(0)
   const [items, setItems] = useState<ReadyItem[] | null>(null)
   useEffect(() => {
-    const load = () => void loadReadinessInput().then(({ input }) => setItems(readyItems(input)))
+    // #1722: overlapping loads apply in start order, so a slow earlier read cannot revert the sender status.
+    const load = () => { const seq = ++seqRef.current; void loadReadinessInput().then(({ input }) => { if (seq === seqRef.current) setItems(readyItems(input)) }) }
     load()
     window.addEventListener('profile-updated', load)
     // #1722: the sender status can change in another tab; re-read when this tab is used again.

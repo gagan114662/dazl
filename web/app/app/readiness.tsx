@@ -1,6 +1,6 @@
 'use client'
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import KeyInline from './key-inline'
 import SenderInline from './sender-inline'
 import { normalizeWebsite } from '@/lib/onboarding'
@@ -27,9 +27,13 @@ export default function Readiness() {
   const [site, setSite] = useState({ website: '', sells: '', business_name: '' })
   const [siteMsg, setSiteMsg] = useState('')
 
+  const loadSeqRef = useRef(0)
   async function load(refreshSite = true) {
     // #1471: the plays are GET /api/plays, the same list the Plays page shows; each row's outcome comes from the jobs read
+    // #1722: overlapping loads (mount vs wake) apply in start order - a slow earlier read must not revert a newer status.
+    const seq = ++loadSeqRef.current
     const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput(), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
+    if (seq !== loadSeqRef.current) return
     const profile = next.profile
     setInput(next)
     setPlays(listed && Array.isArray(listed.plays) ? homePlays(listed.plays, jobs ?? null, next.campaigns) : null)
