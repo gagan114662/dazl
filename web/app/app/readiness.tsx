@@ -39,7 +39,11 @@ export default function Readiness() {
     void load() // eslint-disable-line react-hooks/set-state-in-effect
     const refresh = () => void load()
     window.addEventListener('profile-updated', refresh) // the Home setup steps saved the business or buyer profile
-    return () => window.removeEventListener('profile-updated', refresh)
+    // #1722: the sender status can change in another tab (Outreach); re-read when this tab is used again.
+    const wake = () => { if (!document.hidden) void load() }
+    window.addEventListener('focus', wake)
+    document.addEventListener('visibilitychange', wake)
+    return () => { window.removeEventListener('profile-updated', refresh); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake) }
   }, [])
 
   async function saveSite(e: React.FormEvent) {

@@ -13,7 +13,11 @@ export default function ReadyCard() {
     const load = () => void loadReadinessInput().then(({ input }) => setItems(readyItems(input)))
     load()
     window.addEventListener('profile-updated', load)
-    return () => window.removeEventListener('profile-updated', load)
+    // #1722: the sender status can change in another tab; re-read when this tab is used again.
+    const wake = () => { if (!document.hidden) load() }
+    window.addEventListener('focus', wake)
+    document.addEventListener('visibilitychange', wake)
+    return () => { window.removeEventListener('profile-updated', load); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake) }
   }, [])
   if (!items || readyComplete(items)) return null
   const done = items.filter(x => x.state === 'done').length

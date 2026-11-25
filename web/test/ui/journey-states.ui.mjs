@@ -151,7 +151,7 @@ try {
           assert.doesNotMatch(text, /Review \d+ held|a few leads need your eyes|Widen to \d+ days|need review/)
           assert.equal(await page.getByTestId('stat-held').locator('div').first().textContent().then(t => t.trim()), '0')
           assert.equal(await page.getByTestId('widen-window').count(), 0, 'no date widening for a missing date')
-          for (const t of ['recover-dated', 'widen-signal']) assert.equal(await page.getByTestId(t).count(), 1, t)
+          for (const t of ['recover-dated', 'widen-edit']) assert.equal(await page.getByTestId(t).count(), 1, t)
           assert.equal(await page.getByTestId('recover-source').count(), name.endsWith('london') ? 1 : 0, 'another source is offered for a customer mention')
           // #352: each research lead says why it is research and what dazl's automatic recovery already tried (or why it did not run); nothing asks the user to check or confirm.
           const rows = (await page.getByTestId('research-row').allTextContents()).map(t => t.trim())
