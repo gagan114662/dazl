@@ -32,6 +32,8 @@ test('recognizes public-sector bodies and preserves commercial buyers', () => {
     { name: 'public-sector procurement offer', input: { company: 'Public Health Office', offer: 'Built for public sector procurement.' }, expected: false },
     { name: 'govtech offer', input: { company: 'Town of Oakville', offer: 'Govtech software for SLED/public sector teams.' }, expected: false },
     { name: 'City of Dreams Bakery', input: { company: 'City of Dreams Bakery' }, expected: false },
+    { name: 'City of Dreams Carpentry', input: { company: 'City of Dreams Carpentry' }, expected: false },
+    { name: 'negated public-sector offer', input: { company: 'Northstar Analytics', offer: 'We do not sell to the public sector.' }, expected: false },
     { name: 'commercial school', input: { company: 'School District Consulting LLC' }, expected: false },
     { name: 'commercial library', input: { company: 'Public Library Software Inc.' }, expected: false },
     { name: 'lookalike domain', input: { company: 'Civic Solutions', domain: 'example.gov.com' }, expected: false },
