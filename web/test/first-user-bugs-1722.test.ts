@@ -17,6 +17,7 @@ test('#1722 an industry that already names companies is not doubled', () => {
   const name = playName('x', { summary: '', industries: ['Marketing agencies'], where: ['Toronto'], signals: ['Hiring SDRs'] })
   assert.doesNotMatch(name, /agencies companies/i)
   assert.equal(playName('x', { summary: '', industries: ['SaaS'], where: [], signals: [] }), 'Saas companies', 'an industry that does not name companies still gets the suffix')
+  assert.equal(playName('x', { summary: '', industries: ['Marketing agency'], where: [], signals: [] }), 'Marketing agency', 'a singular industry that names the business gets no suffix either')
 })
 
 test('#1722 Home sender readiness re-reads when the tab is used again', () => {

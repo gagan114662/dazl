@@ -35,7 +35,7 @@ export function playName(query: string | null, icp: PlayIcp | null): string {
   while (GENERIC.test(who)) who = who.replace(GENERIC, '')
   if (who.split(' ').length > 4) who = who.split(' ').slice(-3).join(' ')
   // #1722: an industry that already names the companies ("marketing agencies") is not suffixed with " companies".
-  if (!who) { const ind = icp?.industries?.[0]?.trim(); who = ind ? (/(companies|businesses|agencies|firms|practices|clinics|shops|stores|studios|salons|restaurants|hotels|startups)$/i.test(ind) ? ind : `${ind} companies`) : icp?.who?.[0] ?? '' }
+  if (!who) { const ind = icp?.industries?.[0]?.trim(); who = ind ? (/(compan(?:y|ies)|businesses?|agenc(?:y|ies)|firms?|practices?|clinics?|shops?|stores?|studios?|salons?|restaurants?|hotels?|startups?)$/i.test(ind) ? ind : `${ind} companies`) : icp?.who?.[0] ?? '' }
   const sig = icp?.signals?.[0] ?? q
   const happening = SIGNALS.find(([re]) => re.test(sig))?.[1] ?? ''
   const name = [place, who.toLowerCase(), happening].filter(Boolean).join(' ')

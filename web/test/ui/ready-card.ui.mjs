@@ -51,8 +51,11 @@ const SCENES = {
   pwtrial: { profile: PROFILE, key: false, trial: { blocked: 'google_required' }, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   done: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 1), camps: [camp(JOBS[0].id, { sc: 2, contacts: 1, ready: 1, drafts: 1 })], msgs: [{ id: 'm1', lead_id: 'x', status: 'draft' }] },
 }
+// #1722: scenario 2c flips the sender mid-scene (filled in elsewhere); null = use the scene's own sender.
+let liveSender = null
 const b = await chromium.launch()
 async function open(sc, width, height) {
+  liveSender = null
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
@@ -72,7 +75,7 @@ async function open(sc, width, height) {
     if (p === '/api/settings/llm-key') return json({ keys: sc.key ? [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }] : [], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [{ platform: 'reddit', allowed: true, consent: false, connected: false, enabled: false }] })
     if (p === '/api/scan/sources') return json({ web_index: false, news: true, websites: true })
-    if (p === '/api/outreach/settings') return json({ gmail: sc.gmail, sender: sc.sender, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: [] })
+    if (p === '/api/outreach/settings') return json({ gmail: sc.gmail, sender: liveSender ?? sc.sender, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: [] })
     if (p === '/api/outreach') return json({ messages: sc.msgs })
     if (p === '/api/campaigns') return sc.camps === 'fail' ? json({ error: 'boom' }, 500) : json({ campaigns: sc.camps })
     return json({}, 404)
@@ -130,6 +133,18 @@ try {
       await page.getByTestId('rc-sender').getByRole('link', { name: 'Add sender details' }).click()
       await page.waitForURL('**/app/settings#gmail')
     }
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2c. #1722: the sender details get filled in (another tab or a settings visit); using this tab again
+    // re-reads the status and flips the sender step to done without a reload.
+    ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
+    await card(page).waitFor()
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example; your sender name and mailing address are missing/)
+    assert.equal(await page.getByTestId('rc-progress').textContent(), '3 of 7 done')
+    liveSender = SENDER
+    await page.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')) })
+    await page.getByTestId('rc-sender').filter({ hasText: 'as Dana Smith' }).waitFor({ timeout: 15000 })
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example, as Dana Smith/)
+    assert.equal(await page.getByTestId('rc-progress').textContent(), '4 of 7 done')
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
     // nothing is pushed off the side of the page, and the card does not scroll inside itself.
