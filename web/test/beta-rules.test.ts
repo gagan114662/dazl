@@ -142,7 +142,7 @@ test('B: the reason a user reads is a plain sentence', () => {
 
 // ---- C (#1583) ----
 const person = { connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: 'named on a public page', source_url: 'https://northwind-dental.example/team' }
-const email = { connector: 'discover', kind: 'email', value: 'dana@northwind-dental.example', label: 'published on a public page', source_url: 'https://northwind-dental.example/contact' }
+const email = { connector: 'discover', kind: 'email', value: 'dana@northwind-dental.example', label: 'email verified on source page', source_url: 'https://northwind-dental.example/contact' }
 const linkedin = { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/dana-ruiz/', label: 'linked from a public page', source_url: 'https://northwind-dental.example/team' }
 function discoverDb() {
   process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')

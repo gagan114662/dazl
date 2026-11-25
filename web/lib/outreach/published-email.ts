@@ -1,5 +1,5 @@
 import { isRecruitingInbox } from '../recruiting-inbox.ts'
-import { discoverContactNote } from '../discover/card.ts'
+import { discoverContact, discoverContactNote } from '../discover/card.ts'
 import {contextRestriction,readContextLabel,type ContactContext} from './contact-context.ts'
 export const PUBLISHED_EMAIL_RE = /^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/
 const address = (value: string | null) => value?.trim().toLowerCase() ?? ''
@@ -105,6 +105,32 @@ export function addressCitationUrl(lead: PublishedEmailLead): string | null {
   if (e) return e.source_url ?? lead.source_url ?? null
   return lead.source_url ?? null
 }
+export function emailsInText(text: string): string[] {
+  return text.match(/(?<![a-z0-9._%+@-])[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9_@-]|\.[a-z0-9-])/gi) ?? []
+}
+
+export function emailSourceUrl(value: string | null | undefined): string | null {
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? value : null
+  } catch {
+    return null
+  }
+}
+
+// A lead's signal URL alone does not establish where its address came from.
+export function displayedEmailSource(lead: PublishedEmailLead, email: string): string | null {
+  for (const row of lead.enrichments ?? []) {
+    if (row.connector !== 'sitecrawl' || row.kind !== 'email' || address(row.value) !== email) continue
+    const url = emailSourceUrl(row.source_url)
+    if (url) return url
+  }
+  const excerpt = emailsInText(lead.evidence_excerpt ?? '')
+  return address(lead.contact) === email && excerpt.some(value => address(value) === email)
+    ? emailSourceUrl(lead.source_url) : null
+}
+
 // Every page a draft for this lead may cite: the address-citation page plus the lead's cited signal page (the
 // saved excerpt rides with it). The launch claim check (launch-policy.ts claimIssuesFor) allows links on exactly
 // these pages, so a draft's own citations never depend on WHERE the contact was stored.
@@ -141,7 +167,7 @@ export function contactSearchNote(lead: PublishedEmailLead & { confidence?: numb
   if (publishedContact(lead)) return null
   if (lead.contact) return null
   // #1571: a discovery-lane lead's published address is its own record (connector 'discover'); with one, there is no "no contact" note
-  if ((lead.enrichments ?? []).some(r => (r as { connector?: string }).connector === 'discover' && r.kind === 'email' && !!r.value)) return null
+  if (discoverContact({ ...lead, source_kind: 'discover' })?.email) return null
   // #1579: the named person's LinkedIn profile is stored, so "no contact stored" would be untrue; what is missing is their own email
   const profileKnown = discoverContactNote(lead as never)
   if (profileKnown) return profileKnown

@@ -34,7 +34,7 @@ export function discoverLine(l: DiscoverCardLead): string {
 // Where each fact on a discovery lead came from (#1401): the page that proves the signal, the page that names the person, the page
 // that prints the email. Only links the run stored; nothing is inferred.
 export interface FieldSource { field: 'signal' | 'person' | 'email' | 'linkedin'; label: string; url: string }
-export function discoverSources(l: { source_url?: string | null; name?: string | null; enrichments?: { kind: string; connector?: string; value?: string; source_url?: string | null }[] }): FieldSource[] {
+export function discoverSources(l: { source_url?: string | null; name?: string | null; enrichments?: { kind: string; connector?: string; value?: string; source_url?: string | null; label?: string | null }[] }): FieldSource[] {
   const out: FieldSource[] = []
   if (l.source_url) out.push({ field: 'signal', label: 'Signal', url: l.source_url })
   // The same person, address and profile the card shows (discoverContact, below): the named person's own address, never a shared inbox
@@ -51,12 +51,13 @@ export function discoverSources(l: { source_url?: string | null; name?: string |
 // (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
 // email: the person's or company's own published address. A shared inbox (info@, sales@ ...) is never one (#1250); sharedInbox says one was published.
 export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null; sharedInbox: boolean; otherAddress: boolean }
-type Row = { kind: string; connector?: string; value?: string; source_url?: string | null }
+export const PAGE_PROVEN_EMAIL_LABEL = 'email verified on source page'
+type Row = { kind: string; connector?: string; value?: string; source_url?: string | null; label?: string | null }
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
   const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
-  const mails = rows.filter(r => r.kind === 'email' && r.value && r.source_url && EMAIL.test(r.value.trim().toLowerCase()))
+  const mails = rows.filter(r => r.kind === 'email' && r.label === PAGE_PROVEN_EMAIL_LABEL && r.value && r.source_url && /^https?:\/\//i.test(r.source_url) && EMAIL.test(r.value.trim().toLowerCase()))
   const p = rows.find(r => r.kind === 'person' && r.value)
   const li = rows.find(r => r.kind === 'linkedin' && r.value)
   let person: DiscoverContact['person'] = null
@@ -73,6 +74,18 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   const e = mails.find(own)
   return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
 }
+export function discoverGuessedEmail(l: Parameters<typeof discoverContact>[0], guessingEnabled: boolean): string | null {
+  if (!guessingEnabled) return null
+  const contact = discoverContact(l)
+  if (!contact?.person || contact.email) return null
+  const name = contact.person.name
+  return (l.enrichments ?? []).find(r => {
+    const value = r.value?.trim().toLowerCase() ?? ''
+    return r.connector === 'discover' && r.kind === 'email' && r.label === 'guessed' && EMAIL.test(value)
+      && !isGenericInbox(value) && nameBound(value.split('@')[0], name)
+  })?.value?.trim().toLowerCase() ?? null
+}
+
 // The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
 // A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's
 // publication, and nothing shows the company put it there (review of #1574).

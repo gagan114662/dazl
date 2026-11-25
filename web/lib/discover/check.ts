@@ -1,6 +1,9 @@
 // Reads a lead's proof page ourselves and labels the lead. It never hides one (launch brief, Step 3): a page we could not
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
 import type { DiscoveredLead, SeenPage } from './agent.ts'
+import { emailsInText } from '../outreach/published-email.ts'
+import { revealEmails } from '../people/email-reveal.ts'
+import { fetchPageDetailed } from '../scan/fetch-page.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -153,6 +156,42 @@ function publicUrl(raw: string): URL | null {
   } catch { return null }
 }
 
+// A citation from the model is a candidate. Only the text of that exact page can prove it.
+export async function checkEmailSource<T extends Pick<DiscoveredLead, 'email' | 'email_source_url'>>(
+  lead: T, seen: SeenPage[], read: (url: string) => Promise<{ text: string } | null> = readEmailPage,
+): Promise<T> {
+  const { email, email_source_url: source } = lead
+  const url = source && publicUrl(source)
+  if (email && url) {
+    const key = emailPageKey(url)
+    const samePage = seen.filter(page => page.text && emailPageKey(page.url) === key)
+    const pages = samePage.length ? samePage : [await read(url.href).catch(() => null)]
+    if (pages.some(page => page?.text && emailInPageText(email, page.text))) return lead
+  }
+  return { ...lead, email: null, email_source_url: null }
+}
+
+async function readEmailPage(url: string): Promise<{ text: string } | null> {
+  const key = emailPageKey(url)
+  const page = await fetchPageDetailed(url, async () => null, AbortSignal.timeout(8_000), {
+    allow: next => emailPageKey(next) === key,
+    blocked: () => {},
+  })
+  return 'text' in page ? page : null
+}
+
+function emailPageKey(raw: string | URL): string | null {
+  const url = typeof raw === 'string' ? publicUrl(raw) : raw
+  if (!url) return null
+  url.hash = ''
+  return url.href
+}
+
+function emailInPageText(email: string, body: string): boolean {
+  const normalized = revealEmails(entities(body.replace(/&commat;/gi, '@').replace(/&period;/gi, '.')))
+  return emailsInText(normalized).some(address => address.toLowerCase() === email.toLowerCase())
+}
+
 // Two URLs are the same page when host (without www.), path (without a trailing slash) and query match.
 const pageKey = (raw: string): string => { try { const u = new URL(raw); return `${u.hostname.toLowerCase().replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}${u.search}` } catch { return raw } }
 
@@ -276,18 +315,27 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
-  if (hit?.text) return fromPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
+  if (hit?.text) {
+    lead = await checkEmailSource(lead, seen)
+    return fromPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
+  }
   // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
-      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
+      if (r.ok) {
+        const html = (await r.text()).slice(0, 1_500_000), body = text(html)
+        const emailPage = { url: r.url || u.href, title: null, page_age: null, text: body }
+        lead = await checkEmailSource(lead, [...seen, emailPage])
+        return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now)
+      }
       // dazl asked and the address is gone: a search result's title does not bring it back
-      if (r.status === 404 || r.status === 410) return { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
+      if (r.status === 404 || r.status === 410) return { ...lead, email: null, email_source_url: null, ...dated(lead, hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
+  lead = await checkEmailSource(lead, seen)
   const base = { ...lead, ...dated(lead, hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
   // An unread search result supports the signal when its own title states the signal line.
   const listed = !!hit && companyOnPage(lead.company, hit.title ?? ''), title = listed ? hit!.title ?? '' : ''

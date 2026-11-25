@@ -1,5 +1,5 @@
 'use client'
-import { discoverCountParts, discoverLine, discoverSources, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
+import { discoverContact, discoverCountParts, discoverGuessedEmail, discoverLine, discoverSources, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
@@ -29,7 +29,7 @@ import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
-import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
+import { publishedEmail, publishedContact, displayedEmailSource, emailsInText, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainUnresolvedText } from '@/lib/connectors/domain-unresolved'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -59,6 +59,7 @@ import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
 import { outcomeOwnCopy, scanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { ContactStatusLine } from './contact-status'
+import { EmailSourceLink } from './contact-status'
 import { Icon } from '../ui/icons'
 import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
@@ -391,7 +392,7 @@ export default function LeadsClient() {
 
   const [hiddenCount, setHiddenCount] = useState(0)
   // The page's stored Find work email answers, read once with the leads (#1182): no per-lead GET on load.
-  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']>; guesses?: Record<string, unknown> } | null>(null)
+  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']>; guesses?: Record<string, unknown>; guessing_enabled?: true } | null>(null)
   // One empty list per page read: stable across re-renders, new on every refresh, so the panel keeps a click only until the next read
   // (shownWorkEmails, #1036 / #1250).
   const noLookups = useMemo<unknown[]>(() => (workEmailPage ? [] : []), [workEmailPage])
@@ -1367,7 +1368,13 @@ export default function LeadsClient() {
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
                     <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
-                    {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
+                    {(() => { const line = lp ? c.contact : c.contactNoPerson
+                      const email = emailsInText(line ?? '')[0]
+                      const discovered = discoverContact(l)?.email
+                      const source = email && (discovered?.address === email ? discovered.source : displayedEmailSource(l, email.toLowerCase()))
+                      const guess = !source && discoverGuessedEmail(l, workEmailPage?.guessing_enabled === true)
+                      const visibleLine = email && !source ? line?.slice(0, line.indexOf(email)).replace(/ - $/, '').trim() : line
+                      return <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || (guess ? null : 'No contact found yet') : null}{source && <> · <EmailSourceLink url={source} /></>}{guess && <span> {guess} · guessed</span>}</div> })()}
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
@@ -1536,9 +1543,10 @@ export default function LeadsClient() {
             <DiscoveredVia l={l} />
             {(() => {
               const pc = publishedContact(l)
-              const draftTo = publishedEmail(l)
+              const pcSource = pc && displayedEmailSource(l, pc.email)
+              const draftTo = pcSource && publishedEmail(l)
               return <>
-                {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
+                {pc && pcSource && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'} · <EmailSourceLink url={pcSource} /></span>}
                 {pc && (() => { const rv = domainReviewFor(l, l.enrichments)
                   // A contact email that is also the address the crawl recorded is reviewed like a crawled address: equality does not show a cited-page origin.
                   const lc = pc.source === 'lead' && rv.state !== 'not_required'
@@ -1548,17 +1556,17 @@ export default function LeadsClient() {
                   const cv = rv.covered
                   return <span className="text-xs ml-3 block mt-1 border border-black px-2 py-1 text-[#111]">
                     {note}{bpc.domainBasisSourceUrl && bpc.domainBasis !== 'unrecorded' ? <> <a className="underline" href={bpc.domainBasisSourceUrl} target="_blank" rel="noopener noreferrer nofollow">{bpc.domainBasis === 'name_probe' ? 'homepage read' : 'page with the link'}</a>.</> : null}
-                    {rv.multi && cv && rv.state !== 'not_required' && <span className="block mt-1">One check covers all of these, not only the first: {cv.domains.length} {cv.domains.length === 1 ? 'website' : 'websites'} ({cv.domains.map((d, i) => <span key={'d' + i}>{i ? ', ' : ''}{d.domain}{d.source_url ? <> (<a className="underline" href={d.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}) and {cv.addresses.length} {cv.addresses.length === 1 ? 'address' : 'addresses'} ({cv.addresses.map((a, i) => <span key={'a' + i}>{i ? ', ' : ''}{a.email}{a.source_url ? <> (<a className="underline" href={a.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}).</span>}
+                    {rv.multi && cv && rv.state !== 'not_required' && <span className="block mt-1">One check covers all of these, not only the first: {cv.domains.length} {cv.domains.length === 1 ? 'website' : 'websites'} ({cv.domains.map((d, i) => <span key={'d' + i}>{i ? ', ' : ''}{d.domain}{d.source_url ? <> (<a className="underline" href={d.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}) and {cv.addresses.length} {cv.addresses.length === 1 ? 'address' : 'addresses'} ({cv.addresses.map((a, i) => { const source = displayedEmailSource(l, a.email); return source ? <span key={'a' + i}> {a.email} (<EmailSourceLink url={source} />)</span> : null })}).</span>}
                     {rv.state === 'required' && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">{rv.multi ? 'These websites are the right company' : 'This website is the right company'}</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
                     {rv.state === 'confirmed' && <> You checked that {rv.multi && cv ? `these ${cv.domains.length} websites and ${cv.addresses.length} addresses are` : `${rv.domain} is`} the right company. <button onClick={() => domainReview(l.id, 'withdraw')} className="underline">withdraw</button></>}
                     {reviewMsg[l.id] ? <span className="text-gray-500 ml-2">{reviewMsg[l.id]}</span> : null}
                   </span> })()}
-                {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
+                {pc && pcSource && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact · <EmailSourceLink url={pcSource} /></span>}
                 {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
                 {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && (
                   <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
                 )}
-                {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
+                {!pc && l.contact && emailsInText(l.contact).length === 0 && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
                 {draftTo && domainReviewFor(l, l.enrichments).state !== 'required' && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
                     ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>

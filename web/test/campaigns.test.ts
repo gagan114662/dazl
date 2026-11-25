@@ -230,7 +230,7 @@ test('a discovery lead with a published address counts as a lead with a contact;
   job(db, 'A', 'jd', 'dental clinics in Toronto')
   lead(db, 'jd', 'd-mail'); lead(db, 'jd', 'd-none'); lead(db, 'jd', 'old-mail')
   db.prepare("UPDATE leads SET source_kind = 'discover', name = 'Dana Ruiz' WHERE id IN ('d-mail', 'd-none')").run()
-  const mail = (tenant: string, leadId: string) => addEnrichment(db, tenant, leadId, { connector: 'discover', kind: 'email', value: 'dana.ruiz@co.example', label: 'published on a public page', confidence: null, source_url: 'https://co.example/contact', source_date: '2026-11-22', retrieved_at: 1 })
+  const mail = (tenant: string, leadId: string) => addEnrichment(db, tenant, leadId, { connector: 'discover', kind: 'email', value: 'dana.ruiz@co.example', label: 'email verified on source page', confidence: null, source_url: 'https://co.example/contact', source_date: '2026-11-22', retrieved_at: 1 })
   mail('A', 'd-mail')
   mail('A', 'old-mail')            // the discovery connector's row on a lead that is not a discovery lead
   mail('B', 'd-none')              // a row carrying another workspace
@@ -253,7 +253,7 @@ test('a discovery lead whose named person has a LinkedIn profile counts as a lea
   job(db, 'A', 'jl', 'dental clinics in Toronto')
   lead(db, 'jl', 'l-profile'); lead(db, 'jl', 'l-company'); lead(db, 'jl', 'l-noperson')
   db.prepare("UPDATE leads SET source_kind = 'discover', event_date = '2026-11-10' WHERE scan_job_id = 'jl'").run()   // dated: an undated lead is held whatever its contact (#1238)
-  const row = (leadId: string, kind: string, value: string) => addEnrichment(db, 'A', leadId, { connector: 'discover', kind, value, label: 'x', confidence: null, source_url: 'https://co.example/team', source_date: '2026-11-22', retrieved_at: 1 })
+  const row = (leadId: string, kind: string, value: string) => addEnrichment(db, 'A', leadId, { connector: 'discover', kind, value, label: kind === 'email' ? 'email verified on source page' : 'x', confidence: null, source_url: 'https://co.example/team', source_date: '2026-11-22', retrieved_at: 1 })
   row('l-profile', 'person', 'Dana Ruiz, Practice Owner'); row('l-profile', 'linkedin', 'https://www.linkedin.com/in/dana-ruiz/')
   row('l-company', 'person', 'Sam Patel, Owner'); row('l-company', 'linkedin', 'https://www.linkedin.com/company/co/')
   row('l-noperson', 'linkedin', 'https://www.linkedin.com/in/someone/')
