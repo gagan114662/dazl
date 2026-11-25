@@ -1,5 +1,6 @@
 import { LLM_TIMEOUT_MS } from './provider.ts'
-import { CLAUDE_SEARCH_MODEL, claudeSearchMaxUses, CLAUDE_SEARCH_MAX_OUTPUT, USD_PER_SEARCH, MICROS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchUsageDiagnostic, type ClaudeUsageSnapshot, type ClaudeUsageCounter } from './claude-web-search-estimate.ts'
+import { reserveNativeScanSearches } from '../discover/search-budget.ts'
+import { CLAUDE_SEARCH_MODEL, claudeSearchMaxUses, CLAUDE_SEARCH_MAX_OUTPUT, USD_PER_SEARCH, MICROS, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchUsageDiagnostic, type ClaudeUsageSnapshot } from './claude-web-search-estimate.ts'
 export { CLAUDE_SEARCH_MODEL, CLAUDE_SEARCH_MAX_USES, CLAUDE_SEARCH_MAX_OUTPUT, CLAUDE_SEARCH_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH, CLAUDE_COMPANY_FIRST_MAX_CALLS, CLAUDE_COMPANY_FIRST_MAX_USES, COMPANY_FIRST_MAX_PUBLISHER_READS, claudeSearchMaxUses, ClaudeSearchError, claudeSearchEstimate, type ClaudeSearchEstimate, type ClaudeSearchFailure } from './claude-web-search-estimate.ts'
 
 const CLAUDE_SEARCH_TIMEOUT_MS = Math.min(150_000, LLM_TIMEOUT_MS)
@@ -12,27 +13,11 @@ export const CLAUDE_SEARCH_STALL_MS = 20_000
 const MAX_STREAM_BYTES = 4 * 1024 * 1024
 const MESSAGE = 'https://api.anthropic.com/v1/messages'
 const MAX_PROMPT_BYTES = 24_000
-const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
-const obj = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
-const arr = (v: unknown): unknown[] => Array.isArray(v) ? v : []
+import { count, obj, arr, projectedObject, projectedCount, projectedEnum } from './claude-response-shape.ts'
 export interface ClaudeSearchUsage {
   inputTokens: number; outputTokens: number; cacheReadTokens: number
   cacheWrite5mTokens: number; cacheWrite1hTokens: number; searches: number; usd: number
   inferenceGeoDiagnostic?: 'not_available' | 'unrecognized_price_neutral'
-}
-
-type Absent = 'absent' | 'null'
-const absent = (p: Record<string, unknown>, field: string): Absent | undefined =>
-  !Object.hasOwn(p, field) ? 'absent' : p[field] === null ? 'null' : undefined
-const projectedObject = (p: Record<string, unknown>, field: string): 'object' | Absent | 'malformed' =>
-  absent(p, field) ?? (p[field] !== null && typeof p[field] === 'object' && !Array.isArray(p[field]) ? 'object' : 'malformed')
-const projectedCount = (p: Record<string, unknown>, field: string, bound: number): ClaudeUsageCounter => {
-  const state = absent(p, field), v = p[field]
-  return state ?? (count(v) ? v <= bound ? v : 'outside_diagnostic_bound' : 'malformed')
-}
-function projectedEnum<const T extends string>(p: Record<string, unknown>, field: string, options: readonly T[]): T | Absent | 'malformed' | 'unrecognized' {
-  const state = absent(p, field), v = p[field]
-  return state ?? (typeof v === 'string' ? options.find(option => option === v) ?? 'unrecognized' : 'malformed')
 }
 
 // This never serializes the upstream object. Fixed keys, bounded nonnegative integers, and compiled-in enums only.
@@ -262,7 +247,8 @@ export async function runClaudeWebSearch(
   if (!apiKey.trim() || !prompt.trim() || Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) throw new ClaudeSearchError('invalid_input')
   const headers = { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
   const countPayload = { model: CLAUDE_SEARCH_MODEL, messages: [{ role: 'user', content: prompt }] }
-  const tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: claudeSearchMaxUses(policy) }]
+  const searches = await reserveNativeScanSearches(claudeSearchMaxUses(policy))
+  const tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: searches?.allowance ?? claudeSearchMaxUses(policy) }]
   let input: unknown
   try {
     const r = await fetchImpl(MESSAGE + '/count_tokens', { method: 'POST', headers, body: JSON.stringify(countPayload), signal: AbortSignal.timeout(20_000), redirect: 'error' })
@@ -335,6 +321,7 @@ export async function runClaudeWebSearch(
   const checked = checkUsage(json, true)
   if ('diagnostic' in checked) { await hold.uncertain(); throw new ClaudeSearchError('usage_uncertain', checked.diagnostic, rejectedUsage(json, checked.diagnostic)) }
   const { usage } = checked
+  await searches?.settle(usage.searches)
   // Known actual is always settled, even if it exceeded the soft estimate or violated the claimed output/tool limits.
   await hold.settle(usage.usd, usage)
   if (usage.searches > claudeSearchMaxUses(policy) || usage.outputTokens > CLAUDE_SEARCH_MAX_OUTPUT)

@@ -788,6 +788,15 @@ CREATE TABLE scan_model_calls (
     recorded_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
   );
 
+CREATE TABLE scan_native_search_calls (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  scan_job_id TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  allowance INTEGER NOT NULL CHECK (allowance >= 0 AND allowance <= 15),
+  used INTEGER CHECK (used IS NULL OR (used >= 0 AND used <= allowance))
+);
+
 CREATE TABLE scan_run_report (
     job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE CASCADE,
     attempt INTEGER NOT NULL,
@@ -1393,6 +1402,8 @@ CREATE INDEX scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
 
 CREATE UNIQUE INDEX scan_model_calls_job ON scan_model_calls(job_id, attempt, seq);
 
+CREATE INDEX scan_native_search_calls_job ON scan_native_search_calls(user_id,scan_job_id);
+
 CREATE INDEX scan_spend_calls_job ON scan_spend_calls (user_id, scan_job_id);
 
 CREATE INDEX scan_traces_created ON scan_traces (created_at);
@@ -1667,6 +1678,8 @@ CREATE TRIGGER tomb_scan_jobs BEFORE INSERT ON scan_jobs BEGIN SELECT NEW.user_i
 
 CREATE TRIGGER tomb_scan_model_calls BEFORE INSERT ON scan_model_calls BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_scan_native_search_calls BEFORE INSERT ON scan_native_search_calls BEGIN SELECT NEW.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id); END;
+
 CREATE TRIGGER tomb_scan_run_report BEFORE INSERT ON scan_run_report BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id); END;
 
 CREATE TRIGGER tomb_scan_source_runs BEFORE INSERT ON scan_source_runs BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id); END;
@@ -1880,6 +1893,8 @@ CREATE TRIGGER tomb_upd_reply_threads BEFORE UPDATE OF tenant_id ON reply_thread
 CREATE TRIGGER tomb_upd_scan_jobs BEFORE UPDATE OF user_id ON scan_jobs BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_scan_model_calls BEFORE UPDATE OF tenant_id ON scan_model_calls BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_scan_native_search_calls BEFORE UPDATE OF user_id ON scan_native_search_calls BEGIN SELECT NEW.user_id; SELECT OLD.user_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.user_id IS NOT OLD.user_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.user_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.user_id))); END;
 
 CREATE TRIGGER tomb_upd_scan_run_report BEFORE UPDATE OF job_id ON scan_run_report BEGIN SELECT (SELECT user_id FROM scan_jobs WHERE id = NEW.job_id); SELECT (SELECT user_id FROM scan_jobs WHERE id = OLD.job_id); SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.job_id IS NOT OLD.job_id AND ((EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = NEW.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = NEW.job_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstone_keys WHERE tbl = 'scan_jobs' AND key = OLD.job_id) OR EXISTS (SELECT 1 FROM scan_jobs p0 JOIN tenant_tombstones t0 ON t0.deleted_tenant = p0.user_id WHERE p0.id = OLD.job_id))); END;
 
