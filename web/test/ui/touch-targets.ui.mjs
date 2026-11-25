@@ -213,7 +213,8 @@ try {
     const c = await browser.newContext({ ...VIEWPORT, viewport: { width: 390, height: 844 } })
     await c.route('**/*', r => new URL(r.request().url()).origin === srv.base ? r.continue() : r.abort())
     const page = await c.newPage()
-    await stubApis(page, '/app/settings')
+    // A returning account (as for /app?known=1 above): the business is known, so the app opens on Home, not on the first-run overlay, which covers the header and its Menu label.
+    await stubApis(page, '/app?known=1')
     // The seeded user has no real password, so the answer to the sign-in POST is made here: the session cookie the real route would set, then {ok}.
     await page.route('**/api/auth/signin', async r => { await c.addCookies([{ name: 'dazl_session', value: srv.token, url: srv.base }]); await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }) })
     try {
@@ -235,7 +236,10 @@ try {
       const skip = await page.evaluate(() => ({ checked: document.getElementById('navtoggle').checked, shown: getComputedStyle(document.querySelector('#main')).display !== 'none', focused: document.activeElement?.id === 'main' }))
       if (skip.checked || !skip.shown || !skip.focused) failures.push(`${tag}: after a client-side sign-in, "Skip to content" with the menu open did not reach <main> (menu still open: ${skip.checked}, main shown: ${skip.shown}, main focused: ${skip.focused})`)
       console.log(`${failures.some(f => f.startsWith(tag)) ? 'FAIL' : 'ok  '} ${tag}: client navigation=${clientNav}, menu closed=${!skip.checked}, main shown=${skip.shown}, main focused=${skip.focused}`)
-    } catch (e) { failures.push(`${tag}: could not be measured (${String(e.message).split('\n')[0].slice(0, 200)})`) }
+    } catch (e) {
+      failures.push(`${tag}: could not be measured (${String(e.message).split('\n')[0].slice(0, 200)})`)
+      try { await page.screenshot({ path: fileURLToPath(new URL('../../preview/menu-1771/client-nav-failure.png', import.meta.url)) }) } catch { /* diagnostics only */ }
+    }
     await c.close()
   }
 } finally {
