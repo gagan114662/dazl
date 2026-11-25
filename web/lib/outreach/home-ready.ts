@@ -8,6 +8,7 @@
 // when that limit (or the store's per-scan read limit) cuts the count, the answer says so (capped) and counts only the
 // scans it judged completely, so the page can say "first N leads checked" and "N or more" instead of a wrong total.
 // On the scan store's synchronous handle, like GET /api/leads whose helpers it reuses (lib/db/pg-port-status.ts lists it).
+import type Database from 'better-sqlite3'
 import { getScanDb } from '@/lib/scan/service'
 import { getJob, listLeads } from '@/lib/scan/store'
 import { enrichmentsForLeads } from '@/lib/connectors/store'
@@ -20,6 +21,9 @@ import { discoverContact, emailOnCompanySite, isDiscoverLead } from '@/lib/disco
 import { leadPerson } from '@/lib/people/lead-person'
 import { identityOf } from '@/lib/scan/opportunity'
 import { publishedEmail } from '@/lib/outreach/published-email'
+import { leadContactContext, contactPurposeRestricted } from '@/lib/outreach/contact-purpose-db'
+import { isSuppressed, recipientAllowed } from '@/lib/outreach/service'
+import { shownIcp } from '@/lib/scan/carry-exclusions'
 import { eventDayVerified } from '@/lib/scan/scoreboard'
 
 export const READY_LEADS_MAX = 600    // leads judged per Home load (each costs a few indexed reads; batching them is #1181)
@@ -37,21 +41,38 @@ interface ReadyLeadDetails {
   email: string | null
 }
 
-function detailsOf(lead: PreviewLead & { name?: string | null; source_kind?: string | null }, at: Date): ReadyLeadDetails {
+function buyerRolesOf(raw: string | null): string {
+  try {
+    const profile = shownIcp(raw) as { who?: unknown } | null
+    return Array.isArray(profile?.who) ? profile.who.filter(role => typeof role === 'string').join('; ') : ''
+  } catch { return '' }
+}
+
+function detailsOf(
+  db: Database.Database, tenantId: string,
+  lead: PreviewLead & { name?: string | null; source_kind?: string | null },
+  buyerRoles: string, at: Date,
+): ReadyLeadDetails {
   const rows = lead.enrichments ?? []
   const discover = isDiscoverLead(lead)
   const contact = discoverContact(lead)
-  const person = discover ? contact?.person : leadPerson(rows, '', at.getTime(), identityOf(lead, rows))
-  const email = contact?.email
+  const person = discover ? contact?.person : leadPerson(rows, buyerRoles, at.getTime(), identityOf(lead, rows))
+  let email: string | null = null
+  try {
+    const published = contact?.email
+    const address = discover
+      ? published && emailOnCompanySite(published.address, published.source, lead.company_domain) ? published.address : null
+      : publishedEmail({ ...lead, contact_context: leadContactContext(db, tenantId, lead.id) })
+    if (address && recipientAllowed(db, tenantId, address) && !isSuppressed(db, tenantId, address)
+      && !contactPurposeRestricted(db, tenantId, lead.id, address)) email = address
+  } catch { /* Keep the ready details available if the address cannot be checked. */ }
   return {
     signal: lead.signal || null,
     event_date: lead.event_date,
     day_verified: eventDayVerified(lead, { now: at }),
     contact_name: person?.name ?? null,
     contact_title: person?.title || null,
-    email: discover
-      ? email && emailOnCompanySite(email.address, email.source, lead.company_domain) ? email.address : null
-      : publishedEmail(lead),
+    email,
   }
 }
 // held: why the other judged companies are not ready (lib/journey.ts heldReason's own words), largest first; job_id = the
@@ -90,6 +111,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
     const job = getJob(db, tenantId, id) as { id: string; query: string | null; icp: string | null } | undefined
     if (!job) continue
     const timingOpts = timingOptsFor(job)
+    const buyerRoles = buyerRolesOf(job.icp)
     const leads = (listLeads(db, tenantId, id, perScan, true) as (PreviewLead & { created_at: number; seen_before?: number | null; source_kind?: string | null; name?: string | null; company_domain: string | null; company: string; quarantined_at?: unknown })[])
       .filter(l => countedOnHome(l) && Number(l.created_at) >= since && !l.seen_before && l.source_kind !== 'test' && !l.quarantined_at)   // rejected leads are not judged
     const enr = enrichmentsForLeads(db, tenantId, leads.map(l => l.id))
@@ -105,7 +127,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
       const why = byChecks(l.id) ? gateHoldReason(j, shown) : leadHoldReason(db, tenantId, l as never, enr[l.id] ?? [], timingOpts, at)   // lib/outreach/lead-hold.ts: the one rule
       if (!v) { v = { lead_id: l.id, company: l.company || 'Unnamed company', job_id: id, ready: !why, reason: why ?? '' }; companies.push(v) }
       else if (!why) { v.ready = true; v.reason = ''; v.job_id = id; v.lead_id = l.id; v.company = l.company || v.company }   // held in a newer scan, ready in this one: ready wins
-      if (!why) v.details = detailsOf({ ...l, enrichments: enr[l.id] ?? [] }, at)
+      if (!why) v.details = detailsOf(db, tenantId, { ...l, enrichments: enr[l.id] ?? [] }, buyerRoles, at)
       for (const k of keys) byKey.set(k, v)
     }
     if (whole) checked++; else capped = true

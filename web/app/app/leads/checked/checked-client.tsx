@@ -13,7 +13,7 @@ function ReadyLeadDetails({ detail }: { detail: ReadyCompany['details'] }) {
     <dt>Signal</dt><dd className="break-words">{detail?.signal || 'No signal recorded'}</dd>
     <dt>Date</dt><dd>{detail?.event_date ? `${detail.event_date}${detail.day_verified ? '' : ' (unconfirmed)'}` : 'No date confirmed'}</dd>
     <dt>Contact</dt><dd className="break-words">{detail?.contact_name ? [detail.contact_name, detail.contact_title].filter(Boolean).join(' · ') : 'No contact named'}</dd>
-    <dt>Email</dt><dd className="break-all">{detail?.email || 'No email on this lead'}</dd>
+    <dt>Email</dt><dd className="break-all">{detail?.email || 'No eligible work email'}</dd>
   </dl>
 }
 

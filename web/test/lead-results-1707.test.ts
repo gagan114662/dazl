@@ -31,6 +31,7 @@ test('the ready response attaches details from the winning lead without crossing
     import { migrateAllSqlite } from './lib/db/sqlite-migrations.ts'
     import { addEnrichment } from './lib/connectors/store.ts'
     import { homeReady } from './lib/outreach/home-ready.ts'
+    import { ownSiteBuyerRows } from './test/helpers/own-site-buyer.ts'
 
     const db = new Database(':memory:')
     migrateAllSqlite(db)
@@ -58,6 +59,35 @@ test('the ready response attaches details from the winning lead without crossing
     assert.equal(row.reason, '')
     assert.deepEqual(row.details, { signal: 'A dated event', event_date: date, day_verified: true, contact_name: name, contact_title: title, email })
     assert.doesNotMatch(JSON.stringify(result), /Private detail|Unrelated detail/)
+
+    addEnrichment(db, 'tenant', 'ready', { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/sample-buyer', label: null, confidence: null, source_url: 'https://' + domain + '/person', source_date: date, retrieved_at: at })
+    db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, ?, 'manual')").run('tenant', email)
+    const suppressed = (await homeReady('tenant', at)).companies.find(row => row.lead_id === 'ready')
+    assert.equal(suppressed?.ready, true)
+    assert.equal(suppressed?.details?.email, null, 'a suppressed address stays hidden on a LinkedIn-ready row')
+    db.prepare("UPDATE lead_enrichments SET value = ? WHERE tenant_id = ? AND lead_id = ? AND kind = 'email'")
+      .run('sample.buyer@gmail.com', 'tenant', 'ready')
+    const personal = (await homeReady('tenant', at)).companies.find(row => row.lead_id === 'ready')
+    assert.equal(personal?.ready, true)
+    assert.equal(personal?.details?.email, null, 'a personal mailbox stays hidden even if published on the company site')
+
+    const legacy = randomUUID(), site = legacy + '.example', legacyEmail = 'inquiries@' + site
+    job.run(legacy, 'tenant', legacy, at - 3)
+    lead.run(legacy, legacy, legacy, site, 'A dated event', 'https://' + site + '/signal', date, at - 3)
+    db.prepare("UPDATE scan_jobs SET status = 'done', icp = ? WHERE id = ?").run(JSON.stringify({ who: ['Head of Sales'] }), legacy)
+    db.prepare("UPDATE leads SET source_kind = NULL, confidence = 80, human_confirmed_at = ?, evidence_excerpt = ?, contact = ? WHERE id = ?")
+      .run(at - 3, 'A dated event', legacyEmail, legacy)
+    for (const row of [
+      ...ownSiteBuyerRows(site, { name: 'First Buyer', title: 'Founder', at }),
+      ...ownSiteBuyerRows(site, { name: 'Relevant Buyer', title: 'Head of Sales', at }).filter(row => row.kind === 'person'),
+    ]) addEnrichment(db, 'tenant', legacy, row)
+    const legacyDetails = async () => (await homeReady('tenant', at)).companies.find(row => row.lead_id === legacy)?.details
+    assert.equal((await legacyDetails())?.contact_name, 'Relevant Buyer')
+    assert.equal((await legacyDetails())?.email, legacyEmail)
+    db.prepare("INSERT INTO source_reviews VALUES (?, ?, ?, ?, ?, 'ok', 1, 1, 1, ?)").run(
+      randomUUID(), 'tenant', legacy, legacy,
+      JSON.stringify({ contact_context: { excerpt: 'Send your application to ' + legacyEmail, source_url: 'https://' + site + '/careers' } }), at)
+    assert.equal((await legacyDetails())?.email, null, 'the saved source context restricts the address')
   `
   const child = spawnSync(process.execPath, [
     '--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
