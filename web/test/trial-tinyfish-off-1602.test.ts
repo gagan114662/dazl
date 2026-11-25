@@ -3,6 +3,7 @@ import { admitTrialScan, trialFundable } from '../lib/billing/trial-budget.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const trialEnv = {
+  NODE_ENV: 'test' as const,
   DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-api03-TRIALFIXTURETRIALFIXTURETRIALFIXTURE',
   DAZL_TRIAL_SCAN_RESERVE_USD: '0.30',
   DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1',
