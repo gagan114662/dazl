@@ -19,12 +19,14 @@ export function launchRegionSystemPrompt(system: string): string {
   return `${system.replace('{"leads":[{"company":', '{"leads":[{"country":null,"company":')}\n${LAUNCH_REGION_PROMPT}`
 }
 
+const groupedTargets = (text: string): string[] => text.split(/\s+(?:and|or)\s+|[&;/]/i)
+
 function outsideLaunchCoverage(place: PlanPlace): boolean {
   if (!place.country || !LAUNCH_COUNTRIES.has(place.country)) return true
   const named = countriesIn(place.text)
   if (named.some(country => !LAUNCH_COUNTRIES.has(country))) return true
   // A grouped place's one country code cannot confirm every independently named target.
-  const groups = place.text.split(/\s+(?:and|or)\s+|[&;/]/i)
+  const groups = groupedTargets(place.text)
   if (groups.length > 1) return groups.some(group => !confirmedLaunchPart(group))
   const city = place.city?.trim().toLowerCase()
   const region = place.region?.trim().toLowerCase()
@@ -36,12 +38,16 @@ function outsideLaunchCoverage(place: PlanPlace): boolean {
 }
 
 function confirmedLaunchPart(text: string): boolean {
-  const direct = countryFromField(text)
-  if (direct) return LAUNCH_COUNTRIES.has(direct)
-  const region = regionOf(text)
-  if (region) return LAUNCH_COUNTRIES.has(countryOfRegion(region))
-  const countries = countriesIn(text)
+  const countries = launchPartCountries(text)
   return countries.length > 0 && countries.every(country => LAUNCH_COUNTRIES.has(country))
+}
+
+function launchPartCountries(text: string): string[] {
+  const direct = countryFromField(text)
+  if (direct) return [direct]
+  const region = regionOf(text)
+  if (region) return [countryOfRegion(region)]
+  return countriesIn(text)
 }
 
 type LaunchRegion = { ok: true; places: PlanPlace[]; usage: DiscoverUsage } | { ok: false; result: DiscoverResult }
@@ -108,7 +114,12 @@ export function launchRegionMessage(message: string, places: PlanPlace[]): strin
 export function allowsLaunchLead(lead: Record<string, unknown>, places: PlanPlace[]): boolean {
   const country = lead.country
   return typeof country === 'string' && LAUNCH_COUNTRIES.has(country)
-    && (places.length === 0 || places.some(place => place.country === country))
+    && (places.length === 0 || places.some(place => {
+      if (place.country === country) return true
+      const groups = groupedTargets(place.text)
+      if (groups.length > 1) return groups.flatMap(launchPartCountries).includes(country)
+      return !place.city && !place.region && place.text.includes(',') && countriesIn(place.text).includes(country)
+    }))
 }
 
 export function addLaunchRegionUsage(search: DiscoverUsage, plan: DiscoverUsage): DiscoverUsage {

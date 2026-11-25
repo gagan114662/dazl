@@ -84,3 +84,11 @@ test('a second discovery pass reuses the tool-free plan and accounts for it once
   assert.equal(run.requests, 3)
   assert.equal(requests.filter(request => !request.tools).length, 1)
 })
+
+test('both allowed countries survive when Claude groups them under one code', async () => {
+  const { fetchImpl } = provider([{ text: 'Canada and US', city: null, region: null, country: 'US' }], [
+    candidate('American', 'US'), candidate('Canadian', 'CA'),
+  ])
+  const result = await discoverLeads({ query: 'Find agencies hiring an SDR in Canada and US' }, { apiKey: 'test', fetch: fetchImpl })
+  assert.deepEqual(result.leads.map(lead => lead.company), ['American', 'Canadian'])
+})
