@@ -1812,7 +1812,7 @@ export default function LeadsClient() {
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
                 {(() => {
                   const a = reviewAction(l)
-                  const showAction = !unconfirmedIds.has(l.id) &&
+                  const showAction = !unconfirmedIds.has(l.id) && l.review_reason !== 'no_buyer_named' &&
                     (part === 'review' || a.label === 'Keep as research' || a.label === 'Keep this signal')
                   return <div className="mt-3" data-testid="review-actions">
                   <div className="flex flex-wrap gap-2">
