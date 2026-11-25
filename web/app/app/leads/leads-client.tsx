@@ -874,12 +874,16 @@ export default function LeadsClient() {
     return () => { live = false }
   }, [splitFor])
   const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
-  const visibleLeads = visibleReadyLeads(leads, showSeen)
+  const unconfirmedTiming = leads.filter(l => l.timing === 'unconfirmed' && !l.review_reason && !l.quarantined_at)
+  const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
+  const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
+  const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)
   const reviewSplit = reviewListSplit(leads)
+  const researchLeads = [...reviewSplit.research, ...unconfirmedTiming]
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
   // currentView is set only by a successful GET /api/leads for this job: until then there is no per-lead line at all
-  const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads, showSeen, leadsRead: currentView !== null })
-  const repeats = readyRepeats(leads)
+  const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads: readyCandidates, showSeen, leadsRead: currentView !== null })
+  const repeats = readyRepeats(readyCandidates)
 
   return (
     <div className="p-4 sm:p-8 max-w-6xl mx-auto flex flex-col">
@@ -1347,7 +1351,9 @@ export default function LeadsClient() {
           // #1579: with no scan open, nothing is said until the past scans have been read ("No leads yet" beside a list of them was false).
           status === 'loading' || status === 'failed' || statusError ? null
             : !jobId && !pastJobs ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' && currentView?.marked && currentView.counts?.reviewable === 0
+            : <p className="p-10 text-center text-gray-500 text-sm">{unconfirmedTiming.length > 0
+              ? 'Leads with unconfirmed timing are listed under Research only.'
+              : status === 'done' && currentView?.marked && currentView.counts?.reviewable === 0
               ? 'No leads passed the checks for review.'
               : status === 'done' && currentView?.marked && !currentView.counts
               ? 'Lead results could not be checked. Refresh to try again.'
@@ -1583,7 +1589,7 @@ export default function LeadsClient() {
       )}
       {/* The count line's own split (lib/scan/leads-view.ts reviewListSplit): a lead a check can still make usable is listed under "Needs your review",
           every other lead with a reason under "Research only" (#352: that copy never asks the user to check or confirm). A heading shows only with its rows. */}
-      {([['review', reviewSplit.review], ['research', reviewSplit.research]] as const).map(([part, rows]) => rows.length > 0 && (
+      {([['review', reviewSplit.review], ['research', researchLeads]] as const).map(([part, rows]) => rows.length > 0 && (
         <div key={part} data-testid={`${part}-list`}>
           {part === 'review' ? <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
@@ -1600,7 +1606,7 @@ export default function LeadsClient() {
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>{hiringTimingLine(l.signal, l.signal_kind) && <div className="text-gray-400 text-xs" data-testid="hiring-not-buying">{hiringTimingLine(l.signal, l.signal_kind)}</div>}
-                <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
+                <span className="text-[#333] text-xs mr-3">{unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 {l.timing_note && <span className="text-[#333] text-xs mr-3" data-testid="timing-note-review">Researched opportunity - {l.timing_note}.</span>}
                 <DiscoveredVia l={l} />
@@ -1608,7 +1614,7 @@ export default function LeadsClient() {
                 {(() => { const t = reviewLaneWorkEmailTargets(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''); return t.length > 0 ? <div data-testid="review-work-email"><WorkEmail leadId={l.id} initial={workEmailInitial(l.id)} targets={t} /></div> : null })()}
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
-                  <p>{leadCardDateLine(l)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
+                  <p>{unconfirmedIds.has(l.id) ? 'Event date unconfirmed' : leadCardDateLine(l)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
                 </div>}
                 <EvidenceRecheck leadId={l.id} />
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
@@ -1620,9 +1626,9 @@ export default function LeadsClient() {
                 {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">
                   <div className="flex flex-wrap gap-2">
                     <a className="btn-ghost text-xs px-3 py-1.5" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">Open source</a>
-                    <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>
+                    {!unconfirmedIds.has(l.id) && <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>}
                   </div>
-                  <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>
+                  {!unconfirmedIds.has(l.id) && <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>}
                 </div> })()}
               </div>
             ))}
