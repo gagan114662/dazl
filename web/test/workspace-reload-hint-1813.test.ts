@@ -48,3 +48,11 @@ test('#1813: reload hint appears at ten seconds and the timer is cleared on unmo
   t.mock.timers.tick(10000)
   assert.equal(shown, false)
 })
+
+test('#1813: the workspace fallback mounts the delayed hint in place of the unconditional text', () => {
+  const layout = readFileSync(new URL('../app/app/layout.tsx', import.meta.url), 'utf8')
+  const fallback = layout.match(/<Suspense fallback=\{\s*<div id=\{OPENING_ID\}[\s\S]*?<AuthGate>/)?.[0]
+  assert.ok(fallback, 'workspace-opening Suspense fallback')
+  assert.ok(fallback.includes('<WorkspaceReloadHint />'), 'the fallback mounts the delayed hint')
+  assert.doesNotMatch(fallback, /reload the page to try again/i)
+})
