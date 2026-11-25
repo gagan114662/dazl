@@ -156,9 +156,10 @@ test('1725 real discovery and concurrent enrichment share the last one search',a
     const first=requests.length===1
     const searches=first?14:Math.min(searchLimit(body),4)
     const leads=['Fictional Cedar','Fictional Elm'].map(company=>({company,
-      signal:'Opening a new branch',evidence_url:'https://fixture.example/branch',person:null}))
+      signal:'Opening a new branch',evidence_url:'https://fixture.example/branch',person:null,country:'US',location_evidence:'United States'}))
+    const request_plan={offer:null,buyer_type:null,industry_code:null,places:[],signals:[],exclusions:[],language:'en'}
     return sseResponse(sseEvents({id:'msg_fixture1725',model:body.model,
-      content:[{type:'text',text:`<json>${JSON.stringify(first?{leads}:{person:null})}</json>`}],
+      content:[{type:'text',text:`<json>${JSON.stringify(first?{request_plan,leads}:{person:null})}</json>`}],
       stop_reason:'end_turn',usage:{input_tokens:10,output_tokens:1,cache_read_input_tokens:0,
         cache_creation_input_tokens:0,server_tool_use:{web_search_requests:searches}}}))
   }
