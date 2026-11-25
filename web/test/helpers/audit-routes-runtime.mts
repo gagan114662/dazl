@@ -83,7 +83,8 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   }
   // refused or failed requests record nothing: each of these is refused before the change (the exact event list
   // below has none of them, and would have if an audit call moved above its route's validation)
-  await step('llm key refused (not a key)', t.A, () => llmKey.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', api_key: 'short' })), 400)
+  // #1703: the key route is gone (410); neither a bad nor a real key is stored, checked with the provider or recorded
+  await step('llm key refused (not a key)', t.A, () => llmKey.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', api_key: 'short' })), 410)
   await step('enrichment key refused (too short)', t.D, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: 'short' })), 400)
   await step('crm key refused (too short)', t.A, () => crm.POST(req('/api/crm', 'POST', { action: 'save', provider: 'hubspot', key: 'short' })), 400)
   await step('profile refused (bad website)', t.A, () => profile.POST(req('/api/settings/profile', 'POST', { website: 'not-a-url' })), 400)
@@ -94,8 +95,8 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   raw.prepare("INSERT INTO tenant_plans (tenant_id, plan) VALUES ('A', 'pro') ON CONFLICT(tenant_id) DO UPDATE SET plan = 'pro'").run()
   await step('checkout refused (already Pro)', t.A, () => checkout.POST(req('/api/billing/checkout', 'POST')), 409)
   raw.prepare("UPDATE tenant_plans SET plan = 'free' WHERE tenant_id = 'A'").run()
-  await step('llm key saved', t.A, () => llmKey.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', api_key: MARK.modelKey })))
-  await step('llm key removed', t.A, () => llmKey.DELETE(req('/api/settings/llm-key?vendor=anthropic', 'DELETE')))
+  await step('llm key not saved', t.A, () => llmKey.PUT(req('/api/settings/llm-key', 'PUT', { vendor: 'anthropic', api_key: MARK.modelKey })), 410)
+  await step('llm key not removed', t.A, () => llmKey.DELETE(req('/api/settings/llm-key?vendor=anthropic', 'DELETE')), 410)
   await step('enrichment saved', t.D, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', key: MARK.enrichKey })))
   await step('enrichment removed', t.D, () => enrichment.POST(req('/api/settings/enrichment', 'POST', { connector: 'enrich:apollo', disconnect: true })))
   const rotated = await (await step('calcom rotated', t.A, () => calcom.POST(req('/api/settings/calcom', 'POST', { action: 'rotate' })))).json() as { secret: string }
@@ -120,7 +121,7 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   // a viewer is refused by role (403) and nothing is deleted or recorded
   await step('viewer delete refused', t.V, () => warm.DELETE(req('/api/warm/connections', 'DELETE')), 403)
   await step('monitor deleted', t.A, () => monitor.DELETE(req(`/api/monitors/${mon}`, 'DELETE'), { params: Promise.resolve({ id: mon }) }))
-  assert.deepEqual(fetched.map(u => new URL(u).host), ['api.anthropic.com', 'oauth2.googleapis.com', 'api.stripe.com'], "only the stubbed model-key check, Google's grant revoke and Stripe test-mode checkout")
+  assert.deepEqual(fetched.map(u => new URL(u).host), ['oauth2.googleapis.com', 'api.stripe.com'], "only Google's grant revoke and Stripe test-mode checkout (no model-key check: #1703)")
   assert.ok(fetched.includes('https://oauth2.googleapis.com/revoke'))
 
   // owners and admins read the trail; operators and viewers are refused, and each refusal is a denied event
@@ -133,7 +134,6 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   assert.equal(r.status, 200)
   const events = ((await r.json()) as { events: Ev[] }).events.reverse()
   assert.deepEqual(events.map(e => `${e.decision} ${e.actor_id} ${e.action} ${e.resource_type}${e.resource_id ? ` ${e.resource_id}` : ''}`), [
-    'allowed A credential.saved llm_key anthropic', 'allowed A credential.removed llm_key anthropic',
     'allowed D credential.saved enrichment enrich:apollo', 'allowed D credential.removed enrichment enrich:apollo',
     'allowed A credential.rotated calcom', 'allowed A credential.saved crm hubspot', 'allowed A credential.removed crm',
     'allowed A credential.removed gmail', 'allowed A settings.changed sender', `allowed A export.leads scan_job ${job}`,
@@ -159,7 +159,7 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   for (const [k, v] of Object.entries({ ...MARK, calcomSecret: rotated.secret })) assert.ok(!table.includes(v), `${k} is not in the trail`)
 
   // filters, then the CSV download, which is itself recorded
-  assert.deepEqual(((await (await read(t.A, '?action=credential.&actor=A')).json()) as { events: Ev[] }).events.map(e => e.action), ['credential.removed', 'credential.removed', 'credential.saved', 'credential.rotated', 'credential.removed', 'credential.saved'])
+  assert.deepEqual(((await (await read(t.A, '?action=credential.&actor=A')).json()) as { events: Ev[] }).events.map(e => e.action), ['credential.removed', 'credential.removed', 'credential.saved', 'credential.rotated'])
   assert.equal((await read(t.A, '?action=DROP%20TABLE')).status, 400)
   const csv = await read(t.A, '?format=csv')
   assert.equal(csv.headers.get('content-type'), 'text/csv; charset=utf-8')

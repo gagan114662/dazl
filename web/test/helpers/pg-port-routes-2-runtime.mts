@@ -244,7 +244,10 @@ test('batch 2 routes on SQLite: settings, Cal.com and warm paths behave, and ten
   assert.equal((o('warm report dup').body as { path: { id: string } }).path.id, (o('warm report').body as { path: { id: string } }).path.id)
   assert.deepEqual((o('warm path after').body as { user_reported: { mutual_name: string }[] }).user_reported.map(p => p.mutual_name), ['Margaret Hamilton', 'Katherine Johnson'], 'same second: insertion order')
   assert.deepEqual((o('warm path newer first').body as { user_reported: { mutual_name: string }[] }).user_reported.map(p => p.mutual_name), ['Katherine Johnson', 'Margaret Hamilton'], 'a newer second comes first')
-  for (const n of ['B memory', 'B competitors', 'B calcom', 'B enrichment', 'B connectors', 'B llm key', 'B warm status']) assert.equal(o(n).status, 200, n)
+  for (const n of ['B memory', 'B competitors', 'B calcom', 'B enrichment', 'B connectors', 'B warm status']) assert.equal(o(n).status, 200, n)
+  // #1703: the key route is gone for everyone (410), and it neither reads nor removes the keys saved before
+  for (const n of ['llm key', 'llm key remove', 'llm key after', 'B llm key']) assert.equal(o(n).status, 410, n)
+  assert.deepEqual((rows as { keys: unknown[] }).keys, [{ tenant_id: A, vendor: 'anthropic', last4: '1234' }, { tenant_id: A, vendor: 'openai', last4: '5678' }], 'saved keys are left as they were')
   assert.equal((o('B memory').body as { memory: unknown }).memory, null)
   assert.deepEqual((o('B competitors').body as { competitors: unknown[] }).competitors, [])
   assert.deepEqual((o('B calcom').body as { bookings: unknown[] }).bookings, [])

@@ -39,7 +39,6 @@ import { GET as statusGET } from '../../app/api/scan/status/route.ts'
 import { GET as outreachGET } from '../../app/api/outreach/route.ts'
 import { GET as inboxGET } from '../../app/api/outreach/inbox/route.ts'
 import { GET as followupsGET } from '../../app/api/outreach/followups/route.ts'
-import { GET as keyGET } from '../../app/api/settings/llm-key/route.ts'
 import { GET as memoryGET } from '../../app/api/settings/memory/route.ts'
 import { GET as monitorsGET } from '../../app/api/monitors/route.ts'
 import { GET as conversionGET } from '../../app/api/outreach/conversion/route.ts'
@@ -105,7 +104,6 @@ test('all 12 read routes: A and B each get their own content, never the other te
     { name: 'GET /api/outreach', call: () => outreachGET(), own: { A: [MA.subj], B: [MB.subj] } },
     { name: 'GET /api/outreach/inbox thread', call: t => inboxGET(get(`/api/outreach/inbox?thread_id=${t === 'A' ? MA.thread : MB.thread}`)), own: { A: [MA.thread], B: [MB.thread] } },
     { name: 'GET /api/outreach/followups', call: () => followupsGET(), own: { A: [MA.co, MA.thread], B: [MB.co, MB.thread] } },
-    { name: 'GET /api/settings/llm-key', call: () => keyGET(), own: { A: ['Q9ZK'], B: ['W4XJ'] } },
     { name: 'GET /api/settings/memory', call: () => memoryGET(), own: { A: [MA.mem], B: [MB.mem] } },
     { name: 'GET /api/outreach/conversion', call: () => conversionGET(), own: { A: [MA.sig], B: [MB.sig] } },
     { name: 'GET /api/monitors', call: () => monitorsGET(), own: { A: [MA.mon], B: [MB.mon] } },

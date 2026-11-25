@@ -24,7 +24,7 @@ if (!existsSync(path.join(dir, '.next/BUILD_ID'))) notRun('no production build (
 
 // #1095: the trial scans come with Google sign-in (lib/trial-copy.ts signUpPlanLine)
 const TRIAL_LINE = /Your first search is free, whether you sign up with Google or with email\. No card needed\./
-const FALLBACK_LINE = /On this site a search runs on your own Anthropic key, which you add in Settings\./
+const FALLBACK_LINE = /Free searches aren't available on this site right now\./
 
 async function withServer(env, fn) {
   const port = pickUiPort(); const base = `http://127.0.0.1:${port}`

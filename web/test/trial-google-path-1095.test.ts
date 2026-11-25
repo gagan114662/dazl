@@ -116,7 +116,8 @@ test('#1095 / #1648 / #1704: sign-up says the first search is free on both paths
   assert.doesNotMatch(on, /New accounts may get 3 trial scans/)
   // Where no free search can run, the line says what a search needs here and promises no free one.
   const off = signUpPlanLine(false)
-  assert.equal(off, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. On this site a search runs on your own Anthropic key, which you add in Settings.')
+  assert.equal(off, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Free searches aren\'t available on this site right now.')
+  assert.doesNotMatch(off, /AI key|Anthropic key/, '#1703: no key to add where no free search can run either')
   assert.doesNotMatch(off, /first search is free/)
   // #1648: the page told two stories (intro: Google or link it later; caption: needs Google sign-in). One rule now, the one
   // the code enforces since #1630: a first free search on either path, up to TRIAL_SCANS_PER_ACCOUNT with Google.
