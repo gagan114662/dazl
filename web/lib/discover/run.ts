@@ -3,8 +3,9 @@
 //   1. one Claude loop finds leads; dazl checks each proof page;
 //   2. if fewer than `wantShown` leads are shown and the budget has room, a second loop looks for different companies;
 //   3. a small-model pass fills the person, website and published email that shown leads still lack.
-// Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
-import { discoverLeads, type DiscoverInput, type DiscoverUsage } from './agent.ts'
+// Eligible candidates come back with their proof labels. What a run may spend is stated by the caller.
+import { isPublicSectorBody } from '../non-buyer.ts'
+import { discoverLeads, type DiscoveredLead, type DiscoverInput, type DiscoverUsage } from './agent.ts'
 import { createSearchBudget, searchAllowance } from './search-budget.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
@@ -30,12 +31,21 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   const want = budget.wantShown ?? 5
   const usage: Pick<DiscoverUsage, 'usd' | 'searches' | 'requests'> = { usd: 0, searches: 0, requests: 0 }
   const add = (u: Pick<DiscoverUsage, 'usd' | 'searches' | 'requests'>) => { usage.usd = r4(usage.usd + u.usd); usage.searches += u.searches; usage.requests += u.requests }
+  const excludedReasons = new Set<string>()
+  const excludedPages = new Set<string>()
+  const keepBuyer = (lead: DiscoveredLead) => {
+    const { nonBuyer, reason } = isPublicSectorBody({ company: lead.company, domain: lead.domain, offer: input.offer ?? null })
+    if (!nonBuyer) return true
+    excludedReasons.add(reason)
+    excludedPages.add(lead.evidence_url)
+    return false
+  }
 
   const first = await discover(sized, api)
   add(first.usage)
   // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
   const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
-  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
+  let leads = await checkLeads(first.leads.filter(keepBuyer).map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
   const pages = first.seen.map(p => p.url)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note, accountingUncertain = judge?.usage.accountingUncertain === true
@@ -46,7 +56,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       add(second.usage)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = (await checkLeads(second.leads.filter(keepBuyer).map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
       passes = 2
       accountingUncertain ||= judge?.usage.accountingUncertain === true
@@ -78,6 +88,8 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
     accountingUncertain ||= judge.usage.accountingUncertain === true
   }
-  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
+  for (const lead of leads) excludedPages.delete(lead.evidence_url)
+  if (excludedReasons.size) note = [note, `Public-sector leads excluded: ${[...excludedReasons].join('; ')}.`].filter(Boolean).join(' ')
+  return { pages: pages.filter(url => !excludedPages.has(url)), leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
     note: accountingUncertain ? 'Some research could not be accounted for. Earlier evidence is kept; the full spending reservation remains held.' : note, accountingUncertain }
 }
