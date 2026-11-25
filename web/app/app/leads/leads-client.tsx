@@ -215,6 +215,8 @@ type ZeroResultScan = {
 
 function renderZeroResultReason(scan: ZeroResultScan | null) {
   if (scan?.status !== 'done' || scan.lead_count !== 0) return null
+  // The scan's trial-stop notice already explains a monetary limit.
+  if (scan.error === 'trial_budget_reached') return null
   const report = scan.run_report?.at(-1)
   const discover = report?.discover
   const nativeSearch = report?.native_web_search

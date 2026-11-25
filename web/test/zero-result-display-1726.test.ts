@@ -76,3 +76,8 @@ test('#1726: a working, failed or nonzero scan does not call the helper or show 
     assert.deepEqual(renderHelp(record), { html: '', calls: [] })
   }
 })
+
+test('#1726: a trial spending stop keeps the existing spending explanation', () => {
+  const capped = { ...scan, error: 'trial_budget_reached' }
+  assert.deepEqual(renderHelp(capped), { html: '', calls: [] })
+})
