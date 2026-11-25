@@ -39,9 +39,11 @@ test('a sparse profile: its own suggestion only under business details; the top-
   const agencies = playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: ['Toronto'], industries: ['Marketing agencies'] } })
   assert.deepEqual(agencies.business, ['Marketing agencies that could use online booking software in Toronto - opened a new location', 'Marketing agencies that could use online booking software in Toronto - complaining publicly about their current tool'])
   assert.ok(agencies.business.every(b => !/agencies businesses/i.test(b)))
-  // Singular industry names are not suffixed either ("Marketing agency businesses").
-  assert.deepEqual(playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: [], industries: ['Marketing agency'] } }).business[0], 'Marketing agency that could use online booking software - opened a new location')
-  assert.deepEqual(playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: [], industries: ['Consulting firm'] } }).business[0], 'Consulting firm that could use online booking software - opened a new location')
+  // The general rule (no industry word lists): an audience already reading plural or collective keeps its wording.
+  assert.deepEqual(playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: [], industries: ['IT services'] } }).business[0], 'IT services that could use online booking software - opened a new location')
+  // A singular industry is still suffixed, and a word ending in "ss" is not read as a plural.
+  assert.deepEqual(playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: [], industries: ['Marketing agency'] } }).business[0], 'Marketing agency businesses that could use online booking software - opened a new location')
+  assert.deepEqual(playSuggestions({ sells: 'Timetabling software', buyer: { who: [], where: [], industries: ['Fitness'] } }).business[0], 'Fitness businesses that could use timetabling software - opened a new location')
   assert.deepEqual(sellsOnly.examples, [])
   for (const p of [{ buyer: { who: ['A'] } }, { buyer: { who: ['A', 'B'] } }, { sells: 'x' }, { buyer: { who: ['A'], signals: ['s'] } }]) {
     const r = playSuggestions(p)
