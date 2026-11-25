@@ -1,3 +1,4 @@
+import { discoveryEstimate } from '../discover/pricing.ts'
 // Price estimate for one scan, shown BEFORE anything paid runs, and the actual-vs-estimate read after it. Pure: no database,
 // no network, no provider call. The idea (a menu of what a run will use, each with a unit price and a projected total the
 // user confirms) follows other lead agents' pre-run cost gates; the numbers here are dazl's own.
@@ -219,16 +220,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     const u = num(env[`DAZL_PRICE_${v.toUpperCase()}_CREDIT_USD`]), n = enrichOff ? 0 : 8
     rows.push({ id: `${v}_credits`, label: v === 'apollo' ? 'Apollo enrichment' : 'People Data Labs enrichment', provider: v === 'apollo' ? 'Apollo' : 'People Data Labs', kind: 'enrichment', unit: 'credit', unit_usd: u === null ? 'your own plan; per-credit price not set' : money(u), units: { min: 0, max: n }, usd: enrichOff ? { min: 0, max: 0 } : u === null ? null : { min: 0, max: u * n }, capped: false, note: enrichOff ? 'Off: this run turns bring-your-own enrichment off' : 'Up to 8 companies, on your own credits' })
   }
-  if (i.discoverLane) {
-    // What the lane really spends, measured on the 16 benchmark prompts (BENCHMARK.md): about US$0.30 to US$0.90 a run with the full
-    // search budget, less with the smaller one. The run reserves its worst case before it starts and is settled at the reported usage.
-    const usd = i.discoverLane === 'tiny' ? { min: 0.08, max: 0.3 } : i.discoverLane === 'small' ? { min: 0.25, max: 0.6 } : { min: 0.3, max: 1 }
-    rows.splice(0, rows.length, {
-      id: 'claude_discover', label: 'Claude finds leads and checks their proof', provider: 'Anthropic', kind: 'search', unit: 'run',
-      unit_usd: 'web searches, page reads and model tokens, billed at what the run uses', units: { min: 1, max: 1 }, usd, capped,
-      note: 'One search loop, a second one when fewer than five leads are found, and a short pass that looks for the person, website and published email.',
-    })
-  }
+  if (i.discoverLane) rows.splice(0, rows.length, discoveryEstimate(i.discoverLane, capped))
   const unpriced = rows.filter(r => r.usd === null).map(r => r.label)
   const sum = (rs: EstimateRow[]): Range => ({ min: rs.reduce((a, r) => a + (r.usd?.min ?? 0), 0), max: rs.reduce((a, r) => a + (r.usd?.max ?? 0), 0) })
   const total = sum(rows), cappedTotal = sum(rows.filter(r => r.capped))

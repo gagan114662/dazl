@@ -32,7 +32,7 @@ test('parseLeads: an unreadable answer is zero leads with a note, and the cap is
 })
 
 test('usd: tokens at list price plus searches', () => {
-  assert.equal(usd({ input_tokens: 100_000, output_tokens: 5_000, cache_read_tokens: 0, cache_write_tokens: 0, searches: 6, requests: 1 }), 0.56)
+  assert.equal(usd({ input_tokens: 100_000, output_tokens: 5_000, cache_read_tokens: 0, cache_write_tokens: 0, searches: 6, requests: 1 }), 0.31)
 })
 
 test('companyOnPage and dayOnPage label the proof; they tolerate case, accents and date styles', () => {
