@@ -382,6 +382,7 @@ export default function LeadsClient() {
   const [leadTab, setLeadTab] = useState<'review' | 'approved' | 'rejected'>('review')
   const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
   const [otherActiveJobId, setOtherActiveJobId] = useState<string | null>(null)
+  const [otherActiveReadFailed, setOtherActiveReadFailed] = useState(false)
   const scanActive = !!otherActiveJobId || (!!jobId && (status === 'pending' || status === 'running' || status === 'enriching'))
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
   useEffect(() => {
@@ -803,14 +804,29 @@ export default function LeadsClient() {
   useEffect(() => {
     if (!otherActiveJobId) return
     const controller = new AbortController()
-    const timer = setInterval(() => {
-      void fetch(`/api/scan/status?job_id=${otherActiveJobId}&passive=1`, { signal: controller.signal })
-        .then(async response => {
-          const status = response.ok ? (await response.json()).status : null
-          if (!controller.signal.aborted && (response.status === 404 || status === 'done' || status === 'failed')) {
-            setOtherActiveJobId(current => current === otherActiveJobId ? null : current)
-          }
-        }).catch(() => {})
+    const read = (url: string) => fetch(url, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(4500)]),
+    }).catch(() => null)
+    let reading = false
+    const timer = setInterval(async () => {
+      if (reading) return
+      reading = true
+      try {
+        const response = await read(`/api/scan/status?job_id=${otherActiveJobId}&readonly=1`)
+        let status = response?.ok ? (await response.json().catch(() => null))?.status : null
+        if (!status && response?.status !== 404 && !controller.signal.aborted) {
+          const history = await read('/api/scan/jobs')
+          const jobs = history?.ok ? (await history.json().catch(() => null))?.jobs : null
+          status = Array.isArray(jobs) ? jobs.find(job => job.id === otherActiveJobId)?.status : null
+        }
+        if (controller.signal.aborted) return
+        setOtherActiveReadFailed(!status && response?.status !== 404)
+        if (response?.status === 404 || status === 'done' || status === 'failed') {
+          setOtherActiveJobId(current => current === otherActiveJobId ? null : current)
+        }
+      } finally {
+        reading = false
+      }
     }, 5000)
     return () => { clearInterval(timer); controller.abort() }
   }, [otherActiveJobId])
@@ -922,6 +938,7 @@ export default function LeadsClient() {
       </div>
       {otherActiveJobId && <p role="status" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">
         A search is running. <a className="underline" href={`/app/leads?job_id=${otherActiveJobId}`}>View progress</a>
+        {otherActiveReadFailed && ' Progress is temporarily unavailable. Retrying.'}
       </p>}
       {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
           at any width (below the card it sat off screen at 390). */}
@@ -929,7 +946,7 @@ export default function LeadsClient() {
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval, pendingEst.carryExclude)} onCancel={() => setPendingEst(null)} />}
+      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting || scanActive} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval, pendingEst.carryExclude)} onCancel={() => setPendingEst(null)} />}
       <form onSubmit={e => { e.preventDefault(); if (openWebsiteDraft) reviewPanel.current?.focus(); else void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
@@ -1089,7 +1106,7 @@ export default function LeadsClient() {
               <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
               {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
             </div>
-            <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || scanActive || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
@@ -1114,7 +1131,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={name => { const offer = completeOffer(name); if (!offer) return; setOfferText(offer); if (websiteDraft.current && reviewChoice) setOfferConflict(null) }} />}
-          <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText, true)} disabled={starting || scanActive || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}

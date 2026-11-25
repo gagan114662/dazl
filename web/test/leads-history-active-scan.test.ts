@@ -43,7 +43,7 @@ function renderBanner(otherActiveJobId: string | null): string {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
   }).outputText
   const exports = { default: null }
-  vm.runInNewContext(output, { exports, require: createRequire(import.meta.url), otherActiveJobId })
+  vm.runInNewContext(output, { exports, require: createRequire(import.meta.url), otherActiveJobId, otherActiveReadFailed: false })
   return renderToStaticMarkup(exports.default)
 }
 
@@ -103,3 +103,27 @@ for (const query of ['', '?job_id=malformed']) {
     assert.equal(view.status, 'running')
   })
 }
+
+test('background polling reads without reaping and recovers a completed job from history', async () => {
+  const requests: string[] = []
+  let callback!: () => Promise<void>
+  let listed: string | null = ACTIVE
+  clientEffect('controller.abort()').runInNewContext({
+    AbortController, AbortSignal,
+    otherActiveJobId: ACTIVE,
+    fetch: async (url: string) => {
+      requests.push(url)
+      return url === '/api/scan/jobs'
+        ? Response.json({ jobs: [{ id: ACTIVE, status: 'done' }] })
+        : new Response(null, { status: 503 })
+    },
+    useEffect: (effect: () => void) => effect(),
+    setInterval: (tick: () => Promise<void>) => { callback = tick },
+    setOtherActiveJobId: (update: (id: string | null) => string | null) => { listed = update(listed) },
+    setOtherActiveReadFailed() {},
+  })
+  await callback()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(requests, [`/api/scan/status?job_id=${ACTIVE}&readonly=1`, '/api/scan/jobs'])
+  assert.equal(listed, null)
+})
