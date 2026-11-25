@@ -347,6 +347,22 @@ export function sequenceStepsView(db: Database.Database, tenantId: string, seq: 
 }
 
 // Per-lead status for the Leads page. next_due_at is only set while waiting between steps.
+// #1802: what the lead shows is a plain reason, never the stored code. The stored codes stay exactly as
+// they are (audit evidence; other suites pin them) — the words are chosen here, at the read boundary.
+// A sequence stopped by a suppression says why the address was suppressed: a hard bounce is not a
+// do-not-contact, and neither is an unsubscribe. The tick's reply stop likewise ignores bounce notices:
+// a verified bounce stops the sequence through its suppression, and an unverified one (bounce_review /
+// bounce_unmatched) must not kill a sequence labelled as a reply.
+const PLAIN_STOP_REASONS: Record<string, string> = { reply: 'Replied', existing_reply: 'Replied', user_stopped: 'Stopped by you' }
+export function plainSequenceStopReason(db: Database.Database, tenantId: string, toEmail: string, status: string, reason: string | null): string | null {
+  if (status === 'replied') return 'Replied'
+  if (reason === 'suppressed') {
+    const s = db.prepare('SELECT reason FROM suppressions WHERE tenant_id = ? AND email = ?').get(tenantId, norm(toEmail)) as { reason: string } | undefined
+    return s?.reason === 'bounce' ? 'Email bounced' : s?.reason === 'unsubscribe' ? 'Unsubscribed' : 'Do not contact'
+  }
+  return (reason && PLAIN_STOP_REASONS[reason]) || displayStopReason(reason)
+}
+
 export function sequenceStatusByLead(db: Database.Database, tenantId: string, d: Deps = {}): Map<string, { status: string; step: number; next_due_at: number | null; stop_reason: string | null }> {
   const now = d.now ?? Math.floor(Date.now() / 1000); void now
   const out = new Map<string, { status: string; step: number; next_due_at: number | null; stop_reason: string | null }>()
@@ -359,7 +375,7 @@ export function sequenceStatusByLead(db: Database.Database, tenantId: string, d:
       const gaps = isTestRecipient(db, tenantId, r.to_email) ? TEST_GAPS_S : GAPS_S
       nextDue = r.step1_sent + gaps[r.steps_sent] // steps_sent counts step 1: index of the NEXT step
     }
-    out.set(r.lead_id, { status: r.status, step: r.steps_sent, next_due_at: nextDue, stop_reason: displayStopReason(r.stop_reason) })
+    out.set(r.lead_id, { status: r.status, step: r.steps_sent, next_due_at: nextDue, stop_reason: plainSequenceStopReason(db, tenantId, r.to_email, r.status, r.stop_reason) })
   }
   return out
 }
@@ -399,7 +415,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
                               JOIN outreach_messages m ON m.id = s.message_id
                               WHERE s.tenant_id = ? AND s.status = 'approved' AND m.status = 'sent'`).all(tenantId) as { id: string; lead_id: string; message_id: string; to_email: string; sent_at: number; gmail_id: string | null; thread_id: string | null; msg_test: number }[]
   for (const r of toStart) {
-    if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'replied','existing_reply',now); continue }
+    if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce','bounce','bounce_review','bounce_unmatched')").get(tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'replied','existing_reply',now); continue }
     if (contactPurposeRestricted(db,tenantId,r.lead_id,r.to_email)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{to_email:r.to_email,test:r.msg_test}) && currentnessHeld(db,tenantId,r.lead_id)) { out.skipped++; continue }
     if (!testFixtureSend(db,tenantId,{ to_email: r.to_email, test: r.msg_test }) && !leadEvidenceEligible(db,tenantId,r.lead_id)) { stopSequenceForThread(db,tenantId,r.lead_id,'stopped','evidence_withdrawn',now); out.skipped++; continue }
@@ -438,7 +454,7 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
     if (!testFixtureSend(db,tenantId,{ to_email: s.to_email, test: s.msg_test })) { const st = domainReviewStatus(db,tenantId,s.lead_id,s.to_email); if (st !== 'ok') { if (st === 'required' || st === 'quarantined') stopSequenceForThread(db,tenantId,s.lead_id,'stopped',st === 'quarantined' ? 'lead_quarantined' : 'domain_unconfirmed',now); out.skipped++; continue } }
     if (!s.thread_id) { out.skipped++; continue } // never send a bump without a readable original thread
     if (!s.step1_sent) continue // activation lags one tick
-    if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
+    if (db.prepare("SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND lead_id = ? AND classification NOT IN ('auto','soft_bounce','bounce','bounce_review','bounce_unmatched')").get(tenantId,s.lead_id)) { stopSequenceForThread(db,tenantId,s.lead_id,'replied','existing_reply',now); continue }
     const stepRow = db.prepare("SELECT step, subject, body, approved_hash, status FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status <> 'sent' ORDER BY step LIMIT 1").get(tenantId, s.id) as { step: number; subject: string; body: string; approved_hash: string | null; status: string } | undefined
     if (!stepRow) { if (db.prepare("SELECT 1 FROM sequence_steps WHERE tenant_id = ? AND sequence_id = ? AND status <> 'sent'").get(tenantId,s.id)) continue; db.prepare("UPDATE sequences SET status = 'done' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id); continue }
     if (stepRow.status !== 'approved') continue // never jump past an in-flight or uncertain step
