@@ -1,5 +1,6 @@
-// Settings' free-trial line (#410): a fresh account on a deployment without the trial is told the trial is unavailable,
-// never that it used three; a used-up account sees its count; a network limit gives retry guidance. NOT part of
+// Settings' free-trial line (#410, #1704): a fresh account on a deployment without the trial is told the trial is unavailable,
+// never that it used three; a used-up account sees its count; a network limit gives retry guidance; the count says what was
+// really used and the plan's monthly quota is not shown beside it; no key step. NOT part of
 // `npm test`. Run:  cd web && npm run build && node test/ui/trial-status.ui.mjs   (SHOTS=<dir> saves desktop and 390px
 // screenshots). Production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call stubbed
 // in the browser with synthetic usage: no trial activation, no key, no scan.
@@ -30,18 +31,21 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 // GET /api/usage as the route builds it (app/api/usage/route.ts): a keyless account's trial block with its reason.
 const usage = trial => ({ plan: 'free', scans_used: 0, scan_limit: 50, has_key: false, billing_status: null, trial })
 const SCENES = [
-  ['fresh-unavailable', usage({ funded: false, remaining: 0, cap: 3, blocked: 'not_configured' }), 'unavailable', "Free trial scans aren't available here right now.", 'Add your AI key to scan'],
-  ['available', usage({ funded: true, remaining: 2, cap: 3, blocked: null }), 'available', '2 of 3 free trial scans left.', 'Add your AI key for the full plan'],
-  ['used-up', usage({ funded: false, remaining: 0, cap: 3, blocked: 'account_cap' }), 'exhausted', 'You have used all 3 free trial scan attempts (a failed attempt that cost something counts; one that stopped after an interruption, or at its spending limit before finding any company, does not).', 'Add your AI key to keep scanning'],
-  ['throttled', usage({ funded: false, remaining: 3, cap: 3, blocked: 'ip_throttle' }), 'throttled', 'Too many free trial scans from your network today. Try again tomorrow. You have used 0 of 3 free trial scan attempts.', 'Or add your AI key to scan now'],
+  ['fresh-unavailable', usage({ funded: false, remaining: 0, used: 0, exempt: false, cap: 3, blocked: 'not_configured' }), 'unavailable', "Free searches aren't available here right now."],
+  ['fresh', usage({ funded: true, remaining: 3, used: 0, exempt: false, cap: 3, blocked: null }), 'available', '3 free searches left.'],
+  ['available', usage({ funded: true, remaining: 2, used: 1, exempt: false, cap: 3, blocked: null }), 'available', '2 free searches left (1 used).'],
+  ['qa', usage({ funded: true, remaining: 3, used: 2, exempt: true, cap: 3, blocked: null }), 'available', 'QA account: unlimited free searches (2 used).'],
+  ['used-up', usage({ funded: false, remaining: 0, used: 3, exempt: false, cap: 3, blocked: 'account_cap' }), 'exhausted', 'You have used all 3 free search attempts (a failed attempt that cost something counts; one that stopped after an interruption, or at its spending limit before finding any company, does not).'],
+  ['throttled', usage({ funded: false, remaining: 3, used: 0, exempt: false, cap: 3, blocked: 'ip_throttle' }), 'throttled', 'Too many free searches from your network today. Try again tomorrow. You have used 0 of 3 free search attempts.'],
+  ['email-used', usage({ funded: false, remaining: 0, used: 1, exempt: false, cap: 3, blocked: 'google_required' }), 'ineligible', 'You have used 1 free search on this account. More need Google sign-in: link Google to this account (no card).'],
   // The money ceiling reached by website reads on the trial, with every scan attempt still unused: the line says
   // which allowance, that reads count toward it, and the true attempt count.
-  ['allowance', usage({ funded: false, remaining: 3, cap: 3, blocked: 'account_total_cap' }), 'exhausted', "Your free trial's spending allowance is used up (website reads on the trial count toward it). You have used 0 of 3 free trial scan attempts.", 'Add your AI key to keep scanning'],
+  ['allowance', usage({ funded: false, remaining: 3, used: 0, exempt: false, cap: 3, blocked: 'account_total_cap' }), 'exhausted', "Your free searches' spending allowance is used up (website reads on the free trial count toward it). You have used 0 of 3 free search attempts."],
 ]
 const b = await chromium.launch()
 try {
   for (const [width, height, tag] of [[1440, 900, 'desktop'], [390, 844, 'mobile']]) {
-    for (const [name, body, state, text, link] of SCENES) {
+    for (const [name, body, state, text] of SCENES) {
       const ctx = await b.newContext({ viewport: { width, height } })
       await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
       const writes = []
@@ -58,19 +62,20 @@ try {
       const line = page.getByTestId('trial-status')
       await line.waitFor({ timeout: 15000 })
       assert.equal(await line.getAttribute('data-state'), state, name)
-      assert.equal((await line.innerText()).trim(), `${text} ${link}`, name)
-      assert.equal(await line.getByRole('link', { name: link }).getAttribute('href'), '#model-key')
+      assert.equal((await line.innerText()).trim(), text, name)
+      assert.equal(await line.getByRole('link').count(), 0, `${name}: no key step under the trial line`)
+      assert.doesNotMatch(await page.getByTestId('plan-panel').innerText(), /AI key/, `${name}: no AI key on the plan panel`)
       if (name !== 'used-up' && name !== 'allowance') assert.doesNotMatch(await page.getByTestId('plan-panel').innerText(), /used up|used all/, `${name}: never "used up"`)
       if (name === 'allowance') assert.doesNotMatch(await line.innerText(), /used all|used your three/, 'the allowance line never says the attempts are used')
       if (name === 'fresh-unavailable') assert.doesNotMatch(await line.innerText(), /none|used/, 'an unavailable trial claims nothing about past use')
-      assert.match(await page.getByTestId('plan-panel').innerText(), /0 of 50 scans used this month\./, 'usage stays separate from the trial line')
+      assert.doesNotMatch(await page.getByTestId('plan-panel').innerText(), /of 50 scans used/, 'the plan quota is not shown beside the free-search count')
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `no horizontal scroll at ${width}px`)
       if (process.env.SHOTS) await page.getByTestId('plan-panel').screenshot({ path: path.join(process.env.SHOTS, `${name}-${tag}.png`) })
       assert.deepEqual(writes, [], 'reading Settings writes nothing')
       await ctx.close()
     }
   }
-  console.log('trial status UI check passed: fresh/unavailable says unavailable (no claim about past use), available counts down, used-up says all 3 attempts used, network limit says try tomorrow; desktop + 390px, no writes')
+  console.log('trial status UI check passed: fresh/unavailable says unavailable (no claim about past use), available counts down with what was used, the QA account says what it used, used-up says all 3 attempts used, network limit says try tomorrow, an email account past its first search is told what it used; no key step, no plan quota beside the count; desktop + 390px, no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

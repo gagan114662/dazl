@@ -119,10 +119,10 @@ try {
     // A funded read: the editable draft lands and is saved exactly as read (the same POST a keyed read makes).
     {
       // A funded trial read leaves the scan trial intact (reads never consume scans): the account still has its
-      // three trial searches, so the ready step must say so - not 'Add your AI key to start'.
+      // three trial searches, so the ready step must say so, in the shared count (#1704) - not a key step.
       const { ctx, page, writes } = await open(width, height, { status: 200, body: FUNDED }, { plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3, blocked: null } })
       await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
-      assert.match(await page.getByTestId('ready-step').innerText(), /3 free searches to start/, 'funded: the intact scan trial heads the ready step')
+      assert.match(await page.getByTestId('ready-step').innerText(), /3 free searches left/, 'funded: the intact scan trial heads the ready step')
       assert.ok(writes.includes('POST /api/settings/profile'), 'the funded draft is saved like a keyed read')
       if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `funded-${tag}.png`), fullPage: true })
       await ctx.close()
@@ -133,7 +133,8 @@ try {
       const { ctx, page } = await open(width, height, { status: 200, body: FUNDED }, { plan: 'free', scans_used: 3, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 0, cap: 3, blocked: null } })
       await page.getByTestId('ready-step').waitFor({ timeout: 15000 })
       const plan = await page.getByTestId('ready-plan').innerText()
-      assert.match(plan, /Add your AI key to start/, 'keyless, trial spent: the heading says so')
+      assert.match(plan, /Free searches can't run right now\./, 'keyless, trial spent: the heading says so, in the shared trial line (#1704)')
+      assert.doesNotMatch(plan, /free searches left/, 'keyless, trial spent: no count claimed')
       assert.match(plan, /Searches run on Claude, with your own Anthropic key\./, 'keyless, trial spent: the key form is up front, before any commitment')
       assert.equal(await page.getByTestId('ready-cta').count(), 0, 'keyless, trial spent: no bare Find-my-first-leads button')
       assert.equal(await page.getByTestId('first-play').count(), 3, 'three suggestion chips render')
@@ -161,7 +162,7 @@ try {
       // Recovery: the retry re-checks the allowance and the start paths come back.
       await page.getByTestId('usage-retry').click()
       await page.getByTestId('ready-cta').waitFor({ timeout: 15000 })
-      assert.match(await page.getByTestId('ready-plan').innerText(), /3 free searches to start/, 'usage recovered: the real pool heads the ready step')
+      assert.match(await page.getByTestId('ready-plan').innerText(), /3 free searches left/, 'usage recovered: the real pool heads the ready step')
       assert.ok(!(await page.getByTestId('first-play').first().isDisabled()), 'usage recovered: chips re-enabled')
       await ctx.close()
     }
