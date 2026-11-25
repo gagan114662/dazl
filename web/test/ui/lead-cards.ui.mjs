@@ -9,7 +9,7 @@
 //      conflicting websites, restricted inbox, past-title people; only cited/own-site/user-checked reads "Confirmed";
 //   2. Approve on an eligible lead sends one POST /api/outreach { lead_id } per attempt (the existing draft action),
 //      even on a double click against a slow server; after a failure it can be retried; nothing else is written;
-//   3. Approve is disabled with the reason on leads the existing gates hold (no email, window, timing);
+//   3. Held leads omit Approve and show the reason (no email, window, timing);
 //   4. Reject opens an optional-reason step (presets, free text, Cancel/Escape writes nothing); Confirm reject sends the
 //      existing quarantine POST with "Rejected: <reason>" (or just "Rejected" with none); the card leaves To decide, the
 //      result line says so and the card shows its reason under Rejected; Undo (on the card or the result) sends its DELETE;
@@ -104,7 +104,8 @@ try {
   assert.doesNotMatch(await pico.textContent(), /Dana Smith/)
   assert.equal(await statusOf('Pico Dental').isVisible(), true)
   assert.equal(await statusOf('Pico Dental').textContent(), 'Unconfirmed - name match only: name-guessed.example: found by name search, not linked from the source. No buyer named on the company\'s own site.')
-  assert.equal(await pico.getByRole('button', { name: 'Approve' }).isDisabled(), true)
+  assert.equal(await pico.getByRole('button', { name: 'Approve', exact: true }).count(), 0)
+  assert.equal(await pico.getByTestId('approve-hold').isVisible(), true)
   assert.match(await statusOf('Twin Dental').textContent(), /^Unconfirmed - name match only: several websites recorded \(a-dental\.example, b-dental\.example\); which one is theirs is not settled\./)
   assert.match(await statusOf('Quiet Dental').textContent(), /Restricted inbox \(privacy\): not a sales contact\./)
   assert.doesNotMatch(await cards.filter({ hasText: 'Former Dental' }).textContent(), /Pat Lee/)
@@ -140,12 +141,12 @@ try {
   assert.equal(await bright.getByRole('link', { name: 'news.example' }).getAttribute('href'), 'https://www.news.example/aaaa')
   assert.equal(await page.getByText('Reported event: Bright Dental opened a second office').isVisible(), false, 'Details are closed by default')
 
-  // Held leads: Approve disabled, with the reason on the card.
+  // Held leads omit Approve and explain the hold on the card.
   const lakeside = cards.filter({ hasText: 'Lakeside Smiles' })
-  assert.equal(await lakeside.getByRole('button', { name: 'Approve' }).isDisabled(), true)
+  assert.equal(await lakeside.getByRole('button', { name: 'Approve', exact: true }).count(), 0)
   assert.match(await lakeside.textContent(), /No contact found yet[\s\S]*Can't approve yet\. No published email address to draft to yet/)
   const old = cards.filter({ hasText: 'Old Town Dental' })
-  assert.equal(await old.getByRole('button', { name: 'Approve' }).isDisabled(), true)
+  assert.equal(await old.getByRole('button', { name: 'Approve', exact: true }).count(), 0)
   assert.match(await old.textContent(), /Can't approve yet\. Outside the time window/)
 
   assert.deepEqual(writes, [], 'nothing written by loading the page')
