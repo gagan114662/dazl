@@ -7,7 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
-import { addLaunchRegionUsage, allowsLaunchLead, launchRegionMessage, LAUNCH_REGION_PROMPT, prepareLaunchRegion } from './launch-region.ts'
+import { addLaunchRegionUsage, allowsLaunchLead, launchRegionMessage, launchRegionSystemPrompt, prepareLaunchRegion } from './launch-region.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
@@ -158,7 +158,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       // Caching is what keeps this loop affordable: every search adds its results to the prompt, and without a cache point the whole
       // growing prompt is billed at full price on each step (measured: US$2.16 a prompt without it, US$0.41 with it).
       cache_control: { type: 'ephemeral' },
-      system: [{ type: 'text', text: `${SYSTEM}\n${LAUNCH_REGION_PROMPT}`, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: launchRegionSystemPrompt(SYSTEM), cache_control: { type: 'ephemeral' } }],
       tools: [
         ...(reservation.allowance > 0 ? [{ type: 'web_search_20260209' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },

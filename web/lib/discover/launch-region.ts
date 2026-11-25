@@ -1,6 +1,7 @@
 // Launch coverage is decided from Claude's typed request plan before any web tools are offered.
 import type Anthropic from '@anthropic-ai/sdk'
 import { completionCost } from '../llm/spend-guard.ts'
+import { countriesIn } from '../scan/countries.ts'
 import { groundedIn, parsePlan, planPrompt, PLAN_MAX_TOKENS, type PlanPlace } from '../scan/request-plan.ts'
 import type { DiscoverInput, DiscoverResult, DiscoverUsage, DiscoveredLead } from './agent.ts'
 
@@ -12,7 +13,18 @@ const COVERAGE_COPY = 'dazl covers the US and Canada for now. More regions soon.
 const UNCONFIRMED_COPY = 'dazl could not confirm the search location. Try again with a more specific location.'
 const ZERO_USAGE: DiscoverUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0, usd: 0 }
 
-export const LAUNCH_REGION_PROMPT = 'Search only for targets in the US and Canada, including when the request leaves location open. Respect confirmed target locations. Confirm the relevant company or role location from the source before looking for a person or email. Add a "country" field to each returned lead with its ISO 3166-1 alpha-2 code, or null when the source does not establish it.'
+const LAUNCH_REGION_PROMPT = 'Search only for targets in the US and Canada, including when the request leaves location open. Respect confirmed target locations. Confirm the relevant company or role location from the source before looking for a person or email. Give each returned lead a "country" field with its ISO 3166-1 alpha-2 code, or null when the source does not establish it.'
+
+export function launchRegionSystemPrompt(system: string): string {
+  return `${system.replace('{"leads":[{"company":', '{"leads":[{"country":null,"company":')}\n${LAUNCH_REGION_PROMPT}`
+}
+
+function outsideLaunchCoverage(place: PlanPlace): boolean {
+  if (!place.country || !LAUNCH_COUNTRIES.has(place.country)) return true
+  // The planner can group multiple locations under one country code. Check the text of that place as well.
+  const named = [place.text, ...place.text.split(/\s+(?:and|or)\s+|[&;/]/i)].flatMap(countriesIn)
+  return named.some(country => !LAUNCH_COUNTRIES.has(country))
+}
 
 type LaunchRegion = { ok: true; places: PlanPlace[]; usage: DiscoverUsage } | { ok: false; result: DiscoverResult }
 
@@ -53,7 +65,7 @@ export async function prepareLaunchRegion(client: Anthropic, input: DiscoverInpu
   if (!plan || !plan.places.every(place => groundedIn(ground, place))) {
     return { ok: false, result: { leads: [], seen: [], model: reply.model, usage: pricedUsage, stop: UNCONFIRMED, note: UNCONFIRMED_COPY } }
   }
-  if (plan.places.some(place => !place.country || !LAUNCH_COUNTRIES.has(place.country))) {
+  if (plan.places.some(outsideLaunchCoverage)) {
     return { ok: false, result: { leads: [], seen: [], model: reply.model, usage: pricedUsage, stop: UNSUPPORTED, note: COVERAGE_COPY } }
   }
   return { ok: true, places: plan.places, usage: pricedUsage }

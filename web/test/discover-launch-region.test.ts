@@ -36,6 +36,7 @@ function provider(places: Place[], leads: ReturnType<typeof candidate>[] = []) {
 for (const [target, places] of [
   ['the UK', [{ text: 'UK', city: null, region: null, country: 'GB' }]],
   ['the US and UK', [{ text: 'US', city: null, region: null, country: 'US' }, { text: 'UK', city: null, region: null, country: 'GB' }]],
+  ['the UK and US in one place', [{ text: 'UK and US', city: null, region: null, country: 'US' }]],
   ['Europe', [{ text: 'Europe', city: null, region: null, country: null }]],
 ] as const) {
   test(`the Claude plan stops a request for ${target} before web tools are offered`, async () => {
@@ -64,6 +65,10 @@ for (const [target, country] of [['US', 'US'], ['Canada', 'CA'], ['', null]] as 
     assert.equal(requests[0].tools, undefined)
     assert.match(JSON.stringify(requests[1].tools), /web_search/)
     assert.match(JSON.stringify(requests[1].system), /Search only for targets in the US and Canada/)
+    const system = (requests[1].system as Array<{ text: string }>)[0].text
+    const example = /<json>(\{.*\})<\/json>/.exec(system)?.[1]
+    assert.ok(example)
+    assert.ok(Object.hasOwn(JSON.parse(example).leads[0], 'country'))
     if (country) assert.match(JSON.stringify(requests[1].messages), /Confirmed target locations/)
     const inScope = country === 'US' ? ['American'] : country === 'CA' ? ['Canadian'] : ['American', 'Canadian']
     assert.deepEqual(result.leads.map(lead => lead.company), inScope)
