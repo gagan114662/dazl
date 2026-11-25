@@ -11,9 +11,10 @@ const layouts = ['sign-in', 'sign-up'].map((name) => ({
   src: readFileSync(new URL(`../app/${name}/layout.tsx`, import.meta.url), 'utf8'),
 }))
 
-// The one element each layout renders around {children}.
+// The element each layout renders around {children}. Later work may put siblings beside the page inside this element
+// (the site footer, #1781), so only the opening tag and {children} are matched.
 function wrapperTokens(src: string): string[] {
-  const m = /<div className="([^"]*)">\s*\{children\}\s*<\/div>/.exec(src)
+  const m = /<div className="([^"]*)">\s*\{children\}/.exec(src)
   assert.ok(m, 'the layout wraps {children} in a single <div>')
   return m![1].split(/\s+/).filter(Boolean)
 }
