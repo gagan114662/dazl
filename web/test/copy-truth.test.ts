@@ -26,21 +26,22 @@ test('copy matches behaviour: Autopilot is not offered in the beta (#1428), no "
 
 test('homepage claims match behaviour (Instinct #326, #1042, #1428): example demo labelled, first play daily, unconfirmed leads set aside not dropped, free beta only', () => {
   const page = read('app/page.tsx'); const demo = read('app/landing-demo.tsx')
-  // #1042 (decision 2026-11-12): the first play's automatic repeat runs every day (lib/play-repeat.ts, lib/play-cadence.ts);
-  // a play saved by hand still runs weekly. So the homepage may say "every day" only about the first Play.
+  // #1042 (decision 2026-11-12): the first play's automatic repeat code runs every day (lib/play-repeat.ts,
+  // lib/play-cadence.ts); a play saved by hand still runs weekly. That lib behaviour is unchanged here.
   assert.match(read('lib/play-cadence.ts'), /DAY_S = 86400/)
   assert.match(read('lib/play-cadence.ts'), /watchIntervalS = \(auto: boolean\): number => auto \? DAY_S : WEEK_S/)
   assert.match(read('lib/play-repeat.ts'), /REPEAT_INTERVAL_S = DAY_S/)
-  assert.match(page, /Your first Play runs again every day/)
-  assert.equal(page.match(/\bdaily\b|every day/gi)?.length, 2, 'the step title and its first-Play sentence only')
-  // #1428: the demo plays a first run, whose Play repeats daily. It said "Live · runs weekly", which contradicted the step above it.
-  assert.doesNotMatch(demo, /weekly/i)
-  assert.match(demo, /Live · runs every day/)
-  // #1428: the step says what a Play is.
-  assert.match(page, /saves your first search as a Play: a search it keeps running for you/)
-  // The demo's people and companies are invented: labelled on screen and for screen readers.
-  assert.match(demo, /data-testid="demo-label">Illustrative example · made-up companies and people</)
-  assert.match(demo, /'Illustrative example of a dazl run, with made-up companies and people/)
+  // #1713 (Quest on prod 2026-11-25): new plays show "Ran once, does not repeat", so the landing page must not
+  // promise a re-run cadence at all; the automatic repeat feature stays with #1593.
+  assert.doesNotMatch(page, /\bdaily\b|every day/i)
+  assert.doesNotMatch(demo, /\bdaily\b|every day|weekly/i)
+  // #1705: the step says what a Play is, without a repeat promise; the demo's Play card says the search is saved.
+  assert.match(page, /saves your first search as a Play you can run again whenever you want fresh leads/)
+  assert.match(demo, /Saved as a Play/)
+  // The demo's people and companies are invented: labelled an example on screen and for screen readers (#1705:
+  // plainly "Illustrative example", without the self-undermining "made-up" wording; Quest: label it "Example").
+  assert.match(demo, /data-testid="demo-label">Illustrative example</)
+  assert.match(demo, /'Illustrative example of a dazl run/)
   // The example leads are made up until real ones from a saved scan are swapped in; until then the label must show.
   const ex = read('lib/landing-examples.ts')
   assert.match(ex, /real: false/)
@@ -91,10 +92,10 @@ test('homepage evidence and coverage claims match what a scan returns (Instinct 
   const page = read('app/page.tsx'), demo = read('app/landing-demo.tsx')
   // Undated, unconfirmed or blocked candidates stay held for review: only ready leads carry the checked evidence.
   assert.doesNotMatch(page, /Every lead (comes|shows)|Each lead comes|Evidence for every lead/)
-  // #1428: the subhead is the owner's sentence; what is missing or unconfirmed is said in the proof strip in plain words
-  // (it used to be "Leads marked ready come with the quoted line" / "stay held for your review, with the reason").
-  assert.match(page, /Paste your website\. dazl finds businesses that need what you sell right now, shows you the proof, and drafts the email from your Gmail\./)
-  assert.match(page, /Proof behind every lead, not a database dump/)
+  // #1705: the subhead is the single first step's pitch (the app's first screen asks "Who do you want to reach?").
+  // What is missing or unconfirmed is said in the proof strip in plain words.
+  assert.match(page, /dazl finds buyers showing that intent right now, verifies each lead against its source, and drafts the email from your Gmail\./)
+  assert.match(page, /Each ready lead shows the exact line from its source page, with the link\./)
   assert.match(page, /Anything missing, such as a date or a person, is said on the lead\./)
   // Any business is welcome; results are not promised for every market.
   assert.doesNotMatch(page, /works out who buys from you\./)
