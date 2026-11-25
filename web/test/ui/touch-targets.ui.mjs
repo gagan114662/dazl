@@ -7,6 +7,8 @@
 // under the network fence, off-host browser requests aborted. Leads and Inbox get synthetic /api data from in-browser
 // stubs so their controls render; nothing is scanned, sent or billed.
 // Exit 1 on an undersized control. Missing playwright/build: NOT RUN, exit 2.
+import { mkdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { loadPlaywright, startServer } from '../smoke/harness.mjs'
 
 const MIN = 44
@@ -115,6 +117,22 @@ try {
     await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))
     const path = route.split('?')[0]
     try { await page.locator(MARKERS[path]).first().waitFor({ state: 'visible', timeout: 15000 }) } catch { failures.push(`${path}: page content (${MARKERS[path]}) never rendered, so its own controls were not measured`); await c.close(); continue }
+    // #1771: <main> is hidden while the phone menu is open, so the page's own controls are measured FIRST with the menu closed,
+    // then the nav rows with it open (the shared header is measured in both states).
+    let checked = 0, excepted = 0
+    const checkAll = async list => {
+    for (const t of list) {
+      const cover = await page.evaluate(OCCLUDED, t.id)
+      if (cover) failures.push(`${path}: ${t.tag} "${t.name}" is partly covered: ${cover}`)
+      if (t.w >= MIN && t.h >= MIN) { checked++; continue }
+      if (t.inline) { excepted++; console.log(`     exception INLINE ${path} ${t.tag} "${t.name}" ${t.w}x${t.h} (link inside sentence text)`); continue }
+      const named = NAMED.find(n => n.page === path && n.name.test(t.name))
+      if (named) { excepted++; console.log(`     exception NAMED ${path} ${t.tag} "${t.name}" ${t.w}x${t.h} (${named.reason})`); continue }
+      failures.push(`${path}: ${t.tag} "${t.name}" is ${t.w}x${t.h}, under ${MIN}x${MIN}`)
+    }
+    }
+    const got = [...await page.evaluate(MEASURE)]
+    await checkAll(got)
     // The app's nav lives behind the Menu label below md (hidden until the checkbox is on): open it the way a user does, so its
     // rows are measured too (the closed-menu run missed 36px rows, #672 live review). Plain /app is the first-run onboarding
     // screen, a fixed full-screen overlay that legitimately covers the shell, so it has no Menu to open; the returning-account
@@ -125,19 +143,103 @@ try {
         await page.locator('nav[aria-label="Main"] a').first().waitFor({ state: 'visible', timeout: 15000 })
       } catch (e) { failures.push(`${path}: the Menu could not be opened by a click on its visible label, so the nav rows were not measured (${String(e.message).split('\n')[0].slice(0, 160)})`) }
     }
-    const got = await page.evaluate(MEASURE)
-    let checked = 0, excepted = 0
-    for (const t of got) {
-      const cover = await page.evaluate(OCCLUDED, t.id)
-      if (cover) failures.push(`${path}: ${t.tag} "${t.name}" is partly covered: ${cover}`)
-      if (t.w >= MIN && t.h >= MIN) { checked++; continue }
-      if (t.inline) { excepted++; console.log(`     exception INLINE ${path} ${t.tag} "${t.name}" ${t.w}x${t.h} (link inside sentence text)`); continue }
-      const named = NAMED.find(n => n.page === path && n.name.test(t.name))
-      if (named) { excepted++; console.log(`     exception NAMED ${path} ${t.tag} "${t.name}" ${t.w}x${t.h} (${named.reason})`); continue }
-      failures.push(`${path}: ${t.tag} "${t.name}" is ${t.w}x${t.h}, under ${MIN}x${MIN}`)
-    }
+    { const open = await page.evaluate(MEASURE); got.push(...open); await checkAll(open) }
     console.log(`${failures.some(f => f.startsWith(path + ':')) ? 'FAIL' : 'ok  '} ${path}: ${got.length} control(s), ${checked} >= ${MIN}px, ${excepted} listed exception(s)`)
     if (got.length === 0) failures.push(`${path}: no controls measured (page did not render?)`)
+    await c.close()
+  }
+  // #1771: the open phone menu is the whole page body with ONE scroll. Measured signed in at 390px on a tall and a short phone:
+  // while it is open <main> is hidden, the document does not scroll, exactly one element scrolls (the menu itself), Settings and
+  // Sign out can be brought into view inside the viewport by scrolling it, and the Menu label still closes it.
+  for (const height of [844, 500]) {
+    const c = await browser.newContext({ ...VIEWPORT, viewport: { width: 390, height } })
+    await c.addCookies([{ name: 'dazl_session', value: srv.token, url: srv.base }])
+    await c.route('**/*', r => new URL(r.request().url()).origin === srv.base ? r.continue() : r.abort())
+    const page = await c.newPage()
+    await stubApis(page, '/app/settings')
+    const tag = `menu@390x${height}`
+    try {
+      await page.goto(srv.base + '/app/settings', { waitUntil: 'networkidle' })
+      await page.waitForTimeout(800)
+      await page.locator(MARKERS['/app/settings']).first().waitFor({ state: 'visible', timeout: 15000 })
+      await page.locator('label[for="navtoggle"]').click({ timeout: 15000 })
+      await page.locator('nav[aria-label="Main"] a').first().waitFor({ state: 'visible', timeout: 15000 })
+      // Pixels of the open menu for the reviewer (CI keeps web/preview/menu-1771/*.png when the workflow uploads it); never decides pass or fail.
+      try { mkdirSync(new URL('../../preview/menu-1771/', import.meta.url), { recursive: true }); await page.screenshot({ path: fileURLToPath(new URL(`../../preview/menu-1771/menu-open-390x${height}.png`, import.meta.url)) }) } catch (e) { console.log(`     (no screenshot saved for ${tag}: ${String(e.message).split('\n')[0].slice(0, 120)})`) }
+      const m = await page.evaluate(() => {
+        const vis = el => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0 }
+        const scrollers = [...document.querySelectorAll('body *')].filter(el => vis(el) && /(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight + 1).map(el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : ''))
+        const doc = document.scrollingElement
+        const aside = document.querySelector('aside'), main = document.querySelector('#main')
+        const ar = aside.getBoundingClientRect()
+        const header = document.querySelector('header')
+        return { scrollers, docOverflow: doc.scrollHeight - innerHeight, mainShown: vis(main), asideTop: Math.round(ar.top), asideBottom: Math.round(ar.bottom), headerBottom: Math.round(header.getBoundingClientRect().bottom), vh: innerHeight }
+      })
+      if (m.mainShown) failures.push(`${tag}: <main> is still shown behind the open menu`)
+      if (m.docOverflow > 1) failures.push(`${tag}: the page itself scrolls (${m.docOverflow}px past the viewport) while the menu is open`)
+      if (m.asideBottom > m.vh + 1) failures.push(`${tag}: the menu runs ${m.asideBottom - m.vh}px past the bottom of the screen`)
+      if (m.asideTop < m.headerBottom - 1) failures.push(`${tag}: the menu covers the header (top ${m.asideTop} < header bottom ${m.headerBottom}), so the Menu label could not close it`)
+      if (m.scrollers.length > 1) failures.push(`${tag}: more than one scroller while open: ${m.scrollers.join(', ')}`)
+      for (const [name, loc] of [['Settings', page.locator('aside a', { hasText: /^Settings$/ }).first()], ['Sign out', page.locator('aside button', { hasText: /^Sign out$/ }).first()]]) {
+        await loc.scrollIntoViewIfNeeded({ timeout: 5000 })
+        const box = await loc.boundingBox()
+        const inView = box && box.y >= 0 && box.y + box.height <= height + 1 && box.y >= m.headerBottom - 1
+        if (!inView) failures.push(`${tag}: "${name}" cannot be brought into view by scrolling the menu (${JSON.stringify(box)})`)
+        else {
+          const top = await loc.evaluate(el => { const r = el.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return !!hit && (el === hit || el.contains(hit) || hit.contains(el)) })
+          if (!top) failures.push(`${tag}: "${name}" is in view but covered by another element`)
+        }
+      }
+      await page.locator('label[for="navtoggle"]').click({ timeout: 5000 })
+      const closed = await page.evaluate(() => getComputedStyle(document.querySelector('aside')).display === 'none')
+      const mainBack = await page.evaluate(() => getComputedStyle(document.querySelector('#main')).display !== 'none')
+      if (!closed || !mainBack) failures.push(`${tag}: the Menu label did not close the menu and bring the page back`)
+      // Review fix: "Skip to content" with the menu open must close it and land focus on the visible <main>.
+      await page.locator('label[for="navtoggle"]').click({ timeout: 5000 })
+      await page.locator('a.skip-link').focus()
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(300)
+      const skip = await page.evaluate(() => ({ checked: document.getElementById('navtoggle').checked, shown: getComputedStyle(document.querySelector('#main')).display !== 'none', focused: document.activeElement?.id === 'main' }))
+      if (skip.checked || !skip.shown || !skip.focused) failures.push(`${tag}: "Skip to content" with the menu open did not reach <main> (menu still open: ${skip.checked}, main shown: ${skip.shown}, main focused: ${skip.focused})`)
+      console.log(`${failures.some(f => f.startsWith(tag)) ? 'FAIL' : 'ok  '} ${tag}: scrollers=${m.scrollers.join('+') || 'none'}, aside ${m.asideTop}-${m.asideBottom} of ${m.vh}, doc overflow ${m.docOverflow}px`)
+    } catch (e) { failures.push(`${tag}: could not be measured (${String(e.message).split('\n')[0].slice(0, 200)})`) }
+    await c.close()
+  }
+  // Review (#1774, Qodo): entering the app by CLIENT navigation (sign-in does router.push('/app'), no document load) must keep the skip link
+  // working with the phone menu open. An inline <script> in the layout does not run on that path; MainFocus (a client component) does.
+  // Isolated: the harness's seeded session, with the sign-in POST answered in the browser (no real credentials).
+  {
+    const tag = 'menu-skip@client-nav'
+    const c = await browser.newContext({ ...VIEWPORT, viewport: { width: 390, height: 844 } })
+    await c.route('**/*', r => new URL(r.request().url()).origin === srv.base ? r.continue() : r.abort())
+    const page = await c.newPage()
+    // A returning account (as for /app?known=1 above): the business is known, so the app opens on Home, not on the first-run overlay, which covers the header and its Menu label.
+    await stubApis(page, '/app?known=1')
+    // The seeded user has no real password, so the answer to the sign-in POST is made here: the session cookie the real route would set, then {ok}.
+    await page.route('**/api/auth/signin', async r => { await c.addCookies([{ name: 'dazl_session', value: srv.token, url: srv.base }]); await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }) })
+    try {
+      await page.goto(srv.base + '/sign-in', { waitUntil: 'networkidle' })
+      await page.evaluate(() => { window.__noDocumentLoad = true })
+      await page.locator('input[name="email"]').fill('smoke@example.test')
+      await page.locator('input[name="password"]').fill('not-a-real-password')
+      await page.locator('form button[type="submit"]').first().click()
+      await page.waitForURL(/\/app(\?|#|$)/, { timeout: 20000 })
+      await page.locator('label[for="navtoggle"]').waitFor({ state: 'visible', timeout: 20000 })
+      const clientNav = await page.evaluate(() => window.__noDocumentLoad === true)
+      if (!clientNav) failures.push(`${tag}: the sign-in reached /app with a full document load, so the client-navigation path was not exercised`)
+      await page.waitForTimeout(800)
+      await page.locator('label[for="navtoggle"]').click({ timeout: 15000 })
+      await page.locator('nav[aria-label="Main"] a').first().waitFor({ state: 'visible', timeout: 15000 })
+      await page.locator('a.skip-link').focus()
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(300)
+      const skip = await page.evaluate(() => ({ checked: document.getElementById('navtoggle').checked, shown: getComputedStyle(document.querySelector('#main')).display !== 'none', focused: document.activeElement?.id === 'main' }))
+      if (skip.checked || !skip.shown || !skip.focused) failures.push(`${tag}: after a client-side sign-in, "Skip to content" with the menu open did not reach <main> (menu still open: ${skip.checked}, main shown: ${skip.shown}, main focused: ${skip.focused})`)
+      console.log(`${failures.some(f => f.startsWith(tag)) ? 'FAIL' : 'ok  '} ${tag}: client navigation=${clientNav}, menu closed=${!skip.checked}, main shown=${skip.shown}, main focused=${skip.focused}`)
+    } catch (e) {
+      failures.push(`${tag}: could not be measured (${String(e.message).split('\n')[0].slice(0, 200)})`)
+      try { await page.screenshot({ path: fileURLToPath(new URL('../../preview/menu-1771/client-nav-failure.png', import.meta.url)) }) } catch { /* diagnostics only */ }
+    }
     await c.close()
   }
 } finally {
@@ -145,7 +247,7 @@ try {
   srv.stop()
 }
 if (failures.length) { console.log(`\nFAIL: ${failures.length} undersized control(s) at 390px:\n  ${failures.join('\n  ')}`); process.exit(1) }
-console.log(`OK: every measured control on ${PAGES.length} pages is at least ${MIN}x${MIN} CSS px at 390px, or a listed exception`)
+console.log(`OK: every measured control on ${PAGES.length} pages is at least ${MIN}x${MIN} CSS px at 390px, or a listed exception; the open phone menu is one scroll (tall and short phone)`)
 
 // Synthetic /api answers so Leads and Inbox render their real controls (same shapes as test/ui/frontend-baseline.ui.mjs).
 async function stubApis(page, route) {

@@ -37,7 +37,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/app" className="inline-flex items-center justify-center min-h-11 min-w-11 text-lg font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></Link>
         <label htmlFor={NAV_TOGGLE_ID} className="cursor-pointer inline-flex items-center min-h-11 text-sm font-semibold border border-[var(--line-2)] rounded-full px-4">Menu</label>
       </header>
-      <aside className="hidden peer-checked:flex md:flex md:w-60 shrink-0 max-md:max-h-[55svh] max-md:overflow-auto border-b md:border-b-0 md:border-r border-[var(--line)] bg-[var(--canvas)] flex-col py-4 md:py-6 px-3 md:overflow-auto">
+      <aside className="hidden peer-checked:flex md:flex md:w-60 shrink-0 max-md:flex-1 max-md:min-h-0 max-md:overflow-y-auto border-b md:border-b-0 md:border-r border-[var(--line)] bg-[var(--canvas)] flex-col py-4 md:py-6 px-3 md:overflow-auto">
         <Link href="/app" className="hidden md:block text-xl font-bold tracking-tight mb-6 px-3">dazl<span className="text-[var(--pink)]">.</span></Link>
         <Suspense fallback={null}><Nav /></Suspense>
         <div className="hidden md:block flex-1" />
@@ -48,7 +48,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           landed on <main> when the page was tall enough for Chromium to treat the scroller as focusable (Settings);
           Home and Inbox stayed on BODY. Its visible focus ring is #main:focus-visible in globals.css. MainFocus keeps
           that focus when the page swaps its loading view for the loaded one, or hydration re-creates the subtree. */}
-      <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto">
+      <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto max-md:peer-checked:hidden">
         <Suspense fallback={
           <div id={OPENING_ID} className="p-4 sm:p-8" role="status">
             <p className="text-sm font-medium">Opening your workspace…</p>

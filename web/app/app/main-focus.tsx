@@ -1,6 +1,7 @@
 'use client'
 import { useEffect } from 'react'
 import { shouldRestoreMainFocus } from '@/lib/main-focus'
+import { closeMobileMenu } from './nav-toggle'
 
 // #673: keeps keyboard focus on the /app layout's <main> (the skip link target) once the "Skip to content" link (or anything
 // inside <main>) had it. Focus otherwise falls back to BODY when React swaps the focused node: a loading view
@@ -26,6 +27,9 @@ export default function MainFocus() {
     // Enter on the skip link: fragment navigation focuses <main> natively (tabIndex -1); make sure it stuck.
     const onClick = (e: MouseEvent) => {
       if (!(e.target instanceof Element) || !e.target.closest('a.skip-link')) return
+      // #1771: <main> is hidden while the phone menu is open; close it first so the jump and the focus below land on visible content.
+      // Here (a client component, mounted on every entry to the app, including router.push after sign-in), not in an inline script, which Next does not run on client navigation.
+      closeMobileMenu(document)
       requestAnimationFrame(() => { const m = main(); if (m && document.activeElement !== m) m.focus(); last = m; pointerSince = false })
     }
     const mo = new MutationObserver(restore)
