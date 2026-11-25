@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { verifyResult, verifyResultCopy, type VerifyResult } from './result'
+import { ResendConfirmation } from '../resend-confirmation'
 
 // Opened from the verification email. The token is in the #fragment, so it never reaches a server log.
 export default function Verify() {
@@ -18,9 +19,18 @@ export default function Verify() {
         <h1 className="text-2xl font-medium mb-3">Confirm your email</h1>
         {state === 'working' && <p className="text-[#555] text-sm">Confirming...</p>}
         {state === 'done' && <p className="text-[#555] text-sm">Your email is confirmed. <a className="underline underline-offset-2" href="/sign-in">Sign in to dazl</a></p>}
-        {(state === 'unusable' || state === 'uncertain' || state === 'limited') &&
-          <p className="text-[#555] text-sm" role="status">{verifyResultCopy[state]} <a className="underline underline-offset-2" href="/sign-in">Sign in</a> to check whether your email is already confirmed. If it’s still pending, follow the sign-in instructions.</p>}
-        {state === 'none' && <p className="text-[#555] text-sm">Open the link from the email we sent you.</p>}
+        {(state === 'unusable' || state === 'uncertain' || state === 'limited') && (
+          <>
+            <p className="text-[#555] text-sm" role="status">{verifyResultCopy[state]} <a className="underline underline-offset-2" href="/sign-in">Sign in</a> to check whether your email is already confirmed. If it’s still pending, follow the sign-in instructions.</p>
+            <ResendConfirmation />
+          </>
+        )}
+        {state === 'none' && (
+          <>
+            <p className="text-[#555] text-sm">Open the link from the email we sent you.</p>
+            <ResendConfirmation />
+          </>
+        )}
       </div>
     </main>
   )
