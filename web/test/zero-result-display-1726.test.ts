@@ -47,8 +47,8 @@ function renderHelp(record: typeof scan, withAction = true) {
 test('#1726: a completed zero-lead scan displays the helper reason, next step and optional action', () => {
   const { html, calls } = renderHelp(scan)
   assert.deepEqual(calls, [{
-    stop: 'end_turn', query: scan.query, offer: null, searchesUsed: 4,
-    searchAllowance: 0, candidates: 3, rejected: 3,
+    stop: null, query: scan.query, offer: null, searchesUsed: 4,
+    searchAllowance: Infinity, candidates: 3, rejected: 3,
   }])
   assert.match(html, /data-testid="zero-result-reason"/)
   assert.ok(html.includes(reason))
@@ -57,6 +57,14 @@ test('#1726: a completed zero-lead scan displays the helper reason, next step an
   assert.ok(html.includes(action.label))
   assert.doesNotMatch(renderHelp(scan, false).html, /<a\b/)
   assert.match(source.text, /renderZeroResultReason\(zeroResultScan\)/)
+})
+
+test('#1726: missing telemetry cannot look like an exhausted allowance', () => {
+  const { calls } = renderHelp({ ...scan, run_report: [] })
+  assert.deepEqual(calls, [{
+    stop: null, query: scan.query, offer: null, searchesUsed: 0,
+    searchAllowance: Infinity, candidates: 3, rejected: 3,
+  }])
 })
 
 test('#1726: a working, failed or nonzero scan does not call the helper or show the explanation', () => {

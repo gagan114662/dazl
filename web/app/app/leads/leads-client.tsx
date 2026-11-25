@@ -218,13 +218,14 @@ function renderZeroResultReason(scan: ZeroResultScan | null) {
   const report = scan.run_report?.at(-1)
   const discover = report?.discover
   const nativeSearch = report?.native_web_search
+  const discoveryStop = discover?.stop === 'end_turn' ? null : discover?.stop
   const { reason, nextStep, action } = zeroResultReason({
-    stop: discover?.stop ?? report?.stop?.code ?? scan.error ?? null,
+    stop: discoveryStop ?? report?.stop?.code ?? scan.error ?? null,
     query: scan.query ?? '',
     offer: statedOffer(scan.query),
     searchesUsed: discover?.searches ?? nativeSearch?.searches ?? 0,
-    // The discovery report does not record its allowance. Zero passes no allowance evidence to the helper.
-    searchAllowance: discover ? 0 : nativeSearch?.max_searches ?? 0,
+    // Only native search reports record a numeric allowance. An unknown limit cannot establish exhaustion.
+    searchAllowance: discover ? Infinity : nativeSearch?.max_searches ?? Infinity,
     candidates: scan.quality?.candidates ?? discover?.returned ?? 0,
     rejected: scan.quality?.dropped ?? 0,
   })
