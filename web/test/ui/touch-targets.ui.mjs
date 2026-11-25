@@ -194,6 +194,13 @@ try {
       const closed = await page.evaluate(() => getComputedStyle(document.querySelector('aside')).display === 'none')
       const mainBack = await page.evaluate(() => getComputedStyle(document.querySelector('#main')).display !== 'none')
       if (!closed || !mainBack) failures.push(`${tag}: the Menu label did not close the menu and bring the page back`)
+      // Review fix: "Skip to content" with the menu open must close it and land focus on the visible <main>.
+      await page.locator('label[for="navtoggle"]').click({ timeout: 5000 })
+      await page.locator('a.skip-link').focus()
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(300)
+      const skip = await page.evaluate(() => ({ checked: document.getElementById('navtoggle').checked, shown: getComputedStyle(document.querySelector('#main')).display !== 'none', focused: document.activeElement?.id === 'main' }))
+      if (skip.checked || !skip.shown || !skip.focused) failures.push(`${tag}: "Skip to content" with the menu open did not reach <main> (menu still open: ${skip.checked}, main shown: ${skip.shown}, main focused: ${skip.focused})`)
       console.log(`${failures.some(f => f.startsWith(tag)) ? 'FAIL' : 'ok  '} ${tag}: scrollers=${m.scrollers.join('+') || 'none'}, aside ${m.asideTop}-${m.asideBottom} of ${m.vh}, doc overflow ${m.docOverflow}px`)
     } catch (e) { failures.push(`${tag}: could not be measured (${String(e.message).split('\n')[0].slice(0, 200)})`) }
     await c.close()

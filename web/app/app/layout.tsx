@@ -48,6 +48,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           landed on <main> when the page was tall enough for Chromium to treat the scroller as focusable (Settings);
           Home and Inbox stayed on BODY. Its visible focus ring is #main:focus-visible in globals.css. MainFocus keeps
           that focus when the page swaps its loading view for the loaded one, or hydration re-creates the subtree. */}
+      {/* #1771 review: <main> is hidden while the phone menu is open, so the root "Skip to content" link would land on nothing. Close the menu
+          first (capture phase, before the fragment jump and MainFocus's own focus) so the link always reaches the page. Inline like the stall script below: no new client file. */}
+      <script dangerouslySetInnerHTML={{ __html: `if(!window.__dazlSkipMenu){window.__dazlSkipMenu=1;document.addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a.skip-link');var t=document.getElementById(${JSON.stringify(NAV_TOGGLE_ID)});if(a&&t&&t.checked)t.checked=false},true)}` }} />
       <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto max-md:peer-checked:hidden">
         <Suspense fallback={
           <div id={OPENING_ID} className="p-4 sm:p-8" role="status">

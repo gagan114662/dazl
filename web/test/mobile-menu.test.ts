@@ -60,3 +60,10 @@ test('Inbox: the explanatory note under the reply-rate heading is readable size 
   const panel = src('app/app/inbox/conversion-panel.tsx'), cls = panel.match(/<p className="([^"]*)">Sent emails only\./)?.[1] ?? ''
   assert.ok(cls.split(' ').includes('text-sm') && cls.split(' ').includes('sm:text-xs'), cls)
 })
+
+test('#1771 review: with the menu open <main> is hidden, so the layout closes the menu when the skip link is used', () => {
+  const layout = src('app/app/layout.tsx')
+  assert.match(layout, /a\.skip-link/, 'the layout handles clicks on the root skip link')
+  assert.match(layout, /\.checked=false/, 'and unchecks the menu toggle before the jump')
+  assert.ok(layout.indexOf("a.skip-link") < layout.indexOf('<main id="main"'), 'the handler is in place before <main>')
+})
