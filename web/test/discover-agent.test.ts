@@ -54,7 +54,7 @@ test('checkLead: the text Claude read decides first, then the read by dazl, then
   assert.deepEqual([ours.proof, ours.proof_read_by], ['confirmed', 'dazl'])
   assert.equal((await checkLead(l, [], page('<p>Unrelated story</p>'))).proof, 'company_not_on_page')
   // a page nobody could read: shown when the search result's own title names the company AND speaks of the signal, dated or not
-  const listed = await checkLead({ ...l, signal_date: null }, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('blocked', 403))
+  const listed = await checkLead({ ...l, signal_date: null }, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('temporarily unavailable', 503))
   assert.deepEqual([listed.proof, listed.signal_seen, isShown(listed)], ['listed', true, true])
   assert.equal(isShown(read), true, 'a real expansion page: the quoted words are in the text that was read')
   const unseen = await checkLead(l, [{ url: 'https://news.example/other', title: 'Northwind Dental', page_age: null, text: null }], page('blocked', 403))
@@ -64,9 +64,9 @@ test('checkLead: the text Claude read decides first, then the read by dazl, then
 
 // Review of #1575: recency and a date-like number are labels, never support for the buying signal.
 test('a recently indexed directory result nobody could read is not shown, however fresh the index date', async () => {
-  const blocked = (async () => new Response('blocked', { status: 403 })) as unknown as typeof fetch
+  const unavailable = (async () => new Response('temporarily unavailable', { status: 503 })) as unknown as typeof fetch
   const l = parseLeads(JSON.stringify({ leads: [lead({ signal_date: null, evidence_quote: null })] }), 1).leads[0]
-  const dir = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental - reviews and opening hours', page_age: '3 days ago', text: null }], blocked)
+  const dir = await checkLead(l, [{ url: l.evidence_url, title: 'Northwind Dental - reviews and opening hours', page_age: '3 days ago', text: null }], unavailable)
   assert.deepEqual([dir.proof, dir.date_source, dir.signal_seen, isShown(dir)], ['listed', 'index', false, false], 'the index date still labels the lead; it does not admit it')
 })
 
@@ -182,12 +182,12 @@ test('routine directory text that shares words with the signal is not shown; the
   const hours = await checkLead({ ...l, evidence_quote: routine }, [], page(`<h1>Northwind Dental</h1><p>${routine}. Call to book.</p>`))
   assert.deepEqual([hours.proof, hours.quote_on_page, hours.signal_seen, isShown(hours)], ['confirmed', true, false, false])
   // the same kind of title on a result nobody could read
-  const title = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental clinic reviews and opening hours', page_age: '3 days ago', text: null }], page('blocked', 403))
+  const title = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental clinic reviews and opening hours', page_age: '3 days ago', text: null }], page('temporarily unavailable', 503))
   assert.deepEqual([title.proof, title.signal_seen, isShown(title)], ['listed', false, false])
   // the real announcement, read and unread
   const real = await checkLead(l, [], page('<p>Northwind Dental will open its second clinic on King Street next spring.</p>'))
   assert.deepEqual([real.proof, real.signal_seen, isShown(real)], ['confirmed', true, true])
-  const realTitle = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental opens second clinic downtown', page_age: null, text: null }], page('blocked', 403))
+  const realTitle = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental opens second clinic downtown', page_age: null, text: null }], page('temporarily unavailable', 503))
   assert.deepEqual([realTitle.proof, realTitle.signal_seen, isShown(realTitle)], ['listed', true, true])
 })
 
@@ -248,7 +248,7 @@ test('#1575 the event and its qualifier are never set aside or outvoted: the rev
   for (const c of cases) for (const path of ['reader', 'dazl', 'title'] as const) {
     const l = parseLeads(JSON.stringify({ leads: [lead({ signal: c.signal, evidence_quote: c.quote, evidence_url: 'https://northwind.example/news', signal_date: null })] }), 1).leads[0]
     const seen = [{ url: l.evidence_url, title: c.quote, text: path === 'reader' ? c.quote : null, page_age: null }]
-    const fetcher = (async () => path === 'dazl' ? new Response(c.quote) : new Response('', { status: 403 })) as unknown as typeof fetch
+    const fetcher = (async () => path === 'dazl' ? new Response(c.quote) : new Response('', { status: 503 })) as unknown as typeof fetch
     const out = await checkLead(l, seen, fetcher)
     assert.equal(isShown(out), c.want, `${c.id} ${path}`)
     if (!c.want) assert.ok(out.claim_lacks.includes('second'), `${c.id} ${path}: the hold names the word the proof lacks`)

@@ -325,6 +325,7 @@ async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeo
       denied = r.status === 401 || r.status === 403
       // dazl asked and the address is gone: a search result's title does not bring it back
       if (r.status === 404 || r.status === 410) return { ...lead, ...indexDate(hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
+      if (r.status === 401 || r.status === 403) return { ...lead, ...indexDate(hit?.page_age ?? null, now), proof: 'unseen', proof_read_by: null, page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
   }
   const alternate = lead.alternate_evidence
