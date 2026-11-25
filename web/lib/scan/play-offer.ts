@@ -21,7 +21,7 @@ import { effectiveOffer, cleanOffer, completeOffer, isMissingSchema, tenantOffer
 // The effective offer of one play of this tenant (null: no such play of this tenant).
 export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string): Promise<PlayOffer | null> {
   const d = asDb(db)
-  const row = await d.get<{ offer: string | null; offer_set_at: number | null; seller: string | null; query: string | null }>('SELECT offer, offer_set_at, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
+  const row = await d.get<{ offer: string | null; seller: string | null; query: string | null; offer_set_at: number | null }>('SELECT offer, seller, query, offer_set_at FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
   if (!row) return null
   const resolved = effectiveOffer(row, await profileOffer(d, tenantId))
   return resolved.source === 'play' && row.offer_set_at === null ? { ...resolved, source: 'recorded' } : resolved
