@@ -28,20 +28,31 @@ export default function Readiness() {
   const [siteMsg, setSiteMsg] = useState('')
 
   const loadSeqRef = useRef(0)
+  const siteSeededRef = useRef(false) // the form was filled from a profile read at least once
+  const siteDirtyRef = useRef(false) // the user has typed into the form since the last save
+  const editSite = (k: 'website' | 'sells' | 'business_name', v: string) => { siteDirtyRef.current = true; setSite(cur => ({ ...cur, [k]: v })) }
   async function load(refreshSite = true) {
     // #1471: the plays are GET /api/plays, the same list the Plays page shows; each row's outcome comes from the jobs read
     // #1722: overlapping loads (mount vs wake) apply in start order - a slow earlier read must not revert a newer status.
     const seq = ++loadSeqRef.current
     const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput(), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
-    if (seq !== loadSeqRef.current) return
     const profile = next.profile
+    // The form seeds once from a profile read, and only over untouched input: a wake re-read (refreshSite=false)
+    // can win the race and never seeds it, so a discarded older read still applies the seed - otherwise the form
+    // keeps its empty initial state and a save would post those empty fields over the stored profile (#1760).
+    const seedSite = () => {
+      if (!profile || siteDirtyRef.current) return
+      siteSeededRef.current = true
+      setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
+    }
+    if (seq !== loadSeqRef.current) { if (refreshSite && !siteSeededRef.current) seedSite(); return }
     setInput(next)
     setPlays(listed && Array.isArray(listed.plays) ? homePlays(listed.plays, jobs ?? null, next.campaigns) : null)
     // #1722: a wake re-read refreshes the status only - never the form state, so unsaved input survives.
-    if (profile && refreshSite) setSite({ website: String(profile.website ?? ''), sells: String(profile.sells ?? ''), business_name: String(profile.business_name ?? '') })
+    if (refreshSite) seedSite()
   }
   useEffect(() => {
-    void load() // eslint-disable-line react-hooks/set-state-in-effect
+    void load()
     const refresh = () => void load()
     window.addEventListener('profile-updated', refresh) // the Home setup steps saved the business or buyer profile
     // #1722: the sender status can change in another tab (Outreach); re-read when this tab is used again.
@@ -57,6 +68,7 @@ export default function Readiness() {
     const r = await fetch('/api/settings/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ website: normalizeWebsite(site.website), sells: site.sells, business_name: site.business_name }) }).catch(() => null)
     const j = await r?.json().catch(() => ({}))
     if (!r?.ok) return setSiteMsg(j?.error || 'Could not save')
+    siteDirtyRef.current = false // the saved profile is now what the form shows
     setOpen(null); void load()
   }
 
@@ -94,9 +106,9 @@ export default function Readiness() {
                 : <button type="button" className={`${r.next ? 'btn-primary' : 'btn-ghost'} btn-sm shrink-0`} aria-expanded={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)}>{r.fix.label}</button>)}
             </div>
             {open === r.id && r.id === 'site' && <form onSubmit={saveSite} className="mt-3 flex flex-col gap-2">
-              <input className="field" aria-label="Business name" required maxLength={150} placeholder="Business name (used in your email drafts)" value={site.business_name} onChange={e => setSite({ ...site, business_name: e.target.value })} />
-              <input className="field" aria-label="Your website" placeholder="acme.com" value={site.website} onChange={e => setSite({ ...site, website: e.target.value })} />
-              <input className="field" aria-label="What you sell" required minLength={3} maxLength={150} placeholder="What you sell, in one line" value={site.sells} onChange={e => setSite({ ...site, sells: e.target.value })} />
+              <input className="field" aria-label="Business name" required maxLength={150} placeholder="Business name (used in your email drafts)" value={site.business_name} onChange={e => editSite('business_name', e.target.value)} />
+              <input className="field" aria-label="Your website" placeholder="acme.com" value={site.website} onChange={e => editSite('website', e.target.value)} />
+              <input className="field" aria-label="What you sell" required minLength={3} maxLength={150} placeholder="What you sell, in one line" value={site.sells} onChange={e => editSite('sells', e.target.value)} />
               <div className="flex gap-3 items-center"><button className="btn-primary text-xs px-3 py-1.5">Save</button>{siteMsg && <span className="text-xs" role="status">{siteMsg}</span>}</div>
             </form>}
             {open === r.id && r.id === 'key' && <div className="mt-3"><KeyInline reason="Searches and website reads run on Claude, with your own Anthropic key." onSaved={() => { setOpen(null); void load() }} /></div>}

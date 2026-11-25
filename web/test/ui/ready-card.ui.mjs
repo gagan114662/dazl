@@ -55,6 +55,7 @@ const SCENES = {
 // #1722: scenario 2c flips the sender mid-scene (filled in elsewhere); null = use the scene's own sender.
 let liveSender = null
 let settingsSlowUntil = 0
+let profileSlowFirst = 0 // one-shot: delays the first /api/settings/profile response (the mount read)
 const b = await chromium.launch()
 async function open(sc, width, height) {
   liveSender = null
@@ -68,7 +69,10 @@ async function open(sc, width, height) {
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (m !== 'GET') { writes.push(`${m} ${p}`); return json({ error: 'not stubbed' }, 400) }
-    if (p === '/api/settings/profile') return json(sc.profile)
+    if (p === '/api/settings/profile') {
+      if (profileSlowFirst > 0) { const ms = profileSlowFirst; profileSlowFirst = 0; await new Promise(r => setTimeout(r, ms)) } // #1760 2e/2f: a slow mount read
+      return json(sc.profile)
+    }
     if (p === '/api/scan/jobs') return json({ jobs: sc.jobs, totals: { searches: sc.jobs.length, finished: sc.jobs.length } })
     if (p === '/api/scan/latest') return json({ query: sc.jobs[0]?.query ?? null, icp: null, icp_source: null })
     if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
@@ -180,6 +184,30 @@ try {
     await page.waitForTimeout(900) // the delayed older response lands here
     assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example, as Dana Smith/, 'the delayed older read must not revert the sender status')
     assert.equal(await page.getByTestId('rc-progress').textContent(), '4 of 7 done')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2e. #1760: a wake re-read that wins the race refreshes only the status - the discarded older mount read
+    // must still seed the business-details form once, or a later save would post its empty initial fields over the
+    // stored profile (capy review 4700171286).
+    profileSlowFirst = 800
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
+    await page.waitForTimeout(200) // the mount read is in flight, delayed
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // the wake's read starts and lands first
+    await card(page).waitFor()
+    await page.waitForTimeout(1200) // the delayed older read lands here
+    await page.getByTestId('ready-site').getByRole('button').click()
+    assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example', 'the discarded older read still seeds the form')
+    assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2f. #1760: that late seed never overwrites what the user already typed into the form.
+    profileSlowFirst = 1500
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
+    await page.waitForTimeout(200)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await card(page).waitFor()
+    await page.getByTestId('ready-site').getByRole('button').click()
+    await page.getByLabel('Your website').fill('typed.example')
+    await page.waitForTimeout(2000) // the delayed older read lands here
+    assert.equal(await page.getByLabel('Your website').inputValue(), 'typed.example', 'a late seed never overwrites typed input')
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
     // nothing is pushed off the side of the page, and the card does not scroll inside itself.
