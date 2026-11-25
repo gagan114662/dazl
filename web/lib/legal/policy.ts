@@ -225,6 +225,9 @@ export const PRIVACY: Section[] = [
   { heading: 'Who we are', paragraphs: [
     `Last updated: ${P.lastUpdated}. ${P.legalName}, ${P.companyRegistration} ("dazl", "we"), operates dazl.ai. Privacy questions and requests: ${P.privacyContact}.`,
   ] },
+  { heading: 'Google user data and Limited Use', paragraphs: [
+    'dazl\'s use and transfer to any other app of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.',
+  ] },
   { heading: 'What we collect about you (customers)', paragraphs: [
     'Account details: your name, email address, optional business name, and a salted scrypt hash of your password (never the password itself). If you sign in with Google, the name, email address and account identifier Google returns.',
     'Session records: a hash of each sign-in token, a coarse device label such as "Chrome on macOS" (the raw browser header is not stored), and when the session was last used.',
@@ -245,7 +248,6 @@ export const PRIVACY: Section[] = [
   ] },
   { heading: 'Gmail', paragraphs: [
     'Outreach is sent from your own Gmail account, and only the messages you approve. Connecting it grants send access only (gmail.send). dazl does not ask for access to read your mailbox and does not read your replies.',
-    'dazl\'s use and transfer to any other app of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.',
   ] },
   { heading: 'dazl Connect browser extension', paragraphs: [
     'dazl Connect is an optional Chrome extension. If you install it and connect it from dazl Settings, it opens the LinkedIn pages your workspace asks for (company People pages, profiles and post comments) in a background tab in your own browser, using the LinkedIn account you are already signed in to there. It reads the names, job titles and profile links shown on those pages, sends them to your dazl workspace over HTTPS, and closes the tab.',

@@ -10,8 +10,9 @@ export default function Privacy() {
     <main id="main" className="max-w-2xl mx-auto px-6 py-16 text-[#555] text-sm leading-relaxed">
       <nav aria-label="dazl" className="mb-6 flex gap-4 text-sm"><Link href="/" className="underline">dazl home</Link><Link href="/app" className="underline">Open the app</Link></nav>
       <h1 className="text-2xl font-semibold text-[#111] mb-4">Privacy Policy</h1>
+      <p className="mb-2"><a href="#google-user-data" className="underline">Google user data and Limited Use</a></p>
       {PRIVACY.map(s => (
-        <section key={s.heading}>
+        <section key={s.heading} id={s.heading === 'Google user data and Limited Use' ? 'google-user-data' : undefined}>
           <h2 className="text-lg font-semibold text-[#111] mt-6 mb-2">{s.heading}</h2>
           {s.paragraphs.map((p, i) => <p key={i} className="mb-2">{p}</p>)}
         </section>
