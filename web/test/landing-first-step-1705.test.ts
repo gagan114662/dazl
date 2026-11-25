@@ -65,7 +65,7 @@ test('#1705: pricing text matches what the app charges: free beta searches on da
   assert.doesNotMatch(pricing, /\$\d|own (AI )?key|upgrade|Fair-use/i)
 })
 
-test('#1705: the mobile header has a menu: How it works and Pricing reachable below 768px', () => {
+test('#1705: the mobile header has a menu: How it works and Pricing reachable below 768px, closing on tap', () => {
   const page = read('app/page.tsx')
   const nav = page.slice(page.indexOf('<nav'), page.indexOf('</nav>'))
   assert.match(nav, /hidden md:flex/, 'desktop inline links stay')
@@ -73,4 +73,10 @@ test('#1705: the mobile header has a menu: How it works and Pricing reachable be
   const menu = nav.slice(nav.indexOf('md:hidden'))
   assert.match(menu, /#how/)
   assert.match(menu, /#pricing/)
+  // Follow-up (Gagan, 2026-11-25; Quest scope: only the menu handler in page.tsx): the menu closes after
+  // a link is tapped, via one inline handler in this server component - no client component, no new file.
+  assert.match(page, /MOBILE_MENU_CLOSE/)
+  assert.match(page, /addEventListener\('click'/)
+  assert.match(page, /d\.open = false/)
+  assert.doesNotMatch(page, /'use client'/, 'page.tsx stays a server component')
 })

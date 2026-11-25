@@ -43,6 +43,10 @@ const PROOF = [
   ['You approve every email', 'Every message is reviewed and sent by you, from your own Gmail. Autopilot is not available during the beta.'],
 ]
 
+// #1705 follow-up: close the mobile menu after a link is tapped. A one-line inline handler keeps the menu
+// in this server component (same pattern as the chunk-recovery script in layout.tsx; CSP allows inline scripts).
+const MOBILE_MENU_CLOSE = `document.querySelectorAll('[data-testid="mobile-nav"] a').forEach(function (a) { a.addEventListener('click', function () { var d = a.closest('details'); if (d) d.open = false }) })`
+
 export default function Home() {
   return (
     <main id="main" className="app-ui lp min-h-screen flex flex-col">
@@ -62,6 +66,7 @@ export default function Home() {
             <a href="#pricing" className="lp-navlink hover:opacity-70">Pricing</a>
           </div>
         </details>
+        <script dangerouslySetInnerHTML={{ __html: MOBILE_MENU_CLOSE }} />
         <div className="flex gap-2">
           <Link href="/sign-in" className="btn-ghost">Sign in</Link>
           <a href="/api/auth/google" className="btn-primary">Start free</a>

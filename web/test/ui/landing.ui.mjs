@@ -97,7 +97,10 @@ try {
       assert.ok(await menu.isVisible(), 'the mobile menu control is visible')
       await menu.locator('summary').click()
       assert.ok(await menu.getByRole('link', { name: 'How it works' }).isVisible(), 'How it works reachable from the mobile menu')
-      assert.ok(await menu.getByRole('link', { name: 'Pricing' }).isVisible(), 'Pricing reachable from the mobile menu')
+      await menu.getByRole('link', { name: 'Pricing' }).click()
+      assert.ok(await page.locator('#pricing .lp-card').first().isVisible(), 'Pricing navigates to the pricing section')
+      // #1705 follow-up: the panel closes after a link is tapped.
+      assert.equal(await menu.evaluate(el => el.open), false, 'the menu closes after a link tap')
     } else {
       assert.ok(!(await page.getByTestId('mobile-nav').isVisible()), 'no mobile menu on desktop')
     }
