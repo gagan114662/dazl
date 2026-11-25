@@ -889,11 +889,11 @@ export default function LeadsClient() {
           <h1 className="text-3xl font-bold tracking-tight">{jobId ? 'Leads' : 'Find leads'}</h1>
           <p className="text-[var(--ink-2)] text-sm mt-1">{jobId ? 'Approve the leads worth an email.' : 'Describe who you want to reach.'}<InfoTip>Companies matching your search, with the signal and source for each. Match is a heuristic - review fit yourself.</InfoTip></p>
         </div>
-        <div className="flex gap-2 items-center">
+        {(!scanActive || leads.length > 0) && <div className="flex gap-2 items-center">
           {/* The scan being viewed as one campaign: its play, every lead's status, drafts and sends. */}
           {jobId && <a className="btn-ghost btn-sm" href={`/app/campaigns/${jobId}`} data-testid="campaign-page-link"><Icon name="campaigns" className="w-4 h-4" />Campaign page</a>}
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
-        </div>
+        </div>}
       </div>
       {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
           at any width (below the card it sat off screen at 390). */}
@@ -1399,8 +1399,8 @@ export default function LeadsClient() {
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
-                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn<InfoTip label="Why LinkedIn and not email">An email draft is not available for this lead: {c.approve.reason} {c.linkedin.name}&apos;s own LinkedIn profile is known: open it and send the first message yourself.</InfoTip></div>
-                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet<InfoTip label="Why this lead is on hold">To approve: {c.approve.reason}</InfoTip></div> : null}
+                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Email draft unavailable. <span>{c.approve.reason}</span></div>
+                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{c.approve.reason}</span></div> : null}
               </div>
             })()}
             <details className="mt-2 text-sm">
