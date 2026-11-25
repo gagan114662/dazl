@@ -134,3 +134,10 @@ test('excluded root domains also exclude mail subdomains, case-insensitively, wi
     assert.ok(!preflight(input({ policy: p, samples: [sample(1, { to }), sample(2), sample(3)] })).failures.includes('sample_excluded'), to)
   }
 })
+
+test('undeliverable recipient is held with the named skip reason', () => {
+  const r = preflight(input({ samples: [sample(1, { to: 'NoReply+tag@prospect.test' }), sample(2), sample(3)] }))
+  assert.equal(r.ok, false)
+  assert.ok(r.failures.includes('undeliverable_address'))
+  assert.ok(r.heldLeads.includes('l1'))
+})
