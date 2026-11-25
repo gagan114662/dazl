@@ -1,7 +1,7 @@
 // Two pilot blockers found in the 2026-11-11 staging trial check (lib/billing/trial-budget.ts, lib/scan/estimate-request.ts):
 // (A) a trial scan that died mid-run ("Stopped after an interruption", error accounting_uncertain) used up one of the account's
-//     three free scan attempts even though the person got nothing; it now gives the place back. Its worst-case reserve STILL counts
-//     against the account's dollar total and the day's budget, so the money caps ($0.30 / $1 / $10) are unchanged.
+//     three free scan attempts even though the person got nothing. An interruption with no saved leads also restores
+//     the customer dollar allowance (Refs #1727). The platform still accounts for provider spend.
 // (B) with the free scans used up, the cost screen still offered "Confirm and run", which then did nothing; the estimate now refuses
 //     up front (verdict blocked, with what to do), for the same reasons POST /api/scan would refuse at confirm time.
 import assert from 'node:assert/strict'
@@ -35,14 +35,14 @@ const ended = async (db: Db, u: { id: string; email: string }, o: { status: stri
   if (o.settle !== false) await settleTrialReservation(db, id, Number((await db.get<{ a: number }>('SELECT attempts AS a FROM scan_jobs WHERE id = ?', [id]))!.a), NOW)
   return id
 }
-const row = (o: Partial<LedgerRow>): LedgerRow => ({ tenant_id: 'T', kind: 'scan', reserve_usd: 0.3, spent_usd: null, day: DAY, created_at: NOW, settled_at: NOW, settled_attempt: 1, status: 'failed', error: 'accounting_uncertain', attempts: 1, spend_reserved_usd: 0.03, ...o })
+const row = (o: Partial<LedgerRow>): LedgerRow => ({ tenant_id: 'T', kind: 'scan', reserve_usd: 0.3, spent_usd: null, day: DAY, created_at: NOW, settled_at: NOW, settled_attempt: 1, status: 'failed', error: 'accounting_uncertain', attempts: 1, spend_reserved_usd: 0.03, has_saved_leads: false, ...o })
 
 // ---- (A)
-test('(A) ledger: a settled scan that stopped after an interruption does not count as a used free scan, but its reserve still counts as money', () => {
+test('(A) ledger: a settled scan that stopped after an interruption restores both customer allowances', () => {
   const l = ledger([row({}), row({}), row({})], 'T', DAY)
   assert.equal(l.attempts, 0, 'three interrupted scans used no free scan')
-  assert.ok(Math.abs(l.account - 0.09) < 1e-9, 'their worst-case spend still counts against the account total')
-  assert.ok(Math.abs(l.today - 0.09) < 1e-9, 'and against the day')
+  assert.equal(l.account, 0, 'the customer dollar allowance is restored')
+  assert.ok(Math.abs(l.today - 0.09) < 1e-9, 'the platform still accounts for the spend against the day')
 })
 test('(A) ledger: every other ending keeps its place (control: pins the existing rule)', () => {
   const one = (o: Partial<LedgerRow>) => ledger([row(o)], 'T', DAY).attempts
@@ -63,7 +63,7 @@ test('#1172 ledger: a settled trial scan stopped by a spending limit with nothin
   assert.equal(one({ error: 'budget_stopped', spend_reserved_usd: 0.09 }), 1, 'a scan that recorded spend keeps its place')
   assert.equal(one({ error: 'budget_stopped', spend_reserved_usd: 0, settled_at: null, settled_attempt: null }), 1, 'until its run has settled')
 })
-bothEngines('(A) admission: three interrupted scans leave all three free scans; the money caps still bind', async ({ db }) => {
+bothEngines('(A) admission: three interrupted scans restore the customer allowance and the global daily cap still binds', async ({ db }) => {
   const u = await mkUser(db, 'a'.repeat(32), 'a@gmail.com')
   for (let i = 0; i < 3; i++) await ended(db, u, { status: 'failed', error: 'accounting_uncertain', spent: 0.03 })
   assert.equal((await admitTrialScan(db, u, { env: caps, now: NOW })).ok, true, 'a fourth attempt is admitted: the interruptions gave their places back')
@@ -71,11 +71,15 @@ bothEngines('(A) admission: three interrupted scans leave all three free scans; 
   const v = await mkUser(db, 'b'.repeat(32), 'b@gmail.com')
   for (let i = 0; i < 3; i++) await ended(db, v, { status: 'failed', error: 'provider_error', spent: 0.03 })
   assert.deepEqual(await admitTrialScan(db, v, { env: caps, now: NOW }), { ok: false, reason: 'attempts_cap' })
-  // the dollar total still binds interruptions: each interrupted scan reserved $0.45 worst case -> $1 total refuses the third
+  // Those interruptions still reserve $0.90 against the platform day.
   const w = await mkUser(db, 'c'.repeat(32), 'c@gmail.com')
   await ended(db, w, { status: 'failed', error: 'accounting_uncertain', spent: 0.45 })
   await ended(db, w, { status: 'failed', error: 'accounting_uncertain', spent: 0.45 })
-  assert.deepEqual(await admitTrialScan(db, w, { env: caps, now: NOW }), { ok: false, reason: 'account_total_cap' }, 'interruptions cannot run past the $1 account total')
+  // Prior fixture users also incurred $0.18 today, so a $1.30 platform limit cannot admit another $0.30.
+  assert.deepEqual(await admitTrialScan(db, w, { env: { ...caps, DAZL_TRIAL_GLOBAL_DAILY_USD: '1.30' }, now: NOW }),
+    { ok: false, reason: 'global_daily_cap' })
+  assert.equal((await admitTrialScan(db, w, { env: caps, now: NOW })).ok, true,
+    'the restored account can run again when the platform has room')
 })
 
 // ---- (B)

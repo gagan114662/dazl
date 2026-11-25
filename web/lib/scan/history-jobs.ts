@@ -1,3 +1,4 @@
+import { interruptedTrialAllowanceRestored } from '../billing/trial-budget.ts'
 import type { Db } from '../db/client.ts'
 import { listJobs } from './store-db.ts'
 import { effectiveStatus } from './enrichment.ts'
@@ -14,21 +15,24 @@ export async function historyJobs(db: Db, userId: string) {
   const trial = new Set((await db.all<{ id: string }>("SELECT id FROM scan_jobs WHERE user_id = ? AND funded_by = 'trial'", [userId])).map(r => r.id))
   // A failed read leaves the map empty: no job then claims anything about charges (scan-outcome.ts), and the list still loads.
   const spend = new Map((await db.all<{ id: string; run: number | string | null; cap: number | string | null }>('SELECT id, spend_reserved_usd AS run, spend_cap_reserved_usd AS cap FROM scan_jobs WHERE user_id = ?', [userId]).catch(() => [])).map(r => [r.id, recordedJobCostUsd(r.run, r.cap)]))
-  return Promise.all((await listJobs(db, userId)).map(async j => ({
-    ...j,
-    // Recorded spend (the job's one cost, job-cost.ts: a positive amount is a paid call), only when it was read (an empty column on a read row = 0; a failed read = omitted): a free scan that stopped at its limit says whether anything was charged (scan-outcome.ts).
-    ...(spend.get(j.id) != null ? { spend_usd: spend.get(j.id) } : {}),   // unread or unreadable: left out, never 0
-    funded_by: trial.has(j.id) ? 'trial' as const : null,
-    status: effectiveStatus(j),
-    // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.
-    empty_reason: await recordedEmptyReason(db, userId, j),
-    // The recorded stop provenance (typed report only); null = no reason kept, so a legacy budget_stopped reads neutrally.
-    stop_refusal_reason: await recordedStopRefusalReason(db, userId, j),
-    // Fixture jobs carry the inserters' own job-level marker (industry/location
-    // 'test only') - the same provenance the export filter uses - so a genuine
-    // business whose name contains '(test only)' is never mislabeled or hidden.
-    test_only: j.industry === 'test only' && j.location === 'test only',
-  })))
+  return Promise.all((await listJobs(db, userId)).map(async j => {
+    const trial_allowance_restored = j.error === 'accounting_uncertain' && await interruptedTrialAllowanceRestored(db, userId, j.id)
+    return {
+      ...j,
+      // A confirmed restoration is $0 to the customer; otherwise use the recorded cost when available.
+      ...(trial_allowance_restored ? { trial_allowance_restored, spend_usd: 0 } : spend.get(j.id) != null ? { spend_usd: spend.get(j.id) } : {}),
+      funded_by: trial.has(j.id) ? 'trial' as const : null,
+      status: effectiveStatus(j),
+      // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.
+      empty_reason: await recordedEmptyReason(db, userId, j),
+      // The recorded stop provenance (typed report only); null = no reason kept, so a legacy budget_stopped reads neutrally.
+      stop_refusal_reason: await recordedStopRefusalReason(db, userId, j),
+      // Fixture jobs carry the inserters' own job-level marker (industry/location
+      // 'test only') - the same provenance the export filter uses - so a genuine
+      // business whose name contains '(test only)' is never mislabeled or hidden.
+      test_only: j.industry === 'test only' && j.location === 'test only',
+    }
+  }))
 }
 
 // Home's checklist needs "has any own search been written / finished", which the newest-20 list above cannot prove
