@@ -49,7 +49,7 @@ export function playSuggestions(p: PlayProfile | null): PlaySuggestions {
   }
   const sells = offering(tidy(p?.sells))
   // #1722: an industry that already names the businesses ("marketing agencies") is not suffixed with " businesses".
-  const group = industry ? (/(companies|businesses|agencies|firms|practices|clinics|shops|stores|studios|salons|restaurants|hotels|startups)$/i.test(industry) ? industry : `${industry} businesses`) : 'Businesses'
+  const group = industry ? (/(compan(?:y|ies)|businesses?|agenc(?:y|ies)|firms?|practices?|clinics?|shops?|stores?|studios?|salons?|restaurants?|hotels?|startups?)$/i.test(industry) ? industry : `${industry} businesses`) : 'Businesses'
   if (sells) for (const s of SELLS_SIGNALS) { if (out.length >= 3) break; add(`${group} that could use ${lower(sells)}${where ? ` in ${where}` : ''} - ${s}`) }
   const examples = EXAMPLE_PLAYS.filter(e => !out.some(x => x.toLowerCase() === e.toLowerCase())).slice(0, 3 - out.length)
   return { business: out, examples }

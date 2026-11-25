@@ -39,6 +39,9 @@ test('a sparse profile: its own suggestion only under business details; the top-
   const agencies = playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: ['Toronto'], industries: ['Marketing agencies'] } })
   assert.deepEqual(agencies.business, ['Marketing agencies that could use online booking software in Toronto - opened a new location', 'Marketing agencies that could use online booking software in Toronto - complaining publicly about their current tool'])
   assert.ok(agencies.business.every(b => !/agencies businesses/i.test(b)))
+  // Singular industry names are not suffixed either ("Marketing agency businesses").
+  assert.deepEqual(playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: [], industries: ['Marketing agency'] } }).business[0], 'Marketing agency that could use online booking software - opened a new location')
+  assert.deepEqual(playSuggestions({ sells: 'Online booking software', buyer: { who: [], where: [], industries: ['Consulting firm'] } }).business[0], 'Consulting firm that could use online booking software - opened a new location')
   assert.deepEqual(sellsOnly.examples, [])
   for (const p of [{ buyer: { who: ['A'] } }, { buyer: { who: ['A', 'B'] } }, { sells: 'x' }, { buyer: { who: ['A'], signals: ['s'] } }]) {
     const r = playSuggestions(p)
