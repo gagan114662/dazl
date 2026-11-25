@@ -184,3 +184,30 @@ test('a London plan labelled US keeps no UK-evidence leads and returns the cover
   assert.equal(run.searches, 2)
   assert.deepEqual([run.leads, run.pages], [[], []])
 })
+
+test('an accepted US search with an empty retry finishes normally after two calls', async () => {
+  const places = [{ text: 'US', city: null, region: null, country: 'US' }]
+  const first = provider(places, [candidate('Outside', 'GB')], 1)
+  const second = provider(places, [], 1)
+  const fetchImpl: typeof fetch = (url, init) =>
+    (first.requests.length === 0 ? first.fetchImpl : second.fetchImpl)(url, init)
+  const run = await runDiscovery({ query: 'Find agencies hiring an SDR in the US' }, { maxUsd: 1 }, {
+    apiKey: 'test', fetch: fetchImpl, judge: null, enrich: null,
+  })
+  assert.equal(run.requests, 2)
+  assert.equal(run.passes, 2)
+  assert.equal(run.stop, 'end_turn')
+  assert.doesNotMatch(run.note ?? '', /covers the US and Canada/)
+  assert.deepEqual(run.leads, [])
+})
+
+test('an explicitly UK plan stops with the coverage message and sends no retry', async () => {
+  const { requests, fetchImpl } = provider([{ text: 'UK', city: null, region: null, country: 'GB' }])
+  const run = await runDiscovery({ query: 'Find agencies hiring an SDR in the UK' }, { maxUsd: 1 }, {
+    apiKey: 'test', fetch: fetchImpl, judge: null, enrich: null,
+  })
+  assert.equal(requests.length, 1)
+  assert.equal(run.stop, 'unsupported_search_region')
+  assert.match(run.note ?? '', /covers the US and Canada/)
+  assert.deepEqual(run.leads, [])
+})

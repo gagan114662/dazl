@@ -56,7 +56,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       leads = [...leads, ...more]
       passes = 2
       accountingUncertain ||= judge?.usage.accountingUncertain === true
-      if (regionRetry && leads.length > 0) {
+      if (regionRetry && (leads.length > 0 || second.stop === 'end_turn')) {
         stop = second.stop
         note = second.note
       } else if (leads.length === 0 && second.stop === LAUNCH_RESULTS_REJECTED) {
