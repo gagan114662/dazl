@@ -5,47 +5,16 @@
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import type { HomeReady } from '@/lib/outreach/home-ready'
+import type { HomeReady, ReadyCompany } from '@/lib/outreach/home-ready'
 import { holdWords } from '@/lib/outreach/hold-words'
 
-type LeadDetails = {
-  id: string
-  signal: string | null
-  event_date: string | null
-  date_status: string | null
-  name: string | null
-  contact: string | null
-}
-
-function ReadyLeadDetails({ jobId, leadId }: { jobId: string; leadId: string }) {
-  const [detail, setDetail] = useState<LeadDetails | 'loading' | 'unavailable' | null>(null)
-
-  async function load() {
-    if (detail && detail !== 'unavailable') return
-    setDetail('loading')
-    try {
-      const response = await fetch(`/api/leads?job_id=${encodeURIComponent(jobId)}`)
-      if (!response.ok) throw new Error(String(response.status))
-      const { leads }: { leads: LeadDetails[] } = await response.json()
-      setDetail(leads.find(lead => lead.id === leadId) ?? 'unavailable')
-    } catch {
-      setDetail('unavailable')
-    }
-  }
-
-  return <details className="basis-full" onToggle={event => {
-    if (event.currentTarget.open && detail === null) void load()
-  }}>
-    <summary className="cursor-pointer underline">Lead details</summary>
-    {detail === 'loading' && <p role="status">Loading lead details…</p>}
-    {detail === 'unavailable' && <p role="status">Details are unavailable. <button type="button" className="underline" onClick={() => void load()}>Retry</button></p>}
-    {detail && typeof detail === 'object' && <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-      <dt>Signal</dt><dd>{detail.signal || 'No signal recorded'}</dd>
-      <dt>Date</dt><dd>{detail.event_date ? `${detail.event_date}${detail.date_status === 'verified' ? '' : ' (unconfirmed)'}` : 'No date confirmed'}</dd>
-      <dt>Contact</dt><dd>{detail.name || 'No contact named'}</dd>
-      <dt>Email</dt><dd className="break-all">{detail.contact && /^[^\s@]+@[^\s@]+$/.test(detail.contact) ? detail.contact : 'No email on this lead'}</dd>
-    </dl>}
-  </details>
+function ReadyLeadDetails({ detail }: { detail: ReadyCompany['details'] }) {
+  return <dl className="basis-full grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[var(--ink-2)]">
+    <dt>Signal</dt><dd className="break-words">{detail?.signal || 'No signal recorded'}</dd>
+    <dt>Date</dt><dd>{detail?.event_date ? `${detail.event_date}${detail.day_verified ? '' : ' (unconfirmed)'}` : 'No date confirmed'}</dd>
+    <dt>Contact</dt><dd className="break-words">{detail?.contact_name ? [detail.contact_name, detail.contact_title].filter(Boolean).join(' · ') : 'No contact named'}</dd>
+    <dt>Email</dt><dd className="break-all">{detail?.email || 'No email on this lead'}</dd>
+  </dl>
 }
 
 export default function CheckedClient() {
@@ -67,7 +36,7 @@ export default function CheckedClient() {
     <div className="p-4 sm:p-8 max-w-3xl">
       <p className="text-sm mb-2"><Link className="underline" href="/app">Back to Home</Link></p>
       <h1 className="text-2xl font-semibold mb-1" data-testid="checked-title">{title}</h1>
-      <p className="text-sm text-[var(--ink-2)] mb-4">Companies found in the last {r.window_days} days, one row each. Expand a ready row for details, or open the company’s scan.{' '}
+      <p className="text-sm text-[var(--ink-2)] mb-4">Companies found in the last {r.window_days} days, one row each. Open a company to see its scan.{' '}
         {r.capped && <span data-testid="checked-capped">Only the first {r.leads_checked} of your {r.leads_in_window} leads were checked, newest scans first.</span>}</p>
       {rows.length === 0 ? <p className="text-sm" data-testid="checked-empty">{why === 'ready' ? 'No lead from the last 30 days is ready yet.' : 'No leads here.'} <Link className="underline" href="/app/leads/checked">See every lead that was checked</Link>.</p>
         : <ul className="card divide-y divide-black/5" data-testid="checked-list">
@@ -75,7 +44,7 @@ export default function CheckedClient() {
             <li key={c.lead_id} className="p-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-sm min-w-0" data-testid="checked-row">
               <Link className="underline break-words min-w-0" href={`/app/leads?job_id=${c.job_id}`}>{c.company}</Link>
               <span className="text-[var(--ink-3)]">{c.ready ? 'Ready' : holdWords(c.reason, 1).replace(/^./, x => x.toUpperCase())}</span>
-              {c.ready && <ReadyLeadDetails jobId={c.job_id} leadId={c.lead_id} />}
+              {c.ready && <ReadyLeadDetails detail={c.details} />}
             </li>))}
         </ul>}
     </div>)

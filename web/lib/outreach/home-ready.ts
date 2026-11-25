@@ -1,7 +1,7 @@
 // #1040 acceptance 1: Home's "Ready leads" tile - leads found in the last 30 days that are READY by the rule Home's journey
 // and the first-run preview already use ("Leads ready", lib/journey.ts previewSplit / heldReason): every hold clear. Each lead
 // gets exactly the hold fields GET /api/leads gives it (the same helpers, same arguments): the gate verdict, the time-window
-// and currentness holds, the timing-adjusted intent and its enrichments. Nothing else of the Leads view is built (count only).
+// and currentness holds, the timing-adjusted intent and its enrichments. The checked list also receives the winning ready lead’s summary.
 // A company found again by a later scan (seen_before, hidden on Leads by default) or by two scans in the window counts once
 // (same domain or same normalised name), and it is ready when any of its leads is;
 // test-fixture leads never count. The WHOLE window is judged, newest scan first, up to READY_LEADS_MAX leads per load;
@@ -16,13 +16,44 @@ import { countedOnHome, type PreviewLead } from '@/lib/journey'
 import { companyKey } from '@/lib/scan/evidence'
 import { RESULTS_WINDOW_DAYS } from '@/lib/outreach/home-results'
 import { companyFirstShown, gateHoldReason, heldByChecksOf } from '@/lib/outreach/campaigns'
+import { discoverContact, emailOnCompanySite, isDiscoverLead } from '@/lib/discover/card'
+import { leadPerson } from '@/lib/people/lead-person'
+import { identityOf } from '@/lib/scan/opportunity'
+import { publishedEmail } from '@/lib/outreach/published-email'
+import { eventDayVerified } from '@/lib/scan/scoreboard'
 
 export const READY_LEADS_MAX = 600    // leads judged per Home load (each costs a few indexed reads; batching them is #1181)
 export const SCAN_READ_MAX = 500      // listLeads' own ceiling per scan
 
 // companies: every company judged, in the order met, with its verdict - what the breakdown lines and the tile open
 // (/app/leads/checked lists exactly these rows, so a line's number is the number of rows its link shows).
-export interface ReadyCompany { lead_id: string; company: string; job_id: string; ready: boolean; reason: string }
+export interface ReadyCompany { lead_id: string; company: string; job_id: string; ready: boolean; reason: string; details?: ReadyLeadDetails }
+interface ReadyLeadDetails {
+  signal: string | null
+  event_date: string | null
+  day_verified: boolean
+  contact_name: string | null
+  contact_title: string | null
+  email: string | null
+}
+
+function detailsOf(lead: PreviewLead & { name?: string | null; source_kind?: string | null }, at: Date): ReadyLeadDetails {
+  const rows = lead.enrichments ?? []
+  const discover = isDiscoverLead(lead)
+  const contact = discoverContact(lead)
+  const person = discover ? contact?.person : leadPerson(rows, '', at.getTime(), identityOf(lead, rows))
+  const email = contact?.email
+  return {
+    signal: lead.signal || null,
+    event_date: lead.event_date,
+    day_verified: eventDayVerified(lead, { now: at }),
+    contact_name: person?.name ?? null,
+    contact_title: person?.title || null,
+    email: discover
+      ? email && emailOnCompanySite(email.address, email.source, lead.company_domain) ? email.address : null
+      : publishedEmail(lead),
+  }
+}
 // held: why the other judged companies are not ready (lib/journey.ts heldReason's own words), largest first; job_id = the
 // one scan holding them all, or null when they are in several (scans says how many). judged = ready + every held count.
 // capped: a limit cut the count, so ready and held are lower bounds; leads_checked says how many leads were judged, and
@@ -59,7 +90,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
     const job = getJob(db, tenantId, id) as { id: string; query: string | null; icp: string | null } | undefined
     if (!job) continue
     const timingOpts = timingOptsFor(job)
-    const leads = (listLeads(db, tenantId, id, perScan, true) as (PreviewLead & { created_at: number; seen_before?: number | null; source_kind?: string | null; company_domain?: string | null; company: string; quarantined_at?: unknown })[])
+    const leads = (listLeads(db, tenantId, id, perScan, true) as (PreviewLead & { created_at: number; seen_before?: number | null; source_kind?: string | null; name?: string | null; company_domain: string | null; company: string; quarantined_at?: unknown })[])
       .filter(l => countedOnHome(l) && Number(l.created_at) >= since && !l.seen_before && l.source_kind !== 'test' && !l.quarantined_at)   // rejected leads are not judged
     const enr = enrichmentsForLeads(db, tenantId, leads.map(l => l.id))
     let whole = leads.length >= Number(n)   // false: the per-scan read limit left judgeable leads of this scan unread
@@ -74,6 +105,7 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
       const why = byChecks(l.id) ? gateHoldReason(j, shown) : leadHoldReason(db, tenantId, l as never, enr[l.id] ?? [], timingOpts, at)   // lib/outreach/lead-hold.ts: the one rule
       if (!v) { v = { lead_id: l.id, company: l.company || 'Unnamed company', job_id: id, ready: !why, reason: why ?? '' }; companies.push(v) }
       else if (!why) { v.ready = true; v.reason = ''; v.job_id = id; v.lead_id = l.id; v.company = l.company || v.company }   // held in a newer scan, ready in this one: ready wins
+      if (!why) v.details = detailsOf({ ...l, enrichments: enr[l.id] ?? [] }, at)
       for (const k of keys) byKey.set(k, v)
     }
     if (whole) checked++; else capped = true
