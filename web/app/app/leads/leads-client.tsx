@@ -381,7 +381,8 @@ export default function LeadsClient() {
   // Rejected (it leaves the list), each with a one-line result above the list.
   const [leadTab, setLeadTab] = useState<'review' | 'approved' | 'rejected'>('review')
   const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
-  const scanActive = !!jobId && (status === 'pending' || status === 'running' || status === 'enriching')
+  const [otherActiveJobId, setOtherActiveJobId] = useState<string | null>(null)
+  const scanActive = !!otherActiveJobId || (!!jobId && (status === 'pending' || status === 'running' || status === 'enriching'))
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
   useEffect(() => {
     if (!csvActive || !csvBatch) return
@@ -597,6 +598,7 @@ export default function LeadsClient() {
     return true
   }
   async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean, carryExclude?: string[]) {
+    if (scanActive) return
     if (websiteReadInFlight.current || !canQuoteWebsiteDraft(websiteDraft.current, latestOfferQuery.current, reviewed === true)) {
       reviewPanel.current?.focus()
       return
@@ -624,6 +626,7 @@ export default function LeadsClient() {
     }
   }
   async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean, websiteApproval?:string, carryExclude?: string[]) {
+    if (scanActive) return
     if (requested !== latestOfferQuery.current || websiteReadInFlight.current ||
       !canQuoteWebsiteDraft(websiteDraft.current, requested, reviewed === true) ||
       (websiteDraft.current && (!websiteApproval || draft !== withIcp || offerText !== offer))) { setPendingEst(null); return }
@@ -780,15 +783,37 @@ export default function LeadsClient() {
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
-      if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
+      const params = new URLSearchParams(window.location.search)
+      // The jobs request can resolve after the requested job has opened.
+      const requested = params.get('job_id') ?? ''
+      const viewing = viewedJob.current || (/^[a-f0-9]{24}$/.test(requested) ? requested : '')
+      if (viewing) {
+        setOtherActiveJobId(active && active.id !== viewing ? active.id : null)
+        return
+      }
+      if (active) { passiveJob.current = params.get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
       // The sidebar's "Leads" link (?latest=1) is the user explicitly asking for their newest leads: open the newest own,
       // finished, non-test scan that saved any. No such scan => stay on Plays.
-      else if (new URLSearchParams(window.location.search).get('latest') === '1') {
+      else if (params.get('latest') === '1') {
         const newest = jobs.find(x => !x.csv_domain && !x.test_only && x.status === 'done' && x.lead_count > 0)
         if (newest) window.location.replace(`/app/leads?job_id=${newest.id}`)
       }
     } }).catch(() => {})
   }, [jobId])
+  useEffect(() => {
+    if (!otherActiveJobId) return
+    const controller = new AbortController()
+    const timer = setInterval(() => {
+      void fetch(`/api/scan/status?job_id=${otherActiveJobId}&passive=1`, { signal: controller.signal })
+        .then(async response => {
+          const status = response.ok ? (await response.json()).status : null
+          if (!controller.signal.aborted && (response.status === 404 || status === 'done' || status === 'failed')) {
+            setOtherActiveJobId(current => current === otherActiveJobId ? null : current)
+          }
+        }).catch(() => {})
+    }, 5000)
+    return () => { clearInterval(timer); controller.abort() }
+  }, [otherActiveJobId])
   // Restore the last profile so a reload never loses it (item: ICP persistence).
   useEffect(() => {
     if (jobId) return
@@ -895,6 +920,9 @@ export default function LeadsClient() {
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
         </div>
       </div>
+      {otherActiveJobId && <p role="status" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">
+        A search is running. <a className="underline" href={`/app/leads?job_id=${otherActiveJobId}`}>View progress</a>
+      </p>}
       {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
           at any width (below the card it sat off screen at 390). */}
       {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
@@ -919,7 +947,7 @@ export default function LeadsClient() {
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">
           <button type="button" disabled={query.trim().length < 3 || busy || starting || siteBusy || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
-          {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
+          {scanActive && !otherActiveJobId && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
         {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
