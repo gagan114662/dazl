@@ -29,7 +29,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // page scroll too), and `relative overflow-hidden` makes it the containing block that clips absolutely positioned descendants,
   // which otherwise escape <main>'s overflow and stretch the page behind it (two vertical scrollbars at 390px).
   return (
-    <div className="app-ui relative overflow-hidden flex flex-col md:flex-row h-dvh">
+    <div className="app-ui app-shell relative overflow-hidden flex flex-col md:flex-row h-dvh">
       {/* CSS-only collapsing nav: a checkbox toggles the menu below md; a slim sidebar from md up */}
       {/* #534: md:hidden keeps the invisible checkbox out of the desktop Tab order; its focus ring shows on the Menu label (globals.css) */}
       <input id={NAV_TOGGLE_ID} type="checkbox" className="peer sr-only md:hidden" aria-label="Menu" />
