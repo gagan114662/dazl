@@ -12,16 +12,21 @@ import { readFileSync } from 'node:fs'
 const read = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
 
 test('#1705: hero, steps and OG text describe the same single first step: say who you want to reach', () => {
-  const page = read('app/page.tsx'), layout = read('app/layout.tsx'), site = read('lib/site.ts'), leads = read('app/app/leads/leads-client.tsx')
+  const page = read('app/page.tsx'), layout = read('app/layout.tsx'), leads = read('app/app/leads/leads-client.tsx')
   // The app's real first screen asks this; the landing hero and step 1 say the same thing.
   assert.match(leads, />Who do you want to reach\?</)
   assert.match(page, /Say who you want to reach\./)
-  // The meta/OG description is the same pitch ("Say who you are looking for"), not a third one, and the
-  // homepage inherits it unchanged (publicMeta defaults its description to SITE_DESCRIPTION, lib/site.ts).
-  assert.match(site, /SITE_DESCRIPTION = 'Say who you are looking for\./)
-  assert.match(layout, /description: SITE_DESCRIPTION/)
-  assert.match(site, /description = SITE_DESCRIPTION/)
-  assert.match(page, /publicMeta\('\/', SITE_TITLE\)/)
+  // The meta/OG description is the same first step, not a third pitch, and it does not overclaim proof:
+  // dazl does not open every source page (#1716), so it shows the dated public proof for each lead.
+  // Both the homepage (publicMeta argument) and the layout fallback set this wording explicitly; the
+  // shared SITE_DESCRIPTION default in lib/site.ts and the OG image in app/opengraph-image.tsx still
+  // carry the old wording and are outside this lane's allowed files.
+  const honest = /Say who you want to reach\. dazl finds buyers showing intent and shows the dated public proof for each lead\./
+  assert.match(page, honest)
+  assert.match(page, /publicMeta\('\/', SITE_TITLE, LANDING_DESCRIPTION\)/)
+  assert.match(layout, /description: LANDING_DESCRIPTION/)
+  assert.doesNotMatch(page, /verifies each lead against its source/)
+  assert.doesNotMatch(layout, /verifies each lead against its source/)
   // The old website-first pitch is gone: nothing tells people to paste a website, and no "only thing you type"
   // (that claim may return only if the first screen ever asks for a website).
   assert.doesNotMatch(page, /Paste your website|only thing you type/i)

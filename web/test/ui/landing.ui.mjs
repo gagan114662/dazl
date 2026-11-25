@@ -41,7 +41,7 @@ try {
     const main = page.locator('main')
     // 1. Hero.
     assert.equal((await page.locator('h1').innerText()).replace(/\s+/g, ' '), 'Say who you want to reach.')
-    assert.match(await main.innerText(), /dazl finds buyers showing that intent right now, verifies each lead against its source, and drafts the email from your Gmail\./)
+    assert.match(await main.innerText(), /dazl finds buyers showing that intent right now, shows the dated public proof for each lead, and drafts the email from your Gmail\./)
     const cta = page.getByTestId('hero-cta')
     assert.equal(await cta.innerText(), 'Start free'); assert.equal(await cta.getAttribute('href'), '/api/auth/google', 'Start free is Google sign-in')
     assert.equal(await page.getByRole('link', { name: 'See how it works' }).getAttribute('href'), '#how')

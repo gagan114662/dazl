@@ -9,8 +9,14 @@ import { FREE_BETA_TERMS } from '@/lib/legal/policy'
 // Self-referencing canonical (Indexing audit finding: the homepage had none, so the
 // apex and www duplicates competed). Kept on the page, not the root layout, so child
 // routes don't inherit a canonical pointing at the homepage.
+// #1705: the meta/OG description is the same single first step as the hero, with honest proof wording:
+// dazl does not open every source page (#1716), so it shows the dated public proof rather than claiming
+// to verify each lead against its source. Passed explicitly because publicMeta's default (lib/site.ts)
+// still carries the old wording and that file is outside this lane.
+const LANDING_DESCRIPTION = 'Say who you want to reach. dazl finds buyers showing intent and shows the dated public proof for each lead.'
+
 export const metadata: Metadata = {
-  ...publicMeta('/', SITE_TITLE),
+  ...publicMeta('/', SITE_TITLE, LANDING_DESCRIPTION),
   alternates: { canonical: SITE_BASE },
 }
 
@@ -65,7 +71,7 @@ export default function Home() {
       {/* #1705: one line plus the call to action, graspable in seconds. */}
       <section className="px-4 sm:px-6 pt-12 md:pt-20 pb-10 max-w-4xl mx-auto w-full text-center">
         <h1 className="lp-h1">Say who you want to reach.</h1>
-        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">dazl finds buyers showing that intent right now, verifies each lead against its source, and drafts the email from your Gmail.</p>
+        <p className="text-lg md:text-xl text-[var(--ink-2)] mt-6 max-w-2xl mx-auto leading-relaxed">dazl finds buyers showing that intent right now, shows the dated public proof for each lead, and drafts the email from your Gmail.</p>
         <div className="flex flex-wrap gap-3 mt-8 justify-center">
           <a href="/api/auth/google" className="btn-primary btn-lg" data-testid="hero-cta">Start free</a>
           <a href="#how" className="btn-ghost btn-lg">See how it works</a>

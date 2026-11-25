@@ -94,7 +94,7 @@ test('homepage evidence and coverage claims match what a scan returns (Instinct 
   assert.doesNotMatch(page, /Every lead (comes|shows)|Each lead comes|Evidence for every lead/)
   // #1705: the subhead is the single first step's pitch (the app's first screen asks "Who do you want to reach?").
   // What is missing or unconfirmed is said in the proof strip in plain words.
-  assert.match(page, /dazl finds buyers showing that intent right now, verifies each lead against its source, and drafts the email from your Gmail\./)
+  assert.match(page, /dazl finds buyers showing that intent right now, shows the dated public proof for each lead, and drafts the email from your Gmail\./)
   assert.match(page, /Each ready lead shows the exact line from its source page, with the link\./)
   assert.match(page, /Anything missing, such as a date or a person, is said on the lead\./)
   // Any business is welcome; results are not promised for every market.
