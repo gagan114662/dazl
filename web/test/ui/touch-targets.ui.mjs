@@ -205,6 +205,39 @@ try {
     } catch (e) { failures.push(`${tag}: could not be measured (${String(e.message).split('\n')[0].slice(0, 200)})`) }
     await c.close()
   }
+  // Review (#1774, Qodo): entering the app by CLIENT navigation (sign-in does router.push('/app'), no document load) must keep the skip link
+  // working with the phone menu open. An inline <script> in the layout does not run on that path; MainFocus (a client component) does.
+  // Isolated: the harness's seeded session, with the sign-in POST answered in the browser (no real credentials).
+  {
+    const tag = 'menu-skip@client-nav'
+    const c = await browser.newContext({ ...VIEWPORT, viewport: { width: 390, height: 844 } })
+    await c.route('**/*', r => new URL(r.request().url()).origin === srv.base ? r.continue() : r.abort())
+    const page = await c.newPage()
+    await stubApis(page, '/app/settings')
+    // The seeded user has no real password, so the answer to the sign-in POST is made here: the session cookie the real route would set, then {ok}.
+    await page.route('**/api/auth/signin', async r => { await c.addCookies([{ name: 'dazl_session', value: srv.token, url: srv.base }]); await r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) }) })
+    try {
+      await page.goto(srv.base + '/sign-in', { waitUntil: 'networkidle' })
+      await page.evaluate(() => { window.__noDocumentLoad = true })
+      await page.locator('input[name="email"]').fill('smoke@example.test')
+      await page.locator('input[name="password"]').fill('not-a-real-password')
+      await page.locator('form button[type="submit"]').first().click()
+      await page.waitForURL(/\/app(\?|#|$)/, { timeout: 20000 })
+      await page.locator('label[for="navtoggle"]').waitFor({ state: 'visible', timeout: 20000 })
+      const clientNav = await page.evaluate(() => window.__noDocumentLoad === true)
+      if (!clientNav) failures.push(`${tag}: the sign-in reached /app with a full document load, so the client-navigation path was not exercised`)
+      await page.waitForTimeout(800)
+      await page.locator('label[for="navtoggle"]').click({ timeout: 15000 })
+      await page.locator('nav[aria-label="Main"] a').first().waitFor({ state: 'visible', timeout: 15000 })
+      await page.locator('a.skip-link').focus()
+      await page.keyboard.press('Enter')
+      await page.waitForTimeout(300)
+      const skip = await page.evaluate(() => ({ checked: document.getElementById('navtoggle').checked, shown: getComputedStyle(document.querySelector('#main')).display !== 'none', focused: document.activeElement?.id === 'main' }))
+      if (skip.checked || !skip.shown || !skip.focused) failures.push(`${tag}: after a client-side sign-in, "Skip to content" with the menu open did not reach <main> (menu still open: ${skip.checked}, main shown: ${skip.shown}, main focused: ${skip.focused})`)
+      console.log(`${failures.some(f => f.startsWith(tag)) ? 'FAIL' : 'ok  '} ${tag}: client navigation=${clientNav}, menu closed=${!skip.checked}, main shown=${skip.shown}, main focused=${skip.focused}`)
+    } catch (e) { failures.push(`${tag}: could not be measured (${String(e.message).split('\n')[0].slice(0, 200)})`) }
+    await c.close()
+  }
 } finally {
   await browser?.close()
   srv.stop()

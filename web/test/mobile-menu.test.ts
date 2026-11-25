@@ -61,9 +61,11 @@ test('Inbox: the explanatory note under the reply-rate heading is readable size 
   assert.ok(cls.split(' ').includes('text-sm') && cls.split(' ').includes('sm:text-xs'), cls)
 })
 
-test('#1771 review: with the menu open <main> is hidden, so the layout closes the menu when the skip link is used', () => {
-  const layout = src('app/app/layout.tsx')
-  assert.match(layout, /a\.skip-link/, 'the layout handles clicks on the root skip link')
-  assert.match(layout, /\.checked=false/, 'and unchecks the menu toggle before the jump')
-  assert.ok(layout.indexOf("a.skip-link") < layout.indexOf('<main id="main"'), 'the handler is in place before <main>')
+test('#1771 review: with the menu open <main> is hidden, so the skip link closes the menu first, in the client component that runs on every entry to the app', () => {
+  const focus = src('app/app/main-focus.tsx'), layout = src('app/app/layout.tsx')
+  assert.match(focus, /import \{ closeMobileMenu \} from '\.\/nav-toggle'/)
+  const click = focus.slice(focus.indexOf("closest('a.skip-link')"))
+  assert.ok(click.indexOf('closeMobileMenu(document)') > -1 && click.indexOf('closeMobileMenu(document)') < click.indexOf('requestAnimationFrame'), 'the menu is closed before the focus is moved')
+  assert.doesNotMatch(layout, /a\.skip-link/, 'no inline script in the layout: Next does not run it after a client-side navigation (router.push after sign-in)')
+  assert.match(layout, /<MainFocus \/>/)
 })
