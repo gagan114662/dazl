@@ -41,7 +41,7 @@ export default function Home() {
   return (
     <main id="main" className="app-ui lp min-h-screen flex flex-col">
       <Banner />
-      <nav className="flex items-center justify-between gap-4 px-4 sm:px-6 md:px-10 py-5 max-w-6xl mx-auto w-full">
+      <nav className="relative flex items-center justify-between gap-4 px-4 sm:px-6 md:px-10 py-5 max-w-6xl mx-auto w-full">
         <span className="text-[22px] font-semibold tracking-tight">dazl</span>
         <div className="hidden md:flex gap-8 text-sm font-medium">
           <a href="#how" className="lp-navlink hover:opacity-70">How it works</a>
@@ -49,9 +49,9 @@ export default function Home() {
         </div>
         {/* #1705: below md the inline links are hidden, so the sections need another way in. A details/summary
             menu needs no client script. */}
-        <details className="md:hidden relative" data-testid="mobile-nav">
+        <details className="md:hidden static" data-testid="mobile-nav">
           <summary className="btn-ghost btn-sm list-none [&::-webkit-details-marker]:hidden cursor-pointer select-none">Menu</summary>
-          <div className="absolute right-0 top-full mt-2 lp-card p-4 flex flex-col gap-3 text-sm font-medium min-w-[10rem] z-20">
+          <div className="absolute left-4 right-4 top-full mt-1 lp-card p-4 flex flex-col gap-3 text-sm font-medium z-20 shadow-lg">
             <a href="#how" className="lp-navlink hover:opacity-70">How it works</a>
             <a href="#pricing" className="lp-navlink hover:opacity-70">Pricing</a>
           </div>
