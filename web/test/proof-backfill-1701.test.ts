@@ -93,6 +93,10 @@ test('a tenant backfill holds blocked and unnamed leads, quarantines dead proof,
     assert.deepEqual(await recheckDiscoveryProof(db, { ...options, execute: true }), { checked: 6, quarantined: 0, blocked: 0, unnamed: 0 })
     assert.deepEqual(rows(), confirmed)
     assert.equal(raw.prepare("SELECT human_confirmed_at FROM leads WHERE id = 'blocked'").pluck().get(), 20)
+    raw.exec("UPDATE leads SET human_confirmed_at = 30, review_reason = NULL WHERE id = 'unnamed'")
+    assert.deepEqual(await recheckDiscoveryProof(db, { ...options, execute: true }), { checked: 6, quarantined: 0, blocked: 0, unnamed: 1 })
+    assert.deepEqual(raw.prepare("SELECT human_confirmed_at, review_reason FROM leads WHERE id = 'unnamed'").get(),
+      { human_confirmed_at: 30, review_reason: 'no_buyer_named' })
   } finally {
     raw.close()
     rmSync(dir, { recursive: true, force: true })

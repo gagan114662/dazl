@@ -18,12 +18,11 @@ const LEAD = `SELECT l.id, l.source_url, l.name, l.review_reason, l.human_confir
   ${ELIGIBLE} AND l.id = ?`
 
 function reviewOutcome(lead: Lead, blocked: boolean): Exclude<Outcome, 'quarantined'> | null {
-  if (lead.human_confirmed_at !== null) return null
   if (lead.review_reason !== null && lead.review_reason !== 'blocked_by_site') return null
   const enrichments = lead.person_value ? [{ kind: 'person', connector: 'discover', value: lead.person_value }] : []
   const person = discoverContact({ source_kind: 'discover', name: lead.name, enrichments })?.person
   if (!person) return 'unnamed'
-  return blocked && lead.review_reason === null ? 'blocked' : null
+  return blocked && lead.review_reason === null && lead.human_confirmed_at === null ? 'blocked' : null
 }
 
 // One pass over a workspace's stored discovery leads. Only the original public proof URL is read.
@@ -66,8 +65,8 @@ export async function recheckDiscoveryProof(db: Db, { tenantId, execute, readPag
         if (!outcome) return null
         const reason = outcome === 'blocked' ? 'blocked_by_site' : NO_BUYER_NAMED
         const updated = yield* tx.run(
-          "UPDATE leads SET review_reason = ? WHERE id = ? AND quarantined_at IS NULL AND human_confirmed_at IS NULL AND COALESCE(review_reason, '') = ? AND source_url = ?",
-          [reason, lead.id, lead.review_reason ?? '', lead.source_url],
+          "UPDATE leads SET review_reason = ? WHERE id = ? AND quarantined_at IS NULL AND (? = 1 OR human_confirmed_at IS NULL) AND COALESCE(review_reason, '') = ? AND source_url = ?",
+          [reason, lead.id, outcome === 'unnamed' ? 1 : 0, lead.review_reason ?? '', lead.source_url],
         )
         return updated.changes === 1 ? outcome : null
       }, 'serializable')
