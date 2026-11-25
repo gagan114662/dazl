@@ -4,7 +4,7 @@ import { unexpectedStallWrites, type SmokeWrite, type SmokePageError } from './h
 
 const origin = 'http://127.0.0.1:4000'
 const frames = [{ file: '/_next/static/chunks/react.js', line: 31, col: 47398 }]
-const error: SmokePageError = { path: '/app/settings', message: 'Minified React error #418; visit https://react.dev/errors/418', stack: `Error: Minified React error #418
+const error: SmokePageError = { loadedScripts: [frames[0].file], path: '/app/settings', message: 'Minified React error #418; visit https://react.dev/errors/418', stack: `Error: Minified React error #418
     at r1 (${origin}${frames[0].file}:31:47398)` }
 const write: SmokeWrite = { method: 'POST', url: `${origin}/api/client-errors`, body: JSON.stringify({ kind: 'error', type: 'Error', path: '/app/settings', frames }) }
 
@@ -44,4 +44,19 @@ test('an unrelated write still fails beside the quarantined report', () => {
 })
 test('no writes needs no exception', () => {
   assert.deepEqual(unexpectedStallWrites([], [], origin), [])
+})
+
+test('a shortened two-loaded-bundle report is not quarantined', () => {
+  const other = { file: '/_next/static/chunks/settings.js', line: 45, col: 12 }
+  const observed = { ...error, stack: `${error.stack}\n    at settings (${origin}${other.file}:45:12)`, loadedScripts: [frames[0].file, other.file] }
+  const complete = { ...write, body: body({ frames: [...frames, other] }) }
+  assert.deepEqual(unexpectedStallWrites([complete], [observed], origin), [], 'complete correlated report control')
+  assert.deepEqual(unexpectedStallWrites([write], [observed], origin), ['POST /api/client-errors'], 'omitted loaded bundle must remain unexpected')
+})
+
+test('an unavailable or empty independent loaded-script snapshot cannot excuse a report', () => {
+  for (const loadedScripts of [undefined, null, []]) {
+    const observed = { ...error, loadedScripts } as unknown as SmokePageError
+    assert.deepEqual(unexpectedStallWrites([write], [observed], origin), ['POST /api/client-errors'])
+  }
 })

@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { loadPlaywright, startServer } from './harness.mjs'
+import { loadedScripts } from '../../lib/client-error-report.ts'
 import { unexpectedStallWrites, STALL_WRITE_QUARANTINE } from '../helpers/stall-write-quarantine.ts'
 const { chromium } = loadPlaywright()
 
@@ -32,6 +33,19 @@ try {
   await ctx.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort())
   const page = await ctx.newPage()
   const docs = [], writes = [], reports = [], pageErrors = []
+  // Observe the emitting document before navigation; never trust the submitted report's file list.
+  await ctx.exposeBinding('__dazlSmokePageErrorSnapshot', (_source, snapshot) => { pageErrors.push(snapshot) })
+  await ctx.addInitScript({ content: `(() => {
+    const snapshotLoadedScripts = (${loadedScripts.toString()});
+    globalThis.addEventListener('error', e => {
+      void globalThis.__dazlSmokePageErrorSnapshot({
+        path: globalThis.location.pathname,
+        message: String(e.error?.message ?? e.message ?? ''),
+        stack: String(e.error?.stack ?? '').slice(0, 8000),
+        loadedScripts: [...snapshotLoadedScripts(globalThis)],
+      }).catch(() => {});
+    });
+  })()` })
   page.on('request', r => {
     if (r.resourceType() === 'document') docs.push(new URL(r.url()).pathname)
     if (!['GET', 'HEAD'].includes(r.method())) writes.push({ method: r.method(), url: r.url(), body: r.postData() })
@@ -41,7 +55,6 @@ try {
   })
   page.on('pageerror', e => {
     reports.push(`pageerror: ${String(e?.stack ?? e).slice(0, 1500)}`)
-    pageErrors.push({ path: new URL(page.url()).pathname, message: e.message, stack: e.stack ?? '' })
   })
   page.on('console', m => { if (m.type() === 'error') reports.push(`console.error: ${m.text().slice(0, 500)}`) })
   const leadsLink = () => page.locator('aside').getByRole('link', { name: 'Leads', exact: true })

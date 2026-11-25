@@ -1,7 +1,7 @@
 import { clientFrames, type ClientFrame } from '../../lib/client-error-report.ts'
 
 export interface SmokeWrite { method: string; url: string; body: string | null }
-export interface SmokePageError { path: string; message: string; stack: string }
+export interface SmokePageError { path: string; message: string; stack: string; loadedScripts: string[] }
 
 // Factory removes this entry in the real hydration fix after #1752.
 export const STALL_WRITE_QUARANTINE = [{
@@ -43,9 +43,9 @@ export function unexpectedStallWrites(writes: SmokeWrite[], errors: SmokePageErr
     if (!row) return true
     for (const entry of STALL_WRITE_QUARANTINE) {
       if (row.path !== entry.path) continue
-      const loaded = new Set(row.frames.map(frame => frame.file))
       const match = remaining.findIndex(error => error.path === entry.path && entry.error.test(error.message)
-        && JSON.stringify(clientFrames(error.stack, loaded)) === JSON.stringify(row.frames))
+        && Array.isArray(error.loadedScripts) && error.loadedScripts.length > 0
+        && JSON.stringify(clientFrames(error.stack, new Set(error.loadedScripts))) === JSON.stringify(row.frames))
       if (match < 0) continue
       remaining.splice(match, 1)
       return false
