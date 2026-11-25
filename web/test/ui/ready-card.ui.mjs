@@ -54,9 +54,11 @@ const SCENES = {
 }
 // #1722: scenario 2c flips the sender mid-scene (filled in elsewhere); null = use the scene's own sender.
 let liveSender = null
+let settingsSlowUntil = 0
 const b = await chromium.launch()
 async function open(sc, width, height) {
   liveSender = null
+  settingsSlowUntil = 0
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
@@ -76,7 +78,12 @@ async function open(sc, width, height) {
     if (p === '/api/settings/llm-key') return json({ keys: sc.key ? [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }] : [], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [{ platform: 'reddit', allowed: true, consent: false, connected: false, enabled: false }] })
     if (p === '/api/scan/sources') return json({ web_index: false, news: true, websites: true })
-    if (p === '/api/outreach/settings') return json({ gmail: sc.gmail, sender: liveSender ?? sc.sender, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: [] })
+    if (p === '/api/outreach/settings') {
+      const snap = liveSender ?? sc.sender // the response snapshot is fixed when the request arrives
+      const d = settingsSlowUntil - Date.now()
+      if (d > 0) await new Promise(r => setTimeout(r, d + 400)) // #1722 2d: a slow older read
+      return json({ gmail: sc.gmail, sender: snap, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: [] })
+    }
     if (p === '/api/outreach') return json({ messages: sc.msgs })
     if (p === '/api/campaigns') return sc.camps === 'fail' ? json({ error: 'boom' }, 500) : json({ campaigns: sc.camps })
     return json({}, 404)
@@ -156,6 +163,22 @@ try {
     await page.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')) })
     await page.getByTestId('rc-sender').filter({ hasText: 'as Dana Smith' }).waitFor({ timeout: 15000 })
     assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example, as Dana Smith/)
+    assert.equal(await page.getByTestId('rc-progress').textContent(), '4 of 7 done')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2d. #1722: a slow older settings read must not revert the newer sender status. The wake's read starts
+    // first but is delayed; the sender is filled in and a second wake read lands first. The delayed older
+    // response must be discarded, not re-applied.
+    ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
+    await card(page).waitFor()
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sender name and mailing address are missing/)
+    settingsSlowUntil = Date.now() + 200
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // older read starts, gets delayed
+    await page.waitForTimeout(300) // it is in flight now
+    liveSender = SENDER
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // newer read starts, returns at once
+    await page.getByTestId('rc-sender').filter({ hasText: 'as Dana Smith' }).waitFor({ timeout: 15000 })
+    await page.waitForTimeout(900) // the delayed older response lands here
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example, as Dana Smith/, 'the delayed older read must not revert the sender status')
     assert.equal(await page.getByTestId('rc-progress').textContent(), '4 of 7 done')
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
