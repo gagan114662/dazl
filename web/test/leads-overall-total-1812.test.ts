@@ -24,3 +24,11 @@ test('#1812: a full history list offers the older searches control', () => {
   assert.ok(/pastJobs\.length >= 20[\s\S]+?Show older searches with ready leads/.test(leads))
   assert.match(leads, /ready\.scans\.filter\(scan => !listed\.has\(scan\.job_id\)\)/)
 })
+
+test('#1812: opening the latest search keeps the workspace total visible', () => {
+  const effect = leads.match(/const \[ready, setReady\][\s\S]*?const \[pastJobs, setPastJobs\]/)?.[0]
+  assert.ok(effect, 'workspace count read')
+  assert.ok(!effect.includes('if (jobId) return'), 'a search deep link also loads the workspace counts')
+  assert.ok(/\{ready && \(\s*<p[^>]*data-testid="leads-overall-total"/.test(leads),
+    'the workspace total is visible while viewing an individual search')
+})
