@@ -7,7 +7,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
-import { allowsLaunchLead, launchRegionSystemPrompt, readLaunchRegion } from './launch-region.ts'
+import { filterLaunchResults, launchRegionSystemPrompt, readLaunchRegion } from './launch-region.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
@@ -100,9 +100,9 @@ export function parseLeads(text: string, max: number, allow?: (lead: Record<stri
   const out: DiscoveredLead[] = [], seen = new Set<string>()
   for (const item of Array.isArray(o.leads) ? o.leads : []) {
     const l = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
-    if (allow && !allow(l)) continue
     const company = str(l.company, 150), signal = str(l.signal, 500), evidence_url = httpUrl(l.evidence_url)
     if (!company || !signal || !evidence_url) continue
+    if (allow && !allow(l)) continue
     const key = company.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
@@ -194,6 +194,6 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const settled = { ...usage, usd: usd(usage) }
   const launch = stop === 'refusal' ? null : readLaunchRegion(input, text, retainedLaunch)
   if (launch && !launch.ok) return { leads: [], seen: [], usage: settled, stop: launch.stop, model, note: launch.note }
-  const parsed = launch ? parseLeads(text, max, lead => allowsLaunchLead(lead, launch.places)) : { leads: [], note: 'the model declined this request' }
-  return { ...parsed, usage: settled, stop, model, seen: [...seen.values()] }
+  const parsed = launch ? filterLaunchResults(text, max, launch.places, parseLeads) : { leads: [], note: 'the model declined this request', stop: null }
+  return { ...parsed, usage: settled, stop: parsed.stop ?? stop, model, seen: parsed.stop ? [] : [...seen.values()] }
 }
