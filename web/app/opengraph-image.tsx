@@ -10,7 +10,7 @@ export default function OgImage() {
     (
       <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 80, background: '#fff', color: '#111', fontFamily: 'sans-serif' }}>
         <div style={{ fontSize: 104, fontWeight: 700, letterSpacing: '-0.04em' }}>dazl.</div>
-        <div style={{ fontSize: 40, marginTop: 20, lineHeight: 1.3, color: '#444' }}>Say who you are looking for. dazl finds buyers showing intent and verifies each lead against its source.</div>
+        <div style={{ fontSize: 40, marginTop: 20, lineHeight: 1.3, color: '#444' }}>Say who you want to reach. dazl finds buyers showing intent and shows the dated public proof for each lead.</div>
       </div>
     ),
     size,
