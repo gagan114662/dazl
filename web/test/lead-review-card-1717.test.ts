@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as jsx from 'react/jsx-runtime'
 import ts from 'typescript'
@@ -12,8 +13,10 @@ function render(fragment: string, bindings: Record<string, unknown>) {
     compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS },
     fileName: 'fragment.tsx',
   })
-  return renderToStaticMarkup(new Function('require', 'exports', ...Object.keys(bindings),
-    'let result; ' + outputText + '; return result')( () => jsx, {}, ...Object.values(bindings)))
+  const element = runInNewContext(outputText + '\nresult', {
+    ...bindings, require: () => jsx, exports: {}, result: undefined,
+  })
+  return renderToStaticMarkup(element)
 }
 
 test('review copy distinguishes a stored manual entry from an AI-found hold', () => {
@@ -21,7 +24,7 @@ test('review copy distinguishes a stored manual entry from an AI-found hold', ()
   const { outputText } = ts.transpileModule(declarations + '\nresult = reviewLabel;', {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   })
-  const reviewLabel = new Function('let result; ' + outputText + '; return result')()
+  const reviewLabel = runInNewContext(outputText + '\nresult', { result: undefined })
   const row = source.match(/<span className="text-\[#333\] text-xs mr-3">.*reviewLabel.*<\/span>/)?.[0]
   assert.ok(row)
   const label = (source_kind: string | null) => render(row, {
