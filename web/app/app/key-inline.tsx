@@ -1,3 +1,5 @@
-export default function KeyInline(_props: { reason: string; onSaved: () => void }) {
+const KeyInline: React.FC<{ reason: string; onSaved: () => void }> = () => {
   return null
 }
+
+export default KeyInline
