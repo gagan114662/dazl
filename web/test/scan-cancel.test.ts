@@ -82,7 +82,7 @@ test('Home never asks for an AI key once one is saved; seller profile stays visi
   // the sign-up line (lib/trial-copy.ts signUpPlanLine, rendered by sign-up-form.tsx) is mode-accurate. #1428: it used to
   // name the own-key plan in both modes ("with your own AI key"); now a key is named only where no free search can run.
   const { signUpPlanLine } = await import('../lib/trial-copy.ts')
-  assert.match(signUpPlanLine(true), /^dazl is free during the beta\. .* Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own\.$/)
+  assert.match(signUpPlanLine(true), /^dazl is free during the beta\. .* Your first search is free, whether you sign up with Google or with email\. No card needed\.$/)
   assert.match(signUpPlanLine(false), /a search runs on your own Anthropic key/)
   for (const funded of [true, false]) assert.match(signUpPlanLine(funded), /^dazl is free during the beta\./)
   assert.match(rd('../app/sign-up/sign-up-form.tsx'), /signUpPlanLine\(/)

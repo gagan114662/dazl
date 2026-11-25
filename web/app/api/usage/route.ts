@@ -5,7 +5,7 @@ import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
 import { readBillingStatus, readScanQuota } from '@/lib/plans'
 import { TRIAL_SCANS_PER_ACCOUNT, readTrialStatus } from '@/lib/scan/trial'
-import { trialPrincipal, trialRefusal } from '@/lib/billing/trial-budget'
+import { trialPrincipal, trialQaExemptAccount, trialRefusal } from '@/lib/billing/trial-budget'
 
 export async function GET(req: NextRequest) {
   const user = await requireUser()
@@ -21,9 +21,12 @@ export async function GET(req: NextRequest) {
   // The free-scans counter: what is left of the account's trial scans, and, when one would not run now, why (the
   // account or network caps of lib/scan/trial.ts, or dazl's trial budget and abuse limits, lib/billing/trial-budget.ts).
   const blocked = !t ? null : !t.funded ? t.reason ?? null : await trialRefusal(db, principal!)
+  // used: the account's real count from the trial store, so the counter never shows a full allowance after a search (#1704).
+  // exempt: the QA acceptance account (#1579), whose remaining never moves; the counter says so instead.
+  const exempt = !t || t.reason === 'not_configured' ? false : await trialQaExemptAccount(db, principal!.id)
   return NextResponse.json({
     plan: q.plan, scans_used: q.used, scan_limit: q.limit, has_key: keyed,
     billing_status: await readBillingStatus(db, user.tenantId), // e.g. past_due after a failed payment while Stripe retries (still Pro)
-    trial: t ? { funded: t.funded && blocked === null, remaining: t.remaining, cap: TRIAL_SCANS_PER_ACCOUNT, blocked } : null,
+    trial: t ? { funded: t.funded && blocked === null, remaining: t.remaining, used: t.used, exempt, cap: TRIAL_SCANS_PER_ACCOUNT, blocked } : null,
   })
 }

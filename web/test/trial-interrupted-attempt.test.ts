@@ -88,8 +88,9 @@ test('(B) estimate: a trial account with no free scans left is refused up front,
     assert.ok(e.verdict.message.length > 20 && !/No dollar limit|Within your limit/.test(e.verdict.message), why)
     assert.ok(e.verdict.change.length >= 1, `${why}: says what to change`)
   }
-  assert.match(estimateRun({ ...base, trialRefusal: 'attempts_cap' } as never).verdict.message, /used all 3 free trial scan attempts/)
-  assert.match(estimateRun({ ...base, trialRefusal: 'attempts_cap' } as never).verdict.change.join(' '), /AI key/)
+  assert.match(estimateRun({ ...base, trialRefusal: 'attempts_cap' } as never).verdict.message, /used all 3 free search attempts/)
+  // #1704: the way forward is the plan, never the account's own key (BYOK is being removed, #1703)
+  assert.deepEqual(estimateRun({ ...base, trialRefusal: 'attempts_cap' } as never).verdict.change, ['See your plan.'])
 })
 test('(B) estimate: no refusal, own key, or not-configured keep today\'s screen', () => {
   assert.equal(estimateRun({ ...base, trialRefusal: null } as never).verdict.ok, true)
@@ -185,7 +186,7 @@ test('(B) copy: a full day or a spent allowance never says "used 3 of 3" for a f
   assert.match(day.verdict.message, /used 0 of 3/)
   const money = estimateRun({ ...base, trialRefusal: 'account_total_cap', trialUsed: 1 } as never)
   assert.doesNotMatch(money.verdict.message, /3 of 3/); assert.match(money.verdict.message, /used 1 of 3/)
-  assert.match(estimateRun({ ...base, trialRefusal: 'attempts_cap', trialUsed: 0 } as never).verdict.message, /used all 3 free trial scan attempts/)
+  assert.match(estimateRun({ ...base, trialRefusal: 'attempts_cap', trialUsed: 0 } as never).verdict.message, /used all 3 free search attempts/)
   assert.doesNotMatch(day.verdict.message, /used 3 of 3/); assert.doesNotMatch(estimateRun({ ...base, trialRefusal: 'global_daily_cap' } as never).verdict.message, /3 of 3/, 'unknown count reads 0, never 3')
 })
 test('(B) an unpriced trial model does not overwrite the trial refusal', () => {
