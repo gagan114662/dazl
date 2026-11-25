@@ -1,17 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import vm from 'node:vm'
+import { renderToStaticMarkup } from 'react-dom/server'
+import ts from 'typescript'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
-import { checkEmailSource } from '../lib/discover/check.ts'
+import { checkEmailSource, checkLead } from '../lib/discover/check.ts'
 import { runDiscovery } from '../lib/discover/run.ts'
 import type { DiscoverResult } from '../lib/discover/agent.ts'
-import { discoverContact, discoverSources, PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
+import { discoverContact, discoverSources, isDiscoverLead, PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
 
-import { displayedEmailSource } from '../lib/outreach/published-email.ts'
+import { displayedEmailSource, emailsInText, publishedEmail } from '../lib/outreach/published-email.ts'
 
 const url = 'https://example.com/about'
 const email = 'buyer@example.com'
@@ -178,4 +183,51 @@ test('scan stores verified addresses after enrichment and preserves the original
   } finally {
     db.close()
   }
+})
+
+
+test('the own-fetch proof retains published mailto and Cloudflare addresses', async () => {
+  const encoded = '5a' + [...email].map(char => (char.charCodeAt(0) ^ 0x5a).toString(16).padStart(2, '0')).join('')
+  for (const markup of [
+    `<a href="mailto:${email}">Email Dana</a>`,
+    `<span class="__cf_email__" data-cfemail="${encoded}">[email protected]</span>`,
+  ]) {
+    const result = await checkLead(discoveryResult('').leads[0], [], async () => new Response(`<p>${quote}</p>${markup}`))
+    assert.equal(result.email, email, markup)
+    assert.equal(result.email_source_url, url)
+  }
+  const hidden = await checkLead(discoveryResult('').leads[0], [], async () =>
+    new Response(`<p data-email="${email}">${quote}</p><script>const internal = "${email}";</script>`))
+  assert.equal(hidden.email, null)
+})
+
+test('the lead card disables Approve when the recipient source is hidden', () => {
+  const filename = new URL('../app/app/leads/leads-client.tsx', import.meta.url)
+  const source = ts.createSourceFile('leads-client.tsx', readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  function find(node: ts.Node): ts.JsxElement | undefined {
+    if (ts.isJsxElement(node) && node.openingElement.tagName.getText(source) === 'button' &&
+        node.children.some(child => ts.isJsxText(child) && child.getText(source).trim() === 'Approve')) return node
+    return node.forEachChild(find)
+  }
+  const button = find(source)
+  assert.ok(button)
+  let parent: ts.Node = button
+  while (!ts.isBlock(parent) || !parent.statements.some(statement => statement.getText(source).startsWith('const lp ='))) parent = parent.parent
+  const declarations = parent.statements.filter(statement => ts.isVariableStatement(statement))
+    .slice(2).map(statement => statement.getText(source))
+  const compiled = ts.transpileModule(`${declarations.join('\n')}
+exports.button = (${button.getText(source)})`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText
+  const render = (evidence_excerpt: string) => {
+    const exports = { button: null }
+    vm.runInNewContext(compiled, { exports, require: createRequire(import.meta.url),
+      l: { id: 'proof', contact: email, source_url: url, evidence_excerpt }, lp: null,
+      c: { contact: email, contactNoPerson: email, approve: { ok: true } },
+      approving: {}, approved: {}, Icon: () => null, displayedEmailSource, discoverContact, emailsInText, isDiscoverLead, publishedEmail,
+    })
+    return renderToStaticMarkup(exports.button)
+  }
+  assert.match(render('The page lists press@example.com.'), /disabled=""/)
+  assert.doesNotMatch(render(`Contact Dana at ${email}.`), /disabled=""/)
 })

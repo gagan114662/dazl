@@ -1421,6 +1421,15 @@ export default function LeadsClient() {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               // #1037: the person to contact, on the row itself (lib/people/lead-person.ts); null = "No buyer named yet".
               const lp = leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
+              const contactLine = lp ? c.contact : c.contactNoPerson
+              const email = emailsInText(contactLine ?? '')[0]
+              const discovered = discoverContact(l)?.email
+              const emailSource = email && (discovered?.address === email ? discovered.source : displayedEmailSource(l, email.toLowerCase()))
+              const visibleLine = email && !emailSource ? contactLine?.slice(0, contactLine.indexOf(email)).replace(/ - $/, '').trim() : contactLine
+              const recipient = isDiscoverLead(l) ? discovered?.address : publishedEmail(l)
+              const approval = c.approve.ok && (!emailSource || email.toLowerCase() !== recipient?.toLowerCase())
+                ? { ok: false as const, reason: 'The recipient needs a visible email source before you can approve.' }
+                : c.approve
               return <div data-testid="lead-card">
                 {/* Below sm the actions sit under the identity so the company, contact and any warning get the full width. */}
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1430,12 +1439,7 @@ export default function LeadsClient() {
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
                     <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
-                    {(() => { const line = lp ? c.contact : c.contactNoPerson
-                      const email = emailsInText(line ?? '')[0]
-                      const discovered = discoverContact(l)?.email
-                      const source = email && (discovered?.address === email ? discovered.source : displayedEmailSource(l, email.toLowerCase()))
-                      const visibleLine = email && !source ? line?.slice(0, line.indexOf(email)).replace(/ - $/, '').trim() : line
-                      return <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{source && <> · <EmailSourceLink url={source} /></>}</div> })()}
+                    <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{emailSource && <> · <EmailSourceLink url={emailSource} /></>}</div>
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
@@ -1447,8 +1451,8 @@ export default function LeadsClient() {
                   </div>
                   </div>
                   {!l.quarantined_at && <div className="flex gap-2 shrink-0 pl-[52px] sm:pl-0" data-testid="card-actions">
-                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>
-                    {!c.approve.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
+                    <button onClick={() => approveLead(l.id)} disabled={!approval.ok || !!approving[l.id] || !!approved[l.id]} title={approval.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : approval.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>
+                    {!approval.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
                 </div>
@@ -1467,8 +1471,8 @@ export default function LeadsClient() {
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
-                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{c.approve.reason}</span></div>
-                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{c.approve.reason}</span></div> : null}
+                  : !approval.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{approval.reason}</span></div>
+                  : !approval.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{approval.reason}</span></div> : null}
               </div>
             })()}
             <details className="mt-2 text-sm">

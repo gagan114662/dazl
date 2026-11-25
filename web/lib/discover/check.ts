@@ -3,7 +3,7 @@
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { emailsInText } from '../outreach/published-email.ts'
 import { revealEmails } from '../people/email-reveal.ts'
-import { fetchPageDetailed } from '../scan/fetch-page.ts'
+import { fetchPageDetailed, htmlToText } from '../scan/fetch-page.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
@@ -177,6 +177,7 @@ async function readEmailPage(url: string): Promise<{ text: string } | null> {
   const page = await fetchPageDetailed(url, async () => null, AbortSignal.timeout(8_000), {
     allow: next => emailPageKey(next) === key,
     blocked: () => {},
+    includeEmailLinks: true,
   })
   return 'text' in page ? page : null
 }
@@ -327,7 +328,7 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
       if (r.ok) {
         const html = (await r.text()).slice(0, 1_500_000), body = text(html)
-        const emailPage = { url: r.url || u.href, title: null, page_age: null, text: body }
+        const emailPage = { url: r.url || u.href, title: null, page_age: null, text: htmlToText(html, true).text }
         lead = await checkEmailSource(lead, [...seen, emailPage])
         return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now)
       }
