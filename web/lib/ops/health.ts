@@ -23,6 +23,7 @@ import { DbQueue } from '../queue/db.ts'
 import { queueAlerts, type QueueAlert } from '../queue/alerts.ts'
 import { getMasterKey } from '../secrets.ts'
 import type { DeletionCheck, MailCheck } from './launch-checks.ts'
+import type { OutboxCheck } from '../system-mail.ts'
 
 export type CheckResult = { ok: true; ms: number } | { ok: false; ms: number; reason: 'error' | 'timeout' | 'behind' }
 export interface Readiness {
@@ -44,6 +45,8 @@ export interface Readiness {
     // #1089: can account mail leave the host, and can an account be deleted (lib/ops/launch-checks.ts)
     mail: MailCheck | { ok: true; skipped: 'not_wired' }
     deletion: DeletionCheck | { ok: true; skipped: 'not_wired' }
+    // #1089: is account mail piling up unsent in the stored outbox (lib/system-mail.ts outboxReadiness)
+    outbox: OutboxCheck | { ok: true; skipped: 'not_wired' }
   }
 }
 
@@ -59,6 +62,7 @@ export interface ReadinessDeps {
   // #1089: the route wires both; unit callers may leave them out (reported as skipped: 'not_wired')
   mail?: () => MailCheck
   deletion?: () => DeletionCheck
+  outbox?: () => Promise<OutboxCheck>
   // true: mail and deletion are part of `ok` (DAZL_READY_REQUIRES_LAUNCH=1); otherwise they are reported only
   launchRequired?: () => boolean
   timeoutMs?: number
@@ -123,6 +127,18 @@ export async function timed(name: string, f: () => Promise<'ok' | 'behind'>, tim
   } finally { clearTimeout(timer); deadline.catch(() => {}) }
 }
 
+// #1089: the outbox closure includes DB acquisition (health-route wires getDb inside it), so it gets the
+// same containment as the timed checks: a rejection or a stall becomes a failed check, never a thrown or
+// hung readiness. The response carries only the failed state — the error itself is captured server-side,
+// never exposed. A stalled closure is left behind (raced, nothing awaits it afterwards), like timed().
+async function timedOutbox(f: () => Promise<OutboxCheck>, timeoutMs: number): Promise<OutboxCheck> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Timeout()), timeoutMs) })
+  try { return await Promise.race([Promise.resolve().then(f), deadline]) }
+  catch (e) { captureError(e, { source: 'health', where: 'readiness:outbox' }); return { ok: false, reason: 'error' } }
+  finally { clearTimeout(timer); deadline.catch(() => {}) }
+}
+
 export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   const timeoutMs = d.timeoutMs ?? 2000, statsMs = d.statsTimeoutMs ?? Math.min(timeoutMs, 500), clock = d.clock ?? Date.now
   let db: Db | undefined
@@ -159,28 +175,33 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   const env = d.env ? envCheck(d.env()) : { ok: true as const, skipped: 'not_wired' as const }
   const mail = d.mail ? d.mail() : { ok: true as const, skipped: 'not_wired' as const }
   const deletion = d.deletion ? d.deletion() : { ok: true as const, skipped: 'not_wired' as const }
-  reportLaunchChecks(mail, deletion)
+  const outbox = d.outbox ? await timedOutbox(d.outbox, timeoutMs) : { ok: true as const, skipped: 'not_wired' as const }
+  reportLaunchChecks(mail, deletion, outbox)
   return {
-    ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok && (d.launchRequired?.() ? mail.ok && deletion.ok : true),
+    ok: store.ok && schema.ok && queue.ok && sqlite.ok && split.ok && env.ok && (d.launchRequired?.() ? mail.ok && deletion.ok && outbox.ok : true),
     // #1089: can a stranger use this deployment (account mail leaves the host, an account can be deleted)? Part of `ok`
     // only where the operator requires it; always stated here.
-    launch: { ok: mail.ok && deletion.ok, required: d.launchRequired?.() === true },
+    launch: { ok: mail.ok && deletion.ok && outbox.ok, required: d.launchRequired?.() === true },
     store: { engine, migrations: { shipped, applied }, raw_sqlite_modules: raw },
     queue: queueBody,
-    checks: { store: { ...store, engine }, schema, queue, sqlite, split, env, mail, deletion },
+    checks: { store: { ...store, engine }, schema, queue, sqlite, split, env, mail, deletion, outbox },
   }
 }
 
 // One error record when the mail or deletion state changes to a SETTLED failure (not on every probe), like the env check.
 // verify_pending is not a failure: the mail check never waits, so the first probe after every start reads pending, and a
-// healthy deployment must not raise an alert each time it starts. Pending leaves the last reported state as it was.
-let lastLaunch = ''
-export const resetLaunchReport = () => { lastLaunch = '' }
-function reportLaunchChecks(mail: { ok: boolean; reason?: string }, deletion: { ok: boolean; reason?: string }): void {
-  if (!mail.ok && mail.reason === 'verify_pending') return
-  const key = [mail.ok ? '' : `mail:${mail.reason}`, deletion.ok ? '' : `deletion:${deletion.reason}`].filter(Boolean).join(',')
+// healthy deployment must not raise an alert each time it starts. While mail is pending, the mail part of the key keeps
+// its last settled value, so a re-verification changes nothing by itself — but pending must not mask the other checks
+// (Qodo): an outbox or deletion failure that lands while mail is pending still reports.
+let lastLaunch = '', lastMailPart = ''
+export const resetLaunchReport = () => { lastLaunch = ''; lastMailPart = '' }
+function reportLaunchChecks(mail: { ok: boolean; reason?: string }, deletion: { ok: boolean; reason?: string }, outbox: { ok: boolean; reason?: string } = { ok: true }): void {
+  const pending = !mail.ok && mail.reason === 'verify_pending'
+  const mailPart = pending ? lastMailPart : mail.ok ? '' : `mail:${mail.reason}`
+  const key = [mailPart, deletion.ok ? '' : `deletion:${deletion.reason}`, outbox.ok ? '' : `outbox:${outbox.reason}`].filter(Boolean).join(',')
   if (key && key !== lastLaunch) captureError(new Error(`not ready for customers: ${key}`), { source: 'health', where: 'readiness:launch' })
   lastLaunch = key
+  if (!pending) lastMailPart = mailPart
 }
 
 // One error record when the set of queue alerts changes (not on every probe), like the env check.

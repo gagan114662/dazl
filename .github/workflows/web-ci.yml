@@ -9,6 +9,8 @@ on:
   # Manual run at an exact ref so a merged commit whose diff only touched release plumbing
   # can still carry the full required check set on its own SHA (checked_launch's gate).
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
 permissions:
   contents: read
 concurrency:

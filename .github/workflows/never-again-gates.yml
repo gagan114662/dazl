@@ -5,8 +5,13 @@ on:
   pull_request:
   push:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
 permissions:
   contents: read
+concurrency:
+  group: never-again-gates-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   never-again:
     runs-on: ubuntu-latest

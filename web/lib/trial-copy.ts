@@ -54,8 +54,10 @@ export function trialCopy(t: TrialBlock): TrialCopy {
       return { state: 'exhausted', text: `Your free searches' spending allowance is used up (website reads on the free trial count toward it). ${usedText}`, next: PLAN }
     case 'ip_throttle':
       return { state: 'throttled', text: `Too many free searches from your network today. Try again tomorrow. ${usedText}`, next: TOMORROW }
-    case 'global_daily_cap':
-      return { state: 'throttled', text: `Today's free searches are fully booked. Try again tomorrow (it resets at midnight UTC). ${usedText}`, next: TOMORROW }
+    case 'global_daily_cap': {
+      const notice = TRIAL_REFUSAL_COPY.global_daily_cap.text
+      return { state: 'throttled', text: t.exempt ? notice : `${notice} ${usedText}`, next: TOMORROW }
+    }
     case 'google_required':
       // A password account past its first free search (#1630) is told what it used, not that it never had one.
       if (t.used) return { state: 'ineligible', text: `You have used ${freeSearches(t.used)} on this account. More need Google sign-in: link Google to this account (no card).`, next: { label: 'Link Google', href: linkGoogleHref('/app/settings') } }
@@ -70,7 +72,6 @@ export function trialCopy(t: TrialBlock): TrialCopy {
 
 // #1704: the trial line every page shows (Settings > Plan, Plays).
 export function trialSummary(t: TrialBlock): { state: TrialCopyState; text: string } {
-  if (t.exempt) return { state: 'available', text: `${trialCountText(t)}.` }
   const { state, text } = trialCopy(t)
   return { state, text }
 }
