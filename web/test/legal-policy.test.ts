@@ -311,7 +311,7 @@ test('prospect rows are tenant-scoped; the only global address-based processing 
   for (const t of ['leads', 'lead_enrichments', 'inbound_messages', 'outreach_messages', 'sequences', 'followup_threads'])
     assert.ok(!globals.includes(t), `${t} must stay tenant-scoped`)
   assert.match(read('app/api/outreach/sequences/route.ts'), /stop_reason/)
-  assert.match(privacy, /dazl serves them only to that workspace/)
+  assert.match(privacy, /dazl serves them only to that workspace, and no route serves one customer's leads to another/)
   assert.match(privacy, /queued messages to that address that were waiting to go out without a further approval are stopped in every customer's workspace/)
   assert.match(privacy, /generic policy stop: the conversion kind \(signup, activation or payment\) does not appear in their stop reasons, lists or data exports/)
   assert.match(privacy, /bound to the recipient address until claimed/)
