@@ -21,7 +21,7 @@ export default function UsagePanel() {
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">AI rewrite attempts</h2>
-      <p className="text-[#555] text-sm mb-4">Every AI rewrite you asked for is listed here. The token numbers show how much text the AI read and wrote; they are not a cost estimate - your AI provider bills you directly and its account page shows the amounts.</p>
+      <p className="text-[#555] text-sm mb-4">Every AI rewrite you asked for is listed here. The token numbers show how much text the AI read and wrote; they are not a cost estimate.</p>
       {total === 0 ? <p className="text-sm text-[#666]">No AI rewrite attempts yet.</p> : (
         <>
           <p className="text-sm mb-3">{total} attempt{total === 1 ? '' : 's'} (newest first)</p>

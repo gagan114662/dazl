@@ -22,6 +22,8 @@ test('connectors panel: no env var names, tier jargon, API-key talk or "throwawa
   assert.doesNotMatch(s, /Tier 0 channels/)
   assert.doesNotMatch(s, /outside API key/)
   assert.doesNotMatch(s, /throwaway/i)
+  // Plain wording must not drop the third-party disclosure from the original caveat.
+  assert.match(s, /third-party services that receive the URLs or search terms/)
   // The ban risk is still said plainly.
   assert.match(s, /can limit or ban the account you use/)
   assert.match(s, /never your main one/)
@@ -40,6 +42,7 @@ test('usage panel: no "provider-reported usage" wording', () => {
   const s = src(FILES.usage)
   assert.doesNotMatch(s, /provider-reported/)
   assert.doesNotMatch(s, /what your provider reported back/)
+  assert.doesNotMatch(s, /your AI provider bills you directly/)
   assert.match(s, /not a cost estimate/)
 })
 
