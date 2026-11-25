@@ -608,7 +608,11 @@ function withdrawsSaved(withdrawn: string, saved: string): boolean {
   return !unrelatedTermExclusion(withdrawn, saved)
 }
 
-export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
+export function effectiveOffer(
+  play: { offer?: string | null; seller?: string | null; query?: string | null },
+  profileSells: string | null | undefined,
+  { newPlay = false }: { newPlay?: boolean } = {},
+): PlayOffer {
   const reviewed = completeOffer(play.offer)
   const incomplete = (): PlayOffer => ({ offer: null, source: 'conflict', conflict: { stated: null, recorded: '', incomplete: true } })
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
@@ -629,7 +633,8 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   }
   // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
   if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
-  if (!stated && hasSellerDescription(play.query)) return { offer: null, source: 'conflict', conflict: { stated: null, recorded: base ?? '', ambiguous: true } }
+  // Identity-only descriptions require a choice at admission. Historical reads keep the recorded offer.
+  if (newPlay && !stated && hasSellerDescription(play.query)) return { offer: null, source: 'conflict', conflict: { stated: null, recorded: base ?? '', ambiguous: true } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }
   if (stated) return { offer: stated, source: 'request', conflict: null }
   return { offer: null, source: 'none', conflict: null }

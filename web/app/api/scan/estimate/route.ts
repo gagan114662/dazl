@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
       const confirmed = await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller)
       if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
       if (!confirmed) {
-        const result = effectiveOffer({ seller, query }, readTenantOffer(getScanDb(), user.tenantId))
+        const result = effectiveOffer({ seller, query }, readTenantOffer(getScanDb(), user.tenantId), { newPlay: true })
         const conflict = result.conflict ?? (!result.offer || result.source === 'request'
           ? { stated: result.offer, recorded: '', incomplete: true as const } : null)
         if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated,

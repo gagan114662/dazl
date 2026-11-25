@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
     // profile offer), so a conflict surfaces here, at creation, for a Memory-only tenant too
     let tenant: string | null
     try { tenant = readTenantOffer(getScanDb(), user.tenantId) } catch (e) { captureError(e, { source: 'route', where: '/api/scan', method: 'POST', tenantId: user.tenantId, requestId: requestIdOf(req) }); return NextResponse.json({ error: 'offer_unreadable' }, { status: 503 }) }
-    const e = effectiveOffer({ seller, query }, tenant)
+    const e = effectiveOffer({ seller, query }, tenant, { newPlay: true })
     const conflict = e.conflict ?? (!e.offer || e.source === 'request'
       ? { stated: e.offer, recorded: '', incomplete: true as const } : null)
     if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated, saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}), ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })
