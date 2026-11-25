@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { denied, stale } from '@/lib/workspace-access'
 
@@ -15,7 +15,7 @@ export async function GET() {
   return gone()
 }
 
-export async function PUT(_req: NextRequest) {
+export async function PUT() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const no = denied(user, 'configure'); if (no) return no
@@ -23,7 +23,7 @@ export async function PUT(_req: NextRequest) {
   return gone()
 }
 
-export async function DELETE(_req: NextRequest) {
+export async function DELETE() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const no = denied(user, 'configure'); if (no) return no

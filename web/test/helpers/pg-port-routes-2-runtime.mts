@@ -147,7 +147,7 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: unknown }> {
   out.push(await call('advanced after', advanced.GET()))
   out.push(await call('connectors', connectors.GET()))
   out.push(await call('llm key', llmKey.GET()))
-  out.push(await call('llm key remove', llmKey.DELETE(req('/api/settings/llm-key', 'DELETE', { vendor: 'openai' }))))
+  out.push(await call('llm key remove', llmKey.DELETE()))
   out.push(await call('llm key after', llmKey.GET()))
   out.push(await call('warm none', warmConnections.GET()))
   const csv = 'First Name,Last Name,URL,Connected On\nAda,Lovelace,https://linkedin.com/in/adalovelace,15 Mar 2024\nAda,L,https://www.linkedin.com/in/AdaLovelace/,16 Mar 2024\nGrace,Hopper,https://linkedin.com/in/gracehopper,01 Jan 2023\nNo,Url,,02 Feb 2024\n'

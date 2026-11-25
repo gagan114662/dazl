@@ -136,7 +136,7 @@ if (contentOk && restored) {
           const ids = [...new Set(jobs.body.match(/\b[0-9a-f]{24}\b/g) ?? [])]
           let leadsRead = 0
           for (const id of ids) { const l = await get(`/api/leads?job_id=${id}`); if (l.status === 200) { try { const j = JSON.parse(l.body); leadsRead += Array.isArray(j.leads) ? j.leads.length : 0 } catch { /* counted as 0 */ } } }
-          const keys = await get('/api/settings/llm-key'), page = await get('/app/leads')
+          const usage = await get('/api/usage'), page = await get('/app/leads')
           // a scan on the restored store: accepted (202 with a job id) and readable back. Providers are fenced, so the
           // runner's calls fail without leaving the machine; the check is that the scan path works on this copy.
           const sc = await get('/api/scan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'recovery drill check: dental clinics in Toronto', offer: 'recovery drill check', mode: 'first5' }) })
@@ -145,8 +145,8 @@ if (contentOk && restored) {
           let scanError: string | null = null
           if (!scanId) { try { const e = JSON.parse(sc.body).error; scanError = typeof e === 'string' ? e.slice(0, 60) : null } catch { scanError = 'not json' } }
           const scanBack = scanId ? await get(`/api/scan/status?job_id=${scanId}&passive=1`) : null
-          Object.assign(detail, { scans_status: jobs.status, scans_read: ids.length, leads_read: leadsRead, key_status: keys.status, leads_page_status: page.status, scan_started_status: sc.status, scan_read_back_status: scanBack?.status ?? null, ...(scanError ? { scan_refused: scanError } : {}) })
-          ok &&= jobs.status === 200 && keys.status === 200 && page.status === 200 && (tenant.leads === 0 || leadsRead > 0) && sc.status === 202 && scanBack?.status === 200
+          Object.assign(detail, { scans_status: jobs.status, scans_read: ids.length, leads_read: leadsRead, usage_status: usage.status, leads_page_status: page.status, scan_started_status: sc.status, scan_read_back_status: scanBack?.status ?? null, ...(scanError ? { scan_refused: scanError } : {}) })
+          ok &&= jobs.status === 200 && usage.status === 200 && page.status === 200 && (tenant.leads === 0 || leadsRead > 0) && sc.status === 202 && scanBack?.status === 200
         } else { detail.note = 'no tenant with scans in this backup: reads and the scan not checked'; ok = false }
         // a real password sign-in through the app's own routes, as a drill-only account made in the restored COPY: the
         // account is created (sign-up), signed out, then signed in with its password; the new session must read the
@@ -160,7 +160,7 @@ if (contentOk && restored) {
         if (upCookie) await post('/api/auth/signout', {}, `dazl_session=${upCookie}`)
         const inn = await post('/api/auth/signin', { email, password })
         const inCookie = cookieOf(inn)
-        const me = inCookie ? await fetch(base + '/api/settings/llm-key', { redirect: 'manual', headers: { cookie: `dazl_session=${inCookie}` } }) : null
+        const me = inCookie ? await fetch(base + '/api/usage', { redirect: 'manual', headers: { cookie: `dazl_session=${inCookie}` } }) : null
         const wrong = await post('/api/auth/signin', { email, password: password + 'x' })
         Object.assign(detail, { sign_up_status: up.status, sign_in_status: inn.status, signed_in_read_status: me?.status ?? null, wrong_password_status: wrong.status })
         ok &&= up.status === 200 && inn.status === 200 && !!inCookie && me?.status === 200 && wrong.status === 401

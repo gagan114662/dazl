@@ -222,7 +222,7 @@ const checks: Record<string, boolean> = {
   ...(mode === 'full' ? {
     sign_in: appD.sign_in_status === 200 && appD.signed_in_read_status === 200 && appD.wrong_password_status === 401,
     scan: appD.scan_started_status === 202 && appD.scan_read_back_status === 200,
-    read: appD.scans_status === 200 && appD.key_status === 200 && appD.leads_page_status === 200 && Number(appD.leads_read) > 0,
+    read: appD.scans_status === 200 && appD.usage_status === 200 && appD.leads_page_status === 200 && Number(appD.leads_read) > 0,
     sending_disabled: appD.tick_status === 404,
   } : {}),
 }
