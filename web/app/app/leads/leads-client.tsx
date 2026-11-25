@@ -1782,7 +1782,7 @@ export default function LeadsClient() {
           <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked.</p>
           </> : <>
           <h2 className="text-sm font-semibold mt-8 mb-2" data-testid="research-heading">Research only</h2>
-          <p className="text-gray-500 text-xs mb-3" data-testid="research-intro">dazl could not verify a current, dated event of their own for these leads (no usable date, older than your time window, someone else&apos;s customer, a different place or a closed opening), so they will not be emailed, and checking their sources does not make them ready. Where dazl already searched other sources automatically, each row says so. To change the result, search again with a different signal or source.</p>
+          <p className="text-gray-500 text-xs mb-3" data-testid="research-intro">Each lead lists what is missing, such as a current dated event or that no buyer was named. These leads will not be emailed, and checking their sources does not make them ready. Where dazl already searched other sources automatically, each row says so.</p>
           </>}
           <div className="card divide-y divide-white/5">
             {rows.map(l => (

@@ -67,14 +67,14 @@ test('a tenant backfill holds blocked and unnamed leads, quarantines dead proof,
     } finally {
       await readonly.close()
     }
-    assert.deepEqual(preview, { checked: 8, quarantined: 2, blocked: 1, unnamed: 2 })
+    assert.deepEqual(preview, { checked: 8, quarantined: 2, blocked: 2, unnamed: 1 })
     assert.deepEqual(rows(), untouched)
     const applied = await recheckDiscoveryProof(db, { ...options, execute: true })
     assert.deepEqual(applied, preview)
     const after = rows()
     assert.deepEqual(after, [
       { id: 'blocked', review_reason: 'blocked_by_site', quarantine_reason: null },
-      { id: 'blocked-unnamed', review_reason: 'no_buyer_named', quarantine_reason: null },
+      { id: 'blocked-unnamed', review_reason: 'blocked_by_site', quarantine_reason: null },
       { id: 'dead', review_reason: null, quarantine_reason: 'page_not_found' },
       { id: 'enriched', review_reason: null, quarantine_reason: null },
       { id: 'live', review_reason: null, quarantine_reason: null },
@@ -109,4 +109,23 @@ test('an unnamed buyer does not override an undated or gated discovery lead', ()
   const now = new Date().toISOString().slice(0, 10)
   assert.equal(discoverState({ ...lead, event_date: now, gate_held: true }), 'research')
   assert.equal(discoverState({ ...lead, event_date: now }), 'no_contact')
+})
+
+test('a proof recheck never replaces an existing blocked-by-site hold on an unnamed lead', async () => {
+  const { recheckDiscoveryProof } = await import('../lib/proof-backfill.ts')
+  const raw = new Database(':memory:')
+  try {
+    migrateScan(raw)
+    migrateConnectors(raw)
+    raw.exec(`INSERT INTO scan_jobs (id, user_id, status, business_name, industry, location)
+      VALUES ('finished', 'workspace', 'running', 'Example', 'Retail', 'US');
+      INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, source_kind, review_reason)
+      VALUES ('held', 'finished', '', 'Example Outfitters', 'opening a store', 'https://retail.example/held', 'discover', 'blocked_by_site')`)
+    raw.exec("UPDATE scan_jobs SET status = 'done' WHERE id = 'finished'")
+    const db = sqliteDb(raw)
+    const readPage: typeof fetchPublicHtml = async () => ({ error: 'blocked', status: 403 })
+    assert.deepEqual(await recheckDiscoveryProof(db, { tenantId: 'workspace', execute: true, readPage }),
+      { checked: 1, quarantined: 0, blocked: 0, unnamed: 0 })
+    assert.equal(raw.prepare("SELECT review_reason FROM leads WHERE id = 'held'").pluck().get(), 'blocked_by_site')
+  } finally { raw.close() }
 })
