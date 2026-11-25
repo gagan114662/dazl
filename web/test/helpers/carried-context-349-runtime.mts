@@ -130,7 +130,16 @@ test('naming the current company does not imply changing its saved product', asy
   }
 })
 
-for (const next of ["We're a small marketing agency in Toronto", 'We are a small marketing agency in Toronto', 'I run a dental practice in Austin', "I'm a plumber in Oakville", 'I am a plumber in Oakville']) {
+for (const next of [
+  "We're a small marketing agency in Toronto", 'We are a small marketing agency in Toronto',
+  'I run a dental practice in Austin', "I'm a plumber in Oakville", 'I am a plumber in Oakville',
+  "I'm the owner of a ceramics studio in Kyoto", 'We are plumbers in Oakville',
+  'My company sells language lessons to remote workers',
+  'Our business offers bookkeeping to independent retailers',
+  'My agency provides creative services to local businesses',
+  'Our practice is a physiotherapy clinic in Porto',
+  'We sell ceramics to restaurants', 'We offer language lessons to remote workers',
+]) {
   for (const handler of [ESTIMATE, SCAN]) test(`seller self-description requires a choice at ${handler === ESTIMATE ? 'estimate' : 'scan'}: ${next}`, async () => {
     const t = tenant('a B2B sales-automation SaaS to small marketing agencies')
     const before = db.prepare('SELECT * FROM users WHERE id=?').get(t)
@@ -150,6 +159,13 @@ test('buyer searches, exclusions, negations and quoted identities never become s
     'We are not a dental practice. Find independent clinics in Ontario',
     'I am looking for dental practices in Austin',
     'We are seeking plumbers in Oakville',
+    'Find agencies we sell to in Ontario',
+    'Find owners of practices offering physiotherapy',
+    'Find agencies. Exclude owners who say "My company sells language lessons"',
+    'Our agency is looking for dental practices in Austin',
+    'My company does not sell ceramics. Find retailers',
+    'We sell to dental practices in Austin',
+    'We offer to contact founders in Ontario',
   ]) for (const handler of [ESTIMATE, SCAN]) {
     const t = tenant()
     const result = await request(t, handler, { query: next, icp: profile, reviewed: false })

@@ -59,9 +59,9 @@ test('at the caps exactly: accepted and stored whole (6 exclusions, 160-char ite
   assert.deepEqual(stored.exclude, icp.exclude); assert.deepEqual(stored.signals, icp.signals); assert.equal(stored.summary, icp.summary)
 })
 
-test('a valid or absent window, country and language are accepted and kept; null and "" mean not given', async () => {
+test('explicitly reviewed valid window, country and language are accepted and kept', async () => {
   const db = setup(); as(db)
-  const r1 = await post({ query: Q, icp: { ...BASE, window_days: 90, country: 'gb', language: 'EN' } })
+  const r1 = await post({ query: Q, reviewed: true, icp: { ...BASE, window_days: 90, country: 'gb', language: 'EN' } })
   assert.equal(r1.status, 202, JSON.stringify(await r1.clone().json()))
   const stored = JSON.parse((db.prepare('SELECT icp FROM scan_jobs ORDER BY rowid DESC').get() as { icp: string }).icp)
   assert.equal(stored.window_days, 90); assert.equal(stored.country, 'GB'); assert.equal(stored.language, 'en')

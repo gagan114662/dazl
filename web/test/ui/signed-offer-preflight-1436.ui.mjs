@@ -18,16 +18,17 @@ const require=createRequire(join(dir,'package.json'))
 const Database=require('better-sqlite3')
 const httpOnly=process.argv.includes('--http-only')
 const sameBrand=process.argv.includes('--same-brand')
+const sellerDescription=process.argv.includes('--seller-description')
 assert.ok(existsSync(join(dir,'.next/BUILD_ID')),'build the actual app before this test')
 const root=mkdtempSync(join(tmpdir(),'dazl-signed-offer-1436-')), file=join(root,'app.db')
 const db=new Database(file)
 const actor='fixture-owner',away='fixture-other',oldJob='a'.repeat(24)
 const oldQuery='Find independent dental practices in New York City hiring a receptionist.'
 const dental='Dental appointment reminder software'
-const savedOffer=sameBrand?'dazl':dental
-const chosenOffer=sameBrand?savedOffer:'CRM setup services'
+const savedOffer=sellerDescription?'B2B sales-automation SaaS':sameBrand?'dazl':dental
+const chosenOffer=sellerDescription||sameBrand?savedOffer:'CRM setup services'
 const buyer={summary:'Independent dental practices in New York City',who:['Practice owner'],where:['New York City'],industries:['Dental'],sizes:[],signals:[],exclude:[],country:'US',language:'en',window_days:45}
-const query=sameBrand
+const query=sellerDescription?'I run a dental practice in Austin':sameBrand
   ?'Find leads for dazl (dazl.ai): small marketing and creative agencies in Toronto, Ontario hiring an SDR or sales development rep.'
   :'We sell CRM setup services to independent creative agencies in Toronto hiring their first sales rep.'
 const fakeSession=()=>randomBytes(32).toString('hex')
@@ -92,7 +93,9 @@ try{
   console.log('signed old-context quote status:',before.status,'same brand:',sameBrand)
   assert.equal(before.status,sameBrand?200:409,'only a different seller offer needs a choice')
   if(sameBrand) assert.equal(before.data.estimate.verdict.ok,true)
-  else assert.deepEqual(before.data,{error:'offer_conflict',stated:chosenOffer,saved:savedOffer})
+  else assert.deepEqual(before.data,sellerDescription
+    ?{error:'offer_conflict',stated:null,saved:savedOffer,ambiguous:true}
+    :{error:'offer_conflict',stated:chosenOffer,saved:savedOffer})
   const outside=await request('/api/scan/estimate',{query,icp:latest.data.icp,reviewed:false},other)
   assert.notEqual(outside.data?.saved,savedOffer,'another workspace cannot learn the stored offer')
   const selected=await request('/api/scan/estimate',{query,offer:chosenOffer})
@@ -139,6 +142,8 @@ try{
         const shots=process.env.SHOTS
         if(shots){mkdirSync(shots,{recursive:true});await page.screenshot({path:join(shots,'different-choice-'+width+'.png')})}
       }
+      if(sellerDescription)assert.doesNotMatch(await page.getByTestId('offer-chooser').innerText(),/parenthesis is unfinished/i,
+        'an ordinary seller description must not be blamed on a broken parenthesis')
       const quoteResponse=page.waitForResponse(r=>r.url()===base+'/api/scan/estimate'&&r.status()===200)
       await use.click()
       const submitted=(await quoteResponse).request().postDataJSON()
