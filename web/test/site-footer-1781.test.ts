@@ -34,6 +34,12 @@ test('#1781 every internal footer link points at a page that exists', () => {
   }
 })
 
+test('#1781 every footer link is a 44px touch target', () => {
+  assert.match(footer, /const LINK = 'inline-flex items-center min-h-11 px-2 -mx-2 hover:text-\[var\(--ink\)\]'/)
+  assert.equal(footer.split('className={LINK}').length - 1, 4, 'Terms, Privacy, Contact and the support address use it')
+  assert.match(footer, /<Link href="\/sign-in" className=\{`\$\{LINK\} whitespace-nowrap`\}>/, 'Sign in too')
+})
+
 for (const { name, src } of layouts) {
   test(`#1781 /${name} renders the shared site footer inside the visible-height wrapper`, () => {
     assert.match(src, /import SiteFooter from '\.\.\/site-footer'/, 'the shared component, not a copy')
