@@ -65,8 +65,11 @@ const SCENES = {
 let liveSender = null
 let settingsSlowUntil = 0
 let profileSlowFirst = 0 // one-shot: delays the first /api/settings/profile response (the mount read)
+let profileGate = 0 // 2h: holds this many /api/settings/profile GETs until releaseHeldProfiles() (armed BEFORE open, like profileSlowFirst)
+const profileHeld = []
+const releaseHeldProfiles = () => { while (profileHeld.length) profileHeld.shift()() }
 const b = await chromium.launch()
-async function open(sc, width, height) {
+async function open(sc, width, height, opts = {}) {
   liveSender = null
   settingsSlowUntil = 0
   const ctx = await b.newContext({ viewport: { width, height } })
@@ -84,6 +87,7 @@ async function open(sc, width, height) {
       return json({ error: 'not stubbed' }, 400)
     }
     if (p === '/api/settings/profile') {
+      if (profileGate > 0) { profileGate--; await new Promise(r => profileHeld.push(r)) } // 2h: the held mount read (see the scenario)
       if (profileSlowFirst > 0) { const ms = profileSlowFirst; profileSlowFirst = 0; await new Promise(r => setTimeout(r, ms)) } // #1760 2e/2f: a slow mount read
       return json(sc.profile)
     }
@@ -108,8 +112,15 @@ async function open(sc, width, height) {
     return json({}, 404)
   })
   const page = await ctx.newPage()
-  await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
-  await page.getByTestId('journey').waitFor({ timeout: 15000 }); await page.waitForLoadState('networkidle')
+  if (opts.deferProfile) {
+    // 2h: profile reads are held behind profileGate, so networkidle would never fire. The observable barrier instead:
+    // FirstRun renders nothing until its own (ungated) reads resolve, so setup-details visible = page resolved and mounted.
+    await page.goto(`${base}/app`, { waitUntil: 'domcontentloaded' })
+    await page.getByTestId('setup-details').waitFor({ timeout: 15000 })
+  } else {
+    await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
+    await page.getByTestId('journey').waitFor({ timeout: 15000 }); await page.waitForLoadState('networkidle')
+  }
   return { ctx, page, writes }
 }
 const card = page => page.getByTestId('ready-card')
@@ -229,25 +240,52 @@ try {
     // 2h. #1760 (Ziggy review on ae7767bbb): typing into one field before the saved profile loads must not keep
     // the untouched website blank - the seed fills every field the user did not touch, and Save then posts the
     // stored website, not an empty string that would erase it.
-    profileSlowFirst = 1500
-    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
-    await page.waitForTimeout(200) // the mount read is in flight, delayed
-    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // the wake's read starts and lands first
-    await card(page).waitFor()
-    await page.getByTestId('setup-details').locator('summary').click()
-    await page.getByTestId('ready-site').getByRole('button').click()
-    await page.getByLabel('What you sell').fill('Typed sells line')
-    await page.waitForTimeout(2000) // the delayed older read lands here
-    assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example', `${tag}: the untouched website still seeds when another field was typed`)
-    assert.equal(await page.getByLabel('What you sell').inputValue(), 'Typed sells line', `${tag}: the typed field keeps its input`)
-    await page.getByRole('button', { name: 'Save' }).click()
-    await page.waitForTimeout(400)
-    const saveCall = writes.find(x => x.startsWith('POST /api/settings/profile '))
-    assert.ok(saveCall, `${tag}: the save posted`)
-    const posted = JSON.parse(saveCall.slice('POST /api/settings/profile '.length))
-    assert.equal(posted.website, 'https://brightsmile.example', `${tag}: the POST keeps the stored website`)
-    assert.equal(posted.sells, 'Typed sells line', `${tag}: the POST keeps the typed sells`)
-    assert.deepEqual(writes.filter(x => !x.startsWith('POST /api/settings/profile')), []); await ctx.close()
+    // Exact ordering, all observable (no sleeps standing in for state): /app fires three profile reads on load -
+    // FirstRun's (ungated, or the page renders nothing), then Journey's and the readiness panel's mount read.
+    // profileGate holds the two post-FirstRun mount reads, so the page is up with the readiness form UNSEEDED.
+    // A wake re-read (focus) then lands first - the card rendering is the barrier that it did - and it never seeds.
+    // Typing happens before the gate opens; releasing it lands the stale mount read, which must still seed the
+    // untouched fields. The Save POST is awaited with a request wait armed BEFORE the click, never a fixed sleep.
+    profileGate = 2
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h, { deferProfile: true }))
+    const pageErrors = [], reqFailed = []
+    page.on('pageerror', e => pageErrors.push(String(e).split('\n')[0].slice(0, 200)))
+    page.on('requestfailed', r => reqFailed.push(`${r.method()} ${new URL(r.url()).pathname} ${r.failure()?.errorText}`.slice(0, 200)))
+    try {
+      // readiness.tsx renders nothing until its first load applies (`if (!input) return null`), so a ready-site row
+      // in the DOM is the observable barrier that a readiness read landed; the mount read is held, so that was the wake's.
+      const wake0 = Date.now() // hydration timing varies: re-dispatch focus until the barrier holds
+      while (!(await page.getByTestId('ready-site').count()) && Date.now() - wake0 < 15000) { await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await page.waitForTimeout(250) }
+      assert.ok((await page.getByTestId('ready-site').count()) > 0, `${tag}: the wake read never landed (no readiness rows while the mount read was held)`)
+      await page.getByTestId('setup-details').locator('summary').click()
+      await page.getByTestId('ready-site').getByRole('button').click()
+      assert.equal(await page.getByLabel('Your website').inputValue(), '', `${tag}: the form is unseeded while the mount read is held`)
+      await page.getByLabel('What you sell').fill('Typed sells line')
+      releaseHeldProfiles() // the stale mount read lands here
+      const seed0 = Date.now() // observable barrier: the seed actually arrived, bounded
+      while ((await page.getByLabel('Your website').inputValue()) === '' && Date.now() - seed0 < 15000) await page.waitForTimeout(50)
+      assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example', `${tag}: the untouched website still seeds when another field was typed`)
+      assert.equal(await page.getByLabel('Business name').inputValue(), 'Brightsmile', `${tag}: the untouched business name seeds`)
+      assert.equal(await page.getByLabel('What you sell').inputValue(), 'Typed sells line', `${tag}: the typed field keeps its input`)
+      // The browser's own verdict that every required control is populated (the source fixture alone is not proof).
+      const validity = await page.evaluate(() => { const f = document.querySelector('[data-testid="ready-site"] form'); return f ? { valid: f.checkValidity(), invalid: [...f.querySelectorAll('input')].filter(i => !i.validity.valid).map(i => i.getAttribute('aria-label')) } : null })
+      assert.ok(validity && validity.valid, `${tag}: the populated form is valid before Save (${JSON.stringify(validity)})`)
+      const savePosted = page.waitForRequest(r => r.method() === 'POST' && new URL(r.url()).pathname === '/api/settings/profile', { timeout: 15000 })
+      await page.getByRole('button', { name: 'Save' }).click()
+      await savePosted // armed before the click: the browser provably issued the POST
+      const w0 = Date.now(); let saveCall // the harness ledger carries the body; the route handler runs just after the request event
+      while (!(saveCall = writes.find(x => x.startsWith('POST /api/settings/profile '))) && Date.now() - w0 < 5000) await page.waitForTimeout(50)
+      assert.ok(saveCall, `${tag}: the save posted`)
+      const posted = JSON.parse(saveCall.slice('POST /api/settings/profile '.length))
+      assert.equal(posted.website, 'https://brightsmile.example', `${tag}: the POST keeps the stored website`)
+      assert.equal(posted.sells, 'Typed sells line', `${tag}: the POST keeps the typed sells`)
+      assert.deepEqual(writes.filter(x => !x.startsWith('POST /api/settings/profile')), [])
+    } catch (e) {
+      const diag = await page.evaluate(() => { const f = document.querySelector('[data-testid="ready-site"] form'); const save = f?.querySelector('button'); return { formPresent: !!f, formValid: f ? f.checkValidity() : null, invalidFields: f ? [...f.querySelectorAll('input')].filter(i => !i.validity.valid).map(i => i.getAttribute('aria-label')) : null, saveEnabled: save ? !save.disabled : null, siteMsg: f?.querySelector('[role="status"]')?.textContent ?? null } }).catch(err => ({ diagError: String(err).split('\n')[0].slice(0, 120) }))
+      e.message = `${e.message} | diag=${JSON.stringify(diag)} writes=${JSON.stringify(writes).slice(0, 400)} pageErrors=${JSON.stringify(pageErrors)} requestFailed=${JSON.stringify(reqFailed)}`
+      throw e
+    }
+    await ctx.close()
     // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
     // leads with no company name - rendered on the real Home page from the stubbed /api/home/results answer
     // (RESULTS2G), at both widths.
