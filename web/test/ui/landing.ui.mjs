@@ -101,6 +101,21 @@ try {
       assert.ok(await page.locator('#pricing .lp-card').first().isVisible(), 'Pricing navigates to the pricing section')
       // #1705 follow-up: the panel closes after a link is tapped.
       assert.equal(await menu.evaluate(el => el.open), false, 'the menu closes after a link tap')
+      // Quest review on PR #1751: the same holds when the landing page is reached through a client-side
+      // transition (the logo link on /sign-in), where a page-level inline script never executes. Fails on
+      // head 587692234 (handler attaches only on full loads); passes with the LandingMenu client component.
+      await page.goto(base + '/sign-in', { waitUntil: 'networkidle' })
+      await page.evaluate(() => { window.__clientNavMarker = 'same-document' })
+      await page.locator('a[href="/"]').first().click()
+      await page.getByTestId('mobile-nav').waitFor({ state: 'visible' })
+      assert.equal(await page.evaluate(() => window.__clientNavMarker), 'same-document', 'arrived via a client-side transition, not a reload')
+      const menu2 = page.getByTestId('mobile-nav')
+      await menu2.locator('summary').click()
+      assert.ok(await menu2.evaluate(el => el.open), 'the menu opens on the client-navigated visit')
+      await menu2.getByRole('link', { name: 'Pricing' }).click()
+      await page.waitForTimeout(300)
+      assert.equal(await menu2.evaluate(el => el.open), false, 'the menu closes after a link tap on the client-navigated visit')
+      assert.equal(new URL(page.url()).hash, '#pricing', 'and still navigates to the section')
     } else {
       assert.ok(!(await page.getByTestId('mobile-nav').isVisible()), 'no mobile menu on desktop')
     }

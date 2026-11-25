@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import Banner from './banner'
+import LandingMenu from './landing-menu'
 import LandingDemo from './landing-demo'
 
 import { SITE_BASE, SITE_TITLE, SUPPORT_EMAIL, publicMeta } from '@/lib/site'
@@ -43,10 +44,6 @@ const PROOF = [
   ['You approve every email', 'Every message is reviewed and sent by you, from your own Gmail. Autopilot is not available during the beta.'],
 ]
 
-// #1705 follow-up: close the mobile menu after a link is tapped. A one-line inline handler keeps the menu
-// in this server component (same pattern as the chunk-recovery script in layout.tsx; CSP allows inline scripts).
-const MOBILE_MENU_CLOSE = `document.querySelectorAll('[data-testid="mobile-nav"] a').forEach(function (a) { a.addEventListener('click', function () { var d = a.closest('details'); if (d) d.open = false }) })`
-
 export default function Home() {
   return (
     <main id="main" className="app-ui lp min-h-screen flex flex-col">
@@ -57,16 +54,10 @@ export default function Home() {
           <a href="#how" className="lp-navlink hover:opacity-70">How it works</a>
           <a href="#pricing" className="lp-navlink hover:opacity-70">Pricing</a>
         </div>
-        {/* #1705: below md the inline links are hidden, so the sections need another way in. A details/summary
-            menu needs no client script. */}
-        <details className="md:hidden static" data-testid="mobile-nav">
-          <summary className="btn-ghost btn-sm list-none [&::-webkit-details-marker]:hidden cursor-pointer select-none">Menu</summary>
-          <div className="absolute left-4 right-4 top-full mt-1 lp-card p-4 flex flex-col gap-3 text-sm font-medium z-20 shadow-lg">
-            <a href="#how" className="lp-navlink hover:opacity-70">How it works</a>
-            <a href="#pricing" className="lp-navlink hover:opacity-70">Pricing</a>
-          </div>
-        </details>
-        <script dangerouslySetInnerHTML={{ __html: MOBILE_MENU_CLOSE }} />
+        {/* #1705: below md the inline links are hidden, so the sections need another way in. The menu is a
+            small client component (landing-menu.tsx) so it closes after a tap on every render, including
+            client-side transitions, where a page-level inline script never runs. */}
+        <LandingMenu />
         <div className="flex gap-2">
           <Link href="/sign-in" className="btn-ghost">Sign in</Link>
           <a href="/api/auth/google" className="btn-primary">Start free</a>

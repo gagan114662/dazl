@@ -69,14 +69,21 @@ test('#1705: the mobile header has a menu: How it works and Pricing reachable be
   const page = read('app/page.tsx')
   const nav = page.slice(page.indexOf('<nav'), page.indexOf('</nav>'))
   assert.match(nav, /hidden md:flex/, 'desktop inline links stay')
-  assert.match(nav, /md:hidden/, 'a mobile-only control exists')
-  const menu = nav.slice(nav.indexOf('md:hidden'))
+  assert.doesNotMatch(nav, /md:hidden/, 'no inline mobile markup left in page.tsx (moved to LandingMenu)')
+  assert.match(nav, /<LandingMenu \/>/, 'a mobile-only control exists (the LandingMenu component)')
+  // Follow-up (Gagan, 2026-11-25 12:45 ET approval; Quest review on PR #1751): the menu closes after a
+  // link tap on every render via a small client component - a page-level inline script never runs on
+  // client-side transitions (reproduced rendered). It closes on the tap (hash links do not change the
+  // pathname) and on any route change through usePathname. This test fails on 587692234, where
+  // app/landing-menu.tsx does not exist.
+  const menu = read('app/landing-menu.tsx')
+  assert.match(menu, /md:hidden/, 'the menu is mobile-only')
+  assert.match(menu, /^'use client'/m, 'the menu is a client component (hydrates on client transitions)')
+  assert.match(menu, /usePathname/)
+  assert.match(menu, /ref\.current\.open = false/)
   assert.match(menu, /#how/)
   assert.match(menu, /#pricing/)
-  // Follow-up (Gagan, 2026-11-25; Quest scope: only the menu handler in page.tsx): the menu closes after
-  // a link is tapped, via one inline handler in this server component - no client component, no new file.
-  assert.match(page, /MOBILE_MENU_CLOSE/)
-  assert.match(page, /addEventListener\('click'/)
-  assert.match(page, /d\.open = false/)
+  assert.match(menu, /onClick={close}/, 'hash-link taps close the panel directly')
+  assert.match(menu, /data-testid="mobile-nav"/)
   assert.doesNotMatch(page, /'use client'/, 'page.tsx stays a server component')
 })
