@@ -185,7 +185,7 @@ try {
       } finally { await ctx.close() }
     })
     // #1095 (Hermes review): the cost panel for a run the free trial refused claims no payer (never "Paid by the shared
-    // free trial" above "Free scans need a Google account") and offers Link Google back to this page.
+    // free trial" above "Free searches need a Google account") and offers Link Google back to this page.
     await check(`/app/leads blocked trial estimate @${width}`, async () => {
       const o = await open(width, '/app/leads', null)
       const label = `/app/leads blocked estimate @${width}`
@@ -197,7 +197,8 @@ try {
         assert.equal(await panel.getAttribute('data-verdict'), 'blocked', `${label}: blocked`)
         const t = await panel.innerText()
         assert.doesNotMatch(t, /Paid by the shared free trial/i, `${label}: a refused run is not paid by the trial`)
-        assert.match(t, /Free scans need a Google account/, `${label}: why, in words`)
+        assert.match(t, /Free searches need a Google account/, `${label}: why, in words`)
+        assert.doesNotMatch(t, /AI key/, `${label}: no key to add (#1704)`)
         await wayForward(o.page, false, 'failed', label)
         assert.equal(await o.page.getByTestId('estimate-confirm-run').count(), 0, `${label}: no Run button`)
         await noOverflow(o.page, label)

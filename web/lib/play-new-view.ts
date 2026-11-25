@@ -5,7 +5,8 @@
 // Decision (Hermes, under delegation, reversible): no new table or migration for a per-device read marker; a new device
 // shows the play's new leads once more. Anything unreadable in storage reads as "never checked" (0), never as a time
 // in the future that would hide new leads.
-import { whenOf } from './saved-plays.ts'
+import { whenOf, type PlaysAnswer, type SavedPlay } from './saved-plays.ts'
+import { FREE_SEARCHES_USED_UP } from './trial-copy.ts'
 
 export const seenKey = (kind: string, id: string) => `dazl:play-seen:${kind}:${id}`
 
@@ -45,6 +46,13 @@ export function runEnded(httpStatus: number, body: unknown): boolean {
   return s === 'done' || s === 'failed'
 }
 
+// #1704: a play the scheduler paused because its free searches ran out says so in the shared words (lib/trial-copy.ts),
+// with no key to add; every other status keeps its own label.
+export function playStatusLabel(p: SavedPlay, a: Pick<PlaysAnswer, 'watches' | 'monitors'> | null): string {
+  const row = !a ? undefined : p.kind === 'watch' ? a.watches.find(w => w.id === p.id) : a.monitors.find(m => m.id === p.id)
+  return !p.active && row?.paused_reason === 'trial_used' ? `Paused: ${FREE_SEARCHES_USED_UP.toLowerCase()}` : p.status.label
+}
+
 export type RunNowAnswer = { job_id: string; next_run_at: number; funded_by?: 'user' | 'trial' } | { error: string; retry_at?: number } | null
 // What the person sees after pressing Find leads now: one sentence, never a raw code.
 export function runNowMessage(status: number, body: RunNowAnswer, timeZone?: string): { ok: boolean; text: string } {
@@ -53,8 +61,8 @@ export function runNowMessage(status: number, body: RunNowAnswer, timeZone?: str
   switch (e) {
     case 'paused': return { ok: false, text: 'This play is paused. Resume it to run it.' }
     case 'no_api_key': return { ok: false, text: 'Running a play on demand uses your own AI key. Add one in Settings, or run a one-off search in Leads.' }
-    case 'trial_used': return { ok: false, text: 'Your free searches are used up. Add your own AI key in Settings to keep this play running.' }
-    case 'trial_busy': return { ok: false, text: "Today's free searches are all taken. Try again tomorrow, or add your own AI key in Settings." }
+    case 'trial_used': return { ok: false, text: `${FREE_SEARCHES_USED_UP} This play cannot run on them again.` }
+    case 'trial_busy': return { ok: false, text: "Today's free searches are all taken. Try again tomorrow." }
     case 'daily_cap': return { ok: false, text: `The free plan runs this play once a day and a search already ran today. It can run again after ${body && 'retry_at' in body && typeof body.retry_at === 'number' ? whenOf(body.retry_at, timeZone) : 'midnight UTC'}.` }
     case 'runner_unavailable': return { ok: false, text: "Plays can't be run on demand right now. Its scheduled run still happens." }
     case 'quota_exceeded': return { ok: false, text: "This month's scans are used up, so it can't run now." }

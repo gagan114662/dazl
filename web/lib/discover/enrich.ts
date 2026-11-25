@@ -3,12 +3,13 @@
 // own people. It runs on the small model, in parallel, and only fills fields that are empty. It never changes the signal,
 // its date or its proof, and never replaces a person the first pass already found.
 import Anthropic from '@anthropic-ai/sdk'
+import { configuredSearchAllowance, createSearchBudget, type SearchBudget } from './search-budget.ts'
 import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage } from './agent.ts'
 
 export const ENRICH_MODEL = process.env.DAZL_DISCOVER_ENRICH_MODEL?.trim() || 'claude-haiku-5-5'
 // US$ per million tokens for the default small model, and per web search.
 const PRICE = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, search: 0.01 }
-const MAX_SEARCHES = Number(process.env.DAZL_DISCOVER_ENRICH_SEARCHES || 4)
+const MAX_SEARCHES = configuredSearchAllowance(process.env.DAZL_DISCOVER_ENRICH_SEARCHES ?? '4')
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_ENRICH_FETCHES || 2)
 
 const SYSTEM = `You are given one company and what a seller wants to sell to it. Find these on the open web:
@@ -135,20 +136,28 @@ const usdOf = (u: Omit<DiscoverUsage, 'usd'>) => Math.round(((u.input_tokens * P
 export const enrichRequest = (lead: DiscoveredLead, offer: string | null): string => [`Company: ${lead.company}`, lead.domain ? `Website: ${lead.domain}` : '', `What we know: ${lead.signal}`, `Where we read it: ${lead.evidence_url}`,
   lead.person ? `Person already found: ${[lead.person, lead.title].filter(Boolean).join(', ')}` : '', offer ? `The seller sells: ${str(offer, 400)}` : ''].filter(Boolean).join('\n')
 
-async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string | null, allSeen: Map<string, SeenPage>, usage: Omit<DiscoverUsage, 'usd'>, signal?: AbortSignal): Promise<Enriched> {
+async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string | null, allSeen: Map<string, SeenPage>, usage: Omit<DiscoverUsage, 'usd'>, searchBudget: SearchBudget, safe: () => boolean, signal?: AbortSignal): Promise<Enriched> {
   const user = enrichRequest(lead, offer)
   const seen = new Map<string, SeenPage>()   // this lookup's own results: the profile check reads these only
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: user }]
   let text = ''
   for (let turn = 0; turn < 3; turn++) {
+    const reservation = await searchBudget.reserve(MAX_SEARCHES)
+    if (!safe()) throw new Error('Enrichment accounting is uncertain; no further request was sent')
     const res = await client.messages.stream({
-      model: ENRICH_MODEL, max_tokens: 4000, system: SYSTEM,
+      model: ENRICH_MODEL, max_tokens: 4000, service_tier: 'standard_only', system: SYSTEM,
       tools: [
-        { type: 'web_search_20250305', name: 'web_search', max_uses: MAX_SEARCHES },
+        ...(reservation.allowance > 0 ? [{ type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
         { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: MAX_FETCHES, max_content_tokens: 4000 },
       ],
       messages,
     }, { signal }).finalMessage()
+    if (res.model !== ENRICH_MODEL ||
+      ![res.usage.input_tokens, res.usage.output_tokens, res.usage.cache_read_input_tokens, res.usage.cache_creation_input_tokens]
+        .every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)) {
+      throw new Error('Enrichment usage is unavailable; reservation retained')
+    }
+    await reservation.settle(reservation.allowance === 0 ? 0 : res.usage.server_tool_use?.web_search_requests)
     usage.requests++
     usage.input_tokens += res.usage.input_tokens ?? 0
     usage.output_tokens += res.usage.output_tokens ?? 0
@@ -176,22 +185,25 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
 }
 
 // Fills the empty person and website fields of the leads that need it. A lead whose call fails is returned unchanged.
-export async function enrichLeads(leads: DiscoveredLead[], o: { offer?: string | null; maxLeads?: number }, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal }, concurrency = 4): Promise<{ leads: DiscoveredLead[]; usage: DiscoverUsage; seen: SeenPage[]; enriched: number }> {
-  const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 2 })
+export async function enrichLeads(leads: DiscoveredLead[], o: { offer?: string | null; maxLeads?: number }, deps: { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; searchBudget?: SearchBudget }, concurrency = 4): Promise<{ leads: DiscoveredLead[]; usage: DiscoverUsage; seen: SeenPage[]; enriched: number; accountingUncertain?: boolean }> {
+  if (ENRICH_MODEL !== 'claude-haiku-5-5') throw new Error('Enrichment requires the supported small-model cost policy')
+  const client = new Anthropic({ apiKey: deps.apiKey, fetch: deps.fetch, maxRetries: 0 })
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   const seen = new Map<string, SeenPage>()
+  const searchBudget = deps.searchBudget ?? createSearchBudget()
   const out = [...leads]
   const todo = leads.map((l, i) => ({ l, i })).filter(x => needsEnrichment(x.l)).slice(0, o.maxLeads ?? 12)
-  let next = 0, enriched = 0
+  let next = 0, enriched = 0, accountingUncertain = false
   await Promise.all(Array.from({ length: Math.min(concurrency, todo.length) }, async () => {
     for (let k = next++; k < todo.length; k = next++) {
+      if (accountingUncertain) break
       const { l, i } = todo[k]
       try {
-        const merged = mergeEnriched(l, await enrichOne(client, l, o.offer ?? null, seen, usage, deps.signal))
+        const merged = mergeEnriched(l, await enrichOne(client, l, o.offer ?? null, seen, usage, searchBudget, () => !accountingUncertain, deps.signal))
         if (merged.person !== l.person || merged.domain !== l.domain || merged.linkedin_url !== l.linkedin_url) enriched++
         out[i] = merged
-      } catch { /* this lead stays as the first pass left it */ }
+      } catch { accountingUncertain = true }
     }
   }))
-  return { leads: out, usage: { ...usage, usd: usdOf(usage) }, seen: [...seen.values()], enriched }
+  return { leads: out, usage: { ...usage, usd: usdOf(usage) }, seen: [...seen.values()], enriched, accountingUncertain }
 }

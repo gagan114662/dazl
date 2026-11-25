@@ -16,6 +16,7 @@ const sendCapNote = (cap: number) => `Sent ${cap} today, more tomorrow to keep y
 const ERR: Record<string, string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   sender_identity_missing: 'Add your name and mailing address in the form at the top of this page first.',
+  draft_changed: 'This draft changed while the test was being prepared, so nothing was sent. Check the current words and try again.',
   gmail_not_connected: 'Connect Gmail in Settings first.',
   gmail_reconnect_needed: 'Gmail needs to be reconnected in Settings.',
   suppressed: 'This address unsubscribed, so it will not be emailed.',
@@ -28,6 +29,9 @@ const ERR: Record<string, string> = {
   domain_unconfirmed: 'The website behind this draft is not confirmed as the right company. Confirm it on the Leads page ("This website is the right company"). That check is not need or consent. If the lead shows no check there, skip this draft and create a new one from the lead.',
   lead_evidence_withdrawn: 'The lead confirmation behind this draft was withdrawn. Re-confirm the lead on the Leads page - dazl has not verified it.',
   already_sending: 'This message is already being sent.',
+  send_outcome_unknown: 'Gmail did not confirm that send. Check your inbox and Sent folder before trying again.',
+  gmail_unavailable: 'Gmail could not be reached just now. Nothing was sent. Try again in a minute.',
+  connection_replaced: 'The Gmail connection changed while sending. Nothing was sent. Check Settings, then try again.',
   already_uncertain: 'We could not confirm whether this was sent. Check your Gmail Sent folder, then choose below.',
 }
 
@@ -88,16 +92,32 @@ export default function OutreachClient() {
     const j = await r.json()
     if (!r.ok) setNote(j.error === 'daily_cap' && Number.isInteger(j.cap) ? sendCapNote(j.cap) : ERR[j.error] || 'That did not work')
     else if (j.result === 'uncertain') setNote('Gmail did not confirm the send. Check your Sent folder, then choose whether it went out.')
+    else if (j.result === 'test_sent') setNote(`Test sent to ${j.to} — the exact email, with the footer and unsubscribe link as the prospect would get them. This draft is unchanged.`)
     void load()
+  }
+  // #1711: a refused save used to collapse into one generic note, so a blank subject looked like it had
+  // silently reverted. The API error code now names the field, shown under the editor; the edit stays open.
+  const [editError, setEditError] = useState<Record<string, string>>({})
+  const SAVE_ERR: Record<string, string> = {
+    bad_subject: 'The subject cannot be empty or longer than 150 characters. Nothing was saved; your last saved subject is still in place.',
+    bad_body: 'The message must be 20 to 3000 characters. Nothing was saved; your last saved message is still in place.',
+    not_editable: 'This message can no longer be edited.',
+    not_found: 'This message is no longer there. Reload the page.',
   }
   async function save(id: string) {
     const e = edit[id]
     const r = await fetch(`/api/outreach/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(e) })
-    if (r.ok) { setEdit(({ [id]: _, ...rest }) => rest); void load() } else setNote('Subject or message is the wrong length')
+    if (r.ok) { setEdit(x => { const n = { ...x }; delete n[id]; return n }); setEditError(x => { const n = { ...x }; delete n[id]; return n }); void load() }
+    else { const j = await r.json().catch(() => null) as { error?: string } | null; setEditError(x => ({ ...x, [id]: SAVE_ERR[j?.error ?? ''] ?? 'That change could not be saved. Your last saved words are still in place.' })) }
   }
 
   const btn = 'btn-ghost text-xs px-3 py-1.5'
-  const shown = scan ? (scan.leadIds ? forScan(msgs, scan.leadIds) : []) : msgs
+  // #1711: skipped drafts used to stay in the list forever (there is no delete). They are hidden by default now.
+  const [showSkipped, setShowSkipped] = useState(false)
+  const base = scan ? (scan.leadIds ? forScan(msgs, scan.leadIds) : []) : msgs
+  // the toggle counts what this view can actually reveal: the scan-filtered list, not every scan's skipped
+  const skippedCount = base.filter(m => m.status === 'skipped').length
+  const shown = showSkipped ? base : base.filter(m => m.status !== 'skipped')
   return (
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
@@ -112,6 +132,7 @@ export default function OutreachClient() {
         <a className="underline" href="/app/outreach">{scan.leadIds === null ? 'show all emails' : 'Show all emails'}</a>{scan.leadIds === null ? '.' : ''} <a className="underline" href={`/app/leads?job_id=${scan.id}`}>Back to its leads</a></p>}
       {scan && playOffer !== undefined && <div className="mb-4" data-testid="outreach-play-offer"><PlayOfferCard jobId={scan.id} offer={playOffer} onChange={setPlayOffer} /></div>}
       {loaded && !loadFailed && msgs.length === 0 && <p className="text-[#666] text-sm">No emails yet. Open Leads and choose Draft email on a lead with a published address.</p>}
+      {loaded && !loadFailed && skippedCount > 0 && <label className="flex items-center gap-2 text-xs text-[#555] mb-4 cursor-pointer"><input type="checkbox" checked={showSkipped} onChange={x => setShowSkipped(x.target.checked)} /> Show skipped ({skippedCount})</label>}
       <div className="flex flex-col gap-3">
         {shown.map(m => {
           const e = edit[m.id]
@@ -124,21 +145,24 @@ export default function OutreachClient() {
               {['draft','approved'].includes(m.status) && <Provenance value={m.provenance} />}
               {e ? (
                 <div className="flex flex-col gap-2">
-                  <input className="bg-white border border-black/20 rounded px-3 py-2" value={e.subject} maxLength={150} onChange={x => setEdit({ ...edit, [m.id]: { ...e, subject: x.target.value } })} />
-                  <textarea className="bg-white border border-black/20 rounded px-3 py-2" rows={9} value={e.body} maxLength={3000} onChange={x => setEdit({ ...edit, [m.id]: { ...e, body: x.target.value } })} />
+                  <div className="text-xs text-[#555]">To: {m.to_email} <span className="text-[#999]">(read-only — to check the final email first, save and use “Send test to me”; the test goes to your own inbox)</span></div>
+                  <input className="bg-white border border-black/20 rounded px-3 py-2" value={e.subject} maxLength={150} onChange={x => setEdit({ ...edit, [m.id]: { ...e, subject: x.target.value } })} aria-label="Subject" />
+                  <textarea className="bg-white border border-black/20 rounded px-3 py-2" rows={9} value={e.body} maxLength={3000} onChange={x => setEdit({ ...edit, [m.id]: { ...e, body: x.target.value } })} aria-label="Message" />
                   <div className="flex gap-2"><button className={btn} onClick={() => save(m.id)}>Save</button><button className={btn} onClick={() => setEdit(({ [m.id]: _, ...rest }) => rest)}>Cancel</button></div>
+                  {editError[m.id] && <p className="text-xs text-[#111] border-l-2 border-[#111] pl-3" role="alert">{editError[m.id]}</p>}
                 </div>
               ) : (
                 <>
-                  <div className="font-medium mb-1">{m.subject}</div>
-                  <pre className="whitespace-pre-wrap text-[#333] font-sans mb-3">{m.body}</pre>
-                  {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <div className="mb-3"><pre className="whitespace-pre-wrap text-[#666] font-sans text-xs" aria-label="Added automatically when sent">{m.send_footer}</pre><p className="text-[11px] text-[#999] mt-1">Added when sent, from your current Settings. Edit your name or address there before sending if it is wrong.</p></div> : <p className="text-xs text-[#666] mb-3">Sending needs your name and mailing address - add them in the form at the top of this page. They are appended automatically.</p>)}
+                  <div className="font-medium break-words mb-1">{m.subject}</div>
+                  <pre className="whitespace-pre-wrap break-words text-[#333] font-sans mb-3">{m.body}</pre>
+                  {(m.status === 'draft' || m.status === 'approved') && (m.send_footer ? <div className="mb-3"><pre className="whitespace-pre-wrap break-words text-[#666] font-sans text-xs" aria-label="Added automatically when sent">{m.send_footer}</pre><p className="text-[11px] text-[#999] mt-1">Added when sent, from your current Settings. Edit your name or address there before sending if it is wrong.</p></div> : <p className="text-xs text-[#666] mb-3">Sending needs your name and mailing address - add them in the form at the top of this page. They are appended automatically.</p>)}
                   <div className="flex gap-2 flex-wrap">
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
                     {m.status === 'draft' && <button className={btn} title="Rewrites this draft with your own AI key - your provider bills you for the call" onClick={() => void polish(m.id)}>Rewrite with AI (uses your key)</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && !sequencesOff && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)} title="Creates editable templates without an AI call or provider charge">Create 3-step sequence (templates)</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
+                    {(m.status === 'draft' || m.status === 'approved') && <button className={btn} title="Send the exact final email, footer and unsubscribe link included, to your own connected Gmail address" onClick={() => act(m.id, 'test')}>Send test to me</button>}
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => act(m.id, 'skip')}>Skip</button>}
                     {m.status === 'uncertain' && <><button className={btn} onClick={() => act(m.id, 'mark_sent')}>It was sent</button><button className={btn} onClick={() => act(m.id, 'retry')}>It was not sent, allow retry</button></>}
                   </div>

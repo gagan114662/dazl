@@ -1,4 +1,5 @@
 import { qaClaudeOnlyTransport } from './qa-provider-policy.ts'
+import { scanSpendSchemaSql } from './spend-schema.ts'
 // Hard per-scan spend cap (#377 / #533 closure blocker 1). Every paid provider call a scan can make reserves its
 // worst-case cost against the scan's own durable ledger row BEFORE the request is sent, and is refused (nothing is
 // sent) when the reservation would pass the scan's cap. The cap is the owner's CAD 5 per paid scan.
@@ -561,26 +562,11 @@ export async function scanSpendCalls(d: DbLike, jobId: string, tenantId: string)
   return rows.map(r => ({ id: String(r.id), scan_job_id: String(r.scan_job_id), attempt: Number(r.attempt), kind: String(r.kind), reserve_usd: Number(r.reserve_usd), actual_usd: r.actual_usd === null ? null : Number(r.actual_usd), status: String(r.status), reason: r.reason === null ? null : String(r.reason), created_at: Number(r.created_at) }))
 }
 
-// SQLite side (Postgres: lib/db/migrations/pg/0048_scan_spend_cap.sql). Called from migrateScan, after scan_jobs exists.
+// SQLite side; Postgres uses the checked-in migrations.
 export function migrateScanSpendCap(db: Database.Database): void {
   const has = (c: string) => (db.prepare('PRAGMA table_info(scan_jobs)').all() as { name: string }[]).some(r => r.name === c)
   if (!has('spend_cap_usd')) db.exec(`ALTER TABLE scan_jobs ADD COLUMN spend_cap_usd REAL CHECK (spend_cap_usd IS NULL OR (spend_cap_usd > 0 AND spend_cap_usd <= ${STORE_CAP_BOUND_USD}))`)
   if (!has('spend_cap_reserved_usd')) db.exec('ALTER TABLE scan_jobs ADD COLUMN spend_cap_reserved_usd REAL NOT NULL DEFAULT 0 CHECK (spend_cap_reserved_usd >= 0)')
   if (!has('spend_cap_refusals')) db.exec('ALTER TABLE scan_jobs ADD COLUMN spend_cap_refusals INTEGER NOT NULL DEFAULT 0')
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS scan_spend_calls (
-      id          TEXT PRIMARY KEY,
-      user_id     TEXT NOT NULL,
-      scan_job_id TEXT NOT NULL,
-      attempt     INTEGER NOT NULL,
-      kind        TEXT NOT NULL CHECK (length(kind) <= 32),
-      reserve_usd REAL NOT NULL CHECK (reserve_usd >= 0),
-      actual_usd  REAL CHECK (actual_usd IS NULL OR actual_usd >= 0),
-      status      TEXT NOT NULL CHECK (status IN ('reserved','settled','kept','refused')),
-      reason      TEXT CHECK (reason IS NULL OR length(reason) <= 80),
-      created_at  INTEGER NOT NULL,
-      settled_at  INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS scan_spend_calls_job ON scan_spend_calls (user_id, scan_job_id);
-  `)
+  db.exec(scanSpendSchemaSql())
 }

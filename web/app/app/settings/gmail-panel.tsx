@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
 import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 
-interface State { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; sent_today?: number }
+interface State { autopilot_available?: boolean; google_app_verified?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; sent_today?: number }
 
 export default function GmailPanel() {
   const [s, setS] = useState<State | null>(null)
@@ -73,11 +73,15 @@ export default function GmailPanel() {
           {s.gmail.status === 'active' && (
             <p className="text-[#666] text-xs mt-1">{s.gmail.read_granted ? 'Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.' : 'Send only. dazl does not read this mailbox: replies and delivery-failure notices arrive in your Gmail inbox.'}</p>
           )}
+          {s.gmail.status !== 'active' && !s.google_app_verified && (
+            <p className="text-[#666] text-xs mt-1" data-testid="gmail-panel-verification-note">{'Reconnecting goes through Google again: dazl is waiting on Google\'s review of its app, so Google first shows a warning that says "Google hasn\'t verified this app". That is expected. On the warning, click "Advanced", then "Go to dazl.ai (unsafe)".'}</p>
+          )}
         </div>
       ) : (
         <div className="mb-4">
           <a href={GMAIL_EXPLAINER_PATH} className="inline-block btn-primary px-5 py-2 text-sm">Connect Gmail</a>
           <p className="text-[#666] text-xs mt-2">Google will ask for permission to send email as you. dazl does not ask to read your mailbox.</p>
+          {!s?.google_app_verified && <p className="text-[#666] text-xs mt-2" data-testid="gmail-panel-verification-note">{'One heads-up: dazl is waiting on Google\'s review of its app, so Google first shows a warning that says "Google hasn\'t verified this app". That is expected. The page before Google explains it; on the warning itself, click "Advanced", then "Go to dazl.ai (unsafe)".'}</p>}
         </div>
       )}
       <form onSubmit={saveSender} className="flex flex-col gap-3">
