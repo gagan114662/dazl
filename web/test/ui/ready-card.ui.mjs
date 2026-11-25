@@ -66,6 +66,7 @@ let liveSender = null
 let settingsSlowUntil = 0
 let profileSlowFirst = 0 // one-shot: delays the first /api/settings/profile response (the mount read)
 let profileGate = 0 // 2h: holds this many /api/settings/profile GETs until releaseHeldProfiles() (armed BEFORE open, like profileSlowFirst)
+let profileSeen = 0 // profile GETs served since the gate was armed; the FIRST is FirstRun's own read and always passes
 const profileHeld = []
 const releaseHeldProfiles = () => { while (profileHeld.length) profileHeld.shift()() }
 const b = await chromium.launch()
@@ -87,7 +88,9 @@ async function open(sc, width, height, opts = {}) {
       return json({ error: 'not stubbed' }, 400)
     }
     if (p === '/api/settings/profile') {
-      if (profileGate > 0) { profileGate--; await new Promise(r => profileHeld.push(r)) } // 2h: the held mount read (see the scenario)
+      // The first profile GET on /app is FirstRun's own (the page renders nothing until it resolves) - never hold it.
+      if (profileGate > 0 && ++profileSeen > 1) { profileGate--; await new Promise(r => profileHeld.push(r)) } // 2h: the held post-FirstRun mount reads
+
       if (profileSlowFirst > 0) { const ms = profileSlowFirst; profileSlowFirst = 0; await new Promise(r => setTimeout(r, ms)) } // #1760 2e/2f: a slow mount read
       return json(sc.profile)
     }
@@ -246,7 +249,7 @@ try {
     // A wake re-read (focus) then lands first - the card rendering is the barrier that it did - and it never seeds.
     // Typing happens before the gate opens; releasing it lands the stale mount read, which must still seed the
     // untouched fields. The Save POST is awaited with a request wait armed BEFORE the click, never a fixed sleep.
-    profileGate = 2
+    profileGate = 2; profileSeen = 0
     ;({ ctx, page, writes } = await open(SCENES.siteform, w, h, { deferProfile: true }))
     const pageErrors = [], reqFailed = []
     page.on('pageerror', e => pageErrors.push(String(e).split('\n')[0].slice(0, 200)))
