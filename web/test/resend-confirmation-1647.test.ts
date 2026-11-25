@@ -6,6 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 test('#1647 resend confirmation: same answer for every address, capped, signed-in path unchanged (real routes, no network)', () => {
@@ -14,4 +15,10 @@ test('#1647 resend confirmation: same answer for every address, capped, signed-i
     { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 180000 })
   assert.equal(r.error, undefined)
   assert.equal(r.status, 0, r.stdout + r.stderr)
+})
+
+test('#1647 the verify page renders the resend block in the no-link and failed states', () => {
+  const page = readFileSync(fileURLToPath(new URL('../app/verify/page.tsx', import.meta.url)), 'utf8')
+  for (const state of ['none', 'unusable', 'uncertain', 'limited'])
+    assert.match(page, new RegExp(`state === '${state}'[\\s\\S]{0,600}<ResendConfirmation`), `${state} offers resend`)
 })
