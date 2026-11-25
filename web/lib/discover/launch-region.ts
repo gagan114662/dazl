@@ -25,13 +25,16 @@ function outsideLaunchCoverage(place: PlanPlace): boolean {
   if (!place.country || !LAUNCH_COUNTRIES.has(place.country)) return true
   const named = countriesIn(place.text)
   if (named.some(country => !LAUNCH_COUNTRIES.has(country))) return true
+  const wholeRegion = regionOf(place.text)
+  if (wholeRegion) return !LAUNCH_COUNTRIES.has(countryOfRegion(wholeRegion))
   // A grouped place's one country code cannot confirm every independently named target.
   const groups = groupedTargets(place.text)
   if (groups.length > 1) return groups.some(group => !confirmedLaunchPart(group))
   const city = place.city?.trim().toLowerCase()
   const region = place.region?.trim().toLowerCase()
   const address = place.text.split(',').map(part => part.trim()).filter(Boolean)
-  return address.length > 1 && address.some(part => {
+  if (address.length <= 1) return !city && !regionOf(region ?? '') && !confirmedLaunchPart(place.text)
+  return address.some(part => {
     const text = part.toLowerCase()
     return text !== city && text !== region && !confirmedLaunchPart(part)
   })

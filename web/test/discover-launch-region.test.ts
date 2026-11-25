@@ -39,6 +39,8 @@ for (const [target, places] of [
   ['the UK and US in one place', [{ text: 'UK and US', city: null, region: null, country: 'US' }]],
   ['the US and Europe', [{ text: 'US and Europe', city: null, region: null, country: 'US' }]],
   ['the US, Europe', [{ text: 'US, Europe', city: null, region: null, country: 'US' }]],
+  ['Europe with a wrong code', [{ text: 'Europe', city: null, region: null, country: 'US' }]],
+  ['London with no typed city', [{ text: 'London', city: null, region: null, country: 'US' }]],
   ['Europe', [{ text: 'Europe', city: null, region: null, country: null }]],
 ] as const) {
   test(`the Claude plan stops a request for ${target} before web tools are offered`, async () => {
@@ -92,3 +94,19 @@ test('both allowed countries survive when Claude groups them under one code', as
   const result = await discoverLeads({ query: 'Find agencies hiring an SDR in Canada and US' }, { apiKey: 'test', fetch: fetchImpl })
   assert.deepEqual(result.leads.map(lead => lead.company), ['American', 'Canadian'])
 })
+
+for (const places of [
+  [{ text: 'Newfoundland and Labrador', city: null, region: 'Newfoundland and Labrador', country: 'CA' }],
+  [{ text: 'Indianapolis, IN', city: 'Indianapolis', region: 'IN', country: 'US' }],
+  [{ text: 'Dallas', city: 'Dallas', region: null, country: 'US' }, { text: 'Austin', city: 'Austin', region: null, country: 'US' }],
+  [{ text: 'Toronto', city: 'Toronto', region: null, country: 'CA' }, { text: 'Montreal', city: 'Montreal', region: null, country: 'CA' }],
+] satisfies Place[][]) {
+  const location = places.map(place => place.text).join(' and ')
+  test(`typed coverage admits ${location}`, async () => {
+    const { requests, fetchImpl } = provider(places, [candidate('Local', places[0].country)])
+    const result = await discoverLeads({ query: `Find agencies hiring an SDR in ${location}` }, { apiKey: 'test', fetch: fetchImpl })
+    assert.equal(requests.length, 2)
+    assert.match(JSON.stringify(requests[1].tools), /web_search/)
+    assert.equal(result.leads.length, 1)
+  })
+}
