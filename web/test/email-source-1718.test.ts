@@ -9,7 +9,7 @@ import { createQueryJob } from '../lib/scan/store.ts'
 import { checkEmailSource } from '../lib/discover/check.ts'
 import { runDiscovery } from '../lib/discover/run.ts'
 import type { DiscoverResult } from '../lib/discover/agent.ts'
-import { discoverContact, discoverGuessedEmail, discoverSources, PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
+import { discoverContact, discoverSources, PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
 
 import { displayedEmailSource } from '../lib/outreach/published-email.ts'
 
@@ -60,17 +60,17 @@ test('a legacy discovery citation does not prove the address was read', () => {
   assert.equal(discoverSources(lead).some(source => source.field === 'email'), false)
 })
 
-test('a proof-marked email supplies its own source; guessing never supplies a published contact', () => {
+test('a proof-marked email supplies its own source and a raw guess stays hidden', () => {
   const row = { connector: 'discover', kind: 'email', value: email, source_url: url, label: PAGE_PROVEN_EMAIL_LABEL }
   const proven = { source_kind: 'discover', name: 'Dana Buyer', enrichments: [row] }
   assert.deepEqual(discoverContact(proven)?.email, { address: email, source: url })
   assert.deepEqual(discoverSources(proven), [{ field: 'email', label: 'Email', url }])
 
-  const guessed = { ...proven, enrichments: [{ ...row, label: 'guessed', source_url: null }] }
-  assert.equal(discoverGuessedEmail(guessed, false), null)
-  assert.equal(discoverGuessedEmail(guessed, true), email)
-  assert.equal(discoverContact(guessed)?.email, null)
-  assert.deepEqual(discoverSources(guessed), [])
+  for (const address of [email, 'buyer@other.example']) {
+    const guessed = { ...proven, enrichments: [{ ...row, value: address, label: 'guessed' }] }
+    assert.equal(discoverContact(guessed)?.email, null)
+    assert.deepEqual(discoverSources(guessed), [])
+  }
 })
 
 test('legacy contact citations use the crawl page or the evidence that contains the address', () => {
@@ -110,6 +110,71 @@ test('the scan writes no published enrichment for a missing address with guessin
     const row = db.prepare('SELECT id, contact FROM leads WHERE scan_job_id = ?').get(id) as { id: string; contact: string | null }
     assert.equal(row.contact, null)
     assert.deepEqual(db.prepare("SELECT value FROM lead_enrichments WHERE lead_id = ? AND kind = 'email'").all(row.id), [])
+  } finally {
+    db.close()
+  }
+})
+
+test('scan stores verified addresses after enrichment and preserves the original source', async () => {
+  const db = new Database(':memory:')
+  try {
+    migrateAllSqlite(db)
+    const key = randomBytes(32)
+    saveKey(db, 'T', 'anthropic', 'sk-ant-test', key)
+    const jobId = createQueryJob(db, 'T', { query: 'Find companies opening a new site', seller: 'Business equipment' })
+    const job = claimKeyedJob(db, jobId)
+    assert.ok(job)
+    const result = discoveryResult('Dana Buyer: buyer@example.com.')
+    const enrichmentPage = 'https://example.com/team'
+    const unsupportedPage = 'https://example.com/contact'
+    const enrichedEmail = 'dana.buyer@example.com'
+    const unsupportedEmail = 'buyer@other.example'
+    const original = result.leads[0]
+    for (const company of ['Enriched Example', 'Unsupported Example']) {
+      const signalPage = `https://example.com/news/${company.split(' ')[0].toLowerCase()}`
+      const evidenceQuote = `${company} is opening a new site`
+      result.leads.push({ ...original, company, evidence_url: signalPage, evidence_quote: evidenceQuote,
+        person_source_url: `${url}#person`, email: null, email_source_url: null })
+      result.seen.push({ url: signalPage, title: company, page_age: null, text: evidenceQuote })
+    }
+    result.usage.usd = 0.01
+    let enrichmentCalls = 0
+    assert.equal(await runJob(db, job, {
+      master: key, discover: true,
+      discoverImpl: async input => input.exclude?.length ? { ...result, leads: [], seen: [] } : result,
+      fetchImpl: async () => new Response(null, { status: 404 }),
+      enrichImpl: async leads => {
+        enrichmentCalls++
+        return {
+          leads: leads.map(lead => ({ ...lead,
+            email: lead.company === 'Enriched Example' ? enrichedEmail : unsupportedEmail,
+            email_source_url: lead.company === 'Enriched Example' ? enrichmentPage : unsupportedPage,
+          })),
+          usage: { ...result.usage, usd: 0.01 },
+          seen: [
+            { url: enrichmentPage, title: 'Team', page_age: null, text: `Dana Buyer: ${enrichedEmail}` },
+            { url: unsupportedPage, title: 'Contact', page_age: null, text: 'Media: press@example.com' },
+          ],
+          enriched: leads.length,
+        }
+      },
+    }), 'done')
+    assert.equal(enrichmentCalls, 1)
+    const rows = db.prepare(`SELECT l.company, e.kind, e.connector, e.value, e.label, e.source_url
+      FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id
+      WHERE l.scan_job_id = ? AND e.kind = 'email' ORDER BY l.company`).all(jobId) as
+      { company: string; kind: string; connector: string; value: string; label: string; source_url: string }[]
+    assert.deepEqual(rows.map(row => [row.company, row.value, row.label, row.source_url]), [
+      ['Enriched Example', enrichedEmail, PAGE_PROVEN_EMAIL_LABEL, enrichmentPage],
+      ['Example', email, PAGE_PROVEN_EMAIL_LABEL, url],
+    ])
+    for (const row of rows) {
+      assert.deepEqual(discoverContact({ source_kind: 'discover', name: 'Dana Buyer', enrichments: [row] })?.email,
+        { address: row.value, source: row.source_url })
+    }
+    const stored = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(jobId) as { report: string }
+    assert.equal(JSON.parse(stored.report).discover.emails_dropped, 1)
+    assert.equal(JSON.parse(stored.report).discover.email_dropped, 'not_on_source')
   } finally {
     db.close()
   }

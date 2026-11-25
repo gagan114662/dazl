@@ -52,7 +52,10 @@ const LEADS = [
   // Instinct's repro: website guessed from the name, crawled address on it, a listed person.
   lead('e'.repeat(24), 'Pico Dental', { contact: 'hello@name-guessed.example', enrichments: [dom('name-guessed.example', 'name_probe', 'https://name-guessed.example/'), row('email', 'hello@name-guessed.example'), row('person', 'Dana Smith, Practice owner')] }),
   lead('f'.repeat(24), 'Twin Dental', { contact: 'hello@a-dental.example', enrichments: [dom('a-dental.example', 'name_probe'), dom('b-dental.example', 'evidence_link_domain_label'), row('email', 'hello@a-dental.example')] }),
-  lead('1'.repeat(24), 'Quiet Dental', { contact: 'privacy@quietdental.example' }),
+  lead('1'.repeat(24), 'Quiet Dental', {
+    contact: 'privacy@quietdental.example', evidence_excerpt: 'Quiet Dental opened a second office',
+    enrichments: [{ ...row('email', 'privacy@quietdental.example'), source_url: 'https://quietdental.example/privacy' }],
+  }),
   lead('2'.repeat(24), 'Former Dental', { contact: 'hello@formerdental.example', enrichments: [row('person', 'Pat Lee, Former practice owner')] }),
 ]
 let outreachMode = 'ok'

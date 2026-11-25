@@ -4,14 +4,14 @@
 //   2. if fewer than `wantShown` leads are shown and the budget has room, a second loop looks for different companies;
 //   3. a small-model pass fills the person, website and published email that shown leads still lack.
 // Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
-import { discoverLeads, type DiscoverInput, type DiscoverUsage } from './agent.ts'
+import { discoverLeads, type DiscoverInput, type DiscoverResult, type DiscoverUsage } from './agent.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
-import { checkLeads, isShown, type CheckedLead } from './check.ts'
+import { checkEmailSource, checkLeads, isShown, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
-export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null }
+export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; emailDropped: number; stop: string; model: string; note: string | null }
 export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; judge?: SignalJudge | null; now?: Date }
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
@@ -34,7 +34,14 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   add(first.usage)
   // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
   const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
-  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
+  let emailDropped = 0
+  const check = async ({ leads: candidates, seen }: DiscoverResult) => {
+    const checked = await checkLeads(candidates.map(l => dropUnseenProfile(l, seen)), seen, deps.fetch, 4, judge?.ask)
+    emailDropped += checked.filter((lead, index) => candidates[index].email && !lead.email).length
+    return checked
+  }
+  let leads = await check(first)
+  const seen = [...first.seen]
   const pages = first.seen.map(p => p.url)
   const stop = first.stop, model = first.model
   let passes = 1, note = first.note
@@ -45,7 +52,8 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       add(second.usage)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = await check({ ...second, leads: second.leads.filter(l => !known.has(l.company.toLowerCase())) })
+      seen.push(...second.seen)
       leads = [...leads, ...more]
       passes = 2
       note = second.note ?? note
@@ -68,9 +76,20 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       add(e.usage)
       enriched = e.enriched
       const byCompany = new Map(e.leads.map(l => [l.company, l]))
-      leads = leads.map(l => { const m = byCompany.get(l.company); return m && l.proof !== 'gone' ? { ...l, ...mergeEnriched(l, m) } : l })
+      const sourcePages = [...e.seen, ...seen]
+      // Only a new address needs rechecking. The merge keeps an already-proven address and its citation.
+      const merged = await Promise.all(leads.map(async lead => {
+        const candidate = byCompany.get(lead.company)
+        if (!candidate || lead.proof === 'gone') return { lead, dropped: false }
+        const updated = { ...lead, ...mergeEnriched(lead, candidate) }
+        if (lead.email) return { lead: updated, dropped: false }
+        const checked = await checkEmailSource(updated, sourcePages)
+        return { lead: checked, dropped: !!updated.email && !checked.email }
+      }))
+      emailDropped += merged.filter(item => item.dropped).length
+      leads = merged.map(item => item.lead)
     } catch { /* the leads stay as found */ }
   }
   if (judge) add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
-  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop, model, note }
+  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, emailDropped, stop, model, note }
 }

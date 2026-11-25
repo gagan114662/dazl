@@ -1,5 +1,5 @@
 'use client'
-import { discoverContact, discoverCountParts, discoverGuessedEmail, discoverLine, discoverSources, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
+import { discoverContact, discoverCountParts, discoverLine, discoverSources, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
@@ -392,7 +392,7 @@ export default function LeadsClient() {
 
   const [hiddenCount, setHiddenCount] = useState(0)
   // The page's stored Find work email answers, read once with the leads (#1182): no per-lead GET on load.
-  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']>; guesses?: Record<string, unknown>; guessing_enabled?: true } | null>(null)
+  const [workEmailPage, setWorkEmailPage] = useState<{ providers: WorkEmailInitial['providers']; providers_by_lead?: Record<string, WorkEmailInitial['providers']>; lookups: Record<string, WorkEmailInitial['lookups']>; guesses?: Record<string, unknown> } | null>(null)
   // One empty list per page read: stable across re-renders, new on every refresh, so the panel keeps a click only until the next read
   // (shownWorkEmails, #1036 / #1250).
   const noLookups = useMemo<unknown[]>(() => (workEmailPage ? [] : []), [workEmailPage])
@@ -1372,9 +1372,8 @@ export default function LeadsClient() {
                       const email = emailsInText(line ?? '')[0]
                       const discovered = discoverContact(l)?.email
                       const source = email && (discovered?.address === email ? discovered.source : displayedEmailSource(l, email.toLowerCase()))
-                      const guess = !source && discoverGuessedEmail(l, workEmailPage?.guessing_enabled === true)
                       const visibleLine = email && !source ? line?.slice(0, line.indexOf(email)).replace(/ - $/, '').trim() : line
-                      return <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || (guess ? null : 'No contact found yet') : null}{source && <> · <EmailSourceLink url={source} /></>}{guess && <span> {guess} · guessed</span>}</div> })()}
+                      return <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{source && <> · <EmailSourceLink url={source} /></>}</div> })()}
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}

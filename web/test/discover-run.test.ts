@@ -13,7 +13,7 @@ test('five shown leads on the first pass: no second pass; the people pass gets t
   const names = ['A Co', 'B Co', 'C Co', 'D Co', 'E Co', 'Ghost Co']
   const run = await runDiscovery({ query: 'q' }, { maxUsd: 1 }, { apiKey: 'k', fetch: never,
     discover: async () => result(names.map(n => lead(n)), 0.3, ['Ghost Co']),
-    enrich: async leads => { calls.push(leads.map(l => l.company)); return { leads: leads.map(l => ({ ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://x.example/team', email: 'pat@x.example', email_source_url: 'https://x.example/team' })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 5, usd: 0.05 }, seen: [], enriched: leads.length } } })
+    enrich: async leads => { calls.push(leads.map(l => l.company)); return { leads: leads.map(l => ({ ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://x.example/team', email: 'pat@x.example', email_source_url: 'https://x.example/team' })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 5, usd: 0.05 }, seen: [{ url: 'https://x.example/team', title: 'Team', page_age: null, text: 'Pat Lee: pat@x.example' }], enriched: leads.length } } })
   assert.equal(run.passes, 1)
   assert.deepEqual(calls, [['A Co', 'B Co', 'C Co', 'D Co', 'E Co', 'Ghost Co']], 'shown leads first, then the lead that waits for review')
   assert.equal(run.usd, 0.35)

@@ -2,6 +2,7 @@ import { runClaudeWebSearch, ClaudeSearchError, CLAUDE_SEARCH_MODEL, CLAUDE_COMP
 import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { discoverLeads, discoverProfileCarried } from '../discover/agent.ts'
+import { PAGE_PROVEN_EMAIL_LABEL } from '../discover/card.ts'
 import { isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
@@ -1518,7 +1519,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   }
   // #1579: the lane's own account goes into the saved run report, so a search that returns nothing says why (which budget it ran
   // with, how it stopped, and the engine's one-sentence note) instead of only "0 candidates".
-  ledger.report({ discover: { stop: run.stop, note: run.note, budget: small ? (room < DISCOVER_SMALL_MIN_USD ? 'smallest' : 'small') : 'full', searches: run.searches, requests: run.requests, passes: run.passes, returned: run.leads.length, shown: shown.length, usd: run.usd } })
+  ledger.report({ discover: { stop: run.stop, note: run.note, budget: small ? (room < DISCOVER_SMALL_MIN_USD ? 'smallest' : 'small') : 'full', searches: run.searches, requests: run.requests, passes: run.passes, returned: run.leads.length, shown: shown.length, usd: run.usd, ...(run.emailDropped ? { email_dropped: 'not_on_source', emails_dropped: run.emailDropped } : {}) } })
   ledger.record(source, 'ok')
   // #1579 (production, 2026-11-23): a request accepted as company-first and answered here is the lane's scan. Left marked, every page, the
   // leads API and the spreadsheet hold its leads for the older rollout's final checks, which this lane never runs: 7 and 5 paid leads, none shown.
@@ -1535,7 +1536,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
-    if (l.email && l.email_source_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'email', value: l.email.slice(0, 254), label: 'published on a public page', confidence: null,
+    if (l.email && l.email_source_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'email', value: l.email.slice(0, 254), label: PAGE_PROVEN_EMAIL_LABEL, confidence: null,
       source_url: l.email_source_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
     if (l.linkedin_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'linkedin', value: l.linkedin_url.slice(0, 254), label: 'linked from a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })

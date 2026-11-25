@@ -85,18 +85,6 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   const e = mails.find(own)
   return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
 }
-export function discoverGuessedEmail(l: Parameters<typeof discoverContact>[0], guessingEnabled: boolean): string | null {
-  if (!guessingEnabled) return null
-  const contact = discoverContact(l)
-  if (!contact?.person || contact.email) return null
-  const name = contact.person.name
-  return (l.enrichments ?? []).find(r => {
-    const value = r.value?.trim().toLowerCase() ?? ''
-    return r.connector === 'discover' && r.kind === 'email' && r.label === 'guessed' && EMAIL.test(value)
-      && !isGenericInbox(value) && nameBound(value.split('@')[0], name)
-  })?.value?.trim().toLowerCase() ?? null
-}
-
 // The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
 // A mailbox on the company's domain is not enough: the same address copied onto a directory or a data site is someone else's
 // publication, and nothing shows the company put it there (review of #1574).
