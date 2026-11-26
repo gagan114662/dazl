@@ -7,6 +7,7 @@ import { normalizeWebsite } from '@/lib/onboarding'
 import { Icon } from './ui/icons'
 import { Pill } from './ui/bits'
 import { loadReadinessInput } from './readiness-input'
+import { subscribeFocusRefresh } from '@/lib/focus-refresh'
 import { homePlays, readinessRows, type ReadinessInput, type HomePlay } from '@/lib/readiness'
 
 // Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
@@ -63,10 +64,9 @@ export default function Readiness() {
     const refresh = () => void load()
     window.addEventListener('profile-updated', refresh) // the Home setup steps saved the business or buyer profile
     // #1722: the sender status can change in another tab (Outreach); re-read when this tab is used again.
-    const wake = () => { if (!document.hidden) void load(false) }
-    window.addEventListener('focus', wake)
-    document.addEventListener('visibilitychange', wake)
-    return () => { window.removeEventListener('profile-updated', refresh); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake) }
+    // #1876: one shared listener for the page, so a focus refreshes once instead of once per panel and event.
+    const offWake = subscribeFocusRefresh(() => void load(false))
+    return () => { window.removeEventListener('profile-updated', refresh); offWake() }
   }, [])
 
   async function saveSite(e: React.FormEvent) {

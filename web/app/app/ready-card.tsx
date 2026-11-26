@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { readyComplete, readyItems, type ReadyItem } from '@/lib/ready-card'
 import { loadReadinessInput } from './readiness-input'
+import { subscribeFocusRefresh } from '@/lib/focus-refresh'
 
 // Home's setup checklist toward the first useful result (lib/ready-card.ts). Each step still to do has one button straight
 // to its fix (secondary: Home keeps one primary action; the next step is marked by its dark dot). Read-only; gone once
@@ -16,10 +17,9 @@ export default function ReadyCard() {
     load()
     window.addEventListener('profile-updated', load)
     // #1722: the sender status can change in another tab; re-read when this tab is used again.
-    const wake = () => { if (!document.hidden) load() }
-    window.addEventListener('focus', wake)
-    document.addEventListener('visibilitychange', wake)
-    return () => { window.removeEventListener('profile-updated', load); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake) }
+    // #1876: one shared listener for the page, so a focus refreshes once instead of once per panel and event.
+    const offWake = subscribeFocusRefresh(load)
+    return () => { window.removeEventListener('profile-updated', load); offWake() }
   }, [])
   if (!items || readyComplete(items)) return null
   const done = items.filter(x => x.state === 'done').length
