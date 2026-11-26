@@ -143,9 +143,8 @@ jobs:
           POSTGRES_PASSWORD: ci
         # PC lane: no published host port (all WSL distros share one network namespace); hosted keeps 5432:5432.
         ports: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && fromJSON('[]') || fromJSON('["5432:5432"]') }}
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s --health-timeout 5s --health-retries 10
+        # PC lane: PGDATA on tmpfs (measured 9.0 ms vs 1.7 ms per commit on the WSL disk); hosted options unchanged.
+        options: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && '--tmpfs /var/lib/postgresql/data --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10' || '--health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10' }}
     env:
       DAZL_TEST_PG_URL: postgres://postgres:ci@127.0.0.1:5432/postgres
       DAZL_REQUIRE_PG: "1"
