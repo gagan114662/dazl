@@ -38,10 +38,12 @@ export async function matchReadyApolloBuyer(
   evidence: ApolloBuyerEvidence,
   options: { key: string; scanId: string; scanLimit: number; env?: Record<string, string | undefined>; fetchImpl?: typeof fetch },
 ): Promise<ApolloMatch | null> {
+  const env = options.env ?? process.env
+  if (env.DAZL_ENV !== 'staging') return null
   const query = buyerQuery(evidence)
   const key = options.key.trim()
   if (!key || !query) return null
-  if (!await reserveApolloLead(db, tenantId, leadId, options.env, { id: options.scanId, limit: options.scanLimit })) return null
+  if (!await reserveApolloLead(db, tenantId, leadId, env, { id: options.scanId, limit: options.scanLimit })) return null
   let match: ApolloMatch | null
   try {
     const dispatch = options.fetchImpl ?? fetch
