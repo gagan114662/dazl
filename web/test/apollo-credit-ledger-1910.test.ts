@@ -34,7 +34,7 @@ test('only an otherwise Ready buyer after a completed empty crawl reaches one Ap
   const match = (leadId: string, evidence = buyer, cap = '1', tenantId = 'a', scanId = 'scan-a') =>
     matchReadyApolloBuyer(db, tenantId, leadId, evidence, {
       key: 'test-only', scanId, scanLimit: 1,
-      env: { APOLLO_CREDIT_CAP: cap },
+      env: { DAZL_ENV: 'staging', APOLLO_CREDIT_CAP: cap },
       fetchImpl: async input => {
         calls.push(String(input))
         return Response.json({ person: null })
@@ -97,7 +97,7 @@ test('a committed reservation blocks a second tenant while the first request is 
     first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
     dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
   }
-  const env = { APOLLO_CREDIT_CAP: '1' }
+  const env = { DAZL_ENV: 'staging', APOLLO_CREDIT_CAP: '1' }
   let attempted = 0
   try {
     await matchReadyApolloBuyer(first, 'tenant-a', 'lead-a', evidence, {
@@ -135,7 +135,7 @@ test('an ambiguous transport error is logged and remains charged against the cap
   }
   let attempted = 0
   const options = {
-    key: 'fixture-only', scanLimit: 2, env: { APOLLO_CREDIT_CAP: '1' },
+    key: 'fixture-only', scanLimit: 2, env: { DAZL_ENV: 'staging', APOLLO_CREDIT_CAP: '1' },
     fetchImpl: async () => {
       attempted++
       throw new Error('fixture transport disconnected after sending')
@@ -149,5 +149,23 @@ test('an ambiguous transport error is logged and remains charged against the cap
     assert.equal(attempted, 1)
     assert.deepEqual(db.prepare('SELECT lead_id, credit, result FROM apollo_credit_ledger').all(),
       [{ lead_id: 'first', credit: 1, result: 'uncertain' }])
+  } finally { db.close() }
+})
+
+test('a production or unset deployment cannot reserve or dispatch an Apollo pilot request', async () => {
+  const db = new Database(':memory:')
+  const evidence: ApolloBuyerEvidence = {
+    first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
+    dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
+  }
+  try {
+    for (const DAZL_ENV of ['production', undefined]) {
+      assert.equal(await matchReadyApolloBuyer(db, 'tenant', 'lead', evidence, {
+        key: 'fixture-only', scanId: 'scan', scanLimit: 1,
+        env: { DAZL_ENV, APOLLO_CREDIT_CAP: '1' },
+        fetchImpl: async () => { assert.fail('non-staging request reached transport') },
+      }), null)
+    }
+    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'apollo_credit_ledger'").get(), undefined)
   } finally { db.close() }
 })
