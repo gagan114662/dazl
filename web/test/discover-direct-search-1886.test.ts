@@ -15,6 +15,7 @@ test('#1886 direct search followed by a proof-page fetch yields a discovery lead
   const company = 'Cedar Fixture'
   const evidence = 'Cedar Fixture announced that it is opening its second office.'
   const url = 'https://fixture.example/announcement'
+  const toolTypes = ['web_search_20250305', 'web_fetch_20250910']
   const requests: { name: string; type: string; max_uses?: number; allowed_callers?: string[] }[][] = []
   try {
     migrateAllSqlite(db)
@@ -30,10 +31,10 @@ test('#1886 direct search followed by a proof-page fetch yields a discovery lead
       if (!init?.body) return new Response('<p>' + now + ' ' + evidence + '</p>')
       const body = JSON.parse(String(init.body)) as { model: string; tools: typeof requests[number] }
       requests.push(body.tools)
-      const direct = body.tools.some(tool => tool.type === 'web_search_20250305')
+      assert.deepEqual(body.tools.map(tool => tool.type), toolTypes)
       return sseResponse(sseEvents({
         id: 'msg_fixture1886_direct', model: body.model, stop_reason: 'end_turn',
-        content: direct ? [
+        content: [
           { type: 'server_tool_use', id: 'srvtoolu_search', name: 'web_search', input: { query: 'business expansion announcement' } },
           { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_search',
             content: [{ type: 'web_search_result', url, title: company, encrypted_content: 'fixture', page_age: now }] },
@@ -42,16 +43,17 @@ test('#1886 direct search followed by a proof-page fetch yields a discovery lead
             content: { type: 'web_fetch_result', url, content: { type: 'document', title: company, source: { type: 'text', media_type: 'text/plain', data: now + ' ' + evidence } } } },
           { type: 'text', text: '<json>' + JSON.stringify({ leads: [{ company, signal: 'Opening its second office',
             signal_date: now, evidence_url: url, evidence_quote: evidence, confidence: 'high' }] }) + '</json>' },
-        ] : [{ type: 'text', text: '<json>{"leads":[],"note":"No proof page opened"}</json>' }],
+        ],
         usage: { input_tokens: 20000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
-          server_tool_use: { web_search_requests: 1, web_fetch_requests: direct ? 1 : 0 } },
+          server_tool_use: { web_search_requests: 1, web_fetch_requests: 1 } },
       }))
     }
-    assert.equal(await runJob(db, job, { master, discover: true, enrichImpl: null, fetchImpl }), 'done')
+    const outcome = await runJob(db, job, { master, discover: true, enrichImpl: null, fetchImpl })
     assert.equal(requests.length, 1)
     assert.deepEqual(requests[0].map(tool => [tool.name, tool.type]), [
-      ['web_search', 'web_search_20250305'], ['web_fetch', 'web_fetch_20260209'],
+      ['web_search', 'web_search_20250305'], ['web_fetch', 'web_fetch_20250910'],
     ])
+    assert.equal(outcome, 'done')
     assert.equal(requests[0][0].max_uses, 5)
     assert.equal(requests[0][0].allowed_callers, undefined)
     assert.equal((db.prepare('SELECT candidates FROM scan_jobs WHERE id = ?').get(id) as { candidates: number }).candidates, 1)

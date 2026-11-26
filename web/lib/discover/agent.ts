@@ -167,7 +167,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       ...(finalAnswer ? { tool_choice: { type: 'none' as const } } : {}),
       tools: [
         ...(reservation.allowance > 0 ? [{ type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
-        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
+        { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
       ],
       messages,
     }, { signal: deps.signal }).finalMessage()
