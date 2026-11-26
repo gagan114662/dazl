@@ -9,6 +9,7 @@ import { runDueWatches } from '@/lib/watch'
 import { collectMonitorResults, runDueMonitors } from '@/lib/monitors'
 import { repeatFirstPlays } from '@/lib/play-repeat'
 import { sendPlayRunMails } from '@/lib/play-mail'
+import { sendWorkspaceStallAlerts } from '@/lib/ops/workspace-stalls'
 import { kickRunner } from '@/lib/scan/runner'
 import { sharedScanQueue } from '@/lib/queue/scan-claimer'
 import { getDb, type Tx } from '@/lib/db/client'
@@ -154,6 +155,8 @@ async function tick(lease: Lease, runId: string, requestId?: string) {
   await lease.keep()
   let playRunMails = 0
   try { playRunMails = await sendPlayRunMails(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:play-run-mail', requestId }) }
+  await lease.keep()
+  try { await sendWorkspaceStallAlerts(shared, { fence }) } catch (e) { fenced(e); captureError(e, { source: 'worker', where: 'tick:workspace-stalls', requestId }) }
   // Weekly indexing checks: one TinyFish site: search per saved keyword, inside the tenant's
   // own 10-searches-per-week allowance (separate from the scan caps). Best-effort per tenant.
   let indexChecked = 0

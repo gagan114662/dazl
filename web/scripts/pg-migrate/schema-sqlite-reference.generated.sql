@@ -1272,6 +1272,15 @@ CREATE TABLE worker_runs (
     finished_at INTEGER
   );
 
+CREATE TABLE workspace_stall_state (
+    tenant_id TEXT PRIMARY KEY,
+    gmail_since INTEGER,
+    sequences_since INTEGER,
+    reply_since INTEGER,
+    mail_at INTEGER,
+    operator_at INTEGER
+  );
+
 CREATE INDEX adv_requests_window ON adv_requests (tenant_id, connector, at);
 
 CREATE INDEX audit_events_at ON audit_events (at);
@@ -1974,6 +1983,8 @@ CREATE TRIGGER tomb_upd_worker_grants BEFORE UPDATE OF tenant_id ON worker_grant
 
 CREATE TRIGGER tomb_upd_worker_runs BEFORE UPDATE OF tenant_id ON worker_runs BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
+CREATE TRIGGER tomb_upd_workspace_stall_state BEFORE UPDATE OF tenant_id ON workspace_stall_state BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
 CREATE TRIGGER tomb_users BEFORE INSERT ON users BEGIN SELECT NEW.id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.id); END;
 
 CREATE TRIGGER tomb_warm_user_paths BEFORE INSERT ON warm_user_paths BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1989,6 +2000,8 @@ CREATE TRIGGER tomb_work_queue BEFORE INSERT ON work_queue BEGIN SELECT NEW.tena
 CREATE TRIGGER tomb_worker_grants BEFORE INSERT ON worker_grants BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_worker_runs BEFORE INSERT ON worker_runs BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
+CREATE TRIGGER tomb_workspace_stall_state BEFORE INSERT ON workspace_stall_state BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER warm_user_paths_insert_seq AFTER INSERT ON warm_user_paths WHEN NEW.insert_seq IS NULL BEGIN UPDATE warm_user_paths SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM warm_user_paths) WHERE rowid = NEW.rowid; END;
 
