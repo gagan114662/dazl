@@ -229,7 +229,7 @@ export const PRIVACY: Section[] = [
   { heading: 'What we collect about you (customers)', paragraphs: [
     'Account details: your name, email address, optional business name, and a salted scrypt hash of your password (never the password itself). If you sign in with Google, the name, email address and account identifier Google returns.',
     'Session records: a hash of each sign-in token, a coarse device label such as "Chrome on macOS" (the raw browser header is not stored), and when the session was last used.',
-    `Credentials you give us: your Anthropic key, any enrichment or CRM keys you save, your Gmail authorization, and any social-site session you save for the optional advanced connector. These are stored encrypted (AES-256-GCM, with a key held only in the server environment); the secrets themselves are never included in a data export.`,
+    `Credentials you give us: any enrichment or CRM keys you save, your Gmail authorization, and any social-site session you save for the optional advanced connector. These are stored encrypted (AES-256-GCM, with a key held only in the server environment); the secrets themselves are never included in a data export.`,
     'Your business profile, the prospects your searches find, and the drafts and messages you send.',
   ] },
   { heading: 'What we hold about prospects', paragraphs: [
@@ -242,7 +242,7 @@ export const PRIVACY: Section[] = [
   ] },
   { heading: 'How we use it', paragraphs: [
     'To run your account, find and score prospects, draft outreach, send the messages you approve, and keep the service secure.',
-    'Your search request, your business profile and page text about prospects are sent to Anthropic, whose Claude models find and score leads (including the web searches and page reads the model makes for your search) and write drafts. If the free trial is enabled, trial scans run on dazl\'s own Anthropic key; everything else runs on the Anthropic key you saved.',
+    'Your search request, your business profile and page text about prospects are sent to Anthropic, whose Claude models find and score leads (including the web searches and page reads the model makes for your search) and write drafts.',
   ] },
   { heading: 'Gmail', paragraphs: [
     'Outreach is sent from your own Gmail account, and only the messages you approve. Connecting it grants send access only (gmail.send). dazl does not ask for access to read your mailbox and does not read your replies.',
@@ -296,9 +296,6 @@ export const TERMS: Section[] = [
   ] },
   { heading: 'Acceptable use', paragraphs: [
     'No spam, no purchased lists, no messages to people who asked to stop, no illegal or deceptive content. You must comply with the anti-spam and privacy laws that apply to you and your recipients, for example CASL in Canada, CAN-SPAM in the US, and PECR and GDPR in the UK and EU.',
-  ] },
-  { heading: 'Your key', paragraphs: [
-    'If you connect your own Anthropic key, usage is billed to you by Anthropic. Cost figures dazl shows for that usage are estimates.',
   ] },
   { heading: 'Plans and billing', paragraphs: [
     FREE_BETA_TERMS,

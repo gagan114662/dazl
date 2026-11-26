@@ -18,7 +18,7 @@ export default function AppHome() {
         <ReadyCard />
         <Journey />
         <details className="drawer card mt-4" data-testid="setup-details">
-          <summary><span className="flex items-center gap-2">Setup details and all plays</span><span className="ml-auto text-xs font-normal text-[var(--ink-3)] hidden sm:inline">AI key, sources, Gmail, sender, limits</span></summary>
+          <summary><span className="flex items-center gap-2">Setup details and all plays</span><span className="ml-auto text-xs font-normal text-[var(--ink-3)] hidden sm:inline">Sources, Gmail, sender, limits</span></summary>
           <div className="px-5 pb-5 pt-4 border-t border-[var(--line)]"><Readiness /><FeatureDiscovery /></div>
         </details>
       </FirstRun>

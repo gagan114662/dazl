@@ -76,7 +76,6 @@ test('both policies are final, with no placeholder and no draft notice (privacy:
     'By creating an account you agree to these Terms and to the Privacy Policy.',
     'Autopilot is not available during the beta. Every message is reviewed and sent by you.',
     'You are responsible for any disclosure the law where your recipient lives requires.',
-    'If you connect your own Anthropic key, usage is billed to you by Anthropic.',
     "dazl is free during the beta. We don't charge you anything. We'll give at least 30 days' notice by email before any paid plan starts, and nothing will be charged without you choosing a plan.",
     'During the beta the service is provided "as is", with no warranties.',
     'Our liability to you is capped at the greater of the amounts you paid us in the last 12 months or US$100.',
@@ -189,14 +188,14 @@ test('AI, enrichment and CRM providers named in the policy are the ones the code
   const crm = /CRM_PROVIDERS[^=]*=\s*\[([^\]]+)\]/.exec(read('lib/crm/index.ts'))
   assert.ok(crm, 'CRM provider allowlist (CRM_PROVIDERS) not found in lib/crm/index.ts')
   assert.deepEqual(crm[1].split(',').map(s => s.trim().replace(/'/g, '')).sort(), Object.keys(FACTS.crmProviders).sort())
-  // #1428: the text names the providers a customer can really connect today (Anthropic key; a CRM in Settings, app/api/crm/route.ts
-  // has no switch), and not the ones the launch configuration never calls (next test).
+  // Privacy names the AI processor and the supported CRM providers.
   for (const name of ['Anthropic', 'HubSpot', 'Pipedrive']) assert.ok(privacy.includes(name), `privacy policy does not name ${name}`)
   assert.match(read('app/api/crm/route.ts'), /pushLead\(cfg, lead\)/)
   // the free trial runs on dazl's own Anthropic key
   assert.match(read('lib/scan/trial.ts'), /DAZL_TRIAL_ANTHROPIC_KEY/)
   assert.match(read('lib/scan/trial.ts'), /Absent means the trial is off/)
-  assert.match(privacy, /trial scans run on dazl's own Anthropic key/)
+  assert.match(privacy, /sent to Anthropic, whose Claude models find and score leads/)
+  assert.doesNotMatch(privacy, /Anthropic key|key you saved/i)
   assert.match(privacy, /the free trial when it is enabled/)
 })
 

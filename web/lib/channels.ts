@@ -23,7 +23,7 @@ export const CHANNELS: Channel[] = [
   { id: 'youtube', name: 'YouTube', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Uses the official YouTube Data API when dazl has its own key for it (free daily quota); otherwise public mirror sites run by outside services, which receive the search keywords.' },
   { id: 'github', name: 'GitHub', tier: 0, status: 'live', note: 'On. Public repos and issues. Pick it in a scan under Sources. No key.' },
   { id: 'rss', name: 'RSS', tier: 0, status: 'live', note: 'On. Add feed URLs in a scan under Sources. No key.' },
-  { id: 'search', name: 'Web search', tier: 0, status: 'live', note: 'On. The dazl web search when dazl has its own key for it, otherwise your own model provider search. A paid search service is not used.' },
+  { id: 'search', name: 'Web search', tier: 0, status: 'live', note: 'On. dazl searches the web for public sources.' },
   { id: 'v2ex', name: 'V2EX', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Keyword search goes through sov2ex.com, a third-party service that receives the keywords. Most posts are Chinese; only topics with English text can be verified.' },
   { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Found through web search of the public index when dazl has its own key for it - no session needed and no account at risk; results go to review. Otherwise it needs a saved session from a spare account. X disallows automated access in robots.txt and its terms.' },
   { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Reddit limits automated access under its terms.' },
