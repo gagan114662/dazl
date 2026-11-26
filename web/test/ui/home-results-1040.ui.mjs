@@ -163,6 +163,26 @@ try {
     await page.getByTestId('tile-ready').click(); await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
     assert.equal(await page.getByTestId('checked-title').textContent(), '7 ready leads'); assert.equal(await page.getByTestId('checked-row').count(), 7)
     out.push('ready in two scans: the tile opens 7 rows'); await ctx.close() }
+  // #1833: a ready row whose recorded verdict is rejected / no_mx says "This address can't receive email" (never the address);
+  // a usable address still shows. Rendered on the real production build, both widths.
+  for (const width of [1280, 390]) {
+    const det = (email, undeliverable) => ({ signal: 'Opened a second location', event_date: '2026-11-10', day_verified: true, contact_name: 'Dana Ruiz', contact_title: 'Owner', email, ...(undeliverable ? { email_undeliverable: true } : {}) })
+    const bad = mk({ scans_checked: 1, scans_in_window: 1, scans: [{ job_id: JA, ready: 3 }], held: [], companies: [
+      { lead_id: 'u-1', company: 'Rejected Co', job_id: JA, ready: true, reason: '', details: det(null, true) },
+      { lead_id: 'u-2', company: 'Bounced Co', job_id: JA, ready: true, reason: '', details: det(null, true) },
+      { lead_id: 'u-3', company: 'Usable Co', job_id: JA, ready: true, reason: '', details: det('dana@usable.example', false) }] })
+    const { ctx, page } = await open(width, FULL, bad)
+    await page.goto(`${base}/app/leads/checked?why=ready`); await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
+    assert.equal(await page.getByTestId('checked-row').count(), 3)
+    const emailOf = async i => (await page.getByTestId('checked-row').nth(i).locator('dd').nth(3).textContent()).trim()
+    assert.equal(await emailOf(0), "This address can't receive email", `${width}px: a rejected address row says so`)
+    assert.equal(await emailOf(1), "This address can't receive email", `${width}px: a no_mx address row says so`)
+    assert.equal(await emailOf(2), 'dana@usable.example', `${width}px: a usable address still shows`)
+    const text = (await page.getByTestId('checked-list').textContent()) ?? ''
+    assert.ok(!/rejected\.example|bounced\.example/.test(text), 'no undeliverable address is printed')
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px: no horizontal scroll`)
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `checked-undeliverable-1833-${width}.png`) })
+    out.push(`1833 at ${width}px: rejected and no_mx ready rows say "This address can't receive email", a usable address shows`); await ctx.close() }
   // finding 2: a limit cut the count: "or more", and how many leads were checked - never a total that is not one
   { const cut = mk({ capped: true, leads_checked: 600, leads_in_window: 1000, scans_checked: 3, scans_in_window: 5, scans: [{ job_id: JA, ready: 2 }], held: [{ reason: 'needs your review', count: 3, job_id: JB, scans: 1 }], companies: [...co(2, JA, ''), ...co(3, JB, 'needs your review')] })
     const { ctx, page } = await open(1280, FULL, cut)
