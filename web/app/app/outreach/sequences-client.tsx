@@ -18,6 +18,7 @@ const COPY: Record<string,string> = {
   reading_not_enabled: SEQUENCES_NEED_READING,
   sender_identity_missing:'Add your sender name and mailing address in the form at the top of this page.',
   gmail_not_connected:'Connect Gmail in Settings.',
+  uncertain_send:'A send with an unknown outcome is holding all sending on your account until it is reviewed. Check Gmail Sent and mark it sent or not sent above, then resume sending.',
   not_editable:'This sequence has started. Stop it instead of editing sent content.',
   already_exists:'A sequence already exists for this lead.',
   suppressed:'This address is suppressed. Nothing will be sent.',
@@ -119,7 +120,8 @@ export default function SequencesClient() {
         {['draft','approved','active'].includes(s.status)&&<button disabled={busy} className="btn-ghost text-xs mt-4 ml-2" onClick={()=>void action({action:'stop',id:s.id})}>Stop sequence</button>}
       </article>
     })}
-    <button disabled={busy} className="btn-ghost text-xs mt-4" onClick={()=>void action({action:'resume'})}>Resume after resolving unknown sends</button>
+    {(data?.sequences ?? []).some(s => s.steps.some(st => st.status === 'uncertain')) && <p className="text-xs text-[#555] mt-4">Sending stays paused while the outcome of a send is unknown. Check Gmail Sent and mark each unknown send above as sent or not sent; Resume sending works once all of them are resolved.</p>}
+    <button disabled={busy} className="btn-ghost text-xs mt-4" onClick={()=>void action({action:'resume'})}>Resume sending</button>
     <h2 className="text-lg font-semibold mt-8">Campaign analytics</h2>
     <p className="text-xs text-[#555] mt-1">A campaign is a scan. &quot;No bounce reported&quot; is sent minus recorded permanent bounces, not confirmed delivery. Opens and bookings are not tracked.</p>
     {data?.campaigns.map(c=><div key={c.id} className="card p-3 mt-3 text-sm"><p className="font-medium">{c.query||c.id}</p><p className="text-xs text-[#555] mt-2">Sent {c.analytics.sent} / No bounce reported {c.analytics.delivered} / Replied {c.analytics.replied} / Bounced {c.analytics.bounced} / Opt-outs {c.analytics.optOuts}</p></div>)}
