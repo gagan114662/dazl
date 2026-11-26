@@ -1435,7 +1435,7 @@ export default function LeadsClient() {
                   {o.kind === 'running' || o.kind === 'enriching' ? <span className="live-dot shrink-0 mt-1">{pill}</span> : <span className="shrink-0"><Pill tone={tone}>{pill}</Pill></span>}
                 </div>
                 <dl className="mb-3">
-                  <div className="kv"><dt>Last run</dt><dd>{new Date(j.created_at * 1000).toLocaleDateString()}</dd></div>
+                  <div className="kv"><dt>Last run</dt><dd>{new Date(j.created_at * 1000).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' })}</dd></div>
                   <div className="kv"><dt>Leads</dt><dd><span className="font-semibold">{j.lead_count}</span> saved</dd></div>
                   <div className="kv"><dt>Result</dt><dd className="text-[var(--ink-2)]" data-testid="past-scan-result">{pending ? 'Counting its leads as they are now...' : <>{run.label}{run.detail && <InfoTip><span data-testid="outcome-detail">{run.detail}</span></InfoTip>}{!h.current && <span className="block text-xs text-[var(--ink-3)]" data-testid="as-recorded">As recorded when the scan finished{currentRuns instanceof Map ? ' (Campaigns does not list this scan)' : ''}.</span>}</>}</dd></div>
                 </dl>
