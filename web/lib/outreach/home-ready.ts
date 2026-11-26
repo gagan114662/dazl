@@ -130,7 +130,10 @@ export async function homeReady(tenantId: string, now: number = Math.floor(Date.
     const { id, n } = j, byChecks = heldByChecksOf(j, shown)
     const job = getJob(db, tenantId, id) as { id: string; query: string | null; icp: string | null } | undefined
     if (!job) continue
-    const timingOpts = timingOptsFor(job)
+    // #1831: getJob does not read run_budget, but a company-first job's window lives there (jobWindowDays applies
+    // its saved 45-day window; without the marker a 'recently' query has no window at all, timing reads as an
+    // unresolved recency bound, and a proof-backed lead is wrongly held). The jobs list above already read it.
+    const timingOpts = timingOptsFor({ ...job, run_budget: j.run_budget })
     const buyerRoles = buyerRolesOf(job.icp)
     const leads = (listLeads(db, tenantId, id, perScan, true) as (PreviewLead & { created_at: number; seen_before?: number | null; source_kind?: string | null; name?: string | null; company_domain: string | null; company: string; quarantined_at?: unknown })[])
       .filter(l => countedOnHome(l) && Number(l.created_at) >= since && !l.seen_before && l.source_kind !== 'test' && !l.quarantined_at)   // rejected leads are not judged

@@ -64,6 +64,17 @@ export function previewSplit(leads: PreviewLead[]): PreviewSplit {
       else if (h?.cause === 'contact') out.noContact.push(l)
       else out.research.push({ lead: l, cause: h?.cause ?? 'unsupported' })
     }
+    // #1831: the Leads page's Research rule (#1735), the same one leadHoldReason applies for Home's tile — a lead whose
+    // surfaced timing is 'unconfirmed', with no review reason and no human confirmation, is Research on the Leads page,
+    // so the header stats that read this split must count it as research too, never as an opportunity (prod showed
+    // '2 ready, 0 research' over a page that held one of the two under Research). heldReason never reads the timing
+    // verdict. Discovery-lane leads keep their one state (heldReason above).
+    else if (!isDiscoverLead(l as { source_kind?: string | null }) && l.timing === 'unconfirmed' && !l.review_reason && l.human_confirmed_at == null) {
+      // The lead is held as well as research: journey() picks its zero-results state from an empty held list, so a
+      // research-only play would read 'This play has 0 opportunities' and skip the research-only explanation.
+      out.held.push({ lead: l, reason: 'event timing unknown' })
+      out.research.push({ lead: l, cause: 'need' })
+    }
     // a discovery-lane lead reaches here only when it is ready by email or on LinkedIn (heldReason above), so its contact is ready
     else out.opportunities.push({ ...l, contactReady: isDiscoverLead(l as { source_kind?: string | null }) || !!publishedEmail(l) })
   }
