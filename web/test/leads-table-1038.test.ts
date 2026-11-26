@@ -72,7 +72,10 @@ test("#1038 review fixes: unreadable drafts never read as a decision, and the ap
 })
 
 test('#1038 review fixes: the table and the cards share the one tab filter', () => {
-  const uses = client.match(/visibleLeads\.filter\(l => leadTab === 'rejected'/g) ?? []
-  assert.ok(uses.length >= 2, 'the identical tab-filter expression serves both views')
-  assert.match(client, /<LeadsTable leads=\{visibleLeads\.filter/, 'the table renders the filtered set')
+  // On this branch (#1869) the filter runs ONCE into tabLeads and both views (and the panel) read it -
+  // a stronger form of the shared-filter rule: divergence is impossible by construction.
+  const defs = client.match(/const tabLeads = visibleLeads\.filter\(l => leadTab === 'rejected'/g) ?? []
+  assert.equal(defs.length, 1, 'the tab filter is defined exactly once')
+  assert.match(client, /<LeadsTable leads=\{sortedTabLeads\}/, 'the table renders the filtered set')
+  assert.match(client, /\) : tabLeads\.map\(l => \(/, 'the cards render the same filtered set')
 })
