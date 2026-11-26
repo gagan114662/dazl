@@ -1457,7 +1457,7 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, fetchImpl: typeof fetch | undefined, deps: RunDeps, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
   const savedSource = sells?.icp_inferred
@@ -1571,6 +1571,11 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   try { await enqueuePostEngagement(sqliteDb(db), job.user_id, job.id, [...checked.map(l => l.evidence_url), ...run.pages]) } catch { /* the scan's own leads stand */ }
   // ...and the company People page of a lead whose person has no LinkedIn profile yet (lib/linkedin-tasks/lane-people.ts)
   try { await enqueueLanePeople(sqliteDb(db), job.user_id, job.id, forLinkedIn) } catch { /* the scan's own leads stand */ }
+  // #1910: the contact step belongs to every done job. The lane used to return here, so no job since 2026-11-23 ~13:55Z
+  // recorded enrich_started_at, no company site was read for a contact, and proof-carrying leads showed "no contact found
+  // yet" (Ready 0). Same bounded post-finish stage the older lane runs: runner.ts's beginEnrichment -> runPostFinishBounded.
+  beginEnrichment(db, job.id, job.attempts)
+  try { await runPostFinishBounded(db, job, deps) } finally { endEnrichment(db, job.id, job.attempts) }
   return 'done'
 }
 
@@ -1679,7 +1684,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         finish(db, job, 'failed', trial ? 'trial_unavailable' : 'claude_key_required', null, null, ledger)
         return 'failed'
       }
-      return await runDiscoverLane(db, job, key, spendGuards, ledger, providers_.anthropic, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
+      return await runDiscoverLane(db, job, key, spendGuards, ledger, providers_.anthropic, deps.fetchImpl, deps, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
     }
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
