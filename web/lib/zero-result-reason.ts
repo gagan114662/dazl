@@ -33,11 +33,23 @@ export function zeroResultReason(input: ZeroResultInput): ZeroResultReason {
       nextStep: 'Try again in a few minutes.',
     }
   }
-  if (stop && /budget|limit|allowance|quota/.test(stop)) {
+  const searchStop = stop !== null && /^(?:(?:web_)?search(?:es)?_(?:budget|limit|allowance|quota|used_up)(?:_|$)|max_uses_exceeded$)/.test(stop)
+  const usedAllSearches = Number.isFinite(input.searchAllowance) && input.searchAllowance > 0 &&
+    Number.isFinite(input.searchesUsed) && input.searchesUsed >= input.searchAllowance
+  if (searchStop || (!stop && usedAllSearches)) {
     return {
       code: 'budget_spent',
-      reason: `This search used all ${input.searchesUsed} of its web searches before finding a lead that passed.`,
+      reason: usedAllSearches
+        ? `This search used all ${input.searchesUsed} of its web searches before finding a lead that passed.`
+        : 'This search reached its web search limit before finding a lead that passed.',
       nextStep: 'Try a narrower request, like one city or one signal, and run it again.',
+    }
+  }
+  if (stop && /(?:^|_)(?:budget|spend(?:ing)?)(?:_|$)|^(?:over_cap|over_limit|owner_pool_limit)$/.test(stop)) {
+    return {
+      code: 'budget_spent',
+      reason: 'This search reached its spending limit before finding a lead that passed.',
+      nextStep: 'Try a narrower request to reduce the cost of the next search.',
     }
   }
   if (stop) {
@@ -45,13 +57,6 @@ export function zeroResultReason(input: ZeroResultInput): ZeroResultReason {
       code: 'unknown',
       reason: "We couldn't find leads for this search.",
       nextStep: 'Try rewording it with a clear buyer and signal.',
-    }
-  }
-  if (input.searchesUsed >= input.searchAllowance) {
-    return {
-      code: 'budget_spent',
-      reason: `This search used all ${input.searchesUsed} of its web searches before finding a lead that passed.`,
-      nextStep: 'Try a narrower request, like one city or one signal, and run it again.',
     }
   }
 
