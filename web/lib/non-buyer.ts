@@ -15,18 +15,9 @@ export function isPublicSectorBody(input: {
   }
 
   const govDomain = /(?:^|\.)gov$/.test(domain) || /(?:^|\.)gc\.ca$/.test(domain) || /(?:^|\.)mil$/.test(domain);
-  const businessLookalike = /\b(?:bakery|cafe|restaurant|boutique|salon|llc|inc|software|consulting|store|shop|dreams|carpentry|plumbing|glass|pizza)\b/.test(company);
-  const cityPattern = /\bcity of (?!the\b)([a-z0-9]+(?: [a-z0-9]+){0,3})(?: council)?\b/;
-  const cityMatch = company.match(cityPattern);
-  const cityLooksLikeBusiness = !!cityMatch && /\b(?:dreams|bakery|carpentry|plumbing|glass|pizza|cafe|restaurant|shop|store)\b/.test(cityMatch[1]);
-  const publicBody =
-    /\btown of [a-z][a-z ]+\b/.test(company) ||
-    (!!cityMatch && !cityLooksLikeBusiness) ||
-    /\b[a-z][a-z ]+ county\b|\bcounty of [a-z][a-z ]+\b/.test(company) ||
-    /\bmunicipality(?: of [a-z][a-z ]+)?\b|\bministry(?: of [a-z][a-z ]+)?\b|\bdepartment of [a-z][a-z ]+\b|\bgovernment of [a-z][a-z ]+\b/.test(company) ||
-    /\b(?:borough|school board|school district|public schools|public library|public health|police department|fire department|state of|province of|village of|public agency|housing authority|transit authority|public works)\b/.test(company);
+  const publicBody = /^(?:(?:city|town|county) of [a-z0-9]+|(?:ministry|department) of [a-z0-9]+|[a-z0-9]+(?: [a-z0-9]+)* (?:school district|school board|district school board|police department|fire department))$/.test(company);
 
-  if ((govDomain || publicBody) && !(publicBody && businessLookalike)) {
+  if (govDomain || publicBody) {
     return { nonBuyer: true, reason: govDomain ? 'The domain identifies a government or public-sector organization.' : 'The organization name identifies a government or public-sector body.' };
   }
   return { nonBuyer: false, reason: 'No clear public-sector identity was found.' };
