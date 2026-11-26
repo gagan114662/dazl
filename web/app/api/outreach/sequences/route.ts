@@ -12,6 +12,7 @@ import { audit } from '@/lib/audit-route'
 import { autopilotAvailable, getState } from '@/lib/outreach/autopilot'
 import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 import { displayStopReason } from '@/lib/outreach/lifecycle'
+import { fixtureAvailable, fixtureEligible } from '@/lib/outreach/test-fixture'
 import { track } from '@/lib/analytics/track'
 
 export async function GET() {
@@ -27,7 +28,9 @@ export async function GET() {
   const available = autopilotAvailable(), accepted = autoSequencePolicyAccepted(db, user.tenantId)
   const auto_policy = available ? { version: AUTO_SEQUENCE_POLICY, text: AUTO_SEQUENCE_POLICY_TEXT, accepted, available } : accepted ? { version: AUTO_SEQUENCE_POLICY, text: [], accepted, available } : undefined
   // scheduler/gates: configuration. freshness: whether the scheduler is actually making progress for this tenant (its own rows only).
-  return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), auto_policy, status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
+  // #1706 (Ziggy's send-back): fixture availability travels in THIS production response, gated exactly
+  // as the staging fixture route gates it, so the page never calls the staging-only route to ask.
+  return NextResponse.json({ scheduler, gates, freshness: await tenantFreshness(db, user.tenantId), sequences, test_addresses: testAddresses(db,user.tenantId), fixture_available: process.env.DAZL_ENV === 'staging' && fixtureAvailable(db, user.tenantId), fixture_eligible: fixtureEligible(user.tenantId), auto_policy, status: Object.fromEntries(sequenceStatusByLead(db,user.tenantId)), campaigns: campaigns.map(c => ({ ...c, analytics: sequenceAnalytics(db,user.tenantId,(db.prepare('SELECT id FROM leads WHERE scan_job_id = ?').all(c.id) as { id: string }[]).map(l => l.id)) })) })
 
 }
 export async function POST(req: NextRequest) {

@@ -89,9 +89,22 @@ test('test timing is server allowlist only; no flag accelerates a prospect',asyn
   const db=await setup(),s=add(db),m=mock(); await start(db,s,m)
   assert.equal((await runSequences(db,'A','', {...m,now:NOW+180,flags:{SEQUENCES_ENABLED:'1',TEST_MODE:'1'}})).sent,0)
   setTestAddresses(db,'A',[s.email])
-  assert.equal((await runSequences(db,'A','', {...m,now:NOW+180})).sent,1)
+  // #1706 (Quest): the saved list alone no longer buys minute timing — that is reserved for the
+  // env-designated test account. A normal account with a saved list gets normal timing.
+  assert.equal((await runSequences(db,'A','', {...m,now:NOW+180})).sent,0)
   setTestAddresses(db,'A',[])
   assert.equal((await runSequences(db,'A','', {...m,now:NOW+420})).sent,0)
+})
+
+test('test timing: the designated test account keeps minute gaps for its test inbox',async()=>{
+  const db=await setup(); setTestAddresses(db,'A',['instinct114114@gmail.com'])
+  const s=add(db,'instinct114114@gmail.com'),m=mock()
+  process.env.OUTREACH_TEST_TENANT_ID='A'
+  try {
+    await start(db,s,m)
+    await runSequences(db,'A','', {...m,now:NOW+1})
+    assert.equal((await runSequences(db,'A','', {...m,now:NOW+180})).sent,1, 'step 2 goes at +3 minutes for the designated account')
+  } finally { delete process.env.OUTREACH_TEST_TENANT_ID }
 })
 
 test('any human reply stops sequence; failed reply sync never sends',async()=>{
