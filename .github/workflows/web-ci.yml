@@ -251,6 +251,29 @@ jobs:
           fi
           [ "$FULL_CI" = true ] && [ "$SHARDS" = success ] || { echo "::error::Shards: $SHARDS"; exit 1; }
 
+  # Required on main's branch protection to prevent merging after just the fast tier.
+  full-suite:
+    if: always()
+    needs: [test-sqlite, test-postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      FULL_CI: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
+      SQLITE: ${{ needs.test-sqlite.result }}
+      POSTGRES: ${{ needs.test-postgres.result }}
+    steps:
+      - name: Require the full tier and passing shards
+        run: |
+          if [ "$FULL_CI" != true ]; then
+            echo "::error::Add ready-to-merge or quest-approved to run the full suite before merging."
+            exit 1
+          fi
+          if [ "$SQLITE" != success ] || [ "$POSTGRES" != success ]; then
+            echo "::error::Full suite requires successful SQLite and PostgreSQL checks."
+            exit 1
+          fi
+          echo "Full SQLite and PostgreSQL checks passed."
+
   # Gate 3: after the full suite passes on main, mark the commit green. Only main-green commits may deploy (prod-deploy.yml).
   main-green:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

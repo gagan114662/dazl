@@ -149,5 +149,5 @@ Times are US Eastern unless marked Z.
 
 - **Mistake:** full test and browser jobs ran on routine pull requests, delaying merge and deploy checks.
 - **Date:** 2026-11-25.
-- **Rule:** run lint, typecheck and affected unit tests on routine pull requests. Run the full suite for approved or ready-to-merge pull requests, the merge queue and main. Required checks report when the full suite is deferred.
+- **Rule:** run lint, typecheck and affected unit tests on routine pull requests. Run the full suite for approved or ready-to-merge pull requests, the merge queue and main. The `ready-to-merge` and `quest-approved` labels replace `full-suite-ci`. The required `full-suite` check blocks merges until the full tier passes.
 - **Enforced by (automated):** `web/test/pr-ci-tiers-1906.test.ts` checks the workflow triggers, required check names and deferral rules.

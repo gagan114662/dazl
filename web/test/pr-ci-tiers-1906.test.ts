@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import test from 'node:test'
 
 type Step = { if?: string; run?: string }
-type Job = { if?: string; needs?: string[]; steps: Step[] }
+type Job = { if?: string; env?: Record<string, string>; needs?: string[]; steps: Step[] }
 type Workflow = { on: { pull_request: { types: string[]; paths?: string[] } }; env?: Record<string, string>; jobs: Record<string, Job> }
 const { load } = createRequire(import.meta.url)('js-yaml') as { load: (yaml: string) => unknown }
 const read = (name: string) => load(readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), 'utf8')) as Workflow
@@ -58,3 +58,25 @@ for (const [name, jobs] of [['release-gate', ['browser', 'migrations', 'package'
     }
   })
 }
+
+test('#1906 an unlabeled PR cannot pass the full-suite check even when every other required check passes', () => {
+  const gate = read('web-ci').jobs['full-suite']
+  assert.ok(gate, 'branch protection needs a full-suite check')
+  assert.equal(gate.if, 'always()')
+  assert.equal(gate.env?.FULL_CI, full)
+  assert.deepEqual(gate.needs, ['test-sqlite', 'test-postgres'])
+  const script = gate.steps[0].run!
+  for (const [tier, sqlite, postgres, expected] of [
+    ['false', 'success', 'success', 1],
+    ['true', 'success', 'success', 0],
+    ['true', 'failure', 'success', 1],
+    ['true', 'success', 'skipped', 1],
+  ] as const) {
+    const run = spawnSync('bash', ['-e', '-c', script], {
+      encoding: 'utf8',
+      env: { ...process.env, FULL_CI: tier, SQLITE: sqlite, POSTGRES: postgres },
+    })
+    assert.equal(run.status, expected, run.stdout + run.stderr)
+    if (tier === 'false') assert.match(run.stdout, /add ready-to-merge or quest-approved/i)
+  }
+})
