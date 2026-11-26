@@ -183,7 +183,7 @@ test('DATES SmartRecruiters: a posting page dates itself from its company record
 })
 
 test('DATES SmartRecruiters fails closed: no releasedDate, a future day, a stale day', async () => {
-  const { releasedDate, ...noDate } = SR
+  const noDate = Object.fromEntries(Object.entries(SR).filter(([k]) => k !== 'releasedDate'))
   assert.equal(await atsDate(SR_PAGE, stub({ [SR_API]: { body: noDate } }).f, NOW), null, 'no releasedDate means no date')
   assert.equal(await atsDate(SR_PAGE, stub({ [SR_API]: { body: { ...SR, releasedDate: '2027-03-01T00:00:00Z' } } }).f, NOW), null, 'a future day is refused')
   assert.equal(await atsDate(SR_PAGE, stub({ [SR_API]: { body: { ...SR, releasedDate: '2019-01-02T00:00:00Z' } } }).f, NOW), null, 'a day outside the window is refused')
