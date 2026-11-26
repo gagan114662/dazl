@@ -228,11 +228,14 @@ export async function oldestDue(d: DbLike, tenantId: string, now = nowS()): Prom
   if (!rows.length) return null
   const set = await db.get<{ test_addresses: string }>('SELECT test_addresses FROM sequence_settings WHERE tenant_id = ?', [tenantId])
   let tests: string[] = []; try { tests = (JSON.parse(set?.test_addresses ?? '[]') as string[]).map(e => e.trim().toLowerCase()) } catch { /* none */ }
+  // Minute gaps belong to the env-designated test account alone — the same gate isTestRecipient
+  // applies in lib/outreach/sequences.ts. A saved list on an ordinary account changes nothing.
+  const isDesignatedTestTenant = !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
   let due: number | null = null
   for (const r of rows) {
     const sent = Number(r.steps_sent)
     if (sent >= GAPS_S.length) continue
-    const at = Number(r.step1_sent) + (tests.includes(r.to_email.trim().toLowerCase()) ? TEST_GAPS_S : GAPS_S)[sent]
+    const at = Number(r.step1_sent) + (isDesignatedTestTenant && tests.includes(r.to_email.trim().toLowerCase()) ? TEST_GAPS_S : GAPS_S)[sent]
     if (at <= now && (due === null || at < due)) due = at
   }
   return due === null ? null : { due_at: due, overdue_s: now - due }
