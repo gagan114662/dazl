@@ -69,12 +69,27 @@ test('GET /api/outreach/inbox paged list and POST /api/outreach/inbox read: own 
   const unknown = await post({ thread_id: 'no-such-thread', action: 'read' })
   assert.equal(cross.status, 404); assert.equal(await cross.text(), await unknown.text())
   assert.deepEqual(db.prepare("SELECT tenant_id, thread_id FROM inbox_thread_reads ORDER BY thread_id").all(), [{ tenant_id: 'A', thread_id: 'AMARKER-T1' }])
-  // B's list: B's own row only, A's play id filters to nothing.
+  // B's list and filters return its own rows. Foreign and absent filters are indistinguishable.
   const b = await (await get('')).json()
   assert.deepEqual(b.threads.map((t: { thread_id: string }) => t.thread_id), ['BMARKER-THREAD'])
   assert.ok(!JSON.stringify(b).includes('AMARKER'))
-  const bOnA = await (await get(`?job_id=${PA}`)).json()
-  assert.deepEqual([bOnA.threads.length, bOnA.counts.threads], [0, 0])
+  for (const [param, own, other, missing] of [
+    ['job_id', PB, PA, 'f'.repeat(24)],
+    ['thread', 'BMARKER-THREAD', 'AMARKER-THREAD-OLD', 'no-such-thread'],
+  ]) {
+    const ownResponse = await get(`?${param}=${own}`)
+    assert.equal(ownResponse.status, 200)
+    assert.deepEqual((await ownResponse.json()).threads.map((row: { thread_id: string }) => row.thread_id), ['BMARKER-THREAD'])
+    const absent = await get(`?${param}=${missing}`)
+    const foreignResponse = await get(`?${param}=${other}`)
+    assert.equal(absent.status, 404, param)
+    assert.equal(foreignResponse.status, 404, param)
+    assert.deepEqual(await foreignResponse.json(), await absent.json(), param)
+  }
+  const emptyOwn = await get(`?job_id=${PB}&class=negative`)
+  assert.equal(emptyOwn.status, 200)
+  const empty = await emptyOwn.json()
+  assert.deepEqual([empty.threads.length, empty.counts.threads], [0, 0])
 })
 
 test('POST /api/outreach/inbox read is an operator write: a viewer of A is refused and marks nothing; the viewer still reads A; an operator marks', async () => {
