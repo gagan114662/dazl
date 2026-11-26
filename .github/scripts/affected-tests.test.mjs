@@ -80,3 +80,24 @@ test('a changed top-level test still selects itself', t => {
   git(cwd, 'commit', '-am', 'top-level test')
   assert.equal(run(cwd, base, 'HEAD'), 'test/other.test.ts')
 })
+
+
+test('fast PR checks run explicitly changed tests when shared changes require the full tier', t => {
+  const [cwd, base] = repo(t)
+  mkdirSync(join(cwd, '.github/scripts'), { recursive: true })
+  writeFileSync(join(cwd, '.github/scripts/affected-tests.mjs'), readFileSync(select))
+  writeFileSync(join(cwd, 'web/test/helpers/runtime.mts'), 'export {}')
+  writeFileSync(join(cwd, 'web/test/other.test.ts'), "console.log('changed test executed')")
+  git(cwd, 'add', '.'); git(cwd, 'commit', '-m', 'shared and top-level changes')
+  const start = workflow.indexOf('      - name: Run affected unit tests')
+  assert.ok(start >= 0)
+  const body = workflow.slice(start).match(/^        run: \|\n((?:^          .*\n)+)/m)?.[1]
+  assert.ok(body)
+  const env = { ...process.env, PR_BASE_SHA: base, GITHUB_SHA: git(cwd, 'rev-parse', 'HEAD'),
+    GITHUB_STEP_SUMMARY: join(cwd, 'summary') }
+  delete env.NODE_TEST_CONTEXT
+  const result = spawnSync('bash', ['-e', '-c', body], { cwd: join(cwd, 'web'), env, encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /changed test executed/)
+  assert.match(readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8'), /Shared changes require the full tier/)
+})

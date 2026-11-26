@@ -1,6 +1,3 @@
-// Refs #1099 (Hermes F1 on #1273): a reviewer-applied `full-suite-ci` label gives web-ci's two PR test jobs the existing
-// 45-minute full-suite ceiling AND forces the ALL suite. Unlabeled PRs keep the 5-minute affected-only budget; main is
-// unchanged; pr-budget still fails on a cancelled job. Run: node --test '.github/scripts/*.test.mjs' (never-again-gates.yml).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -14,34 +11,16 @@ const job = name => {
   assert.ok(m, `job ${name} missing`)
   return m[1]
 }
-const TIMEOUT = "timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}"
-const FULL_ENV = "FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite-ci') }}"
-const SELECT = 'if [ "$FULL_SUITE" = true ]; then sel=ALL; else sel=$(node .github/scripts/affected-tests.mjs'
-
-// mirror of the TIMEOUT expression, so the on/off cases are spelled out
-const timeoutFor = (event, labels) => (event === 'pull_request' && !labels.includes('full-suite-ci') ? 5 : 45)
-
-test('label on/off: both PR test jobs use the 45-min ceiling only with full-suite-ci', () => {
+test('full shards keep the full test list, ceiling and partition', () => {
   for (const name of ['sqlite-shard', 'postgres-shard']) {
-    const lines = job(name).split('\n').map(l => l.trim())
-    assert.ok(lines.includes(TIMEOUT), `${name}: timeout must honour the full-suite-ci label`)
+    const body = job(name)
+    assert.match(body, /timeout-minutes: 45/)
+    assert.match(body, /SEL: ALL/)
+    assert.ok(body.includes('all=$(ls test/*.test.ts test/crm-webhook-unknown-ui.test.mjs)'))
+    assert.match(body, /shard: \[1, 2, 3, 4\]/)
+    assert.ok(body.includes("'NF && (NR-1)%n==i-1'"))
   }
-  assert.equal(timeoutFor('pull_request', []), 5, 'unlabeled PR keeps 5 minutes')
-  assert.equal(timeoutFor('pull_request', ['launch']), 5, 'other labels keep 5 minutes')
-  assert.equal(timeoutFor('pull_request', ['full-suite-ci']), 45, 'labeled PR gets 45')
-  assert.equal(timeoutFor('push', []), 45, 'main unchanged')
-})
-
-test('full-suite selection: the label forces ALL, otherwise affected-tests decides', () => {
-  for (const name of ['sqlite-shard', 'postgres-shard']) {
-    const j = job(name)
-    const lines = j.split('\n').map(l => l.trim())
-    assert.ok(lines.includes(FULL_ENV), `${name}: selection step reads the label`)
-    assert.ok(j.includes(SELECT), `${name}: label => sel=ALL`)
-    assert.match(j, /\[ "\$SEL" = ALL \]; then all=\$\(ls test\/\*\.test\.ts test\/crm-webhook-unknown-ui\.test\.mjs\)/, `${name}: ALL still runs the whole npm test list`)
-    assert.match(j, /shard: \[1, 2, 3, 4\]/, `${name}: 4 shards`)
-    assert.match(j, /'NF && \(NR-1\)%n==i-1'/, `${name}: each file lands in exactly one shard`)
-  }
+  assert.match(job('fast-pr'), /timeout-minutes: 20/)
 })
 
 test('adding or removing the label re-runs CI', () => {
@@ -53,12 +32,12 @@ test('nothing else is loosened: migrations, pr-budget cancel detection, no manua
   assert.match(pg, /npm run db:migrate \| grep -q 'applied \\\[\\\]'/, 'migrate-twice check kept')
   assert.match(pg, /test\/leads-read-pg-live\.test\.ts/, 'live leads-read contract kept')
   const b = job('pr-budget')
-  assert.match(b, /if \[ "\$R1" = cancelled \] \|\| \[ "\$R2" = cancelled \]; then/)
+  assert.match(b, /if \[ "\$FAST" = cancelled \] \|\| \[ "\$R1" = cancelled \] \|\| \[ "\$R2" = cancelled \]; then/)
   assert.match(b, /exit 1/)
   for (const [req, shard] of [['test-sqlite', 'sqlite-shard'], ['test-postgres', 'postgres-shard']]) {
     const j = job(req)
-    assert.match(j, new RegExp(`needs: ${shard}`), `${req} waits for every shard`)
-    assert.ok(j.includes(`[ "\${{ needs.${shard}.result }}" = success ] || {`), `${req} fails unless every shard passed`)
+    assert.ok(j.includes(`needs: [fast-pr, ${shard}]`), `${req} waits for fast checks and shards`)
+    assert.ok(j.includes('[ "$FULL_CI" = true ] && [ "$SHARDS" = success ]'), `${req} requires shards to pass at the full tier`)
     assert.match(j, /if: always\(\)/, `${req} reports even when a shard fails`)
   }
   assert.match(job('main-green'), /needs: \[test-sqlite, test-postgres\]/)

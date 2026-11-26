@@ -2,12 +2,10 @@ name: web-ci
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
     # no path filter on main: every merged commit gets the full suite and, if green, main-green (gate 3)
-  # Manual run at an exact ref so a merged commit whose diff only touched release plumbing
-  # can still carry the full required check set on its own SHA (checked_launch's gate).
+  # Manual runs on main can still validate the selected commit.
   workflow_dispatch:
   merge_group:
     types: [checks_requested]
@@ -19,19 +17,10 @@ concurrency:
   group: ${{ github.event_name == 'push' && 'web-ci-main' || format('web-ci-{0}', github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  # Full suite on SQLite, today's runtime store. PG-only tests skip here.
-  # Sharded 4 ways (round-robin over the exact `npm test` file list, or over the PR's affected list) so the full suite on
-  # main can run the work concurrently. Every file still runs in exactly one shard; the test-sqlite and
-  # test-postgres jobs below keep the required check names and fail unless every shard passed.
-  sqlite-shard:
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
-    # Gate 2: PRs get a hard 20-minute budget (affected tests only; 5 minutes cancelled most pull requests that touch a shared file, 2026-11-23); main runs the full suite (gate 3).
-    # A reviewer-applied `full-suite-ci` label gives a PR the 45-minute ceiling AND forces ALL (#1099/#1273, Hermes F1).
-    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
+  fast-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ vars.PR_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
@@ -45,7 +34,6 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Verify PR merge parents
-        if: github.event_name == 'pull_request'
         id: pr_base
         working-directory: .
         env:
@@ -55,37 +43,76 @@ jobs:
           base=$(node .github/scripts/pr-merge-base.mjs "$GITHUB_SHA" "$PR_HEAD_SHA" "$PR_EVENT_BASE_SHA")
           echo "sha=$base" >> "$GITHUB_OUTPUT"
       - run: npm ci
-      # one tsc pass: ordinary type errors AND unused locals/imports/parameters (narrow documented exemptions, #898).
-      # check-unused fails on any non-unused TS error too, so a separate `tsc --noEmit` step would only compile twice.
-      # #1504: the full-repo type check runs on every PR too. Changed-file lint alone let an untouched file's type error
-      # (TS6133 in a file the PR did not edit) reach main twice (#1462, #1480).
-      - name: Lint changed files (PR) + full-repo typecheck (PR and main)
-        if: matrix.shard == 1
+      - name: Lint changed files and typecheck the full web project
         env:
           PR_BASE_SHA: ${{ steps.pr_base.outputs.sha }}
         run: |
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            files=$(git diff --name-only "$PR_BASE_SHA...$GITHUB_SHA" -- 'web/*.ts' 'web/*.tsx' 'web/*.mts' 'web/*.mjs' | sed 's#^web/##' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
-            [ -z "$files" ] || npx eslint $files
-          fi
+          set -euo pipefail
+          git diff --relative --name-only -z "$PR_BASE_SHA...$GITHUB_SHA" -- '*.ts' '*.tsx' '*.mts' '*.mjs' > "$RUNNER_TEMP/changed-web-files"
+          mapfile -d '' -t changed < "$RUNNER_TEMP/changed-web-files"
+          files=()
+          for f in "${changed[@]}"; do
+            if [[ -f "$f" ]]; then files+=("$f"); fi
+          done
+          if (( ${#files[@]} )); then npx eslint -- "${files[@]}"; fi
           npm run check:unused
+      - name: Run affected unit tests
+        if: "!contains(github.event.pull_request.labels.*.name, 'ready-to-merge') && !contains(github.event.pull_request.labels.*.name, 'quest-approved')"
+        env:
+          PR_BASE_SHA: ${{ steps.pr_base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          selected=$(cd .. && node .github/scripts/affected-tests.mjs "$PR_BASE_SHA" "$GITHUB_SHA")
+          if [ -z "$selected" ]; then echo "::error::Missing affected test selection"; exit 1; fi
+          if [ "$selected" = ALL ]; then
+            echo "Shared changes require the full tier. Running explicitly changed tests now." >> "$GITHUB_STEP_SUMMARY"
+            selected=$(git diff --name-only --diff-filter=AM "$PR_BASE_SHA...$GITHUB_SHA" -- test/ |
+              sed 's#^web/##' | sed -nE '/^test\/[a-zA-Z0-9_.-]+\.test\.(ts|mjs)$/p' | paste -sd ' ' -)
+          fi
+          if [ -z "$selected" ] || [ "$selected" = NONE ]; then echo "No affected unit tests selected."; exit 0; fi
+          read -r -a files <<< "$selected"
+          runnable=()
+          for f in "${files[@]}"; do
+            [[ "$f" =~ ^test/[a-zA-Z0-9_.-]+\.test\.(ts|mjs)$ ]] || { echo "::error::Invalid test selection"; exit 1; }
+            if [[ -f "$f" ]]; then runnable+=("$f"); fi
+          done
+          if (( ${#runnable[@]} )); then
+            SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test "${runnable[@]}"
+          fi
+  # Full suite on SQLite, today's runtime store. PG-only tests skip here.
+  # Sharded 4 ways (round-robin over the exact `npm test` file list) so the full suite on
+  # main can run the work concurrently. Every file still runs in exactly one shard; the test-sqlite and
+  # test-postgres jobs below keep the required check names and fail unless every shard passed.
+  sqlite-shard:
+    if: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Full-repo typecheck on non-PR events
+        if: matrix.shard == 1 && github.event_name != 'pull_request'
+        run: npm run check:unused
       # age for the encrypted off-host backup tests (test/offhost-backup.test.ts); DAZL_REQUIRE_AGE makes a missing one fail
       - run: sudo apt-get update -q && sudo apt-get install -y -q age
-      - name: Affected tests (PR only; gate 2)
-        id: sel
-        if: github.event_name == 'pull_request'
-        working-directory: .
-        env:
-          FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite-ci') }}
-          PR_BASE_SHA: ${{ steps.pr_base.outputs.sha }}
-        run: |
-          if [ "$FULL_SUITE" = true ]; then sel=ALL; else sel=$(node .github/scripts/affected-tests.mjs "$PR_BASE_SHA" "$GITHUB_SHA"); fi
-          echo "tests=$sel" >> "$GITHUB_OUTPUT"
-          echo "affected: $sel"
-      - name: Tests (PR = affected, main = full suite)
+      - name: Full test suite
         env:
           DAZL_REQUIRE_AGE: "1"
-          SEL: ${{ steps.sel.outputs.tests }}
+          SEL: ALL
         run: |
           # the full list is exactly what `npm test` runs; the guard fails loudly if package.json's test script changes
           want='SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts test/crm-webhook-unknown-ui.test.mjs'
@@ -113,12 +140,13 @@ jobs:
   # contract, migrations, schema drift) and DAZL_REQUIRE_PG=1 makes them fail instead of skipping if it is missing.
   # Modules not yet moved to lib/db/client.ts still run on SQLite in this job (docs/PLATFORM.md step 2).
   postgres-shard:
+    if: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
     runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -143,31 +171,10 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Verify PR merge parents
-        if: github.event_name == 'pull_request'
-        id: pr_base
-        working-directory: .
-        env:
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          base=$(node .github/scripts/pr-merge-base.mjs "$GITHUB_SHA" "$PR_HEAD_SHA" "$PR_EVENT_BASE_SHA")
-          echo "sha=$base" >> "$GITHUB_OUTPUT"
       - run: npm ci
-      - name: Affected tests (PR only; gate 2)
-        id: sel
-        if: github.event_name == 'pull_request'
-        working-directory: .
+      - name: Full test suite
         env:
-          FULL_SUITE: ${{ contains(github.event.pull_request.labels.*.name, 'full-suite-ci') }}
-          PR_BASE_SHA: ${{ steps.pr_base.outputs.sha }}
-        run: |
-          if [ "$FULL_SUITE" = true ]; then sel=ALL; else sel=$(node .github/scripts/affected-tests.mjs "$PR_BASE_SHA" "$GITHUB_SHA"); fi
-          echo "tests=$sel" >> "$GITHUB_OUTPUT"
-          echo "affected: $sel"
-      - name: Tests (PR = affected, main = full suite)
-        env:
-          SEL: ${{ steps.sel.outputs.tests }}
+          SEL: ALL
         run: |
           # the full list is exactly what `npm test` runs; the guard fails loudly if package.json's test script changes
           want='SITECRAWL_ENABLED=0 NEWS_SEARCH_ENABLED=0 node --experimental-strip-types --import ./test/helpers/net-fence.ts --test test/*.test.ts test/crm-webhook-unknown-ui.test.mjs'
@@ -199,21 +206,50 @@ jobs:
         if: matrix.shard == 1
         run: DAZL_PG_ADMIN=$DAZL_TEST_PG_URL node --experimental-strip-types --test test/leads-read-pg-live.test.ts
 
-  # Required checks: these names are what branch protection requires. Each passes only if every shard passed.
+  # Required check names are stable. A full run must pass every shard, and a PR must pass the fast checks.
   test-sqlite:
     if: always()
-    needs: sqlite-shard
+    needs: [fast-pr, sqlite-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    env:
+      FULL_CI: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
+      EVENT: ${{ github.event_name }}
+      FAST: ${{ needs.fast-pr.result }}
+      SHARDS: ${{ needs.sqlite-shard.result }}
     steps:
-      - run: '[ "${{ needs.sqlite-shard.result }}" = success ] || { echo "::error::sqlite shards: ${{ needs.sqlite-shard.result }}"; exit 1; }'
+      - run: |
+          if [ "$EVENT" = pull_request ] && [ "$FAST" != success ]; then
+            echo "::error::Fast PR checks: $FAST"
+            exit 1
+          fi
+          if [ "$FULL_CI" = false ] && [ "$SHARDS" = skipped ]; then
+            echo "full suite deferred until ready-to-merge" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 0
+          fi
+          [ "$FULL_CI" = true ] && [ "$SHARDS" = success ] || { echo "::error::Shards: $SHARDS"; exit 1; }
+
   test-postgres:
     if: always()
-    needs: postgres-shard
+    needs: [fast-pr, postgres-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    env:
+      FULL_CI: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
+      EVENT: ${{ github.event_name }}
+      FAST: ${{ needs.fast-pr.result }}
+      SHARDS: ${{ needs.postgres-shard.result }}
     steps:
-      - run: '[ "${{ needs.postgres-shard.result }}" = success ] || { echo "::error::postgres shards: ${{ needs.postgres-shard.result }}"; exit 1; }'
+      - run: |
+          if [ "$EVENT" = pull_request ] && [ "$FAST" != success ]; then
+            echo "::error::Fast PR checks: $FAST"
+            exit 1
+          fi
+          if [ "$FULL_CI" = false ] && [ "$SHARDS" = skipped ]; then
+            echo "full suite deferred until ready-to-merge" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 0
+          fi
+          [ "$FULL_CI" = true ] && [ "$SHARDS" = success ] || { echo "::error::Shards: $SHARDS"; exit 1; }
 
   # Gate 3: after the full suite passes on main, mark the commit green. Only main-green commits may deploy (prod-deploy.yml).
   main-green:
@@ -238,17 +274,18 @@ jobs:
   # Gate 2: say clearly when a PR job hit the 20-minute budget, so an optimization lane gets opened.
   pr-budget:
     if: always() && github.event_name == 'pull_request'
-    needs: [sqlite-shard, postgres-shard]
+    needs: [fast-pr, sqlite-shard, postgres-shard]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Budget report
         env:
+          FAST: ${{ needs.fast-pr.result }}
           R1: ${{ needs.sqlite-shard.result }}
           R2: ${{ needs.postgres-shard.result }}
         run: |
-          echo "test-sqlite=$R1 test-postgres=$R2"
-          if [ "$R1" = cancelled ] || [ "$R2" = cancelled ]; then
+          echo "fast-pr=$FAST test-sqlite=$R1 test-postgres=$R2"
+          if [ "$FAST" = cancelled ] || [ "$R1" = cancelled ] || [ "$R2" = cancelled ]; then
             echo "::error::PR CI over the 20-minute budget (job cancelled by timeout). Open an optimization lane."
             exit 1
           fi
