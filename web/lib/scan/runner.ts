@@ -88,7 +88,7 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
-import { addEnrichment, audit, writeAudit } from '../connectors/store.ts'
+import { addEnrichment, audit, enrichmentsForLeads, writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -1457,7 +1457,7 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet }: Pick<RunDeps, 'fetchImpl' | 'crawlGet'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
   const savedSource = sells?.icp_inferred
@@ -1554,10 +1554,18 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
   const tag = db.prepare('UPDATE leads SET source_kind = ?, company_domain = COALESCE(?, company_domain) WHERE id = ?')
   const forLinkedIn: LaneLead[] = []
+  const needsContactCrawl: { id: string; company: string; source_url: string; signal: string; evidence_excerpt: string | null }[] = []
+  const siteHints: { company: string; website: string }[] = []
   for (const l of checked) {
     const row = rows.find(r => r.source_url === l.evidence_url && r.company === l.company.slice(0, 150))
     if (!row) continue
-    if (isShown(l)) forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
+    if (isShown(l)) {
+      forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
+      if (!l.person) {
+        needsContactCrawl.push({ ...row, signal: l.signal, evidence_excerpt: l.evidence_quote })
+        if (l.domain) siteHints.push({ company: l.company, website: l.domain })
+      }
+    }
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
@@ -1565,6 +1573,36 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
       source_url: l.email_source_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
     if (l.linkedin_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'linkedin', value: l.linkedin_url.slice(0, 254), label: 'linked from a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+  }
+  if (needsContactCrawl.length && sitecrawlEnabled()) {
+    beginEnrichment(db, job.id, job.attempts)
+    try {
+      await crawlJob(db, job.user_id, job.id, {
+        leads: needsContactCrawl,
+        textSites: siteHints,
+        companyFirstContacts: true,
+        signal: AbortSignal.timeout(postFinishBudgetMs()),
+        ...(crawlGet ? { get: crawlGet } : {}),
+      })
+      if (postFinishAliveStrict(db, job)) {
+        // Discovery cards read their own connector. Carry over the strict crawl's
+        // single buyer and any personal address proven on that buyer's page.
+        const contacts = enrichmentsForLeads(db, job.user_id, needsContactCrawl.map(row => row.id))
+        for (const { id } of needsContactCrawl) {
+          const siteRows = (contacts[id] ?? []).filter(row => row.connector === 'sitecrawl')
+          const buyers = siteRows.filter(row => row.kind === 'person')
+          if (buyers.length !== 1) continue
+          const [buyer] = buyers
+          addEnrichment(db, job.user_id, id, { ...buyer, connector: 'discover' })
+          const addresses = siteRows.filter(row => row.kind === 'email' && row.source_url === buyer.source_url)
+          if (addresses.length === 1) {
+            addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover', label: 'published on a public page' })
+          }
+        }
+      }
+    } finally {
+      endEnrichment(db, job.id, job.attempts)
+    }
   }
   // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
   // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.
@@ -1679,7 +1717,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         finish(db, job, 'failed', trial ? 'trial_unavailable' : 'claude_key_required', null, null, ledger)
         return 'failed'
       }
-      return await runDiscoverLane(db, job, key, spendGuards, ledger, providers_.anthropic, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
+      return await runDiscoverLane(db, job, key, spendGuards, ledger, providers_.anthropic, deps, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
     }
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
