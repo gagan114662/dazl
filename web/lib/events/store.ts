@@ -149,15 +149,40 @@ export function listCompanyEvents(db: Database.Database, tenantId: string, opts:
 // rows keyed by the lead's domain when it has one. The two key families are not merged
 // (documented identity rule) - both kinds are returned, each with its own key.
 export function eventsForLeads(db: Database.Database, tenantId: string, leads: { id: string; company_domain: string | null }[], opts: { now?: number } = {}): Record<string, CompanyEventRow[]> {
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const keysByLead = leads.map(lead => {
+    const domain = (lead.company_domain ?? '').toLowerCase().replace(/^www\./, '').trim()
+    return domain.includes('.') ? [domain, `lead:${lead.id}`] : [`lead:${lead.id}`]
+  })
+  const uniqueKeys = [...new Set(keysByLead.flat())]
+  const byKey = new Map<string, CompanyEventRow[]>()
+  for (let offset = 0; offset < uniqueKeys.length; offset += 400) {
+    const keys = uniqueKeys.slice(offset, offset + 400)
+    const matches = db.prepare(
+      `SELECT id, company_key, company_name, scope, lead_id, event_type, summary, detail, source_url,
+         source_published_at, retrieved_at, first_seen_at, last_seen_at, confidence
+       FROM (
+         SELECT *, ROW_NUMBER() OVER (PARTITION BY company_key ORDER BY last_seen_at DESC) AS row_number
+         FROM company_events WHERE tenant_id = ? AND scope = 'account'
+           AND company_key IN (${keys.map(() => '?').join(', ')})
+       )
+       WHERE row_number <= 200
+       ORDER BY company_key, row_number`,
+    ).all(tenantId, ...keys) as Omit<CompanyEventRow, 'fresh'>[]
+    for (const row of matches) {
+      const rows = byKey.get(row.company_key) ?? []
+      rows.push({ ...row, fresh: eventTimingFresh(row, now) })
+      byKey.set(row.company_key, rows)
+    }
+  }
   const out: Record<string, CompanyEventRow[]> = {}
-  for (const l of leads) {
-    const d = (l.company_domain ?? '').toLowerCase().replace(/^www\./, '').trim()
+  for (const [index, l] of leads.entries()) {
     // Canonical identity first: domain key before the tenant lead key.
-    const keys = d.includes('.') ? [d, `lead:${l.id}`] : [`lead:${l.id}`]
+    const keys = keysByLead[index]
     const seen = new Set<string>()
     const seenObservation = new Set<string>()
     const rows: CompanyEventRow[] = []
-    for (const k of keys) for (const e of listCompanyEvents(db, tenantId, { companyKey: k, scope: 'account', now: opts.now })) {
+    for (const k of keys) for (const e of byKey.get(k) ?? []) {
       if (seen.has(e.id)) continue
       // An event observed under the lead key before the domain was known can be
       // re-recorded under the domain key afterwards. Same source reporting the same
