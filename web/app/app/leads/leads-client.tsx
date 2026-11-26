@@ -30,7 +30,7 @@ import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import LeadsTable from './leads-table'
 import { reviewAction } from '@/lib/scan/review-action'
-import { uncheckableCause } from '@/lib/lead-state'
+import { isUnconfirmedTimingResearch, uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
@@ -1031,7 +1031,7 @@ export default function LeadsClient() {
     return () => { live = false }
   }, [splitFor])
   const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
-  const unconfirmedTiming = leads.filter(l => l.timing === 'unconfirmed' && !l.review_reason && !l.quarantined_at && l.human_confirmed_at == null)
+  const unconfirmedTiming = leads.filter(isUnconfirmedTimingResearch)
   const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
   const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
   const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)

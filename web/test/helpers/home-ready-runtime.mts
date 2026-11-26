@@ -244,3 +244,29 @@ test('#1620 an older-engine poor-fit lead stays out of Home\'s play card, as bef
   const rows = [{ id: 'a', fit: 1, source_kind: null }, { id: 'b', fit: null, source_kind: null }, { id: 'c', fit: 3, source_kind: null }, { id: 'd', fit: 0, source_kind: 'discover' }] as unknown as PreviewLead[]
   assert.deepEqual(playLeads(rows).map(l => l.id), ['b', 'c', 'd'])
 })
+
+test('#1831 Home and header do not count the unconfirmed-timing row in Leads Research', async () => {
+  const { db, job, lead, done } = seed()
+  const id = 'd'.repeat(24)
+  job(id, 'A', 'Dental practices', NOW - 2 * DAY)
+  for (const key of ['ungraded', 'graded']) {
+    const domain = `${key}.example`
+    lead(key, id, { machine: true, date: recent, domain, source: 'discover', buyer: false })
+    for (const [kind, value] of [['person', 'Dana Ruiz, Owner'], ['email', `dana.ruiz@${domain}`]]) {
+      addEnrichment(db, 'A', key, { connector: 'discover', kind, value, label: 'published on a public page', source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW })
+    }
+  }
+  db.prepare("UPDATE leads SET intent = 4 WHERE id = 'graded'").run()
+  done(id)
+
+  const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
+  assert.equal(res.status, 200)
+  const { leads } = await res.json() as { leads: (PreviewLead & { timing: string })[] }
+  const research = leads.filter(row => row.timing === 'unconfirmed' && !row.review_reason && !row.quarantined_at && row.human_confirmed_at == null)
+  assert.deepEqual(research.map(row => row.id), ['ungraded'])
+  const home = await readyGET()
+  assert.equal(home.status, 200)
+  const result = await home.json() as { ready: number }
+  assert.equal(result.ready, leads.length - research.length)
+  db.close()
+})
