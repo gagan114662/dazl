@@ -131,7 +131,7 @@ test('POST /api/scan refuses a new scan while one is pending, running or ENRICHI
   assert.equal((await post({ query: Q })).status, 202)
 })
 
-test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) and a sentence-only request stores none (the server infers later)', async () => {
+test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 4) and a sentence-only request stores none (the server infers later)', async () => {
   const REVIEWED = { summary: 'Seed-funded London B2B SaaS startups that are also hiring sales', who: ['Founder', 'Co-founder', 'CEO'], industries: ['B2B SaaS'], sizes: ['10-50 employees'], where: ['London, UK'], signals: ['announced seed funding within the past 90 days AND currently hiring sales staff'], exclude: ['agencies', 'recruiters'], country: 'GB', language: 'en', window_days: 90 }
   const db = setup(); as(db)
   const r = await post({ query: Q, icp: REVIEWED, reviewed: true }); assert.equal(r.status, 202)
@@ -140,8 +140,9 @@ test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) 
   // A new typed target without a review replaces positive saved criteria; exclusions survive.
   const dbC = setup(); as(dbC)
   const rc = await post({ query: Q, icp: REVIEWED }); assert.equal(rc.status, 202)
-  const carry = dbC.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
-  assert.deepEqual(JSON.parse(carry.icp), { summary: Q, who: [], industries: [], sizes: [], where: [], signals: [], exclude: REVIEWED.exclude, request: Q }, 'new query owns targeting, including country, language and time window, not the unreviewed saved buyer')
+  const carry = dbC.prepare('SELECT query, icp, icp_inferred FROM scan_jobs').get() as { query: string; icp: string; icp_inferred: number }
+  assert.equal(carry.query, Q, 'the full typed request is stored on the job')
+  assert.deepEqual(JSON.parse(carry.icp), { summary: Q, who: [], industries: [], sizes: [], where: [], signals: [], exclude: REVIEWED.exclude }, 'new query owns targeting, including country, language and time window, not the unreviewed saved buyer')
   assert.equal(carry.icp_inferred, 2, 'new request provenance is not a review or raw carry')
   const db2 = setup(); as(db2)
   assert.equal((await post({ query: Q })).status, 202)
