@@ -1,6 +1,17 @@
 import { asDb, type DbLike } from '../db/client.ts'
 
 type Env = Record<string, string | undefined>
+type ScanLimit = { id: string; limit: number }
+
+function creditCap(env: Env): number {
+  const raw = env.APOLLO_CREDIT_CAP ?? ''
+  const cap = Number(raw)
+  return /^[0-9]+$/.test(raw) && Number.isSafeInteger(cap) && cap > 0 ? cap : 0
+}
+
+function validScan(scan: ScanLimit): boolean {
+  return !!scan.id && Number.isSafeInteger(scan.limit) && scan.limit > 0
+}
 
 /** Each admitted request retains its reservation, including after an ambiguous timeout. */
 export async function reserveApolloLead(
@@ -8,12 +19,10 @@ export async function reserveApolloLead(
   tenantId: string,
   leadId: string,
   env: Env = process.env,
-  scan: { id: string; limit: number },
+  scan: ScanLimit,
 ): Promise<boolean> {
-  const rawCap = env.APOLLO_CREDIT_CAP ?? ''
-  const cap = Number(rawCap)
-  if (!/^[0-9]+$/.test(rawCap) || !Number.isSafeInteger(cap) || cap < 1 || !tenantId || !leadId ||
-    !scan.id || !Number.isSafeInteger(scan.limit) || scan.limit < 1) return false
+  const cap = creditCap(env)
+  if (!cap || !tenantId || !leadId || !validScan(scan)) return false
 
   try {
     return await asDb(store).tx(function* (tx) {
@@ -45,4 +54,25 @@ export async function recordApolloResult(
     "UPDATE apollo_credit_ledger SET result = ? WHERE tenant_id = ? AND lead_id = ? AND result = 'reserved'",
     [result, tenantId, leadId],
   )
+}
+
+/** Snapshot only. A later attempt must still acquire a durable reservation. */
+export async function planApolloReservations(
+  store: DbLike, tenantId: string, leadIds: readonly string[], env: Env, scan: ScanLimit,
+): Promise<string[]> {
+  const cap = creditCap(env)
+  if (!cap || !tenantId || !validScan(scan) || !leadIds.length) return []
+  let reservations: { tenant_id: string; lead_id: string; scan_id: string }[]
+  try {
+    reservations = await asDb(store).all('SELECT tenant_id, lead_id, scan_id FROM apollo_credit_ledger')
+  } catch (error) {
+    const e = error as { code?: string; message?: string }
+    if (e.code !== '42P01' && !/^no such table: apollo_credit_ledger$/i.test(e.message ?? '')) throw error
+    reservations = []
+  }
+  const own = reservations.filter(row => row.tenant_id === tenantId)
+  const available = Math.max(0, Math.min(cap - reservations.length,
+    scan.limit - own.filter(row => row.scan_id === scan.id).length))
+  const used = new Set(own.map(row => row.lead_id))
+  return [...new Set(leadIds)].filter(id => id && !used.has(id)).slice(0, available)
 }
