@@ -84,6 +84,34 @@ test('DATES the day is always YYYY-MM-DD whatever the API prints', async () => {
   for (const raw of ['2026-11-18', '2026-11-18T23:30:00-08:00', '2026-11-18T00:00:00Z', 'November 18, 2026'])
     assert.match((await atsDate(u, stub({ [api]: { body: { first_published: raw } } }).f, NOW))?.date ?? '', /^2026-11-1[89]$/, raw)
 })
+// A careers index page on a board links to its postings but prints no dates. The board's own list record carries them.
+test('DATES a board index is recognised and its list record names the date', async () => {
+  const { atsList, atsListDate } = await import('../lib/discover/ats-dates.ts')
+  const cases: [string, string, string, unknown][] = [
+    ['workable', 'https://brightloop.workable.com/', 'https://apply.workable.com/brightloop/j/1A2B3C4D5E', { jobs: [{ shortcode: '1A2B3C4D5E', url: 'https://apply.workable.com/brightloop/j/1A2B3C4D5E', published_on: '2026-11-19' }] }],
+    ['lever', 'https://jobs.lever.co/brightloop', 'https://jobs.lever.co/brightloop/9f1c2f7a-1b2c-4d5e-8f90-1234567890ab', [{ id: '9f1c2f7a-1b2c-4d5e-8f90-1234567890ab', hostedUrl: 'https://jobs.lever.co/brightloop/9f1c2f7a-1b2c-4d5e-8f90-1234567890ab', createdAt: Date.parse('2026-11-20T08:00:00Z') }]],
+    ['ashby', 'https://jobs.ashbyhq.com/brightloop', 'https://jobs.ashbyhq.com/brightloop/0a1b2c3d-4e5f-6789-abcd-ef0123456789', { jobs: [{ id: '0a1b2c3d-4e5f-6789-abcd-ef0123456789', jobUrl: 'https://jobs.ashbyhq.com/brightloop/0a1b2c3d-4e5f-6789-abcd-ef0123456789', publishedAt: '2026-11-22T00:00:00.000Z' }] }],
+  ]
+  for (const [platform, index, posting, body] of cases) {
+    const rec = atsList(index)
+    assert.equal(rec?.platform, platform, index)
+    const d = await atsListDate(index, posting, stub({ [rec!.apiUrl]: { body } }).f, NOW)
+    assert.equal(d?.date, body && platform === 'workable' ? '2026-11-19' : platform === 'lever' ? '2026-11-20' : '2026-11-22', `${platform} list date`)
+    assert.equal(d?.sourceUrl, rec!.apiUrl, `${platform} cites the list record`)
+  }
+})
+
+test('DATES the list fails closed: no entry, no date, two days for one posting, a non-board index, a network error', async () => {
+  const { atsListDate } = await import('../lib/discover/ats-dates.ts')
+  const index = 'https://brightloop.workable.com/'
+  const posting = 'https://apply.workable.com/brightloop/j/1A2B3C4D5E'
+  const api = 'https://apply.workable.com/api/v1/accounts/brightloop/jobs?details=true'
+  assert.equal(await atsListDate(index, posting, stub({ [api]: { body: { jobs: [{ shortcode: 'OTHER', published_on: '2026-11-19' }] } } }).f, NOW), null, 'no entry for this posting')
+  assert.equal(await atsListDate(index, posting, stub({ [api]: { body: { jobs: [{ shortcode: '1A2B3C4D5E' }] } } }).f, NOW), null, 'entry carries no date')
+  assert.equal(await atsListDate(index, posting, stub({ [api]: { body: { jobs: [{ shortcode: '1A2B3C4D5E', published_on: '2026-11-19' }, { shortcode: '1A2B3C4D5E', published_on: '2026-11-20' }] } } }).f, NOW), null, 'two days for one posting is not a fact')
+  assert.equal(await atsListDate('https://example.com/careers', posting, stub({}).f, NOW), null, 'not a board index')
+  assert.equal(await atsListDate(index, posting, stub({ [api]: 'throw' }).f, NOW), null, 'network failure')
+})
 
 // Control for the rule above: when one record fails closed, an unrelated posting on another board still gets its own day from the
 // same code path, so the null is the record's fault and not the reader refusing everything.
