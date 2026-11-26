@@ -82,3 +82,12 @@ test('#1721 the AI attempts list shows no vendor or model name and no "AI key" w
   assert.doesNotMatch(s, /a\.vendor|a\.model/, 'no vendor/model name rendered')
   assert.doesNotMatch(s, /AI key on file/)
 })
+
+test('#1721 Settings has no Apollo / People Data Labs key rows, credit limits or "bring your own key" wording', () => {
+  const s = src('settings/enrichment-panel.tsx')
+  assert.doesNotMatch(s, /apollo|People Data Labs|pdl|bring your own|credit limit|Recent enrichment lookups|type="password"/i)
+  assert.doesNotMatch(s, /fetch\('\/api\/settings\/enrichment', \{ method/, 'the panel no longer writes keys or limits')
+  assert.match(s, /Email address checks/)
+  const page = src('settings/page.tsx')
+  assert.doesNotMatch(page, /Model key|Enrichment'|your AI key/)
+})

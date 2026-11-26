@@ -23,7 +23,7 @@ import { can } from '@/lib/workspaces'
 import { billingAvailable } from '@/lib/beta'
 import { autopilotAvailable } from '@/lib/outreach/autopilot'
 
-const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['connectors', 'Connectors'], ['enrichment', 'Enrichment'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
+const SECTIONS = [['plan', 'Plan'], ['account', 'Account'], ['team', 'Team'], ['devices', 'Devices'], ['memory', 'Memory'], ['connectors', 'Connectors'], ['enrichment', 'Email checks'], ['gmail', 'Gmail'], ['autopilot', 'Autopilot'], ['replies', 'Replies']]
 
 // cacheComponents: the session read is request-time data, so it sits inside its own Suspense boundary (same pattern as
 // the claimed preview page).
