@@ -47,6 +47,7 @@ test('S3 keeps a named local manager and their own-site address with separate pu
 
 for (const [label, proposal, sources] of [
   ['a role inbox', { email: 'office@cedar.example' }, [page(team, `${personText} office@cedar.example`)]],
+  ['a group mailbox', { email: 'founders@cedar.example' }, [page(team, `${personText} founders@cedar.example`)]],
   ['an off-domain address', { email: 'dana@other.example' }, [page(team, `${personText} dana@other.example`)]],
   ['an address only on a registry', { email_source_url: registry }, [page(team, personText), page(registry, `${personText} ${email}`)]],
   ['an address missing from the fetched page', {}, [page(team, personText)]],

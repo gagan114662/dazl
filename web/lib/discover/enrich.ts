@@ -3,7 +3,7 @@
 // own people. It runs on the small model, in parallel, and only fills fields that are empty. It never changes the signal,
 // its date or its proof, and never replaces a person the first pass already found.
 import Anthropic from '@anthropic-ai/sdk'
-import { GENERIC_LOCAL } from '../outreach/generic-inbox.ts'
+import { isGenericInbox } from '../outreach/generic-inbox.ts'
 import { isPersonName } from '../people/job-title-name.ts'
 import { configuredSearchAllowance, createSearchBudget, type SearchBudget } from './search-budget.ts'
 import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage } from './agent.ts'
@@ -165,7 +165,7 @@ function verifyContact(lead: DiscoveredLead, candidate: Enriched, seen: Readonly
     const [local, addressDomain] = email.split('@')
     const mailbox = local.split('+')[0].replace(/[._-]/g, '').replace(/\d+$/, '')
     const source = seen.get(contact.email_source_url!)?.text
-    if (addressDomain === domain && !GENERIC_LOCAL.test(mailbox) && !/^(?:support|billing|careers|hr|noreply|webmaster|helpdesk|patients?|manager|owner|doctor|dentist)$/.test(mailbox) &&
+    if (addressDomain === domain && !isGenericInbox(mailbox) && !/^(?:support|billing|careers|hr|noreply|webmaster|helpdesk|patients?|manager|owner|doctor|dentist)$/.test(mailbox) &&
       source?.split(/\r?\n[ \t]*\r?\n/).some(block => block.length <= 400 && containsPhrase(block, buyer) &&
         block.toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g)?.includes(email))) return contact
   }
