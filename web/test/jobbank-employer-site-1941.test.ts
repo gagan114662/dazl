@@ -17,3 +17,6 @@ test('free-mail only is rejected', () => assert.equal(findJobBankEmployerSite('<
 test('Job Bank hosts are rejected', () => assert.equal(findJobBankEmployerSite('<div>Website: https://on.jobbank.gc.ca/path</div>'), null));
 test('messy URL normalizes', () => assert.equal(findJobBankEmployerSite('<div>Website:  WWW.Example.ca./path?q=1 </div>'), 'example.ca'));
 test('domain-looking employer name is not guessed', () => assert.equal(findJobBankEmployerSite('<strong>Example.ca Dentistry</strong>'), null));
+
+test('ATS-only greenhouse link is rejected', () => assert.equal(findJobBankEmployerSite('<a href="https://boards.greenhouse.io/acme/jobs/123">Website</a>'), null));
+test('canada.ca portal link is rejected', () => assert.equal(findJobBankEmployerSite('<div>Website: https://www.canada.ca/en/services.html</div>'), null));
