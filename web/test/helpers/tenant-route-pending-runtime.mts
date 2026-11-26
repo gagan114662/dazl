@@ -23,6 +23,7 @@ process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 
 const crm = await import('../../app/api/crm/route.ts')
 const hiringFeed = await import('../../app/api/leads/hiring-feed/route.ts')
+const playResearch = await import('../../app/api/leads/play-research/route.ts')
 const polish = await import('../../app/api/outreach/polish/route.ts')
 const reopen = await import('../../app/api/outreach/reopen/route.ts')
 const outreach = await import('../../app/api/outreach/route.ts')
@@ -104,8 +105,23 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
   const is404 = (s: number) => s === 404
   await asB('GET /api/crm', () => crm.GET(), s => s === 200)
   await asB('POST /api/crm', () => crm.POST(req('/api/crm', 'POST', { action: 'push', lead_id: f.lead })), is404)
-  await asB('GET /api/leads/hiring-feed', () => hiringFeed.GET(req(`/api/leads/hiring-feed?job_id=${f.job}`, 'GET')), is404) // #830: a foreign id is not found, never an empty 2xx
-  await asB('POST /api/leads/hiring-feed', () => hiringFeed.POST(req('/api/leads/hiring-feed', 'POST', { retry_job_id: f.job })), is404) // #830: a foreign id is not found, never an empty 2xx
+  const readHiringFeed = (id: string) => hiringFeed.GET(req(`/api/leads/hiring-feed?job_id=${id}`, 'GET'))
+  const retryHiringFeed = (id: string) => hiringFeed.POST(req('/api/leads/hiring-feed', 'POST', { retry_job_id: id }))
+  const readPlayResearch = (id: string) => playResearch.GET(req(`/api/leads/play-research?job_id=${id}`, 'GET'))
+  for (const [name, call] of [
+    ['GET /api/leads/hiring-feed', readHiringFeed],
+    ['POST /api/leads/hiring-feed', retryHiringFeed],
+    ['GET /api/leads/play-research', readPlayResearch],
+  ] as const) {
+    await asB(name, async () => {
+      const foreign = await call(f.job)
+      const missing = await call(randomBytes(12).toString('hex'))
+      assert.equal(missing.status, 404, name)
+      assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'), name)
+      assert.equal(await foreign.clone().text(), await missing.text(), name)
+      return foreign
+    }, is404)
+  }
   await asB('POST /api/outreach/polish', () => polish.POST(req('/api/outreach/polish', 'POST', { message_id: f.draft })), is404) // #830: a foreign id is not found, never an empty 2xx
   await asB('GET /api/outreach/reopen', () => reopen.GET(), s => s === 200)
   await asB('POST /api/outreach', () => outreach.POST(req('/api/outreach', 'POST', { lead_id: f.lead })), is404)
@@ -144,6 +160,9 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
   assert.equal((await watch.POST(req('/api/watch', 'POST', { action: 'pause', id: f.w })))!.status, 200)
   assert.equal((await newsjack.POST(req('/api/seo/newsjack', 'POST', { action: 'approve', id: f.news })))!.status, 200)
   assert.equal((await replies.POST(req('/api/replies', 'POST', { action: 'dismiss', id: f.thread })))!.status, 200)
+  const research = await readPlayResearch(f.job)
+  assert.equal(research.status, 200)
+  assert.equal((await research.json()).job_id, f.job)
   const hf = JSON.parse(await text(hiringFeed.GET(req(`/api/leads/hiring-feed?job_id=${f.job}`, 'GET'))))
   assert.equal(hf.contacts.length, 1)
 
