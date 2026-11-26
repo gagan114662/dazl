@@ -38,6 +38,22 @@ export function heldReason(l: PreviewLead): string | null {
   if (domainReviewFor({ id: l.id, contact: l.contact }, l.enrichments ?? []).state === 'required') return 'company website not confirmed'
   if (l.fit === 0 && l.intent === null) return 'not a fit'
   if (!ownSiteBuyer(l)) return NO_OWN_BUYER
+  // #1980: email-candidate verdicts apply only when the lead has an email contact route.
+  const contact = typeof l.contact === 'string' ? l.contact.trim().toLowerCase() : ''
+  if (/^[^\s@]+@[^\s@]+$/.test(contact)) {
+    const candidates = (l as PreviewLead & { email_candidates?: { address: string; verification: string }[] }).email_candidates ?? []
+    const checks = (l.enrichments ?? []).filter(r => r.kind === 'deliverability').map(r => {
+      const [address, verdict] = (r.value ?? '').toLowerCase().split('|')
+      return { address, verdict, at: r.retrieved_at ?? 0 }
+    })
+    const addresses = new Set([contact, ...candidates.map(c => c.address.toLowerCase()), ...checks.filter(c => c.address?.includes('@')).map(c => c.address)])
+    if (addresses.size && [...addresses].every(address => {
+      const current = checks.filter(c => c.address === address || (c.address === `@${address.split('@')[1]}` && ['no_mx', 'mx_found', 'catch_all'].includes(c.verdict))).sort((a, b) => b.at - a.at)[0]?.verdict
+      const candidate = candidates.find(c => c.address.toLowerCase() === address)?.verification
+      if (['verified', 'catch_all'].includes(candidate ?? '') || ['accepted', 'mx_found', 'catch_all'].includes(current ?? '')) return false
+      return current === 'rejected' || current === 'no_mx' || candidate === 'undeliverable'
+    })) return "email can't receive mail"
+  }
   return null
 }
 

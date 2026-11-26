@@ -16,7 +16,10 @@ export const timingOptsFor = (job: { query: string | null; icp: string | null })
 
 // null = ready; otherwise the first failing check's own words.
 export function leadHoldReason(db: Database.Database, tenantId: string, lead: Record<string, unknown> & { id: string }, enrichments: unknown[], timing: TimingOpts, at: Date): string | null {
-  const row = { ...lead, stored_intent: lead.intent ?? null, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
+  let candidates: { address: string; verification: string }[] = []
+  try { candidates = db.prepare('SELECT address, verification FROM email_candidates WHERE tenant_id = ? AND lead_id = ?').all(tenantId, lead.id) as typeof candidates }
+  catch (e) { if (!/no such (?:table|column)/i.test(String((e as Error)?.message))) throw e }
+  const row = { ...lead, email_candidates: candidates, stored_intent: lead.intent ?? null, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
     window_held: leadWindowHeld(db, tenantId, lead.id, at), currentness_held: currentnessHeld(db, tenantId, lead.id, at), gate_held: requiredGateHeld(db, tenantId, lead.id) !== null }
   return heldReason(row as unknown as PreviewLead)
 }
