@@ -17,14 +17,13 @@ for (const { signal, quote, deferred, shown } of [
     const statement = `${company} ${quote}`
     const [lead] = parseLeads(JSON.stringify({ leads: [{ company, signal, evidence_url, evidence_quote: statement }] }), 1).leads
     assert.ok(lead)
-    let judged = 0
+    const judgments: string[][] = []
     const fetchPage = async () => new Response(`<p>${statement}</p>`)
     const checked = await checkLead(lead, [], fetchPage, undefined, new Date(), async (_signal, _company, statements) => {
-      judged++
-      assert.deepEqual(statements, [statement])
+      judgments.push(statements)
       return false
     })
-    assert.equal(judged, deferred ? 1 : 0)
+    assert.deepEqual(judgments, deferred ? [[statement]] : [])
     assert.equal(isShown(checked), shown)
   })
 }
