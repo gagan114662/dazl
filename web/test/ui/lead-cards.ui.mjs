@@ -91,6 +91,8 @@ const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  // Card-content checks: select the Cards view explicitly - the default view is the table (#1038).
+  await page.getByTestId('view-cards').click()
   const cards = page.getByTestId('lead-card')
   await cards.first().waitFor({ timeout: 15000 })
   assert.equal(await cards.count(), 8)
@@ -268,6 +270,7 @@ try {
   const tblMatch = u => u.pathname === '/api/leads'
   await ctx.route(tblMatch, tblRoute)
   await page.setViewportSize({ width: 1440, height: 900 })
+  await page.getByTestId('view-table').click()
   await page.reload({ waitUntil: 'networkidle' })
   await page.getByTestId('leads-table').waitFor()
   const trows = page.getByTestId('leads-row')
