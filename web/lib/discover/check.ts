@@ -2,6 +2,7 @@
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
+import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -194,9 +195,10 @@ const TAKEN_DOWN = /\bthis\s+(?:job\s+)?(?:job|listing|posting|position|role|ope
 export const pageIsGone = (body: string): boolean => { const t = body.replace(/\s+/g, ' ').trim(); return (t.length < 1500 && GONE.test(t)) || TAKEN_DOWN.test(t.slice(0, 2500)) }
 // "Posted 4d ago", "Posted: 3 days ago", "Published 2 weeks ago": the day that works out to, when the page prints exactly one such age.
 // Several different ages on one page (a list of postings) give no date.
-export function relativeDay(body: string, now: Date): string | null {
+export function relativeDay(body: string, now: Date, hiringOnly = false): string | null {
   const days = new Set<number>()
   for (const m of body.matchAll(/\b(?:posted|published|listed|updated)\s*:?\s*(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
+    if (hiringOnly && !/^posted\b/i.test(m[0])) continue
     const n = Number(m[1]), u = m[2].toLowerCase()
     days.add(u.startsWith('h') ? 0 : u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
   }
@@ -210,8 +212,12 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
   const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
-  const statedDay = dayOnPage(lead.signal_date, body) ? lead.signal_date : null
-  const day = statedDay ?? relativeDay(body, now)
+  const hiring = isDiscoveryHiringLead(lead)
+  const posted = hiring ? [...new Set(dateMentions(body).filter(mention =>
+    /\bposted(?:\s+on)?[\s:–—-]*$/i.test(body.slice(Math.max(0, mention.index - 32), mention.index)),
+  ).map(mention => mention.day))] : []
+  const statedDay = hiring ? (posted.length === 1 ? posted[0] : null) : dayOnPage(lead.signal_date, body) ? lead.signal_date : null
+  const day = statedDay ?? (posted.length > 1 ? null : relativeDay(body, now, hiring))
   return { ...lead, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
     quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
 }
@@ -226,17 +232,21 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
 // The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
 // tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
 // moves it), not a day in the future, not one more than a year old.
-export function embeddedDay(html: string, now: Date): string | null {
-  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
-    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html)
+export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
+  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? (hiringOnly ? null : /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
+    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html))
   if (!m) return null
   const t = Date.parse(`${m[1]}T00:00:00Z`)
-  return Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
+  return hiringOnly ? validDay(t, now) : Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
 }
 // A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
 // the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging
 // 2026-11-23: every hiring lead on these boards came back undated.
-const validDay = (t: number, now: Date): string | null => Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : new Date(t).toISOString().slice(0, 10)
+function validDay(t: number, now: Date): string | null {
+  if (!Number.isFinite(t)) return null
+  const age = Math.floor(now.getTime() / 86_400_000) - Math.floor(t / 86_400_000)
+  return age < 0 || age > INDEX_DATE_MAX_AGE_DAYS ? null : new Date(t).toISOString().slice(0, 10)
+}
 export function postingRecord(u: URL): { url: string; day: (j: unknown) => unknown } | null {
   const h = u.hostname.toLowerCase(), seg = u.pathname.split('/').filter(Boolean)
   const obj = (j: unknown) => (j && typeof j === 'object' ? j as Record<string, unknown> : {})
@@ -290,11 +300,17 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
     try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
   }
   if (!raw) return out
-  if (stillDate) { const day = embeddedDay(raw, now); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }
 export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal): Promise<CheckedLead> {
+  const checked = await readLead(lead, seen, fetchImpl, timeoutMs, now, ask)
+  if (discoveryHiringDateProven(checked, INDEX_DATE_MAX_AGE_DAYS, now)) return checked
+  return { ...checked, date: null, date_source: null, date_on_page: false }
+}
+
+async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeof fetch, timeoutMs: number, now: Date, ask?: AskSignal): Promise<CheckedLead> {
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
