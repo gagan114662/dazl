@@ -111,7 +111,7 @@ type PersonLineProps = { p: LeadPerson | null; nameOnly?: boolean; children?: Re
 function PersonLine({ p, nameOnly, children, sourceLink }: PersonLineProps & { sourceLink?: ReactNode }) {
   if (!p) return <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
 
-  const title = p.title.trim()
+  const title = p.title?.trim() ?? ''
   const missing = title ? (p.linkedin ? null : 'No LinkedIn profile found')
     : p.linkedin ? 'No job title found' : 'No job title or LinkedIn profile found'
   return <div className="text-sm mt-0.5" data-testid="lead-person">
@@ -158,7 +158,13 @@ const REASON: Record<string, string> = {
 }
 const REVIEW: Record<string, string> = { posting_not_specific: 'The source is a report, search or listing page, not one job posting, so it proves no opening and no posting date', job_role_mismatch: 'The posting is for a different role than the one you asked for', research_unverified: 'The event is quoted on the source page, but its day or a named decision-maker is not proven there - read the source before you use it', legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - check the date on the source before you use it', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Review the source. We haven’t confirmed what happened, when it happened, whether the company is looking to buy, or whether you have permission to contact them', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', location_unconfirmed: 'The source page does not name the place you asked for, so it cannot be tied to a company there - not verified', location_mismatch: 'The source page names a different place than you asked for - possibly a same-name business elsewhere. Not verified', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead', no_event_evidence: 'The request asks for a funding or other event as well as hiring, and the saved quote shows only hiring (a job ad alone does not show that) - check the source for the event before you use it', no_sales_hiring_evidence: 'The request asks for a hiring posting, and no dated posting for the requested role was found on a public job board tied to this company - the other evidence alone is not enough', sales_hiring_check_failed: 'The sales-hiring check could not run, so the lead is not verified. Run the scan again', outside_window_undated: 'No event date was found, so it cannot be placed inside the time window you asked for - research only', trial_budget_reached: 'Found before this free scan reached its spending limit - some checks did not run, so it is not verified', first_party_signal: 'From your own site or form (signed, consent recorded) - an account-level visit does not identify a person; buying need and outreach consent are not verified' }
 // Own keys only: a stored reason such as 'constructor' or 'toString' is an unknown reason, never an Object.prototype member rendered as text.
-const reviewLabel = (r: string | null | undefined): string | undefined => (r && Object.hasOwn(REVIEW, r) ? REVIEW[r] : undefined)
+function reviewLabel(reason: string | null | undefined, sourceKind?: string | null): string | undefined {
+  if (reason === 'source_review_required') {
+    if (sourceKind === 'hiring_feed') return 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent'
+    if (sourceKind !== 'manual_source') return "dazl couldn't confirm the signal on the source page. Review the evidence before using this lead."
+  }
+  return reason && Object.hasOwn(REVIEW, reason) ? REVIEW[reason] : undefined
+}
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -1562,7 +1568,7 @@ export default function LeadsClient() {
                   </div>
                   </div>
                   {!l.quarantined_at && <div className="flex gap-2 shrink-0 pl-[52px] sm:pl-0" data-testid="card-actions">
-                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>
+                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!!approving[l.id] || !!approved[l.id]} title="Creates a draft for you to review in Outreach. Nothing is sent." className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
                     {!c.approve.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
@@ -1704,7 +1710,7 @@ export default function LeadsClient() {
             {l.timing_note && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-note">Researched opportunity - {l.timing_note}</p>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).confirmed : 'not verified') : `confidence ${l.confidence}`}{`, ${leadCardDateLine(l)}`}</span>
             {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
-              <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${reviewLabel(l.human_confirmed_from) ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
+              <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${reviewLabel(l.human_confirmed_from, l.source_kind) ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
             )}
             <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             <DiscoveredVia l={l} />
@@ -1776,7 +1782,7 @@ export default function LeadsClient() {
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonWithProvenance signalSource={l.source_url} nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Reported event: ${l.signal}`}</div>{hiringTimingLine(l.signal, l.signal_kind) && <div className="text-gray-400 text-xs" data-testid="hiring-not-buying">{hiringTimingLine(l.signal, l.signal_kind)}</div>}
-                <span className="text-[#333] text-xs mr-3">{reviewTimingCopy(unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified'), l.timing_note)}</span>
+                <span className="text-[#333] text-xs mr-3">{reviewTimingCopy(unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : (reviewLabel(l.review_reason, l.source_kind) ?? 'Not verified'), l.timing_note)}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 <DiscoveredVia l={l} />
                 {/* #1036: the buyer's work email does not wait for the review (lib/people/work-email-review-lane.ts): same targets, same lookup. */}
