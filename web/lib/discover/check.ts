@@ -294,7 +294,7 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   if (!needDate && !needProfile) return c
   let out = c
   // A posting on Greenhouse, Lever, Workable, Ashby or BambooHR carries its day in the board's own API record, with the record's URL as
-  // the source. That covers first_published/updated_at, createdAt, published_on and the board listings; the page/JSON-LD path stays for
+  // the source. That covers first_published, createdAt, published_on and the board listings; the page/JSON-LD path stays for
   // everything else.
   if (needDate && u) {
     const ats = await atsDate(u, fetchImpl, now)

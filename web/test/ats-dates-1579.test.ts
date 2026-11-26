@@ -112,3 +112,16 @@ test('DATES the list fails closed: no entry, no date, two days for one posting, 
   assert.equal(await atsListDate('https://example.com/careers', posting, stub({}).f, NOW), null, 'not a board index')
   assert.equal(await atsListDate(index, posting, stub({ [api]: 'throw' }).f, NOW), null, 'network failure')
 })
+
+// Control for the rule above: when one record fails closed, an unrelated posting on another board still gets its own day from the
+// same code path, so the null is the record's fault and not the reader refusing everything.
+test('DATES control: an unrelated posting still dates itself when another record fails closed', async () => {
+  const ghApi = 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/4567890'
+  const leverApi = 'https://api.lever.co/v0/postings/otherco/9f1c2f7a-1b2c-4d5e-8f90-1234567890ab'
+  const f = stub({
+    [ghApi]: { body: { id: 4567890, first_published: null, updated_at: '2026-11-24T10:00:00-05:00' } },
+    [leverApi]: { body: { createdAt: Date.parse('2026-11-20T08:00:00Z') } },
+  }).f
+  assert.equal(await atsDate('https://boards.greenhouse.io/brightloop/jobs/4567890', f, NOW), null, 'the edited-only record stays undated')
+  assert.equal((await atsDate('https://jobs.lever.co/otherco/9f1c2f7a-1b2c-4d5e-8f90-1234567890ab', f, NOW))?.date, '2026-11-20', 'an unrelated posting is unaffected')
+})
