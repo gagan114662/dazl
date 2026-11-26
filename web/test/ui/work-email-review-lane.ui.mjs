@@ -65,6 +65,8 @@ const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  // The review lane renders in the card JSX; select the Cards view explicitly (the default view is the table, #1038).
+  await page.getByTestId('view-cards').click()
   // 1. one block on the eligible review row, with the button, before any confirm click; nothing was requested for it on load
   const blocks = page.locator('[data-testid="review-work-email"]')
   await blocks.first().waitFor({ timeout: 15000 }).catch(async e => { console.log('PAGE TEXT:', (await page.locator('body').innerText()).slice(0, 1500)); throw e })
@@ -100,6 +102,7 @@ try {
   weCalls.length = 0; stored = true
   await page.setViewportSize({ width: 1280, height: 1000 })
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  await page.getByTestId('view-cards').click()
   await page.locator('[data-testid="work-email-address"]').first().waitFor({ timeout: 15000 })
   assert.match(await page.locator('[data-testid="review-work-email"]').first().innerText(), /jordan@harlowreedlaw\.example/)
   assert.deepEqual(weCalls, [], 'the stored answer came with the list: no GET and no POST for the lead')

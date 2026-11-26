@@ -31,7 +31,7 @@ const NAMED = [
 const MARKERS = {
   '/app': '[data-testid="onboarding-screen"], #main h1',
   '/app/plays': '[data-testid="saved-play"]',
-  '/app/leads': '[data-testid="lead-card"]',
+  '/app/leads': '[data-testid="lead-card"], [data-testid="leads-table"]',
   '/app/inbox': '[data-testid="inbox-thread"]',
   '/app/settings': '#main h1',
   '/sign-in': 'main form',
@@ -133,6 +133,16 @@ try {
     }
     const got = [...await page.evaluate(MEASURE)]
     await checkAll(got)
+    // /app/leads defaults to the table (#1038); the Cards view carries its own controls, so select it explicitly and measure it too.
+    if (path === '/app/leads') {
+      try {
+        await page.getByTestId('view-cards').click()
+        await page.getByTestId('lead-card').first().waitFor({ state: 'visible', timeout: 15000 })
+        const more = [...await page.evaluate(MEASURE)]
+        await checkAll(more)
+        got.push(...more)
+      } catch (e) { failures.push(`${path}: the Cards view could not be measured (${String(e.message).split('\n')[0].slice(0, 120)})`) }
+    }
     // The app's nav lives behind the Menu label below md (hidden until the checkbox is on): open it the way a user does, so its
     // rows are measured too (the closed-menu run missed 36px rows, #672 live review). Plain /app is the first-run onboarding
     // screen, a fixed full-screen overlay that legitimately covers the shell, so it has no Menu to open; the returning-account
