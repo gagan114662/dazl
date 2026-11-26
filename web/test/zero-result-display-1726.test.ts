@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { zeroResultReason } from '../lib/zero-result-reason.ts'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as jsxRuntime from 'react/jsx-runtime'
@@ -31,17 +32,18 @@ function renderHelp(record: typeof scan, withAction = true) {
     compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   })
   const calls: unknown[] = []
-  const stub = (input: unknown) => {
-    calls.push(input)
+  const stub = (input: Parameters<typeof zeroResultReason>[0]) => {
+    calls.push({ ...input })
     return { code: 'unknown', reason, nextStep, action: withAction ? action : undefined }
   }
-  const html = renderToStaticMarkup(new Function(
-    'require', 'exports', 'zeroResultReason', 'statedOffer', 'scan',
-    outputText + '\nreturn renderZeroResultReason(scan)',
-  )((id: string) => {
-    assert.equal(id, 'react/jsx-runtime')
-    return jsxRuntime
-  }, {}, stub, statedOffer, record))
+  const element = runInNewContext(outputText + '\nrenderZeroResultReason(scan)', {
+    exports: {}, zeroResultReason: stub, statedOffer, scan: record,
+    require(id: string) {
+      assert.equal(id, 'react/jsx-runtime')
+      return jsxRuntime
+    },
+  })
+  const html = renderToStaticMarkup(element)
   return { html, calls }
 }
 
