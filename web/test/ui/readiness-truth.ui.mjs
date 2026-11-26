@@ -79,6 +79,11 @@ try {
     assert.equal(await row('key').getByText('✓').count(), 0, 'a rejection is never a check')
     assert.equal(await row('key').getByRole('button').count(), 0, 'no key form button')
     assert.equal(await row('key').getByRole('link').count(), 0, 'no link while our side fixes it')
+    // #1703: while a key error is open no source is called usable either - the sources row shows no check,
+    // no link, and never mentions a key.
+    assert.equal(await row('sources').getByText('✓').count(), 0, 'a rejection is never a sources check')
+    assert.equal(await row('sources').getByRole('link').count(), 0, 'no sources link while our side fixes it')
+    assert.doesNotMatch(await row('sources').textContent(), /key|Anthropic|OpenAI/i, 'no key is named on the sources row')
     // The server clears the rejection; then the row reads ready, with its check back.
     state.rejection = null
     await page.reload({ waitUntil: 'networkidle' })

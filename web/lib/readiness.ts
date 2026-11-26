@@ -66,9 +66,6 @@ export function readinessRows(i: ReadinessInput): Row[] {
     : !i.totals && listFull ? { id: 'play', label: 'First play', state: 'unknown', detail: `could not check - only your latest ${JOBS_CAP} scans could be checked`, fix: null }
     : { id: 'play', label: 'First play', state: 'todo', detail: 'describe who you want to find, in one sentence', fix: { kind: 'link', href: '/app/leads', label: 'Write a play' } }
   const trialLeft = u?.trial?.funded ? u.trial.remaining ?? 0 : 0
-  // A saved key was accepted by its provider when it was saved. After that, the server reports a rejection while any
-  // saved key has not been accepted again since that scan; it cannot say which key the scan used, so neither does Home.
-  // A later cancelled, failed or done scan never clears it. Without the key status loaded, no claim either way.
   // #1703: no customer is asked for an AI key. Searches run on dazl's own keys and a key saved before is never named. An open
   // rejection means the latest scan stopped on our side, so the row is unknown - never "ready to run" while searches would fail.
   // When free searches run out the way forward is the plan.
@@ -93,7 +90,9 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const offFix = off.find(r => r.fix)?.fix
   const enrichment = core ? enrichmentLabels(core) : ''
   const enrichText = enrichment ? `. After discovery: ${enrichment} (enrichment only)` : ''
+  // #1703: with an open rejection the latest scan stopped on our side, so no source is claimed usable until it clears.
   const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check - the source settings did not load', fix: null }
+    : keyRej ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: `a recent search stopped on our side - we are fixing it${offText}`, fix: null }
     : !analysis?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start because your free runs are used up${offText}`, fix: analysis?.fix ? { kind: 'link', href: analysis.fix.href, label: analysis.fix.label } : null }
     : usableSources.length === 0 ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `no usable discovery source is available${enrichText}${offText}`, fix: offFix ? {kind:'link',href:offFix.href,label:offFix.label} : null }
     : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${enrichText}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }

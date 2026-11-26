@@ -176,7 +176,8 @@ test('#1703 Searches row: a saved key is never named; an open rejection reads as
   // a rejection with no saved key says nothing about it
   assert.equal(byId(readinessRows({ profile: null, usage: { has_key: false, trial: { funded: true, remaining: 2 } }, outreach: null, rejection: { error: 'key_rejected' } as never })).key.state, 'done')
   const src = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: K as never, rejection: { error: 'key_rejected' } as never, sources: { web_index: true, news: true, websites: true } })).sources
-  assert.equal(src.state, 'done')
+  assert.equal(src.state, 'unknown', 'an open rejection means the sources row is never done')
+  assert.equal(src.detail, 'a recent search stopped on our side - we are fixing it')
   assert.equal(src.fix, null)
 })
 
@@ -280,6 +281,9 @@ test('#919 Home source capability matrix: funding, discovery/enrichment, social,
  }
  assert.equal(row(null,{has_key:true}).state,'unknown')
  assert.equal(row({web_index:true,news:false,websites:false},null).state,'unknown')
- assert.equal(row({web_index:true,news:false,websites:false},{has_key:true},null,{error:'key_rejected'}).fix?.label,undefined, 'a saved key rejection offers no key button (#1703)')
+ const rejected=row({web_index:true,news:false,websites:false},{has_key:true},null,{error:'key_rejected'})
+ assert.equal(rejected.state,'unknown','an open rejection means the sources row is never done (#1703)')
+ assert.equal(rejected.fix,null)
+ assert.equal(rejected.detail,'a recent search stopped on our side - we are fixing it. Not available: News articles (not set up on this server), Company website enrichment (not set up on this server)','unavailable sources are still listed under a rejection')
  for(const usage of [{has_key:false},{has_key:false,trial:{funded:true,remaining:0}}]) assert.equal(row({web_index:false,news:true,websites:false},usage).fix?.label,'See your plan')
 })
