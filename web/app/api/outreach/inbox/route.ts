@@ -15,16 +15,22 @@ export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
+  const ownsThread = (id: string) => db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? UNION ALL SELECT 1 FROM followup_threads WHERE tenant_id = ? AND thread_id = ? LIMIT 1').get(user.tenantId, id, user.tenantId, id)
   const threadId = req.nextUrl.searchParams.get('thread_id')
   if (threadId) {
     // Owner-scoped: threadMessages returns empty for another tenant's thread.
     const messages = threadMessages(db, user.tenantId, threadId)
     // #830: a thread this workspace has no part of (another workspace's, or unknown) is not found, never an empty 200
-    if (!messages.length && !db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? UNION ALL SELECT 1 FROM followup_threads WHERE tenant_id = ? AND thread_id = ?').get(user.tenantId, threadId, user.tenantId, threadId)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
+    if (!messages.length && !ownsThread(threadId)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
     return NextResponse.json({ messages })
   }
   let page
-  try { page = await inboxPage(db, user.tenantId, parseInboxQuery(req.nextUrl.searchParams)) } catch (e) {
+  try {
+    const query = parseInboxQuery(req.nextUrl.searchParams)
+    if ((query.jobId && !db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(query.jobId, user.tenantId)) ||
+        (query.threadId && !ownsThread(query.threadId))) return NextResponse.json({ error: 'not_found' }, { status: 404 })
+    page = await inboxPage(db, user.tenantId, query)
+  } catch (e) {
     if (e instanceof InboxQueryError) return NextResponse.json({ error: e.code }, { status: 400 })
     throw e
   }

@@ -69,12 +69,13 @@ test('GET /api/outreach/inbox paged list and POST /api/outreach/inbox read: own 
   const unknown = await post({ thread_id: 'no-such-thread', action: 'read' })
   assert.equal(cross.status, 404); assert.equal(await cross.text(), await unknown.text())
   assert.deepEqual(db.prepare("SELECT tenant_id, thread_id FROM inbox_thread_reads ORDER BY thread_id").all(), [{ tenant_id: 'A', thread_id: 'AMARKER-T1' }])
-  // B's list: B's own row only, A's play id filters to nothing.
+  // B's list: B's own row only, A's play id is not found.
   const b = await (await get('')).json()
   assert.deepEqual(b.threads.map((t: { thread_id: string }) => t.thread_id), ['BMARKER-THREAD'])
   assert.ok(!JSON.stringify(b).includes('AMARKER'))
-  const bOnA = await (await get(`?job_id=${PA}`)).json()
-  assert.deepEqual([bOnA.threads.length, bOnA.counts.threads], [0, 0])
+  const bOnA = await get(`?job_id=${PA}`)
+  assert.equal(bOnA.status, 404)
+  assert.deepEqual(await bOnA.json(), { error: 'not_found' })
 })
 
 test('POST /api/outreach/inbox read is an operator write: a viewer of A is refused and marks nothing; the viewer still reads A; an operator marks', async () => {
