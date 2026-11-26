@@ -70,5 +70,5 @@ test('both PR test jobs use the verified merge base rather than the event snapsh
   ]) {
     assert.equal(workflow.split(fragment).length - 1, 2, fragment)
   }
-  assert.match(workflow, /git diff --name-only "\$PR_BASE_SHA\.\.\.\$GITHUB_SHA"/)
+  assert.match(workflow, /git diff --name-only --find-renames --diff-filter=AMR "\$PR_BASE_SHA\.\.\.\$GITHUB_SHA"/)
 })

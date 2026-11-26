@@ -80,3 +80,23 @@ test('a changed top-level test still selects itself', t => {
   git(cwd, 'commit', '-am', 'top-level test')
   assert.equal(run(cwd, base, 'HEAD'), 'test/other.test.ts')
 })
+
+test('renamed library source selects its consumers while docs alone select none', t => {
+  const [cwd, base] = repo(t)
+  git(cwd, 'mv', 'web/lib/other.ts', 'web/lib/renamed.ts')
+  git(cwd, 'commit', '-m', 'rename library source')
+  assert.match(git(cwd, 'diff', '--name-status', '-M', base, 'HEAD'), /^R100\tweb\/lib\/other\.ts\tweb\/lib\/renamed\.ts$/)
+  assert.equal(run(cwd, base, 'HEAD'), 'test/other.test.ts')
+
+  const renamed = git(cwd, 'rev-parse', 'HEAD')
+  writeFileSync(join(cwd, 'README.md'), '# Documentation')
+  git(cwd, 'add', 'README.md')
+  git(cwd, 'commit', '-m', 'docs only')
+  assert.equal(run(cwd, renamed, 'HEAD'), 'NONE')
+})
+
+test('web-ci includes load-only PRs', () => {
+  const prTrigger = workflow.match(/^  pull_request:\n(.*\n)*?(?=^  push:)/m)?.[0]
+  assert.ok(prTrigger)
+  assert.match(prTrigger, /"load\/\*\*"/)
+})

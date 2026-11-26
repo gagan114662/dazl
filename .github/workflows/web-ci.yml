@@ -2,7 +2,7 @@ name: web-ci
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
+    paths: ["web/**", "load/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
   push:
     branches: [main]
     # no path filter on main: every merged commit gets the full suite and, if green, main-green (gate 3)
@@ -65,7 +65,7 @@ jobs:
           PR_BASE_SHA: ${{ steps.pr_base.outputs.sha }}
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
-            files=$(git diff --name-only "$PR_BASE_SHA...$GITHUB_SHA" -- 'web/*.ts' 'web/*.tsx' 'web/*.mts' 'web/*.mjs' | sed 's#^web/##' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
+            files=$(git diff --name-only --find-renames --diff-filter=AMR "$PR_BASE_SHA...$GITHUB_SHA" -- 'web/*.ts' 'web/*.tsx' 'web/*.mts' 'web/*.mjs' | sed 's#^web/##' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
             [ -z "$files" ] || npx eslint $files
           fi
           npm run check:unused
