@@ -29,9 +29,9 @@ function build() {
   migrateAllSqlite(db)
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, candidates, created_at) VALUES (?, ?, 'x', '(from request)', '-', 'B2B SaaS founders hiring their first salesperson', 'running', 9, 1000)").run(J, T)
   const lead = (id: string, o: { date?: string | null; review?: string | null; fit?: number | null; intent?: number | null; name?: string; rejected?: boolean } = {}) =>
-    db.prepare(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, fit, intent, company_domain, source_kind, quarantined_at)
-      VALUES (?, ?, ?, ?, 'hiring a first salesperson', ?, 85, 'is hiring its first salesperson', ?, ?, ?, ?, ?, 'discover', ?)`)
-      .run(id, J, o.name ?? '', `Co ${id}`, `https://jobs.example/${id}`, o.review ?? null, o.date === undefined ? '2026-11-10' : o.date, o.fit === undefined ? 4 : o.fit, o.intent === undefined ? 4 : o.intent, `${id}.example`, o.rejected ? 5 : null)
+    db.prepare(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, event_date_proof, fit, intent, company_domain, source_kind, quarantined_at)
+      VALUES (?, ?, ?, ?, 'hiring a first salesperson', ?, 85, 'is hiring its first salesperson', ?, ?, ?, ?, ?, ?, 'discover', ?)`)
+      .run(id, J, o.name ?? '', `Co ${id}`, `https://jobs.example/${id}`, o.review ?? null, o.date === undefined ? '2026-11-10' : o.date, o.date === null || o.review ? null : 'page_bound', o.fit === undefined ? 4 : o.fit, o.intent === undefined ? 4 : o.intent, `${id}.example`, o.rejected ? 5 : null)
   const row = (id: string, kind: string, value: string, page = `https://${id}.example/team`) => addEnrichment(db, T, id, { connector: 'discover', kind, value, label: 'x', confidence: null, source_url: page, source_date: '2026-11-22', retrieved_at: 1 })
   const person = (id: string) => row(id, 'person', 'Dana Ruiz, Founder')
   const ownEmail = (id: string) => row(id, 'email', `dana.ruiz@${id}.example`)
