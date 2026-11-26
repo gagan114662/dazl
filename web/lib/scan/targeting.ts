@@ -174,7 +174,7 @@ function findAtoms(q: string): Atom[] {
   techAtoms(q, add)
   // 1. A completed hire ("hired their first VP of Sales", "first VP hired"): a fact in the past, never an open role.
   for (const m of q.matchAll(/\b(?:hired|appointed|named|brought\s+on|onboarded|welcomed)\s+((?:(?:a|an|its|their|the)\s+)?((?:first|founding|inaugural|new)\s+)?[a-z][a-z&\s-]{1,60})/gi)) {
-    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role) || MODAL_HAVE.test(q.slice(0, m.index ?? 0))) continue
+    const role = cleanRole(m[1]); if (!ROLE_WORD.test(role) || MODAL_HAVE.test(q.slice(0, m.index ?? 0)) || /^(?:fewer|less|no)\b/i.test(m[1])) continue   // #1163: a shrinking count is no completed hire
     const end = (m.index ?? 0) + m[0].indexOf(m[1]) + m[1].indexOf(role) + role.length
     add({ kind: 'hire_made', start: m.index ?? 0, end, role, first: /\b(?:first|founding|inaugural)\b/i.test(m[1].slice(0, m[1].indexOf(role) + 1)) })
   }
@@ -210,7 +210,7 @@ function findAtoms(q: string): Atom[] {
   for (const m of q.matchAll(/\b(?:hiring|recruiting)(?:\s+for)?\b(?=([^.;!?]*))/gi)) {
     const at = m.index ?? 0
     if (atoms.some(b => b.kind === 'hiring' && b.role && b.end <= at && /^(?:\s*\/\s*|\s+or\s+|\s+and\s*\/\s*or\s+|\s*,\s*(?:or\s+)?)(?:(?:are|is|also)\s+)?$/i.test(q.slice(b.end, at)))) continue
-    const role = cleanRole(m[1])
+    const role = cleanRole(m[1]).replace(/\s+on\s+hold$/i, '')   // #1163: "hiring SDRs on hold" - the hold is negation (NEG_AFTER), not part of the role
     const end = at + m[0].length + (role ? m[1].indexOf(role) + role.length : 0)
     add({ kind: 'hiring', start: at, end, role, ...(role ? { more: m[1].slice(m[1].indexOf(role) + role.length) } : {}) })
   }
@@ -242,7 +242,12 @@ function findAtoms(q: string): Atom[] {
 }
 
 // Words before a condition that negate it. A stated exclusion cue counts too ("excluding companies that raised a Series B").
-const NEG_BEFORE = /\b(?:not|never|no|without|haven'?t|hasn'?t|have\s+not|has\s+not|didn'?t|did\s+not|yet\s+to|no\s+longer|excluding|exclude|except|other\s+than|but\s+not|neither|nor)\b(?:\s+(?:been|be|yet|that|which|who|have|has|had|are|is|any|a|an|the|companies|startups|firms|businesses|currently|recently|actively))*\s*$/i
+// #1163: negating, stopping and shrinking wordings count too - "rejecting venture capital funding", "stopped
+// hiring", "isn't hiring", "instead of hiring", "ran out of funding", "lost funding", "barely hiring",
+// "yet to raise funding". Rejection verbs carry their object ("rejecting venture capital " ends at the condition).
+const NEG_AFTER = /^\s+(?:(?:is|are|was|were)\s+)?on\s+hold\b|^\s+fell\s+(?:through|apart)\b/i   // "hiring SDRs on hold", "funding fell through"
+const DOUBLE_NEG = /\b(?:never|not|no|didn'?t|haven'?t|hasn'?t)\s+(?:stopped?|stopping|rejecting|rejects?|paus(?:e|ed|es|ing)|lost|losing|froze|frozen|freezing)\s*$/i
+const NEG_BEFORE = /\b(?:not|never|no|without|haven'?t|hasn'?t|have\s+not|has\s+not|didn'?t|did\s+not|yet\s+to|yet\s+to\s+\w+|no\s+longer|excluding|exclude|except|other\s+than|but\s+not|neither|nor|rejecting|rejects?|stopped?|stopping|paus(?:e|ed|es|ing)|froze|frozen|freezing|isn'?t|aren'?t|is\s+not|are\s+not|instead\s+of|rather\s+than|ran\s+out\s+of|lost|losing|barely|hardly|scarcely)\b(?:\s+(?:been|be|yet|that|which|who|have|has|had|are|is|any|a|an|the|companies|startups|firms|businesses|currently|recently|actively))*\s*$|(?:\brejecting\b(?:\s+\w+){0,3})\s*$/i
 const EXCL_CUE = /\b(?:excluding|exclude|excludes|except(?:\s+for)?|other\s+than|not\s+including|but\s+not|apart\s+from)\s+/gi
 const COMPETITOR = /\b(?:competitors?|rivals?|competing\s+(?:companies|vendors|products|firms))\b/i
 const CATEGORY_WORDS = /\b(?:franchis\w*|agenc(?:y|ies)|consultanc(?:y|ies)|consultants?|resellers?|marketplaces?|directories|directory|recruiters?|staffing|non-?profits?|charit(?:y|ies)|government|public\s+sector|enterprises?|chains?|startups?|universit(?:y|ies)|schools?|hospitals?)\b/i
@@ -252,6 +257,9 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
   const ambiguities: Ambiguity[] = []
   const atoms = findAtoms(q)
   // #876: a modal completed hire ("may have made their first sales hire") compiles to no condition (findAtoms); the plan says why.
+  // #1163: a shrinking completed hire ("hired fewer SDRs") is refused, never a positive completed-hire condition.
+  for (const m of q.matchAll(/\b(?:hired|appointed|named|brought\s+on|onboarded|welcomed)\s+((?:fewer|less|no)\b[^.;!?]*)/gi))
+    ambiguities.push({ text: m[0], readings: ['a smaller hiring round that happened', 'hiring that shrank or never happened'], chosen: 'neither: a shrinking or absent hire is not a completed-hire condition and not an open role, so nothing is compiled from it' })
   for (const m of q.matchAll(/\b(?:will|would|could|can|may|might|should|must)\s+(?:not\s+)?have\s+(?:(?:already|just|recently|probably|possibly|likely)\s+)*(?:made\s+(?:(?:a|an|its|their|the|our)\s+)?(?:[a-z][a-z-]*\s+){0,2}hires?|hired|appointed|named|brought\s+on|onboarded|welcomed)\b/gi))
     ambiguities.push({ text: m[0], readings: ['a completed hire', 'a hire that may not have happened'], chosen: 'no completed-hire condition: the request does not say the hire happened, so nothing is proven by it' })
   for (const a of atoms) if (a.bare) ambiguities.push({ text: q.slice(a.start, a.end), readings: ['a person who recently joined in this role', 'an open role still being filled'], chosen: 'either one, each on its own dated source: a source saying the person joined, or a dated job posting for the role. The lead says which.' })
@@ -318,7 +326,13 @@ export function compileTargeting(query: string | null | undefined, icp?: string 
     } else if (c.kind === 'hiring' || c.kind === 'hire_made') { c.within_days = 90; c.window_source = 'default' }   // the same 90-day default the sales-hiring gate applies
   }
   // Negation, then the connective between each pair of neighbouring conditions.
-  const negated = atoms.map((a, i) => !!a.neg || NEG_BEFORE.test(q.slice(i === 0 ? Math.max(0, a.start - 40) : Math.max(atoms[i - 1].end, a.start - 40), a.start)))
+  const negated = atoms.map((a, i) => {
+    const before = q.slice(i === 0 ? Math.max(0, a.start - 40) : Math.max(atoms[i - 1].end, a.start - 40), a.start)
+    return !!a.neg || (NEG_BEFORE.test(before) && !DOUBLE_NEG.test(before))   // "never stopped hiring" IS hiring
+    // #1163: negation after the condition ("hiring SDRs on hold", "funding fell through"), a negation the role text
+    // swallowed ("hiring SDRs on hold" as one span), and a "pre-" prefix ("pre-funding" = not yet funded).
+    || NEG_AFTER.test(q.slice(a.end, a.end + 30)) || /\s+on\s+hold\s*$/i.test(q.slice(a.start, a.end))
+    || q.slice(Math.max(0, a.start - 4), a.start).toLowerCase() === 'pre-' })
   const gaps = atoms.slice(1).map((a, i) => q.slice(atoms[i].end, a.start))
   const conn: ('and' | 'or')[] = []
   const connAt = (i: number): 'and' | 'or' => {
