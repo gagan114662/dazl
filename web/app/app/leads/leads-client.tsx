@@ -1594,8 +1594,8 @@ export default function LeadsClient() {
                   </div>
                   </div>
                   {!l.quarantined_at && <div className="flex flex-wrap gap-2 min-w-0 pl-[52px] sm:pl-0 sm:shrink-0" data-testid="card-actions">
-                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!!approving[l.id] || !!approved[l.id]} title="Creates a draft for you to review in Outreach. Nothing is sent." className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
-                    {!c.approve.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
+                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!approval.ok || !!approving[l.id] || !!approved[l.id]} title={approval.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : approval.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
+                    {!approval.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
                 </div>
