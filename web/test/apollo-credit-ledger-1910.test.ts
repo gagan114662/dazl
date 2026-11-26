@@ -31,9 +31,9 @@ test('only an otherwise Ready buyer after a completed empty crawl reaches one Ap
   const calls: string[] = []
   const buyer: ApolloBuyerEvidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test', dayVerified: true,
     otherwiseReady: true, ownSiteRead: 'none_published' as const }
-  const match = (leadId: string, evidence = buyer, cap = '1', tenantId = 'a') =>
+  const match = (leadId: string, evidence = buyer, cap = '1', tenantId = 'a', scanId = 'scan-a') =>
     matchReadyApolloBuyer(db, tenantId, leadId, evidence, {
-      key: 'test-only',
+      key: 'test-only', scanId, scanLimit: 1,
       env: { APOLLO_CREDIT_CAP: cap },
       fetchImpl: async input => {
         calls.push(String(input))
@@ -49,7 +49,11 @@ test('only an otherwise Ready buyer after a completed empty crawl reaches one Ap
     assert.deepEqual(calls, [])
     await match('eligible')
     await match('eligible', buyer, '2')
-    await match('at-cap', buyer, '1', 'b')
+    await match('at-cap', buyer, '1', 'b', 'scan-b')
+    await match('same-scan', buyer, '2')
+    assert.equal(calls.length, 1)
+    assert.deepEqual(db.prepare('SELECT lead_id, scan_id, credit, result FROM apollo_credit_ledger').all(),
+      [{ lead_id: 'eligible', scan_id: 'scan-a', credit: 1, result: 'empty' }])
     assert.deepEqual(calls, ['https://api.apollo.io/api/v1/people/match'])
   } finally {
     db.close()
