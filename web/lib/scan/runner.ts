@@ -36,6 +36,7 @@ import { requestedHiringRoles, matchedHiringRole, type RequestedHiringRole } fro
 import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
+import { resolveSearchProfile } from './profile-match.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -1456,7 +1457,31 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+  const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
+  let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
+  const savedSource = sells?.icp_inferred
+  let profileCarried = savedSource !== 1 && savedSource !== 2 && discoverProfileCarried(savedSource, job.watch_id)
+  if (job.query && profile && profileCarried) {
+    assertOwned(db, job)
+    let resolved: Awaited<ReturnType<typeof resolveSearchProfile>> | { source: 'request_only'; profile: Icp }
+    try {
+      if (!profileProvider.complete) throw new Error('search_profile:completion_unavailable')
+      resolved = await resolveSearchProfile(job.query, profile, key, fetchImpl, profileProvider.complete)
+    } catch (error) {
+      const code = error instanceof Error ? /^search_profile:([a-z_]+)$/.exec(error.message)?.[1] : undefined
+      const reason = code ?? (error instanceof SpendRefused ? error.reason
+        : error instanceof ProviderError ? error.kind : 'completion_error')
+      console.warn('Scan profile resolution used request-only fallback', reason)
+      resolved = { source: 'request_only', profile: fallbackIcp(job.query) }
+    }
+    profile = resolved.profile
+    profileCarried = resolved.source === 'carried'
+    const source = resolved.source === 'inferred' ? 1 : resolved.source === 'request_only' ? 2 : 3
+    assertOwned(db, job)
+    db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?")
+      .run(JSON.stringify(profile), source, job.id, job.user_id, job.attempts)
+  }
   // What this run may still spend: the tightest of the job's own budget, the account's limits and the scan's cap. With room for a full
   // run it gets the full search budget; with less (a free-trial run, or a request that set its own lower limit) it gets the smaller
   // budget and reserves what there is; with too little for even that, the scan stops and says so.
@@ -1479,15 +1504,8 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const source = 'search:claude_discover'
   ledger.record(source, 'started')
   assertOwned(db, job)
-  // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
-  const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
-  // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
+  // Repeating watches exclude companies found on earlier runs.
   const known = job.watch_id ? (db.prepare('SELECT DISTINCT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.watch_id = ? AND l.company <> ? ORDER BY l.created_at DESC LIMIT 80').all(job.user_id, job.watch_id, '') as { company: string }[]).map(r => r.company) : []
-  // the buyer profile saved on this play (who, where, what to leave out) goes with the request
-  const profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
-  // #1579: a profile the person reviewed for this search (icp_inferred 0), or a saved play's own on its repeat runs, narrows the request.
-  // One carried over unreviewed from an earlier search is background: the typed request decides who, where and which signal.
-  const profileCarried = discoverProfileCarried(sells?.icp_inferred, job.watch_id)
   let providerDispatchStarted = false
   const providerFetch: typeof fetch = (input, init) => {
     const signal = init && 'signal' in init ? init.signal : input instanceof Request ? input.signal : null
@@ -1661,7 +1679,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         finish(db, job, 'failed', trial ? 'trial_unavailable' : 'claude_key_required', null, null, ledger)
         return 'failed'
       }
-      return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
+      return await runDiscoverLane(db, job, key, spendGuards, ledger, providers_.anthropic, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
     }
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null
