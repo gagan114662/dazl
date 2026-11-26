@@ -5,6 +5,8 @@ import { isPersonName } from '../people/job-title-name.ts'
 export interface DiscoverCardLead {
   source_kind?: string | null; confidence: number | null; event_date: string | null; date_status?: string | null; timing_note?: string | null
   name: string; company_domain: string | null; enrichments?: { kind: string; connector?: string }[]
+  // #1592: a company event's kind and its funding amount, as the proof page printed it
+  event_kind?: string | null; event_amount?: string | null
 }
 export const isDiscoverLead = (l: { source_kind?: string | null }): boolean => l.source_kind === 'discover'
 export function discoverConfidence(l: Pick<DiscoverCardLead, 'confidence'>): 'high' | 'medium' | 'low' {
@@ -26,9 +28,17 @@ function namesPerson(l: { name?: string | null; enrichments?: { kind: string; co
   // a person row sent without its value (a list that carries only the kinds) cannot be judged here and counts, as before
   return p ? p.value === undefined || isPersonName(rowName(p.value)) : isPersonName(l.name)
 }
+// #1592: what kind of company event this lead is, with its funding amount when one was printed on the proof page.
+// Only the five kind words; anything else is no event. The amount rides with funding alone (parseLeads keeps it there only).
+export function eventLine(l: Pick<DiscoverCardLead, 'event_kind' | 'event_amount'>): string | null {
+  if (l.event_kind !== 'funding' && l.event_kind !== 'expansion' && l.event_kind !== 'launch' && l.event_kind !== 'contract' && l.event_kind !== 'other') return null
+  const kind = { funding: 'Funding round', expansion: 'Expansion or new location', launch: 'Launch', contract: 'Contract won', other: 'Company event' }[l.event_kind]
+  return l.event_kind === 'funding' && l.event_amount ? `${kind} ${l.event_amount}` : kind
+}
 export function discoverLine(l: DiscoverCardLead): string {
   const missing = discoverMissing(l)
-  return `Confidence: ${discoverConfidence(l)}. ${missing.length ? `Missing: ${missing.join('; ')}.` : 'Dated signal, proof page, person and website all found.'}`
+  const event = eventLine(l)
+  return `${event ? `${event}. ` : ''}Confidence: ${discoverConfidence(l)}. ${missing.length ? `Missing: ${missing.join('; ')}.` : 'Dated signal, proof page, person and website all found.'}`
 }
 
 // Where each fact on a discovery lead came from (#1401): the page that proves the signal, the page that names the person, the page

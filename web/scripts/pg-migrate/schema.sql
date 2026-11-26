@@ -68,7 +68,7 @@ CREATE TABLE outreach_messages (
       sent_at        BIGINT,
       gmail_id       TEXT,
       error          TEXT CHECK (error IS NULL OR char_length(error) <= 200),
-      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), thread_id TEXT, test BIGINT NOT NULL DEFAULT 0, reply_checked_at BIGINT, insert_seq BIGINT DEFAULT nextval('outreach_messages_insert_seq_seq'),
+      created_at     BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), thread_id TEXT, test BIGINT NOT NULL DEFAULT 0, reply_checked_at BIGINT, words_rev BIGINT NOT NULL DEFAULT 0, insert_seq BIGINT DEFAULT nextval('outreach_messages_insert_seq_seq'),
       UNIQUE (tenant_id, lead_id)
     );
 
@@ -85,6 +85,20 @@ CREATE TABLE scan_jobs (
       claimed_at    BIGINT,
       finished_at   BIGINT
     , funded_by TEXT NOT NULL DEFAULT 'user', seller TEXT, offer TEXT CHECK (offer IS NULL OR char_length(offer) <= 150), offer_set_at BIGINT, watch_id TEXT, candidates BIGINT, needs_review BIGINT, dropped BIGINT, run_budget TEXT, estimate TEXT, spend_reserved_usd DOUBLE PRECISION, drop_reasons TEXT, verified BIGINT, query TEXT CHECK (query IS NULL OR char_length(query) <= 600), icp TEXT CHECK (icp IS NULL OR char_length(icp) <= 4000), icp_inferred BIGINT, sources TEXT CHECK (sources IS NULL OR char_length(sources) <= 2000), csv_domain TEXT CHECK (csv_domain IS NULL OR char_length(csv_domain) <= 253), batch_id TEXT, enrich_started_at BIGINT, enrich_finished_at BIGINT, insert_seq BIGINT DEFAULT nextval('scan_jobs_insert_seq_seq'), spend_cap_usd DOUBLE PRECISION CHECK (spend_cap_usd IS NULL OR (spend_cap_usd > 0 AND spend_cap_usd <= 3.3334)), spend_cap_reserved_usd DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (spend_cap_reserved_usd >= 0), spend_cap_refusals BIGINT NOT NULL DEFAULT 0);
+
+CREATE TABLE scan_spend_calls (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      scan_job_id TEXT NOT NULL,
+      attempt     BIGINT NOT NULL,
+      kind        TEXT NOT NULL CHECK (char_length(kind) <= 32),
+      reserve_usd DOUBLE PRECISION NOT NULL CHECK (reserve_usd >= 0),
+      actual_usd  DOUBLE PRECISION CHECK (actual_usd IS NULL OR actual_usd >= 0),
+      status      TEXT NOT NULL CHECK (status IN ('reserved','settled','kept','refused')),
+      reason      TEXT CHECK (reason IS NULL OR char_length(reason) <= 80),
+      created_at  BIGINT NOT NULL,
+      settled_at  BIGINT
+    );
 
 CREATE TABLE sequence_settings (
       tenant_id      TEXT PRIMARY KEY,
@@ -137,13 +151,17 @@ CREATE TABLE leads (
       signal      TEXT NOT NULL CHECK (char_length(signal) BETWEEN 1 AND 500),
       source_url  TEXT NOT NULL CHECK (char_length(source_url) <= 500 AND (lower(source_url) LIKE lower('https://%') OR lower(source_url) LIKE lower('http://%'))),
       score       BIGINT NOT NULL DEFAULT 50 CHECK (score BETWEEN 0 AND 100),
-      created_at  BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), stage TEXT, watch_new BIGINT NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR char_length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR char_length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at BIGINT, confidence BIGINT CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at BIGINT, timing_note TEXT CHECK (timing_note IS NULL OR char_length(timing_note) <= 300), published_at TEXT, evidence_copy_id TEXT, human_confirmed_at BIGINT, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR char_length(company_domain) <= 253), quarantined_at BIGINT, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR char_length(quarantine_reason) <= 300), fit BIGINT CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent BIGINT CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action BIGINT CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR char_length(why) <= 600), signals TEXT CHECK (signals IS NULL OR char_length(signals) <= 1000), seen_before BIGINT NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT, event_date_proof TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured')), event_date_proof_note TEXT CHECK (event_date_proof_note IS NULL OR char_length(event_date_proof_note) <= 200), insert_seq BIGINT DEFAULT nextval('leads_insert_seq_seq'),
+      created_at  BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT)), stage TEXT, watch_new BIGINT NOT NULL DEFAULT 0, evidence_excerpt TEXT CHECK (evidence_excerpt IS NULL OR char_length(evidence_excerpt) <= 400), icp_match TEXT CHECK (icp_match IS NULL OR char_length(icp_match) <= 400), event_date TEXT, date_status TEXT CHECK (date_status IS NULL OR date_status IN ('verified','unverified','undated')), retrieved_at BIGINT, confidence BIGINT CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 100), dedup_key TEXT, review_reason TEXT, evidence_origin TEXT CHECK (evidence_origin IS NULL OR evidence_origin IN ('tinyfish_copy')), own_fetch_failure TEXT, evidence_copy_sha256 TEXT, evidence_purged_at BIGINT, timing_note TEXT CHECK (timing_note IS NULL OR char_length(timing_note) <= 300), published_at TEXT, evidence_copy_id TEXT, human_confirmed_at BIGINT, human_confirmed_from TEXT, company_domain TEXT CHECK (company_domain IS NULL OR char_length(company_domain) <= 253), quarantined_at BIGINT, quarantine_reason TEXT CHECK (quarantine_reason IS NULL OR char_length(quarantine_reason) <= 300), fit BIGINT CHECK (fit IS NULL OR fit BETWEEN 0 AND 5), intent BIGINT CHECK (intent IS NULL OR intent BETWEEN 0 AND 5), action BIGINT CHECK (action IS NULL OR action BETWEEN 0 AND 5), why TEXT CHECK (why IS NULL OR char_length(why) <= 600), signals TEXT CHECK (signals IS NULL OR char_length(signals) <= 1000), seen_before BIGINT NOT NULL DEFAULT 0, signal_kind TEXT, source_kind TEXT, event_kind TEXT CHECK (event_kind IS NULL OR event_kind IN ('funding','expansion','launch','contract','other')), event_amount TEXT CHECK (event_amount IS NULL OR char_length(event_amount) <= 60), event_date_proof TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured')), event_date_proof_note TEXT CHECK (event_date_proof_note IS NULL OR char_length(event_date_proof_note) <= 200), insert_seq BIGINT DEFAULT nextval('leads_insert_seq_seq'),
       CHECK (name <> '' OR company <> '')
     );
 
 CREATE INDEX company_events_company ON company_events (tenant_id, company_key);
 
 CREATE INDEX company_events_tenant ON company_events (tenant_id, last_seen_at);
+
+CREATE INDEX inbound_messages_outreach ON inbound_messages (tenant_id, outreach_message_id);
+
+CREATE INDEX inbound_messages_tenant_received ON inbound_messages (tenant_id, received_at);
 
 CREATE INDEX inbound_messages_thread ON inbound_messages (tenant_id, thread_id, received_at);
 
@@ -157,9 +175,15 @@ CREATE INDEX leads_insert_seq_idx ON leads (insert_seq);
 
 CREATE INDEX leads_job ON leads (scan_job_id);
 
+CREATE INDEX leads_job_created ON leads (scan_job_id, created_at);
+
 CREATE INDEX outreach_messages_insert_seq_idx ON outreach_messages (insert_seq);
 
+CREATE INDEX outreach_messages_tenant_sent ON outreach_messages (tenant_id, sent_at);
+
 CREATE INDEX outreach_tenant ON outreach_messages (tenant_id, status);
+
+CREATE INDEX scan_jobs_enriching ON scan_jobs (enrich_started_at) WHERE enrich_finished_at IS NULL;
 
 CREATE INDEX scan_jobs_insert_seq_idx ON scan_jobs (insert_seq);
 
@@ -167,19 +191,10 @@ CREATE INDEX scan_jobs_status ON scan_jobs (status, created_at);
 
 CREATE INDEX scan_jobs_user ON scan_jobs (user_id, created_at);
 
-CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
+CREATE INDEX scan_jobs_user_claimed ON scan_jobs (user_id, claimed_at);
 
-CREATE TABLE scan_spend_calls (
-  id          TEXT PRIMARY KEY,
-  user_id     TEXT NOT NULL,
-  scan_job_id TEXT NOT NULL,
-  attempt     BIGINT NOT NULL,
-  kind        TEXT NOT NULL CHECK (char_length(kind) <= 32),
-  reserve_usd DOUBLE PRECISION NOT NULL CHECK (reserve_usd >= 0),
-  actual_usd  DOUBLE PRECISION CHECK (actual_usd IS NULL OR actual_usd >= 0),
-  status      TEXT NOT NULL CHECK (status IN ('reserved','settled','kept','refused')),
-  reason      TEXT CHECK (reason IS NULL OR char_length(reason) <= 80),
-  created_at  BIGINT NOT NULL,
-  settled_at  BIGINT
-);
+CREATE INDEX scan_jobs_user_finished ON scan_jobs (user_id, finished_at);
+
 CREATE INDEX scan_spend_calls_job ON scan_spend_calls (user_id, scan_job_id);
+
+CREATE INDEX sequences_tenant ON sequences (tenant_id, status);

@@ -30,6 +30,8 @@ const COLUMNS = [
   { key: 'name', label: 'Contact Name' },
   { key: 'contact', label: 'Contact' },
   { key: 'signal', label: 'Signal' },
+  { key: 'event_kind', label: 'Event Kind' },
+  { key: 'event_amount', label: 'Funding Amount (as printed by the source)' },
   { key: 'why', label: 'Why This Lead (saved grade assessment)' },
   { key: 'human_confirmed_from', label: 'Confirmed By User (reason dazl could not verify)' },
   { key: 'fit', label: 'Fit (0-5)' },

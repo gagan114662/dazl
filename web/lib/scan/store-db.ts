@@ -119,7 +119,7 @@ async function allHeld(db: Db, plain: string, plainCols: string, heldCols: strin
 }
 
 const LEAD_COLUMNS = `l.id, l.scan_job_id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.created_at,
-l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
+l.evidence_excerpt, l.event_date, l.event_date_proof, l.event_date_proof_note, l.signal_kind, l.event_kind, l.event_amount, l.date_status, l.retrieved_at, l.confidence, l.review_reason, l.company_domain,
 l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l.quarantine_reason, l.evidence_origin, l.own_fetch_failure, l.evidence_copy_sha256, l.evidence_copy_id, l.evidence_purged_at, l.timing_note, l.published_at,
 l.fit, l.intent, l.action, l.why, l.signals, l.icp_match, l.watch_new, l.seen_before, l.stage`
 
@@ -186,7 +186,7 @@ function exportLeadRows(db:Db,userId:string,jobId:string|undefined,limit:number,
   return allHeld(db,
     `SELECT l.id AS lead_id, l.scan_job_id AS job_id, l.company, l.name, l.contact, l.signal, l.why, l.source_url,
             l.fit, l.intent, l.action, l.score, l.confidence, l.event_date, l.date_status, l.review_reason,
-            l.event_date_proof, l.signal_kind, l.source_kind, j.query AS job_query, j.icp AS job_icp,${includeBudget ? ' j.run_budget AS job_run_budget,' : ''}
+            l.event_date_proof, l.signal_kind, l.event_kind, l.event_amount, l.source_kind, j.query AS job_query, j.icp AS job_icp,${includeBudget ? ' j.run_budget AS job_run_budget,' : ''}
             l.human_confirmed_from, l.evidence_excerpt, l.evidence_origin, l.own_fetch_failure, l.evidence_purged_at, l.timing_note, l.published_at, l.created_at
             ${includeCursor ? ', l.insert_seq AS export_insert_seq' : ''}
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
@@ -225,6 +225,8 @@ export interface LeadRow {
   evidence_excerpt: string | null; event_date: string | null; date_status: string | null; retrieved_at: number | null
   confidence: number | null; dedup_key: string | null; fit?: number | null; intent?: number | null; action?: number | null
   why?: string | null; signals?: string | null; icp_match?: string | null; signal_kind?: string | null; source_kind?: string | null
+  // #1592: a company event's kind and its funding amount as the proof page printed it
+  event_kind?: string | null; event_amount?: string | null
   evidence_origin?: string | null; own_fetch_failure?: string | null; evidence_copy_sha256?: string | null; evidence_copy_id?: string | null
   // page timing (lib/scan/page-timing.ts): the publication day is a label, never the event date
   timing_note?: string | null; published_at?: string | null
@@ -254,10 +256,10 @@ export function finishJob(db: Db, job: { id: string; attempts: number }, input: 
     const inserted: string[] = []
     for (const l of leads) {
       const r = yield* t.run(
-        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+        `INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, retrieved_at, confidence, dedup_key, fit, intent, action, why, signals, icp_match, signal_kind, source_kind, event_kind, event_amount, evidence_origin, own_fetch_failure, evidence_copy_sha256, evidence_copy_id, timing_note, published_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
         [randomBytes(12).toString('hex'), job.id, l.name, l.company, l.contact, l.signal, l.source_url, l.score, l.evidence_excerpt, l.event_date, l.date_status, l.retrieved_at, l.confidence, l.dedup_key,
-          l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, l.signal_kind ?? null, l.source_kind ?? null, l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_id ?? null, l.timing_note ?? null, l.published_at ?? null, now])
+          l.fit ?? null, l.intent ?? null, l.action ?? null, l.why ?? null, l.signals ?? null, l.icp_match ?? null, l.signal_kind ?? null, l.source_kind ?? null, l.event_kind ?? null, l.event_amount ?? null, l.evidence_origin ?? null, l.own_fetch_failure ?? null, l.evidence_copy_sha256 ?? null, l.evidence_copy_id ?? null, l.timing_note ?? null, l.published_at ?? null, now])
       if (r.changes) inserted.push(`${l.dedup_key}|${l.source_url}`)
     }
     for (const l of review) {

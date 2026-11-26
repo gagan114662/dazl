@@ -89,7 +89,7 @@ for (const failure of ['http503','missingusage','wrongmodel']) test(`1725 uncert
     {apiKey:'synthetic-fixture',fetch:fetchImpl,judge:null,discover:async()=>({
       leads:[{company:'Fictional Cedar',signal:evidence,evidence_url:'https://fixture.example/branch',
         domain:null,person:null,title:null,person_source_url:null,linkedin_url:null,email:null,email_source_url:null,
-        signal_date:null,evidence_quote:evidence,confidence:'high',why:'Expanding'}],
+        signal_date:null,evidence_quote:evidence,confidence:'high',why:'Expanding',event_kind:null,amount:null}],
       seen:[{url:'https://fixture.example/branch',text:evidence,title:'Fictional Cedar',page_age:null}],
       usage:{input_tokens:10,output_tokens:1,cache_read_tokens:0,cache_write_tokens:0,searches:1,requests:1,usd:0.01},
       stop:'end_turn',model:'claude-sonnet-5-5',note:null})})
@@ -140,7 +140,7 @@ test('1725 parallel enrichment never continues after another request becomes unc
   const lead = { company: 'Fictional Cedar', domain: null, signal: 'Opening a branch', signal_date: null,
     evidence_url: 'https://fixture.example/branch', evidence_quote: null, person: null, title: null,
     person_source_url: null, linkedin_url: null, email: null, email_source_url: null,
-    confidence: 'high' as const, why: 'Expansion' }
+    confidence: 'high' as const, why: 'Expansion', event_kind: null, amount: null }
   const result = await enrichLeads([lead, { ...lead, company: 'Fictional Elm' }], { maxLeads: 2 },
     { apiKey: 'synthetic-fixture', fetch: fetchImpl }, 2)
   assert.equal(result.accountingUncertain, true)

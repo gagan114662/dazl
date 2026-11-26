@@ -41,7 +41,7 @@ for (const [i, r] of rows.entries()) {
   const lacks = (w as { missing?: string[] }).missing
   let line = !quote ? 'no quote stored' : `stored quote ${states ? 'states the line' : 'does NOT state the line'}: ${w.found} of ${w.want} words${lacks?.length ? `, lacks: ${lacks.join(', ')}` : ''}`
   if (read) {
-    const lead: DiscoveredLead = { company, domain: null, signal, signal_date: null, evidence_url: String(r.source_url ?? ''), evidence_quote: quote, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '' }
+    const lead: DiscoveredLead = { company, domain: null, signal, signal_date: null, evidence_url: String(r.source_url ?? ''), evidence_quote: quote, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'medium', why: '', event_kind: null, amount: null }
     const c = await check.checkLead(lead, [])
     if (check.isShown(c)) shown++
     const pageLacks = (c as { claim_lacks?: string[] }).claim_lacks

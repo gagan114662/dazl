@@ -123,7 +123,7 @@ export type LeadDraft = Candidate
 export const sourceKind = (job: Job): 'watch' | 'csv' | 'query' =>
   job.watch_id ? 'watch' : job.csv_domain ? 'csv' : 'query'
 
-export interface VerifiedLead extends LeadDraft { evidence_origin?: typeof COPY_ORIGIN; own_fetch_failure?: string; evidence_copy_sha256?: string; evidence_copy_page?: HeldPage; confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string; icp_match?: string }
+export interface VerifiedLead extends LeadDraft { evidence_origin?: typeof COPY_ORIGIN; own_fetch_failure?: string; evidence_copy_sha256?: string; evidence_copy_page?: HeldPage; confidence: number; date_status: 'verified' | 'unverified' | 'undated'; retrieved_at: number; contact: string | null; fit?: number; intent?: number; action?: number; why?: string; signals?: string; icp_match?: string; event_kind?: string; event_amount?: string }
 
 const MAX_LEADS = 20
 // At most this many verified (or review) leads may come from a single source page in one scan.
@@ -1444,7 +1444,7 @@ export function laneSwitchedOn(job: Pick<Job, 'query' | 'csv_domain'>, deps: Pic
   return deps.discover === true || (deps.discover !== false && env.DAZL_DISCOVER_LANE !== '0')
 }
 const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
-function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
+export function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
   const dated = !!l.date, printed = l.date_source === 'page'
   return {
     name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
@@ -1454,6 +1454,8 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     timing_note: l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
     date_status: dated ? (printed && l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
+    // #1592: the company event's kind, and its funding amount only as the proof page printed it (check.ts drops one it did not)
+    event_kind: l.event_kind ?? undefined, event_amount: l.amount ?? undefined,
   }
 }
 async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {

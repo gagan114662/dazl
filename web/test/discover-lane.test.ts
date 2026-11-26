@@ -13,7 +13,7 @@ import { enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { leadHoldReason, timingOptsFor } from '../lib/outreach/lead-hold.ts'
 import type { DiscoverResult, DiscoveredLead } from '../lib/discover/agent.ts'
 
-const lead = (o: Partial<DiscoveredLead>): DiscoveredLead => ({ company: 'Northwind Dental', domain: 'northwind-dental.example', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://northwind-dental.example/team', linkedin_url: null, email: null, email_source_url: null, confidence: 'high', why: 'expanding', ...o })
+const lead = (o: Partial<DiscoveredLead>): DiscoveredLead => ({ company: 'Northwind Dental', domain: 'northwind-dental.example', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://northwind-dental.example/team', linkedin_url: null, email: null, email_source_url: null, confidence: 'high', why: 'expanding', event_kind: null, amount: null, ...o })
 
 test('the lane runs for an ordinary request on the workspace\'s own Anthropic key, and only then', () => {
   const job = { query: 'dental clinics expanding', csv_domain: null, watch_id: null, funded_by: 'user' }
