@@ -113,3 +113,17 @@ for (const mailbox of ['drruiz', 'dr.ruiz']) {
     assert.deepEqual([result.person, result.email, result.email_source_url], [name, address, team])
   })
 }
+
+test('S3 refuses a same-surname dentist mailbox for a practice manager', async () => {
+  const address = 'drruiz@cedar.example'
+  const result = await lookup({ email: address }, [
+    page(team, `Dana Ruiz, Practice Manager. Dr. Luis Ruiz, Dentist: ${address}`),
+  ])
+  assert.deepEqual([result.person, result.email, result.email_source_url], [name, null, null])
+})
+
+test('S3 keeps a published name-matched mailbox with a numeric suffix', async () => {
+  const address = 'dana.ruiz2@cedar.example'
+  const result = await lookup({ email: address }, [page(team, `${personText} ${address}`)])
+  assert.deepEqual([result.person, result.email, result.email_source_url], [name, address, team])
+})
