@@ -45,3 +45,25 @@ test('server test: diagnostic-only names and evidence use neutral copy', () => {
   assert.doesNotMatch(body, systemCopy)
   assert.doesNotMatch(body, /November 12/)
 })
+
+test('MadeThis production draft profile yields a short personal draft without the system log', () => {
+  // Production issue records the company and profile text. Recipient and exact date are fixture values.
+  const draft = composeDraftCopy({
+    name: 'Alex Chen',
+    company: 'MadeThis',
+    confidence: 90,
+    event_date: '2026-11-24',
+    event_date_proof: 'page_bound',
+    evidence_excerpt: [
+      "I'm writing to the contact address published on MadeThis's page: https://madethis.example/contact",
+      'Saved excerpt from this public page: https://madethis.example/jobs',
+      'MadeThis is hiring two SDRs',
+    ].join('\n'),
+  }, 'dazl', 'About dazl: a B2B sales-automation SaaS to small marketing agencies')
+
+  assert.match(draft.body, /^Hi Alex,/)
+  assert.match(draft.body, /November 24, 2026.*MadeThis is hiring two SDRs/)
+  assert.match(draft.body, /we offer a B2B sales-automation SaaS to small marketing agencies/)
+  assert.doesNotMatch(draft.body, /About dazl:|Saved excerpt|contact address published|https?:\/\//i)
+  assert.ok(draft.body.split(/\s+/).length <= 120)
+})
