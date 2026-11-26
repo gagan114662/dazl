@@ -293,6 +293,9 @@ test('#2012 a LinkedIn-only buyer is held on Home, Leads, the header and the sca
     }
   }
   done(id)
+  const verifiedAddress = 'rosa.chen@verified-email.example'
+  const suppress = db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, ?, 'manual')")
+  suppress.run('another-workspace', verifiedAddress)
   const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
   assert.equal(res.status, 200)
   const payload = await res.json() as { leads: (PreviewLead & { discover_state: string })[]; discover_counts: { ready: number } }
@@ -314,4 +317,17 @@ test('#2012 a LinkedIn-only buyer is held on Home, Leads, the header and the sca
     leads: { 'profile-only': 'no_contact', 'refused-email': 'no_contact', 'verified-email': 'ready_email' },
     reason: 'no contact found yet',
   })
+
+  suppress.run('A', verifiedAddress)
+  const suppressedResponse = await leadsGET(new NextRequest("http://test/api/leads?job_id=" + id))
+  assert.equal(suppressedResponse.status, 200)
+  const suppressed = await suppressedResponse.json() as typeof payload
+  const suppressedHome = await readyGET()
+  assert.equal(suppressedHome.status, 200)
+  assert.deepEqual({
+    home: (await suppressedHome.json() as { ready: number }).ready,
+    header: suppressed.discover_counts.ready,
+    scan: (await discoverJobCounts(sqliteDb(db), 'A', id))?.ready,
+    lead: suppressed.leads.find(row => row.id === 'verified-email')?.discover_state,
+  }, { home: 0, header: 0, scan: 0, lead: 'no_contact' })
 })
