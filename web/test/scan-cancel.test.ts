@@ -76,7 +76,7 @@ test('Home never asks for an AI key once one is saved; seller profile stays visi
   // Home is the readiness checklist now: a saved key is done (no key fix offered) and the saved seller profile is shown.
   const { readinessRows } = await import('../lib/readiness.ts')
   const rows = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, outreach: { gmail: null, sender: null } })
-  assert.deepEqual(rows.find(x => x.id === 'key'), { id: 'key', label: 'AI key', state: 'done', detail: 'saved', fix: null })
+  assert.deepEqual(rows.find(x => x.id === 'key'), { id: 'key', label: 'Searches', state: 'done', detail: 'ready to run', fix: null })
   assert.match(rows.find(x => x.id === 'site')!.detail, /Booking software/)
   assert.doesNotMatch(rd('../app/app/outreach/send-readiness.tsx'), /Every email still needs your approval/)
   // the sign-up line (lib/trial-copy.ts signUpPlanLine, rendered by sign-up-form.tsx) is mode-accurate. #1428: it used to
@@ -109,7 +109,7 @@ test('profile save returns canonical stored values; business name round-trips; k
   assert.match(rd('../app/app/readiness.tsx'), /setOpen\(null\); void load\(\)/)
   const { readinessRows } = await import('../lib/readiness.ts')
   const key = readinessRows({ profile: null, usage: null, outreach: null }).find(x => x.id === 'key')!
-  assert.deepEqual([key.state, key.detail, key.fix], ['unknown', 'could not check - your plan and key status did not load', null])
+  assert.deepEqual([key.state, key.detail, key.fix], ['unknown', 'could not check - your plan status did not load', null])
 })
 
 test('contact search note states eligibility and stored facts only, never completion or absence', async () => {
