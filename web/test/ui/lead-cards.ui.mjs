@@ -332,6 +332,7 @@ try {
   await page.waitForFunction(id => document.activeElement && document.activeElement.id === `lead-card-${id}`, co16)
   const co16Box = await page.locator(`#lead-card-${co16}`).boundingBox()
   assert.ok(co16Box && co16Box.y >= 0 && co16Box.y < 900, 'Review in Cards scrolls the lead card into the viewport')
+  await shot('review-in-cards')
   const ctx390b = await b.newContext({ viewport: { width: 390, height: 844 } })
   await ctx390b.addCookies([{ name: 'dazl_session', value: token, url: base }])
   await ctx390b.route('**/*', routeApi)
