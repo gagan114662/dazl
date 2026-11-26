@@ -1,0 +1,123 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { businessPlays, type BrainProfile } from '../lib/business-brain.ts'
+import { MAX_READINGS, parseReading, promptFor, readSignals, READING_SYSTEM, type ReadSignal, type SignalReading } from '../lib/scan/signal-reading.ts'
+import { withReadings } from '../lib/scan/signal-readings.ts'
+import { normalizeIcp } from '../lib/scan/icp.ts'
+
+const buyer = (lang: string | null, signals: string[]) => ({
+  summary: 'Dental practices in Ohio', who: ['Practice owner'], industries: ['dentistry'], sizes: [], where: ['Ohio'], signals, exclude: [],
+  ...(lang ? { language: lang } : {}),
+})
+const plays = (lang: string | null, signals: string[], readings: Record<string, SignalReading> = {}) =>
+  businessPlays({ buyer: buyer(lang, signals) } as BrainProfile, [], readings).map(p => p.query)
+const stub = (answers: Record<string, SignalReading | null>) => {
+  const asked: { signal: string; lang: string | null }[] = []
+  const read: ReadSignal = async (signal, lang) => { asked.push({ signal, lang }); return answers[signal] ?? null }
+  return { read, asked }
+}
+
+// --- the judge's one line -----------------------------------------------------------------------------------------------------
+
+test('#2084 the judge answer is parsed from a fixed shape; anything else is no reading, never a guess', () => {
+  assert.deepEqual(parseReading('HIRING: SDRs'), { kind: 'hiring', role: 'SDRs' })
+  assert.deepEqual(parseReading('  hiring:  \n'), { kind: 'hiring', role: null })
+  assert.deepEqual(parseReading('NOT_HIRING'), { kind: 'not_hiring' })
+  assert.deepEqual(parseReading('not hiring'), { kind: 'not_hiring' })
+  assert.equal(parseReading('OTHER'), null)
+  assert.equal(parseReading(''), null)
+  assert.equal(parseReading('Sure! Here is what I think'), null, 'prose is not a reading')
+})
+
+test('#2084 the question names no language and no wording list: the signal is read in its own language', () => {
+  assert.match(READING_SYSTEM, /any language/i)
+  const p = promptFor('Wir stellen SDRs ein', 'de')
+  assert.match(p, /LANGUAGE: de/)
+  assert.match(p, /SIGNAL: Wir stellen SDRs ein/, 'the signal is passed verbatim')
+  assert.doesNotMatch(p, /\b(?:freeze|stopped|paused)\b.*\b(?:German|Spanish|French)\b/i)
+})
+
+test('#2084 one call per signal, capped, and a failed reading is left out rather than guessed', async () => {
+  const asked: string[] = []
+  const read: ReadSignal = async s => { asked.push(s); if (s === 'boom') throw new Error('upstream'); return { kind: 'hiring', role: 'SDRs' } }
+  const got = await readSignals(['a', 'a', 'boom', ...Array.from({ length: 10 }, (_, i) => `s${i}`)], 'de', read)
+  assert.ok(asked.length <= MAX_READINGS, `asked ${asked.length}`)
+  assert.equal(asked.filter(s => s === 'a').length, 1, 'a signal is asked once')
+  assert.ok(!('boom' in got), 'a failed reading is not stored')
+  assert.equal(got.a?.kind, 'hiring')
+})
+
+// --- readings are filled once, at save, and reused ----------------------------------------------------------------------------
+
+test('#2084 readings are stored with the profile and reused; an English profile asks the judge nothing', async () => {
+  const de = normalizeIcp({ ...buyer('de', ['Wir stellen SDRs ein', 'Einstellungsstopp']), summary: 'Dental practices in Ohio' })!
+  const { read, asked } = stub({ 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs' }, Einstellungsstopp: { kind: 'not_hiring' } })
+  const saved = await withReadings(de, read, 1000)
+  assert.deepEqual(saved.signal_readings, { 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs', at: 1000 }, Einstellungsstopp: { kind: 'not_hiring', at: 1000 } })
+  const again = await withReadings(saved, read, 2000)
+  assert.equal(asked.length, 2, 'a stored reading is not asked again')
+  assert.deepEqual(again.signal_readings, saved.signal_readings, 'and keeps its first reading time')
+  const en = normalizeIcp({ ...buyer('en', ['hiring SDRs']), summary: 'Dental practices in Ohio' })!
+  const enSaved = await withReadings(en, read, 3000)
+  assert.equal(asked.length, 2, 'the compiler reads English: no call')
+  assert.equal(enSaved.signal_readings, undefined)
+  // a reworded signal is read again, never inherited
+  const reworded = await withReadings({ ...saved, signals: ['Wir stellen SDRs ein', 'Wir bauen das Team aus'] }, read, 4000)
+  assert.equal(asked.at(-1)?.signal, 'Wir bauen das Team aus')
+  assert.ok(!('Einstellungsstopp' in (reworded.signal_readings ?? {})), 'a reading for a signal no longer saved is dropped')
+})
+
+test('#2084 no key (no reader) leaves the signal without a reading, and no reading is never read as fine', async () => {
+  const de = normalizeIcp({ ...buyer('de', ['Wir stellen SDRs ein']), summary: 'Dental practices in Ohio' })!
+  const saved = await withReadings(de, null, 1000)
+  assert.equal(saved.signal_readings, undefined)
+  assert.deepEqual(plays('de', ['Wir stellen SDRs ein']), [], 'no reading, no play')
+})
+
+// --- the plays in four languages ----------------------------------------------------------------------------------------------
+
+test('#2084 DE: a judged hiring signal makes its play, a judged denial makes none, and nothing is read on English rules', () => {
+  const hiring = 'Wir stellen SDRs ein'
+  const denial = 'Wir haben einen Einstellungsstopp'
+  assert.deepEqual(plays('de', [hiring], { [hiring]: { kind: 'hiring', role: 'SDRs' } }), ['Practice owner at companies in Ohio hiring SDRs'])
+  assert.deepEqual(plays('de', [denial], { [denial]: { kind: 'not_hiring' } }), [])
+  assert.deepEqual(plays('de', [hiring]), [], 'without a reading the signal makes no play')
+  // the table guards the role the judge names: a German not-a-role word never becomes a role
+  assert.deepEqual(plays('de', [hiring], { [hiring]: { kind: 'hiring', role: 'niemand' } }), [], 'the German row rejects "niemand"')
+})
+
+test('#2084 ES: judged hiring fires, judged denial does not, and the Spanish row guards the role', () => {
+  const hiring = 'Estamos contratando SDRs'
+  const denial = 'No estamos contratando SDRs'
+  assert.deepEqual(plays('es', [hiring], { [hiring]: { kind: 'hiring', role: 'SDRs' } }), ['Practice owner at companies in Ohio hiring SDRs'])
+  assert.deepEqual(plays('es', [denial], { [denial]: { kind: 'not_hiring' } }), [])
+  assert.deepEqual(plays('es', [denial]), [], 'a denial without a reading is not passed either')
+  assert.deepEqual(plays('es', [hiring], { [hiring]: { kind: 'hiring', role: 'nadie' } }), [], 'the Spanish row rejects "nadie"')
+})
+
+test('#2084 FR: judged hiring fires, judged denial does not, and the French row guards the role', () => {
+  const hiring = 'Nous recrutons des SDR'
+  const denial = 'Nous ne recrutons personne'
+  assert.deepEqual(plays('fr', [hiring], { [hiring]: { kind: 'hiring', role: 'SDRs' } }), ['Practice owner at companies in Ohio hiring SDRs'])
+  assert.deepEqual(plays('fr', [denial], { [denial]: { kind: 'not_hiring' } }), [])
+  assert.deepEqual(plays('fr', [hiring], { [hiring]: { kind: 'hiring', role: 'personne' } }), [], 'the French row rejects "personne"')
+})
+
+test('#2084 JA: the judge reads the signal (the table has no word rules for a script without spaces)', () => {
+  const hiring = 'SDRを採用中'
+  const denial = '採用停止中'
+  assert.deepEqual(plays('ja', [hiring], { [hiring]: { kind: 'hiring', role: 'SDRs' } }), ['Practice owner at companies in Ohio hiring SDRs'])
+  assert.deepEqual(plays('ja', [denial], { [denial]: { kind: 'not_hiring' } }), [])
+  assert.deepEqual(plays('ja', [hiring]), [], 'without a reading: no play, never an English guess')
+})
+
+// --- what is stored is what is read -------------------------------------------------------------------------------------------
+
+test('#2084 normalizeIcp keeps a well-formed reading, drops a malformed one, and bounds how many are stored', () => {
+  const base = { summary: 'Dental practices in Ohio', signals: ['a'], language: 'de' }
+  assert.deepEqual(normalizeIcp({ ...base, signal_readings: { a: { kind: 'hiring', role: 'SDRs', at: 5 } } })?.signal_readings, { a: { kind: 'hiring', role: 'SDRs', at: 5 } })
+  assert.equal(normalizeIcp({ ...base, signal_readings: { a: { kind: 'maybe', at: 5 } } })?.signal_readings, undefined, 'an unknown kind is dropped')
+  assert.equal(normalizeIcp({ ...base, signal_readings: { a: { kind: 'hiring', role: 'SDRs' } } })?.signal_readings, undefined, 'no time, no reading')
+  const many = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`s${i}`, { kind: 'not_hiring', at: i }]))
+  assert.equal(Object.keys(normalizeIcp({ ...base, signal_readings: many })?.signal_readings ?? {}).length, 8, 'bounded')
+})

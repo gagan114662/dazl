@@ -111,7 +111,9 @@ export default function BusinessClient() {
   useEffect(() => { queueMicrotask(() => void load()) }, [load])
   if (!data) return <div className="p-8 max-w-2xl"><p className="text-sm text-[#555]">Loading what dazl knows about your business...</p></div>
   const sections = businessSections(data.profile, data.memory, data.competitors)
-  const plays = businessPlays(data.profile, data.competitors)
+  // #2084: a signal in a language the compiler cannot read carries the judge's reading, stored when the profile was saved
+  const readings = Object.fromEntries(Object.entries(data.profile?.buyer?.signal_readings ?? {}).map(([k, v]) => [k, v.kind === 'hiring' ? { kind: 'hiring' as const, role: v.role ?? null } : { kind: 'not_hiring' as const }]))
+  const plays = businessPlays(data.profile, data.competitors, readings)
   const hasSite = sections.some(x => x.items.some(i => i.source.kind === 'site'))
   return (
     <div className="p-4 sm:p-8 max-w-2xl">
