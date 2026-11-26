@@ -219,3 +219,58 @@ test('a lead whose proof page is gone is dropped and counted, never listed; the 
   assert.deepEqual([j.status, j.verified, j.needs_review], ['done', 1, 0])
   assert.equal((JSON.parse(j.drop_reasons ?? '{}') as Record<string, number>).page_not_found, 1, 'counted as dropped, with the reason the Leads page already words as "page no longer exists"')
 })
+
+test('Discovery starts contact enrichment and names the buyer from a hiring lead’s own site', async t => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-11-26T12:00:00Z'))
+  const crawlSetting = process.env.SITECRAWL_ENABLED
+  process.env.SITECRAWL_ENABLED = '1'
+  t.after(() => {
+    if (crawlSetting === undefined) delete process.env.SITECRAWL_ENABLED
+    else process.env.SITECRAWL_ENABLED = crawlSetting
+  })
+  const master = randomBytes(32)
+  const db = new Database(':memory:')
+  t.after(() => db.close())
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'Dentists in Mississauga', seller: 'Dental supplies' })
+  db.prepare('UPDATE scan_jobs SET icp = ?, icp_inferred = 1 WHERE id = ?').run(JSON.stringify({ who: ['Practice Manager'], where: ['Mississauga, ON'] }), id)
+  const job = claimKeyedJob(db, id)
+  assert.ok(job)
+  const evidence = 'https://www.jobbank.gc.ca/jobsearch/jobposting/123456'
+  const origin = 'https://fern-dental.example'
+  const company = 'Fern Dental'
+  const signal = 'Hiring a Dental Receptionist'
+  const quote = 'Fern Dental is hiring a Dental Receptionist in Mississauga'
+  const found: DiscoverResult = {
+    leads: [lead({ company, domain: null, evidence_url: evidence, evidence_quote: quote, signal, signal_date: '2026-11-20', person: null, title: null, person_source_url: null })],
+    seen: [{ url: evidence, title: company, page_age: null, text: 'Posted on November 20, 2026. ' + quote }],
+    usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 },
+    stop: 'end_turn', model: 'claude-opus-5-5', note: null,
+  }
+  const pages: Record<string, string> = {
+    [evidence]: '<html><body>' + quote + ' <a href="' + origin + '/">Fern Dental</a></body></html>',
+    [origin + '/robots.txt']: 'User-agent: *\nAllow: /',
+    [origin + '/']: '<html><body><h1>Fern Dental</h1><p>100 Example Avenue, Mississauga, ON L5B 1M1, Canada.</p><a href="/team">Our team</a></body></html>',
+    [origin + '/team']: '<html><body><p>Our local clinic has served the neighbourhood for many years. We welcome new patients and offer appointments for families throughout the week.</p><article><h2>Dana Ruiz</h2><p>Practice Manager</p></article><a href="mailto:office@fern-dental.example">office@fern-dental.example</a></body></html>',
+  }
+  assert.equal(await runJob(db, job, {
+    master, discover: true, discoverImpl: async () => found, enrichImpl: null,
+    fetchImpl: async () => new Response('no', { status: 403 }),
+    crawlGet: async url => ({ status: pages[url] ? 200 : 404, body: pages[url] ?? '', finalUrl: url }),
+  }), 'done')
+  const completion = db.prepare('SELECT enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ?').get(id) as {
+    enrich_started_at: number | null; enrich_finished_at: number | null
+  }
+  assert.ok(completion.enrich_started_at, 'Discovery starts post-finish contact enrichment')
+  assert.ok(completion.enrich_finished_at, 'Discovery finishes post-finish contact enrichment')
+  const [saved] = listLeads(db, 'T', id, 50, false)
+  assert.ok(saved)
+  assert.equal(saved.date_status, 'verified')
+  assert.equal(saved.event_date, '2026-11-20')
+  assert.ok(db.prepare('SELECT 1 FROM crawl_pages WHERE scan_job_id = ? AND url = ?').get(id, origin + '/team'))
+  assert.equal(saved.company_domain, 'fern-dental.example')
+  const contacts = enrichmentsForLeads(db, 'T', [saved.id])[saved.id] ?? []
+  assert.ok(contacts.some(row => row.kind === 'person' && row.value === 'Dana Ruiz, Practice Manager' && row.source_url === origin + '/team'))
+  assert.equal(contacts.some(row => row.kind === 'email'), false, 'a shared inbox is not the buyer’s address')
+})
