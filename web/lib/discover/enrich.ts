@@ -247,7 +247,12 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
     messages.push({ role: 'assistant', content: res.content as Anthropic.ContentBlockParam[] })
   }
   for (const [url, page] of seen) if (!allSeen.has(url) || page.text) allSeen.set(url, page)
-  const kept = keepSeenProfile(verifyContact(lead, parseEnriched(text), seen), seen)
+  const verified = keepSeenProfile(verifyContact(lead, parseEnriched(text), seen), seen)
+  // A lone address on a team page can still belong to another person.
+  const buyer = lead.person ?? verified.person
+  const kept = verified.email && (!buyer || !nameBound(verified.email.split('@')[0], nameParts(buyer).join(' ')))
+    ? { ...verified, email: null, email_source_url: null }
+    : verified
   if (kept.linkedin_url) return kept
   // no profile from the model, or one the rule refused: the results themselves may still show this person's profile at this company
   const who = kept.person ?? lead.person
