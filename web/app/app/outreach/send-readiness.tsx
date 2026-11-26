@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import SenderInline from '../sender-inline'
+import SenderInline, { SenderSavedNote } from '../sender-inline'
 
 interface S { autopilot_available?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null }
 
@@ -24,6 +24,8 @@ function isSettings(v: unknown): v is S {
 export default function SendReadiness() {
   const [s, setS] = useState<S | null>(null)
   const [state, setState] = useState<Load>({ kind: 'loading' })
+  // A save unmounts SenderInline (senderOk flips at once), so the confirmation lives here, not in the form.
+  const [senderSaved, setSenderSaved] = useState(false)
   const load = async () => {
     setState({ kind: 'loading' })
     try {
@@ -55,7 +57,7 @@ export default function SendReadiness() {
     : null
   const gmailOk = s.gmail?.status === 'active'
   const senderOk = !!s.sender?.sender_name && !!s.sender?.postal_address
-  if (gmailOk && senderOk) return <>{reloadError}<p className="text-xs text-[#666] mb-4">Ready to send from {s.gmail!.email}. {s.autopilot_available ? 'Manual emails send only after your click; autopilot, if you turn it on in Settings, can send first emails on its own.' : 'Every email is reviewed and sent by you: nothing sends without your click.'} Reply reading is {s.gmail!.read_granted ? 'on' : 'off (optional)'}.</p></>
+  if (gmailOk && senderOk) return <>{reloadError}{senderSaved && <SenderSavedNote className="mb-1" />}<p className="text-xs text-[#666] mb-4">Ready to send from {s.gmail!.email}. {s.autopilot_available ? 'Manual emails send only after your click; autopilot, if you turn it on in Settings, can send first emails on its own.' : 'Every email is reviewed and sent by you: nothing sends without your click.'} Reply reading is {s.gmail!.read_granted ? 'on' : 'off (optional)'}.</p></>
   return (
     <div className="card p-4 mb-4 text-sm">
       {reloadError}
@@ -65,7 +67,8 @@ export default function SendReadiness() {
         {s.gmail && !gmailOk && <li>Gmail needs reconnecting.</li>}
         {!senderOk && <li>Add your name and mailing address below.</li>}
       </ul>
-      {!senderOk && <div className="mb-3"><SenderInline initial={s.sender} onSaved={() => void load()} /></div>}
+      {!senderOk && <div className="mb-3"><SenderInline initial={s.sender} onSaved={(saved) => { setSenderSaved(true); setS(prev => prev ? { ...prev, sender: { ...saved, booking_url: prev.sender?.booking_url ?? null } } : prev); void load() }} /></div>}
+      {senderSaved && senderOk && <div className="mb-3"><SenderSavedNote /></div>}
       {!gmailOk && <a className="underline underline-offset-2" href="/app/settings#gmail">Connect Gmail in Settings</a>}
     </div>
   )

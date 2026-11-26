@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import KeyInline from './key-inline'
-import SenderInline from './sender-inline'
+import SenderInline, { SenderSavedNote } from './sender-inline'
 import { normalizeWebsite } from '@/lib/onboarding'
 import { Icon } from './ui/icons'
 import { Pill } from './ui/bits'
@@ -23,6 +23,7 @@ export default function Readiness() {
   const [input, setInput] = useState<ReadinessInput | null>(null)
   const [plays, setPlays] = useState<HomePlay[] | null>(null)
   const [open, setOpen] = useState<string | null>(null)
+  const [senderSaved, setSenderSaved] = useState(false) // the sender panel closes on save; the confirmation stays in the row
   const [reopened, setReopened] = useState(false) // the finished checklist, shown again on request
   const [site, setSite] = useState({ website: '', sells: '', business_name: '' })
   const [siteMsg, setSiteMsg] = useState('')
@@ -119,7 +120,8 @@ export default function Readiness() {
               <div className="flex gap-3 items-center"><button className="btn-primary text-xs px-3 py-1.5">Save</button>{siteMsg && <span className="text-xs" role="status">{siteMsg}</span>}</div>
             </form>}
             {open === r.id && r.id === 'key' && <div className="mt-3"><KeyInline reason="Searches and website reads run on Claude, with your own Anthropic key." onSaved={() => { setOpen(null); void load() }} /></div>}
-            {open === r.id && r.id === 'sender' && <div className="mt-3"><SenderInline initial={input.outreach?.sender ?? null} onSaved={() => { setOpen(null); void load() }} /></div>}
+            {open === r.id && r.id === 'sender' && <div className="mt-3"><SenderInline initial={input.outreach?.sender ?? null} onSaved={() => { setSenderSaved(true); setOpen(null); void load() }} /></div>}
+            {r.id === 'sender' && senderSaved && <div className="mt-2"><SenderSavedNote /></div>}
           </li>
         ))}
       </ul>
