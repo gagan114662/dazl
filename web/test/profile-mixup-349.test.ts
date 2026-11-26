@@ -4,7 +4,9 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import * as websiteReview from '../app/app/leads/website-review-offer.ts'
 
-test('#349: a dental request does not submit the saved cleaning profile for confirmation', () => {
+const savedBuyer = { summary: 'Cleaning agencies', who: ['Cleaning agencies'], exclude: ['Existing customers'] }
+
+function submitSearch(query: string) {
   const client = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
   const selection = /^  const startIcp = .+$/m.exec(client)?.[0]
   const requestProfile = /^  const requestProfile = .+$/m.exec(client)?.[0]
@@ -14,9 +16,9 @@ test('#349: a dental request does not submit the saved cleaning profile for conf
 
   const submitted: unknown[][] = []
   runInNewContext(`${selection}\n${requestProfile ?? ''}\n${submit}`, {
-    query: 'Find dental clinics in Toronto',
+    query,
     priorIcp: null,
-    savedBuyer: { summary: 'Cleaning agencies', who: ['Cleaning agencies'], exclude: ['Existing customers'] },
+    savedBuyer,
     startReviewed: false,
     openWebsiteDraft: null,
     e: { preventDefault() {} },
@@ -24,8 +26,29 @@ test('#349: a dental request does not submit the saved cleaning profile for conf
     run: (...args: unknown[]) => submitted.push(args),
   })
 
-  assert.deepEqual(submitted, [[null, undefined, undefined, ['Existing customers']]])
+  return submitted
+}
+
+test('#349: a dental request does not submit the saved cleaning profile for confirmation', () => {
+  assert.deepEqual(submitSearch('Find dental clinics in Toronto'), [[null, undefined, undefined, ['Existing customers']]])
 })
+
+for (const query of [
+  'Find customers in my area',
+  'Companies in Toronto',
+  'Find customers in Toronto',
+  'Find businesses in Toronto',
+  'Find clients in Toronto',
+  'Find buyers in Toronto',
+  'Find accounts in Toronto',
+  'Find people in Toronto',
+  'Find dental clinics in my area',
+  'Find dental clinics near me',
+]) {
+  test(`#349: "${query}" submits the saved profile for confirmation`, () => {
+    assert.deepEqual(submitSearch(query), [[savedBuyer, undefined, false]])
+  })
+}
 
 test('#349: a generic request and an exact reviewed repeat keep their existing carry path', () => {
   const saved = { summary: 'Cleaning agencies', who: ['Cleaning agencies'], industries: [], sizes: [], where: [], signals: [], exclude: [] }

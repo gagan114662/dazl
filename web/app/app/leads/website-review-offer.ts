@@ -34,7 +34,11 @@ export function canQuoteWebsiteDraft(draft: {query:string; invalidated:boolean}|
 export function requestConfirmationProfile(query: string, prior: Pick<Icp, 'summary'> | null, saved: unknown) {
   if (prior || !saved) return null
   const target = query.trim().replace(/^(?:find|show me|look for)\s+/i, '')
-  if (!/^(?!leads?\b|prospects?\b).+?\s+in\s+(?!need\b|search\b|the (?:last|past)\b)\p{L}/iu.test(target)) return null
+  const buyerAndPlace = /^(.*?)\s+in\s+(\p{L}.*)$/iu.exec(target)
+  if (!buyerAndPlace) return null
+  const [, buyer, place] = buyerAndPlace
+  if (/^(?:(?:a|an|the|some)\s+)?(?:leads?|prospects?|customers?|clients?|buyers?|business(?:es)?|compan(?:y|ies)|accounts?|people|persons?)\b/i.test(buyer)) return null
+  if (/^(?:need|search|my\s+area|near\s+me|the\s+(?:last|past))\b/i.test(place)) return null
   const profile = normalizeIcp(saved)
   return profile ? { carryExclude: carriedExclusions(profile) } : null
 }
