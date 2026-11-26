@@ -256,12 +256,23 @@ const DOUBLE_NEG = /\b(?:never|not|no|didn'?t|haven'?t|hasn'?t)\s+(?:stopped?|st
 //      "rejecting", "declining", "cut", "reduced", "lost", "ran out of", "fell through", "short of", "lacking";
 //   3. privative morphology on the modifying word - "pre-funding", "non-hiring", "unfunded", "staffless".
 // Applied to any condition, so a new industry or wording needs no change here.
-const NEG_CLOSED = String.raw`(?:not|never|no|none|without|haven'?t|hasn'?t|hadn'?t|have\s+not|has\s+not|didn'?t|did\s+not|doesn'?t|does\s+not|isn'?t|aren'?t|wasn'?t|weren'?t|is\s+not|are\s+not|was\s+not|were\s+not|yet\s+to|yet\s+to\s+\w+|no\s+longer|excluding|exclude|except|other\s+than|but\s+not|neither|nor|instead\s+of|rather\s+than|barely|hardly|scarcely|seldom|rarely)`
-const NEG_CEASE_STEM = String.raw`(?:stopp?(?:ed|ing|s)?|paus(?:e|ed|es|ing)|halt(?:ed|ing|s)?|ceas(?:e|ed|es|ing)|suspend(?:ed|ing|s)?|discontinu(?:e|ed|es|ing)|freez(?:e|es|ing)|froze|frozen|cancel(?:led|ing|s)?|scrap(?:ped|ping|s)?|shelv(?:e|ed|es|ing)|abandon(?:ed|ing|s)?|reject(?:ed|ing|s)?|refus(?:e|ed|es|ing)|declin(?:e|ed|es|ing)|slash(?:ed|ing|es)?|cut|cutting|trim(?:med|ming|s)?|reduc(?:e|ed|es|ing)|shrink|shrank|shrunk|shrinking|lost|lose|losing|lack(?:s|ed|ing)?|fail(?:ed|ing|s)?|drop(?:ped|ping|s)?|turn(?:s|ed|ing)?\s+(?:down|away)|ran\s+out|run\s+out|short\s+of|fell\s+(?:through|apart|short))`
+const NEG_CLOSED = String.raw`(?:not|never|no|nobody|none|no\s+one|zero|without|sans|against|opposed\s+to|haven'?t|hasn'?t|hadn'?t|have\s+not|has\s+not|didn'?t|did\s+not|doesn'?t|does\s+not|isn'?t|aren'?t|wasn'?t|weren'?t|is\s+not|are\s+not|was\s+not|were\s+not|yet\s+to|yet\s+to\s+\w+|no\s+longer|excluding|exclude|except|other\s+than|but\s+not|neither|nor|instead\s+of|rather\s+than|barely|hardly|scarcely|seldom|rarely)`
+const NEG_CEASE_STEM = String.raw`(?:stopp?(?:ed|ing|s)?|avoid(?:ed|ing|s)?|defer(?:red|ring|s)?|g(?:ave|iv(?:e|es|ing))\s+up|downsiz(?:e|es|ed|ing)|done|end(?:s|ed|ing)?|pass(?:es|ed|ing)?\s+on|turn(?:s|ed|ing)?\s+(?:down|away)|paus(?:e|ed|es|ing)|halt(?:ed|ing|s)?|ceas(?:e|ed|es|ing)|suspend(?:ed|ing|s)?|discontinu(?:e|ed|es|ing)|freez(?:e|es|ing)|froze|frozen|cancel(?:led|ing|s)?|scrap(?:ped|ping|s)?|shelv(?:e|ed|es|ing)|abandon(?:ed|ing|s)?|reject(?:ed|ing|s)?|refus(?:e|ed|es|ing)|declin(?:e|ed|es|ing)|slash(?:ed|ing|es)?|cut|cutting|trim(?:med|ming|s)?|reduc(?:e|ed|es|ing)|shrink|shrank|shrunk|shrinking|lost|lose|losing|lack(?:s|ed|ing)?|fail(?:ed|ing|s)?|drop(?:ped|ping|s)?|turn(?:s|ed|ing)?\s+(?:down|away)|ran\s+out|run\s+out|short\s+of|fell\s+(?:through|apart|short))`
 const NEG_PRIVATIVE = String.raw`(?:(?:pre|non|anti|de|dis|un)-[a-z]+|[a-z]{3,}less)`
 // A cue carries its own object with it ("rejecting venture capital funding", "ran out of funding", "cut its SDR team"), so up to two
 // plain words may sit between the cue and the condition. Nothing longer is bridged, which keeps a cue from reaching across a clause.
 const NEG_BEFORE = new RegExp(String.raw`\b(?:${NEG_CLOSED}|${NEG_CEASE_STEM}|${NEG_PRIVATIVE})\b(?:\s+(?:been|be|yet|that|which|who|have|has|had|are|is|any|a|an|the|of|companies|startups|firms|businesses|currently|recently|actively|its|their|our|all|some))*(?:\s+[\w'’-]+){0,2}\s*$`, 'i')
+// #1163: the same three grammar sources, for a caller that has to read a whole saved signal rather than one condition's window
+// (lib/business-brain.ts). A cue anywhere in the text counts, so "lacking a CMO, raised funding" reads as a denial.
+const DENIAL_ANYWHERE = new RegExp(String.raw`\b(?:${NEG_CLOSED}|${NEG_CEASE_STEM}|${NEG_PRIVATIVE})\b`, 'i')
+// A time cue that puts the condition in the future ("before raising funding", "prior to raising funding"): the event has not
+// happened, so the signal is not one to search for. The same kind of closed-class cue, read the same fail-closed way.
+const PRE_EVENT = /\b(?:before|prior\s+to)\b/i
+// A comparative that shrinks what it counts ("raised less funding", "hiring fewer SDRs"); "no fewer than ten" is a lower bound and
+// stays affirmative, exactly as SHRINKING_COUNT reads it.
+const SHRINKING_ANYWHERE = /\b(?:less|fewer)\b(?!\s+than)/i
+export const readsAsDenial = (text: string): boolean => DENIAL_ANYWHERE.test(text) || PRE_EVENT.test(text) || SHRINKING_ANYWHERE.test(text)
+
 // "hired fewer SDRs" shrinks the count; "hired no fewer than ten SDRs" states a lower bound and is a real, affirmative hire.
 const SHRINKING_COUNT = /^(?:(?:fewer|less)\b|no\b(?!\s+(?:fewer|less)\s+than))/i
 const EXCL_CUE = /\b(?:excluding|exclude|excludes|except(?:\s+for)?|other\s+than|not\s+including|but\s+not|apart\s+from)\s+/gi
