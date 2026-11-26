@@ -254,6 +254,24 @@ test('an untyped covered metro is admitted when the returned lead evidence confi
   assert.deepEqual(result.leads.map(lead => lead.company), ['Local'])
 })
 
+test('an employer name that contains an ambiguous city keeps the saved destination', async () => {
+  const places = [{ text: 'Toronto', country: 'CA', city: 'Toronto', region: null }]
+  for (const employer of ['Hamilton Insurance', 'London Insurance']) {
+    const { requests, fetchImpl } = provider(places, [candidate('Local', 'CA'), candidate('OutsideProfile', 'US')])
+    const result = await discoverLeads({ query: `VP Sales at ${employer}`, profile: { where: ['Toronto'] } }, { apiKey: 'test', fetch: fetchImpl })
+    assert.match(JSON.stringify(requests[0].messages), /Locations .*Toronto/)
+    assert.deepEqual(result.leads.map(lead => lead.company), ['Local'])
+  }
+})
+
+test('an explicit ambiguous city still takes priority over the saved destination', async () => {
+  const places = [{ text: 'Hamilton', country: 'CA', city: 'Hamilton', region: null }]
+  const { requests, fetchImpl } = provider(places, [candidate('Local', 'CA'), candidate('OutsideProfile', 'US')])
+  const result = await discoverLeads({ query: 'VP Sales in Hamilton', profile: { where: ['New York'] } }, { apiKey: 'test', fetch: fetchImpl })
+  assert.doesNotMatch(JSON.stringify(requests[0].messages), /New York/)
+  assert.deepEqual(result.leads.map(lead => lead.company), ['Local'])
+})
+
 test('the saved profile grounds a place when the request leaves geography unspecified', async () => {
   const places = [{ text: 'Toronto', country: 'CA', city: 'Toronto', region: null }]
   const { fetchImpl } = provider(places, [candidate('Local', 'CA'), candidate('OutsideProfile', 'US')])

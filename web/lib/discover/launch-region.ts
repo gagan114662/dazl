@@ -44,9 +44,16 @@ type LaunchRegion = { ok: true; places: PlanPlace[] } | { ok: false; stop: strin
 const UNCONFIRMED_RESULT: LaunchRegion = { ok: false, stop: UNCONFIRMED, note: UNCONFIRMED_COPY }
 
 function namesDestination(query: string): boolean {
-  return Boolean(placeIn(query)) ||
-    worldCitiesIn(query).length > 0 ||
-    placeSkipReason(query) !== 'skipped_no_place'
+  const reason = placeSkipReason(query)
+  const ambiguous = /^skipped_no_place:ambiguous:([a-z]+)$/i.exec(reason)?.[1]
+  if (ambiguous) {
+    const explicit = new RegExp(`\\b(?:in|near|around|across|from)\\s+(?:the\\s+)?${ambiguous}\\b`, 'i')
+    if (explicit.test(query) || query.trim().toLowerCase() === ambiguous.toLowerCase()) return true
+    // A shared city/name token is not sufficient by itself. Look for other places after removing it.
+    query = query.replace(new RegExp(`\\b${ambiguous}\\b`, 'gi'), '')
+    return Boolean(placeIn(query)) || worldCitiesIn(query).length > 0
+  }
+  return Boolean(placeIn(query)) || worldCitiesIn(query).length > 0 || reason !== 'skipped_no_place'
 }
 
 export function launchSearchProfile(input: DiscoverInput): DiscoverInput['profile'] {
