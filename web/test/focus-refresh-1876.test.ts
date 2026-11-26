@@ -104,3 +104,27 @@ test('#1876 concurrent readers share one in-flight read, so a shared refresh ask
     globalThis.fetch = realFetch
   }
 })
+
+test('#1876/#1880 a save during an in-flight read starts a new read, and the new result wins', async () => {
+  const { loadReadinessInput } = await import('../app/app/readiness-input.ts')
+  const realFetch = globalThis.fetch
+  const hits: Record<string, number> = {}
+  let releaseOld: (() => void) | null = null
+  const oldGate = new Promise<void>(r => { releaseOld = r })
+  globalThis.fetch = (async (u: string) => {
+    hits[String(u)] = (hits[String(u)] ?? 0) + 1
+    if (hits[String(u)] === 1) { await oldGate; return new Response(JSON.stringify({ business_name: 'before the save' }), { status: 200 }) }
+    return new Response(JSON.stringify({ business_name: 'after the save' }), { status: 200 })
+  }) as unknown as typeof fetch
+  try {
+    const mount = loadReadinessInput()                    // the shared mount read, still in flight
+    const afterSave = loadReadinessInput({ fresh: true }) // the profile save: a NEW read, never the one in flight
+    releaseOld!()
+    const [old, next] = await Promise.all([mount, afterSave])
+    assert.equal(hits['/api/settings/profile'], 2, 'the save started a second profile read instead of joining the in-flight one')
+    assert.equal((next.input.profile as { business_name?: string }).business_name, 'after the save', 'the new read is the one that wins')
+    assert.equal((old.input.profile as { business_name?: string }).business_name, 'before the save', 'fixture: the in-flight read was the older one')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})

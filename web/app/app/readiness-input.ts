@@ -3,11 +3,12 @@ import type { ReadinessInput } from '@/lib/readiness'
 // The tenant reads behind Home's checklists (all existing GET endpoints). A read that fails comes back null, which the
 // checklists show as "could not check", never as done or to-do. `jobs` is the raw jobs list for the plays shown beside.
 // #1876: the panels that refresh on focus read this together, so concurrent callers share one read. Nothing is cached:
-// the next refresh after it settles reads again.
+// the next refresh after it settles reads again. #1880: a read started by a save passes `fresh` - it must never join the
+// read already in flight, or the panel shows the data from before the save.
 let inFlight: Promise<{ input: ReadinessInput; jobs: ReadinessInput['jobs'] }> | null = null
 
-export function loadReadinessInput(): Promise<{ input: ReadinessInput; jobs: ReadinessInput['jobs'] }> {
-  if (inFlight) return inFlight
+export function loadReadinessInput(opts: { fresh?: boolean } = {}): Promise<{ input: ReadinessInput; jobs: ReadinessInput['jobs'] }> {
+  if (inFlight && !opts.fresh) return inFlight
   const p = readReadinessInput()
   inFlight = p
   void p.finally(() => { if (inFlight === p) inFlight = null })

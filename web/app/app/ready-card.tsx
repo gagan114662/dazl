@@ -13,13 +13,14 @@ export default function ReadyCard() {
   const [items, setItems] = useState<ReadyItem[] | null>(null)
   useEffect(() => {
     // #1722: overlapping loads apply in start order, so a slow earlier read cannot revert the sender status.
-    const load = () => { const seq = ++seqRef.current; void loadReadinessInput().then(({ input }) => { if (seq === seqRef.current) setItems(readyItems(input)) }) }
+    const load = (fresh = false) => { const seq = ++seqRef.current; void loadReadinessInput({ fresh }).then(({ input }) => { if (seq === seqRef.current) setItems(readyItems(input)) }) }
     load()
-    window.addEventListener('profile-updated', load)
+    const onSaved = () => load(true) // a save starts a new read, never joins one in flight (#1880)
+    window.addEventListener('profile-updated', onSaved)
     // #1722: the sender status can change in another tab; re-read when this tab is used again.
     // #1876: one shared listener for the page, so a focus refreshes once instead of once per panel and event.
-    const offWake = subscribeFocusRefresh(load)
-    return () => { window.removeEventListener('profile-updated', load); offWake() }
+    const offWake = subscribeFocusRefresh(() => load(true))
+    return () => { window.removeEventListener('profile-updated', onSaved); offWake() }
   }, [])
   if (!items || readyComplete(items)) return null
   const done = items.filter(x => x.state === 'done').length
