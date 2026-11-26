@@ -7,6 +7,7 @@ import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, manualSendCap, sendDayStart, tableExists } from './send-budget.ts'
 import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
+import { composeDraftCopy, DraftCopyError } from './draft-copy.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -190,7 +191,7 @@ export const getSettings = (db: Database.Database, tenantId: string) =>
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
 const id24 = () => randomBytes(12).toString('hex')
 
-interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null }
+interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null; review_reason?: string | null; event_date?: string | null; event_date_proof?: string | null; signal_kind?: string | null }
 
 export function draftTemplate(lead: Lead, businessName: string, positioning = '', addressUrl: string = lead.source_url): { subject: string; body: string } {
   // Literal seller-authored context only: never infer an offer from a buyer signal.
@@ -366,7 +367,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
 
 function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
   const lead = db.prepare(
-    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason, l.event_date, l.event_date_proof, l.signal_kind
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
@@ -449,7 +450,7 @@ export function playOfferRow(db: Database.Database, tenantId: string, leadId: st
 }
 
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string, manual = false): string {
-  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId, manual)
+  const { lead, to, test } = draftChecks(db, tenantId, leadId, manual)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
   // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
   // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,
@@ -460,7 +461,13 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const r = draftOffer(play, tenant)
   if (r.refuse) throw new OutreachError(r.refuse)
   const positioning = r.offer ?? ''
-  const t = draftTemplate(lead, businessName, positioning, addressUrl)
+  let t: ReturnType<typeof composeDraftCopy>
+  try {
+    t = composeDraftCopy(lead, businessName, positioning)
+  } catch (error) {
+    if (error instanceof DraftCopyError) throw new OutreachError(error.code)
+    throw error
+  }
   const id = id24()
   try {
     db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
