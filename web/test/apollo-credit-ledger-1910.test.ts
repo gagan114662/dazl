@@ -87,3 +87,41 @@ test('dry plan counts eligible new requests within both caps without reserving',
     db.close()
   }
 })
+
+test('a committed reservation blocks a second tenant while the first request is in flight', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'apollo-in-flight-'))
+  const path = join(directory, 'ledger.db')
+  const first = new Database(path)
+  const second = new Database(path)
+  const evidence: ApolloBuyerEvidence = {
+    first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
+    dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
+  }
+  const env = { APOLLO_CREDIT_CAP: '1' }
+  let attempted = 0
+  try {
+    await matchReadyApolloBuyer(first, 'tenant-a', 'lead-a', evidence, {
+      key: 'fixture-only', scanId: 'scan-a', scanLimit: 2, env,
+      fetchImpl: async () => {
+        attempted++
+        assert.deepEqual(second.prepare('SELECT lead_id, credit, result FROM apollo_credit_ledger').all(),
+          [{ lead_id: 'lead-a', credit: 1, result: 'reserved' }])
+        assert.equal(await matchReadyApolloBuyer(second, 'tenant-b', 'lead-b', evidence, {
+          key: 'fixture-only', scanId: 'scan-b', scanLimit: 2, env,
+          fetchImpl: async () => {
+            attempted++
+            return Response.json({ person: null })
+          },
+        }), null)
+        return Response.json({ person: null })
+      },
+    })
+    assert.equal(attempted, 1)
+    assert.deepEqual(second.prepare('SELECT lead_id, credit, result FROM apollo_credit_ledger').all(),
+      [{ lead_id: 'lead-a', credit: 1, result: 'empty' }])
+  } finally {
+    first.close()
+    second.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
