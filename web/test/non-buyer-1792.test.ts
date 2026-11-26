@@ -88,18 +88,30 @@ test('a bare hospital ending does not establish public-sector ownership', () => 
   assert.equal(isPublicSectorBody({ company: 'Central Hospital', domain: 'health.gov' }).nonBuyer, true);
 });
 
-test('multi-word public hospital names remain held without a government hostname', () => {
-  for (const company of ['Toronto Western Hospital', 'Mount Sinai Hospital', "St. Michael's Hospital", 'Credit Valley Hospital']) {
-    assert.equal(isPublicSectorBody({ company }).nonBuyer, true, company);
+test('hospital and health network forms require clear institutional wording or a qualifying domain', () => {
+  for (const company of ['Oakville Hospital', 'Sunnybrook Health Centre', 'Toronto Western Hospital', 'Mount Sinai Hospital', "St. Michael's Hospital", 'Credit Valley Hospital']) {
+    assert.equal(isPublicSectorBody({ company }).nonBuyer, false, company);
   }
-});
-
-test('launch hospital and health network forms hold without a government hostname', () => {
-  for (const company of ['Oakville Hospital', 'Sunnybrook Health Centre', 'Hamilton Health Sciences', 'Cedar Health Network']) {
+  for (const company of ['Hamilton Health Sciences', 'Cedar Health Network']) {
     assert.equal(isPublicSectorBody({ company }).nonBuyer, true, company);
   }
   for (const company of ['Oakville Hospital Clinic', 'Cedar Health Centre Dental', 'Valley Health Network Physio',
     'Cedar Hospital Medical Centre', 'Cedar Health Sciences Inc.', 'Cedar Health Network Ltd.', 'Oakville Hospital Corp.']) {
     assert.equal(isPublicSectorBody({ company }).nonBuyer, false, company);
+  }
+});
+
+test('#1993: private hospitals and commercial hospital names stay eligible without ownership evidence', () => {
+  for (const company of ['VCA Animal Hospital', 'Toronto Veterinary Hospital', 'Pet Hospital', 'The Laptop Hospital', 'Phone Hospital', 'Shouldice Hospital']) {
+    assert.equal(isPublicSectorBody({ company }).nonBuyer, false, company);
+  }
+});
+
+test('#1993: explicit institutional forms and government health domains stay held', () => {
+  for (const company of ['Hamilton General Hospital', 'Westfield Regional Hospital', 'Westfield Health Sciences', 'Westfield Health Network', 'Westfield Health Services', 'Westfield Health Region', 'Westfield LHIN']) {
+    assert.equal(isPublicSectorBody({ company }).nonBuyer, true, company);
+  }
+  for (const domain of ['hospital.on.ca', 'hospital.gc.ca', 'hospital.gov']) {
+    assert.equal(isPublicSectorBody({ company: 'Westfield Hospital', domain }).nonBuyer, true, domain);
   }
 });

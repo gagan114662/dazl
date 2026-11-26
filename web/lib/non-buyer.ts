@@ -3,11 +3,9 @@ const INSTITUTION_FORMS = new Set([
   'police department', 'fire department', 'public agency', 'housing authority', 'transit authority', 'public works',
 ]);
 
-const PRIVATE_HEALTH_SUFFIXES = new Set(['clinic', 'dental', 'physio', 'inc', 'ltd', 'corp']);
-const PUBLIC_HEALTH_FORMS = new Set(['health centre', 'health center', 'health sciences', 'health network']);
-const NON_PUBLIC_HOSPITAL_WORDS = new Set([
-  'animal', 'veterinary', 'vet', 'pet', 'laptop', 'phone', 'computer', 'doll', 'teddy', 'toy', 'private',
-]);
+const PUBLIC_HEALTH_FORM = /\b(?:health sciences|health network|health services|health region|lhin)$/;
+const PUBLIC_HOSPITAL_FORM = /\b(?:general|regional|memorial|district|university|children s|public) hospitals?$/;
+const COMMERCIAL_HOSPITAL_FORM = /\b(?:animal|veterinary|vet|pet|laptop|phone|computer|doll|teddy|toy|private)\b/;
 
 export function isPublicSectorBody(input: {
   company: string;
@@ -43,16 +41,14 @@ export function isPublicSectorBody(input: {
   const localGovernment = first !== 'the' && words.length > 1 && (
     last === 'county' || last === 'township' || (words.length > 2 && (lastTwo === 'city council' || lastTwo === 'town council'))
   );
-  const privateHealthForm = PRIVATE_HEALTH_SUFFIXES.has(last ?? '') || lastTwo === 'medical centre' || lastTwo === 'medical center';
-  const hospital = words.some(word => word === 'hospital' || word === 'hospitals') &&
-    !words.some(word => NON_PUBLIC_HOSPITAL_WORDS.has(word)) && lastTwo !== 'hospital supplies';
-  const publicHealthForm = words.some((word, index) => PUBLIC_HEALTH_FORMS.has(word + ' ' + words[index + 1]));
-  const namedBody = civicPlace || council || localGovernment ||
-    (!privateHealthForm && (hospital || publicHealthForm)) || INSTITUTION_FORMS.has(lastTwo);
+  const hospital = /\bhospitals?$/.test(company) && !COMMERCIAL_HOSPITAL_FORM.test(company);
+  const provincialHealthDomain = hospital && /(?:^|\.)on\.ca$/.test(domain);
+  const namedBody = civicPlace || council || localGovernment || INSTITUTION_FORMS.has(lastTwo) ||
+    PUBLIC_HEALTH_FORM.test(company) || (hospital && PUBLIC_HOSPITAL_FORM.test(company));
   const requiresGovernmentDomain = first === 'ministry' || first === 'department' || first === 'government';
 
-  if (govDomain || (namedBody && !requiresGovernmentDomain)) {
-    return { nonBuyer: true, reason: govDomain ? 'The domain identifies a government or public-sector organization.' : 'The organization name identifies a government or public-sector body.' };
+  if (govDomain || provincialHealthDomain || (namedBody && !requiresGovernmentDomain)) {
+    return { nonBuyer: true, reason: govDomain || provincialHealthDomain ? 'The domain identifies a government or public-sector organization.' : 'The organization name identifies a government or public-sector body.' };
   }
   return { nonBuyer: false, reason: 'No clear public-sector identity was found.' };
 }
