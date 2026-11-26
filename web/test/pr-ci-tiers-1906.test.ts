@@ -38,7 +38,7 @@ test('#1906 web-ci defers shards while retaining the fast checks and failing clo
       ['true', 'success', 'skipped', 1], ['true', 'success', 'failure', 1],
     ] as const) {
       const run = spawnSync('bash', ['-e', '-c', script], {
-        encoding: 'utf8', env: { FULL_CI: tier, FAST: fast, SHARDS: shards, EVENT: fast === 'skipped' ? 'push' : 'pull_request' },
+        encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '/dev/null', FULL_CI: tier, FAST: fast, SHARDS: shards, EVENT: fast === 'skipped' ? 'push' : 'pull_request' },
       })
       assert.equal(run.status, expected, run.stdout + run.stderr)
       if (tier === 'false' && expected === 0) assert.match(run.stdout, /full suite deferred until ready-to-merge/)
