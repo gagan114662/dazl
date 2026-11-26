@@ -5,7 +5,7 @@
 // bulk is the next PR. Review in Cards (Quest on #1869) is navigation only: it jumps to this lead's
 // card, where the actions live.
 import { leadCardSummary } from '@/lib/scan/lead-card'
-import { leadPerson } from '@/lib/people/lead-person'
+import { leadPerson, personBasis } from '@/lib/people/lead-person'
 import { identityOf } from '@/lib/scan/opportunity'
 import { ContactStatusLine } from './contact-status'
 import { Pill } from '../ui/bits'
@@ -38,7 +38,7 @@ export default function LeadsSidePanel({ lead, icpWho, drafted, approved, hasPre
       <h2 className="text-base font-semibold">{c.company}</h2>
       <div className="mt-1">
         {person
-          ? <><span>{person.name}</span>{person.title ? <span className="block text-xs text-[var(--ink-3)]">{person.title}</span> : null}</>
+          ? <><span>{person.name}</span>{person.title ? <span className="block text-xs text-[var(--ink-3)]">{person.title}</span> : null}<span className="text-xs text-[var(--ink-3)]" data-testid="lead-person-basis"> ({personBasis(person)})</span></>
           : <span className="text-[var(--ink-3)]">No buyer named yet</span>}
       </div>
       <dl className="mt-3 space-y-3">
@@ -71,6 +71,8 @@ export default function LeadsSidePanel({ lead, icpWho, drafted, approved, hasPre
               ? <Pill tone="pink">Rejected</Pill>
               : approved[lead.id] || drafted?.has(lead.id)
               ? <Pill tone="mint">Approved</Pill>
+              : drafted == null
+              ? <span className="text-xs text-[var(--ink-3)]">couldn&apos;t load</span>
               : <span className="text-xs text-[var(--ink-3)]">To decide</span>}
             {/* Quest on #1869: a jump to this lead's card, where Approve/Reject live. Navigation only -
                 no Approve/Reject in the panel. A rejected lead has no card decision to make, so no button. */}

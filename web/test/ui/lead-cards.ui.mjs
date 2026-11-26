@@ -299,7 +299,7 @@ try {
   // #1038 PR 2: a row click opens the side panel; prev/next walk the visible (sorted) order; close returns.
   // The sort here is date ascending (from the toggles above), so the first row is the oldest: Table Co 16.
   // Keyboard first (review of #1869): the table is one tab stop, an arrow key focuses the first row, Enter opens it.
-  await page.locator('div[aria-label^="Leads table"]').focus()
+  await page.locator('table[aria-label^="Leads table"]').focus()
   await page.keyboard.press('ArrowDown')
   await page.keyboard.press('Enter')
   const kpanel = page.getByTestId('leads-side-panel')

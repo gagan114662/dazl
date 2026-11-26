@@ -33,6 +33,9 @@ export default function LeadsTable({ leads, icpWho, drafted, approved, sort, onS
   // Keyboard path to the panel (review of #1869): the table is one tab stop; arrows move the focused
   // row, Enter or Space opens it. Rows stay click-to-open for pointer users; no per-row tab stops, so
   // tabbing through the page is not a 16-stop walk and the phone touch-target floor stays on real controls.
+  // The table itself is the focus target so it can act as the composite widget: role="grid" plus
+  // aria-activedescendant on the arrow-focused row tells assistive technology which row Enter opens
+  // (CodeRabbit on #1869), while the single tab stop is unchanged.
   const [focusIx, setFocusIx] = useState(-1)
   const onTableKeys = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); setFocusIx(i => Math.min(i + 1, rows.length - 1)) }
@@ -41,8 +44,8 @@ export default function LeadsTable({ leads, icpWho, drafted, approved, sort, onS
   }
   const arrow = (key: LeadsSortKey) => sort.key === key ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''
   return (
-    <div className="overflow-x-auto" tabIndex={0} onKeyDown={onTableKeys} aria-label="Leads table: arrow keys choose a row, Enter opens it">
-      <table data-testid="leads-table" className="w-full text-sm">
+    <div className="overflow-x-auto">
+      <table data-testid="leads-table" className="w-full text-sm" tabIndex={0} onKeyDown={onTableKeys} role="grid" aria-activedescendant={focusIx >= 0 && rows[focusIx] ? `leads-row-${rows[focusIx].id}` : undefined} aria-label="Leads table: arrow keys choose a row, Enter opens it">
         <thead>
           <tr className="text-left text-xs text-[var(--ink-3)] border-b border-[var(--line)]">
             <th className="px-3 py-2 font-medium">Company</th>
@@ -63,7 +66,7 @@ export default function LeadsTable({ leads, icpWho, drafted, approved, sort, onS
             const c = leadCardSummary(l, icpWho)
             const person = leadPerson(l.enrichments, icpWho, undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
             return (
-              <tr key={l.id} data-testid="leads-row" data-lead-id={l.id} aria-selected={selectedId === l.id} onClick={() => onOpen(l.id)} className={`align-middle h-7 hover:bg-white transition-colors cursor-pointer${selectedId === l.id ? ' bg-white' : ''}${ix === focusIx ? ' outline outline-1 outline-[var(--ink-3)]' : ''}`}>
+              <tr key={l.id} id={`leads-row-${l.id}`} data-testid="leads-row" data-lead-id={l.id} aria-selected={selectedId === l.id} onClick={() => onOpen(l.id)} className={`align-middle h-7 hover:bg-white transition-colors cursor-pointer${selectedId === l.id ? ' bg-white' : ''}${ix === focusIx ? ' outline outline-1 outline-[var(--ink-3)]' : ''}`}>
                 <td className="px-3 py-1 font-medium whitespace-nowrap">{c.company}</td>
                 <td className="px-3 py-1">
                   {person
