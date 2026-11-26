@@ -63,3 +63,10 @@ test('new benchmark results are checked against unchanged product files', () => 
     ['bench-fixture'])
   assert.deepEqual(rules(inspectChanges([{ path: product, before: source, after: source }], bench, results, '', bench, results)), [])
 })
+
+test('a source filename cited in a benchmark report is distinct from a bare domain', () => {
+  const report = ['The reader uses lib/outreach/read-provider.ts. Published source: buyer-company.org']
+  const after = "import { read } from '../outreach/read-provider.ts'; const origin = 'buyer-company.org'"
+  const result = inspectChanges([{ path: product, after }], bench, report)
+  assert.deepEqual(result.errors.map(finding => finding.identity), ['buyer-company.org'])
+})

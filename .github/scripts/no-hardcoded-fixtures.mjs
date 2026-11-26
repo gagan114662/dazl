@@ -3,7 +3,9 @@ import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { sourcePath } from './production-literals.mjs'
 
-const ts = createRequire(new URL('../../web/package.json', import.meta.url))('typescript')
+const require = createRequire(new URL('../../web/package.json', import.meta.url))
+const ts = require('typescript')
+const { parse: parseDomain } = require('tldts')
 const normalized = value => value.normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase()
 const product = path => sourcePath(path) && /^web\/(app|lib)\//.test(path)
 const test = path => /^web\/test\//.test(path) && /\.[cm]?[jt]sx?$/.test(path) &&
@@ -36,7 +38,19 @@ function vocabulary(prompts, results) {
     }
   }
   collect(prompts)
-  for (const result of results) for (const domain of result.match(domainPattern) ?? []) domains.add(normalized(domain))
+  for (const result of results) {
+    for (const match of result.matchAll(domainPattern)) {
+      const host = normalized(match[0])
+      const prefix = result.slice(Math.max(0, match.index - 8), match.index)
+      const url = /https?:\/\/$/i.test(prefix)
+      const bare = !prefix.endsWith('/') && parseDomain(host).isIcann
+      if (url || bare) domains.add(host)
+    }
+    // Structured fixtures may explicitly name an internal or reserved domain.
+    if (/^\s*[\[{]/.test(result)) {
+      try { collect(JSON.parse(result)) } catch { /* Unstructured report; host extraction above still applies. */ }
+    }
+  }
   const words = [...terms].filter(Boolean).map(term => [term, new RegExp('(?:^|[^\\p{L}\\p{N}])' + quote(term) + '(?=$|[^\\p{L}\\p{N}])', 'u')])
   return { words, domains }
 }
