@@ -4,17 +4,27 @@
 // arriving after a re-claim, a cancel or a finish changes nothing. If the store itself is failing the row stays as it
 // is and the reaper remains the fallback.
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { captureError } from '../ops/errors.ts'
 
-export function failCrashedJob(db: Database.Database, job: { id: string; user_id: string; attempts: number }, e: unknown, where: 'scan-runner' | 'queue-runner'): boolean {
-  captureError(e, { source: 'worker', where, tenantId: job.user_id, ref: job.id })
-  try {
-    return db.prepare(
-      `UPDATE scan_jobs SET status = 'failed', error = 'crashed', claimed_at = NULL, finished_at = CAST(strftime('%s','now') AS INTEGER)
-       WHERE id = ? AND status = 'running' AND attempts = ?`,
-    ).run(job.id, job.attempts).changes === 1
-  } catch (e2) {
-    captureError(e2, { source: 'worker', where, tenantId: job.user_id, ref: job.id })
+type CrashedJob = { id: string; user_id: string; attempts: number }
+type CrashLocation = 'scan-runner' | 'queue-runner'
+
+const FAIL_CRASH_SQL = `UPDATE scan_jobs SET status = 'failed', error = 'crashed', claimed_at = NULL, finished_at = ?
+  WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?`
+
+export function failCrashedJob(db: Database.Database, job: CrashedJob, e: unknown, where: CrashLocation): boolean
+export function failCrashedJob(db: Db, job: CrashedJob, e: unknown, where: CrashLocation): Promise<boolean>
+export function failCrashedJob(db: Db | Database.Database, job: CrashedJob, e: unknown, where: CrashLocation): boolean | Promise<boolean> {
+  const context = { source: 'worker' as const, where, tenantId: job.user_id, ref: job.id }
+  captureError(e, context)
+  const params = [Math.floor(Date.now() / 1000), job.id, job.user_id, job.attempts]
+  const failedWrite = (error: unknown) => {
+    captureError(error, context)
     return false
   }
+  if ('kind' in db) return db.run(FAIL_CRASH_SQL, params).then(r => r.changes === 1, failedWrite)
+  try {
+    return db.prepare(FAIL_CRASH_SQL).run(...params).changes === 1
+  } catch (error) { return failedWrite(error) }
 }

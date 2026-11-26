@@ -7,6 +7,9 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './helpers/pg-test.ts'
 import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 
 const { kickRunner } = await import('../lib/scan/runner.ts')
@@ -122,4 +125,29 @@ test('unhandled rejections are recorded; the process keeps the behaviour it had 
   assert.doesNotMatch(String(bare.stdout), /STILL_RUNNING/)
   assert.match(String(bare.stderr), /"where":"unhandledRejection"/)
   assert.ok(!String(bare.stderr).includes('jane@example.com') || /Error: worker lost for jane@example.com/.test(String(bare.stderr)), 'the only raw copy is Node\'s own crash print')
+})
+
+test('Postgres crash transition accepts only the running attempt of the owning workspace', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 2 })
+  const { got, restore } = capture()
+  try {
+    await runPgMigrations(db.pool)
+    for (const [id, tenant] of [['claimed', 'owner'], ['other', 'neighbor']]) {
+      await db.run("INSERT INTO scan_jobs (id, user_id, status, attempts, claimed_at, business_name, industry, location) VALUES (?, ?, 'running', 2, 10, 'Seller', 'Services', 'Region')", [id, tenant])
+    }
+    const crash = (id: string, user_id: string, attempts: number) =>
+      failCrashedJob(db, { id, user_id, attempts }, new Error('scan crashed'), 'queue-runner')
+    assert.equal(await crash('claimed', 'owner', 1), false)
+    assert.equal(await crash('other', 'owner', 2), false)
+    assert.deepEqual(await db.get('SELECT status, claimed_at FROM scan_jobs WHERE id = ?', ['claimed']), { status: 'running', claimed_at: 10 })
+    const outcomes = await Promise.all([crash('claimed', 'owner', 2), crash('claimed', 'owner', 2)])
+    assert.equal(outcomes.filter(Boolean).length, 1)
+    const row = await db.get<{ status: string; error: string; claimed_at: number | null; finished_at: number }>('SELECT status, error, claimed_at, finished_at FROM scan_jobs WHERE id = ?', ['claimed'])
+    assert.ok(row)
+    assert.deepEqual([row.status, row.error, row.claimed_at], ['failed', 'crashed', null])
+    assert.ok(row.finished_at >= 10)
+    assert.deepEqual(await db.get('SELECT status, claimed_at FROM scan_jobs WHERE id = ?', ['other']), { status: 'running', claimed_at: 10 })
+    assert.equal(got.length, 4)
+  } finally { restore(); await db.close(); await drop() }
 })
