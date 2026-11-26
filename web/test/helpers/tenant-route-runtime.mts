@@ -114,8 +114,21 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   await hit('POST /api/outreach/reopen edit', () => reopenPOST(req('/api/outreach/reopen', 'POST', { action: 'edit', thread_id: 'tA4', body: 'HIJACK body long enough to pass.' })), 404, 'not_found')
   await hit('DELETE /api/leads/[lead]/confirm', () => confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead })), 404, undefined)
   await hit('GET /api/monitors/[id]', () => monitorGET(req(`/api/monitors/${mon}`, 'GET'), ctx({ id: mon })), 404, undefined) // #387 detection report
-  await hit('PATCH /api/monitors/[id]', () => monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon })), 404, undefined)
-  await hit('DELETE /api/monitors/[id]', () => monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon })), 404, undefined)
+  const toggleMonitor = (id: string) => monitorPATCH(req(`/api/monitors/${id}`, 'PATCH', { enabled: false }), ctx({ id }))
+  const deleteMonitor = (id: string) => monitorDELETE(req(`/api/monitors/${id}`, 'DELETE'), ctx({ id }))
+  for (const [name, action] of [
+    ['PATCH /api/monitors/[id]', toggleMonitor],
+    ['DELETE /api/monitors/[id]', deleteMonitor],
+  ] as const) {
+    await hit(name, async () => {
+      const foreign = await action(mon)
+      const missing = await action(hex())
+      assert.equal(missing.status, 404, name)
+      assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'), name)
+      assert.equal(await foreign.clone().text(), await missing.text(), name)
+      return foreign
+    }, 404, undefined)
+  }
   await hit('GET /api/plays/[kind]/[id]/runs', () => playRunsGET(req(`/api/plays/monitor/${mon}/runs`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #351
   await hit('GET /api/plays/[kind]/[id]/runs (watch)', () => playRunsGET(req(`/api/plays/watch/${watch}/runs`, 'GET'), ctx({ kind: 'watch', id: watch })), 404, undefined) // #351
   await hit('GET /api/plays/[kind]/[id]/new', () => playNewGET(req(`/api/plays/monitor/${mon}/new?since=0`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #1042
