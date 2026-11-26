@@ -12,7 +12,7 @@ export function isGenericInbox(email: string | null | undefined): boolean {
 // Does the address's local part carry this person's own name (first, last, first.last, flast, firstl...)? A published
 // address shaped like the person's name is the only person binding read here; a shared inbox never is.
 export function nameBound(local: string, name: string): boolean {
-  const parts = name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').match(/[a-z]+/g) ?? []
+  const parts = name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f'’]/g, '').match(/[a-z]+/g) ?? []
   if (parts.length === 0) return false
   const l = local.split('+')[0].replace(/[._-]/g, '')
   const first = parts[0] ?? '', last = parts[parts.length - 1] ?? ''
