@@ -50,6 +50,7 @@ export interface RunEstimate {
   trial_allowance?: { left_usd: number; total_usd: number } | null
   // #1319: a free-trial scan's own per-scan ceiling (trialReserveUsd, e.g. $0.30 from #680). Display only, NOT part of `ack` (the ack already covers it as cap.trial).
   trial_scan_cap_usd?: number | null
+  trial_exempt?: boolean
   // #1157: this account's web search allowance left today (lib/search/tinyfish.ts tenantAllowanceLeft). Display only, like
   // trial_allowance: not part of `ack`, never a block (the run's own gate refuses at the cap); `low` shows a warning before confirm.
   search_allowance?: { left: number; daily: number; low: boolean } | null
@@ -102,6 +103,7 @@ export interface EstimateInput {
   // A free-trial scan's own per-scan ceiling (DAZL_TRIAL_SCAN_RESERVE_USD: the job guard's limit, runner.ts). Only a trial payer with a positive
   // finite number uses it; anything else is ignored, never an invented ceiling.
   trialReserveUsd?: number | null
+  trialExempt?: boolean
   // Why POST /api/scan would refuse this trial account right now (lib/billing/trial-budget.ts trialRefusal), so the screen refuses up front
   // instead of offering a Run button that does nothing. Only trial payers use it; not_configured and unknown reasons never block here.
   trialRefusal?: string | null
@@ -166,8 +168,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       unit: 'search', unit_usd: '$0.01 per search plus model tokens', units: { min: 0, max: search.maxSearches * calls },
       usd: { min: 0, max: search.estimatedUsd * calls }, capped,
       note: i.companyFirst
-        ? `Company-first discovery makes up to ${calls} guarded Anthropic Sonnet call(s), at most ${search.maxSearches} searches per call. Includes ${CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH.toLocaleString('en-US')} assumed result input tokens per search plus an estimated prompt and capped output. Actual billed search-result input can exceed this soft estimate.`
-        : 'Optional, one Anthropic Sonnet call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
+        ? `Company-first discovery makes up to ${calls} guarded AI search call(s), at most ${search.maxSearches} searches per call. Includes ${CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH.toLocaleString('en-US')} assumed result input tokens per search plus an estimated prompt and capped output. Actual billed search-result input can exceed this soft estimate.`
+        : 'Optional, one AI search call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
     })
   }
   // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,
@@ -244,13 +246,16 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const personBinds = runBinds && typeof b?.max_usd === 'number' && b.max_usd <= runMax
   const shownReserved = monthBinds ? monthReserved : runBinds ? 0 : reserved, limitWord = monthBinds ? 'monthly limit' : runBinds && !personBinds ? 'per-scan limit' : 'limit'
   const trialCeil = i.payer === 'trial' && typeof i.trialReserveUsd === 'number' && Number.isFinite(i.trialReserveUsd) && i.trialReserveUsd > 0 ? i.trialReserveUsd : null
+  const trialExempt = i.payer === 'trial' && i.trialExempt === true
+  const scanStop = (usd: number) => trialExempt ? 'this scan has a spending limit' : `the free trial stops each scan at ${money(usd)}`
+  const scanLimit = (usd: number) => trialExempt ? 'the per-scan spending limit' : `the trial's ${money(usd)} limit per scan`
   const change: string[] = []
   let ok = true, reason: Verdict['reason'] = null, message = 'Within your limit.', warning: string | null = null, trialRefusalWhy: string | null = null
   const trialWhy = i.payer === 'trial' && typeof i.trialRefusal === 'string' && TRIAL_BLOCKS.has(i.trialRefusal) ? i.trialRefusal : null
   if (trialWhy) {
     // attempts_cap means all of them are used; any other reason states the account's real count (0 when unknown/fresh), never "3 of 3".
     const used = trialWhy === 'attempts_cap' ? FREE_TRIAL_SCANS : Math.min(FREE_TRIAL_SCANS, Math.max(0, Math.trunc(Number(i.trialUsed) || 0)))
-    const c = trialCopy({ funded: false, remaining: FREE_TRIAL_SCANS - used, cap: FREE_TRIAL_SCANS, blocked: trialWhy })
+    const c = trialCopy({ funded: false, remaining: FREE_TRIAL_SCANS - used, cap: FREE_TRIAL_SCANS, blocked: trialWhy, exempt: trialExempt })
     ok = false; reason = 'trial_unavailable'; trialRefusalWhy = trialWhy
     message = `Blocked: ${c.text} Nothing was started or reserved.`
     change.push(c.next.label + '.')
@@ -270,7 +275,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     if (cappedTotal.min > eff) {
       ok = false; reason = 'over_budget'
       message = trialBinds
-        ? `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but the free trial stops each scan at ${money(eff)}.`
+        ? `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but ${scanStop(eff)}.`
         : `Blocked: the model requests alone are expected to cost at least ${money(cappedTotal.min)} but only ${money(remaining)} of your ${money(shownLimit)} ${limitWord} is left${shownReserved > 0 ? ` (${money(shownReserved)} already reserved)` : ''}.`
       // #1319: only this run's limit is the person's to raise, and a raise is offered only when every other ceiling of the run (the per-scan
       // cap a max_usd can only lower, the free trial's stop, the day's and the month's room) covers the cost. Otherwise the ceiling that
@@ -285,7 +290,7 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       else if (runBinds) {
         if (cappedTotal.min > dayRoom) change.push(dayLine)
         else if (cappedTotal.min > monthLeft) change.push(monthLine)
-        else if (cappedTotal.min > trialRoom) change.push(`The free trial stops each scan at ${money(trialRoom)}.`)
+        else if (cappedTotal.min > trialRoom) change.push(trialExempt ? 'This scan has a spending limit.' : `The free trial stops each scan at ${money(trialRoom)}.`)
         else if (!personBinds || need > scanCeil) change.push(`Each scan is capped at ${money(Number.isFinite(scanCeil) ? scanCeil : runMax)}.`)
         else if (!native) change.push(`Raise the dollar limit to at least ${money(need)} (about ${money(cappedTotal.max + shownReserved)} covers the worst case).`)
       }
@@ -293,15 +298,15 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       if (judge?.usd && judge.usd.min > 0) change.push(`Skip the verification judge (saves about ${money(judge.usd.min)}-${money(judge.usd.max)}).`)
       change.push('Narrow the request so fewer candidates need extracting and grading.')
     } else if (cappedTotal.max > eff) {
-      if (trialBinds) message = `The free trial stops each scan at ${money(eff)}, whatever your own limit says.`
+      if (trialBinds) message = trialExempt ? 'This scan has a spending limit.' : `The free trial stops each scan at ${money(eff)}, whatever your own limit says.`
       warning = trialBinds
-        ? `The worst case (${money(cappedTotal.max)}) is above the trial's ${money(eff)} limit per scan, so the scan may stop early as a budget stop. That is a stop, not zero results.`
+        ? `The worst case (${money(cappedTotal.max)}) is above ${scanLimit(eff)}, so the scan may stop early as a budget stop. That is a stop, not zero results.`
         : `The worst case (${money(cappedTotal.max)}) is above the ${money(remaining)} left, so the run may stop early as a budget stop. That is a stop, not zero results.`
-    } else message = trialBinds ? `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the free trial's ${money(eff)} limit per scan.` : `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the ${money(remaining)} left.`
+    } else message = trialBinds ? `Within your limit: even the worst case (${money(cappedTotal.max)}) fits ${trialExempt ? scanLimit(eff) : `the free trial's ${money(eff)} limit per scan`}.` : `Within your limit: even the worst case (${money(cappedTotal.max)}) fits the ${money(remaining)} left.`
   } else if (trialCeil !== null) {
     // The trial's per-scan ceiling is real: every model call is reserved against it and refused past it.
-    message = `The free trial stops each scan at ${money(trialCeil)}, whatever the estimate shows. A scan that would pass that stops early as a budget stop, which is not "nothing found".`
-    if (total.max > trialCeil) warning = `The worst case (${money(total.max)}) is above the trial's ${money(trialCeil)} limit per scan, so the scan may stop early as a budget stop. That is a stop, not zero results.`
+    message = trialExempt ? 'This scan may stop early if it reaches its spending limit.' : `The free trial stops each scan at ${money(trialCeil)}, whatever the estimate shows. A scan that would pass that stops early as a budget stop, which is not "nothing found".`
+    if (total.max > trialCeil) warning = `The worst case (${money(total.max)}) is above ${scanLimit(trialCeil)}, so the scan may stop early as a budget stop. That is a stop, not zero results.`
   } else message = 'No dollar limit is set, so nothing here is a ceiling. Set one to make the run stop at an amount.'
   // A run under a spending limit only reserves for a model the limit's guard can price (limitReservable); any other model is
   // refused at its first call (model_unpriced). Say so BEFORE launch, and put that verdict inside the confirmation (ack) below.
@@ -340,9 +345,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       'Claude Web Search uses an estimated 8,000 initial prompt tokens in this preview. The actual pre-call reservation prices a count of the submitted prompt, a margin, capped output, and the tool fees plus estimated search-result tokens.',
       'Only the listed Claude Web Search path is included; the generic web-search research fallback remains disabled.',
     ] : ['The web-search research fallback and any provider retries cannot be bounded and are not in the total.']),
-    native ? 'This is a soft estimate, not a quote, a bill, or a hard billing limit.' : trialCeil !== null ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
+    native ? 'This is a soft estimate, not a quote, a bill, or a hard billing limit.' : trialCeil !== null && !trialExempt ? `This is an estimate, not a quote or a bill. Only a dollar limit (when set) and the free trial's ${money(trialCeil)} limit per scan stop a run, and only for the model requests dazl sends.` : 'This is an estimate, not a quote or a bill. Only the dollar limit (when set) stops a run, and only for the model requests dazl sends.',
     // #1095: a refused trial run is not paid by anyone: never claim the trial pays for it
-    ...(i.payer === 'trial' && !trialWhy ? ['This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
+    ...(i.payer === 'trial' && !trialWhy ? [trialExempt ? 'This run is paid by dazl, not billed to you.' : 'This run is paid by the shared free trial, not billed to you; the trial allows 3 scans per account.'] : []),
     ...(unpriced.length ? [`Not priced, so not in the total: ${unpriced.join(', ')}.`] : []),
   ]
   // #1319: a trial's guard stops each scan at the trial reserve (runner.ts guardMax): that is the run's limit on screen
@@ -361,9 +366,9 @@ export function estimateRun(i: EstimateInput): RunEstimate {
     verdict,
   })).digest('hex').slice(0, 16)
   // Never beside a trial refusal: "$1.00 left" next to "your company already had its free trial" (or "$0.40 left" next to "all 3 free scans used") contradicts the block.
-  const a = i.payer === 'trial' && !trialWhy ? i.trialAllowance : null
+  const a = i.payer === 'trial' && !trialWhy && !trialExempt ? i.trialAllowance : null
   const trial_allowance = a && Number.isFinite(a.left_usd) && Number.isFinite(a.total_usd) && a.total_usd > 0 && a.left_usd >= 0 && a.left_usd <= a.total_usd ? { left_usd: a.left_usd, total_usd: a.total_usd } : null
-  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}), ...(trialCeil !== null ? { trial_scan_cap_usd: trialCeil } : {}) }
+  return { rows, total, unpriced, assumptions, payer: i.payer, cap, verdict, ack, ...(trial_allowance ? { trial_allowance } : {}), ...(trialCeil !== null ? { trial_scan_cap_usd: trialCeil } : {}), ...(trialExempt ? { trial_exempt: true } : {}) }
 }
 
 // #1319: what a CUSTOMER sees in the "What this run will use" box. The estimate itself (rows, unit_usd with the model id,
@@ -377,7 +382,7 @@ export function customerCopy(text: string): string {
   // The model id the row names: "... per 1M tokens (claude-sonnet-4-5)" and "o3-mystery: no listed price"
   return text.replace(/(per 1M tokens) \(.*\)$/, '$1').replace(/^.*: no listed price$/, 'no listed price')
 }
-export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer'> & { cap?: Pick<RunEstimate['cap'], 'capped_total'>; trial_scan_cap_usd?: number | null }): CustomerView {
+export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumptions' | 'payer' | 'trial_exempt'> & { cap?: Pick<RunEstimate['cap'], 'capped_total'>; trial_scan_cap_usd?: number | null }): CustomerView {
   const cap = trialScanCap(est)
   const rows: CustomerRow[] = est.rows.filter(r => r.id !== 'fallback_research').map(r => {
     const included = ENV_NAME.test(r.unit_usd) || /^free allowance/.test(r.unit_usd)
@@ -393,7 +398,7 @@ export function customerView(est: Pick<RunEstimate, 'rows' | 'total' | 'assumpti
     .filter(a => !/research fallback/i.test(a))
     .map(a => a.startsWith('Model: ') && a.includes('. Tokens per call') ? `AI research: t${a.slice(a.indexOf('. Tokens per call') + 3)}` : a)
     .filter(a => !ENV_NAME.test(a))
-  return { rows, total, capped_total: clampToCap(est.cap?.capped_total ?? est.total, cap), trial_cap_line: trialCapLine(cap), assumptions }
+  return { rows, total, capped_total: clampToCap(est.cap?.capped_total ?? est.total, cap), trial_cap_line: est.trial_exempt ? null : trialCapLine(cap), assumptions }
 }
 // #1319: a free-trial scan's per-scan cap, when the estimate carries a usable one (own-key runs never have one). Shared by
 // the cost box before the run and the run page after it, so neither shows a dollar amount above the cap.

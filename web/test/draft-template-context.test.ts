@@ -2,7 +2,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { createDraft } from '../lib/outreach/service.ts'
+import { OutreachError, createDraft } from '../lib/outreach/service.ts'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateMemory, saveMemory } from '../lib/memory.ts'
@@ -24,20 +24,20 @@ test('template uses only this tenant saved positioning, literally and without pr
   try {
     saveMemory(db, 'A', { positioning: 'Find leads from public signals, with source links and quotes.' })
     saveMemory(db, 'B', { positioning: 'Unrelated tenant consulting service' })
+    db.prepare("UPDATE leads SET event_date = '2025-11-12', event_date_proof = 'page_bound' WHERE id = 'one'").run()
     const id = createDraft(db, 'A', 'one', 'dazl', { manual: true })
-    assert.match(body(db,id), /About dazl: Find leads from public signals, with source links and quotes\./)
+    assert.match(body(db,id), /At dazl, we find leads from public signals, with source links and quotes\./)
     assert.doesNotMatch(body(db,id), /Unrelated tenant|consulting/)
-    assert.match(body(db,id), /contact address published on Buyer's page/)
-    assert.match(body(db,id), /https:\/\/buyer.invalid\/careers/)
-    assert.doesNotMatch(body(db,id), /\(https?:/, 'source URL is on its own line, not parenthesised')
-    assert.match(body(db,id), /could you point me to the right one\?/)
+    assert.match(body(db,id), /I saw that on November 12, 2025, Buyer is hiring an SDR\./)
+    assert.doesNotMatch(body(db,id), /Saved excerpt|contact address published|About \S+:|https?:\/\//)
+    assert.match(body(db,id), /Open to a quick chat\?/)
     assert.doesNotMatch(body(db,id), /researching businesses|pain|struggl|noticed|congrat/i, 'no stock research claim and no invented need')
     const row = db.prepare('SELECT status,approved_hash,sent_at FROM outreach_messages WHERE id=?').get(id) as {status:string;approved_hash:null;sent_at:null}
     assert.deepEqual(row, {status:'draft',approved_hash:null,sent_at:null})
     // Edits apply only to new drafts. Already prepared words never change silently.
     saveMemory(db, 'A', { positioning: 'Updated seller description.' })
-    assert.match(body(db,id), /Find leads from public signals/)
-    assert.match(body(db,createDraft(db,'A','two','dazl', { manual: true })), /Updated seller description/)
+    assert.match(body(db,id), /At dazl, we find leads from public signals/)
+    assert.match(body(db,createDraft(db,'A','two','dazl', { manual: true })), /At dazl, we offer updated seller description/)
   } finally { db.close() }
 })
 
@@ -58,10 +58,10 @@ test('saved onboarding offer is fallback, never another user or website inferenc
     db.exec('CREATE TABLE users(id TEXT PRIMARY KEY,sells TEXT,website TEXT)')
     db.prepare('INSERT INTO users VALUES(?,?,?)').run('A','Public-source lead finding software.','https://seller.invalid')
     db.prepare('INSERT INTO users VALUES(?,?,?)').run('B','Other user consulting.','https://other.invalid')
-    assert.match(body(db,createDraft(db,'A','one','dazl', { manual: true })), /About dazl: Public-source lead finding software/)
+    assert.match(body(db,createDraft(db,'A','one','dazl', { manual: true })), /At dazl, we offer public-source lead finding software/)
     saveMemory(db,'A',{positioning:'Explicit Memory positioning.'})
     const text=body(db,createDraft(db,'A','two','dazl', { manual: true }))
-    assert.match(text,/Explicit Memory positioning/)
+    assert.match(text,/At dazl, we offer explicit Memory positioning/)
     assert.doesNotMatch(text,/Other user consulting|seller.invalid/)
   } finally { db.close() }
 })
@@ -71,12 +71,13 @@ test('internal QA signal and fabricated event claims cannot enter initial draft'
  const db=setup();saveMemory(db,'A',{positioning:'Sales prospecting software for B2B sales teams'})
  db.prepare("UPDATE leads SET signal='OPERATOR QA ONLY - recently raised $10M. No outreach authorized.'").run()
  const text=body(db,createDraft(db,'A','one','dazl', { manual: true }))
- assert.match(text,/About dazl: Sales prospecting software for B2B sales teams/)
- assert.doesNotMatch(text,/OPERATOR QA|raised|No outreach|About :|We offer|hiring/)
+ assert.match(text,/At dazl, we offer sales prospecting software for B2B sales teams/)
+ assert.match(text,/I saw Buyer is hiring an SDR\./)
+ assert.doesNotMatch(text,/OPERATOR QA|raised|No outreach|About :/)
  assert.equal((db.prepare('SELECT signal FROM leads WHERE id=?').get('one') as {signal:string}).signal,'OPERATOR QA ONLY - recently raised $10M. No outreach authorized.')
 })
 test('no seller context fails before saving words and never fabricates an offer',()=>{
- const db=setup();assert.throws(()=>createDraft(db,'A','one','  ', { manual: true }),/seller_context_required/)
+ const db=setup();assert.throws(()=>createDraft(db,'A','one','  ', { manual: true }), (e: unknown) => e instanceof OutreachError && e.code === 'seller_context_required')
  assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
 })
 

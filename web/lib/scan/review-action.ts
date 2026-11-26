@@ -66,6 +66,6 @@ export function reviewAction(l: ReviewLead, now: Date = new Date()): ReviewActio
   }
   return {
     label: 'I checked the source - use it',
-    hint: 'Moves it to your list as confirmed by you (never shown as source-checked), and it can be drafted. The other draft checks still apply.',
+    hint: 'You checked the source, so the lead shows as confirmed by you. You can draft a message if the other checks pass.',
   }
 }

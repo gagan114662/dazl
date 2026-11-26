@@ -6,19 +6,28 @@ export type Tier = 0 | 1 | 2
 export type ChannelStatus = 'live' | 'worker' | 'soon'
 export interface Channel { id: string; name: string; tier: Tier; status: ChannelStatus; note: string; platform?: 'x' | 'reddit' | 'instagram' | 'facebook' | 'linkedin' | 'xiaohongshu' | 'bilibili' }
 
+// The Connectors row badge (#1721, Quest on #1917 2026-11-26). The session-ready truth is the production
+// session-worker's CAPABILITY (session-worker/src/fetchers.ts), mirrored into the app as PLATFORM_SUPPORT
+// (pinned equal by test/advanced-capability-sync.test.ts) and read here through the platform row's
+// supported flag. 'Not available yet' exactly when the row is missing, the adapter is unbuilt, or
+// connectors are off (the row then says "Not available on dazl yet."); otherwise the badge says what
+// the row below delivers.
+export const BADGE: Record<ChannelStatus, string> = { live: 'Working', worker: 'Needs your session', soon: 'Coming soon' }
+export function connectorBadge(c: Channel, p: { supported?: boolean; allowed: boolean } | undefined): string {
+  if (c.status === 'worker' && (!p || p.supported !== true || !p.allowed)) return 'Not available yet'
+  return BADGE[c.status]
+}
+
 export const CHANNELS: Channel[] = [
-  { id: 'web', name: 'Web pages (Jina Reader)', tier: 0, status: 'live', note: 'On. Add page URLs in a scan under Sources. Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.' },
-  { id: 'youtube', name: 'YouTube', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Uses the official YouTube Data API when the operator has set a key (free daily quota), otherwise public Piped instances, which are third-party services that receive the search keywords.' },
+  { id: 'web', name: 'Web pages', tier: 0, status: 'live', note: 'On. Add page URLs in a scan under Sources. Pages are read through a third-party reader service: the URLs are sent to it, and it rate limits requests without a key.' },
+  { id: 'youtube', name: 'YouTube', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Uses the official YouTube Data API when dazl has its own key for it (free daily quota); otherwise public mirror sites run by outside services, which receive the search keywords.' },
   { id: 'github', name: 'GitHub', tier: 0, status: 'live', note: 'On. Public repos and issues. Pick it in a scan under Sources. No key.' },
   { id: 'rss', name: 'RSS', tier: 0, status: 'live', note: 'On. Add feed URLs in a scan under Sources. No key.' },
-  { id: 'search', name: 'Web search', tier: 0, status: 'live', note: 'On. TinyFish search when the operator has set a key, otherwise your own model provider search. Exa is not used because it needs a paid key.' },
+  { id: 'search', name: 'Web search', tier: 0, status: 'live', note: 'On. The dazl web search when dazl has its own key for it, otherwise your own model provider search. A paid search service is not used.' },
   { id: 'v2ex', name: 'V2EX', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Keyword search goes through sov2ex.com, a third-party service that receives the keywords. Most posts are Chinese; only topics with English text can be verified.' },
-  { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Found through web search of the public index when the operator sets a TinyFish key - no session needed and no account at risk; results go to needs review. Otherwise needs a worker session. X disallows automated access in robots.txt and its terms.' },
-  { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Needs a worker. Reddit limits automated access under its terms.' },
-  { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Needs a worker. Instagram disallows automated access in robots.txt and its terms.' },
-  { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Needs a worker. Facebook disallows automated access in robots.txt and its terms. The worker does not fetch Facebook yet.' },
-  { id: 'bilibili', name: 'Bilibili', tier: 1, status: 'worker', platform: 'bilibili', note: 'Needs a worker.' },
-  { id: 'xiaohongshu', name: 'XiaoHongShu', tier: 1, status: 'worker', platform: 'xiaohongshu', note: 'Needs a worker.' },
-  { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Needs a worker and a separate operator switch. Highest ban risk. Public pages through Jina Reader are not built yet.' },
+  { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Found through web search of the public index when dazl has its own key for it - no session needed and no account at risk; results go to review. Otherwise it needs a saved session from a spare account. X disallows automated access in robots.txt and its terms.' },
+  { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Reddit limits automated access under its terms.' },
+  { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Instagram disallows automated access in robots.txt and its terms.' },
+  { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Not available yet. Facebook disallows automated access in robots.txt and its terms. dazl does not fetch Facebook yet.' },
+  { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'It carries the highest risk of getting the account banned.' },
 ]
-export const TIER_LABEL: Record<Tier, string> = { 0: 'Tier 0 · no setup', 1: 'Tier 1 · your session', 2: 'Tier 2 · login required' }

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
-import SenderInline from '../sender-inline'
+import SenderInline, { SenderSavedNote } from '../sender-inline'
 import { Avatar, Pill } from '../ui/bits'
 
 // After the first lead cards: review them one at a time and start outreach, the way Pancake asks you to approve each lead
@@ -23,6 +23,7 @@ export default function FirstReview({ jobId }: { jobId: string }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [settings, setSettings] = useState<Settings | null>(null)
+  const [senderSaved, setSenderSaved] = useState(false) // the form unmounts once the saved sender loads; the confirmation stays
   // The drafts read could not be read: approving still works (a duplicate is refused by the server and counted as done).
   const [draftsUnknown, setDraftsUnknown] = useState(false)
   const loadSettings = () => void fetch('/api/outreach/settings').then(r => r.ok ? r.json() : null).catch(() => null).then(setSettings)
@@ -112,7 +113,8 @@ export default function FirstReview({ jobId }: { jobId: string }) {
           </div>
           <div data-testid="setup-sender">
             <div className="font-semibold text-sm">{senderOn ? `✓ Sender: ${settings?.sender?.sender_name}` : 'Your name and mailing address'}</div>
-            {!senderOn && settings && <div className="mt-2"><SenderInline initial={settings.sender} onSaved={loadSettings} /></div>}
+            {!senderOn && settings && <div className="mt-2"><SenderInline initial={settings.sender} onSaved={() => { setSenderSaved(true); loadSettings() }} /></div>}
+            {senderSaved && <SenderSavedNote className="mt-1" />}
           </div>
         </div>
         {approved > 0 && <a className="btn-primary btn-lg w-full justify-center mt-6" href={`/app/outreach?job_id=${jobId}`} data-testid="review-drafts">Review your {approved} draft{approved === 1 ? '' : 's'}</a>}

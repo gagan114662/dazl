@@ -15,8 +15,8 @@ test('discovery uses operator switches only; model funding is a separate analysi
   assert.equal(enrichmentLabels(Object.values(r)), 'Company website enrichment')
   assert.equal(analysisPrerequisite({has_key:true})?.usable,true)
   assert.equal(analysisPrerequisite({has_key:false,trial:{funded:true,remaining:2}})?.usable,true)
-  assert.equal(analysisPrerequisite({has_key:false,trial:{funded:true,remaining:0}})?.reason,'free searches used up; no key')
-  assert.equal(analysisPrerequisite({has_key:false})?.fix?.href,'/app/settings#model-key')
+  assert.equal(analysisPrerequisite({has_key:false,trial:{funded:true,remaining:0}})?.reason,'free searches used up')
+  assert.equal(analysisPrerequisite({has_key:false})?.fix?.href,'/app/settings#plan')
   assert.equal(analysisPrerequisite(null),null)
 })
 

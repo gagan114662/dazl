@@ -86,7 +86,7 @@ test('real signal pages stay shown: the full quote, a trimmed quote, and an unda
   const body = '<article><h1>Northwind Dental grows</h1><p>The practice said Northwind Dental will open its second clinic on King Street next spring, adding six chairs.</p></article>'
   assert.equal(isShown(await checkLead(l, [], page(body))), true)
   const trimmed = await checkLead({ ...l, evidence_quote: 'Northwind Dental will open its second clinic on King Street ... adding six chairs' }, [], page(body))
-  assert.deepEqual([trimmed.quote_on_page, isShown(trimmed)], [true, true], 'six consecutive quoted words on the page')
+  assert.deepEqual([trimmed.quote_on_page, isShown(trimmed)], [true, true], 'both explicitly separated quote fragments appear in order')
   const undated = await checkLead({ ...l, signal_date: null }, [], page(body))
   assert.deepEqual([undated.date, isShown(undated)], [null, true], 'no date is a missing label, not a missing proof')
 })
@@ -271,7 +271,7 @@ test('#1575 a claim is judged against the page\'s own sentence, read to its end:
   }
   // words the run put in its excerpt that the page does not print are not evidence, even when six consecutive quoted words are on the page
   const padded = await checkLead(of({ signal: 'Opening a second clinic', evidence_quote: `${routine} and will open its second clinic` }), [], page(`<h1>Northwind Dental</h1><p>${routine}.</p>`))
-  assert.deepEqual([padded.quote_on_page, padded.claim_lacks, isShown(padded)], [true, ['second'], false])
+  assert.deepEqual([padded.quote_on_page, isShown(padded)], [false, false])
   // a stored funding lead (staging, #1571): the line names the other investors, the stored quote stops before them, and the page's own
   // sentence (copied from the public page) goes on to name them. Read to its end, that sentence states the whole line.
   // (the line's "plus" and "with" are joining words; the page says "alongside" and "with participation from")

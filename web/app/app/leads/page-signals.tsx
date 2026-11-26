@@ -12,7 +12,7 @@ export default function PageSignals({leadId}:{leadId:string}){
  async function go(){setBusy(true);setErr('')
  try{const x=await fetch(`/api/leads/page-signals?lead_id=${leadId}`);const b=await x.json();if(!x.ok){setErr(b.error||'Could not read.');return}setR(b)}catch{setErr('Could not read.')}finally{setBusy(false)}}
  return <div className="text-xs text-[#333] mt-2 mb-3">
- <button type="button" onClick={()=>void go()} disabled={busy} className="underline">{busy?'Reading...':'Passages on the pages that use outbound-prospecting words (free, no AI call)'}</button>
+ <button type="button" onClick={()=>void go()} disabled={busy} className="underline">{busy?'Reading...':'Read passages about finding customers (free)'}</button>
  {err&&<span className="ml-2">{err}</span>}
  {r&&<div className="border-l-2 border-black/30 pl-3 mt-2 space-y-1">
  <p>Passages are copied from the pages as they read now, for you to read. dazl did not work out who a passage is about, whether it is negated, or whether {r.company} needs anything or is a fit. It is not a score and not evidence. The fixed word list was written for {r.applies_to} and is not matched to your offer.</p>

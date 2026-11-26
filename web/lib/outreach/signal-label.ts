@@ -11,3 +11,9 @@ export function signalLabel(id: string): string {
   const s = id.replace(/_/g, ' ')
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
+
+// The by-signal footnote under the Home results table: singular/plural on both nouns, the unnamed clause only when
+// some shown lead has no company name. Shared so the exact UI string is unit-tested, never just eyeballed.
+export function bySignalFootnote(leads: number, companies: number, unnamedLeads: number): string {
+  return `${leads} ${leads === 1 ? 'lead' : 'leads'} from ${companies} ${companies === 1 ? 'company' : 'companies'}${unnamedLeads > 0 ? `; ${unnamedLeads} without a company name` : ''}`
+}

@@ -130,6 +130,10 @@ export function sourceCapability(c: Channel, support: PlatformSupport = PLATFORM
 function capabilities(env: Env, support: PlatformSupport): Capability[] {
   const out: Capability[] = []
   for (const c of CHANNELS) out.push(sourceCapability(c, support))
+  // #1721: Bilibili and XiaoHongShu left the Settings registry, but a prospect who needs them is still no-fit, never fit:
+  // the adapters are not built (lib/advanced/config.ts PLATFORM_SUPPORT), so they stay unavailable rather than unknown.
+  for (const [id, name, aliases] of [['bilibili', 'Bilibili', ['bilibili']], ['xiaohongshu', 'XiaoHongShu / RedNote', ['xiaohongshu', 'rednote', 'red note']]] as const)
+    out.push({ id: `source:${id}`, kind: 'source', name, state: 'unavailable', requires: [], aliases: [...aliases], basis: 'removed from lib/channels.ts (#1721); adapter not built' })
   for (const s of SEND_CHANNELS) out.push({ ...s, kind: 'channel' })
   for (const p of CRM_PROVIDERS) {
     const [name, aliases] = CRM_NAMES[p] ?? [p, [p]]

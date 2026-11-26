@@ -9,6 +9,9 @@ const range = (r: { min: number; max: number }) => r.min === r.max ? usd(r.min) 
 // with its assumptions, and the user's confirmation. A blocked estimate has no Run button, only what to change.
 export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query = '' }: { est: RunEstimate; busy: boolean; onConfirm: () => void; onCancel: () => void; query?: string }) {
   const v = est.verdict
+  // #1728: beside a trial refusal, money lines contradict the block ("$0.75 left" next to "your
+  // trial is refused"). On a refusal the panel shows only the refusal and what to do next.
+  const trialRefused = !v.ok && v.reason === 'trial_unavailable'
   // #1319: customer copy only (no env var names, model ids or never-run rows); a trial total is clamped to its per-scan cap
   const view = customerView(est)
   return (
@@ -33,10 +36,10 @@ export default function EstimateConfirm({ est, busy, onConfirm, onCancel, query 
           <tfoot className="block sm:table-footer-group"><tr className="flex justify-between gap-3 sm:table-row border-t border-[var(--line)] font-semibold"><td className="py-2" colSpan={3}>Estimated total{est.unpriced.length ? ' (priced rows only)' : ''}</td><td className="py-2 text-right whitespace-nowrap" data-testid="estimate-total">{range(view.total)}</td></tr></tfoot>
         </table>
       </div>
-      {view.trial_cap_line && <p className="mt-2 text-xs font-medium" data-testid="estimate-trial-cap">{view.trial_cap_line}</p>}
-      {est.payer === 'trial' && est.trial_allowance && <p className="mt-2 text-xs" data-testid="estimate-trial-allowance">{usd(est.trial_allowance.left_usd)} of your {usd(est.trial_allowance.total_usd)} free trial allowance left (all your free trial work counts, including website reads).</p>}
+      {!trialRefused && view.trial_cap_line && <p className="mt-2 text-xs font-medium" data-testid="estimate-trial-cap">{view.trial_cap_line}</p>}
+      {!trialRefused && est.payer === 'trial' && est.trial_allowance && <p className="mt-2 text-xs" data-testid="estimate-trial-allowance">{usd(est.trial_allowance.left_usd)} of your {usd(est.trial_allowance.total_usd)} free trial allowance left (all your free trial work counts, including website reads).</p>}
       {est.search_allowance?.low && <p className="mt-2 text-xs font-medium" role="status" data-testid="estimate-search-allowance">{searchAllowanceLine(est.search_allowance)}</p>}
-      {capLine(est.cap, view.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, view.capped_total)}</p>}
+      {!trialRefused && capLine(est.cap, view.capped_total) && <p className="mt-2 text-xs" data-testid="estimate-cap">{capLine(est.cap, view.capped_total)}</p>}
       {/* #1095: a free-trial block says why in words and offers the way forward (Link Google for a password account) */}
       {!v.ok && v.reason === 'trial_unavailable' && v.trial_refusal
         ? <div className="mt-2" data-testid="estimate-verdict" data-trial-refusal={v.trial_refusal}><TrialRefusalNotice reason={v.trial_refusal} query={query} /></div>

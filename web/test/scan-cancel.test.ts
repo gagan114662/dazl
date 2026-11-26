@@ -76,16 +76,17 @@ test('Home never asks for an AI key once one is saved; seller profile stays visi
   // Home is the readiness checklist now: a saved key is done (no key fix offered) and the saved seller profile is shown.
   const { readinessRows } = await import('../lib/readiness.ts')
   const rows = readinessRows({ profile: { sells: 'Booking software', website: 'https://acme.example', business_name: 'Acme' }, usage: { has_key: true, trial: null }, outreach: { gmail: null, sender: null } })
-  assert.deepEqual(rows.find(x => x.id === 'key'), { id: 'key', label: 'AI key', state: 'done', detail: 'saved', fix: null })
+  assert.deepEqual(rows.find(x => x.id === 'key'), { id: 'key', label: 'Searches', state: 'done', detail: 'ready to run', fix: null })
   assert.match(rows.find(x => x.id === 'site')!.detail, /Booking software/)
   assert.doesNotMatch(rd('../app/app/outreach/send-readiness.tsx'), /Every email still needs your approval/)
-  // the sign-up line (lib/trial-copy.ts signUpPlanLine, rendered by sign-up-form.tsx) is mode-accurate. #1428: it used to
-  // name the own-key plan in both modes ("with your own AI key"); now a key is named only where no free search can run.
-  const { signUpPlanLine } = await import('../lib/trial-copy.ts')
-  assert.match(signUpPlanLine(true), /^dazl is free during the beta\. .* Your first search is free, whether you sign up with Google or with email\. No card needed\.$/)
-  assert.match(signUpPlanLine(false), /a search runs on your own Anthropic key/)
-  for (const funded of [true, false]) assert.match(signUpPlanLine(funded), /^dazl is free during the beta\./)
-  assert.match(rd('../app/sign-up/sign-up-form.tsx'), /signUpPlanLine\(/)
+  // The public allowance is present only on funded deployments and only
+  // advertises email when the deployment can support that sign-up path.
+  const { trialRuleLine } = await import('../lib/trial-copy.ts')
+  assert.equal(trialRuleLine({ funded: true, emailPath: true, cap: 3, emailCap: 1 }), 'With Google: up to 3 free searches. With email: 1 free search.')
+  assert.equal(trialRuleLine({ funded: true, emailPath: false, cap: 3, emailCap: 1 }), 'With Google: up to 3 free searches.')
+  assert.equal(trialRuleLine({ funded: false, emailPath: true, cap: 3, emailCap: 1 }), '')
+  assert.match(rd('../app/sign-up/page.tsx'), /trialRule=\{readPublicTrialAllowance\(\)\}/)
+  assert.match(rd('../app/sign-up/sign-up-form.tsx'), /trialRule \? 'No card needed\.' : 'Free searches are unavailable right now\.'/)
 })
 
 test('profile save returns canonical stored values; business name round-trips; keyless copy is neutral; usage failure is labelled', async () => {
@@ -109,7 +110,7 @@ test('profile save returns canonical stored values; business name round-trips; k
   assert.match(rd('../app/app/readiness.tsx'), /setOpen\(null\); void load\(\)/)
   const { readinessRows } = await import('../lib/readiness.ts')
   const key = readinessRows({ profile: null, usage: null, outreach: null }).find(x => x.id === 'key')!
-  assert.deepEqual([key.state, key.detail, key.fix], ['unknown', 'could not check - your plan and key status did not load', null])
+  assert.deepEqual([key.state, key.detail, key.fix], ['unknown', 'could not check - your plan status did not load', null])
 })
 
 test('contact search note states eligibility and stored facts only, never completion or absence', async () => {

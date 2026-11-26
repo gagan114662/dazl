@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import type { Db } from '../lib/db/client.ts'
-import { homeResults, signalLabel } from '../lib/outreach/home-results.ts'
+import { homeResults, signalLabel, bySignalFootnote } from '../lib/outreach/home-results.ts'
 import { inboxPage } from '../lib/outreach/inbox.ts'
 import { test } from 'node:test'
 
@@ -280,4 +280,45 @@ bothEngines('#1062: a company-first scan\'s held candidates are not new leads or
   assert.equal(r.tiles.leads, 1, 'only the ordinary lead is a new lead')
   assert.deepEqual(r.latest_leads.map(l => l.company), ['Plain Co'])
   assert.equal(r.by_signal.reduce((n, s) => n + s.leads, 0), 1, 'the by-signal rows add up to the tile')
+})
+
+bothEngines("#1772: the by-signal Leads total is also given as distinct companies, under the app's own company key", async ({ db }) => {
+  const J = 'j'.repeat(24)
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, 'x', 'test', 'test', 'running', ?)", [J, 'A', IN])
+  const lead = (id: string, company: string) => db.run(
+    "INSERT INTO leads (id, scan_job_id, company, name, signal, source_url, signal_kind, created_at, quarantined_at) VALUES (?, ?, ?, 'Pat', 'hiring an SDR', 'https://news.example/a', 'hiring', ?, NULL)",
+    [id, J, company, IN])
+  await lead('c1', 'Dup Inc'); await lead('c2', 'Dup Ltd')   // one company under companyKey
+  await lead('c3', 'Solo Co')
+  await lead('c4', '')                                        // a person lead with no company name
+  await lead('c5', '')
+  const r = await homeResults(db, 'A', NOW)
+  assert.equal(r.tiles.leads, 5, 'the by-signal Leads total still counts every shown lead')
+  assert.equal(r.companies, 2, 'distinct named companies under companyKey: Dup Inc and Dup Ltd are one')
+  assert.equal(r.unnamed_leads, 2, 'leads with no company name are not attributed to a company')
+})
+
+bothEngines("#1760 review: the by-signal footnote singularises one lead and one company", async ({ db }) => {
+  const J = 'k'.repeat(24)
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, 'x', 'test', 'test', 'running', ?)", [J, 'A', IN])
+  await db.run("INSERT INTO leads (id, scan_job_id, company, name, signal, source_url, signal_kind, created_at, quarantined_at) VALUES (?, ?, 'Lone Co', 'Pat', 'hiring an SDR', 'https://news.example/a', 'hiring', ?, NULL)", ['l1', J, IN])
+  const r = await homeResults(db, 'A', NOW)
+  assert.equal(r.tiles.leads, 1)
+  assert.equal(r.companies, 1)
+  assert.equal(bySignalFootnote(r.tiles.leads, r.companies, r.unnamed_leads), '1 lead from 1 company', 'singular: never 1 leads / 1 companies')
+  assert.equal(bySignalFootnote(4, 2, 1), '4 leads from 2 companies; 1 without a company name', 'the plural case the UI shows today')
+})
+
+bothEngines("#1760 review: a company named only with legal-form words still counts as a company", async ({ db }) => {
+  const J = 'm'.repeat(24)
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, 'x', 'test', 'test', 'running', ?)", [J, 'A', IN])
+  const lead = (id: string, company: string) => db.run(
+    "INSERT INTO leads (id, scan_job_id, company, name, signal, source_url, signal_kind, created_at, quarantined_at) VALUES (?, ?, ?, 'Pat', 'hiring an SDR', 'https://news.example/a', 'hiring', ?, NULL)",
+    [id, J, company, IN])
+  await lead('s1', 'The Co.')   // companyKey strips every word of this name: it is still a real, named company
+  await lead('s2', 'Named Co')
+  await lead('s3', '   ')       // blank after trimming: the only unnamed kind
+  const r = await homeResults(db, 'A', NOW)
+  assert.equal(r.companies, 2, 'The Co. and Named Co are two named companies')
+  assert.equal(r.unnamed_leads, 1, 'only a company blank after trimming counts as without a company name')
 })

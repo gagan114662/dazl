@@ -134,13 +134,16 @@ l.human_confirmed_at, l.human_confirmed_from, l.source_kind, l.quarantined_at, l
       const t = await pg.query('SELECT test_addresses FROM sequence_settings WHERE tenant_id = $1', [tenantId])
       let testList: string[] = []
       try { testList = (JSON.parse((t.rows[0] as { test_addresses: string } | undefined)?.test_addresses ?? '[]') as string[]).map(norm) } catch { testList = [] }
+      // Minute gaps belong to the env-designated test account alone — the same gate isTestRecipient
+      // applies in lib/outreach/sequences.ts. A saved list on an ordinary account changes nothing.
+      const isDesignatedTestTenant = !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
       const out = new Map<string, { status: string; step: number; next_due_at: number | null; stop_reason: string | null }>()
       for (const r of rows as { lead_id: string; status: string; stop_reason: string | null; to_email: string; step1_sent: number | string | null; steps_sent: number | string }[]) {
         const stepsSent = numReq(r.steps_sent)
         const step1Sent = num(r.step1_sent)
         let nextDue: number | null = null
         if ((r.status === 'active' || r.status === 'approved') && step1Sent && stepsSent < MAX_STEPS) {
-          const gaps = testList.includes(norm(r.to_email)) ? TEST_GAPS_S : GAPS_S
+          const gaps = isDesignatedTestTenant && testList.includes(norm(r.to_email)) ? TEST_GAPS_S : GAPS_S
           nextDue = step1Sent + gaps[stepsSent]
         }
         out.set(r.lead_id, { status: r.status, step: stepsSent, next_due_at: nextDue, stop_reason: displayStopReason(r.stop_reason) })

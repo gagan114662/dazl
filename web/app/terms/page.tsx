@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { SITE_BASE, publicMeta } from '@/lib/site'
 import { TERMS } from '@/lib/legal/policy'
+import SiteFooter from '../site-footer'
 export const metadata: Metadata = { ...publicMeta('/terms', 'Terms of Service - dazl', 'The terms of service for using dazl.ai.'), alternates: { canonical: `${SITE_BASE}/terms` } }
 
 // Text and facts live in lib/legal/policy.ts, held to the code by test/legal-policy.test.ts (#535).
@@ -16,6 +17,7 @@ export default function Terms() {
           {s.paragraphs.map((p, i) => <p key={i} className="mb-2">{p}</p>)}
         </section>
       ))}
+      <SiteFooter />
     </main>
   )
 }

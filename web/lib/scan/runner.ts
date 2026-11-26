@@ -37,6 +37,7 @@ import { requestedHiringRoles, matchedHiringRole, type RequestedHiringRole } fro
 import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
+import { resolveSearchProfile } from './profile-match.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -88,7 +89,7 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
-import { addEnrichment, audit, writeAudit } from '../connectors/store.ts'
+import { addEnrichment, audit, enrichmentsForLeads, writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -1457,7 +1458,31 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, fetchImpl: typeof fetch | undefined, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet }: Pick<RunDeps, 'fetchImpl' | 'crawlGet'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+  const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
+  let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
+  const savedSource = sells?.icp_inferred
+  let profileCarried = savedSource !== 1 && savedSource !== 2 && discoverProfileCarried(savedSource, job.watch_id)
+  if (job.query && profile && profileCarried) {
+    assertOwned(db, job)
+    let resolved: Awaited<ReturnType<typeof resolveSearchProfile>> | { source: 'request_only'; profile: Icp }
+    try {
+      if (!profileProvider.complete) throw new Error('search_profile:completion_unavailable')
+      resolved = await resolveSearchProfile(job.query, profile, key, fetchImpl, profileProvider.complete)
+    } catch (error) {
+      const code = error instanceof Error ? /^search_profile:([a-z_]+)$/.exec(error.message)?.[1] : undefined
+      const reason = code ?? (error instanceof SpendRefused ? error.reason
+        : error instanceof ProviderError ? error.kind : 'completion_error')
+      console.warn('Scan profile resolution used request-only fallback', reason)
+      resolved = { source: 'request_only', profile: fallbackIcp(job.query) }
+    }
+    profile = resolved.profile
+    profileCarried = resolved.source === 'carried'
+    const source = resolved.source === 'inferred' ? 1 : resolved.source === 'request_only' ? 2 : 3
+    assertOwned(db, job)
+    db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?")
+      .run(JSON.stringify(profile), source, job.id, job.user_id, job.attempts)
+  }
   // What this run may still spend: the tightest of the job's own budget, the account's limits and the scan's cap. With room for a full
   // run it gets the full search budget; with less (a free-trial run, or a request that set its own lower limit) it gets the smaller
   // budget and reserves what there is; with too little for even that, the scan stops and says so.
@@ -1480,24 +1505,25 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const source = 'search:claude_discover'
   ledger.record(source, 'started')
   assertOwned(db, job)
-  const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
-  // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
-  const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
-  // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
+  // Repeating watches exclude companies found on earlier runs.
   const known = job.watch_id ? (db.prepare('SELECT DISTINCT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND j.watch_id = ? AND l.company <> ? ORDER BY l.created_at DESC LIMIT 80').all(job.user_id, job.watch_id, '') as { company: string }[]).map(r => r.company) : []
-  // the buyer profile saved on this play (who, where, what to leave out) goes with the request
-  const profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
-  // #1579: a profile the person reviewed for this search (icp_inferred 0), or a saved play's own on its repeat runs, narrows the request.
-  // One carried over unreviewed from an earlier search is background: the typed request decides who, where and which signal.
-  const profileCarried = discoverProfileCarried(sells?.icp_inferred, job.watch_id)
+  let providerDispatchStarted = false
+  const providerFetch: typeof fetch = (input, init) => {
+    const signal = init && 'signal' in init ? init.signal : input instanceof Request ? input.signal : null
+    if (signal?.aborted) return Promise.reject(signal.reason)
+    providerDispatchStarted = true
+    return (fetchImpl ?? fetch)(input, init)
+  }
+  const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
   let run: DiscoveryRun
   try {
     // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
     run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile, profileCarried } : {}), ...(known.length ? { exclude: known } : {}) },
       { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? (room < DISCOVER_SMALL_MIN_USD ? DISCOVER_TINY_BUDGET : DISCOVER_TRIAL_BUDGET) : {}) },
-      { apiKey: key, fetch: fetchImpl, discover, enrich })
+      { apiKey: key, fetch: fetchImpl, providerFetch, discover, enrich })
   } catch (e) {
-    await hold?.settle(null)   // the call may have been billed: keep the worst case
+    // An SDK preflight can throw before it invokes fetch. Give back the hold only with that evidence.
+    await hold?.settle(providerDispatchStarted ? null : 0)
     ledger.record(source, 'error')
     const status = (e as { status?: number })?.status
     finish(db, job, 'failed', status === 401 || status === 403 ? 'key_rejected' : status === 429 ? 'provider_rate_limited' : 'source_error', null, null, ledger)
@@ -1529,10 +1555,18 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
   const tag = db.prepare('UPDATE leads SET source_kind = ?, company_domain = COALESCE(?, company_domain) WHERE id = ?')
   const forLinkedIn: LaneLead[] = []
+  const needsContactCrawl: { id: string; company: string; source_url: string; signal: string; evidence_excerpt: string | null }[] = []
+  const siteHints: { company: string; website: string }[] = []
   for (const l of checked) {
     const row = rows.find(r => r.source_url === l.evidence_url && r.company === l.company.slice(0, 150))
     if (!row) continue
-    if (isShown(l)) forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
+    if (isShown(l)) {
+      forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
+      if (!l.person) {
+        needsContactCrawl.push({ ...row, signal: l.signal, evidence_excerpt: l.evidence_quote })
+        if (l.domain) siteHints.push({ company: l.company, website: l.domain })
+      }
+    }
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
@@ -1540,6 +1574,36 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
       source_url: l.email_source_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
     if (l.linkedin_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'linkedin', value: l.linkedin_url.slice(0, 254), label: 'linked from a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+  }
+  if (needsContactCrawl.length && sitecrawlEnabled()) {
+    beginEnrichment(db, job.id, job.attempts)
+    try {
+      await crawlJob(db, job.user_id, job.id, {
+        leads: needsContactCrawl,
+        textSites: siteHints,
+        companyFirstContacts: true,
+        signal: AbortSignal.timeout(postFinishBudgetMs()),
+        ...(crawlGet ? { get: crawlGet } : {}),
+      })
+      if (postFinishAliveStrict(db, job)) {
+        // Discovery cards read their own connector. Carry over the strict crawl's
+        // single buyer and any personal address proven on that buyer's page.
+        const contacts = enrichmentsForLeads(db, job.user_id, needsContactCrawl.map(row => row.id))
+        for (const { id } of needsContactCrawl) {
+          const siteRows = (contacts[id] ?? []).filter(row => row.connector === 'sitecrawl')
+          const buyers = siteRows.filter(row => row.kind === 'person')
+          if (buyers.length !== 1) continue
+          const [buyer] = buyers
+          addEnrichment(db, job.user_id, id, { ...buyer, connector: 'discover' })
+          const addresses = siteRows.filter(row => row.kind === 'email' && row.source_url === buyer.source_url)
+          if (addresses.length === 1) {
+            addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover', label: 'published on a public page' })
+          }
+        }
+      }
+    } finally {
+      endEnrichment(db, job.id, job.attempts)
+    }
   }
   // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
   // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.
@@ -1654,7 +1718,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         finish(db, job, 'failed', trial ? 'trial_unavailable' : 'claude_key_required', null, null, ledger)
         return 'failed'
       }
-      return await runDiscoverLane(db, job, key, spendGuards, ledger, deps.fetchImpl, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
+      return await runDiscoverLane(db, job, key, spendGuards, ledger, providers_.anthropic, deps, deps.discoverImpl, deps.enrichImpl === undefined ? enrichLeads : deps.enrichImpl, trial?.reserveUsd ?? null)
     }
     let prompt = buildPrompt(job)
     let icpForSources: Icp | null = null

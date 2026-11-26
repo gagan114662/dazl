@@ -25,6 +25,7 @@
 import type { Db } from '../db/client.ts'
 import { NOT_A_PERSON, PERSON_REPLY as PERSON_REPLY_CLASSES, sqlList } from './needs-owner.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { companyKey } from '../scan/evidence.ts'
 import { companyFirstShownDb, heldByChecksOf, type ShownJob } from './campaigns.ts'
 
 export const RESULTS_WINDOW_DAYS = 30
@@ -42,6 +43,11 @@ export interface HomeResults {
   reply_reading: boolean
   tiles: { leads: number; contacted: number; replied: number | null; interested: number | null }
   by_signal: { signal: string; leads: number; contacted: number; replied: number | null }[]
+  // #1772: the by-signal Leads total counts lead rows; the rest of the app talks in companies. companies = distinct
+  // companyKey values among the same shown leads (the key people-search and home-ready count with, lib/scan/evidence.ts),
+  // so the numbers agree; unnamed_leads = shown leads with no company name, not attributed to any company.
+  companies: number
+  unnamed_leads: number
   latest_leads: { id: string; company: string; signal: string; job_id: string; created_at: number }[]
   latest_replies: { thread_id: string; company: string; classification: string; received_at: number }[]
 }
@@ -55,8 +61,8 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   // checks let them through (companyFirstResults, the run page's own gate); the rest are held candidates, never "new leads" or "latest
   // leads". Fails closed: a store without the company-first reader (Postgres today: lib/db/client.ts has it on SQLite only) shows none of a
   // company-first scan's leads, as its run page does not either.
-  const windowLeads = await db.all<{ id: string; job_id: string; kind: string | null; src: string | null; company: string | null; signal: string | null; created_at: number | string } & Omit<ShownJob, 'id'>>(
-    `SELECT l.id, l.scan_job_id AS job_id, l.signal_kind AS kind, l.source_kind AS src, l.company, l.signal, l.created_at,
+  const windowLeads = await db.all<{ id: string; job_id: string; kind: string | null; src: string | null; company: string | null; company_domain: string | null; signal: string | null; created_at: number | string } & Omit<ShownJob, 'id'>>(
+    `SELECT l.id, l.scan_job_id AS job_id, l.signal_kind AS kind, l.source_kind AS src, l.company, l.company_domain, l.signal, l.created_at,
        j.run_budget, j.status, j.enrich_started_at, j.enrich_finished_at FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
      WHERE j.user_id = ? AND l.created_at >= ? AND l.quarantined_at IS NULL AND (l.fit IS NULL OR l.fit > 1) AND (l.source_kind IS NULL OR l.source_kind <> 'test')
      ORDER BY l.created_at DESC, l.id DESC`, [tenantId, since])
@@ -98,6 +104,37 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   for (const r of sentRows) row(kind(r.kind, r.src)).contacted += Number(r.sent)
   for (const r of replyRows) { row(kind(r.kind, r.src)).replied += Number(r.replied); interested += Number(r.interested ?? 0) }
   const by_signal = [...by.values()].sort((a, b) => b.replied - a.replied || b.contacted - a.contacted || b.leads - a.leads || a.signal.localeCompare(b.signal))
+  // #1772: ONE company identity everywhere, home-ready's rule (lib/outreach/home-ready.ts): a lead's company keys
+  // are its domain and its normalised name. (Name-key-only counting split one company under two name variants
+  // sharing a domain - 72 here against 71 in the funnel and on the Leads checked page.) Two leads are the same
+  // company when they share a name key, or when they share a domain AND their names are compatible: one name
+  // key empty (the name is only legal-form words, e.g. 'LLC' on the company's own domain, so the domain is the
+  // identity), or one normalised name a prefix of the other (name variants of one company). Two fully distinct
+  // names on one shared domain (a platform or group domain recorded for both) stay two companies. A lead with
+  // no name and no domain is not a company at all: it is counted in unnamed_leads only. #1760: a name whose
+  // companyKey is empty still names a company, keyed on the trimmed lowercased name.
+  let unnamed_leads = 0
+  const parent: number[] = []
+  const root = (g: number): number => { while (parent[g] !== g) { parent[g] = parent[parent[g]]; g = parent[g] } return g }
+  const union = (a: number, b: number) => { const ra = root(a), rb = root(b); if (ra !== rb) parent[rb] = ra }
+  const entries: { key: string; nameKey: string; domain: string }[] = []
+  for (const l of leadsShown) {
+    const name = (l.company ?? '').trim()
+    if (!name && !l.company_domain) { unnamed_leads += 1; continue }
+    const nameKey = name ? companyKey(name) : ''
+    const key = nameKey || name.toLowerCase()
+    if (!key && !l.company_domain) { unnamed_leads += 1; continue }
+    entries.push({ key, nameKey, domain: (l.company_domain ?? '').trim().toLowerCase() })
+    parent.push(entries.length - 1)
+  }
+  const byName = new Map<string, number>(), byDomain = new Map<string, number[]>()
+  entries.forEach((e, i) => {
+    if (e.key) { const g = byName.get(e.key); if (g === undefined) byName.set(e.key, i); else union(i, g) }
+    if (e.domain) { const arr = byDomain.get(e.domain) ?? []; arr.push(i); byDomain.set(e.domain, arr) }
+  })
+  const compatible = (a: { nameKey: string }, b: { nameKey: string }) => !a.nameKey || !b.nameKey || a.nameKey.startsWith(b.nameKey) || b.nameKey.startsWith(a.nameKey)
+  for (const arr of byDomain.values()) for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++) if (compatible(entries[arr[i]], entries[arr[j]])) union(arr[i], arr[j])
+  const companies = new Set(entries.map((_, i) => root(i))).size
   const sum = (k: 'leads' | 'contacted' | 'replied') => by_signal.reduce((n, r) => n + r[k], 0)
   const latest_leads = leadsShown.slice(0, 5)
     .map(r => ({ id: r.id, company: r.company || 'Unnamed company', signal: r.signal || '', job_id: r.job_id, created_at: Number(r.created_at) }))
@@ -112,10 +149,10 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   // stored stay listed as what was seen
   if (!replyReading && tiles.contacted > 0) {
     tiles.replied = null; tiles.interested = null
-    return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: false, tiles, by_signal: by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })), latest_leads, latest_replies }
+    return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: false, tiles, by_signal: by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })), companies, unnamed_leads, latest_leads, latest_replies }
   }
-  return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: replyReading, tiles, by_signal, latest_leads, latest_replies }
+  return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: replyReading, tiles, by_signal, companies, unnamed_leads, latest_leads, latest_replies }
 }
 
 // signalLabel lives in ./signal-label.ts (browser-safe: Home's client imports it; this module reads the scan store's gate).
-export { signalLabel } from './signal-label.ts'
+export { signalLabel, bySignalFootnote } from './signal-label.ts'

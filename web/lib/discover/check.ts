@@ -5,6 +5,7 @@ import { emailsInText } from '../outreach/published-email.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { fetchPageDetailed, htmlToText } from '../scan/fetch-page.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
+import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -90,27 +91,48 @@ export function statesSignal(signal: string, company: string, textToSearch: stri
 export type AskSignal = (signal: string, company: string, statements: string[]) => Promise<boolean>
 // The page's own statements: a line or block, cut again where a full stop, question mark, exclamation mark or semicolon ends one.
 const statements = (page: string): string[] => page.split(/\n+|(?<=[.!?…;])\s+/).map(s => s.trim()).filter(Boolean)
-// The quoted evidence as the PAGE states it: for each place the quoted words stand (the whole quote, or any six consecutive words of
-// it: a quote is often trimmed or joined with an ellipsis), the statements those words run through THERE, each read to its end. Empty
-// when the quote is not on the page.
+// The quoted evidence must be contiguous after formatting normalization, even if its edges clip a word. An explicit ellipsis can omit
+// words inside a single statement, but each quoted fragment must still occur there in order.
 // This, not the run's excerpt, is what a claim is judged against: an excerpt stops where the run cut it (300 characters at most), and
 // words in an excerpt that the page does not print are not evidence. A word in the next statement is not this statement's word.
 // Each place is its own evidence and is judged alone. The same words often stand in several places (a heading, a menu, two unrelated
 // sentences); pooling them let one place's words finish another's claim (review of #1575 at 0db467b5).
 export function quoteStatements(quote: string | null, page: string): string[] {
-  const q = fold(quote ?? '').split(' ').filter(Boolean)
-  if (q.join(' ').length < 12) return []
-  const all = statements(page), words: string[] = [], at: number[] = []
-  all.forEach((s, i) => { for (const w of fold(s).split(' ')) if (w) { words.push(w); at.push(i) } })
+  const q = fold(quote ?? '')
+  if (q.length < 12) return []
+  const all = statements(page)
+  const parts: string[] = [], starts: number[] = [], statementIndices: number[] = []
+  let offset = 0
+  all.forEach((statement, i) => {
+    const part = fold(statement)
+    if (!part) return
+    parts.push(part)
+    starts.push(offset)
+    statementIndices.push(i)
+    offset += part.length + 1
+  })
+  const normalized = parts.join(' ')
   const places = new Set<string>()
-  const find = (needle: string[]): boolean => {
-    let found = false
-    for (let i = words.indexOf(needle[0]); i >= 0 && i + needle.length <= words.length; i = words.indexOf(needle[0], i + 1)) {
-      if (needle.every((w, j) => words[i + j] === w)) { found = true; places.add(all.slice(at[i], at[i + needle.length - 1] + 1).join(' ')) }
-    }
-    return found
+  let first = 0, last = 0
+  for (let at = normalized.indexOf(q); at >= 0; at = normalized.indexOf(q, at + 1)) {
+    while (starts[first + 1] <= at) first++
+    const end = at + q.length - 1
+    while (starts[last + 1] <= end) last++
+    places.add(all.slice(statementIndices[first], statementIndices[last] + 1).join(' '))
   }
-  if (!find(q)) for (let i = 0; i + 6 <= q.length; i++) find(q.slice(i, i + 6))
+  if (places.size === 0) {
+    const fragments = (quote ?? '').split(/…|\.{3}/).map(fold).filter(Boolean)
+    if (fragments.length > 1) for (const statement of all) {
+      const line = ` ${fold(statement)} `
+      let next = 0
+      if (fragments.every(fragment => {
+        const start = line.indexOf(` ${fragment} `, next)
+        if (start < 0) return false
+        next = start + fragment.length + 1
+        return true
+      })) places.add(statement)
+    }
+  }
   return [...places]
 }
 export const quoteOnPage = (quote: string | null, page: string): boolean => quoteStatements(quote, page).length > 0
@@ -213,9 +235,10 @@ const TAKEN_DOWN = /\bthis\s+(?:job\s+)?(?:job|listing|posting|position|role|ope
 export const pageIsGone = (body: string): boolean => { const t = body.replace(/\s+/g, ' ').trim(); return (t.length < 1500 && GONE.test(t)) || TAKEN_DOWN.test(t.slice(0, 2500)) }
 // "Posted 4d ago", "Posted: 3 days ago", "Published 2 weeks ago": the day that works out to, when the page prints exactly one such age.
 // Several different ages on one page (a list of postings) give no date.
-export function relativeDay(body: string, now: Date): string | null {
+export function relativeDay(body: string, now: Date, hiringOnly = false): string | null {
   const days = new Set<number>()
   for (const m of body.matchAll(/\b(?:posted|published|listed|updated)\s*:?\s*(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
+    if (hiringOnly && !/^posted\b/i.test(m[0])) continue
     const n = Number(m[1]), u = m[2].toLowerCase()
     days.add(u.startsWith('h') ? 0 : u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
   }
@@ -229,8 +252,12 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
   const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
-  const statedDay = dayOnPage(lead.signal_date, body) ? lead.signal_date : null
-  const day = statedDay ?? relativeDay(body, now)
+  const hiring = isDiscoveryHiringLead(lead)
+  const posted = hiring ? [...new Set(dateMentions(body).filter(mention =>
+    /\bposted(?:\s+on)?[\s:–—-]*$/i.test(body.slice(Math.max(0, mention.index - 32), mention.index)),
+  ).map(mention => mention.day))] : []
+  const statedDay = hiring ? (posted.length === 1 ? posted[0] : null) : dayOnPage(lead.signal_date, body) ? lead.signal_date : null
+  const day = statedDay ?? (posted.length > 1 ? null : relativeDay(body, now, hiring))
   return { ...lead, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
     quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
 }
@@ -245,17 +272,21 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
 // The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
 // tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
 // moves it), not a day in the future, not one more than a year old.
-export function embeddedDay(html: string, now: Date): string | null {
-  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
-    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html)
+export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
+  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? (hiringOnly ? null : /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
+    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html))
   if (!m) return null
   const t = Date.parse(`${m[1]}T00:00:00Z`)
-  return Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
+  return hiringOnly ? validDay(t, now) : Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
 }
 // A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
 // the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging
 // 2026-11-23: every hiring lead on these boards came back undated.
-const validDay = (t: number, now: Date): string | null => Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : new Date(t).toISOString().slice(0, 10)
+function validDay(t: number, now: Date): string | null {
+  if (!Number.isFinite(t)) return null
+  const age = Math.floor(now.getTime() / 86_400_000) - Math.floor(t / 86_400_000)
+  return age < 0 || age > INDEX_DATE_MAX_AGE_DAYS ? null : new Date(t).toISOString().slice(0, 10)
+}
 export function postingRecord(u: URL): { url: string; day: (j: unknown) => unknown } | null {
   const h = u.hostname.toLowerCase(), seg = u.pathname.split('/').filter(Boolean)
   const obj = (j: unknown) => (j && typeof j === 'object' ? j as Record<string, unknown> : {})
@@ -309,11 +340,17 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
     try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
   }
   if (!raw) return out
-  if (stillDate) { const day = embeddedDay(raw, now); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }
 export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal): Promise<CheckedLead> {
+  const checked = await readLead(lead, seen, fetchImpl, timeoutMs, now, ask)
+  if (discoveryHiringDateProven(checked, INDEX_DATE_MAX_AGE_DAYS, now)) return checked
+  return { ...checked, date: null, date_source: null, date_on_page: false }
+}
+
+async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeof fetch, timeoutMs: number, now: Date, ask?: AskSignal): Promise<CheckedLead> {
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
@@ -323,6 +360,7 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
   }
   // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
+  let denied = false
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
@@ -332,9 +370,19 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
         lead = await checkEmailSource(lead, [...seen, emailPage])
         return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now)
       }
+      denied = r.status === 401 || r.status === 403
       // dazl asked and the address is gone: a search result's title does not bring it back
       if (r.status === 404 || r.status === 410) return { ...lead, email: null, email_source_url: null, ...indexDate(hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
+  }
+  const alternate = lead.alternate_evidence
+  if (denied && alternate && publicUrl(alternate.url) && pageKey(alternate.url) !== key) {
+    const read = seen.find(p => p.text && pageKey(p.url) === pageKey(alternate.url))
+    if (read?.text) {
+      const candidate = { ...lead, evidence_url: alternate.url, evidence_quote: alternate.quote, signal_date: alternate.date }
+      const checked = await settle(judge(candidate, read.text, 'reader', read.page_age, now), read.text, ask)
+      if (isShown(checked)) return checked
+    }
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
   lead = await checkEmailSource(lead, seen)

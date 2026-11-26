@@ -14,10 +14,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  # PRs: one group per PR. Pushes to main (#1504): one shared group, so a newer main commit cancels the older run and only
-  # the newest main commit is tested and marked main-green. A manual run keeps its own group and is never cancelled.
+  # PRs cancel stale runs. Main pushes share a group so the active run finishes
+  # and GitHub replaces older pending runs with the newest one.
   group: ${{ github.event_name == 'push' && 'web-ci-main' || format('web-ci-{0}', github.event.pull_request.number || github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Full suite on SQLite, today's runtime store. PG-only tests skip here.
   # Sharded 4 ways (round-robin over the exact `npm test` file list, or over the PR's affected list) so the full suite on

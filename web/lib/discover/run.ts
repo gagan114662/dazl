@@ -5,7 +5,7 @@
 //   3. a small-model pass fills the person, website and published email that shown leads still lack.
 // Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
 import { discoverLeads, type DiscoverInput, type DiscoverResult, type DiscoverUsage } from './agent.ts'
-import { createSearchBudget, searchAllowance } from './search-budget.ts'
+import { configuredSearchAllowance, createSearchBudget, searchAllowance } from './search-budget.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkEmailSource, checkLeads, isShown, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
@@ -13,7 +13,17 @@ import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from '
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
 export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; emailDropped: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean }
-export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; judge?: SignalJudge | null; now?: Date }
+export interface DiscoveryDeps {
+  apiKey: string
+  fetch?: typeof fetch
+  /** Provider transport only; public proof reads still use fetch. */
+  providerFetch?: typeof fetch
+  signal?: AbortSignal
+  discover?: typeof discoverLeads
+  enrich?: typeof enrichLeads | null
+  judge?: SignalJudge | null
+  now?: Date
+}
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
 // What the people pass has cost at most on the benchmark; a second search pass must leave room for it under the run's ceiling.
@@ -25,7 +35,10 @@ const PEOPLE_LEAD_USD = 0.045
 
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
   const discover = deps.discover ?? discoverLeads, enrich = deps.enrich === undefined ? enrichLeads : deps.enrich
-  const api = { apiKey: deps.apiKey, fetch: deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(searchAllowance(budget.maxSearches ?? input.maxSearches)) }
+  // The profile limits each pass, while one durable ceiling applies across all passes and enrichment.
+  const perPass = searchAllowance(budget.maxSearches ?? input.maxSearches)
+  const ceiling = perPass === 0 ? 0 : configuredSearchAllowance(process.env.DAZL_DISCOVER_SEARCHES)
+  const api = { apiKey: deps.apiKey, fetch: deps.providerFetch ?? deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(ceiling) }
   const sized = { ...input, ...(budget.maxSearches !== undefined ? { maxSearches: budget.maxSearches } : {}), ...(budget.maxFetches ? { maxFetches: budget.maxFetches } : {}) }
   const want = budget.wantShown ?? 5
   const usage: Pick<DiscoverUsage, 'usd' | 'searches' | 'requests'> = { usd: 0, searches: 0, requests: 0 }
@@ -44,10 +57,11 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   let leads = await check(first)
   const seen = [...first.seen]
   const pages = first.seen.map(p => p.url)
-  const stop = first.stop, model = first.model
+  const model = first.model
+  let stop = first.stop
   let passes = 1, note = first.note, accountingUncertain = judge?.usage.accountingUncertain === true
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
-  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
+  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
@@ -58,6 +72,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       leads = [...leads, ...more]
       passes = 2
       accountingUncertain ||= judge?.usage.accountingUncertain === true
+      if (second.stop === 'search_cap') stop = 'search_cap'
       note = second.note ?? note
     } catch { accountingUncertain = true }
   }

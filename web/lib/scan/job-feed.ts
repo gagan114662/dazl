@@ -76,20 +76,18 @@ export function migrateHiringFeed(db: Database.Database): void {
 }
 
 interface CrawlTarget { id: string; company: string; source_url: string; job_id: string; claim: string }
-// The crawl's own per-site row ('sitecrawl'), never the #389 technology ledger ('sitecrawl:tech'), which is written before the crawl's row:
-// a crawl that failed after the ledger row must still read as failed, not finished.
-export const crawlAuditCount = (db: Database.Database, jobId: string) => (db.prepare("SELECT count(*) c FROM connector_audit WHERE scan_job_id = ? AND connector = 'sitecrawl'").get(jobId) as { c: number }).c
-
 // Reads each company's own site one at a time, each with its own deadline. The outcome is recorded per company:
 // finished = the read ran to an answer (found or none published), cut_off = the deadline hit, failed = it stopped without any answer.
 async function runCrawls(db: Database.Database, tenant: string, targets: CrawlTarget[], deps: FeedIntakeDeps): Promise<void> {
   for (const t of targets) {
     const signal = AbortSignal.timeout(deps.deadlineMs ?? CRAWL_DEADLINE_MS)
-    const before = crawlAuditCount(db, t.job_id)
+    let completed = false
     let status: 'finished' | 'cut_off' | 'failed' = 'failed'
     try {
-      await crawlJob(db, tenant, t.job_id, { get: deps.get ?? ((url, opts) => rawGet(url, 0, 10_000, guardedLookup, opts?.signal ?? signal)), gapMs: deps.gapMs, env: deps.env, signal, leads: [{ id: t.id, company: t.company, source_url: t.source_url }] })
-      status = signal.aborted ? 'cut_off' : crawlAuditCount(db, t.job_id) > before ? 'finished' : 'failed'
+      await crawlJob(db, tenant, t.job_id, { get: deps.get ?? ((url, opts) => rawGet(url, 0, 10_000, guardedLookup, opts?.signal ?? signal)), gapMs: deps.gapMs, env: deps.env, signal, leads: [{ id: t.id, company: t.company, source_url: t.source_url }],
+        onContactReadComplete: leadId => { completed = leadId === t.id },
+      })
+      status = signal.aborted ? 'cut_off' : completed ? 'finished' : 'failed'
     } catch { status = 'failed' }
     // Only the read that still holds this company's claim may record its outcome. A stale worker finishing after a retry took over changes nothing.
     db.prepare("UPDATE hiring_feed_crawl SET status = ?, finished_at = ? WHERE lead_id = ? AND tenant_id = ? AND status = 'reading' AND claim = ?").run(status, Math.floor(Date.now() / 1000), t.id, tenant, t.claim)
@@ -161,11 +159,19 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
   return { crawl, job_id: jobId as string | null, feed_items: items.length, matched: matched.length, leads: rows.map(({ source_url: _s, claim: _c, ...r }) => r), skipped, note: '' }
 }
 
+// Older releases could mark a failure audit as finished. A successful contact read always
+// stores its sitecrawl domain evidence, including when the site publishes no address.
+const LEGACY_NO_READ = `c.status = 'finished' AND NOT EXISTS (
+  SELECT 1 FROM lead_enrichments e WHERE e.lead_id = c.lead_id AND e.tenant_id = c.tenant_id
+    AND e.connector = 'sitecrawl' AND e.kind = 'domain'
+)`
+const RETRYABLE = `(c.status IN ('cut_off','failed') OR (c.status = 'reading' AND ? - c.started_at > ?) OR (${LEGACY_NO_READ}))`
+
 export type CrawlState = 'reading' | 'finished' | 'cut_off' | 'failed' | 'interrupted'
 export interface FeedStatusRow { lead_id: string; company: string; state: CrawlState; site: string | null; emails: number }
 export function hiringFeedStatus(db: Database.Database, tenant: string, jobId: string, now = Math.floor(Date.now() / 1000)): FeedStatusRow[] {
   migrateHiringFeed(db)
-  const rows = db.prepare(`SELECT c.lead_id, l.company, c.status, c.started_at, l.company_domain AS site,
+  const rows = db.prepare(`SELECT c.lead_id, l.company, CASE WHEN ${LEGACY_NO_READ} THEN 'failed' ELSE c.status END AS status, c.started_at, l.company_domain AS site,
       (SELECT count(*) FROM lead_enrichments e WHERE e.lead_id = c.lead_id AND e.tenant_id = c.tenant_id AND e.kind = 'email') AS emails
     FROM hiring_feed_crawl c JOIN leads l ON l.id = c.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = c.tenant_id
     WHERE c.tenant_id = ? AND c.job_id = ? ORDER BY l.rowid`).all(tenant, jobId) as { lead_id: string; company: string; status: string; started_at: number; site: string | null; emails: number }[]
@@ -177,11 +183,11 @@ function claimUnfinished(db: Database.Database, tenant: string, now: number, whe
   const claimed: CrawlTarget[] = []
   db.transaction(() => {
     const rows = db.prepare(`SELECT c.lead_id AS id, l.company, l.source_url, c.job_id FROM hiring_feed_crawl c JOIN leads l ON l.id = c.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = c.tenant_id
-      WHERE c.tenant_id = ? AND (? IS NULL OR c.job_id = ?) AND (c.status IN ('cut_off','failed') OR (c.status = 'reading' AND ? - c.started_at > ?))`).all(tenant, where.jobId ?? null, where.jobId ?? null, now, READING_STALE_S) as Omit<CrawlTarget, 'claim'>[]
+      WHERE c.tenant_id = ? AND (? IS NULL OR c.job_id = ?) AND ${RETRYABLE}`).all(tenant, where.jobId ?? null, where.jobId ?? null, now, READING_STALE_S) as Omit<CrawlTarget, 'claim'>[]
     for (const r of rows) {
       if (where.keys && !where.keys.has(companyKey(r.company))) continue
       const claim = randomBytes(8).toString('hex')
-      const u = db.prepare("UPDATE hiring_feed_crawl SET status = 'reading', started_at = ?, finished_at = NULL, claim = ? WHERE lead_id = ? AND tenant_id = ? AND (status IN ('cut_off','failed') OR (status = 'reading' AND ? - started_at > ?))").run(now, claim, r.id, tenant, now, READING_STALE_S)
+      const u = db.prepare(`UPDATE hiring_feed_crawl AS c SET status = 'reading', started_at = ?, finished_at = NULL, claim = ? WHERE c.lead_id = ? AND c.tenant_id = ? AND ${RETRYABLE}`).run(now, claim, r.id, tenant, now, READING_STALE_S)
       if (u.changes === 1) claimed.push({ ...r, claim })
     }
   })()

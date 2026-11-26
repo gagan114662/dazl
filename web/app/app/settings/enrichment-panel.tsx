@@ -1,123 +1,25 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { panelError } from './panel-error'
 
-interface Slot { connector: string; last4: string; enabled: boolean }
-interface AuditRow { connector: string; scan_job_id: string | null; lookup: string; status: string; results: number; created_at: number }
-
-const SLOTS = [
-  { id: 'enrich:apollo', name: 'Apollo.io', hint: 'api.apollo.io key. Organization lookups can charge Apollo credits (documented 1 credit each on current plans, capped at 5 companies per scan; older plans can differ - the cost on your account is not verified). Apollo documents people search as 0 credits on current plans (older plans can differ); it returns names and titles, not emails.' },
-  { id: 'enrich:pdl', name: 'People Data Labs', hint: 'api key. Used only when no Apollo key is saved - unless you turn on the fallback below. Person search can use your PDL credits per profile returned. Your plan determines available credits and billing, and the cost on your account is not verified.' },
-]
-
+// #1721: the key rows, spending limits and lookup history for outside data services are gone from Settings (the account's own
+// keys were removed, #1703). What stays is the one thing a customer can still see here: how many email address checks this
+// workspace has used today and this month.
 type MailboxChecks = { state: string; verifier: string | null; day: { used: number; cap: number; remaining: number }; month: { used: number; cap: number; scope: string }; note: string }
+
 export default function EnrichmentPanel() {
-  const [data, setData] = useState<{ connectors: Slot[]; audit: AuditRow[]; fallback?: boolean; mailbox_checks?: MailboxChecks | null; credits?: { provider: 'apollo' | 'pdl'; window: 'day' | 'month'; reserved: number; charged: number; limit: number | null; source: 'tenant' | 'operator' | null }[] | null } | null>(null)
-  const [keys, setKeys] = useState<Record<string, string>>({})
-  const [msg, setMsg] = useState('')
-  const [limits, setLimits] = useState<Record<string, string>>({})
-  async function load() { const r = await fetch('/api/settings/enrichment'); if (r.ok) setData(await r.json()) }
-  useEffect(() => { void load() }, [])
-  async function act(body: Record<string, unknown>) {
-    const r = await fetch('/api/settings/enrichment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-    const j = await r.json().catch(() => ({}))
-    setMsg(r.ok ? (body.disconnect ? 'Removed.' : 'Saved.') : panelError(j.error, 'Something went wrong'))
-    setKeys({})
-    void load()
-  }
-  if (!data) return null
-  const byId = Object.fromEntries(data.connectors.map(c => [c.connector, c]))
+  const [checks, setChecks] = useState<MailboxChecks | null>(null)
+  useEffect(() => {
+    void fetch('/api/settings/enrichment').then(r => r.ok ? r.json() : null).then(j => setChecks(j?.mailbox_checks ?? null)).catch(() => null)
+  }, [])
+  if (!checks || checks.state === 'off') return null
   return (
-    <div className="card p-6 mb-4">
-      <h2 className="font-semibold mb-1">Enrichment (bring your own key)</h2>
-      <p className="text-[#555] text-sm mb-3">
-        Add your own Apollo.io or People Data Labs key and every scan enriches the companies it finds with firmographics and named contacts.
-        Your key is stored encrypted, never shown again, and only your account&apos;s scans spend your credits. Without a key nothing calls these services.
+    <div className="card p-6 mb-4" data-testid="mailbox-checks" data-state={checks.state}>
+      <h2 className="font-semibold mb-1">Email address checks</h2>
+      <p className="text-[#555] text-sm mb-2">{checks.note}</p>
+      <p className="text-xs text-[#555]" data-testid="mailbox-checks-numbers">
+        Today: {checks.day.used} used{checks.day.cap > 0 ? ` of ${checks.day.cap}, ${checks.day.remaining} left` : ', no checks allowed (daily limit 0)'}.
+        {' '}This month: {checks.month.used} used by this workspace{checks.verifier ? `; the monthly limit of ${checks.month.cap} is shared by all workspaces` : ''}.
       </p>
-      <div className="space-y-4">
-        {SLOTS.map(s => {
-          const st = byId[s.id]
-          return (
-            <div key={s.id} className="text-sm">
-              <div className="font-medium">{s.name}</div>
-              <p className="text-[#6b6b6b] text-xs mb-1">{s.hint}</p>
-              {st?.enabled ? (
-                <div className="flex items-center gap-3">
-                  <span>Connected (key ending {st.last4})</span>
-                  <button className="underline underline-offset-2" onClick={() => act({ connector: s.id, disconnect: true })}>Remove</button>
-                </div>
-              ) : (
-                <div className="flex gap-2">
-                  <input className="field flex-1" type="password" placeholder={`Paste your ${s.name} API key`} value={keys[s.id] ?? ''} onChange={e => setKeys({ ...keys, [s.id]: e.target.value })} />
-                  <button aria-label={`Save ${s.name} key`} className="btn-primary" disabled={!(keys[s.id] ?? '').trim()} onClick={() => act({ connector: s.id, key: (keys[s.id] ?? '').trim() })}>Save</button>
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-      {byId['enrich:apollo']?.enabled && byId['enrich:pdl']?.enabled && (
-        <label className="flex items-start gap-2 text-sm mt-1">
-          <input type="checkbox" className="mt-0.5" checked={!!data.fallback} onChange={e => act({ fallback: e.target.checked })} />
-          <span>
-            Also use People Data Labs as a fallback when Apollo finds no contacts for a company.
-            <span className="text-[#6b6b6b] text-xs block">Off by default. Each fallback profile returned can use 1 PDL credit (up to 5 per scan - documented terms; the cost on your account is not verified).</span>
-          </span>
-        </label>
-      )}
-      {data.credits && (
-        <div className="mt-4 text-xs text-[#555]" data-testid="credit-limits">
-          <div className="font-medium text-sm mb-1">Credit limits (this workspace)</div>
-          <p className="mb-1">Optional. With no limit set, only the per-scan caps apply. When a limit is reached, paid lookups for that provider are skipped, and the scan says so.</p>
-          {data.credits.map(u => (
-            <div key={u.provider + u.window} className="flex flex-wrap gap-x-2 gap-y-1 items-center mb-2">
-              <span className="w-40 shrink-0">{u.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} per {u.window}</span>
-              <span>{u.reserved} credits used{u.limit === null ? ', no limit set' : ` of ${u.limit}${u.source === 'operator' ? ' (set by the operator)' : ''}`}</span>
-              {u.source !== 'operator' && (
-                <>
-                  <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-2 w-20 min-h-11 shrink-0" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? (u.source === 'tenant' && u.limit !== null ? String(u.limit) : '')} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />
-                  {(() => {
-                    const key = u.provider + u.window, saved = u.source === 'tenant' && u.limit !== null ? String(u.limit) : ''
-                    const v = (limits[key] ?? saved).trim()
-                    // Save needs a whole number that differs from what is saved; a blank field never clears (the separate Clear does).
-                    const canSave = /^[0-9]+$/.test(v) && v !== saved
-                    return (
-                      <>
-                        <button aria-label={`Save ${u.provider} ${u.window} credit limit`} className="min-h-11 min-w-11 px-2 underline disabled:opacity-40 disabled:no-underline" disabled={!canSave} onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: Number(v) } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Save</button>
-                        {u.limit !== null && <button aria-label={`Clear ${u.provider} ${u.window} credit limit`} className="min-h-11 min-w-11 px-2 underline" onClick={() => { void act({ credit_limit: { provider: u.provider, window: u.window, limit: null } }); setLimits(prev => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== key))) }}>Clear</button>}
-                      </>
-                    )
-                  })()}
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {data.audit.length > 0 && (
-        <div className="mt-4 text-xs text-[#555]">
-          <div className="font-medium text-sm mb-1">Recent enrichment lookups</div>
-          {data.audit.slice(0, 8).map((a, i) => (
-            <div key={i} className="flex gap-2">
-              <span>{new Date(a.created_at * 1000).toLocaleDateString()}</span>
-              <span className="font-mono">{a.connector.replace('enrich:', '')}</span>
-              <span className="truncate flex-1">{a.lookup}</span>
-              <span>{a.status}{a.results ? ` · ${a.results}` : ''}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {data.mailbox_checks && (
-        <div className="mt-4 text-xs text-[#555]" data-testid="mailbox-checks" data-state={data.mailbox_checks.state}>
-          <div className="font-medium text-[#111]">Mailbox checks{data.mailbox_checks.verifier ? ` (${data.mailbox_checks.verifier.includes('staging-fake') ? 'STAGING TEST verifier, not a real check' : data.mailbox_checks.verifier})` : ''}</div>
-          <p>{data.mailbox_checks.note}</p>
-          {data.mailbox_checks.state !== 'off' && <p data-testid="mailbox-checks-numbers">
-            Today: {data.mailbox_checks.day.used} used{data.mailbox_checks.day.cap > 0 ? ` of ${data.mailbox_checks.day.cap}, ${data.mailbox_checks.day.remaining} left` : ', no checks allowed (daily limit 0)'}.
-            {' '}This month: {data.mailbox_checks.month.used} used by this workspace{data.mailbox_checks.verifier ? `; the monthly limit of ${data.mailbox_checks.month.cap} is shared by all workspaces` : ''}.
-          </p>}
-        </div>
-      )}
-      {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
     </div>
   )
 }

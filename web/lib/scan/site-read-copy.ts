@@ -1,26 +1,30 @@
 // What the first run says when the website read cannot run on the free trial (app/app/first-run.tsx): the real reason
-// from POST /api/scan/icp-from-url (the `trial` refusal of lib/scan/trial-site-read.ts), never a free-start promise,
-// with the two ways on (own key, or the profile by hand). Pure, so test/site-read-copy.test.ts can pin each mapping.
-const own = 'Add your own Anthropic (Claude) key to read it, or describe your business yourself.'
-export function siteKeyReason(why: string | null): string {
-  if (why === 'not_configured' || why === 'not_in_allowlist') return `The free trial isn't available here right now. ${own}`
+// from POST /api/scan/icp-from-url (the `trial` refusal of lib/scan/trial-site-read.ts), never a free-start promise.
+// #1703: there is no key of the user's own to add, so no line offers one - each refusal says its reason and the manual
+// profile (the form below), or Link Google where that is the read's guard (first-run shows that step beside this text).
+// Pure, so test/site-read-copy.test.ts can pin each mapping.
+const MANUAL = 'Describe your business yourself below.'
+export function siteReadReason(why: string | null): string {
+  if (why === 'not_configured' || why === 'not_in_allowlist') return `The free trial isn't available here right now. ${MANUAL}`
   // Only an admitted read counts (lib/scan/trial-site-read.ts): three per 30 days, done or failed on dazl's side after
   // the call; a refusal (ineligible, busy, throttled, no money) or a read its guard refused before any call never uses one.
   // The limiter is a fixed window (lib/rate-limit.ts): all three come back together, 30 days after the first.
-  if (why === 'site_reads_used') return `You have used your three free website reads for now; they come back together, 30 days after the first. ${own}`
-  if (why === 'workspace_not_eligible') return `The free trial belongs to the account that created this workspace. ${own}`
+  if (why === 'site_reads_used') return `You have used your three free website reads for now; they come back together, 30 days after the first. ${MANUAL}`
+  if (why === 'workspace_not_eligible') return `The free trial belongs to the account that created this workspace. ${MANUAL}`
   // #1095: a password account links Google to THIS account (first-run shows the Link Google step beside this text)
-  if (why === 'google_required') return `Free website reads need a Google account: link Google to this account to read it free (no card). ${own}`
+  if (why === 'google_required') return `Free website reads need a Google account: link Google to this account to read it free (no card). ${MANUAL}`
   // Another account on the same company email domain started the trial: this account's own trial is not "used up".
-  if (why === 'domain_used') return `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${own}`
+  if (why === 'domain_used') return `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${MANUAL}`
   // The money ceiling: website reads on the trial draw on the same allowance as scans (lib/trial-copy.ts says the same).
-  if (why === 'account_total_cap') return `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${own}`
-  if (why === 'attempts_cap' || why === 'account_cap') return `Your free trial is used up. ${own}`
-  if (why === 'ip_throttle' || why === 'global_daily_cap' || why === 'site_reads_busy' || why === 'limit_unavailable') return `The free trial is busy right now. Try again later. ${own}`
+  if (why === 'account_total_cap') return `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${MANUAL}`
+  if (why === 'attempts_cap' || why === 'account_cap') return `Your free trial is used up. ${MANUAL}`
+  if (why === 'ip_throttle' || why === 'global_daily_cap' || why === 'site_reads_busy' || why === 'limit_unavailable') return `The free trial is busy right now. Try again later. ${MANUAL}`
   // The read's own spend guard refused before any call: nothing was spent and nothing was used up.
-  if (why === 'spend_unavailable') return `The free trial could not fund this read just now; nothing was used up. Try again later. ${own}`
+  if (why === 'spend_unavailable') return `The free trial could not fund this read just now; nothing was used up. Try again later. ${MANUAL}`
   // The funded read ran and failed: that read counted toward the three, so the copy says what it cost and never
   // urges a blind retry (a retry is another read of the three).
-  if (why === 'read_failed') return `dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another, or describe your business yourself.`
-  return 'Reading your site runs on Claude, with your own Anthropic key.'
+  if (why === 'read_failed') return `dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another. ${MANUAL}`
+  // No reason given, or one this screen does not know yet: say the read cannot run, never that anything was used,
+  // and point at the profile form below. Nothing free is promised and no key is asked for.
+  return `The automatic read is unavailable. ${MANUAL}`
 }

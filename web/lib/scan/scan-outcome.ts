@@ -49,6 +49,7 @@ export interface ScanRecord {
   // successfully. An accounting_uncertain stop counts that step as billed at this amount. Omitted (or null) when not read.
   uncertain_usd?: number | null
   uncertain_steps?: number | null
+  trial_attempt_restored?: boolean
 }
 // #1157: a definite answer for an interrupted paid step - counted as billed at the amount reserved for it - never "may have been
 // billed". The amount is shown rounded UP (to 1/100 of a cent when it is not a whole cent), so the page never names less than the
@@ -166,7 +167,7 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
         const amount = countedAmount(j), steps = countedSteps(j), many = steps !== null && steps > 1, paren = amount ? ` (${amount})` : ''
         const counted = `${many ? `${steps} paid steps` : steps === 1 ? 'one paid step' : 'the interrupted paid step'} counted as billed${paren}`
         const what = many ? `${steps} paid steps were interrupted before their answers came back, so they are counted as billed at the amount reserved for them${paren}, and they stay` : `A paid step was interrupted before its answer came back, so it is counted as billed at the amount reserved for it${paren}, and it stays`
-        const o: ScanOutcome = { kind: 'stopped', label: `Stopped after an interruption - ${counted}`, detail: `${what} counted against your limits. dazl did not run ${many ? 'them' : 'it'} again automatically: that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.${j.funded_by === 'trial' ? ' This free scan does not count toward your free scans.' : ''}`, next: { text: 'Start a new scan', href: NEW_SCAN } }
+        const o: ScanOutcome = { kind: 'stopped', label: `Stopped after an interruption - ${counted}`, detail: `${what} counted against your limits. dazl did not run ${many ? 'them' : 'it'} again automatically: that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.${j.trial_attempt_restored ? ' This free scan does not count toward your free scans.' : ''}`, next: { text: 'Start a new scan', href: NEW_SCAN } }
         // An outage that names its source keeps that naming (never a bare interruption) and the same definite count.
         return sourcesFailed(j) ? { ...o, kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error; ${counted}` } : o }
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }

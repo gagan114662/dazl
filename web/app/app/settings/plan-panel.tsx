@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { panelError } from './panel-error'
-import { trialSummary, type TrialBlock } from '@/lib/trial-copy'
+import { trialSummary, unlimitedTrialDailyCap, type TrialBlock } from '@/lib/trial-copy'
 import { usageLine } from '@/lib/plan-usage-copy'
 import { BILLING_BETA_TEXT } from '@/lib/beta'
 
@@ -53,6 +53,7 @@ export default function PlanPanel({ billingAvailable = false }: { billingAvailab
 
   if (!u) return null
   const note = u.billing_status ? STATUS_NOTE[u.billing_status] : undefined
+  const trialDailyCap = u.trial && unlimitedTrialDailyCap(u.trial)
   return (
     <div className="card p-6 mb-4" data-testid="plan-panel">
       <h2 className="font-semibold mb-1">Plan <span className="badge ml-2" data-testid="plan-badge">{u.plan === 'pro' ? 'Pro' : 'Free'}</span></h2>
@@ -70,6 +71,7 @@ export default function PlanPanel({ billingAvailable = false }: { billingAvailab
       {u.trial && (() => { const t = trialSummary(u.trial); return (
         <p className="text-[#555] text-sm mb-4" data-testid="trial-status" data-state={t.state}>{t.text}</p>
       ) })()}
+      {trialDailyCap && <p className="text-[#555] text-sm mb-4" data-testid="trial-daily-cap">{trialDailyCap}</p>}
       {u.plan === 'pro'
         ? <button onClick={() => go('/api/billing/portal')} className="btn-ghost">Manage billing</button>
         : billingAvailable ? <button onClick={() => go('/api/billing/checkout')} className="btn-primary">Upgrade to Pro</button>

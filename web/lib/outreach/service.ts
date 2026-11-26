@@ -7,6 +7,7 @@ import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, manualSendCap, sendDayStart, tableExists } from './send-budget.ts'
 import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
+import { composeDraftCopy, DraftCopyError } from './draft-copy.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -17,8 +18,9 @@ import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
-import { discoverContact, emailOnCompanySite, signalStale } from '../discover/card.ts'
+import { discoverContact, emailOnCompanySite } from '../discover/card.ts'
 import { isGenericInbox } from './generic-inbox.ts'
+import { undeliverableAddress } from './undeliverable-address.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -189,7 +191,7 @@ export const getSettings = (db: Database.Database, tenantId: string) =>
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
 const id24 = () => randomBytes(12).toString('hex')
 
-interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null }
+interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null; review_reason?: string | null; event_date?: string | null; event_date_proof?: string | null; signal_kind?: string | null }
 
 export function draftTemplate(lead: Lead, businessName: string, positioning = '', addressUrl: string = lead.source_url): { subject: string; body: string } {
   // Literal seller-authored context only: never infer an offer from a buyer signal.
@@ -340,9 +342,9 @@ export function discoverRecipientRefusal(db: Database.Database, tenantId: string
 }
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
-  const state = db.prepare('SELECT review_reason, event_date, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; event_date: string | null; company_domain: string | null } | undefined
+  const state = db.prepare('SELECT review_reason, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; company_domain: string | null } | undefined
   if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  if (!state?.event_date || signalStale(state.event_date)) throw new OutreachError('lead_currentness_unconfirmed')
+  if (currentnessHeld(db, tenantId, leadId)) throw new OutreachError('lead_currentness_unconfirmed')
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // #1250: a shared inbox (info@, sales@, reception@ ...) is not a contact and is never drafted to; the first address that is not one is used
   // and the address must be the named person's own, as the card decides it (lib/discover/card.ts discoverContact): one rule, read here too
@@ -353,6 +355,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   const to = norm(row?.value ?? '')
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  if (undeliverableAddress(to).blocked) throw new OutreachError('undeliverable_address')
   if (classifyPurpose(to).purpose === 'non-sales') throw new OutreachError('not_sales_contact')
   if (!emailOnCompanySite(to, row!.source_url, state?.company_domain ?? null)) throw new OutreachError('domain_unconfirmed')
   if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
@@ -364,7 +367,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
 
 function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
   const lead = db.prepare(
-    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason, l.event_date, l.event_date_proof, l.signal_kind
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')
@@ -404,6 +407,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string, ma
   const to = norm(published)
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  if (undeliverableAddress(to).blocked) throw new OutreachError('undeliverable_address')
   // Beta rule (owner, 2026-11-23): no automatic function ever drafts to a shared inbox (info@, sales@, hello@, reception@, founders@ ...;
   // lib/outreach/generic-inbox.ts). Every draft a person did not ask for by hand comes through here with manual false: autopilot,
   // calibration, the scheduler. A shared inbox reaches a desk, not a person, so for them it is the same as no contact.
@@ -446,7 +450,7 @@ export function playOfferRow(db: Database.Database, tenantId: string, leadId: st
 }
 
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string, manual = false): string {
-  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId, manual)
+  const { lead, to, test } = draftChecks(db, tenantId, leadId, manual)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
   // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
   // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,
@@ -457,7 +461,13 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const r = draftOffer(play, tenant)
   if (r.refuse) throw new OutreachError(r.refuse)
   const positioning = r.offer ?? ''
-  const t = draftTemplate(lead, businessName, positioning, addressUrl)
+  let t: ReturnType<typeof composeDraftCopy>
+  try {
+    t = composeDraftCopy(lead, businessName, positioning)
+  } catch (error) {
+    if (error instanceof DraftCopyError) throw new OutreachError(error.code)
+    throw error
+  }
   const id = id24()
   try {
     db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
@@ -542,6 +552,7 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
   const m = approveChecks(db, tenantId, id, sequenceSet)
   db.transaction(() => {
     if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
+    if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
     // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
