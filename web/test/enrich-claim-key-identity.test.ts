@@ -4,6 +4,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { randomBytes } from 'node:crypto'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './helpers/pg-test.ts'
+import * as enrichment from '../lib/enrich/index.ts'
 import { enrichLeadContacts, claimKeysFor, legacyTruncatedKeysFor, heldEnrichments, retryHeldEnrichment } from '../lib/enrich/index.ts'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateConnectors, saveCredential, setEnrichFallback, auditTryReserve, auditSettleClaim } from '../lib/connectors/store.ts'
@@ -162,4 +166,30 @@ test('#922 retry revalidates attribution inside release transaction after earlie
   assert.deepEqual(c, calls())
   assert.deepEqual(db.prepare('SELECT status FROM connector_claims WHERE lookup = ?').get(t), { status: 'reserved' })
   db.close()
+})
+
+test('Postgres held enrichment lists attributed, aged claims only for the job owner', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(db.pool)
+    for (const [job, tenant, lead] of [['mine', 'owner', PAIR[0]], ['other', 'neighbor', { ...PAIR[1], id: 'c' }]] as const) {
+      await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES (?, ?, 'Seller', 'Services', 'Region', 'running')", [job, tenant])
+      await db.run("INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url) VALUES (?, ?, ?, ?, 'Opened', 'https://evidence.test/')", [lead.id, job, lead.company, lead.company_domain])
+      const keys = claimKeysFor(lead)
+      await db.run("INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at) VALUES (?, 'enrich:apollo', ?, ?, 'reserved', 10)", [tenant, job, keys.stepOrg])
+      await db.run("INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at) VALUES (?, 'enrich:apollo', ?, ?, 'reserved', 1900)", [tenant, job, keys.stepPeople])
+      if (tenant === 'neighbor') {
+        await db.run("INSERT INTO connector_claims (tenant_id, connector, scan_job_id, lookup, status, claimed_at) VALUES ('owner', 'enrich:apollo', ?, ?, 'reserved', 10)", [job, keys.stepOrg])
+      }
+    }
+    const expected = (leadId: string, jobId: string, lookup: string) =>
+      [{ leadId, jobId, company: LONG, provider: 'apollo', step: 'org', lookup, claimedAt: 10 }]
+    assert.deepEqual(await enrichment.readHeldEnrichments(db, 'owner', 2000), expected('a', 'mine', claimKeysFor(PAIR[0]).stepOrg))
+    assert.deepEqual(await enrichment.readHeldEnrichments(db, 'neighbor', 2000), expected('c', 'other', claimKeysFor(PAIR[1]).stepOrg))
+    assert.deepEqual(await enrichment.readHeldEnrichments(db, 'unrelated', 2000), [])
+  } finally {
+    await db.close()
+    await drop()
+  }
 })

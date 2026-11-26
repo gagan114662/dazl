@@ -6,6 +6,7 @@
 // Every call is audit-rowed; a failure never ends the whole pass (a bonus, never the bar). The summary records each
 // provider's outcome per lead in waterfall order, and failures/skips reach the scan view (lib/scan/provider-issues.ts).
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { createHash } from 'node:crypto'
 import { addEnrichment, audit, auditReleaseUnsent, auditSettleClaim, auditTryReserve, enrichFallbackEnabled, getEnabledCredential, latestAuditStatus, readOutcome, releaseHeldClaim } from '../connectors/store.ts'
 import { apolloOrgEnrich, apolloPeopleSearch, EnrichError } from './apollo.ts'
@@ -577,19 +578,41 @@ export interface HeldEnrichment { leadId: string; company: string; jobId: string
 // pass, not a live one. The age gate is what makes an owner release safe against a concurrent live attempt.
 export const HELD_AFTER_S = 15 * 60
 
+type HeldClaimRow = { scan_job_id: string; connector: string; lookup: string; claimed_at: number | string }
+const HELD_CLAIMS_SQL = "SELECT c.scan_job_id, c.connector, c.lookup, c.claimed_at FROM connector_claims c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.tenant_id WHERE c.tenant_id = ? AND c.status = 'reserved' AND c.connector IN ('enrich:apollo', 'enrich:pdl') AND c.claimed_at < ?"
+const HELD_LEADS_SQL = 'SELECT l.id, l.company, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.scan_job_id = ? AND j.user_id = ? ORDER BY l.insert_seq'
+
+function attributedHeldClaim(row: HeldClaimRow, leads: LeadRow[]): HeldEnrichment | undefined {
+  for (const lead of leads) {
+    const k = claimKeysFor(lead), t = legacyTruncatedKeysFor(lead) // Only attributable old rows are owner-resolvable.
+    const step = row.lookup === k.stepOrg || row.lookup === t.stepOrg ? 'org' : row.lookup === k.stepPeople || row.lookup === t.stepPeople ? 'people' : row.lookup === k.legacyPeople || row.lookup === t.legacyPeople ? 'legacy' : null
+    if (!step) continue
+    const raw = step === 'org' ? (l: LeadRow) => rawStep('org', l) : step === 'people' ? (l: LeadRow) => rawStep('people', l) : (l: LeadRow) => rawLookup('people', l)
+    if (row.lookup !== (step === 'org' ? k.stepOrg : step === 'people' ? k.stepPeople : k.legacyPeople) && !unambiguousTruncatedIdentity(leads, raw(lead), raw)) continue
+    return { leadId: lead.id, company: lead.company, jobId: row.scan_job_id, provider: row.connector === ENRICH_APOLLO ? 'apollo' : 'pdl', step, lookup: row.lookup, claimedAt: Number(row.claimed_at) }
+  }
+}
+
 export function heldEnrichments(db: Database.Database, tenantId: string, nowSec = Math.floor(Date.now() / 1000)): HeldEnrichment[] {
-  const rows = db.prepare("SELECT scan_job_id, connector, lookup, claimed_at FROM connector_claims WHERE tenant_id = ? AND status = 'reserved' AND connector IN ('enrich:apollo', 'enrich:pdl') AND claimed_at < ?").all(tenantId, nowSec - HELD_AFTER_S) as { scan_job_id: string; connector: string; lookup: string; claimed_at: number }[]
+  const rows = db.prepare(HELD_CLAIMS_SQL).all(tenantId, nowSec - HELD_AFTER_S) as HeldClaimRow[]
   const byJob = new Map<string, LeadRow[]>()
   const out: HeldEnrichment[] = []
-  for (const r of rows) {
-    if (!byJob.has(r.scan_job_id)) byJob.set(r.scan_job_id, db.prepare('SELECT id, company, company_domain FROM leads WHERE scan_job_id = ?').all(r.scan_job_id) as LeadRow[])
-    for (const lead of byJob.get(r.scan_job_id)!) {
-      const k = claimKeysFor(lead), t = legacyTruncatedKeysFor(lead) // Only attributable old rows are owner-resolvable.
-      const step = r.lookup === k.stepOrg || r.lookup === t.stepOrg ? 'org' : r.lookup === k.stepPeople || r.lookup === t.stepPeople ? 'people' : r.lookup === k.legacyPeople || r.lookup === t.legacyPeople ? 'legacy' : null
-      const raw = step === 'org' ? (l: LeadRow) => rawStep('org', l) : step === 'people' ? (l: LeadRow) => rawStep('people', l) : (l: LeadRow) => rawLookup('people', l)
-      if (step && r.lookup !== (step === 'org' ? k.stepOrg : step === 'people' ? k.stepPeople : k.legacyPeople) && !unambiguousTruncatedIdentity(byJob.get(r.scan_job_id)!, raw(lead), raw)) continue
-      if (step) { out.push({ leadId: lead.id, company: lead.company, jobId: r.scan_job_id, provider: r.connector === ENRICH_APOLLO ? 'apollo' : 'pdl', step, lookup: r.lookup, claimedAt: r.claimed_at }); break }
-    }
+  for (const row of rows) {
+    if (!byJob.has(row.scan_job_id)) byJob.set(row.scan_job_id, db.prepare(HELD_LEADS_SQL).all(row.scan_job_id, tenantId) as LeadRow[])
+    const claim = attributedHeldClaim(row, byJob.get(row.scan_job_id)!)
+    if (claim) out.push(claim)
+  }
+  return out
+}
+
+export async function readHeldEnrichments(db: Db, tenantId: string, nowSec = Math.floor(Date.now() / 1000)): Promise<HeldEnrichment[]> {
+  const rows = await db.all<HeldClaimRow>(HELD_CLAIMS_SQL, [tenantId, nowSec - HELD_AFTER_S])
+  const byJob = new Map<string, LeadRow[]>()
+  const out: HeldEnrichment[] = []
+  for (const row of rows) {
+    if (!byJob.has(row.scan_job_id)) byJob.set(row.scan_job_id, await db.all<LeadRow>(HELD_LEADS_SQL, [row.scan_job_id, tenantId]))
+    const claim = attributedHeldClaim(row, byJob.get(row.scan_job_id)!)
+    if (claim) out.push(claim)
   }
   return out
 }
