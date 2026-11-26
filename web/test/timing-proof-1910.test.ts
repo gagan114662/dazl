@@ -15,8 +15,8 @@ const lead = parseLeads(JSON.stringify({ leads: [{
 }] }), 1).leads[0]
 assert.ok(lead)
 
-async function readiness(postingDate: string | null) {
-  const html = `<h1>${company}</h1><p>${opening}</p>${postingDate ? `<p>Posted ${postingDate}</p>` : ''}`
+async function readiness(postingDate: string | null, otherMarkup = '') {
+  const html = `<h1>${company}</h1><p>${opening}</p>${postingDate ? `<p>Posted ${postingDate}</p>` : ''}${otherMarkup}`
   const checked = await checkLead(lead, [{ url, title: company, text: null, page_age: '5 days ago' }],
     async () => new Response(html), undefined, now)
   const row = {
@@ -39,4 +39,13 @@ test('#1910 a hiring signal without a posting date stays in Research even if the
 
 test('#1910 a hiring signal with a posting date inside the window can be Ready', async () => {
   assert.equal(await readiness(day), 'ready_email')
+})
+
+test('#1910 unrelated page dates cannot establish a hiring posting date', async () => {
+  assert.equal(await readiness(null, `<p>Applications close ${day}</p>`), 'research')
+  assert.equal(await readiness(null, `<script type="application/ld+json">{"datePublished":"${day}"}</script>`), 'research')
+})
+
+test('#1910 a structured posting date can make a hiring lead Ready', async () => {
+  assert.equal(await readiness(null, `<script type="application/ld+json">{"@type":"JobPosting","datePosted":"${day}"}</script>`), 'ready_email')
 })

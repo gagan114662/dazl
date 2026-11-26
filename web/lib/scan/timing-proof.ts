@@ -19,7 +19,7 @@ import type { Db } from '../db/client.ts'
 import { domainConfirmedDb } from '../signals/domain-basis.ts'
 import type Database from 'better-sqlite3'
 import { addEnrichment, INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
-import { proofBackedTiming, TIMING_REQUESTED } from './scoreboard.ts'
+import { isHiringTrigger, proofBackedTiming, TIMING_REQUESTED } from './scoreboard.ts'
 import { companyFirstJobWindow, jobWindowDays } from './window.ts'
 import { currentSiteContact, siteContactFromRows, whoOf, type SiteContact, type SiteRow } from './site-contact.ts'
 
@@ -32,6 +32,19 @@ const ACTIONABLE_CONNECTOR = 'scan:actionable' // lib/scan/actionable.ts ACTIONA
 
 export type TimingProofGap = 'no_lead' | 'not_machine_verified' | 'needs_review' | 'quarantined' | 'unresolved_recency_bound' | 'timing_unproven'
   | 'no_domain' | 'domain_unconfirmed' | 'not_actionable' | 'no_record' | 'version_mismatch' | 'binding_changed'
+
+// Discovery stores a display date separately from its origin. An index date can
+// describe a search result, but cannot establish when a hiring posting appeared.
+export function discoveryHiringDateProven(lead: {
+  signal: string
+  date: string | null
+  date_source: 'page' | 'index' | null
+  proof: string
+}, windowDays: number, now: Date): boolean {
+  if (!isHiringTrigger(lead.signal)) return true
+  return lead.proof === 'confirmed' && lead.date_source === 'page' &&
+    proofBackedTiming({ signal: lead.signal, event_date: lead.date, event_date_proof: 'page_bound' }, windowDays, now)
+}
 
 interface Binding { v: number; proof: string; date: string; domain: string; route: string }
 type LeadRow = { id: string; source_url: string; company_domain: string | null; event_date: string | null; event_date_proof: string | null; signal: string | null; signal_kind: string | null; review_reason: string | null; quarantined_at: number | null; confidence: number | null; query: string | null; icp: string | null; run_budget: string | null }
