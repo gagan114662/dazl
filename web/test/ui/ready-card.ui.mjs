@@ -65,11 +65,6 @@ const SCENES = {
 let liveSender = null
 let settingsSlowUntil = 0
 let profileSlowFirst = 0 // one-shot: delays the first /api/settings/profile response (the mount read)
-let profileGate = 0 // 2h: holds this many /api/settings/profile GETs until releaseHeldProfiles() (armed BEFORE open, like profileSlowFirst)
-let profileSeen = 0 // profile GETs served since the gate was armed; the FIRST is FirstRun's own read and always passes
-const profileHeld = []
-const profileLog = [] // every profile GET arrival, in order, '#n' or '#n held' - failure forensics for reader order
-const releaseHeldProfiles = () => { while (profileHeld.length) profileHeld.shift()() }
 const b = await chromium.launch()
 async function open(sc, width, height, opts = {}) {
   liveSender = null
@@ -93,9 +88,6 @@ async function open(sc, width, height, opts = {}) {
       // FirstRun renders nothing until its own read resolves): #1 FirstRun (first-run.tsx:127, never held), #2
       // ReadyCard's mount load (ready-card.tsx:15), #3 Journey's loadProfile (journey.tsx:46), #4 the readiness
       // panel's mount read (readiness.tsx:62 - the only read that seeds the form). 2h holds exactly #4 via `> 3`.
-      const n = ++profileSeen
-      if (profileGate > 0 && n > 3) { profileLog.push(`#${n} held`); profileGate--; await new Promise(r => profileHeld.push(r)) } // 2h: the held readiness mount read
-      else profileLog.push(`#${n}`)
 
       if (profileSlowFirst > 0) { const ms = profileSlowFirst; profileSlowFirst = 0; await new Promise(r => setTimeout(r, ms)) } // #1760 2e/2f: a slow mount read
       return json(sc.profile)
@@ -121,15 +113,8 @@ async function open(sc, width, height, opts = {}) {
     return json({}, 404)
   })
   const page = await ctx.newPage()
-  if (opts.deferProfile) {
-    // 2h: profile reads are held behind profileGate, so networkidle would never fire. The observable barrier instead:
-    // FirstRun renders nothing until its own (ungated) reads resolve, so setup-details visible = page resolved and mounted.
-    await page.goto(`${base}/app`, { waitUntil: 'domcontentloaded' })
-    await page.getByTestId('setup-details').waitFor({ timeout: 15000 })
-  } else {
-    await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
-    await page.getByTestId('journey').waitFor({ timeout: 15000 }); await page.waitForLoadState('networkidle')
-  }
+  await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
+  await page.getByTestId('journey').waitFor({ timeout: 15000 }); await page.waitForLoadState('networkidle')
   return { ctx, page, writes }
 }
 const card = page => page.getByTestId('ready-card')
@@ -246,14 +231,13 @@ try {
     await page.waitForTimeout(2000) // the delayed older read lands here
     assert.equal(await page.getByLabel('Your website').inputValue(), 'typed.example', 'a late seed never overwrites typed input')
     assert.deepEqual(writes, []); await ctx.close()
-    // 2h. #1760: the deterministic held-read Save scenario moved to a follow-up PR under Quest's 18:45 ET
-    // timebox (no valid green run in time). The per-field seed fix it proves stays in this PR with its unit test.
-    // Executed evidence before removal: the gate held exactly the readiness mount read, the wake read landed while
-    // held, the form was verified unseeded while held, typed sells kept, and the stale mount read still seeded the
-    // untouched website (run 45718519911, ledger on #1722 comment-7177520633). The follow-up restores the scenario
-    // fixture-corrected from 2ef4e9908: the siteform scene stores an empty business_name, so the required Business
-    // name is filled before Save and the POST body asserts website + sells + business_name. The gate helpers above
-    // (profileGate/profileSeen/profileHeld/profileLog/releaseHeldProfiles) stay for the follow-up to reuse.
+    // 2h. #1760: the deterministic held-read Save scenario moved to #1836 under Quest's 18:45 ET timebox (no
+    // valid green run in time). The per-field seed fix it proves stays in this PR with its unit test. Executed
+    // evidence before removal: the gate held exactly the readiness mount read, the wake read landed while held,
+    // the form was verified unseeded while held, typed sells kept, and the stale mount read still seeded the
+    // untouched website (run 45718519911, ledger on #1722 comment-7177520633). #1836 restores the WHOLE harness -
+    // the scenario AND its profile-gate helpers - fixture-corrected from 2ef4e9908: the siteform scene stores an
+    // empty business_name, so the required Business name is filled before Save and the POST body asserts all three.
     // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
     // leads with no company name - rendered on the real Home page from the stubbed /api/home/results answer
     // (RESULTS2G), at both widths.
