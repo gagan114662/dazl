@@ -1,12 +1,13 @@
-// LLM-written outreach copy on the tenant's own key, with their Memory as context.
+// LLM-written outreach copy with the tenant's Memory as context.
 // Polish runs ONLY on an explicit per-draft request (POST /api/outreach/polish) or
-// inside a tenant-enabled automation - never silently on draft creation, because the
-// call bills the tenant's provider key. Any failure leaves the template in place.
+// inside a tenant-enabled automation. Draft creation does not call the model.
+// Any failure leaves the template in place.
 import type Database from 'better-sqlite3'
 import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import { defaultVendor, getKey } from '../llm/key-store.ts'
 import type { Vendor } from '../llm/vendors.ts'
 import { providers, type Provider, type DetailedCompletion } from '../llm/provider.ts'
+import { operatorKey } from '../scan/trial.ts'
 import { getMasterKey } from '../secrets.ts'
 import { draftOffer } from '../scan/play-offer-text.ts'
 import { playOfferRow } from './service.ts'
@@ -58,12 +59,15 @@ function recordRefusal(db: Database.Database, tenantId: string, messageId: strin
   } catch { /* refusals carry no spend; a missing table must not mask the refusal */ }
 }
 
-function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps): { provider: Provider; key: string; vendor: Vendor } | null {
+function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps, allowPlatform = false): { provider: Provider; key: string; vendor: Vendor } | null {
   let vendor: ReturnType<typeof defaultVendor> = null
   try { vendor = defaultVendor(db, tenantId) } catch { return null } // key table may predate this deploy
-  if (!vendor) return null
-  const key = getKey(db, tenantId, vendor, deps.master ?? getMasterKey())
-  if (!key) return null
+  let key = vendor ? getKey(db, tenantId, vendor, deps.master ?? getMasterKey()) : null
+  if (!vendor && allowPlatform) {
+    const platform = operatorKey()
+    if (platform) ({ vendor, key } = platform)
+  }
+  if (!vendor || !key) return null
   const raw = (deps.providers ?? providers)[vendor]
   // The owner's spend pool (lib/llm/owner-guard.ts): every completion reserves its worst case first.
   const provider = raw && ownerGuarded(db, tenantId, raw)
@@ -117,14 +121,14 @@ export function parseDraftOutput(text: string): { subject: string; body: string 
 // onboarding profile offer). With no offer anywhere the model would have to invent what the seller sells, so it refuses
 // with 'no_profile'; a contested play refuses too. Every refusal comes before any paid call.
 export async function polishDraft(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}): Promise<PolishResult> {
-  const r = await polishDraftWithWords(db, tenantId, messageId, businessName, deps)
+  const r = await polishDraftWithWords(db, tenantId, messageId, businessName, deps, undefined, true)
   delete r.words
   return r as PolishResult
 }
 // The same, also returning the words it wrote (autopilot binds them to tell its own polish from an owner edit, #929).
 // baseRev: the words revision the caller bound (autopilot's inserted template); the polish starts only from that revision.
-export async function polishDraftWithWords(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}, baseRev?: number): Promise<PolishResult & { words?: { subject: string; body: string } }> {
-  const p = pickProvider(db, tenantId, deps)
+export async function polishDraftWithWords(db: Database.Database, tenantId: string, messageId: string, businessName: string, deps: LlmDeps = {}, baseRev?: number, allowPlatform = false): Promise<PolishResult & { words?: { subject: string; body: string } }> {
+  const p = pickProvider(db, tenantId, deps, allowPlatform)
   if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
   const msg = db.prepare("SELECT m.id, m.words_rev, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string; words_rev: number } & LeadCtx & { id: string } | undefined
   if (!msg || (baseRev !== undefined && msg.words_rev !== baseRev)) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }

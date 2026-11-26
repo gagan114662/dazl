@@ -17,10 +17,10 @@ const master = randomBytes(32)
 const KEY = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 
-function setup() {
+function setup(withKey = true) {
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateOutreach(db); migrateMemory(db)
-  saveKey(db, 'A', 'anthropic', KEY, master)
+  if (withKey) saveKey(db, 'A', 'anthropic', KEY, master)
   saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
   saveMemory(db, 'A', { positioning: 'software that ramps new sales hires' })
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
@@ -223,4 +223,29 @@ test('migrating a pre-accountability usage table adds the columns and polish kee
   const r = await polishDraft(db, 'A', msg, 'Dazl', { master, providers })
   assert.equal(r.rewritten, true, 'polish works on a migrated old-schema database')
   db.close()
+})
+
+test('#1934 explicit rewrite uses the platform Anthropic key when the workspace has no key', async t => {
+  const previous = process.env.DAZL_TRIAL_ANTHROPIC_KEY
+  const platformKey = 'synthetic-platform-rewrite-key'
+  process.env.DAZL_TRIAL_ANTHROPIC_KEY = ` ${platformKey} `
+  const db = setup(false)
+  t.after(() => {
+    db.close()
+    if (previous === undefined) delete process.env.DAZL_TRIAL_ANTHROPIC_KEY
+    else process.env.DAZL_TRIAL_ANTHROPIC_KEY = previous
+  })
+  const id = createDraft(db, 'A', 'l1', 'Dazl')
+  const seen: string[] = []
+  const provider: Provider = {
+    research: async () => ({ text: '', citedUrls: [] }),
+    completeDetailed: async key => {
+      seen.push(key)
+      return { text: 'Subject: Helping new sales hires\n\nCould we talk about ramping your new sales hires?', model: 'claude-fixture', request_id: 'msg_1934', usage: { input_tokens: 10, output_tokens: 20 } }
+    },
+  }
+  const result = await polishDraft(db, 'A', id, 'Dazl', { master, providers: { anthropic: provider } })
+  assert.equal(result.rewritten, true)
+  assert.deepEqual(seen, [platformKey])
+  assert.deepEqual(usageRows(db).map(row => [row.vendor, row.outcome, row.request_id]), [['anthropic', 'rewritten', 'msg_1934']])
 })

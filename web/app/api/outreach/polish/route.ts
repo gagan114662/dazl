@@ -6,7 +6,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 
 // Explicit, per-draft AI rewrite. This is the ONLY user-facing path that runs the
-// polish: it bills the tenant's own provider key, so it needs its own click every
+// polish: it needs its own click every
 // time - nothing here implies standing permission, and draft creation never calls it.
 export async function POST(req: NextRequest) {
   const user = await requireUser()
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   const r = await polishDraft(getScanDb(), user.tenantId, body.message_id, user.business_name)
   if (!r.rewritten) {
     const note = {
-      no_key: 'No AI key on file - add one in Settings to use the rewrite.',
+      no_key: 'AI rewrite is unavailable right now. Your original draft is unchanged.',
       spend_limit: 'Your workspace AI spend limit for today or this month is reached, so the draft was not rewritten (nothing was charged). The template draft is unchanged.',
       no_profile: 'Add what you sell (positioning) in Settings first - without it the rewrite would have to invent an offer.',
       offer_unreadable: 'What this play sells could not be read just now, so the draft was not rewritten. Try again in a moment.',
