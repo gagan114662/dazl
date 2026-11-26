@@ -25,6 +25,7 @@ export interface ErrorContext {
   ref?: string
   // the request id proxy.ts gave the request (lib/ops/request-log.ts): a random UUIDv4, dropped unless it has that shape
   requestId?: string | null
+  react?: { componentStack: string[]; digest?: string }
 }
 
 export interface ErrorRecord {
@@ -107,6 +108,9 @@ export function toRecord(e: unknown, ctx: ErrorContext, now = new Date()): Error
   }
 }
 
+// Keep React diagnostics out of the serialized record and the non-Sentry alert.
+const sentryReact = new WeakMap<ErrorRecord, { componentStack?: string[]; digest?: string }>()
+
 export type ErrorSink = (r: ErrorRecord) => void
 const stderrSink: ErrorSink = r => { process.stderr.write(JSON.stringify(r) + '\n') }
 let sinks: ErrorSink[] = [stderrSink]
@@ -122,6 +126,13 @@ export function setErrorSinks(s: ErrorSink[]): () => void {
 export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null {
   let r: ErrorRecord
   try { r = toRecord(e, ctx) } catch { return null }
+  if (r.source === 'client' && ctx.react) {
+    const componentStack = ctx.react.componentStack.filter(name => scrub(name) === name && !/[0-9]{4}/.test(name))
+    const digest = ctx.react.digest
+    if (componentStack.length || digest) {
+      sentryReact.set(r, { ...(componentStack.length ? { componentStack } : {}), ...(digest ? { digest } : {}) })
+    }
+  }
   for (const s of sinks) { try { s(r) } catch { /* a broken sink never breaks the caller */ } }
   for (const h of alertHooks()) { try { h(r) } catch { /* same */ } }
   return r
@@ -205,7 +216,7 @@ export function outboundRecord(r: ErrorRecord, d: Deployment) {
 // error loop cannot flood them. Fire and forget, with a timeout. A send the destination refuses (not 2xx) or that cannot
 // reach it is said in one plain stderr line (alertNote: never through captureError, which would loop; never the URL, token
 // or DSN, only the HTTP status or "timeout" / "network"), at most once per throttled send (#1088). Each sends the scrubbed
-// record only, never anything the record does not hold.
+// record allowlist. Sentry also receives validated React diagnostics when available.
 type AlertSinkName = 'alert' | 'sentry'
 export function alertNote(fields: { type: 'alert_destination'; sink: AlertSinkName; problem: string } | { type: 'alert_delivery'; sink: AlertSinkName; status?: number; reason?: 'timeout' | 'network' }): void {
   try { process.stderr.write(JSON.stringify({ level: 'warn', ts: new Date().toISOString(), ok: false, ...fields }) + '\n') } catch { /* logging never breaks the caller */ }
@@ -268,16 +279,18 @@ export function parseSentryDsn(dsn: string | undefined): SentryDsn | null {
   return { endpoint: `https://${u.host}${prefix}/api/${project}/envelope/`, publicKey: decodeURIComponent(u.username), dsn: `https://${u.username}@${u.host}${prefix}/${project}` }
 }
 
-// One Sentry event per record, built only from the allowlist above. Grouping uses the record's own fingerprint.
+// One Sentry event per record, built from the allowlist and the Sentry-only React context. Grouping uses the record's own fingerprint.
 export function toSentryEnvelope(r: ErrorRecord, d: SentryDsn, dep: Deployment = deployment(), sentAt = new Date()): string {
   const eventId = randomUUID().replace(/-/g, '')
   const tags: Record<string, string> = { source: r.source, where: r.where }
   if (r.method) tags.method = r.method
   if (r.request_id) tags.request_id = r.request_id
   const frames = outboundFrames(r.error.stack, dep.root)
+  const react = sentryReact.get(r)
   const event = {
     event_id: eventId, timestamp: Date.parse(r.ts) / 1000, platform: 'node', level: 'error', logger: r.source, transaction: r.where,
     fingerprint: [r.fingerprint], tags, environment: dep.environment, ...(dep.release ? { release: dep.release } : {}),
+    ...(react ? { contexts: { react } } : {}),
     // Sentry lists frames oldest first; a stack trace lists the newest first
     exception: { values: [{ type: outboundType(r.error.name), ...(frames.length ? { stacktrace: { frames: [...frames].reverse() } } : {}) }] },
   }

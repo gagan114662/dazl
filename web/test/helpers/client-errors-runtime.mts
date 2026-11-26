@@ -6,7 +6,7 @@ import { NextRequest } from 'next/server'
 import { setDb, sqliteDb } from '../../lib/db/client.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { createSession } from '../../lib/auth-db.ts'
-import { setErrorSinks, type ErrorRecord } from '../../lib/ops/errors.ts'
+import { parseSentryDsn, setErrorSinks, toSentryEnvelope, type ErrorRecord } from '../../lib/ops/errors.ts'
 
 const route = await import('../../app/api/client-errors/route.ts')
 const T = 'd'.repeat(32)
@@ -45,6 +45,14 @@ test('client error endpoint', async () => {
     assert.equal((await post('{not json')).status, 400)
     assert.equal((await post(JSON.stringify({ kind: 'nope', path: '/app' }))).status, 400)
     assert.equal(got.length, 2, 'refused reports record nothing')
+    const diagnostic = await post(JSON.stringify({ ...report, componentStack: ['LeadCard'], digest: '1971300154' }))
+    assert.equal(diagnostic.status, 204)
+    assert.equal(await diagnostic.text(), '', 'the API response never returns telemetry JSON')
+    const dsn = parseSentryDsn('https://test@example.test/12')
+    assert.ok(dsn)
+    assert.deepEqual(JSON.parse(toSentryEnvelope(got[2], dsn).split('\n')[2]).contexts.react,
+      { componentStack: ['LeadCard'], digest: '1971300154' })
+    assert.doesNotMatch(JSON.stringify(got[2]), /LeadCard|1971300154/)
     // 30 per IP per 10 minutes, counted in the shared rate_limits table
     const codes: number[] = []
     for (let i = 0; i < 32; i++) codes.push((await post(JSON.stringify(report), {}, '198.51.100.7')).status)
