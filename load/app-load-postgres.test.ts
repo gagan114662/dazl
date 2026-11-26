@@ -67,3 +67,14 @@ test('Postgres load accepts an empty raw-SQLite manifest and refuses every nonem
   assert.throws(() => assertNoRawSqliteModules({ 'one-runtime-module.ts': 0 }), /1 raw SQLite module/)
   assert.throws(() => assertNoRawSqliteModules({ 'first.ts': 0, 'second.ts': 3 }), /2 raw SQLite modules/)
 })
+
+test('the own Leads probe requires all seeded buying-need verdicts', () => {
+  const probe = { own: 'owner-marker', foreign: ['foreign-marker'], triggerLeadIds: ['lead-a', 'lead-b'] }
+  const a = { id: 'lead-a', company: 'owner-marker', buying_need: 'trigger_only' }
+  const b = { id: 'lead-b', company: 'owner-marker', buying_need: 'trigger_only' }
+  const read = (leads: unknown[]) => checkIsolation(200, JSON.stringify({ leads }), probe)
+  assert.deepEqual(read([a, b]), { leak: false, correct: true })
+  assert.deepEqual(read([a]), { leak: false, correct: false })
+  assert.deepEqual(read([a, a]), { leak: false, correct: false })
+  assert.deepEqual(read([a, { ...b, buying_need: null }]), { leak: false, correct: false })
+})

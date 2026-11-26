@@ -72,9 +72,11 @@ SHA. A nonempty raw-SQLite manifest aborts before any workload. It signs in 100
 real test users across 20 workspaces, reads Home and Leads, and submits a fresh
 search for each user. Each workspace queues its users behind the existing
 one-active-search rule. The external network stays fenced; the provider result
-is synthetic and empty, while separately seeded lead rows prove positive owner
-reads and deliberate foreign-ID denial. Report both completion and API latency
-and fail on any returned foreign row.
+is synthetic and empty. Each workspace's seeded Leads job holds 100 hiring-trigger
+leads with stored buying-need verdicts. The owner API probe requires all 100 verdicts
+so its latency includes per-lead revalidation. The report includes this sample as
+`routes.own-leads`, along with completion and aggregate API latency. Deliberate
+foreign-ID reads must be denied, and any returned foreign row fails the run.
 
 ## What these numbers mean - and what they do not
 

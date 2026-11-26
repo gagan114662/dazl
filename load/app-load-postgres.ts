@@ -6,9 +6,11 @@ import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import type { Db } from '../web/lib/db/client.ts'
 
 const TENANTS = 20
 const USERS_PER_TENANT = 5
+const LEADS_PER_TENANT = 100
 const hex = (bytes: number) => randomBytes(bytes).toString('hex')
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -26,7 +28,7 @@ export function assertNoRawSqliteModules(modules: Readonly<Record<string, number
   if (count !== 0) throw new Error(`Postgres split-store gate closed: ${count} raw SQLite modules`)
 }
 
-type Probe = { own?: string; foreign: readonly string[] }
+type Probe = { own?: string; foreign: readonly string[]; triggerLeadIds?: readonly string[] }
 export function checkIsolation(status: number, body: string, probe: Probe, foreignRead = false) {
   let leak = probe.foreign.some(value => body.includes(value))
   if (foreignRead) {
@@ -37,10 +39,19 @@ export function checkIsolation(status: number, body: string, probe: Probe, forei
     leak ||= !!object && (Object.hasOwn(object, 'job_id') || (Array.isArray(object.leads) && object.leads.length > 0))
     return { leak, correct: !leak && status === 404 && object?.error === 'Not found' && Object.keys(object).length === 1 }
   }
-  return { leak, correct: !leak && status === 200 && (!probe.own || body.includes(probe.own)) }
+  let correct = !leak && status === 200 && (!probe.own || body.includes(probe.own))
+  if (correct && probe.triggerLeadIds) {
+    try {
+      const rows = JSON.parse(body)?.leads
+      const expected = new Set(probe.triggerLeadIds)
+      correct = Array.isArray(rows) && rows.length === expected.size &&
+        rows.every(row => row?.buying_need === 'trigger_only' && expected.delete(row.id))
+    } catch { correct = false }
+  }
+  return { leak, correct }
 }
 
-interface Tenant { id: string; job: string; lead: string; mark: string; users: User[] }
+interface Tenant { id: string; job: string; leadIds: string[]; mark: string; users: User[] }
 interface User { email: string; password: string; ip: string; cookie?: string }
 type Sample = { ms: number; kind: 'api' | 'page' | 'completion'; ok: boolean }
 
@@ -57,6 +68,23 @@ async function listenPort(): Promise<number> {
 function percentile(values: number[], percent: number): number {
   values.sort((a, b) => a - b)
   return values.length ? Math.round(values[Math.ceil(values.length * percent) - 1]) : 0
+}
+
+export async function seedLeadProbe(db: Db, tenant: Pick<Tenant, 'id' | 'job' | 'mark'>, now: number): Promise<string[]> {
+  const { recordNeedEvidence } = await import('../web/lib/scan/need-evidence.ts')
+  const ids = Array.from({ length: LEADS_PER_TENANT }, () => hex(12))
+  await db.tx(function* (tx) {
+    yield* tx.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, attempts) VALUES (?, ?, ?, 'services', '-', ?, 'running', 1)",
+      [tenant.job, tenant.id, tenant.mark, 'Businesses hiring sales representatives'])
+    for (const [index, id] of ids.entries()) {
+      yield* tx.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, confidence) VALUES (?, ?, '', ?, 'Open hiring', ?, 80, 80)",
+        [id, tenant.job, `${tenant.mark}-${index}`, `https://load.invalid/proof/${id}`])
+    }
+  })
+  const summary = await recordNeedEvidence(db, tenant.id, tenant.job, { asOf: new Date(now * 1000) })
+  if (summary.trigger_only !== ids.length) throw new Error('Leads workload did not record the expected hiring-trigger verdicts')
+  await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [now, tenant.job])
+  return ids
 }
 
 export async function runPostgresLoad(web: string): Promise<number> {
@@ -87,7 +115,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
     const now = Math.floor(Date.now() / 1000)
     const tenants: Tenant[] = []
     for (let t = 0; t < TENANTS; t++) {
-      const tenant: Tenant = { id: hex(16), job: hex(12), lead: hex(12), mark: `LTMARK${hex(8)}Q`, users: [] }
+      const tenant: Tenant = { id: hex(16), job: hex(12), leadIds: [], mark: `LTMARK${hex(8)}Q`, users: [] }
       for (let u = 0; u < USERS_PER_TENANT; u++) {
         const id = u === 0 ? tenant.id : hex(16)
         const email = `${id}@load.invalid`, password = hex(24), salt = hex(16)
@@ -103,11 +131,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
       }
       await db.run("INSERT INTO tenant_plans (tenant_id, plan) VALUES (?, 'pro')", [tenant.id])
       await writeKey(db, tenant.id, 'anthropic', 'load-synthetic-provider-key', key)
-      await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, attempts) VALUES (?, ?, ?, 'services', '-', ?, 'running', 1)",
-        [tenant.job, tenant.id, tenant.mark, tenant.mark])
-      await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, confidence) VALUES (?, ?, '', ?, 'Expansion', 'https://load.invalid/proof', 80, 80)",
-        [tenant.lead, tenant.job, tenant.mark])
-      await db.run("UPDATE scan_jobs SET status = 'done', finished_at = ? WHERE id = ?", [now, tenant.job])
+      tenant.leadIds = await seedLeadProbe(db, tenant, now)
       tenants.push(tenant)
     }
     const port = await listenPort()
@@ -148,7 +172,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
         return { status: response.status, text, cookie: response.headers.get('set-cookie'), ms: performance.now() - start }
       } catch { return { status: 0, text: '', cookie: null, ms: performance.now() - start } }
     }
-    const foreignTokens = (tenant: Tenant) => tenants.filter(other => other !== tenant).flatMap(other => [other.id, other.job, other.lead, other.mark])
+    const foreignTokens = (tenant: Tenant) => tenants.filter(other => other !== tenant).flatMap(other => [other.id, other.job, other.mark, other.leadIds[0]])
     let foreignAttempts = 0, foreignFailures = 0, leaks = 0, incorrect = 0, signedIn = 0, submitted = 0, completed = 0
     const vUsers = tenants.flatMap((tenant, index) => tenant.users.map(user => ({ user, tenant, other: tenants[(index + 1) % tenants.length] })))
     await Promise.all(vUsers.map(async ({ user, tenant, other }) => {
@@ -171,7 +195,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
         [`/api/scan/status?job_id=${other.job}&readonly=1`, 'foreign-scan', 'api', true, ''],
       ].map(async ([route, name, kind, isForeign, own]) => {
         const res = await request(user, String(route))
-        const check = checkIsolation(res.status, res.text, { own: String(own), foreign }, Boolean(isForeign))
+        const check = checkIsolation(res.status, res.text, { own: String(own), foreign, triggerLeadIds: name === 'own-leads' ? tenant.leadIds : undefined }, Boolean(isForeign))
         if (isForeign) {
           foreignAttempts++
           if (!check.correct) foreignFailures++
