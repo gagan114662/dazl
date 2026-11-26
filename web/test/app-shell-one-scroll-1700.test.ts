@@ -23,3 +23,8 @@ test('#1700 the 100vh floor on html/body does not apply to the app shell', () =>
   assert.doesNotMatch(landing, /\bapp-shell\b/, 'the public landing page keeps its 100vh floor')
   assert.match(css, /html, body \{[^}]*min-height: 100vh;/, 'public pages keep their floor')
 })
+test('#1771 a staging banner above the shell does not add page scroll: body is the visible-height column, the shell fills the rest', () => {
+  assert.match(css, /body:has\(> \.app-shell\) \{[^}]*display: flex; flex-direction: column; height: 100dvh; overflow: hidden;/)
+  assert.match(css, /body:has\(> \.app-shell\) > \.app-shell \{ height: auto; flex: 1 1 0; min-height: 0; \}/)
+  assert.match(css, /\[data-testid="staging-banner"\] \{ flex: none; \}/)
+})
