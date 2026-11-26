@@ -13,7 +13,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
-import { LIMITS, MAX_PEOPLE, MAX_POSTS_PER_PAGE, endOfLocalDay, engagerOk, inWorkingHours, isTaskKind, nextGapS, personOk, postOk, taskUrlOk, validZone, type EngagerPerson, type ReadPost, type ReadPerson, type TaskKind } from './limits.ts'
+import { LIMITS, MAX_PEOPLE, MAX_POSTS_PER_PAGE, endOfLocalDay, engagerOk, inWorkingHours, isTaskKind, nextGapS, personOk, postOk, taskUrlOk, validZone, type ReadPost, type ReadPerson, type TaskKind } from './limits.ts'
 
 export function migrateLiTasks(db: Database.Database): void {
   const first = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'li_task_gate'").get()
@@ -161,8 +161,9 @@ export function parseResult(kind: TaskKind, body: CompleteBody): Parsed {
     return { ok: true, posts }
   }
   if (!Array.isArray(body.people) || body.people.length > MAX_PEOPLE) return null
-  const seen = new Set<string>(), people: EngagerPerson[] = []
-  for (const raw of body.people) { const p = engagerOk(raw); if (p && !seen.has(p.profile_url)) { seen.add(p.profile_url); people.push(p) } }
+  // Only a post's people carry engagement fields (#1588): a People page or a profile stays the plain shape it always was.
+  const seen = new Set<string>(), people: ReadPerson[] = []
+  for (const raw of body.people) { const p = kind === 'post_engagement' ? engagerOk(raw) : personOk(raw); if (p && !seen.has(p.profile_url)) { seen.add(p.profile_url); people.push(p) } }
   return { ok: true, people }
 }
 
