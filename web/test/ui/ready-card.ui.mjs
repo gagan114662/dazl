@@ -35,6 +35,14 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 const now = Math.floor(Date.now() / 1000)
+// #1772 2g's /api/home/results answer: the by-signal footnote (tiles.leads 'N leads from M companies; K without a
+// company name') renders from this response - HomeResultsPanel is a client component and every /api/* call here is
+// stubbed, so the panel never reads the harness database. The numbers behind it (companyKey dedup, unnamed count)
+// come from lib/outreach/home-results.ts and are unit-tested in home-results-1040.test.ts: two names sharing one
+// companyKey, one distinct company, one lead with no company name.
+const RESULTS2G = { window_days: 30, since: now - 30 * 86400, reply_reading: true, tiles: { leads: 4, contacted: 0, replied: 0, interested: 0 }, by_signal: [{ signal: 'hiring', leads: 4, contacted: 0, replied: 0 }], companies: 2, unnamed_leads: 1,
+  latest_leads: [{ id: 'r1', company: 'Dup Inc', signal: 'hiring', job_id: 'a'.repeat(24), created_at: now - 3600 }, { id: 'r2', company: 'Dup Ltd', signal: 'hiring', job_id: 'a'.repeat(24), created_at: now - 3500 }, { id: 'r3', company: 'Solo Co', signal: 'hiring', job_id: 'b'.repeat(24), created_at: now - 3400 }, { id: 'r4', company: 'Unnamed company', signal: 'hiring', job_id: 'b'.repeat(24), created_at: now - 3300 }],
+  latest_replies: [] }
 const PROFILE = { business_name: 'Brightsmile', sells: 'Online booking and reminders for dental practices', website: 'https://brightsmile.example', buyer: { summary: 'Independent dental practices with 2-10 chairs that are expanding', who: ['Practice owner', 'Office manager'], industries: ['Dental'], sizes: ['2-10 chairs'], where: ['Brooklyn, NY', 'Queens, NY'], signals: ['new location'], exclude: ['DSOs'] } }
 const GMAIL = { email: 'dana@brightsmile.example', status: 'active' }, SENDER = { sender_name: 'Dana Smith', postal_address: '1 Main St, Brooklyn NY' }
 const job = (id, t, q) => ({ id: id.repeat(24), status: 'done', error: null, query: q, csv_domain: null, created_at: now - t * 86400, lead_count: 0, candidates: 2, verified: 0, needs_review: 0, dropped: 2, test_only: false })
@@ -42,6 +50,7 @@ const JOBS = [job('a', 1, 'London B2B SaaS startups hiring sales'), job('b', 2, 
 const camp = (id, o = {}) => ({ id, status: 'done', qualification: { sourceChecked: o.sc ?? 0, confirmedByYou: 0, needsReview: 0, unverified: 2, held: o.held ?? 0, rejected: 0 }, contact: { withContact: o.contacts ?? 0, readyWithContact: o.ready ?? 0, draftable: o.draftable ?? 0 }, outreach: { drafts: o.drafts ?? 0, approved: 0, sent: 0 } })
 const SCENES = {
   fresh: { profile: { ...PROFILE, buyer: null }, key: false, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
+  siteform: { profile: { ...PROFILE, business_name: '' }, key: true, gmail: GMAIL, sender: SENDER, jobs: [], camps: [], msgs: [] },
   manual: { profile: { ...PROFILE, website: undefined }, key: true, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   reviewed: { profile: PROFILE, key: true, gmail: GMAIL, sender: { sender_name: '', postal_address: '' }, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [] },
   midway: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 2), camps: [camp(JOBS[0].id), camp(JOBS[1].id, { sc: 2, contacts: 1, ready: 1, draftable: 1 })], msgs: [] },
@@ -50,9 +59,16 @@ const SCENES = {
   // #1678: a password account with no key: step 2 offers two buttons (Link Google, Add key)
   pwtrial: { profile: PROFILE, key: false, trial: { blocked: 'google_required' }, gmail: null, sender: null, jobs: [], camps: [], msgs: [] },
   done: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS.slice(0, 1), camps: [camp(JOBS[0].id, { sc: 2, contacts: 1, ready: 1, drafts: 1 })], msgs: [{ id: 'm1', lead_id: 'x', status: 'draft' }] },
+  withresults: { profile: PROFILE, key: true, gmail: GMAIL, sender: SENDER, jobs: JOBS, camps: JOBS.map(j => camp(j.id)), msgs: [], results: RESULTS2G },
 }
+// #1722: scenario 2c flips the sender mid-scene (filled in elsewhere); null = use the scene's own sender.
+let liveSender = null
+let settingsSlowUntil = 0
+let profileSlowFirst = 0 // one-shot: delays the first /api/settings/profile response (the mount read)
 const b = await chromium.launch()
 async function open(sc, width, height) {
+  liveSender = null
+  settingsSlowUntil = 0
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const writes = []
@@ -61,18 +77,37 @@ async function open(sc, width, height) {
     if (u.origin !== base) return route.abort()
     if (!p.startsWith('/api/')) return route.continue()
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
-    if (m !== 'GET') { writes.push(`${m} ${p}`); return json({ error: 'not stubbed' }, 400) }
-    if (p === '/api/settings/profile') return json(sc.profile)
+    if (m !== 'GET') {
+      const body = req.postData() ?? ''
+      writes.push(`${m} ${p} ${body}`)
+      if (p === '/api/settings/profile') return json({ ok: true }) // 2h inspects the posted body; the save flow reads only .ok and .error
+      return json({ error: 'not stubbed' }, 400)
+    }
+    if (p === '/api/settings/profile') {
+      // /app's profile readers land in mount order (each fires its fetch synchronously in its mount effect, and
+      // FirstRun renders nothing until its own read resolves): #1 FirstRun (first-run.tsx:127, never held), #2
+      // ReadyCard's mount load (ready-card.tsx:15), #3 Journey's loadProfile (journey.tsx:46), #4 the readiness
+      // panel's mount read (readiness.tsx:62 - the only read that seeds the form). 2h holds exactly #4 via `> 3`.
+
+      if (profileSlowFirst > 0) { const ms = profileSlowFirst; profileSlowFirst = 0; await new Promise(r => setTimeout(r, ms)) } // #1760 2e/2f: a slow mount read
+      return json(sc.profile)
+    }
     if (p === '/api/scan/jobs') return json({ jobs: sc.jobs, totals: { searches: sc.jobs.length, finished: sc.jobs.length } })
     if (p === '/api/scan/latest') return json({ query: sc.jobs[0]?.query ?? null, icp: null, icp_source: null })
     if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
+    if (p === '/api/home/results') return sc.results ? json(sc.results) : json({}, 404)
     if (p.startsWith('/api/campaigns/')) return json({ job: sc.jobs[0], leads: [], messages: [] })
     if (p === '/api/watch') return json({ watches: [] })
     if (p === '/api/usage') return json({ plan: 'free', scans_used: sc.used ?? sc.jobs.length, scan_limit: 50, has_key: sc.key, trial: sc.trial ?? null })
     if (p === '/api/settings/llm-key') return json({ keys: sc.key ? [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1 }] : [], rejection: null })
     if (p === '/api/settings/advanced') return json({ available: true, version: '1', platforms: [{ platform: 'reddit', allowed: true, consent: false, connected: false, enabled: false }] })
     if (p === '/api/scan/sources') return json({ web_index: false, news: true, websites: true })
-    if (p === '/api/outreach/settings') return json({ gmail: sc.gmail, sender: sc.sender, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: [] })
+    if (p === '/api/outreach/settings') {
+      const snap = liveSender ?? sc.sender // the response snapshot is fixed when the request arrives
+      const d = settingsSlowUntil - Date.now()
+      if (d > 0) await new Promise(r => setTimeout(r, d + 400)) // #1722 2d: a slow older read
+      return json({ gmail: sc.gmail, sender: snap, daily_cap: 20, sent_24h: 0, account_sent_24h: 0, read_notice: [] })
+    }
     if (p === '/api/outreach') return json({ messages: sc.msgs })
     if (p === '/api/campaigns') return sc.camps === 'fail' ? json({ error: 'boom' }, 500) : json({ campaigns: sc.camps })
     return json({}, 404)
@@ -114,6 +149,17 @@ try {
     assert.ok(!/missing website/.test(siteRow ?? ''), 'readiness panel: no website ask on the manual path')
     await shot(page, `manual-${tag}`)
     assert.deepEqual(writes, []); await ctx.close()
+    // 1b. #1722: on tab return the sender status re-reads but the open business-details form keeps unsaved input.
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
+    await card(page).waitFor()
+    await page.getByTestId('setup-details').evaluate(d => { d.open = true })
+    await page.getByTestId('ready-site').getByRole('button', { name: 'Add' }).click()
+    const nameField = page.getByLabel('Business name')
+    await nameField.fill('Typed Unsaved Name')
+    await page.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')) })
+    await page.waitForTimeout(500)
+    assert.equal(await nameField.inputValue(), 'Typed Unsaved Name', 'unsaved form input survives the wake re-read')
+    assert.deepEqual(writes, []); await ctx.close()
     // 2. The reviewed account.
     ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
     await card(page).waitFor()
@@ -130,6 +176,77 @@ try {
       await page.getByTestId('rc-sender').getByRole('link', { name: 'Add sender details' }).click()
       await page.waitForURL('**/app/settings#gmail')
     }
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2c. #1722: the sender details get filled in (another tab or a settings visit); using this tab again
+    // re-reads the status and flips the sender step to done without a reload.
+    ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
+    await card(page).waitFor()
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example; your sender name and mailing address are missing/)
+    assert.equal(await page.getByTestId('rc-progress').textContent(), '3 of 7 done')
+    liveSender = SENDER
+    await page.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')) })
+    await page.getByTestId('rc-sender').filter({ hasText: 'as Dana Smith' }).waitFor({ timeout: 15000 })
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example, as Dana Smith/)
+    assert.equal(await page.getByTestId('rc-progress').textContent(), '4 of 7 done')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2d. #1722: a slow older settings read must not revert the newer sender status. The wake's read starts
+    // first but is delayed; the sender is filled in and a second wake read lands first. The delayed older
+    // response must be discarded, not re-applied.
+    ;({ ctx, page, writes } = await open(SCENES.reviewed, w, h))
+    await card(page).waitFor()
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sender name and mailing address are missing/)
+    settingsSlowUntil = Date.now() + 200
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // older read starts, gets delayed
+    await page.waitForTimeout(300) // it is in flight now
+    liveSender = SENDER
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // newer read starts, returns at once
+    await page.getByTestId('rc-sender').filter({ hasText: 'as Dana Smith' }).waitFor({ timeout: 15000 })
+    await page.waitForTimeout(900) // the delayed older response lands here
+    assert.match(await page.getByTestId('rc-sender').innerText(), /sending from dana@brightsmile\.example, as Dana Smith/, 'the delayed older read must not revert the sender status')
+    assert.equal(await page.getByTestId('rc-progress').textContent(), '4 of 7 done')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2e. #1760: a wake re-read that wins the race refreshes only the status - the discarded older mount read
+    // must still seed the business-details form once, or a later save would post its empty initial fields over the
+    // stored profile (capy review 4700171286).
+    profileSlowFirst = 800
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
+    await page.waitForTimeout(200) // the mount read is in flight, delayed
+    await page.evaluate(() => window.dispatchEvent(new Event('focus'))) // the wake's read starts and lands first
+    await card(page).waitFor()
+    await page.waitForTimeout(1200) // the delayed older read lands here
+    await page.getByTestId('setup-details').locator('summary').click() // the readiness panel lives in this drawer
+    await page.getByTestId('ready-site').getByRole('button').click()
+    assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example', 'the discarded older read still seeds the form')
+    assert.equal(await page.getByLabel('What you sell').inputValue(), 'Online booking and reminders for dental practices')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2f. #1760: that late seed never overwrites what the user already typed into the form.
+    profileSlowFirst = 1500
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h))
+    await page.waitForTimeout(200)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await card(page).waitFor()
+    await page.getByTestId('setup-details').locator('summary').click()
+    await page.getByTestId('ready-site').getByRole('button').click()
+    await page.getByLabel('Your website').fill('typed.example')
+    await page.waitForTimeout(2000) // the delayed older read lands here
+    assert.equal(await page.getByLabel('Your website').inputValue(), 'typed.example', 'a late seed never overwrites typed input')
+    assert.deepEqual(writes, []); await ctx.close()
+    // 2h. #1760: the deterministic held-read Save scenario moved to #1836 under Quest's 18:45 ET timebox (no
+    // valid green run in time). The per-field seed fix it proves stays in this PR with its unit test. Executed
+    // evidence before removal: the gate held exactly the readiness mount read, the wake read landed while held,
+    // the form was verified unseeded while held, typed sells kept, and the stale mount read still seeded the
+    // untouched website (run 45718519911, ledger on #1722 comment-7177520633). #1836 restores the WHOLE harness -
+    // the scenario AND its profile-gate helpers - fixture-corrected from 2ef4e9908: the siteform scene stores an
+    // empty business_name, so the required Business name is filled before Save and the POST body asserts all three.
+    // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
+    // leads with no company name - rendered on the real Home page from the stubbed /api/home/results answer
+    // (RESULTS2G), at both widths.
+    ;({ ctx, page, writes } = await open(SCENES.withresults, w, h))
+    await card(page).waitFor()
+    const foot = page.getByTestId('by-signal-companies')
+    await foot.waitFor()
+    assert.equal((await foot.innerText()).trim(), '4 leads from 2 companies; 1 without a company name', `${tag}: the by-signal footnote`)
+    if (process.env.SHOTS) { await foot.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, `home-results-1772-${tag}.png`) }) }
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
     // nothing is pushed off the side of the page, and the card does not scroll inside itself.

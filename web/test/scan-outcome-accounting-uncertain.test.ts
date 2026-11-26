@@ -7,7 +7,7 @@ import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 
 test('#1157 AC-1: a free (trial) scan stopped as accounting_uncertain says the free scan was not used up', () => {
   for (const failed_sources of [undefined, ['search:tinyfish']]) {
-    const o = scanOutcome({ id: 'j', status: 'failed', error: 'accounting_uncertain', funded_by: 'trial', failed_sources } as never)
+    const o = scanOutcome({ id: 'j', status: 'failed', error: 'accounting_uncertain', funded_by: 'trial', trial_attempt_restored: true, failed_sources } as never)
     assert.match(o.detail ?? '', /This free scan does not count toward your free scans\./)
   }
 })

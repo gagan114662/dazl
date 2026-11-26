@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { SITE_BASE, publicMeta } from '@/lib/site'
 import { PRIVACY } from '@/lib/legal/policy'
+import SiteFooter from '../site-footer'
 export const metadata: Metadata = { ...publicMeta('/privacy', 'Privacy Policy - dazl', 'What data dazl collects, how it is used and shared, and your rights.'), alternates: { canonical: `${SITE_BASE}/privacy` } }
 
 // Text and facts live in lib/legal/policy.ts, held to the code by test/legal-policy.test.ts (#535).
@@ -17,6 +18,7 @@ export default function Privacy() {
           {s.paragraphs.map((p, i) => <p key={i} className="mb-2">{p}</p>)}
         </section>
       ))}
+      <SiteFooter />
     </main>
   )
 }

@@ -36,6 +36,13 @@ test('the date line never invents a date: claimed event date, else the published
   assert.equal(leadCardSummary({ ...base, event_date: null, published_at: '2026-09-30' } as CardLead).date, 'published 30 Sep 2026, event date unknown')
 })
 
+test('#1716 the ready card shows the date seen on the source page without calling it verified', () => {
+  const summary = leadCardSummary({ ...base, event_date: '2026-10-25', day_verified: true })
+  assert.equal(summary.date, 'Date seen on the source page: 25 Oct 2026')
+  assert.doesNotMatch(summary.date, /verified/i)
+  assert.equal(cardDate('2026-11-04', null, { dayVerified: true }), 'Date seen on the source page: 4 Nov 2026')
+})
+
 test('count bar: rejected cards, cards with a draft (from Outreach or approved now), and the rest to review', () => {
   const L = [{ id: 'a' }, { id: 'b' }, { id: 'c', quarantined_at: 1 }, { id: 'd' }]
   assert.deepEqual(cardCounts(L, new Set(['a']), {}), { approved: 1, rejected: 1, toReview: 2 })

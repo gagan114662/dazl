@@ -64,7 +64,7 @@ export function quoteNote(literalFound: boolean | undefined): { prefix: string; 
 // a proof-backed lead never reads "timing unconfirmed", and an unconfirmed lead names the actual gap (#498). Proof
 // of the event day is never buying need: every variant keeps need unconfirmed.
 export function timingHeadline(t?: { timing: 'proof_backed' | 'unconfirmed'; reason?: import('./scoreboard.ts').TimingUnconfirmedReason | null }): string {
-  if (t?.timing === 'proof_backed') return 'Event timing is verified against the cited source. Current need is unconfirmed.'
+  if (t?.timing === 'proof_backed') return 'Event timing is from the cited source. Current need is unconfirmed.'
   switch (t?.reason) {
     case 'bad_date': return 'The claimed event date is invalid. Event timing and current need are unconfirmed.'
     case 'future_date': return 'The claimed event date is in the future. Event timing and current need are unconfirmed.'
@@ -73,6 +73,11 @@ export function timingHeadline(t?: { timing: 'proof_backed' | 'unconfirmed'; rea
     case 'proof_kind_mismatch': return 'The saved date proof does not belong to this kind of signal. Event timing and current need are unconfirmed.'
     default: return 'Event timing and current need are unconfirmed.'
   }
+}
+
+export function reviewTimingCopy(reason: string, note?: string | null): string {
+  return [reason.trim(), note?.trim()].filter((part): part is string => Boolean(part))
+    .map(part => /[.!?]$/.test(part) ? part : `${part}.`).join(' ')
 }
 
 // Read-time copy for the saved rationale (leads API). "No saved grade" must not be shown next to a saved fit/intent/action

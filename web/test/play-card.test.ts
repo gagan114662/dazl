@@ -33,12 +33,11 @@ test('widen actions: only the window number is rewritten; place and signal open 
   const q = 'Founders of London B2B SaaS startups (10-50 staff) that announced seed funding in the past 90 days and are currently hiring sales staff; skip agencies and recruiters; I need founder contacts.'
   const icp = { summary: 'London B2B SaaS startups that announced seed funding in the past 90 days and are currently hiring sales staff', where: ['London'], sizes: ['10-50 employees'], window_days: 90, signals: ['Seed funding', 'Hiring sales staff'], exclude: ['Agencies', 'Recruiters'], who: ['Founder'] }
   const a = widenActions(q, icp)
-  assert.deepEqual(a.map(x => x.label), ['Widen to 180 days', 'Change the place', 'Change the signal'])
+  assert.deepEqual(a.map(x => x.label), ['Widen to 180 days', 'Change the place or signal'], '#1722: two buttons for one identical action are one button')
   const prefill = (x: { href: string }) => decodeURIComponent(x.href.split('q=')[1])
   assert.equal(prefill(a[0]), q.replace('90 days', '180 days'), 'only the day count changes')
   for (const x of a) for (const kept of ['London', '10-50 staff', 'skip agencies and recruiters', 'I need founder contacts']) assert.ok(prefill(x).includes(kept), `${x.label} keeps "${kept}"`)
-  assert.equal(prefill(a[1]), q, 'the place is changed by the user, from the full request')
-  assert.equal(prefill(a[2]), q, 'the signal is changed by the user, from the full request; nothing claims it was dropped')
+  assert.equal(prefill(a[1]), q, 'place and signal are changed by the user, from the full request; nothing claims it was dropped')
   assert.ok(!a.some(x => /drop/i.test(x.label)))
   assert.ok(a.every(x => x.href.startsWith('/app/leads?q=')))
 })

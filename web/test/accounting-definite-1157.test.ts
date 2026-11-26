@@ -33,7 +33,7 @@ test('#1157 accounting_uncertain: amount not readable still answers definitely; 
   assert.equal(unread.label, 'Stopped after an interruption - the interrupted paid step counted as billed')
   assert.match(unread.detail ?? '', /counted as billed at the amount reserved for it,/)
   assert.doesNotMatch(`${unread.label} ${unread.detail}`, HEDGE)
-  assert.match(stopped({ uncertain_usd: 0.084666, funded_by: 'trial' }).detail ?? '', /This free scan does not count toward your free scans\./)
+  assert.match(stopped({ uncertain_usd: 0.084666, funded_by: 'trial', trial_attempt_restored: true }).detail ?? '', /This free scan does not count toward your free scans\./)
   const src = stopped({ uncertain_usd: 0.0023, uncertain_steps: 1, failed_sources: ['search:anthropic'] })
   assert.equal(src.kind, 'failed')
   assert.equal(src.label, 'Failed - search:anthropic had an error; one paid step counted as billed ($0.0023)')
