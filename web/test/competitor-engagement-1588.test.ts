@@ -186,7 +186,7 @@ bothEngines('one lead per person per month: a second post enriches the first lea
   await completeTask(db, 'A', next.task.id, { posts: [{ url: POST, date: RECENT, approx: true, author: PAGE }, { url: POST2, date: RECENT, approx: true, author: PAGE }] }, TEN_AM + 30)
   assert.deepEqual(await onTaskResult(db, 'A', next.task.id, TEN_AM + 31), { queued: 2 })
   let at = TEN_AM + 500
-  for (const _ of [POST, POST2]) {
+  for (let read = 0; read < 2; read++) {
     next = await nextTask(db, 'A', at, () => 0.5)
     assert.ok('task' in next, JSON.stringify({ at, next }))
     await completeTask(db, 'A', next.task.id, { people: [eng(1, { comment: 'Nice post' })] }, at + 100)
