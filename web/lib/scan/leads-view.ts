@@ -9,7 +9,22 @@ import { heldState } from '../lead-state.ts'
 // "No leads passed verification" would contradict the scan's own "N source-checked" count on the same screen.
 // pastScansWithLeads (#1579): with no scan open, the past scans in the page's own list that saved leads. "No leads yet" beside that list
 // contradicted it (production 145d2eba), so the line points at the list instead.
-export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null, repeatCount = 0, pastScansWithLeads = 0): string | null {
+// #1726: the zero-lead fallback. When the scan record's own outcome is known, the line carries the
+// outcome's plain reason instead of the bare line, which gave the user nothing to act on (prod
+// 77e8b23, 25 Nov: 'residential roofing, Calgary' ended at 'The scan finished with no leads.').
+// Nothing is invented: label and detail are the outcome's recorded copy (lib/scan/scan-outcome.ts is
+// Ziggy's, read-only in this lane). The wording mirrors the merged no-leads-help component
+// (web/app/app/leads/no-leads-help.tsx) so the line and the block agree. The parameter is optional,
+// so existing call sites compile unchanged.
+export interface ZeroLeadsOutcome { label?: string | null; detail?: string | null }
+export function zeroLeadsLine(outcome?: ZeroLeadsOutcome | null): string {
+  const label = outcome?.label?.trim()
+  if (!label) return 'The scan finished with no leads.'
+  const detail = outcome?.detail?.trim()
+  return detail ? `${label}. ${detail}` : `${label}.`
+}
+
+export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCount: number, needsReviewCount?: number | null, repeatCount = 0, pastScansWithLeads = 0, outcome?: ZeroLeadsOutcome | null): string | null {
   if (visibleCount > 0) return null
   if (status === 'pending') return 'This scan is queued and has not started yet. Leads appear here after it runs.'
   if (status === 'running') return 'This scan is still running. Leads appear here when it finishes.'
@@ -21,7 +36,7 @@ export function emptyLeadsMessage(status: string, visibleCount: number, hiddenCo
   if (hiddenCount > 0) return `The scan found nothing above your fit bar - ${hiddenCount} lower-fit lead${hiddenCount === 1 ? ' is' : 's are'} hidden below.`
   // An all-review scan shows its cards below - 'no leads' would contradict them.
   if ((needsReviewCount ?? 0) > 0) return `No leads passed verification. ${needsReviewCount} need${needsReviewCount === 1 ? 's' : ''} your review below.`
-  return 'The scan finished with no leads.'
+  return zeroLeadsLine(outcome)
 }
 
 // The ready list (#1238). Leads already shown in an earlier scan (seen_before) are tucked behind a toggle so a re-run surfaces what is NEW -
