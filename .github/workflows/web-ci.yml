@@ -50,7 +50,7 @@ jobs:
           PR_BASE_SHA: ${{ steps.pr_base.outputs.sha }}
         run: |
           set -euo pipefail
-          git diff --relative --name-only -z "$PR_BASE_SHA...$GITHUB_SHA" -- '*.ts' '*.tsx' '*.mts' '*.mjs' > "$RUNNER_TEMP/changed-web-files"
+          git diff --relative --name-only --find-renames --diff-filter=AMR -z "$PR_BASE_SHA...$GITHUB_SHA" -- '*.ts' '*.tsx' '*.mts' '*.mjs' > "$RUNNER_TEMP/changed-web-files"
           mapfile -d '' -t changed < "$RUNNER_TEMP/changed-web-files"
           files=()
           for f in "${changed[@]}"; do

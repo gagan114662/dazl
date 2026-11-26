@@ -70,5 +70,5 @@ test('fast PR checks use the verified merge base rather than the event snapshot'
   ]) {
     assert.equal(workflow.split(fragment).length - 1, 1, fragment)
   }
-  assert.match(workflow, /git diff --relative --name-only -z "\$PR_BASE_SHA\.\.\.\$GITHUB_SHA"/)
+  assert.match(workflow, /git diff --relative --name-only --find-renames --diff-filter=AMR -z "\$PR_BASE_SHA\.\.\.\$GITHUB_SHA"/)
 })
