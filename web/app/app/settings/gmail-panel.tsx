@@ -66,7 +66,7 @@ export default function GmailPanel() {
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
       <Caveat className="text-[#555] text-sm mb-4" summary={`Emails go out from your own Gmail after you approve them${s?.autopilot_available ? ' (or on autopilot, if you turn it on)' : ''}. Connecting asks Google only for permission to send; dazl does not ask to read your mailbox.`}>Emails go out from your own Gmail. {s?.autopilot_available ? 'By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set.' : 'Each one is sent only after you approve it and click send.'} Connecting asks Google only for permission to send email as you. {s?.reply_reading_on
-          ? 'Your account previously granted read access and has accepted the current terms. Replies and delivery-failure notices for dazl outreach are checked.'
+          ? 'For new connections, dazl does not ask to read your mailbox. Your account previously granted read access and has accepted the current terms. Replies and delivery-failure notices for dazl outreach are checked. You can disconnect at any time, and reconnecting makes it send-only.'
           : 'dazl does not ask to read your mailbox, so replies and delivery-failure notices arrive in your own Gmail inbox and are not shown in dazl. An account connected earlier with read access keeps it until it is disconnected or reconnected; reconnecting makes it send-only.'}</Caveat>
       {s?.gmail ? (
         <div className="text-sm mb-4">
