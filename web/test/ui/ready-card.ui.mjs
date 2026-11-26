@@ -126,7 +126,7 @@ try {
     let { ctx, page, writes } = await open(SCENES.fresh, w, h)
     await card(page).waitFor()
     assert.deepEqual(await states(page), ['profile:todo*', 'search:todo', 'play:todo', 'qualified:todo', 'contact:todo', 'draft:todo', 'sender:todo'])
-    assert.deepEqual(await fixes(page), ['Build profile>/app?setup=brain', 'Add key>/app/settings#model-key', 'Run a search>/app/leads', '', '', '', 'Connect>/app/settings#gmail'])
+    assert.deepEqual(await fixes(page), ['Build profile>/app?setup=brain', 'See your plan>/app/settings#plan', 'Run a search>/app/leads', '', '', '', 'Connect>/app/settings#gmail'])
     assert.equal(await page.getByTestId('rc-progress').textContent(), '0 of 7 done')
     assert.equal(await card(page).locator('.btn-primary').count(), 0, 'Home keeps one primary action')
     assert.ok((await card(page).boundingBox()).y < (await page.getByTestId('journey').boundingBox()).y, 'the card sits above the journey')
