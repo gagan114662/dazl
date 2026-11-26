@@ -126,6 +126,8 @@ test('#1674 a transient homepage failure stays retryable despite a failure audit
     assert.ok(intake.job_id)
     assert.deepEqual(db.prepare("SELECT status FROM connector_audit WHERE connector = 'sitecrawl' AND scan_job_id = ?").all(intake.job_id),
       [{ status: 'site_unreachable' }])
+    assert.deepEqual(db.prepare('SELECT status FROM hiring_feed_crawl WHERE job_id = ?').all(intake.job_id),
+      [{ status: 'failed' }])
     assert.deepEqual(hiringFeedStatus(db, 'A', intake.job_id).map(r => [r.state, r.emails]), [['failed', 0]])
 
     // Match an old row that was incorrectly persisted as finished before the retry fix.
