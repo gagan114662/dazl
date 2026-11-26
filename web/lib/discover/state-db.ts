@@ -19,7 +19,7 @@ export const discoverStoredSql = (n: number) => `SELECT e.lead_id, e.kind, e.con
   FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id
   JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ?
   LEFT JOIN suppressions s ON e.kind = 'email' AND s.tenant_id = e.tenant_id AND s.email = LOWER(TRIM(e.value))
-  LEFT JOIN email_candidates c ON e.kind = 'email' AND c.tenant_id = e.tenant_id AND c.lead_id = e.lead_id AND c.address = LOWER(TRIM(e.value))
+  LEFT JOIN email_candidates c ON c.tier = 'published' AND e.kind = 'email' AND c.tenant_id = e.tenant_id AND c.lead_id = e.lead_id AND c.address = LOWER(TRIM(e.value))
   WHERE e.tenant_id = ? AND l.scan_job_id IN (${marks(n)}) AND l.source_kind = 'discover'
   AND ((e.connector = 'discover' AND e.kind IN ('person', 'email', 'linkedin')) OR e.kind = 'deliverability')
   AND e.value != '' ORDER BY e.retrieved_at, e.id`
