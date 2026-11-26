@@ -35,6 +35,9 @@ export interface Icp {
   // #2084: the judge's reading of each saved signal the compiler cannot read (a language other than English). Filled when the profile
   // is saved, bounded to the signals saved with it, so a play in any language costs one short call per signal, not one per page view.
   signal_readings?: Record<string, { kind: 'hiring' | 'not_hiring'; role?: string; at: number }>
+  // #2084: wordings a scan tried to read and could not (refused, over cap, or no answer). They make no play, and the card says why
+  // (lib/scan/signal-reading.ts UNREAD_LABEL) instead of dropping them in silence.
+  signal_unread?: Record<string, { at: number }>
 }
 
 // Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
@@ -258,7 +261,23 @@ export function normalizeIcp(raw: unknown): Icp | null {
   if (lookalike === null) return null
   const request = clean(r.request, MAX_QUERY)
   const readings = normalizeReadings(r.signal_readings)
-  return { summary, ...(request ? { request } : {}), who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}), ...(carry.length ? { carry_exclude: carry } : {}), ...(readings ? { signal_readings: readings } : {}) }
+  const unread = normalizeUnread(r.signal_unread)
+  return { summary, ...(request ? { request } : {}), who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}), ...(carry.length ? { carry_exclude: carry } : {}), ...(readings ? { signal_readings: readings } : {}), ...(unread ? { signal_unread: unread } : {}) }
+}
+
+// An unread label is a wording and when the attempt was made; anything else is dropped. Bounded like the readings, keyed by the same text.
+function normalizeUnread(raw: unknown): Icp['signal_unread'] | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out: NonNullable<Icp['signal_unread']> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const key = k.replace(/\s+/g, ' ').trim().slice(0, 200)
+    if (!key || !v || typeof v !== 'object') continue
+    const at = (v as Record<string, unknown>).at
+    if (typeof at !== 'number' || !Number.isFinite(at)) continue
+    out[key] = { at: Math.floor(at) }
+    if (Object.keys(out).length >= 8) break
+  }
+  return Object.keys(out).length ? out : undefined
 }
 
 // A reading is a kind and, for hiring, a role; anything else is dropped rather than stored as a guess. At most 8 signals, keyed by the

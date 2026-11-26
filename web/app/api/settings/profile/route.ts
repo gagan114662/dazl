@@ -8,25 +8,6 @@ import { newPlayOffer } from '@/lib/scan/play-offer'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
-import { withReadings } from '@/lib/scan/signal-readings'
-import { parseReading, promptFor, type ReadSignal } from '@/lib/scan/signal-reading'
-import { fetchKey, readKeyStatus } from '@/lib/llm/key-store'
-import { ownerGuarded } from '@/lib/llm/owner-guard'
-import { providers } from '@/lib/llm/provider'
-import type { Vendor } from '@/lib/llm/vendors'
-
-// #2084: a saved signal in a language the compiler cannot read is read by the judge here, once per signal, on the tenant's own key and
-// through the same spend guard as every other model call. No key (or a refused call) leaves the signal without a reading, and a signal
-// without a reading makes no play - it is never read on English rules instead.
-async function reader(db: Db, tenantId: string): Promise<ReadSignal | null> {
-  try {
-    const vendor = ((await readKeyStatus(db, tenantId))[0]?.vendor ?? null) as Vendor | null
-    if (!vendor) return null
-    const key = await fetchKey(db, tenantId, vendor)
-    if (!key || !providers[vendor].complete) return null
-    return async (signal, lang) => parseReading(await ownerGuarded(db, tenantId, providers[vendor]).complete!(key, promptFor(signal, lang), fetch, 40))
-  } catch { return null }
-}
 
 // The stored buyer profile, re-normalized on the way out (null when none is saved or it no longer validates).
 async function buyer(db: Db, userId: string) {
@@ -63,7 +44,8 @@ export async function POST(req: NextRequest) {
     else {
       const icp = normalizeIcp(body.buyer)
       if (!icp) return NextResponse.json({ error: 'The buyer profile needs a description of who buys' }, { status: 400 })
-      buyerJson = JSON.stringify(await withReadings(icp, await reader(db, user.tenantId)))
+      // #2084: readings are a scan-time call on the scan's own metered provider, never a paid call at save.
+      buyerJson = JSON.stringify(icp)
     }
   }
   if (website && !/^https:\/\/[\w.-]+\.[a-z]{2,}([/?#]\S*)?$/i.test(website)) return NextResponse.json({ error: 'Website must be a full https URL, like https://acme.com' }, { status: 400 })

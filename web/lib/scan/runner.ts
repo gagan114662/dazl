@@ -115,6 +115,7 @@ import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
+import { fillReadings } from './signal-readings.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 import { freshBoardPostings, orderByBoardDate, dateBoards } from '../company-first/board-postings.ts'
 import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
@@ -1501,6 +1502,10 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?")
       .run(JSON.stringify(profile), source, job.id, job.user_id, job.attempts)
   }
+  // #2084: a saved signal in a language the compiler cannot read is read here, once for the whole run, on this scan's own key and through
+  // the same guarded, metered provider as its other model calls (Ziggy's call on the PR: no operator-key side channel). The readings and
+  // the labels for wordings that could not be read are kept per wording text, so the next scan does not pay for them again.
+  if (profile) profile = await fillReadings(db, job.user_id, profile, key, profileProvider, fetchImpl)
   // What this run may still spend: the tightest of the job's own budget, the account's limits and the scan's cap. With room for a full
   // run it gets the full search budget; with less (a free-trial run, or a request that set its own lower limit) it gets the smaller
   // budget and reserves what there is; with too little for even that, the scan stops and says so.

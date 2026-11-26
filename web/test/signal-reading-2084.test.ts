@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { businessPlays, type BrainProfile } from '../lib/business-brain.ts'
-import { MAX_READINGS, parseReading, promptFor, readSignals, READING_SYSTEM, type ReadSignal, type SignalReading } from '../lib/scan/signal-reading.ts'
+import { MAX_READINGS, parseReading, promptFor, readSignals, READING_SYSTEM, type ReadSignal, type ReadWordings, type SignalReading } from '../lib/scan/signal-reading.ts'
 import { withReadings } from '../lib/scan/signal-readings.ts'
 import { normalizeIcp } from '../lib/scan/icp.ts'
 
@@ -11,9 +11,19 @@ const buyer = (lang: string | null, signals: string[]) => ({
 })
 const plays = (lang: string | null, signals: string[], readings: Record<string, SignalReading> = {}) =>
   businessPlays({ buyer: buyer(lang, signals) } as BrainProfile, [], readings).map(p => p.query)
+// One call answers every wording of the profile (lib/scan/signal-reading.ts readWordings): the stub reads the numbered list back and
+// answers it in the same order, so `asked` is the list of calls, each with the wordings it carried.
 const stub = (answers: Record<string, SignalReading | null>) => {
-  const asked: { signal: string; lang: string | null }[] = []
-  const read: ReadSignal = async (signal, lang) => { asked.push({ signal, lang }); return answers[signal] ?? null }
+  const asked: string[][] = []
+  const read: ReadWordings = async prompt => {
+    const words = [...prompt.matchAll(/^(\d+)\. (.*)$/gm)].map(m => m[2].trim())
+    asked.push(words)
+    return words.map((w, i) => {
+      const a = answers[w]
+      if (!a) return `${i + 1}. OTHER`
+      return a.kind === 'hiring' ? `${i + 1}. HIRING: ${a.role ?? ''}` : `${i + 1}. NOT_HIRING`
+    }).join('\n')
+  }
   return { read, asked }
 }
 
@@ -54,16 +64,18 @@ test('#2084 readings are stored with the profile and reused; an English profile 
   const { read, asked } = stub({ 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs' }, Einstellungsstopp: { kind: 'not_hiring' } })
   const saved = await withReadings(de, read, 1000)
   assert.deepEqual(saved.signal_readings, { 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs', at: 1000 }, Einstellungsstopp: { kind: 'not_hiring', at: 1000 } })
+  assert.equal(asked.length, 1, 'both wordings went in one call')
+  assert.deepEqual(asked[0], ['Wir stellen SDRs ein', 'Einstellungsstopp'])
   const again = await withReadings(saved, read, 2000)
-  assert.equal(asked.length, 2, 'a stored reading is not asked again')
+  assert.equal(asked.length, 1, 'a stored reading is not asked again')
   assert.deepEqual(again.signal_readings, saved.signal_readings, 'and keeps its first reading time')
   const en = normalizeIcp({ ...buyer('en', ['hiring SDRs']), summary: 'Dental practices in Ohio' })!
   const enSaved = await withReadings(en, read, 3000)
-  assert.equal(asked.length, 2, 'the compiler reads English: no call')
+  assert.equal(asked.length, 1, 'the compiler reads English: no call')
   assert.equal(enSaved.signal_readings, undefined)
   // a reworded signal is read again, never inherited
   const reworded = await withReadings({ ...saved, signals: ['Wir stellen SDRs ein', 'Wir bauen das Team aus'] }, read, 4000)
-  assert.equal(asked.at(-1)?.signal, 'Wir bauen das Team aus')
+  assert.deepEqual(asked.at(-1), ['Wir bauen das Team aus'], 'only the new wording is asked')
   assert.ok(!('Einstellungsstopp' in (reworded.signal_readings ?? {})), 'a reading for a signal no longer saved is dropped')
 })
 
