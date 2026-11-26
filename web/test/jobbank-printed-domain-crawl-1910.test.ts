@@ -22,7 +22,7 @@ async function crawl(t: TestContext, source: string, finalUrl: string, city: str
   db.prepare('INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, score) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run('L', job, company, 'Hiring in Toronto', source, 90, 90)
   if (replay) {
-    const day = '2026-11-20'
+    const day = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
     db.prepare("UPDATE leads SET source_kind = 'discover', event_date = ?, fit = 4, intent = 4 WHERE id = 'L'").run(day)
     db.prepare(`INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url,
       confidence, score, event_date, fit, intent, source_kind) VALUES ('ready', ?, 'Existing Buyer', 'buyer.example',
@@ -85,7 +85,6 @@ test('an ATS URL printed as the Job Bank website is not an employer candidate', 
 })
 
 test('the frozen printed-site replay preserves shown leads and the Ready control', async t => {
-  t.mock.method(Date, 'now', () => Date.parse('2026-11-26T12:00:00Z'))
   const result = await crawl(t, posting, posting, 'Toronto, ON M5S 1T8', site, true)
   assert.deepEqual(result.visible, ['L', 'ready'])
   assert.deepEqual(result.states, { L: 'no_contact', ready: 'ready_email' })
