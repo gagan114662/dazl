@@ -318,19 +318,19 @@ export function estimateRun(i: EstimateInput): RunEstimate {
   const scanUnpriced = i.priceModel !== undefined && p === null && model !== UNKNOWN_MODEL
   if (ok && (scanUnpriced || ((i.limited ?? capped) && !limitReservable(model)))) {
     ok = false; reason = 'model_unpriced'; warning = null; change.length = 0
-    const whose = i.payer === 'trial' ? "The free trial's model" : "Your key's model"
+    const whose = i.payer === 'trial' ? "The free trial's model" : "The workspace model"
     message = model === UNKNOWN_MODEL
-      ? `${i.payer === 'trial' ? "The free trial's model" : 'The model your key runs'} could not be read right now, so a run under a spending limit cannot be priced and would not reserve. Nothing was started or charged.`
+      ? `${i.payer === 'trial' ? "The free trial's model" : 'The workspace model'} could not be read right now, so a run under a spending limit cannot be priced and would not reserve. Nothing was started or charged.`
       : scanUnpriced
         ? `${whose} (${model}) has no listed price, so the per-scan spend cap every run has would stop it at its first model call, with or without a spending limit. Nothing was started or charged.`
         : `${whose} (${model}) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call.${p ? ' The model rows above use its list price for this estimate only.' : ''} Nothing was started or charged.`
-    if (i.payer === 'trial') change.push('This is a dazl configuration problem, not your request: try again later, or add your own AI key in Settings.')
+    if (i.payer === 'trial') change.push('This is a dazl configuration problem, not your request: try again later.')
     else {
       if (model === UNKNOWN_MODEL) change.push('Try again in a moment.')
       if (!scanUnpriced) change.push('Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)')
       // The alternative must be priceable by every guard the run would still meet: the limit's table and the scan cap's.
       const alt = i.pricedAlternative
-      if (alt && alt !== model && limitReservable(alt) && (i.priceModel ?? listedPrice)(alt) !== null) change.push(`${scanUnpriced ? 'Use' : 'Or use'} an Anthropic key (${alt} is priced)`)
+      if (alt && alt !== model && limitReservable(alt) && (i.priceModel ?? listedPrice)(alt) !== null) change.push(`${scanUnpriced ? 'Use' : 'Or use'} the priced Claude model (${alt})`)
       if (scanUnpriced) change.push('This is a dazl model configuration problem, not your request: try again later.')
     }
   }
@@ -490,7 +490,7 @@ export function capLine(cap: RunEstimate['cap'], capped: Range): string | null {
 // (the refusal notice below it says why and what to do); otherwise the shared trial or the account's own keys.
 export function estimatePayerLine(est: Pick<RunEstimate, 'payer' | 'verdict'>): string | null {
   if (!est.verdict.ok && est.verdict.reason === 'trial_unavailable') return null
-  return est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Billed to your own keys and plans.'
+  return est.payer === 'trial' ? 'Paid by the shared free trial, not billed to you.' : 'Usage depends on your workspace plan.'
 }
 
 // #1157: shown BEFORE confirm when this account has little web search left today, so a run the allowance would stop is not started blind

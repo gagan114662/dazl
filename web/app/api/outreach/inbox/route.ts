@@ -7,6 +7,11 @@ import { getSettings } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied } from '@/lib/workspace-access'
 
+function ownsInboxThread(db: ReturnType<typeof getScanDb>, tenantId: string, threadId: string): boolean {
+  return !!db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? UNION ALL SELECT 1 FROM followup_threads WHERE tenant_id = ? AND thread_id = ?')
+    .get(tenantId, threadId, tenantId, threadId)
+}
+
 // GET ?thread_id=<id>             one thread's messages (owner-scoped; another tenant's thread answers like an unknown one)
 // GET ?job_id&status&class&thread&cursor&limit
 //                                 one page of conversations, one row per thread, filtered and cut on the server
@@ -20,11 +25,19 @@ export async function GET(req: NextRequest) {
     // Owner-scoped: threadMessages returns empty for another tenant's thread.
     const messages = threadMessages(db, user.tenantId, threadId)
     // #830: a thread this workspace has no part of (another workspace's, or unknown) is not found, never an empty 200
-    if (!messages.length && !db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? UNION ALL SELECT 1 FROM followup_threads WHERE tenant_id = ? AND thread_id = ?').get(user.tenantId, threadId, user.tenantId, threadId)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
+    if (!messages.length && !ownsInboxThread(db, user.tenantId, threadId)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
     return NextResponse.json({ messages })
   }
   let page
-  try { page = await inboxPage(db, user.tenantId, parseInboxQuery(req.nextUrl.searchParams)) } catch (e) {
+  try {
+    const query = parseInboxQuery(req.nextUrl.searchParams)
+    const tenantId = user.tenantId
+    if ((query.jobId && !db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(query.jobId, tenantId))
+      || (query.threadId && !ownsInboxThread(db, tenantId, query.threadId))) {
+      return NextResponse.json({ error: 'not_found' }, { status: 404 })
+    }
+    page = await inboxPage(db, tenantId, query)
+  } catch (e) {
     if (e instanceof InboxQueryError) return NextResponse.json({ error: e.code }, { status: 400 })
     throw e
   }

@@ -110,3 +110,17 @@ test('#1910 timing proof rejects a page date when the source is unconfirmed', as
   assert.equal(discoveryHiringDateProven({ ...candidate, proof: 'confirmed' }, 365, now), true)
   assert.equal(discoveryHiringDateProven({ ...candidate, proof: 'listed' }, 365, now), false)
 })
+
+test('#1910 a relative posting age with a dash can make a hiring lead Ready', async () => {
+  for (const separator of ['—', '–', '-']) {
+    const label = `Posted ${separator} 5 days ago`
+    assert.equal(await readiness(null, `<p>${label}</p>`), 'ready_email', label)
+  }
+})
+
+test('#1910 a relative update age with a dash keeps a hiring lead in Research', async () => {
+  for (const separator of ['—', '–', '-']) {
+    const label = `Last updated ${separator} 5 days ago`
+    assert.equal(await readiness(null, `<p>${label}</p>`), 'research', label)
+  }
+})

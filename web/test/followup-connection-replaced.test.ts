@@ -8,7 +8,7 @@ import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { startOAuth, completeOAuth } from '../lib/gmail/oauth.ts'
 import { runFollowups } from '../lib/outreach/followups.ts'
-import { acceptReadConsent } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, syncReplies } from '../lib/outreach/replies.ts'
 import { CONSENT_VERSION } from '../lib/outreach/autopilot.ts'
 
 const master = randomBytes(32)
@@ -79,4 +79,44 @@ test('follow-up control: a genuine reconnect failure on an unreplaced connection
   assert.deepEqual(autopilot(db), { paused: 1, pause_reason: 'gmail_reconnect_needed' })
   assert.equal(thread(db).followups_sent, 0)
   db.close()
+})
+
+test('a reply synced during token refresh stops a due second warm follow-up before Gmail', async t => {
+  const db = await setup()
+  t.after(() => db.close())
+  db.prepare("UPDATE outreach_messages SET gmail_id = 'root-gmail', thread_id = ? WHERE id = 'orig-tr-1'").run(TH)
+  db.prepare('UPDATE followup_threads SET followups_sent = 1, last_followup_at = ?, last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?')
+    .run(NOW - 6 * DAY, NOW - 6 * DAY, T, TH)
+  db.prepare('UPDATE followup_threads SET last_lead_reply_at = ? WHERE tenant_id = ? AND thread_id = ?').run(NOW - 7 * DAY, T, TH)
+
+  let sends = 0
+  let ingestedReplies = 0
+  const r = await runFollowups(db, T, 'Biz', {
+    env, master, now: NOW, baseUrl: 'https://app.test',
+    flags: { AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' },
+    fetchImpl: async () => {
+      const synced = await syncReplies(db, T, {
+        env, master, now: NOW,
+        fetchImpl: async url => {
+          if (String(url).includes('oauth2')) return json({ access_token: 'read-token' })
+          if (String(url).includes('/threads/')) return json({ messages: [{
+            id: 'recent-reply', internalDate: String((NOW - 1) * 1000),
+            payload: {
+              mimeType: 'text/plain', headers: [{ name: 'From', value: 'sam1@buyer.example' }],
+              body: { data: Buffer.from('Interested, tell me more').toString('base64url') },
+            },
+          }] })
+          return json({ messages: [] })
+        },
+      })
+      ingestedReplies = synced.replies
+      return json({ access_token: 'send-token' })
+    },
+    sendFn: async () => { sends++; return { id: 'should-not-send', threadId: TH } },
+  })
+  assert.equal(ingestedReplies, 1, 'the Gmail reply was read before handoff')
+  assert.equal(r.sent, 0)
+  assert.equal(sends, 0)
+  assert.deepEqual(thread(db), { followups_sent: 1, stopped: 'replied_again', last_followup_at: NOW - 6 * DAY })
+  assert.equal(db.prepare('SELECT count(*) FROM followup_messages').pluck().get(), 0, 'the unsent claim is released')
 })

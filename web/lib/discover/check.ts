@@ -3,6 +3,7 @@
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
 import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
+import { atsDate } from './ats-dates.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -197,7 +198,7 @@ export const pageIsGone = (body: string): boolean => { const t = body.replace(/\
 // Several different ages on one page (a list of postings) give no date.
 export function relativeDay(body: string, now: Date, hiringOnly = false): string | null {
   const days = new Set<number>()
-  for (const m of body.matchAll(/\b(?:posted|published|listed|updated)\s*:?\s*(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
+  for (const m of body.matchAll(/\b(?:posted[\s:–—-]*|(?:published|listed|updated)\s*:?\s*)(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
     if (hiringOnly && !/^posted\b/i.test(m[0])) continue
     // A label like "Posted 30+ days ago" gives a lower bound, not a posting date.
     if (hiringOnly && m[0].includes('+')) return null
@@ -235,11 +236,28 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
 // tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
 // moves it), not a day in the future, not one more than a year old.
 export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
-  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? (hiringOnly ? null : /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
-    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html))
-  if (!m) return null
-  const t = Date.parse(`${m[1]}T00:00:00Z`)
-  return hiringOnly ? validDay(t, now) : Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
+  const posted = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
+  if (posted) return validDay(Date.parse(`${posted[1]}T00:00:00Z`), now)
+  // Prefer a typed Article-like JSON-LD node; retain the legacy bare datePublished fallback for non-hiring pages.
+  const publishedDays: string[] = []
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) { for (const item of value) visit(item); return }
+    if (!value || typeof value !== 'object') return
+    const o = value as Record<string, unknown>
+    const types = Array.isArray(o['@type']) ? o['@type'] : [o['@type']]
+    if (types.some(type => typeof type === 'string' && /^(?:Article|NewsArticle|BlogPosting|WebPage)$/i.test(type)) && typeof o.datePublished === 'string') publishedDays.push(o.datePublished.slice(0, 10))
+    if (o['@graph']) visit(o['@graph'])
+  }
+  for (const block of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try { visit(JSON.parse(block[1])) } catch { /* malformed structured data is not date evidence */ }
+  }
+  const typed = publishedDays.find(day => /^\d{4}-\d{2}-\d{2}$/.test(day))
+  const bare = !hiringOnly && !typed ? /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)?.[1] : null
+  const meta = !hiringOnly ? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html)?.[1] : null
+  const day = typed ?? bare ?? meta
+  if (!day) return null
+  const t = Date.parse(`${day}T00:00:00Z`)
+  return hiringOnly ? validDay(t, now) : Number.isFinite(t) && t <= now.getTime() + 86_400_000 && now.getTime() - t <= INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? day : null
 }
 // A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
 // the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging
@@ -294,7 +312,14 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   const needDate = c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
   if (!needDate && !needProfile) return c
   let out = c
-  if (needDate && u) { const posted = await postingDay(u, fetchImpl, timeoutMs, now); if (posted) out = { ...out, date: posted, date_source: 'page' } }
+  // A posting on Greenhouse, Lever, Workable, Ashby or BambooHR carries its day in the board's own API record, with the record's URL as
+  // the source. That covers first_published, createdAt, published_on and the board listings; the page/JSON-LD path stays for
+  // everything else.
+  if (needDate && u) {
+    const ats = await atsDate(u, fetchImpl, now)
+    const posted = ats?.date ?? await postingDay(u, fetchImpl, timeoutMs, now)
+    if (posted) out = { ...out, date: posted, date_source: 'page' }
+  }
   const stillDate = needDate && out.date_source !== 'page'
   if (!stillDate && !needProfile) return out
   let raw = html

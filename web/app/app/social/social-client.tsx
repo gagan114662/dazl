@@ -63,7 +63,7 @@ export default function SocialClient() {
       const parts = Object.entries((j.platforms ?? {}) as Record<string, string>).map(([p, s]) => `${p === 'x' ? 'X' : 'Reddit'}: ${s === 'ok' ? 'checked' : s.replaceAll('_', ' ')}`)
       const kept = `${j.added} new thread${j.added === 1 ? '' : 's'} found`
       const dropped = j.filtered > 0 ? `, ${j.filtered} off-topic result${j.filtered === 1 ? '' : 's'} filtered out` : ''
-      const gradedPart = j.graded > 0 ? ` Buyer intent graded on your AI key: ${j.graded}.` : ''
+      const gradedPart = j.graded > 0 ? ` Matches graded for buyer intent: ${j.graded}.` : ''
       const backlog = (j.ungraded_remaining ?? 0) > 0 ? ` ${j.ungraded_remaining} older thread${j.ungraded_remaining === 1 ? ' is' : 's are'} still ungraded - check again to grade more.` : ''
       setMsg((j.added > 0 ? `${kept}${dropped}. ${parts.join(' - ')}` : `Nothing new${dropped}. ${parts.join(' - ')}`) + gradedPart + backlog)
     } catch (e) { setMsg((e as Error).message) } finally { setBusy('') }
@@ -120,7 +120,7 @@ export default function SocialClient() {
       <h1 className="text-2xl font-semibold mb-1">Social opportunities</h1>
       {loadErr && <p role="alert" className="text-xs font-medium text-[#a3173f] mb-2" data-testid="social-load-error">{loadErr} Showing the last loaded threads. <button className="underline" onClick={() => void load()}>Try again</button></p>}
       <p className="text-[#555] text-sm mb-6">
-        Fresh Reddit and X threads that mention your searches and look like questions. Not every match is your buyer - review each one and decide. Replies are drafted on your own AI key.
+        Fresh Reddit and X threads that mention your searches and look like questions. Not every match is your buyer - review each one and decide. Review suggested replies before posting them yourself.
         dazl never posts: you review the reply, edit it, then copy it and post it yourself from your own account.
         Email replies to your outreach are in <a className="underline" href="/app/inbox">Inbox</a>.
       </p>
@@ -137,7 +137,7 @@ export default function SocialClient() {
         <div className="card p-4 mb-6 text-sm text-[#555]">Reddit/X collection needs your consent and your own session in <a className="underline" href="/app/settings">Settings</a> first. Nothing is collected until then.</div>
       )}
       {anyPlatform && !state.has_key && (
-        <div className="card p-4 mb-6 text-sm text-[#555]">Reply drafts use your own AI key - add one in <a className="underline" href="/app/settings">Settings</a>.</div>
+        <div className="card p-4 mb-6 text-sm text-[#555]">Reply drafting is currently unavailable. Review your workspace in <a className="underline" href="/app/settings">Settings</a>.</div>
       )}
 
       {anyPlatform && <ThreadMetrics />}
@@ -159,7 +159,7 @@ export default function SocialClient() {
             {busy === 'refresh' ? 'Checking Reddit and X...' : 'Check for new threads'}
           </button>
           {state.has_key && (
-            <p className="text-xs text-[#999] mt-2">Checking also grades matches for buyer intent on your AI key - up to 10 gradings per check, at your key&apos;s cost. Without a key, matches are keyword-only.</p>
+            <p className="text-xs text-[#999] mt-2">Checking can grade up to 10 matches for buyer intent. When grading is unavailable, matches are keyword-only.</p>
           )}
         </div>
         {msg && <p className="text-sm text-[#555] mt-3">{msg}</p>}
@@ -187,7 +187,7 @@ export default function SocialClient() {
               <div className="flex flex-wrap items-center gap-2 mt-2">
                 <button className="btn-ghost btn-sm" onClick={() => saveEdit(t.id)}>Save</button>
                 <button className="btn-ghost btn-sm" onClick={() => { setEdits(e => without(e, t.id)); setCardErr(c => ({ ...c, [t.id]: '' })); setEditing(null) }}>Cancel</button>
-                <button className="text-xs underline text-[var(--ink-2)] ml-auto" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>{busy === t.id ? 'Drafting...' : 'Write a new draft on your AI key'}</button>
+                <button className="text-xs underline text-[var(--ink-2)] ml-auto" disabled={busy === t.id || !state.has_key} onClick={() => draft(t.id)}>{busy === t.id ? 'Drafting...' : 'Write a new draft'}</button>
               </div>
             </div>
             : <p className="mt-3 text-sm whitespace-pre-wrap break-words rounded-[10px] bg-[#f8f4f0] px-3 py-2.5" data-testid="draft-text">{t.draft}</p>)}
@@ -202,8 +202,8 @@ export default function SocialClient() {
               {t.draft !== null && t.draft_status !== 'posted' && <button className="text-xs underline text-[var(--ink-2)] ml-auto" onClick={() => markPosted(t.id)}>I posted it</button>}
             </div>}
             <p className="text-xs text-[var(--ink-2)] mt-2" data-testid="action-hint">{t.draft === null
-              ? state.has_key ? 'Approve writes a suggested reply on your AI key for you to check. Nothing is posted. Reject hides this thread.'
-                : 'Approve needs your AI key to write the reply (add one in Settings). Reject hides this thread.'
+              ? state.has_key ? 'Approve writes a suggested reply for you to check. Nothing is posted. Reject hides this thread.'
+                : 'Reply drafting is currently unavailable. Reject hides this thread.'
               : 'dazl never posts. Approve copies your reply and opens the thread so you post it from your own account. Reject hides this thread.'}</p>
           </div>
         </div>

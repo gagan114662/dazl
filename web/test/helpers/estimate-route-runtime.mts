@@ -441,7 +441,7 @@ test('#851 an own OpenAI key on a model the per-scan cap cannot price (DAZL_OPEN
     const r0 = await est({ query: Q }); const e = await r0.json() as Est
     assert.equal(r0.status, 200)
     assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
-    assert.match(e.estimate.verdict.message, /^Your key's model \(gpt-4o\) has no listed price, so the per-scan spend cap/)
+    assert.match(e.estimate.verdict.message, /^The workspace model \(gpt-4o\) has no listed price, so the per-scan spend cap/)
     assert.ok(!e.estimate.verdict.change.some(c => /without a spending limit/i.test(c)), JSON.stringify(e.estimate.verdict.change))
     assert.ok(modelRowsOf(e).every(x => x.usd === null))
     const r = await scan({ query: Q }); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced'])
@@ -456,8 +456,8 @@ test('#851 an Anthropic key on a model the limit guard cannot price (dated id): 
     const limited = { query: Q, budget: { max_usd: 2, judge: false } }
     const e = await (await est(limited)).json() as Est
     assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
-    assert.match(e.estimate.verdict.message, /Your key's model \(claude-sonnet-4-5-20250929\) has no listed price/)
-    assert.ok(!e.estimate.verdict.change.some(c => /Anthropic key/.test(c)), 'the Anthropic key is this model: not offered as the fix')
+    assert.match(e.estimate.verdict.message, /The workspace model \(claude-sonnet-4-5-20250929\) has no listed price/)
+    assert.ok(!e.estimate.verdict.change.some(c => /Anthropic key|priced Claude model/.test(c)), 'the unpriceable model is not offered as the fix')
     assert.ok(modelRowsOf(e).every(x => x.usd !== null), 'the rows are still priced as the scan cap prices the alias')
     const r = await scan(limited); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced']); assert.equal(jobs(db).length, 0)
     assert.equal((await scan({ query: Q })).status, 202, 'without a limit nothing is reserved against the limit guard')

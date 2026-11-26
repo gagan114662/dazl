@@ -174,9 +174,11 @@ for (const [w, h, tag] of [[1280, 900, 'desktop'], [390, 844, 'mobile']]) {
       await page.getByRole('button', { name: 'Run scan with this profile' }).last().click()
       const panel = page.getByTestId('estimate-confirm'); await panel.waitFor()
       assert.equal(await panel.getAttribute('data-verdict'), 'blocked'); assert.equal(await page.getByTestId('estimate-confirm-run').count(), 0, `${tag}: no Run button while blocked`)
-      assert.match(await page.getByTestId('estimate-verdict').innerText(), /^Your key's model \(gpt-4\.1\) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call\. The model rows above use its list price for this estimate only\./)
-      const change = await page.getByTestId('estimate-change').innerText()
-      assert.match(change, /Run without a spending limit/); assert.match(change, /Or use an Anthropic key \(claude-sonnet-4-5 is priced\)/)
+      assert.equal(await page.getByTestId('estimate-verdict').innerText(), 'The workspace model (gpt-4.1) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call. The model rows above use its list price for this estimate only. Nothing was started or charged.')
+      assert.deepEqual(await page.getByTestId('estimate-change').locator('li').allTextContents(), [
+        'Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)',
+        'Or use the priced Claude model (claude-sonnet-4-5)',
+      ])
       assert.equal(posts.length, 0, `${tag}: a blocked estimate starts nothing`)
       await shot(page, `budget-estimate-model-unpriced-${tag}`, panel)
       await page.close()
