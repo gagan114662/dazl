@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 
-function dry(...args: string[]) {
+function dryWithCap(cap: string, ...args: string[]) {
   return spawnSync(process.execPath, [
     '--experimental-strip-types', 'scripts/matrix-local.mts', '--dry', '--matrix', '../bench/prompts.json', ...args,
   ], {
@@ -18,10 +18,12 @@ function dry(...args: string[]) {
       TINYFISH_API_KEY: 'dry-fixture',
       MATRIX_ANTHROPIC_KEY: 'dry-fixture',
       MATRIX_APOLLO_KEY: 'dry-fixture',
-      APOLLO_CREDIT_CAP: '75',
+      APOLLO_CREDIT_CAP: cap,
     },
   })
 }
+
+const dry = (...args: string[]) => dryWithCap('50', ...args)
 
 test('matrix refuses Apollo without both explicit opt-ins', () => {
   const contactsOnly = dry('--contacts')
@@ -31,6 +33,7 @@ test('matrix refuses Apollo without both explicit opt-ins', () => {
   assert.equal(budgetOnly.status, 2)
   assert.match(budgetOnly.stderr, /requires --contacts/)
   assert.equal(dry('--contacts', '--apollo-budget', '1.5').status, 2)
+  assert.equal(dryWithCap('51', '--contacts', '--apollo-budget', '2').status, 2)
   const both = dry('--contacts', '--apollo-budget', '2')
   assert.equal(both.status, 0, both.stderr)
   assert.match(both.stdout, /Apollo budget 2/)

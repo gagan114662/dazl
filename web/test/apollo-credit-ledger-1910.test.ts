@@ -169,3 +169,12 @@ test('a production or unset deployment cannot reserve or dispatch an Apollo pilo
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'apollo_credit_ledger'").get(), undefined)
   } finally { db.close() }
 })
+
+test('the operator cannot configure a cap above the approved pilot ceiling', async () => {
+  const db = new Database(':memory:')
+  const scan = { id: 'scan', limit: 1 }
+  try {
+    assert.equal(await reserveApolloLead(db, 'tenant', 'lead', { APOLLO_CREDIT_CAP: '51' }, scan), false)
+    assert.equal(await reserveApolloLead(db, 'tenant', 'lead', { APOLLO_CREDIT_CAP: '50' }, scan), true)
+  } finally { db.close() }
+})
