@@ -137,3 +137,19 @@ test('public-sector non-buyers stay in research without consuming a fit check', 
     assert.deepEqual(discoverApprove(publicLead), { ok: false, reason: 'Not a fit for this offer. The organization is a public-sector body.' })
   } finally { db.close() }
 })
+
+test('an ambiguous hospital remains visible in Research with its original evidence', async () => {
+  const url = 'https://clinic.example/news'
+  const quote = 'Sunnybrook Hospital opened a new clinic.'
+  const db = setup([{ id: 'unknown', company: 'Sunnybrook Hospital', signal: 'Opened a clinic', source_url: url, fit: 5, domain: 'clinic.example' }])
+  try {
+    db.prepare('UPDATE leads SET confidence = 85, evidence_excerpt = ? WHERE id = ?').run(quote, 'unknown')
+    await applyBuyerFitGate(db, 'j', prov(''), 'k', 'Accounting software for private companies')
+    const row = db.prepare('SELECT fit, confidence, review_reason, source_url, evidence_excerpt FROM leads WHERE id = ?').get('unknown') as {
+      fit: number; confidence: number; review_reason: string; source_url: string; evidence_excerpt: string
+    }
+    assert.deepEqual(row, { fit: FIT_CAP, confidence: 45, review_reason: 'hospital_ownership_unconfirmed', source_url: url, evidence_excerpt: quote })
+    assert.equal(discoverState(row), 'research')
+    assert.deepEqual(discoverApprove(row), { ok: false, reason: 'Hospital ownership could not be confirmed. Research only.' })
+  } finally { db.close() }
+})

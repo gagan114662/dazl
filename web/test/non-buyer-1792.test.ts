@@ -71,7 +71,7 @@ test('recognizes public-sector bodies and preserves commercial buyers', () => {
 test('hospitals and health authorities are public-sector bodies for private-sector offers', () => {
   const offer = 'Accounting software for private companies';
   for (const company of ['Hamilton General Hospital', 'North Valley Health Authority']) {
-    assert.equal(isPublicSectorBody({ company, domain: 'hhsc.ca', offer }).nonBuyer, true, company);
+    assert.equal(isPublicSectorBody({ company, domain: 'hhsc.ca', offer, sourceText: company + ' is a public hospital.' }).nonBuyer, true, company);
     assert.equal(isPublicSectorBody({ company, offer: 'Software for public sector procurement' }).nonBuyer, false, company);
   }
   assert.equal(isPublicSectorBody({ company: 'North Valley Hospital Supplies', offer }).nonBuyer, false);
@@ -84,12 +84,18 @@ test('a bare hospital ending does not establish public-sector ownership', () => 
   ]) {
     assert.equal(isPublicSectorBody({ company, domain: 'clinic.example' }).nonBuyer, false, company);
   }
-  assert.equal(isPublicSectorBody({ company: 'Hamilton General Hospital', domain: 'hhsc.ca' }).nonBuyer, true);
+  assert.equal(isPublicSectorBody({ company: 'Hamilton General Hospital', domain: 'hhsc.ca', sourceText: 'Hamilton General Hospital is a public hospital.' }).nonBuyer, true);
   assert.equal(isPublicSectorBody({ company: 'Central Hospital', domain: 'health.gov' }).nonBuyer, true);
 });
 
-test('multi-word public hospital names remain held without a government hostname', () => {
-  for (const company of ['Toronto Western Hospital', 'Mount Sinai Hospital', "St. Michael's Hospital", 'Credit Valley Hospital']) {
-    assert.equal(isPublicSectorBody({ company }).nonBuyer, true, company);
+test('hospital ownership stays unknown until evidence identifies it', () => {
+  for (const company of ['Sunnybrook Hospital', 'Toronto Western Hospital', 'Mount Sinai Hospital', "St. Michael's Hospital", 'Credit Valley Hospital']) {
+    const unknown = isPublicSectorBody({ company, sourceText: company + ' opened a clinic to the public.' });
+    assert.equal(unknown.nonBuyer, false, company);
+    assert.equal(unknown.ownershipUnconfirmed, true, company);
+    assert.equal(isPublicSectorBody({ company, sourceText: company + ' is a public hospital.' }).nonBuyer, true, company);
   }
+  const privateHospital = isPublicSectorBody({ company: 'Shouldice Hospital', sourceText: 'Shouldice Hospital is a private hospital.' });
+  assert.equal(privateHospital.nonBuyer, false);
+  assert.equal(privateHospital.ownershipUnconfirmed, undefined);
 });
