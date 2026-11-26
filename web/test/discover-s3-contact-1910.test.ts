@@ -69,3 +69,11 @@ test('S3 does not accept a proposed domain from a same-name person at an unrelat
   })
   assert.deepEqual([result.person, result.email], [null, null])
 })
+
+test('S3 needs the registry to tie the person to this business in the same entry', async () => {
+  const result = await lookup({ person_source_url: registry }, [
+    page(registry, 'Cedar Dental: Taylor Kay, Dentist.\n\nFir Dental: Dana Ruiz, Practice Manager.'),
+    page(team, `${personText} ${email}`),
+  ])
+  assert.deepEqual([result.person, result.email], [null, null])
+})

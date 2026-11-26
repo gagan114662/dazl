@@ -154,9 +154,9 @@ function verifyContact(lead: DiscoveredLead, candidate: Enriched, seen: Readonly
   const person = candidate.person
   const title = candidate.title
   const verifiedPerson = person && isPersonName(person) && title && personPage &&
-    (ownPage(candidate.person_source_url) || containsPhrase(personPage, lead.company)) &&
     personPage.split(/\r?\n[ \t]*\r?\n/).some(block =>
       block.length <= 800 && containsPhrase(block, person) && containsPhrase(block, title) &&
+      (ownPage(candidate.person_source_url) || containsPhrase(block, lead.company)) &&
       !/\b(?:former|retired|emeritus|assistant to)\b/i.test(block))
   const contact = verifiedPerson ? candidate : { ...candidate, person: null, title: null, person_source_url: null, linkedin_url: null }
   const buyer = lead.person ?? contact.person
