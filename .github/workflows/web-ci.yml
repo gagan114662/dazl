@@ -225,7 +225,9 @@ jobs:
             exit 1
           fi
           if [ "$FULL_CI" = false ] && [ "$SHARDS" = skipped ]; then
-            echo "full suite deferred until ready-to-merge" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            message="full suite deferred until ready-to-merge"
+            printf '%s\n' "$message"
+            printf '%s\n' "$message" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             exit 0
           fi
           [ "$FULL_CI" = true ] && [ "$SHARDS" = success ] || { echo "::error::Shards: $SHARDS"; exit 1; }
@@ -248,7 +250,9 @@ jobs:
             exit 1
           fi
           if [ "$FULL_CI" = false ] && [ "$SHARDS" = skipped ]; then
-            echo "full suite deferred until ready-to-merge" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            message="full suite deferred until ready-to-merge"
+            printf '%s\n' "$message"
+            printf '%s\n' "$message" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
             exit 0
           fi
           [ "$FULL_CI" = true ] && [ "$SHARDS" = success ] || { echo "::error::Shards: $SHARDS"; exit 1; }
