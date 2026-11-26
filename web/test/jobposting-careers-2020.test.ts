@@ -27,6 +27,31 @@ test('CAREERS edit stamps are never a posting date', () => {
   assert.equal(resolveStructuredDate(editOnly, 'n8n', 'is hiring a Sales Development Representative'), null, 'dateModified/datePublished cannot date the posting')
 })
 
+// Recorded from the pages prod leads actually point at (fetched 2026-11-26). One carries a JobPosting; the rest carry none, which
+// is the honest control: a company-owned careers page that names no date must yield nothing rather than a nearby or edited stamp.
+const recorded = (name: string): { url: string; blocks: string[] } =>
+  JSON.parse(readFileSync(new URL(`./fixtures/careers-2020/${name}`, import.meta.url), 'utf8'))
+
+test('CAREERS a company-owned page that declares datePosted is dated by it', () => {
+  const { url, blocks } = recorded('yonovo-software-us.json')
+  assert.equal(url, 'https://www.yonovo.com/careers/founding-sdr')
+  assert.deepEqual(resolveStructuredDate(blocks, 'Yonovo', 'is hiring a Founding Sales Development Representative'), { date: '2026-10-20', kind: 'JobPosting' })
+})
+
+test('CAREERS recorded company-owned pages with no JobPosting give no date', () => {
+  for (const [name, company, claim] of [
+    ['mediaforce-marketing-ca.json', 'Mediaforce', 'is hiring a Business Development Representative'],
+    ['abacus-plumbing-us.json', 'Abacus Plumbing', 'is hiring a plumber'],
+    ['cleanor-service-us.json', 'Cleanor', 'is hiring cleaners'],
+    ['plumbers-that-care-us.json', 'Plumbers That Care', 'is hiring a plumber'],
+    ['lime-advertising-us.json', 'Lime Advertising', 'is hiring a Business Development Representative'],
+  ] as const) {
+    const { blocks } = recorded(name)
+    assert.equal(resolveStructuredDate(blocks, company, claim), null, `${name} declares no datePosted`)
+  }
+  assert.equal(recorded('cleanor-service-us.json').blocks.length, 0, 'that page carries no JSON-LD at all, recorded as such')
+})
+
 test('CAREERS control: a hiring claim on a page with no JobPosting gets no date', () => {
   assert.equal(resolveStructuredDate(blocksOf('ashby-site/n8n.html').map(b => b.replace(/"JobPosting"/g, '"Article"').replace(/"datePosted":"[^"]*"/g, '"x":"y"')), 'n8n', 'is hiring a Sales Development Representative'), null)
   assert.equal(resolveStructuredDate([], 'n8n', 'is hiring a Sales Development Representative'), null, 'no markup at all gives nothing')

@@ -1,0 +1,7 @@
+{
+ "url": "https://www.abacusplumbing.com/careers/",
+ "fetched": "2026-11-26",
+ "blocks": [
+  "[\n    {\n        \"@context\": \"http://www.schema.org\",\n        \"@type\": \"HomeAndConstructionBusiness\",\n        \"name\": \"Abacus Plumbing, Air Conditioning & Electrical\",\n        \"url\": \"https://www.abacusplumbing.com\",\n        \"logo\": \"https://wg.scene7.com/is/image/wrenchgroup/logo-abacus-aba24wi002wg\",\n        \"priceRange\": \"$50 to $500\",\n        \"image\": \"https://wg.scene7.com/is/image/wrenchgroup/abacus-social-card-aba24wi001wg\",\n        \"description\": \"Austin, TX based Plumbing, Air Conditioning and Electric Service Provider\",\n        \"sameAs\" : [\n         \"https://www.facebook.com/Abacusplumbingaustin\",\n         \"https://x.com/AustinAbacus\",\n         \"https://www.youtube.com/channel/UCV6mgkIs_kUEYZchUjjAvNA\"\n         ],\n        \"address\": {\n            \"@type\": \"PostalAddress\",\n            \"streetAddress\": \"2106 Denton Dr\",\n            \"addressLocality\": \"Austin\",\n            \"addressRegion\": \"TX\",\n            \"postalCode\": \"78758\",\n            \"addressCountry\": \"United States\"\n        },\n        \"openingHours\": \"Open 24/7 Including Holidays\",\n        \"telephone\": \"512-400-0749\"\n    }\n]"
+ ]
+}
