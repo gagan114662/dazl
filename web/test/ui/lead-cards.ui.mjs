@@ -221,6 +221,55 @@ try {
   heldMode = false // the retry cleared it
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal(await page.getByTestId('enrich-held').count(), 0, 'the notice clears once nothing is held')
+  // #1038: the table is the default Leads view - 16 dense rows, fit/date sort that survives a reload, cards behind
+  // a toggle, and a 390px phone gets the same table with the page itself never widening (it scrolls inside).
+  // A scenario-local /api/leads override seeds 16 rows; the shared 8-lead fixture above is untouched.
+  const tblLeads = Array.from({ length: 16 }, (_, k) => {
+    const i = k + 1
+    return lead(String.fromCharCode(102 + i).repeat(24), `Table Co ${i}`, {
+      fit: i, event_date: `2026-10-${String(17 - i).padStart(2, '0')}`,
+      enrichments: i <= 2 ? [row('person', `Person ${i}, Practice owner`)] : [],
+    })
+  })
+  const tblRoute = route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ job_id: JOB, status: 'done', hidden_count: 0, leads: tblLeads }) })
+  const tblMatch = u => u.pathname === '/api/leads'
+  await ctx.route(tblMatch, tblRoute)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('leads-table').waitFor()
+  const trows = page.getByTestId('leads-row')
+  assert.equal(await trows.count(), 16, 'every lead is a table row')
+  let fullyVisible = 0
+  for (const r of await trows.all()) { const bb = await r.boundingBox(); if (bb && bb.y >= 0 && bb.y + bb.height <= 900) fullyVisible++ }
+  assert.ok(fullyVisible >= 15, `15+ rows visible at 1440x900 without scrolling, got ${fullyVisible}`)
+  const firstRowId = async () => trows.first().getAttribute('data-lead-id')
+  assert.equal(await firstRowId(), 'v'.repeat(24), 'default sort: highest fit first')
+  await page.getByTestId('sort-fit').click()
+  assert.equal(await firstRowId(), 'g'.repeat(24), 'clicking fit reverses the order')
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByTestId('leads-table').waitFor()
+  assert.equal(await firstRowId(), 'g'.repeat(24), 'the sort choice survives a reload')
+  await page.getByTestId('sort-date').click()
+  assert.equal(await firstRowId(), 'g'.repeat(24), 'date sort: newest first (2026-10-16 is lead g)')
+  await page.getByTestId('sort-date').click()
+  assert.equal(await firstRowId(), 'v'.repeat(24), 'date sort toggled: oldest first (2026-10-01 is lead v)')
+  if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'leads-table-1440.png') })
+  await page.getByTestId('view-cards').click()
+  await page.getByTestId('lead-card').first().waitFor()
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal(await page.getByTestId('lead-card').count() > 0, true, 'the cards choice survives a reload')
+  await page.getByTestId('view-table').click()
+  await page.getByTestId('leads-table').waitFor()
+  const ctx390b = await b.newContext({ viewport: { width: 390, height: 844 } })
+  await ctx390b.addCookies([{ name: 'dazl_session', value: token, url: base }])
+  await ctx390b.route('**/*', routeApi)
+  await ctx390b.route(tblMatch, tblRoute)
+  const p390b = await ctx390b.newPage()
+  await p390b.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  await p390b.getByTestId('leads-table').waitFor()
+  assert.equal(await p390b.evaluate(() => document.documentElement.scrollWidth <= 390), true, 'at 390px the page never widens; the table scrolls inside')
+  if (process.env.SHOTS) { await p390b.getByTestId('leads-table').scrollIntoViewIfNeeded(); await p390b.screenshot({ path: path.join(process.env.SHOTS, 'leads-table-390.png') }) }
+  await ctx390b.close()
   console.log('lead cards UI check passed:', writes.join(', '))
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })

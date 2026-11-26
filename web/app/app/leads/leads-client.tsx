@@ -28,6 +28,7 @@ import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { ResearchRationale } from './research-rationale'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
+import LeadsTable from './leads-table'
 import { reviewAction } from '@/lib/scan/review-action'
 import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
@@ -459,6 +460,9 @@ export default function LeadsClient() {
   // The cards open on what is left to decide; an approved card moves to Approved (it became a draft) and a rejected one to
   // Rejected (it leaves the list), each with a one-line result above the list.
   const [leadTab, setLeadTab] = useState<'review' | 'approved' | 'rejected'>('review')
+  // #1038: the list defaults to a dense table; the choice survives reloads like the sort does.
+  const [leadsView, setLeadsView] = useState<'table' | 'cards'>(() => { try { return typeof localStorage !== 'undefined' && localStorage.getItem('leads-view') === 'cards' ? 'cards' : 'table' } catch { return 'table' } })
+  const chooseLeadsView = (v: 'table' | 'cards') => { setLeadsView(v); try { localStorage.setItem('leads-view', v) } catch { /* the choice just will not persist */ } }
   const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
   const [otherActiveJobId, setOtherActiveJobId] = useState<string | null>(null)
   const [otherActiveReadFailed, setOtherActiveReadFailed] = useState(false)
@@ -1520,6 +1524,10 @@ export default function LeadsClient() {
           : <><Pill tone="pink">Rejected</Pill><span className="flex-1"><span className="font-semibold">{cardResult.company}</span>{cardResult.reason ? ` (${cardResult.reason})` : ''} left the list.<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button type="button" className="btn-ghost btn-sm" onClick={() => void quarantine(cardResult.id, true)}>Undo</button></>}
         <button type="button" aria-label="Dismiss" className="text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setCardResult(null)}><Icon name="x" className="w-4 h-4" /></button>
       </div>}
+      {visibleLeads.length > 0 && <div className="flex items-center justify-end gap-1 mb-2" data-testid="leads-view-toggle">
+        <button type="button" data-testid="view-table" aria-pressed={leadsView === 'table'} onClick={() => chooseLeadsView('table')} className={leadsView === 'table' ? 'btn-ghost btn-sm font-semibold' : 'btn-ghost btn-sm text-[var(--ink-3)]'}>Table</button>
+        <button type="button" data-testid="view-cards" aria-pressed={leadsView === 'cards'} onClick={() => chooseLeadsView('cards')} className={leadsView === 'cards' ? 'btn-ghost btn-sm font-semibold' : 'btn-ghost btn-sm text-[var(--ink-3)]'}>Cards</button>
+      </div>}
       <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
@@ -1533,6 +1541,8 @@ export default function LeadsClient() {
               : status === 'done' && currentView?.marked && !currentView.counts
               ? 'Lead results could not be checked. Refresh to try again.'
               : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? (currentView.discover ? quality?.needs_review : countLine?.needsReview) : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
+        ) : leadsView === 'table' ? (
+          <LeadsTable leads={visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id]))} icpWho={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} drafted={draftedLeads} approved={approved} />
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
