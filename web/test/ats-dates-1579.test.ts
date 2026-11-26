@@ -197,3 +197,15 @@ test('DATES SmartRecruiters control: the other four boards are untouched by the 
   assert.equal((await import('../lib/discover/ats-dates.ts')).atsPosting('https://jobs.smartrecruiters.com/')?.platform ?? null, null, 'a board root is not a posting')
 })
 
+// Live shape check: Greenhouse's current board host is job-boards.greenhouse.io, and its list entries link absolute_url on that host.
+// Verified against the real board on 2026-11-26 (list and single record agree: 2026-10-14).
+test('DATES a job-boards.greenhouse.io board and posting are the same board', async () => {
+  const { atsList, atsListDate, atsPosting } = await import('../lib/discover/ats-dates.ts')
+  const index = 'https://job-boards.greenhouse.io/northlinecare'
+  const posting = 'https://job-boards.greenhouse.io/northlinecare/jobs/4466'
+  assert.equal(atsList(index)?.apiUrl, 'https://boards-api.greenhouse.io/v1/boards/northlinecare/jobs')
+  assert.equal(atsPosting(posting)?.apiUrl, 'https://boards-api.greenhouse.io/v1/boards/northlinecare/jobs/4466')
+  const d = await atsListDate(index, posting, stub({ 'https://boards-api.greenhouse.io/v1/boards/northlinecare/jobs': { body: { jobs: [{ id: 4466, absolute_url: posting, first_published: '2026-11-17T00:00:00Z' }] } } }).f, NOW)
+  assert.deepEqual(d, { date: '2026-11-17', sourceUrl: 'https://boards-api.greenhouse.io/v1/boards/northlinecare/jobs', platform: 'greenhouse' })
+})
+
