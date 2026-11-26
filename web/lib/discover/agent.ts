@@ -7,13 +7,14 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
+import { filterLaunchResults, LAUNCH_RETRY_INSTRUCTION, launchRegionSystemPrompt, launchSearchProfile, readLaunchRegion } from './launch-region.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
-export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean }
+export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean; launchRegionRetry?: boolean }
 // The customer's saved buyer profile for this play, in their own words. One they reviewed for THIS search narrows the request; the
 // request's own words win where they differ. One carried over unreviewed from an earlier search (profileCarried, #1579) is background
 // only: a new typed request for other buyers ran beside "Toronto agencies hiring an SDR" on production and found nothing, twice.
@@ -93,7 +94,7 @@ const host = (v: unknown): string | null => {
 
 // The model's final text -> lead records. Anything that is not a company with a signal and a proof URL is dropped here,
 // because without those three there is nothing to show or check.
-export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]; note: string | null } {
+export function parseLeads(text: string, max: number, allow?: (lead: Record<string, unknown>) => boolean): { leads: DiscoveredLead[]; note: string | null } {
   const m = /<json>([\s\S]*?)<\/json>/.exec(text)
   let raw: unknown
   try { raw = JSON.parse(m ? m[1] : text) } catch { return { leads: [], note: 'unreadable answer' } }
@@ -103,6 +104,7 @@ export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]
     const l = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
     const company = str(l.company, 150), signal = str(l.signal, 500), evidence_url = httpUrl(l.evidence_url)
     if (!company || !signal || !evidence_url) continue
+    if (allow && !allow(l)) continue
     const key = company.toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
@@ -130,11 +132,12 @@ export function usd(u: Omit<DiscoverUsage, 'usd'>): number {
 
 // What the engine is asked, as one message. With a carried profile the request is named as the whole search before the background.
 export function userMessage(input: DiscoverInput, today: string, max: number): string {
-  const profile = profileLines(input.profile, input.profileCarried === true)
+  const profile = profileLines(launchSearchProfile(input), input.profileCarried === true)
   return [`Today is ${today}.`, input.offer ? `The seller sells: ${str(input.offer, 600)}` : '', `Find: ${str(input.query, 1000)}`,
     input.profileCarried === true && profile.length ? 'The request above is the whole search: it decides who to look for, where, and which signal.' : '',
     ...profile,
     // a play that runs again: the companies it already found are not leads this time
+    input.launchRegionRetry ? LAUNCH_RETRY_INSTRUCTION : '',
     input.exclude?.length ? `Already found, do not return these companies again: ${input.exclude.slice(0, 80).map(c => str(c, 80)).filter(Boolean).join('; ')}` : '',
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
 }
@@ -150,6 +153,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   let text = '', stop = 'unknown', model = DISCOVER_MODEL
+  let retainedLaunch: ReturnType<typeof readLaunchRegion> | undefined
   const seen = new Map<string, SeenPage>()
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
     const reservation = await searches.reserve(allowance)
@@ -168,7 +172,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       // Caching is what keeps this loop affordable: every search adds its results to the prompt, and without a cache point the whole
       // growing prompt is billed at full price on each step (measured: US$2.16 a prompt without it, US$0.41 with it).
       cache_control: { type: 'ephemeral' },
-      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: launchRegionSystemPrompt(system), cache_control: { type: 'ephemeral' } }],
       ...(finalAnswer ? { tool_choice: { type: 'none' as const } } : {}),
       tools: [
         ...(reservation.allowance > 0 ? [{ type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
@@ -208,8 +212,12 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
     text = answer
     // The server-side tool loop paused: send the turn back unchanged and it resumes where it stopped.
     if (stop !== 'pause_turn') break
+    retainedLaunch = readLaunchRegion(input, text, retainedLaunch)
     messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.BetaContentBlockParam[] })
   }
-  const parsed = stop === 'refusal' ? { leads: [], note: 'the model declined this request' } : parseLeads(text, max)
-  return { ...parsed, usage: { ...usage, usd: usd(usage) }, stop, model, seen: [...seen.values()] }
+  const settled = { ...usage, usd: usd(usage) }
+  const launch = stop === 'refusal' ? null : readLaunchRegion(input, text, retainedLaunch)
+  if (launch && !launch.ok) return { leads: [], seen: [], usage: settled, stop: launch.stop, model, note: launch.note }
+  const parsed = launch ? filterLaunchResults(text, max, launch.places, parseLeads) : { leads: [], note: 'the model declined this request', stop: null }
+  return { ...parsed, usage: settled, stop: parsed.stop ?? stop, model, seen: parsed.stop ? [] : [...seen.values()] }
 }

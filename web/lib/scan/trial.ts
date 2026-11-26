@@ -55,6 +55,8 @@ const TRIAL_USED_SQL = `SELECT count(*) AS n FROM trial_scans t JOIN scan_jobs j
          NOT (r.settled_at IS NOT NULL AND COALESCE(r.settled_attempt = j.attempts, FALSE)
            AND NOT EXISTS (SELECT 1 FROM leads l WHERE l.scan_job_id = j.id))
        ELSE (j.status != 'failed' OR j.error = 'cancelled' OR COALESCE(j.spend_reserved_usd, 0) > 0) END
+       AND NOT (j.status = 'failed' AND COALESCE(j.error, '') IN ('unsupported_search_region', 'search_region_unconfirmed')
+         AND r.settled_at IS NOT NULL AND COALESCE(r.settled_attempt = j.attempts, FALSE))
        AND NOT (j.status = 'done' AND COALESCE(j.error, '') = 'trial_budget_reached' AND COALESCE(j.candidates, -1) = 0 AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)`
 const TRIAL_IP_SQL = 'SELECT count(*) AS n FROM trial_scans WHERE ip_hash = ? AND created_at >= ?'
 const dayStartS = (now: Date) => Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000)

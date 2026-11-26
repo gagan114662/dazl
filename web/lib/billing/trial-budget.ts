@@ -294,7 +294,8 @@ const stoppedEmpty = (r: LedgerRow) => r.status === 'done' && r.error === TRIAL_
 export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && (stoppedEmpty(r) || (r.status === 'failed'
   && (r.error === 'accounting_uncertain'
     ? r.has_saved_leads === false || r.has_saved_leads === 0
-    : r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0)))
+    : r.error === 'unsupported_search_region' || r.error === 'search_region_unconfirmed'
+      || (r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0))))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {

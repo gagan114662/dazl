@@ -9,6 +9,7 @@ import { configuredSearchAllowance, createSearchBudget, searchAllowance } from '
 import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
+import { isLaunchRegionStop, LAUNCH_RESULTS_REJECTED, launchOutcomeStop, launchRegionPages } from './launch-region.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
@@ -46,26 +47,38 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
 
   const first = await discover(sized, api)
   add(first.usage)
+  if (isLaunchRegionStop(first.stop)) {
+    return { ...usage, pages: [], leads: [], passes: 0, enriched: 0, stop: first.stop, model: first.model, note: first.note }
+  }
   // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
   const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
   let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
-  const pages = first.seen.map(p => p.url)
-  const model = first.model
+  const pages = launchRegionPages(first)
+  const regionRetry = first.stop === LAUNCH_RESULTS_REJECTED
   let stop = first.stop
+  const model = first.model
   let passes = 1, note = first.note, accountingUncertain = judge?.usage.accountingUncertain === true
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
-  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
+  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && (!regionRetry || usage.searches < Math.min(perPass, ceiling)) && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
     try {
-      const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
+      const second = await discover({ ...sized, launchRegionRetry: regionRetry, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
-      pages.push(...second.seen.map(p => p.url))
+      pages.push(...launchRegionPages(second))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
       const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
       passes = 2
       accountingUncertain ||= judge?.usage.accountingUncertain === true
-      if (second.stop === 'search_cap') stop = 'search_cap'
-      note = second.note ?? note
+      if (!regionRetry && second.stop === 'search_cap') stop = 'search_cap'
+      if (regionRetry && (leads.length > 0 || second.stop === 'end_turn')) {
+        stop = second.stop
+        note = second.note
+      } else if (leads.length === 0 && second.stop === LAUNCH_RESULTS_REJECTED) {
+        stop = second.stop
+        note = second.note
+      } else if (!regionRetry && second.stop !== LAUNCH_RESULTS_REJECTED) {
+        note = second.note ?? note
+      }
     } catch { accountingUncertain = true }
   }
   // People, websites and published emails for the leads that lack them: the shown ones first, then the ones that wait for the person's
@@ -93,6 +106,6 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
     accountingUncertain ||= judge.usage.accountingUncertain === true
   }
-  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
+  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : launchOutcomeStop(stop), model,
     note: accountingUncertain ? 'Some research could not be accounted for. Earlier evidence is kept; the full spending reservation remains held.' : note, accountingUncertain }
 }
