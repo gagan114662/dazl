@@ -64,7 +64,7 @@ export default function Readiness() {
     void load()
     // #1722: the sender status can change in another tab (Outreach); re-read when this tab is used again.
     // #1876/#1880: one shared listener for the page and one epoch per focus or save, so the panels share that read.
-    const offWake = subscribeFocusRefresh(() => void load(false))
+    const offWake = subscribeFocusRefresh((epoch, kind) => void load(kind === 'saved', epoch)) // a save reseeds the site form
     return () => { offWake() }
   }, [])
 

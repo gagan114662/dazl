@@ -177,3 +177,39 @@ test('#1876/#1880 one save is one read per endpoint, with both panels subscribin
     offA(); offB(); globalThis.fetch = realFetch
   }
 })
+
+test('#1880 a save while a focus read is in flight starts a new read, and the panels are told it was a save', async () => {
+  const { subscribeFocusRefresh } = await import('../lib/focus-refresh.ts')
+  const { loadReadinessInput } = await import('../app/app/readiness-input.ts')
+  const f = fake()
+  const realFetch = globalThis.fetch
+  const hits: Record<string, number> = {}
+  let releaseFocus: (() => void) | null = null
+  const focusGate = new Promise<void>(r => { releaseFocus = r })
+  globalThis.fetch = (async (u: string) => {
+    hits[String(u)] = (hits[String(u)] ?? 0) + 1
+    if (hits[String(u)] === 1) { await focusGate; return new Response(JSON.stringify({ business_name: 'before the save' }), { status: 200 }) }
+    return new Response(JSON.stringify({ business_name: 'after the save' }), { status: 200 })
+  }) as unknown as typeof fetch
+  const seen: Array<[number, string]> = []
+  const off = subscribeFocusRefresh((epoch, kind) => { seen.push([epoch, kind]); void loadReadinessInput({ fresh: epoch }) }, f)
+  try {
+    f.fire('focus'); f.runTimers()                      // the focus read starts and is still in flight
+    f.fire('profile-updated'); f.runTimers()            // the save lands while it is in flight
+    releaseFocus!()
+    await new Promise(r => setTimeout(r, 60))
+    assert.equal(hits['/api/settings/profile'], 2, 'the save started a new read instead of joining the focus read')
+    assert.deepEqual(seen.map(x => x[1]), ['focus', 'saved'], 'each refresh says what woke it')
+    assert.equal(seen[1][0], seen[0][0] + 1, 'the save gets its own, newer epoch - never the focus read\'s')
+  } finally {
+    off(); globalThis.fetch = realFetch
+  }
+})
+
+test('#1880 readiness reseeds the site form on a save, and passes the epoch through', async () => {
+  const fs = await import('node:fs/promises')
+  const src = await fs.readFile(new URL('../app/app/readiness.tsx', import.meta.url), 'utf8')
+  assert.match(src, /subscribeFocusRefresh\(\(epoch, kind\) => void load\(kind === 'saved', epoch\)\)/,
+    'a save refreshes the site part (refreshSite = true) and a focus keeps the form; the epoch is always passed')
+  assert.match(src, /async function load\(refreshSite = true, epoch\?: number\)/)
+})
