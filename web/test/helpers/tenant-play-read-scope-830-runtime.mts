@@ -12,9 +12,10 @@ import { GET as runs } from '../../app/api/plays/[kind]/[id]/runs/route.ts'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 
 const id = () => randomBytes(12).toString('hex')
-const watch = (action: typeof newLeads) => (value: string) =>
+type PlayRead = (request: Request, context: Parameters<typeof newLeads>[1]) => Promise<Response>
+const watch = (action: PlayRead) => (value: string) =>
   action(new Request('http://localhost'), { params: Promise.resolve({ kind: 'watch', id: value }) })
-const monitor = (action: typeof newLeads) => (value: string) =>
+const monitor = (action: PlayRead) => (value: string) =>
   action(new Request('http://localhost'), { params: Promise.resolve({ kind: 'monitor', id: value }) })
 
 for (const [name, kind, read] of [
