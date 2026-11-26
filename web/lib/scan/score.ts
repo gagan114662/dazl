@@ -12,6 +12,7 @@ export const SIGNALS = [
   'hiring',                // open roles at all
   'hiring_relevant_role',  // hiring the role the ICP cares about (e.g. first sales hire)
   'leadership_change',     // new VP/CRO/CTO/founder appointment
+  'new_decision_maker',    // a person newly in a buyer role for the ICP (new hire or promotion), named on a dated announcement
   'product_launch',        // new product or major feature shipped
   'expansion',             // new office, market or geography
   'tech_stack_change',     // migration/ adoption visible on public pages

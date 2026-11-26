@@ -129,7 +129,7 @@ export const verified = (l: RunLead): boolean => l.review_reason == null && l.co
 // dated by the posting. The shared predicate (isHiringTrigger) lets the wording through; the monitor does not. A lead with any
 // hiring-type signal, an ambient kind or none follows the card's rule unchanged, so a graded hiring posting is never lost here
 // (the grader's list has no order: a posting graded ["expansion", "hiring"] is still a hiring lead).
-export const OTHER_EVENT_KINDS: ReadonlySet<string> = new Set(['raised_funding', 'funding', 'leadership_change', 'product_launch', 'expansion', 'tech_stack_change', 'partnership',
+export const OTHER_EVENT_KINDS: ReadonlySet<string> = new Set(['raised_funding', 'funding', 'leadership_change', 'new_decision_maker', 'product_launch', 'expansion', 'tech_stack_change', 'partnership',
   'rebranding', 'layoffs', 'new_website', 'event_presence', 'customer_win', 'pricing_change', 'integration_launch'])
 export const HIRING_SIGNALS: ReadonlySet<string> = HIRING_KINDS   // one list: the alert record (lib/play-alerts.ts) matches a board-dated lead against the same labels
 // Signals that describe the company's standing, not a dated event of their own: they follow the card's rule.
