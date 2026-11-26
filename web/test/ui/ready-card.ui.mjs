@@ -65,8 +65,13 @@ const SCENES = {
 let liveSender = null
 let settingsSlowUntil = 0
 let profileSlowFirst = 0 // one-shot: delays the first /api/settings/profile response (the mount read)
+let profileGate = 0 // 2h: holds this many /api/settings/profile GETs until releaseHeldProfiles() (armed BEFORE open, like profileSlowFirst)
+let profileSeen = 0 // profile GETs served since the gate was armed; the FIRST is FirstRun's own read and always passes
+const profileHeld = []
+const profileLog = [] // every profile GET arrival, in order, '#n' or '#n held' - failure forensics for reader order
+const releaseHeldProfiles = () => { while (profileHeld.length) profileHeld.shift()() }
 const b = await chromium.launch()
-async function open(sc, width, height) {
+async function open(sc, width, height, opts = {}) {
   liveSender = null
   settingsSlowUntil = 0
   const ctx = await b.newContext({ viewport: { width, height } })
@@ -88,6 +93,10 @@ async function open(sc, width, height) {
       // FirstRun renders nothing until its own read resolves): #1 FirstRun (first-run.tsx:127, never held), #2
       // ReadyCard's mount load (ready-card.tsx:15), #3 Journey's loadProfile (journey.tsx:46), #4 the readiness
       // panel's mount read (readiness.tsx:62 - the only read that seeds the form). 2h holds exactly #4 via `> 3`.
+
+      const n = ++profileSeen
+      if (profileGate > 0 && n > 3) { profileLog.push(`#${n} held`); profileGate--; await new Promise(r => profileHeld.push(r)) } // 2h: the held readiness mount read
+      else profileLog.push(`#${n}`)
 
       if (profileSlowFirst > 0) { const ms = profileSlowFirst; profileSlowFirst = 0; await new Promise(r => setTimeout(r, ms)) } // #1760 2e/2f: a slow mount read
       return json(sc.profile)
@@ -113,8 +122,15 @@ async function open(sc, width, height) {
     return json({}, 404)
   })
   const page = await ctx.newPage()
-  await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
-  await page.getByTestId('journey').waitFor({ timeout: 15000 }); await page.waitForLoadState('networkidle')
+  if (opts.deferProfile) {
+    // 2h: profile reads are held behind profileGate, so networkidle would never fire. The observable barrier instead:
+    // FirstRun renders nothing until its own (ungated) reads resolve, so setup-details visible = page resolved and mounted.
+    await page.goto(`${base}/app`, { waitUntil: 'domcontentloaded' })
+    await page.getByTestId('setup-details').waitFor({ timeout: 15000 })
+  } else {
+    await page.goto(`${base}/app`, { waitUntil: 'networkidle' })
+    await page.getByTestId('journey').waitFor({ timeout: 15000 }); await page.waitForLoadState('networkidle')
+  }
   return { ctx, page, writes }
 }
 const card = page => page.getByTestId('ready-card')
@@ -231,13 +247,68 @@ try {
     await page.waitForTimeout(2000) // the delayed older read lands here
     assert.equal(await page.getByLabel('Your website').inputValue(), 'typed.example', 'a late seed never overwrites typed input')
     assert.deepEqual(writes, []); await ctx.close()
-    // 2h. #1760: the deterministic held-read Save scenario moved to #1836 under Quest's 18:45 ET timebox (no
-    // valid green run in time). The per-field seed fix it proves stays in this PR with its unit test. Executed
-    // evidence before removal: the gate held exactly the readiness mount read, the wake read landed while held,
-    // the form was verified unseeded while held, typed sells kept, and the stale mount read still seeded the
-    // untouched website (run 45718519911, ledger on #1722 comment-7177520633). #1836 restores the WHOLE harness -
-    // the scenario AND its profile-gate helpers - fixture-corrected from 2ef4e9908: the siteform scene stores an
-    // empty business_name, so the required Business name is filled before Save and the POST body asserts all three.
+    // 2h. #1836: typing into one field before the saved profile loads must not keep
+    // the untouched website blank - the seed fills every field the user did not touch, and Save then posts the
+    // stored website, not an empty string that would erase it.
+    // Exact ordering, all observable (no sleeps standing in for state): /app fires FOUR profile reads on load, in
+    // mount order - FirstRun's (ungated, or the page renders nothing), ReadyCard's mount load, Journey's loadProfile,
+    // then the readiness panel's mount read, the only read that seeds the form (the focus wake uses load(false),
+    // which never seeds). profileGate holds exactly the readiness mount read, so the page is up with the form
+    // UNSEEDED. The preconditions below pin that order: a shifted reader order fails loudly there, never green here.
+    // A wake re-read (focus) then lands first - the card rendering is the barrier that it did - and it never seeds.
+    // Typing happens before the gate opens; releasing it lands the stale mount read, which must still seed the
+    // untouched fields. The Save POST is awaited with a request wait armed BEFORE the click, never a fixed sleep.
+    profileGate = 1; profileSeen = 0; profileLog.length = 0
+    ;({ ctx, page, writes } = await open(SCENES.siteform, w, h, { deferProfile: true }))
+    const pageErrors = [], reqFailed = []
+    page.on('pageerror', e => pageErrors.push(String(e).split('\n')[0].slice(0, 200)))
+    page.on('requestfailed', r => reqFailed.push(`${r.method()} ${new URL(r.url()).pathname} ${r.failure()?.errorText}`.slice(0, 200)))
+    try {
+      // Reader-order preconditions, each observable: the card and the journey render only when their own reads (#2,
+      // #3) resolved, and exactly one held read among exactly four arrivals pins the hold to the readiness mount
+      // read (#4). If the reader order ever shifts, one of these fails loudly instead of passing green below.
+      await card(page).waitFor({ timeout: 15000 })
+      await page.getByTestId('journey').waitFor({ timeout: 15000 })
+      const held0 = Date.now() // the held mount read must ARRIVE before it can be counted
+      while (!profileHeld.length && Date.now() - held0 < 5000) await page.waitForTimeout(50)
+      assert.equal(profileSeen, 4, `${tag}: exactly the four mount readers arrived before the wake (arrivals: ${profileLog.join(', ')})`)
+      assert.equal(profileHeld.length, 1, `${tag}: exactly one profile read is held - the readiness mount read (arrivals: ${profileLog.join(', ')})`)
+      // readiness.tsx renders nothing until its first load applies (`if (!input) return null`), so a ready-site row
+      // in the DOM is the observable barrier that a readiness read landed; the mount read is held, so that was the wake's.
+      const wake0 = Date.now() // hydration timing varies: re-dispatch focus until the barrier holds
+      while (!(await page.getByTestId('ready-site').count()) && Date.now() - wake0 < 15000) { await page.evaluate(() => window.dispatchEvent(new Event('focus'))); await page.waitForTimeout(250) }
+      assert.ok((await page.getByTestId('ready-site').count()) > 0, `${tag}: the wake read never landed (no readiness rows while the mount read was held)`)
+      await page.getByTestId('setup-details').locator('summary').click()
+      await page.getByTestId('ready-site').getByRole('button').click()
+      assert.equal(await page.getByLabel('Your website').inputValue(), '', `${tag}: the form is unseeded while the mount read is held`)
+      await page.getByLabel('What you sell').fill('Typed sells line')
+      releaseHeldProfiles() // the stale mount read lands here
+      const seed0 = Date.now() // observable barrier: the seed actually arrived, bounded
+      while ((await page.getByLabel('Your website').inputValue()) === '' && Date.now() - seed0 < 15000) await page.waitForTimeout(50)
+      assert.equal(await page.getByLabel('Your website').inputValue(), 'https://brightsmile.example', `${tag}: the untouched website still seeds when another field was typed`)
+      assert.equal(await page.getByLabel('What you sell').inputValue(), 'Typed sells line', `${tag}: the typed field keeps its input`)
+      const businessName = page.getByLabel('Business name')
+      assert.equal(await businessName.inputValue(), '', `${tag}: the saved fixture has no business name`)
+      await businessName.fill(PROFILE.business_name)
+      // The browser's own verdict that every required control is populated (the source fixture alone is not proof).
+      const validity = await page.evaluate(() => { const f = document.querySelector('[data-testid="ready-site"] form'); return f ? { valid: f.checkValidity(), invalid: [...f.querySelectorAll('input')].filter(i => !i.validity.valid).map(i => i.getAttribute('aria-label')) } : null })
+      assert.ok(validity && validity.valid, `${tag}: the populated form is valid before Save (${JSON.stringify(validity)})`)
+      const savePosted = page.waitForRequest(r => r.method() === 'POST' && new URL(r.url()).pathname === '/api/settings/profile', { timeout: 15000 })
+      await page.getByRole('button', { name: 'Save' }).click()
+      await savePosted // armed before the click: the browser provably issued the POST
+      const w0 = Date.now(); let saveCall // the harness ledger carries the body; the route handler runs just after the request event
+      while (!(saveCall = writes.find(x => x.startsWith('POST /api/settings/profile '))) && Date.now() - w0 < 5000) await page.waitForTimeout(50)
+      assert.ok(saveCall, `${tag}: the save posted`)
+      const posted = JSON.parse(saveCall.slice('POST /api/settings/profile '.length))
+      assert.equal(posted.website, 'https://brightsmile.example', `${tag}: the POST keeps the stored website`)
+      assert.equal(posted.sells, 'Typed sells line', `${tag}: the POST keeps the typed sells`)
+      assert.equal(posted.business_name, PROFILE.business_name, `${tag}: the POST includes the filled business name`)
+      assert.deepEqual(writes.filter(x => !x.startsWith('POST /api/settings/profile')), [])
+    } catch (e) {
+      const diag = await page.evaluate(() => { const f = document.querySelector('[data-testid="ready-site"] form'); const save = f?.querySelector('button'); return { formPresent: !!f, formValid: f ? f.checkValidity() : null, invalidFields: f ? [...f.querySelectorAll('input')].filter(i => !i.validity.valid).map(i => i.getAttribute('aria-label')) : null, saveEnabled: save ? !save.disabled : null, siteMsg: f?.querySelector('[role="status"]')?.textContent ?? null } }).catch(err => ({ diagError: String(err).split('\n')[0].slice(0, 120) }))
+      throw new Error(`${e.message} | diag=${JSON.stringify(diag)} writes=${JSON.stringify(writes).slice(0, 400)} pageErrors=${JSON.stringify(pageErrors)} requestFailed=${JSON.stringify(reqFailed)} profileLog=${profileLog.join(', ')}`, { cause: e }) // a fresh Error: reassigning AssertionError.message never reaches node's uncaught output
+    }
+    await ctx.close()
     // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
     // leads with no company name - rendered on the real Home page from the stubbed /api/home/results answer
     // (RESULTS2G), at both widths.
