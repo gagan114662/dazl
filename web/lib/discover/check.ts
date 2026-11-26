@@ -4,7 +4,7 @@ import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
 import { eventDateBound } from '../scan/event-date-binding.ts'
 import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
-import { atsDate } from './ats-dates.ts'
+import { atsDate, careersAtsDate } from './ats-dates.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -422,7 +422,12 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   if (!stillDate && !needProfile) return out
   raw = await page()
   if (!raw) return out
-  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (stillDate) {
+    // A careers page on the company's own domain names its posting record in its own markup (an embedded board); read that record first.
+    const embedded = await careersAtsDate(raw, u, fetchImpl, now, INDEX_DATE_MAX_AGE_DAYS, timeoutMs)
+    const day = embedded?.date ?? embeddedDay(raw, now, isDiscoveryHiringLead(c))
+    if (day) out = { ...out, date: day, date_source: 'page' }
+  }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }

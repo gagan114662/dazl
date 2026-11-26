@@ -72,6 +72,58 @@ export function atsPosting(url: string | URL): AtsPosting | null {
   return null
 }
 
+// A company careers page often serves its own page and embeds the board inside it: a Greenhouse embed iframe, a Lever, Ashby or
+// Workable posting frame. The page then names its own posting record in its markup, and that record is the page's own data. Only one
+// posting per page counts - two different postings on one careers page settle nothing - and the day still passes dayOf's guards.
+// Only an EMBED counts (an iframe, embed or object), never a plain link: a page that merely links a posting is writing about something
+// else, and its neighbour's day is not this page's day.
+export function embeddedAtsPosting(html: string, pageUrl: string | URL | null = null): AtsPosting | null {
+  const base = (() => { try { return pageUrl ? new URL(String(pageUrl)) : null } catch { return null } })()
+  const found = new Map<string, AtsPosting>()
+  for (const m of html.matchAll(/<(?:iframe|embed|object)\b[^>]*?\b(?:src|data)=["']([^"'\s]+)["'][^>]*>/gi)) {
+    let abs: string
+    try { abs = base ? new URL(m[1], base).toString() : new URL(m[1]).toString() } catch { continue }
+    const rec = atsPosting(abs) ?? greenhouseEmbedPosting(abs)
+    if (rec) found.set(rec.apiUrl, rec)
+  }
+  return found.size === 1 ? [...found.values()][0] : null
+}
+// Greenhouse's embed iframe names the board and the posting as query parameters: boards.greenhouse.io/embed/job_app?for=<board>&token=<job>.
+function greenhouseEmbedPosting(url: string): AtsPosting | null {
+  let u: URL
+  try { u = new URL(url) } catch { return null }
+  if (u.hostname.toLowerCase() !== 'boards.greenhouse.io' || u.pathname.replace(/\/+$/, '') !== '/embed/job_app') return null
+  const board = u.searchParams.get('for'), id = u.searchParams.get('token')
+  if (!board || !id || !/^\d+$/.test(id)) return null
+  return {
+    platform: 'greenhouse',
+    apiUrl: `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board)}/jobs/${id}`,
+    read: j => obj(j).first_published,
+  }
+}
+// The day this careers page's embedded board record names for the posting the page shows.
+export async function careersAtsDate(
+  html: string,
+  pageUrl: string | URL | null,
+  fetchImpl: typeof fetch,
+  now: Date = new Date(),
+  maxAgeDays = ATS_DATE_MAX_AGE_DAYS,
+  timeoutMs = 8_000,
+): Promise<AtsDate | null> {
+  const rec = embeddedAtsPosting(html, pageUrl)
+  if (!rec) return null
+  try {
+    const r = await fetchImpl(rec.apiUrl, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)),
+      headers: { accept: 'application/json' },
+    })
+    if (!r.ok) return null
+    const date = dayOf(rec.read(await r.json()), now, maxAgeDays)
+    return date ? { date, sourceUrl: rec.apiUrl, platform: rec.platform } : null
+  } catch { return null }
+}
+
 export interface AtsList {
   platform: AtsPlatform
   apiUrl: string
