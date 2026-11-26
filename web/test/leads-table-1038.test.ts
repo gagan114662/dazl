@@ -20,7 +20,7 @@ test('#1038 the table component renders the promised structure', () => {
   }
   assert.match(table, /ContactStatusLine/, 'email status reuses the card status line')
   assert.match(table, /leadPerson/, 'person comes from the same buyer logic as the cards')
-  assert.match(table, /from '\.\/leads-table-sort\.ts'/, 'the ordering lives in a dependency-free helper the table imports')
+  assert.match(table, /onSort/, 'the sort state is controlled by the client (so the side panel follows the visible order)')
 })
 
 test('#1038 sortLeads orders by fit and date, unknown fit last, stable on ties', () => {
@@ -48,6 +48,7 @@ test('#1038 the Leads page offers the table as default with a cards toggle', () 
   assert.match(client, /useState<'table' \| 'cards'>\(\(\) =>[\s\S]{0,240}'table'/, 'the table is the default view')
   assert.match(client, /LeadsTable/, 'the table component is wired in')
   assert.match(client, /leads-view/, 'the view choice is persisted too')
+  assert.match(client, /from '\.\/leads-table-sort\.ts'/, 'the client owns the sort via the dependency-free helper')
 })
 
 test('#1038 review fixes: the person cell reuses the card identity step and carries its caveat', () => {
@@ -71,7 +72,10 @@ test("#1038 review fixes: unreadable drafts never read as a decision, and the ap
 })
 
 test('#1038 review fixes: the table and the cards share the one tab filter', () => {
-  const uses = client.match(/visibleLeads\.filter\(l => leadTab === 'rejected'/g) ?? []
-  assert.ok(uses.length >= 2, 'the identical tab-filter expression serves both views')
-  assert.match(client, /<LeadsTable leads=\{visibleLeads\.filter/, 'the table renders the filtered set')
+  // On this branch (#1869) the filter runs ONCE into tabLeads and both views (and the panel) read it -
+  // a stronger form of the shared-filter rule: divergence is impossible by construction.
+  const defs = client.match(/const tabLeads = visibleLeads\.filter\(l => leadTab === 'rejected'/g) ?? []
+  assert.equal(defs.length, 1, 'the tab filter is defined exactly once')
+  assert.match(client, /<LeadsTable leads=\{sortedTabLeads\}/, 'the table renders the filtered set')
+  assert.match(client, /\) : tabLeads\.map\(l => \(/, 'the cards render the same filtered set')
 })

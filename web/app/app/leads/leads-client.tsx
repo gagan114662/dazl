@@ -29,6 +29,9 @@ import { ResearchRationale } from './research-rationale'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import LeadsTable from './leads-table'
+import LeadsSidePanel from './leads-side-panel'
+import { readLeadsSort, writeLeadsSort, sortLeads, type LeadsSort } from './leads-table-sort.ts'
+import { adjacentLeadId } from './leads-side-panel-nav.ts'
 import { reviewAction } from '@/lib/scan/review-action'
 import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
@@ -469,6 +472,22 @@ export default function LeadsClient() {
   // #1038: the list defaults to a dense table; the choice survives reloads like the sort does.
   const [leadsView, setLeadsView] = useState<'table' | 'cards'>(() => { try { return typeof localStorage !== 'undefined' && localStorage.getItem('leads-view') === 'cards' ? 'cards' : 'table' } catch { return 'table' } })
   const chooseLeadsView = (v: 'table' | 'cards') => { setLeadsView(v); try { localStorage.setItem('leads-view', v) } catch { /* the choice just will not persist */ } }
+  // Quest on #1869: the panel's Review in Cards jumps to the lead's card, where Approve/Reject live.
+  // Switch view, close the panel, then after the cards render scroll to the card and focus it.
+  const reviewLeadInCards = (id: string) => {
+    chooseLeadsView('cards')
+    setPanelLeadId(null)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = document.getElementById(`lead-card-${id}`)
+      el?.scrollIntoView({ block: 'center' })
+      el?.focus({ preventScroll: true })
+    }))
+  }
+  // #1038: the table sort lives here (lifted from the table) so the side panel's prev/next follows the
+  // exact visible order; the open panel is just the selected lead id in that order.
+  const [leadsSort, setLeadsSortState] = useState<LeadsSort>(() => readLeadsSort())
+  const setLeadsSort = (next: LeadsSort) => { setLeadsSortState(next); writeLeadsSort(next) }
+  const [panelLeadId, setPanelLeadId] = useState<string | null>(null)
   const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
   const [otherActiveJobId, setOtherActiveJobId] = useState<string | null>(null)
   const [otherActiveReadFailed, setOtherActiveReadFailed] = useState(false)
@@ -1034,6 +1053,12 @@ export default function LeadsClient() {
   const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
   const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
   const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)
+  // #1038: one filtered order feeds both views and the side panel, so cards, table and panel never disagree.
+  const icpWho = icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''
+  const tabLeads = visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id]))
+  const sortedTabLeads = sortLeads(tabLeads, leadsSort.key, leadsSort.dir)
+  const panelLead = sortedTabLeads.find(l => l.id === panelLeadId) ?? null
+  const panelIds = sortedTabLeads.map(l => l.id)
   const zeroResultScan = status === 'done' && zeroResultStatus?.jobId === jobId ? zeroResultStatus.scan : null
   const reviewSplit = reviewListSplit(leads)
   const researchLeads = [...reviewSplit.research, ...unconfirmedTiming]
@@ -1536,6 +1561,18 @@ export default function LeadsClient() {
         <button type="button" data-testid="view-table" aria-pressed={leadsView === 'table'} onClick={() => chooseLeadsView('table')} className={leadsView === 'table' ? 'btn-ghost btn-sm font-semibold' : 'btn-ghost btn-sm text-[var(--ink-3)]'}>Table</button>
         <button type="button" data-testid="view-cards" aria-pressed={leadsView === 'cards'} onClick={() => chooseLeadsView('cards')} className={leadsView === 'cards' ? 'btn-ghost btn-sm font-semibold' : 'btn-ghost btn-sm text-[var(--ink-3)]'}>Cards</button>
       </div>}
+      {panelLead && leadsView === 'table' && <LeadsSidePanel
+        lead={panelLead}
+        icpWho={icpWho}
+        drafted={draftedLeads}
+        approved={approved}
+        hasPrev={adjacentLeadId(panelIds, panelLead.id, -1) !== null}
+        hasNext={adjacentLeadId(panelIds, panelLead.id, 1) !== null}
+        onPrev={() => setPanelLeadId(adjacentLeadId(panelIds, panelLead.id, -1))}
+        onNext={() => setPanelLeadId(adjacentLeadId(panelIds, panelLead.id, 1))}
+        onClose={() => setPanelLeadId(null)}
+        onReviewInCards={reviewLeadInCards}
+      />}
       <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
@@ -1550,9 +1587,9 @@ export default function LeadsClient() {
               ? 'Lead results could not be checked. Refresh to try again.'
               : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? (currentView.discover ? quality?.needs_review : countLine?.needsReview) : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
         ) : leadsView === 'table' ? (
-          <LeadsTable leads={visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id]))} icpWho={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} drafted={draftedLeads} approved={approved} />
-        ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
-          <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
+          <LeadsTable leads={sortedTabLeads} icpWho={icpWho} drafted={draftedLeads} approved={approved} sort={leadsSort} onSort={setLeadsSort} onOpen={setPanelLeadId} selectedId={panelLeadId} />
+        ) : tabLeads.map(l => (
+          <div key={l.id} id={`lead-card-${l.id}`} tabIndex={-1} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               const timing = l.timing === 'proof_backed' ? timingHeadline({ timing: l.timing }) : c.timing
