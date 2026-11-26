@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import { matchReadyApolloBuyer, type ApolloBuyerEvidence } from '../lib/enrich/apollo-ready-match.ts'
+import { matchReadyApolloBuyer, planApolloBuyerMatches, type ApolloBuyerEvidence } from '../lib/enrich/apollo-ready-match.ts'
 import { reserveApolloLead } from '../lib/enrich/apollo-credit-ledger.ts'
 
 test('Apollo refuses when off and admits only one lookup per lead across restarts and tenants', async () => {
@@ -55,6 +55,34 @@ test('only an otherwise Ready buyer after a completed empty crawl reaches one Ap
     assert.deepEqual(db.prepare('SELECT lead_id, scan_id, credit, result FROM apollo_credit_ledger').all(),
       [{ lead_id: 'eligible', scan_id: 'scan-a', credit: 1, result: 'empty' }])
     assert.deepEqual(calls, ['https://api.apollo.io/api/v1/people/match'])
+  } finally {
+    db.close()
+  }
+})
+
+test('dry plan counts eligible new requests within both caps without reserving', async () => {
+  const db = new Database(':memory:')
+  const env = { APOLLO_CREDIT_CAP: '3' }
+  const scan = { id: 'planned-scan', limit: 2 }
+  const buyer: ApolloBuyerEvidence = {
+    first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
+    dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
+  }
+  try {
+    assert.equal(await reserveApolloLead(db, 'a', 'already', env, scan), true)
+    const candidates = [
+      { leadId: 'already', evidence: buyer },
+      { leadId: 'held', evidence: { ...buyer, otherwiseReady: false } },
+      { leadId: 'eligible', evidence: buyer },
+      { leadId: 'eligible', evidence: buyer },
+      { leadId: 'past-scan-cap', evidence: buyer },
+    ]
+    assert.deepEqual(await planApolloBuyerMatches(db, 'a', candidates, scan, env), ['eligible'])
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM apollo_credit_ledger').pluck().get(), 1)
+    assert.deepEqual(await planApolloBuyerMatches(db, 'a', candidates, scan, {}), [])
+    assert.equal(await reserveApolloLead(db, 'b', 'other', env, scan), true)
+    assert.equal(await reserveApolloLead(db, 'b', 'third', env, scan), true)
+    assert.deepEqual(await planApolloBuyerMatches(db, 'a', candidates, scan, env), [])
   } finally {
     db.close()
   }
