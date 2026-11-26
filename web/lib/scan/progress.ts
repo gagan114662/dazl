@@ -118,8 +118,8 @@ export function sourceFindings(rows: SourceRunRow[], jobStatus: string, searchEm
   return { evidence_sources, unknown_sources }
 }
 
-export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null; partial_sources: string[]; stop_refusal_reason: string | null; stop_room?: { left_usd: number; needed_usd: number } } & SourceFindings {
-  const rep = (report && typeof report === 'object' ? report : {}) as { funnel?: { review_reasons?: Record<string, number>; drop_reasons?: Record<string, number> }; search?: { hits_unique_urls?: number | null; hits_raw?: number | null; ok?: number | null; attempted?: number | null } | null; stop?: { spend_refusal_reason?: string | null; room?: { left_usd?: unknown; needed_usd?: unknown } | null } | null }
+export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: string): { failed_sources: string[]; reject_reasons: Record<string, number> | null; search_hits: number | null; partial_sources: string[]; stop_refusal_reason: string | null; empty_reason?: string; stop_room?: { left_usd: number; needed_usd: number } } & SourceFindings {
+  const rep = (report && typeof report === 'object' ? report : {}) as { discover?: { stop?: string; searches?: number; returned?: number; shown?: number } | null; funnel?: { review_reasons?: Record<string, number>; drop_reasons?: Record<string, number> }; search?: { hits_unique_urls?: number | null; hits_raw?: number | null; ok?: number | null; attempted?: number | null } | null; stop?: { spend_refusal_reason?: string | null; room?: { left_usd?: unknown; needed_usd?: unknown } | null } | null }
   const partial = new Map(rows.map(r => [String(r.collector ?? ''), /^error_partial:(\d+)_of_(\d+)/.exec(String(r.status ?? ''))] as const))
   const failed = progressOf(rows, jobStatus).filter(p => p.status === 'failed').map(p => { const m = partial.get(p.source); return m ? `${p.source} (${m[1]} of ${m[2]} requests failed)` : p.note ? `${p.source} (${p.note})` : p.source })
   const search = rep.search ?? null
@@ -139,7 +139,20 @@ export function outcomeInputs(report: unknown, rows: SourceRunRow[], jobStatus: 
   // Present only when recorded, so every other outcome's inputs are exactly what they were.
   const r = rep.stop?.room, amount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
   const stop_room = r && amount(r.left_usd) && amount(r.needed_usd) ? { left_usd: r.left_usd, needed_usd: r.needed_usd } : null
-  return { failed_sources: failed, partial_sources, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits, stop_refusal_reason, ...(stop_room ? { stop_room } : {}), ...sourceFindings(rows, jobStatus, searchEmptyOk) }
+  const findings = sourceFindings(rows, jobStatus, searchEmptyOk)
+  // Discovery records searches in its report, rather than in the source row's evidence count.
+  const discover = rep.discover
+  const searches = discover?.searches
+  const discoverySource = 'search:claude_discover'
+  const searchedWithoutCandidates = jobStatus === 'done' && discover?.stop === 'end_turn' &&
+    discover.returned === 0 && discover.shown === 0 && typeof searches === 'number' &&
+    Number.isSafeInteger(searches) && searches > 0 &&
+    rows.some(row => row.collector === discoverySource && row.status === 'ok')
+  if (searchedWithoutCandidates) findings.unknown_sources = findings.unknown_sources.filter(source => source !== discoverySource)
+  return { failed_sources: failed, partial_sources, reject_reasons: Object.keys(reasons).length ? reasons : null, search_hits: hits, stop_refusal_reason,
+    ...(stop_room ? { stop_room } : {}),
+    ...(searchedWithoutCandidates ? { empty_reason: `Discovery ran ${searches} web ${searches === 1 ? 'search' : 'searches'} but returned no candidates. Try rewording the request with a clear buyer and one sign they need your service.` } : {}),
+    ...findings }
 }
 
 // #1157 line 2: what the running page says about when the scan last made progress. A scan that has been quiet for 90 s
