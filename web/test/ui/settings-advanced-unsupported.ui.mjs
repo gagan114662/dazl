@@ -28,9 +28,10 @@ const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
+// Every stubbed platform must be in the Settings channels registry: the panel renders rows from the registry,
+// so a stubbed platform with no registry entry renders nothing (XiaoHongShu left the registry in #1844).
 const PLATFORMS = [
   { platform: 'facebook', allowed: true, supported: false, unsupported_reason: 'Facebook needs a browser worker dazl does not have yet', consent: false, connected: false, enabled: false, last4: null, high_risk: true },
-  { platform: 'xiaohongshu', allowed: true, supported: false, unsupported_reason: 'its request signing is not implemented', consent: false, connected: false, enabled: false, last4: null, high_risk: true },
   { platform: 'reddit', allowed: true, supported: true, unsupported_reason: null, consent: false, connected: false, enabled: false, last4: null, high_risk: false },
 ]
 const b = await chromium.launch()
@@ -58,10 +59,6 @@ try {
   assert.equal(await fb.locator('input[type="password"]').count(), 0, 'no session field for an unsupported platform')
   assert.equal(await fb.getByRole('button').count(), 0, 'no button of any kind for an unsupported platform')
 
-  const xhs = card.locator('div.border-t', { has: page.locator('span.font-medium', { hasText: 'XiaoHongShu' }) })
-  assert.match(await xhs.innerText(), /Not available yet - dazl cannot read XiaoHongShu: its request signing is not implemented\./, 'xiaohongshu shows its own reason')
-  assert.equal(await xhs.getByRole('button').count(), 0, 'no button for xiaohongshu either')
-
   // Supported: the consent gate is exactly as before - checkbox first, button disabled until it is checked.
   const rd = card.locator('div.border-t', { has: page.locator('span.font-medium', { hasText: 'Reddit' }) })
   assert.match(await rd.innerText(), /I understand this can violate Reddit's terms/, 'a supported platform keeps its consent gate')
@@ -77,9 +74,6 @@ try {
   await fb.scrollIntoViewIfNeeded()
   await page.waitForTimeout(300)
   await shot('settings-connectors-unsupported-mobile')
-  await xhs.scrollIntoViewIfNeeded()
-  await page.waitForTimeout(300)
-  await shot('settings-connectors-unsupported-mobile-xhs')
   console.log('PASS settings-advanced-unsupported: unsupported platforms show the honest reason with no consent/session affordance; supported keeps its consent gate')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
