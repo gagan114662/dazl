@@ -2,6 +2,7 @@
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
+import { eventDateBound } from '../scan/event-date-binding.ts'
 import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
 import { atsDate } from './ats-dates.ts'
 
@@ -225,7 +226,8 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   const posted = hiring ? [...new Set(dateMentions(body).filter(mention =>
     /\bposted(?:\s+on)?[\s:–—-]*$/i.test(body.slice(Math.max(0, mention.index - 32), mention.index)),
   ).map(mention => mention.day))] : []
-  const statedDay = hiring ? (posted.length === 1 ? posted[0] : null) : dayOnPage(lead.signal_date, body) ? lead.signal_date : null
+  const statedDay = hiring ? (posted.length === 1 ? posted[0] : null)
+    : dayOnPage(lead.signal_date, body) && eventDateBound(lead.signal_date, body, lead.evidence_quote ?? '', lead.company).bound ? lead.signal_date : null
   const day = statedDay ?? (posted.length > 1 ? null : relativeDay(body, now, hiring))
   return { ...lead, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
     quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
