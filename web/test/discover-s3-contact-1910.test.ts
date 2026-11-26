@@ -99,6 +99,7 @@ test('S3 reads a long single-line team page and keeps only the matching personâ€
 
 for (const [buyerTitle, mailbox, expected] of [
   ['Dentist', 'dr.ruiz', 'ready_email'],
+  ['Dentist', 'dr.ruiz2', 'ready_email'],
   ['Practice Manager', 'dana.ruiz2', 'ready_email'],
   ['Practice Manager', 'drruiz', 'no_contact'],
 ] as const) {
