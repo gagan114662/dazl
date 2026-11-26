@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
 import { getDb } from '@/lib/db/client'
-import { removeKey, readKeyStatus, writeKey } from '@/lib/llm/key-store'
+import { removeKey, readKeyStatus } from '@/lib/llm/key-store'
 import { openKeyRejection } from '@/lib/llm/key-evidence'
-import { isVendor, looksLikeKey, validateKey } from '@/lib/llm/vendors'
-import { rateLimit } from '@/lib/rate-limit'
+import { isVendor } from '@/lib/llm/vendors'
 import { sameOriginJson } from '@/lib/same-origin'
 import { audit } from '@/lib/audit-route'
 import { denied, stale } from '@/lib/workspace-access'
@@ -25,27 +24,7 @@ export async function PUT(req: NextRequest) {
   const old = stale(user); if (old) return old
 
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
-  const rl = (await rateLimit(`llmkey:${user.tenantId}`, 10, 60 * 60 * 1000))
-  if (!rl.ok) return NextResponse.json({ error: 'Too many attempts. Try again later.' }, { status: 429, headers: { 'Retry-After': String(rl.retryAfterS) } })
-
-  const body = await req.json().catch(() => null)
-  const vendor = body?.vendor
-  const apiKey = typeof body?.api_key === 'string' ? body.api_key.trim() : ''
-  if (!isVendor(vendor) || !looksLikeKey(vendor, apiKey)) return NextResponse.json({ error: 'That does not look like a valid key for this provider' }, { status: 400 })
-  if (!process.env.DAZL_MASTER_KEY) {
-    console.error('DAZL_MASTER_KEY is not configured')
-    return NextResponse.json({ error: 'Key storage is not available right now' }, { status: 503 })
-  }
-
-  const detail: { message?: string } = {}
-  const check = await validateKey(vendor, apiKey, fetch, detail)
-  if (check === 'invalid') return NextResponse.json({ error: 'The provider rejected this key' }, { status: 400 })
-  if (check === 'rejected') return NextResponse.json({ error: `The provider could not use this key${detail.message ? ': ' + detail.message : '.'}` }, { status: 400 })
-  if (check === 'unavailable') return NextResponse.json({ error: 'Could not reach the provider to check the key. Try again.' }, { status: 502 })
-
-  await writeKey(await getDb(), user.tenantId, vendor, apiKey)
-  await audit(user, req, { action: 'credential.saved', resource: 'llm_key', id: vendor, summary: { vendor } })
-  return NextResponse.json({ ok: true, vendor, last4: apiKey.slice(-4) })
+  return NextResponse.json({ error: 'Saving AI keys is no longer supported.' }, { status: 410 })
 }
 
 export async function DELETE(req: NextRequest) {
