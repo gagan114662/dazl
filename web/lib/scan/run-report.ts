@@ -106,15 +106,43 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
   }
 }
 
-export function writeRunReport(db: Database.Database, jobId: string, attempt: number, report: unknown, env: Record<string, string | undefined> = process.env): boolean {
+const RETAIN_REPORTS_SQL = 'DELETE FROM scan_run_report WHERE created_at < ?'
+const WRITE_REPORT_SQL = `INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, ?, ?)
+  ON CONFLICT (job_id, attempt) DO UPDATE SET report = excluded.report, created_at = excluded.created_at`
+
+function reportJson(report: unknown): string | undefined {
+  let json = JSON.stringify(report)
+  if (json === undefined) return
+  if (json.length > MAX_REPORT_CHARS) {
+    const r = report as { urls?: unknown[]; candidates?: unknown[] }
+    json = JSON.stringify({ ...r, urls: (r.urls ?? []).slice(0, 30), candidates: (r.candidates ?? []).slice(0, 30), truncated_for_size: true })
+  }
+  return json.length <= MAX_REPORT_CHARS ? json : undefined
+}
+
+export function writeRunReport(db: Database.Database, jobId: string, attempt: number, report: unknown, env?: Record<string, string | undefined>): boolean
+export function writeRunReport(db: Db, jobId: string, attempt: number, report: unknown, env?: Record<string, string | undefined>): Promise<boolean>
+export function writeRunReport(db: Db | Database.Database, jobId: string, attempt: number, report: unknown, env: Record<string, string | undefined> = process.env): boolean | Promise<boolean> {
+  const cutoff = Math.floor(Date.now() / 1000) - RUN_REPORT_RETENTION_DAYS * 86_400
+  if ('kind' in db) return writeRunReportDb(db, jobId, attempt, report, env, cutoff)
   if (env.DAZL_RUN_REPORT === '0') return false
   try {
     migrateRunReport(db)
-    try { db.prepare('DELETE FROM scan_run_report WHERE created_at < ?').run(Math.floor(Date.now() / 1000) - RUN_REPORT_RETENTION_DAYS * 86_400) } catch { /* retention is best effort */ }
-    let s = JSON.stringify(report)
-    if (s.length > MAX_REPORT_CHARS) { const r = report as { urls?: unknown[]; candidates?: unknown[] }; s = JSON.stringify({ ...r, urls: (r.urls ?? []).slice(0, 30), candidates: (r.candidates ?? []).slice(0, 30), truncated_for_size: true }) }
-    if (s.length > MAX_REPORT_CHARS) return false
-    db.prepare('INSERT OR REPLACE INTO scan_run_report (job_id, attempt, report) VALUES (?, ?, ?)').run(jobId, attempt, s)
+    try { db.prepare(RETAIN_REPORTS_SQL).run(cutoff) } catch { /* retention is best effort */ }
+    const json = reportJson(report)
+    if (json === undefined) return false
+    db.prepare(WRITE_REPORT_SQL).run(jobId, attempt, json)
+    return true
+  } catch { return false }
+}
+
+async function writeRunReportDb(db: Db, jobId: string, attempt: number, report: unknown, env: Record<string, string | undefined>, cutoff: number): Promise<boolean> {
+  if (env.DAZL_RUN_REPORT === '0') return false
+  try {
+    try { await db.run(RETAIN_REPORTS_SQL, [cutoff]) } catch { /* retention is best effort */ }
+    const json = reportJson(report)
+    if (json === undefined) return false
+    await db.run(WRITE_REPORT_SQL, [jobId, attempt, json])
     return true
   } catch { return false }
 }
