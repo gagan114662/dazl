@@ -19,3 +19,10 @@ for (const [file, copy] of cases) {
     assert.ok(source.includes(copy), `Expected customer copy: ${copy}`)
   })
 }
+
+test('saved outreach errors explain the failure without displaying server codes', () => {
+  const source = readFileSync(new URL('../app/app/outreach/outreach-client.tsx', import.meta.url), 'utf8')
+  assert.match(source, /messageErrorCopy\(m\.error\)/)
+  assert.doesNotMatch(source, /\$\{m\.error\}/)
+  assert.ok(source.includes('Check the message status before trying again.'))
+})

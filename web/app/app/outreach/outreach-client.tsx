@@ -36,6 +36,9 @@ const ERR: Record<string, string> = {
   connection_replaced: 'The Gmail connection changed while sending. Nothing was sent. Check Settings, then try again.',
   already_uncertain: 'We could not confirm whether this was sent. Check your Gmail Sent folder, then choose below.',
 }
+const messageErrorCopy = (error: string) => Object.hasOwn(ERR, error)
+  ? ERR[error]
+  : 'Check the message status before trying again.'
 
 export default function OutreachClient() {
   const [msgs, setMsgs] = useState<Msg[]>([])
@@ -140,7 +143,7 @@ export default function OutreachClient() {
           const e = edit[m.id]
           return (
             <div key={m.id} className="card p-4 text-sm">
-              <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}{m.test ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${m.error})` : ''}</span></div>
+              <div className="flex justify-between text-[#555] text-xs mb-2"><span>To {m.to_email}{m.test ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</span><span>{m.status}{m.error && m.status !== 'sent' ? ` (${messageErrorCopy(m.error)})` : ''}</span></div>
               {m.currentness_held && ['draft','approved'].includes(m.status) && <p className="text-xs border-l-2 border-black pl-3 mb-2">dazl could not confirm when the signal happened or whether it still applies. You can review this draft, but you cannot approve or send it yet.</p>}
               {m.evidence_state === 'human' && ['draft','approved'].includes(m.status) && <p className="text-xs text-[#333] border-l-2 border-[#111] pl-3 mb-2">Lead confirmed by you - dazl did not verify the quote. Withdrawing your confirmation on the Leads page blocks approval and sending.</p>}
               {m.evidence_state === 'unverified' && ['draft','approved'].includes(m.status) && <p className="text-xs text-[#111] font-medium border-l-2 border-[#111] pl-3 mb-2">Lead confirmation withdrawn - this can no longer be approved or sent unless you re-confirm the lead or dazl verifies it.</p>}
