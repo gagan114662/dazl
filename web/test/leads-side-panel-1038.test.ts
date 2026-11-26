@@ -79,3 +79,30 @@ test('#1038 review fixes: panel names the buyer like the card, links the proof, 
   // Qodo on #1869: clicking the contact hint bubbled to the row and opened the panel over it.
   assert.match(TABLE, /stopPropagation/, 'the contact hint click never reaches the row')
 })
+
+test('#1038 review fix (Quest on #1869): the panel Approval section mirrors the table when drafts fail to load', () => {
+  // drafted == null means the drafts request failed: the table says "couldn't load", not a definite
+  // "To decide". The panel showed "To decide" anyway. Pin the same branch order as the table.
+  const nullBranch = PANEL.indexOf('drafted == null')
+  const couldntLoad = PANEL.indexOf('couldn&apos;t load')
+  const toDecide = PANEL.indexOf('To decide')
+  assert.ok(nullBranch !== -1, 'the panel checks drafted == null')
+  assert.ok(couldntLoad !== -1, 'the panel renders "couldn\'t load" when drafts fail to load')
+  assert.ok(nullBranch < couldntLoad && couldntLoad < toDecide, '"couldn\'t load" is the drafted==null branch, before the "To decide" fallthrough')
+})
+
+test('#1038 review fix (Quest on #1869): the panel names the buyer with the same provenance caveat as the card and table', () => {
+  // The card and table append ` (${personBasis(person)})` under data-testid="lead-person-basis" so the
+  // reader knows where the name came from. The panel showed the bare name/title.
+  assert.match(PANEL, /personBasis/, 'the panel uses personBasis')
+  assert.match(PANEL, /data-testid="lead-person-basis"/, 'the caveat carries the same test id as the card and table')
+})
+
+test('#1038 review fix (CodeRabbit on #1869): the arrow-focused row is exposed to assistive technology', () => {
+  // Arrows moved only a CSS outline; DOM focus stayed on the wrapper and nothing told AT which row
+  // Enter would open. The table is now the composite focus target: role="grid", stable row ids and
+  // aria-activedescendant tracking the arrow-focused row, still a single tab stop.
+  assert.match(TABLE, /role="grid"/, 'the table is the composite widget')
+  assert.match(TABLE, /aria-activedescendant=/, 'the active descendant is exposed')
+  assert.match(TABLE, /id=\{`leads-row-\$\{l\.id\}`\}/, 'rows have stable ids for aria-activedescendant')
+})
