@@ -16,7 +16,7 @@ const posting = 'https://www.jobbank.gc.ca/jobsearch/jobposting/50715766'
 const quote = 'The Tooth Corner is hiring in Mississauga'
 const searched = 'toothcornermississauga.example'
 
-async function resolveDomain(t: TestContext, city: string, siteName = company) {
+async function resolveDomain(t: TestContext, city: string, siteName = company, where = ['Mississauga, ON']) {
   t.mock.method(Date, 'now', () => Date.parse('2026-11-26T12:00:00Z'))
   const settings = { SITECRAWL_ENABLED: '1', DAZL_FREE_SITE_FINDER: '1', DAZL_FREE_WEB_SEARCH: '1' }
   for (const [key, value] of Object.entries(settings)) {
@@ -35,7 +35,7 @@ async function resolveDomain(t: TestContext, city: string, siteName = company) {
   saveKey(db, 'T', 'anthropic', 'sk-ant-fixture', master)
   const id = createQueryJob(db, 'T', { query: 'Dentists in Mississauga, ON', seller: 'Dental supplies' })
   db.prepare('UPDATE scan_jobs SET icp = ?, icp_inferred = 1 WHERE id = ?')
-    .run(JSON.stringify({ who: ['Practice Manager'], where: ['Mississauga, ON'] }), id)
+    .run(JSON.stringify({ who: ['Practice Manager'], where }), id)
   const job = claimKeyedJob(db, id)
   assert.ok(job)
   const found: DiscoverResult = {
@@ -98,4 +98,10 @@ test('Discovery refuses a matching-city site whose page names another employer',
   const result = await resolveDomain(t, 'Mississauga, ON L5B 1M1', 'Cedar Dental')
   assert.equal(result.domain, null)
   assert.ok(result.reads.includes(`https://${searched}/`), 'the wrong-company candidate was actually read')
+})
+
+test('Discovery does not use a province alone as the city for the free lookup', async t => {
+  const result = await resolveDomain(t, 'Windsor, ON N9A 1A1', company, ['Ontario'])
+  assert.equal(result.domain, null)
+  assert.deepEqual(result.searchRequests, [])
 })
