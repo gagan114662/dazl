@@ -70,6 +70,12 @@ export function trialCopy(t: TrialBlock): TrialCopy {
   }
 }
 
+export function unlimitedTrialDailyCap(t: TrialBlock): string | null {
+  return t.exempt && t.blocked !== 'global_daily_cap'
+    ? 'A shared daily limit still applies. It resets at midnight Toronto time.'
+    : null
+}
+
 // #1704: the trial line every page shows (Settings > Plan, Plays).
 export function trialSummary(t: TrialBlock): { state: TrialCopyState; text: string } {
   const { state, text } = trialCopy(t)
