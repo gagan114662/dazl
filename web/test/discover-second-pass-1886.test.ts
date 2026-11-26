@@ -17,35 +17,41 @@ const lead = {
   evidence_url: evidenceUrl, evidence_quote: quote, confidence: 'high',
 }
 
-async function fixture({ paused }: { paused: boolean }) {
+async function fixture({ paused, needsFinalAnswer = false }: { paused: boolean; needsFinalAnswer?: boolean }) {
   const raw = new Database(':memory:')
   const master = randomBytes(32)
   const allowances: number[] = []
+  const previousCeiling = process.env.DAZL_DISCOVER_SEARCHES
+  if (needsFinalAnswer) process.env.DAZL_DISCOVER_SEARCHES = '10'
   try {
     migrateAllSqlite(raw)
     saveKey(raw, 'fixture1886', 'anthropic', 'synthetic-fixture', master)
     const id = createQueryJob(raw, 'fixture1886', {
       query: 'Find businesses opening a second office', seller: 'Office fitting',
-      ...(paused ? {} : { runBudget: JSON.stringify({ max_usd: 0.75 }) }),
+      ...(paused && !needsFinalAnswer ? {} : { runBudget: JSON.stringify({ max_usd: 0.75 }) }),
     })
     const job = claimKeyedJob(raw, id)
     assert.ok(job)
     const fetchImpl: typeof fetch = async (url, init) => {
       if (!init?.body) return new Response('<p>' + date + ' ' + quote + '</p>')
-      const body = JSON.parse(String(init.body)) as { model: string; tools: { name: string; max_uses?: number }[] }
+      const body = JSON.parse(String(init.body)) as { model: string; tools: { name: string; max_uses?: number }[]; system: { text: string }[]; messages: { role: string; content: unknown }[] }
       assert.equal(body.model, model, String(url))
       const allowance = body.tools.find(tool => tool.name === 'web_search')?.max_uses ?? 0
       allowances.push(allowance)
       const first = allowances.length === 1
-      const hasCandidate = allowance > 0 && (paused ? first : !first)
+      const priorEvidence = body.messages.some(message => message.role === 'assistant' && JSON.stringify(message.content).includes(evidenceUrl))
+      const hasCandidate = needsFinalAnswer
+        ? allowance === 0 && priorEvidence && body.system.some(block => block.text.includes('Return the final JSON'))
+        : allowance > 0 && (paused ? first : !first)
+      const hasSearchResults = hasCandidate || (needsFinalAnswer && first)
       return sseResponse(sseEvents({
         id: 'msg_fixture1886', model, stop_reason: paused && first ? 'pause_turn' : 'end_turn',
         content: [
-          ...(hasCandidate ? [{
+          ...(hasSearchResults ? [{
             type: 'web_search_tool_result', tool_use_id: 'srvtoolu_fixture',
             content: [{ type: 'web_search_result', url: evidenceUrl, title: 'Cedar Fixture announcement', encrypted_content: 'fixture', page_age: date }],
           }] : []),
-          { type: 'text', text: '<json>' + JSON.stringify({ leads: hasCandidate ? [lead] : [], note: null }) + '</json>' },
+          { type: 'text', text: needsFinalAnswer && first ? 'I found relevant evidence.' : '<json>' + JSON.stringify({ leads: hasCandidate ? [lead] : [], note: null }) + '</json>' },
         ],
         usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 0,
           cache_creation_input_tokens: 0, server_tool_use: { web_search_requests: allowance } },
@@ -58,6 +64,8 @@ async function fixture({ paused }: { paused: boolean }) {
     return { allowances, candidates: scan.candidates, used: searches.used, spend }
   } finally {
     raw.close()
+    if (previousCeiling === undefined) delete process.env.DAZL_DISCOVER_SEARCHES
+    else process.env.DAZL_DISCOVER_SEARCHES = previousCeiling
   }
 }
 
@@ -76,5 +84,13 @@ test('#1886 a paused turn at the durable ceiling keeps the candidate it already 
   assert.equal(r.candidates, 1)
   assert.deepEqual(r.allowances, [15])
   assert.equal(r.used, 15)
+  assert.equal(r.spend.status, 'settled')
+})
+
+test('#1886 an exhausted paused turn with search results but no JSON gets one final answer', async () => {
+  const r = await fixture({ paused: true, needsFinalAnswer: true })
+  assert.ok(r.candidates > 0)
+  assert.deepEqual(r.allowances, [10, 0])
+  assert.equal(r.used, 10)
   assert.equal(r.spend.status, 'settled')
 })
