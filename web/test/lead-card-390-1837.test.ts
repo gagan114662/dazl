@@ -16,6 +16,9 @@ test('#1837 the card action row wraps instead of forcing the card wider than a 3
   assert.ok(actions.includes('flex-wrap'), 'the row wraps its buttons onto a second line')
   assert.ok(!actions.includes('shrink-0'), 'shrink-0 let the row keep a width the viewport cannot fit')
   assert.ok(actions.includes('min-w-0'), 'the row may shrink inside the centered column')
+  // Ziggy re-review on #1845: at sm+ the actions sit beside the identity block; without sm:shrink-0
+  // the actions row squeezes it. The exact-token check above still passes: sm:shrink-0 is not shrink-0.
+  assert.ok(actions.includes('sm:shrink-0'), 'at sm+ the actions row holds its width instead of squeezing the identity')
 })
 
 test('#1837 the card summary text wraps, so it cannot be clipped at the card edge', () => {
