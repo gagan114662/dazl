@@ -1,5 +1,6 @@
 import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
 import { isPersonName } from '../people/job-title-name.ts'
+import { hasDiscoveryEventDate } from './timing.ts'
 // What a lead from the Claude discovery lane says about itself on its card: how sure dazl is, and plainly what is missing
 // (launch brief, Step 3: a missing date, person or website lowers confidence and is said; it never hides the lead).
 export interface DiscoverCardLead {
@@ -104,13 +105,14 @@ export const signalStale = (eventDate: string | null | undefined, now: Date = ne
 // What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, a signal more than
 // a year old, not graded a fit.
 // One list, read by Approve (email) and by the LinkedIn route below.
-type ProofLead = { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
+type ProofLead = { timing_note?: string | null; quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
 export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
   if (l.quarantined_at) return 'Rejected. Undo to use it again.'
   if (l.gate_held) return 'A required check has not passed. Research only.'
   if (l.review_reason === 'public_sector_non_buyer') return 'Not a fit for this offer. The organization is a public-sector body.'
   if (l.review_reason) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
   if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
+  if (!hasDiscoveryEventDate(l)) return 'The event date is unconfirmed. Research only.'
   if (signalStale(l.event_date, now)) return 'The signal is more than a year old. It stays here as background; it is not a reason to write now.'
   if (l.fit === 0 && l.intent === null) return 'Graded as not a fit for your profile.'
   return null
@@ -127,7 +129,7 @@ export function discoverLinkedIn(l: ProofLead & { source_kind?: string | null; n
 // Whether a person can approve a discovery lead (a draft email for them to review; nothing is sent), and if not, the one thing to do.
 // Same rules as lib/outreach/service.ts discoverDraftChecks. The inbox-purpose and deliverability rules are applied by the caller
 // (lib/scan/lead-card.ts), which already has them.
-export function discoverApprove(l: { quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; company_domain?: string | null; fit?: number | null; intent?: number | null; source_kind?: string | null; name?: string | null; enrichments?: Row[]; recipient_refused?: string | null }, now: Date = new Date()): { ok: true } | { ok: false; reason: string } {
+export function discoverApprove(l: ProofLead & { company_domain?: string | null; source_kind?: string | null; name?: string | null; enrichments?: Row[]; recipient_refused?: string | null }, now: Date = new Date()): { ok: true } | { ok: false; reason: string } {
   const held = discoverProofHold(l, now)
   if (held) return { ok: false, reason: held }
   const c = discoverContact(l)

@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
-import { createDraft } from '../lib/outreach/service.ts'
+import { createDraft, draftClaimContextFor } from '../lib/outreach/service.ts'
 import { currentnessHeld, leadWindowHeld } from '../lib/outreach/currentness.ts'
 import { setQuarantine } from '../lib/scan/quarantine.ts'
 import { opportunityCard, type CardLead } from '../lib/scan/opportunity.ts'
@@ -110,16 +110,16 @@ function body(db: Database.Database, id: string): { to_email: string; body: stri
   return db.prepare('SELECT to_email, body FROM outreach_messages WHERE lead_id = ?').get(id) as { to_email: string; body: string }
 }
 const CONTACT_URL = 'https://x.example/contact'
-test('draft source URL: contact equal to a crawled own-domain address cites /contact; the news excerpt is separate', async () => {
+test('draft source URL: keep the crawled contact and signal citations in claim context', async () => {
   const { db, id } = await build({ name: 'eq own', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'evidence_own_domain'), mail('owner@x.example'), person] })
   createDraft(db, 'A', id, 'Acme', { manual: true })
   const m = body(db, id)
   assert.equal(m.to_email, 'owner@x.example')
-  assert.ok(m.body.includes(`published on X Dental's page:\n${CONTACT_URL}\n`), m.body)
-  assert.ok(m.body.includes(`Saved excerpt from this public page: "X Dental opened a clinic"\n${S}`), 'the signal excerpt keeps its own URL')
-  assert.ok(!m.body.includes(`page:\n${S}`), 'the address is not attributed to the news page')
+  assert.deepEqual(draftClaimContextFor(db, 'A', id)[0], [CONTACT_URL, S])
+  assert.match(m.body, /I saw X Dental opened a clinic\./)
+  assert.doesNotMatch(m.body, /Saved excerpt|contact address published|https?:\/\//)
 })
-test('draft source URL: a website-reviewed name_probe address that equals the contact also cites /contact', async () => {
+test('draft source URL: keep the website-reviewed crawl citation in claim context', async () => {
   const { db, id } = await build({ name: 'eq probe reviewed', contact: 'owner@x.example', date: day(-10), rows: [dom('x.example', 'name_probe'), mail('owner@x.example'), person] })
   assert.throws(() => createDraft(db, 'A', id, 'Acme', { manual: true }), /domain_unconfirmed/)
   const rows = db.prepare('SELECT connector, kind, value, label, source_url, retrieved_at FROM lead_enrichments WHERE lead_id = ?').all(id) as Parameters<typeof domainReviewFor>[1] & object
@@ -127,11 +127,17 @@ test('draft source URL: a website-reviewed name_probe address that equals the co
   assert.equal(setDomainReview(db, 'A', id, 'confirm', binding).status, 'confirmed')
   createDraft(db, 'A', id, 'Acme', { manual: true })
   const m = body(db, id)
-  assert.equal(m.to_email, 'owner@x.example'); assert.ok(m.body.includes(`page:\n${CONTACT_URL}\n`), m.body); assert.ok(!m.body.includes(`page:\n${S}`))
+  assert.equal(m.to_email, 'owner@x.example')
+  assert.deepEqual(draftClaimContextFor(db, 'A', id)[0], [CONTACT_URL, S])
+  assert.match(m.body, /I saw X Dental opened a clinic\./)
+  assert.doesNotMatch(m.body, /Saved excerpt|contact address published|https?:\/\//)
 })
-test('draft source URL: cited-page-only contact (no crawl record) still cites the signal page, with no duplicate excerpt block', async () => {
+test('draft source URL: keep the signal citation in claim context for a direct contact', async () => {
   const { db, id } = await build({ name: 'cited only', contact: 'owner@x.example', date: day(-10), rows: [person] })
   createDraft(db, 'A', id, 'Acme', { manual: true })
   const m = body(db, id)
-  assert.ok(m.body.includes(`page:\n${S}\n`), m.body); assert.ok(!m.body.includes('Saved excerpt'))
+  assert.equal(m.to_email, 'owner@x.example')
+  assert.deepEqual(draftClaimContextFor(db, 'A', id)[0], [S])
+  assert.match(m.body, /I saw X Dental opened a clinic\./)
+  assert.doesNotMatch(m.body, /Saved excerpt|contact address published|https?:\/\//)
 })

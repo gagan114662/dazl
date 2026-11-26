@@ -1,5 +1,5 @@
 const INSTITUTION_FORMS = new Set([
-  'school board', 'school district', 'public schools', 'public library', 'public health',
+  'school board', 'school district', 'public schools', 'public library', 'public health', 'health authority',
   'police department', 'fire department', 'public agency', 'housing authority', 'transit authority', 'public works',
 ]);
 
@@ -37,7 +37,8 @@ export function isPublicSectorBody(input: {
   const localGovernment = first !== 'the' && words.length > 1 && (
     last === 'county' || last === 'township' || (words.length > 2 && (lastTwo === 'city council' || lastTwo === 'town council'))
   );
-  const namedBody = civicPlace || council || localGovernment || INSTITUTION_FORMS.has(lastTwo);
+  const hospital = words.length > 1 && (last === 'hospital' || last === 'hospitals');
+  const namedBody = civicPlace || council || localGovernment || hospital || INSTITUTION_FORMS.has(lastTwo);
   const requiresGovernmentDomain = first === 'ministry' || first === 'department' || first === 'government';
 
   if (govDomain || (namedBody && !requiresGovernmentDomain)) {
