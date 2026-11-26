@@ -15,7 +15,7 @@ for (const { language, url, name, title } of recordedTeamTitles) {
   test(`#1719: a recorded ${language} leadership title can qualify and rank without configured roles`, () => {
     assert.ok(buyerTitle(title, ''))
     assert.equal(seniority(title), 4)
-    const person = { kind: 'person' as const, value: `${name}, ${title}`, url, label: null }
+    const person = { kind: 'person' as const, value: `${name}, ${title}`, url, label: 'listed on team page' }
     assert.deepEqual(chooseSiteBuyer([person], ''), person)
   })
 }
@@ -26,7 +26,7 @@ test('#1719: role overlap handles Cyrillic and accent differences without admitt
   assert.deepEqual(titleMatches('Former HR Manager', 'HR Manager'), [])
 })
 
-const listed = (value: string) => ({ kind: 'person' as const, label: null, value, url: 'https://fixture.example/team' })
+const listed = (value: string) => ({ kind: 'person' as const, label: 'listed on team page', value, url: 'https://fixture.example/team' })
 test('#1719: an empty role list admits a single senior buyer and rejects a junior, a past role, and another employer', () => {
   assert.ok(buyerTitle('Managing Director', '  '))
   const buyer = listed('Ada Mercer, Managing Director')
