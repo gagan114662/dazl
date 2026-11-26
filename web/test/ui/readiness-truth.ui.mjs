@@ -71,38 +71,22 @@ try {
   await row('key').scrollIntoViewIfNeeded()
   await shot('readiness')
   if (process.env.BEFORE_ONLY !== '1') {
-    assert.match(await row('key').textContent(), /AI key - a scan stopped because the AI provider rejected its key, after your keys were last saved - save each of your keys again to confirm they work/)
-    assert.doesNotMatch(await row('key').textContent(), /Anthropic|OpenAI|Ab12|Zz99/, 'no key is named: the record does not say which one')
-    assert.equal(await row('key').getByText('✓').count(), 0, 'a refused key is not shown as fine')
-    // While the latest scan says the key was refused, no source is called usable: the fix is the key.
-    assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '').replace(/Replace key$/, '')),
-      'a scan may not run until you save your AI key again. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
-    assert.equal(await row('sources').getByRole('link', { name: 'Replace key' }).getAttribute('href'), '/app/settings#model-key')
-    assert.doesNotMatch(await row('sources').textContent(), /Reddit/)
-    await row('key').getByRole('button', { name: 'Replace key' }).click()
-    await row('key').locator('input').first().waitFor()
-    await shot('replace-key-open')
-    // A later cancelled scan and the newer OpenAI save alone are not acceptance of every key: still a to-do.
-    JOBS.push(job('c', now - 20, { status: 'failed', error: 'cancelled', lead_count: 0 }))
-    await page.reload({ waitUntil: 'networkidle' })
-    await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
-    await row('key').waitFor({ timeout: 15000 })
-    assert.match(await row('key').textContent(), /rejected its key/)
-    assert.equal(await row('key').getByText('✓').count(), 0)
-    // Both keys were saved again (each accepted by its provider): the server reports no open rejection.
-    state.rejection = null
+    // #1703: a saved key's rejection is not shown and nobody is sent to a key form. The row reads as ready.
+    assert.match(await row('key').textContent(), /Searches - ready to run/)
+    assert.doesNotMatch(await row('key').textContent(), /key|Anthropic|OpenAI|Ab12|Zz99/i, 'no key is named or asked for')
+    assert.equal(await row('key').getByText('✓').count(), 1)
+    assert.equal(await row('key').getByRole('button').count(), 0, 'no key form button')
     await page.reload({ waitUntil: 'networkidle' })
     await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
     await row('sources').getByText('✓').waitFor({ timeout: 15000 })
-    assert.equal(await row('key').getByText('✓').count(), 1)
     assert.equal(await row('sources').textContent().then(t => t.replace(/^.*?Lead sources - /, '').replace(/Set up$/, '')),
       'a scan can use News articles, Company websites, X posts. Not available: Web search index (not set up on this server), LinkedIn (consent needed)')
     assert.equal(await row('sources').getByRole('link', { name: 'Set up' }).getAttribute('href'), '/app/settings#social')
     await row('sources').scrollIntoViewIfNeeded()
     await shot('sources-available')
   }
-  assert.deepEqual(writes, [], 'loading and opening the key form write nothing')
-  console.log(process.env.BEFORE_ONLY === '1' ? 'screenshots taken (BEFORE_ONLY)' : 'readiness truth UI check passed: a rejected key is a to-do that names no key, kept through a cancelled scan and one key\'s save, cleared only when the server reports every key accepted again; only usable sources are named usable, the rest listed with reasons and a Set up link; no writes')
+  assert.deepEqual(writes, [], 'loading Home writes nothing')
+  console.log(process.env.BEFORE_ONLY === '1' ? 'screenshots taken (BEFORE_ONLY)' : 'readiness truth UI check passed: a saved-key rejection is not shown and no key form is offered; only usable sources are named usable, the rest listed with reasons and a Set up link; no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }

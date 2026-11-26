@@ -79,7 +79,7 @@ try {
   assert.equal(await row('brain').getByRole('link', { name: 'Build' }).getAttribute('href'), '/app?setup=brain')
   assert.equal(await row('play').getByRole('link', { name: 'Write a play' }).getAttribute('href'), '/app/leads')
   assert.equal(await row('gmail').getByRole('link', { name: 'Connect' }).getAttribute('href'), '/app/settings#gmail')
-  assert.equal(await row('sources').getByRole('link', { name: 'Add key' }).getAttribute('href'), '/app/settings#model-key')
+  assert.equal(await row('sources').getByRole('link', { name: 'See your plan' }).getAttribute('href'), '/app/settings#plan')
   assert.equal(await row('site').getByRole('button', { name: 'Add' }).count(), 1)
   assert.equal(await n.page.getByText('Your plays').count(), 0, 'no empty plays list')
   assert.deepEqual(n.writes, [], 'loading Home writes nothing')
