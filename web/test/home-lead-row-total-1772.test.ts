@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
+import { renderToStaticMarkup } from 'react-dom/server'
+import * as jsxRuntime from 'react/jsx-runtime'
+import ts from 'typescript'
 import { bothEngines } from './helpers/engines.ts'
 import { homeResults } from '../lib/outreach/home-results.ts'
 
@@ -25,7 +29,31 @@ bothEngines('#1772: Home signal rows and the Leads row total use the same count'
   const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
   assert.match(read('../app/app/home-results.tsx'), /fetch\('\/api\/home\/results'\)/)
   const leads = read('../app/app/leads/leads-client.tsx')
-  assert.ok(leads.includes("fetch('/api/home/results'"), 'Leads reads the same result as Home')
-  assert.ok(leads.includes('count: result.tiles.leads'), 'Leads uses the same lead-row count, not checked companies')
-  assert.ok(/data-testid="leads-overall-row-total"[\s\S]*?leadRowTotal\.count/.test(leads))
+  const load = leads.match(/void (fetch\('\/api\/home\/results'[\s\S]+?)\n    return \(\) => request.abort\(\)/)?.[1]
+  assert.ok(load, 'Leads reads the same result as Home')
+  const markup = leads.match(/<p[^>]+data-testid="leads-overall-row-total"[^>]*>[\s\S]+?<\/p>/)?.[0]
+  assert.ok(markup, 'Leads renders the workspace total')
+  const options = { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
+  const runnable = ts.transpileModule(load, { compilerOptions: options }).outputText
+  const rendered = ts.transpileModule(`export default (${markup})`, { fileName: 'lead-row-total.tsx', compilerOptions: options }).outputText
+
+  async function renderTotal(response: Response) {
+    const request = new AbortController()
+    let leadRowTotal: unknown
+    await runInNewContext(runnable, {
+      fetch: async (url: string) => {
+        assert.equal(url, '/api/home/results')
+        return response
+      },
+      request, AbortSignal,
+      setLeadRowTotal: (total: unknown) => { leadRowTotal = total },
+    })
+    const exports: { default?: Parameters<typeof renderToStaticMarkup>[0] } = {}
+    runInNewContext(rendered, { exports, leadRowTotal, require: () => jsxRuntime })
+    assert.ok(exports.default)
+    return renderToStaticMarkup(exports.default)
+  }
+
+  assert.match(await renderTotal(Response.json(results)), /Across your workspace, last 30 days: 3 lead rows found\./)
+  assert.match(await renderTotal(new Response(null, { status: 503 })), /Could not load the total number of lead rows\./)
 })

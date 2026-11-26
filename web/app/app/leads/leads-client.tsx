@@ -1033,7 +1033,7 @@ export default function LeadsClient() {
       </div>
       {leadRowTotal && <p className="mb-3 text-sm text-[var(--ink-2)]" data-testid="leads-overall-row-total">
         {leadRowTotal === 'failed' ? 'Could not load the total number of lead rows.' : <>
-          Last {leadRowTotal.days} days: {leadRowTotal.count} lead {leadRowTotal.count === 1 ? 'row' : 'rows'} found.
+          Across your workspace, last {leadRowTotal.days} days: {leadRowTotal.count} lead {leadRowTotal.count === 1 ? 'row' : 'rows'} found.
         </>}
       </p>}
       {ready && (
