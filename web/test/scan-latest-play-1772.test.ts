@@ -38,14 +38,15 @@ test("#1875: the card's title, tooltip and link all read the one featured play",
   const base = { status: 'done', error: null, query: Q, csv_domain: null, candidates: 3, verified: 1, needs_review: 1, dropped: 1, lead_count: 3, test_only: false }
   const A = { ...base, id: 'a'.repeat(24), created_at: 100 }
   const B = { ...base, id: 'b'.repeat(24), created_at: 200 }
-  for (const watches of [
-    [{ query: Q, last_job_id: B.id }, { query: Q, last_job_id: A.id }],
-    [{ query: Q, last_job_id: A.id }, { query: Q, last_job_id: B.id }],
-  ]) {
-    const j = journey({ profile: { website: 'https://x.example', sells: 'y', buyer: null }, jobs: [A, B], leads: null, drafts: null, watches })
-    assert.ok(j.play, 'a play is featured')
-    assert.ok(j.play.id === A.id || j.play.id === B.id, 'the featured run is one of the plays')
-    assert.equal(j.action?.href, `/app/leads?job_id=${j.play.id}`, 'the action link opens the featured run, never another play')
+  // currentPlay takes the first watch whose sentence matches the newest job, so the watch order decides the
+  // featured run; pin each order to its play so a selection regression cannot pass both iterations.
+  for (const [watches, expected] of [
+    [[{ query: Q, last_job_id: B.id }, { query: Q, last_job_id: A.id }], B.id],
+    [[{ query: Q, last_job_id: A.id }, { query: Q, last_job_id: B.id }], A.id],
+  ] as const) {
+    const j = journey({ profile: { website: 'https://x.example', sells: 'y', buyer: null }, jobs: [A, B], leads: null, drafts: null, watches: [...watches] })
+    assert.equal(j.play?.id, expected, 'the first matching watch supplies the featured run')
+    assert.equal(j.action?.href, `/app/leads?job_id=${expected}`, 'the action link opens the featured run, never another play')
   }
   const tsx = readFileSync(new URL('../app/app/journey.tsx', import.meta.url), 'utf8')
   assert.match(tsx, /playName\(j\.play\.query, icp\)/, 'the title names the featured play')
