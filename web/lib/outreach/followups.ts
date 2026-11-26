@@ -138,6 +138,16 @@ export async function runFollowups(db: Database.Database, tenantId: string, busi
         if (why === 'suppressed') db.prepare("UPDATE followup_threads SET stopped = 'suppressed' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)
         skip(why); if (why === 'autopilot_off' || why === 'paused' || why === 'followups_off' || why === 'sender_changed' || why === 'gmail_not_connected' || why === 'authority_unreadable') return stop(why === 'sender_changed' || why === 'gmail_not_connected' ? 'gmail_unavailable' : 'paused'); continue
       }
+      // Reply sync can move or stop this thread while the token or copy is being fetched.
+      const current = db.prepare('SELECT stopped, last_lead_reply_at, last_followup_at, last_activity_at FROM followup_threads WHERE tenant_id = ? AND thread_id = ?')
+        .get(tenantId, t.thread_id) as { stopped: string | null; last_lead_reply_at: number | null; last_followup_at: number | null; last_activity_at: number } | undefined
+      const repliedAgain = current?.last_followup_at != null && current.last_lead_reply_at != null && current.last_lead_reply_at > current.last_followup_at
+      if (!current || current.stopped || repliedAgain || now - current.last_activity_at < GAPS_DAYS[t.followups_sent] * 86400) {
+        db.prepare('DELETE FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND step = ?').run(tenantId, t.thread_id, t.followups_sent)
+        if (repliedAgain) db.prepare("UPDATE followup_threads SET stopped = 'replied_again' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, t.thread_id)
+        skip(repliedAgain ? 'replied again, left for you' : 'thread changed')
+        continue
+      }
       const r = confirmedSendResult(await (d.sendFn ?? gmailSend)(token, raw, d.fetchImpl, t.thread_id))
       db.prepare("UPDATE followup_messages SET status = 'sent', gmail_id = ? WHERE tenant_id = ? AND thread_id = ? AND step = ?").run(r.id, tenantId, t.thread_id, t.followups_sent)
       db.prepare('UPDATE followup_threads SET followups_sent = followups_sent + 1, last_followup_at = ?, last_activity_at = ? WHERE tenant_id = ? AND thread_id = ?').run(now, now, tenantId, t.thread_id)

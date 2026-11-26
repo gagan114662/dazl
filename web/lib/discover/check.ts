@@ -197,8 +197,10 @@ export const pageIsGone = (body: string): boolean => { const t = body.replace(/\
 // Several different ages on one page (a list of postings) give no date.
 export function relativeDay(body: string, now: Date, hiringOnly = false): string | null {
   const days = new Set<number>()
-  for (const m of body.matchAll(/\b(?:posted|published|listed|updated)\s*:?\s*(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
+  for (const m of body.matchAll(/\b(?:posted[\s:–—-]*|(?:published|listed|updated)\s*:?\s*)(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
     if (hiringOnly && !/^posted\b/i.test(m[0])) continue
+    // A label like "Posted 30+ days ago" gives a lower bound, not a posting date.
+    if (hiringOnly && m[0].includes('+')) return null
     const n = Number(m[1]), u = m[2].toLowerCase()
     days.add(u.startsWith('h') ? 0 : u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
   }
