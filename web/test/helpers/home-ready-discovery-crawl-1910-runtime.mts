@@ -2,13 +2,15 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import test from 'node:test'
 import Database from 'better-sqlite3'
+import { NextRequest } from 'next/server'
+import { POST as createDraft } from '../../app/api/outreach/route.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import type { DiscoverResult } from '../../lib/discover/agent.ts'
 import { saveKey } from '../../lib/llm/key-store.ts'
 import { homeReady } from '../../lib/outreach/home-ready.ts'
 import { claimKeyedJob, runJob } from '../../lib/scan/runner.ts'
 import { createQueryJob } from '../../lib/scan/store.ts'
-import { setScanDb } from './tenant-route-db.ts'
+import { setScanDb, setUser } from './tenant-route-db.ts'
 
 test('a source-checked hire with a crawled named buyer reaches Home Ready', async t => {
   const db = new Database(':memory:')
@@ -16,6 +18,7 @@ test('a source-checked hire with a crawled named buyer reaches Home Ready', asyn
   migrateAllSqlite(db)
   setScanDb(db)
   const tenant = 'T'
+  setUser({ id: tenant, business_name: 'Fixture Supplier' })
   const master = randomBytes(32)
   saveKey(db, tenant, 'anthropic', 'sk-ant-test', master)
   const company = 'Fern Dental'
@@ -62,4 +65,25 @@ test('a source-checked hire with a crawled named buyer reaches Home Ready', asyn
   assert.equal(result.companies[0]?.details?.day_verified, true)
   assert.equal(result.companies[0]?.details?.contact_name, 'Dana Ruiz')
   assert.equal(result.companies[0]?.details?.email, address)
+
+  const response = await createDraft(new NextRequest('http://localhost/api/outreach', {
+    method: 'POST',
+    headers: { host: 'localhost', origin: 'http://localhost', 'content-type': 'application/json' },
+    body: JSON.stringify({ lead_id: result.companies[0]?.lead_id }),
+  }))
+  const draft = await response.json() as { id?: string }
+  assert.equal(response.status, 201, JSON.stringify(draft))
+  assert.ok(draft.id)
+
+  const saved = db.prepare('SELECT lead_id, to_email, status, sent_at, body FROM outreach_messages WHERE tenant_id = ? AND id = ?')
+    .get(tenant, draft.id) as { lead_id: string; to_email: string; status: string; sent_at: number | null; body: string } | undefined
+  assert.ok(saved)
+  assert.equal(saved.lead_id, result.companies[0]?.lead_id)
+  assert.equal(saved.to_email, address)
+  assert.equal(saved.status, 'draft')
+  assert.equal(saved.sent_at, null)
+  assert.match(saved.body, /^Hi Dana,/)
+  assert.match(saved.body, /we offer dental supplies/i)
+  assert.match(saved.body, /hiring a Dental Receptionist/i)
+  assert.doesNotMatch(saved.body, /https?:\/\//)
 })
