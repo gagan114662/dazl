@@ -5,8 +5,8 @@ import { ADAPTERS } from '../lib/sources/index.ts'
 import { ADV_PLATFORMS } from '../lib/advanced/config.ts'
 
 test('channel registry is honest about what runs', () => {
-  assert.equal(CHANNELS.length, 13)
-  assert.equal(new Set(CHANNELS.map(c => c.id)).size, 13)
+  assert.equal(CHANNELS.length, 11) // #1721: Bilibili and XiaoHongShu removed - Settings must not list them
+  assert.equal(new Set(CHANNELS.map(c => c.id)).size, 11)
   for (const c of CHANNELS) {
     if (c.id === 'github' || c.id === 'rss') assert.ok(ADAPTERS[c.id], c.id)
     if (c.status === 'worker') assert.ok(c.platform && (ADV_PLATFORMS as readonly string[]).includes(c.platform), c.id)

@@ -7,7 +7,7 @@ export type ChannelStatus = 'live' | 'worker' | 'soon'
 export interface Channel { id: string; name: string; tier: Tier; status: ChannelStatus; note: string; platform?: 'x' | 'reddit' | 'instagram' | 'facebook' | 'linkedin' | 'xiaohongshu' | 'bilibili' }
 
 export const CHANNELS: Channel[] = [
-  { id: 'web', name: 'Web pages (Jina Reader)', tier: 0, status: 'live', note: 'On. Add page URLs in a scan under Sources. Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.' },
+  { id: 'web', name: 'Web pages', tier: 0, status: 'live', note: 'On. Add page URLs in a scan under Sources. Pages are read through a third-party reader service: the URLs are sent to it, and it rate limits requests without a key.' },
   { id: 'youtube', name: 'YouTube', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Uses the official YouTube Data API when dazl has its own key for it (free daily quota); otherwise public mirror sites run by outside services, which receive the search keywords.' },
   { id: 'github', name: 'GitHub', tier: 0, status: 'live', note: 'On. Public repos and issues. Pick it in a scan under Sources. No key.' },
   { id: 'rss', name: 'RSS', tier: 0, status: 'live', note: 'On. Add feed URLs in a scan under Sources. No key.' },
@@ -17,8 +17,6 @@ export const CHANNELS: Channel[] = [
   { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Not available yet. Reddit limits automated access under its terms.' },
   { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Not available yet. Instagram disallows automated access in robots.txt and its terms.' },
   { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Not available yet. Facebook disallows automated access in robots.txt and its terms. dazl does not fetch Facebook yet.' },
-  { id: 'bilibili', name: 'Bilibili', tier: 1, status: 'worker', platform: 'bilibili', note: 'Not available yet.' },
-  { id: 'xiaohongshu', name: 'XiaoHongShu', tier: 1, status: 'worker', platform: 'xiaohongshu', note: 'Not available yet.' },
-  { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Not available yet: it needs a background service and a separate switch dazl turns on. Highest ban risk. Public pages through Jina Reader are not built yet.' },
+  { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Not available yet: it needs a background service and a separate switch dazl turns on. Highest ban risk. Public pages through that reader are not built yet.' },
 ]
 export const TIER_LABEL: Record<Tier, string> = { 0: 'Tier 0 · no setup', 1: 'Tier 1 · your session', 2: 'Tier 2 · login required' }
