@@ -70,7 +70,7 @@ export default function LeadsTable({ leads, icpWho, drafted, approved }: {
                     : approved[l.id] || drafted?.has(l.id)
                     ? <Pill tone="mint">Approved</Pill>
                     : drafted == null
-                    ? <span className="text-xs text-[var(--ink-3)]">couldn't load</span>
+                    ? <span className="text-xs text-[var(--ink-3)]">couldn&apos;t load</span>
                     : <span className="text-xs text-[var(--ink-3)]">To decide</span>}
                 </td>
               </tr>

@@ -62,7 +62,7 @@ test('#1038 review fixes: the person cell reuses the card identity step and carr
 test("#1038 review fixes: unreadable drafts never read as a decision, and the approval states hold", () => {
   // (c) an honest "couldn't load" when drafts could not be read (drafted == null), never "To decide"
   assert.match(table, /drafted == null/, 'the table knows the unreadable-drafts case')
-  const cantLoad = table.indexOf("couldn't load"); const decide = table.indexOf('To decide')
+  const cantLoad = table.indexOf('couldn&apos;t load'); const decide = table.indexOf('To decide')
   assert.ok(cantLoad !== -1, "the honest 'couldn't load' state exists")
   assert.ok(decide !== -1 && cantLoad < decide, "couldn't load is the branch before 'To decide'")
   // the approval states: Rejected wins, Approved next
