@@ -23,6 +23,7 @@ globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw ne
 const evidence = await import('../../app/api/leads/evidence/route.ts')
 const sourceMetrics = await import('../../app/api/leads/source-metrics/route.ts')
 const pageSignals = await import('../../app/api/leads/page-signals/route.ts')
+const commenters = await import('../../app/api/scan/commenters/[batch]/route.ts')
 const domainReview = await import('../../app/api/leads/[lead]/domain-review/route.ts')
 
 const A = { id: 'tenantA_leads', business_name: 'Acme' }, B = { id: 'tenantB_leads', business_name: 'Beta' }
@@ -103,6 +104,27 @@ async function bindingFor(db: Db, lead: string): Promise<string> {
 async function scenario(db: Db): Promise<{ out: Out[]; rows: Record<string, unknown> }> {
   const out: Out[] = []
   const as = async (u: typeof A | null, name: string, res: () => Promise<Response>) => { setUser(u); out.push(await call(name, res())) }
+  const importedJob = id('d1')
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, created_at) VALUES (?, ?, 'Seller', 'software', 'Anywhere', 'Imported contacts', ?)", [importedJob, A.id, T0])
+  for (const [batch, tenant] of [['batch-a', A.id], ['batch-b', B.id]]) {
+    await db.run('INSERT INTO commenter_batches (id, user_id, context, total, created_at, job_id) VALUES (?, ?, ?, 2, ?, ?)', [batch, tenant, 'Imported contacts', T0, tenant === A.id ? importedJob : JOB_B])
+    for (const slug of ['z-first', 'a-second']) {
+      await db.run("INSERT INTO commenter_rows (id, batch_id, profile_url, slug, name, name_source) VALUES (?, ?, ?, ?, ?, 'csv')",
+        [batch + slug, batch, 'https://example.test/' + slug, slug, slug])
+    }
+  }
+  const batchCtx = (batch: string) => ({ params: Promise.resolve({ batch }) })
+  const batchGet = (batch: string) => () => commenters.GET(req('/api/scan/commenters/' + batch), batchCtx(batch))
+  const batchDelete = (batch: string) => () => commenters.DELETE(req('/api/scan/commenters/' + batch, 'DELETE', undefined, { origin: 'http://localhost' }), batchCtx(batch))
+  await as(B, 'foreign batch get', batchGet('batch-a'))
+  await as(B, 'foreign batch delete', batchDelete('batch-a'))
+  await as(A, 'owner batch get', batchGet('batch-a'))
+  await as(A, 'owner batch delete', batchDelete('batch-a'))
+  await as(A, 'deleted batch get', batchGet('batch-a'))
+  await as(B, 'unrelated batch get', batchGet('batch-b'))
+  assert.equal(await db.get('SELECT id FROM scan_jobs WHERE id = ?', [importedJob]), undefined)
+  assert.deepEqual(await db.get('SELECT id FROM scan_jobs WHERE id = ?', [JOB_B]), { id: JOB_B })
+  assert.deepEqual(await db.all('SELECT id FROM commenter_rows WHERE batch_id = ?', ['batch-a']), [])
   // evidence: the preserved copy, an integrity mismatch, expired, purged on request, foreign, malformed ids, signed out.
   const ev = (q: string) => () => evidence.GET(req(`/api/leads/evidence${q}`))
   await as(A, 'evidence copy', ev(`?lead_id=${L.copy}`))
@@ -166,6 +188,12 @@ const by = (out: Out[], n: string) => { const o = out.find(x => x.name === n); a
 function check(r: { out: Out[]; rows: Record<string, unknown> }, engine: string) {
   const o = (n: string) => by(r.out, n)
   const st = (n: string) => o(n).status
+  assert.deepEqual(['foreign batch get', 'foreign batch delete', 'owner batch get', 'owner batch delete', 'deleted batch get', 'unrelated batch get'].map(st),
+    [404, 404, 200, 200, 404, 200])
+  const batch = o('owner batch get').body as { rows: { name: string }[]; total: number; created_at: number }
+  assert.deepEqual(batch.rows.map(row => row.name), ['z-first', 'a-second'])
+  assert.equal(batch.total, 2)
+  assert.equal(batch.created_at, T0)
   const copy = o('evidence copy').body as Record<string, unknown>
   assert.equal(st('evidence copy'), 200)
   assert.deepEqual([copy.lead_id, copy.text, copy.integrity, copy.attempt, copy.expires_at, copy.own_fetch_failure], [L.copy, 'Acme Roofing is hiring a sales rep.', 'ok', 1, FAR, 'blocked'], `${engine}: the preserved copy`)

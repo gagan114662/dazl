@@ -13,6 +13,8 @@
 // contact-page crawl, and SEC/job-board signals.
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
+import { migrateInsertionOrder } from '../db/insertion-order.ts'
 import { addEnrichment, audit, auditReleaseUnsent, auditSettleClaim, auditTryReserve, getEnabledCredential } from '../connectors/store.ts'
 import { paidVendorOn, PAID_VENDOR_OFF } from '../paid-vendors.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
@@ -55,6 +57,7 @@ export function migrateCommenterImport(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS commenter_rows_batch ON commenter_rows (batch_id);
   `)
+  migrateInsertionOrder(db, ['commenter_rows'])
 }
 
 // Only personal profile URLs. Posts, articles, companies, schools, groups, feed items -
@@ -372,4 +375,49 @@ export function deleteCommenterBatch(db: Database.Database, userId: string, batc
     if (batch.job_id) db.prepare('DELETE FROM scan_jobs WHERE id = ?').run(batch.job_id)
   })()
   return true
+}
+
+type StoredBatch = Omit<CommenterBatchStatus, 'rows' | 'total' | 'created_at'> & {
+  total: number | string
+  created_at: number | string
+}
+
+export function readCommenterBatch(db: Db, tenantId: string, batchId: string): Promise<CommenterBatchStatus | undefined> {
+  return db.tx(function* (tx) {
+    const lock = tx.kind === 'pg' ? ' FOR SHARE' : ''
+    const batch = yield* tx.get<StoredBatch>(
+      'SELECT id AS batch_id, context, total, note, created_at, job_id FROM commenter_batches WHERE id = ? AND user_id = ?' + lock,
+      [batchId, tenantId],
+    )
+    if (!batch) return undefined
+    const rows = yield* tx.all<CommenterRowStatus>(
+      'SELECT profile_url, name, name_source, title, company, lead_id, note FROM commenter_rows WHERE batch_id = ? ORDER BY insert_seq',
+      [batchId],
+    )
+    return { ...batch, total: Number(batch.total), created_at: Number(batch.created_at), rows }
+  })
+}
+
+export function removeCommenterBatch(db: Db, tenantId: string, batchId: string): Promise<boolean> {
+  return db.tx(function* (tx) {
+    const lock = tx.kind === 'pg' ? ' FOR UPDATE' : ''
+    const batch = yield* tx.get<{ job_id: string | null }>(
+      'SELECT job_id FROM commenter_batches WHERE id = ? AND user_id = ?' + lock, [batchId, tenantId],
+    )
+    if (!batch) return false
+    const job = batch.job_id && (yield* tx.get<{ id: string }>(
+      'SELECT id FROM scan_jobs WHERE id = ? AND user_id = ?' + lock, [batch.job_id, tenantId],
+    ))
+    if (job) {
+      const leadIds = 'SELECT id FROM leads WHERE scan_job_id = ?'
+      for (const table of ['lead_enrichments', 'work_email_lookups', 'email_candidates', 'email_patterns']) {
+        yield* tx.run(`DELETE FROM ${table} WHERE tenant_id = ? AND lead_id IN (${leadIds})`, [tenantId, job.id])
+      }
+      yield* tx.run('DELETE FROM leads WHERE scan_job_id = ?', [job.id])
+    }
+    yield* tx.run('DELETE FROM commenter_rows WHERE batch_id = ?', [batchId])
+    yield* tx.run('DELETE FROM commenter_batches WHERE id = ? AND user_id = ?', [batchId, tenantId])
+    if (job) yield* tx.run('DELETE FROM scan_jobs WHERE id = ? AND user_id = ?', [job.id, tenantId])
+    return true
+  })
 }

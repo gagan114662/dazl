@@ -132,7 +132,7 @@ CREATE TABLE commenter_rows (
       company     TEXT CHECK (company IS NULL OR length(company) <= 150),
       lead_id     TEXT REFERENCES leads(id) ON DELETE SET NULL,
       note        TEXT
-    );
+    , insert_seq INTEGER);
 
 CREATE TABLE company_events (
       id                 TEXT PRIMARY KEY,
@@ -1308,6 +1308,8 @@ CREATE INDEX commenter_batches_user ON commenter_batches (user_id, created_at);
 
 CREATE INDEX commenter_rows_batch ON commenter_rows (batch_id);
 
+CREATE INDEX commenter_rows_insert_seq_idx ON commenter_rows (insert_seq);
+
 CREATE INDEX company_events_company ON company_events (tenant_id, company_key);
 
 CREATE INDEX company_events_tenant ON company_events (tenant_id, last_seen_at);
@@ -1480,6 +1482,8 @@ CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events
     BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
 
 CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
+
+CREATE TRIGGER commenter_rows_insert_seq AFTER INSERT ON commenter_rows WHEN NEW.insert_seq IS NULL BEGIN UPDATE commenter_rows SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM commenter_rows) WHERE rowid = NEW.rowid; END;
 
 CREATE TRIGGER connector_audit_insert_seq AFTER INSERT ON connector_audit WHEN NEW.insert_seq IS NULL BEGIN UPDATE connector_audit SET insert_seq = (SELECT coalesce(max(insert_seq), 0) + 1 FROM connector_audit) WHERE rowid = NEW.rowid; END;
 

@@ -33,7 +33,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/plays/[kind]/[id]/run/route.ts': 0,
   'app/api/replies/[id]/route.ts': 0,
   'app/api/replies/route.ts': 0,
-  'app/api/scan/commenters/[batch]/route.ts': 0,
   'app/api/scan/commenters/route.ts': 0,
   'app/api/scan/csv/[batch]/route.ts': 0,
   'app/api/scan/csv/route.ts': 0,
