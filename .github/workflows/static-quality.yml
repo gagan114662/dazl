@@ -35,12 +35,34 @@ jobs:
       - name: Resolve exact comparison (never silently fall back)
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base }}
+          EVENT_KIND: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          [[ "$BASE" =~ ^[0-9a-f]{40}$ ]]
-          git cat-file -e "$BASE^{commit}"
-          git merge-base --is-ancestor "$BASE" HEAD
-          echo "QUALITY_BASE=$BASE" >> "$GITHUB_ENV"
+          if [[ "$EVENT_KIND" != pull_request ]]; then
+            [[ "$BASE" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "$BASE^{commit}"
+            git merge-base --is-ancestor "$BASE" HEAD
+            echo "QUALITY_BASE=$BASE" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          fail() { echo "Static quality: $1; rebase onto main." >&2; exit 1; }
+          [[ "$BASE" =~ ^[0-9a-f]{40}$ ]] || fail 'base is not a full commit SHA'
+          [[ $(git cat-file -t "$BASE") == commit ]] || fail 'base commit is missing or invalid'
+          mb=$(git merge-base --all "$BASE" HEAD) || fail 'no common ancestor with main'
+          [[ "$mb" =~ ^[0-9a-f]{40}$ ]] || fail 'no unique merge-base with main'
+          if [[ "$mb" != "$BASE" ]]; then
+            git rev-list --first-parent "$BASE" | grep -Fx "$mb" >/dev/null ||
+              fail "merge-base is off main's first-parent history"
+            distance=$(git rev-list --count --first-parent "$mb..$BASE")
+            base_time=$(git show -s --format=%ct "$BASE")
+            fork_time=$(git show -s --format=%ct "$mb")
+            age=$((base_time - fork_time))
+            if (( distance > 30 && (age < 0 || age > 86400) )); then
+              fail "base is $distance commits behind main (commit-time delta: $((age / 3600))h)"
+            fi
+          fi
+          echo "QUALITY_BASE=$mb" >> "$GITHUB_ENV"
       - name: Block new literal targeting and per-case tuning (protected scanner)
         shell: bash
         env:
