@@ -36,6 +36,7 @@ import { requestedHiringRoles, matchedHiringRole, type RequestedHiringRole } fro
 import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
+import { isCountryOrRegion } from './countries.ts'
 import { resolveSearchProfile } from './profile-match.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -1595,10 +1596,11 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
         companyFirstContacts: true,
         signal,
         ...(findSite ? {
-          findSites: async (company, where, { id, places }) => {
+          findSites: async (company, where, id) => {
             if (!jobBankDomainLookups.has(id) || !postFinishAliveStrict(db, job)) return []
-            const location = where.length ? where : places
-            return location.length ? findSite(company, location) : []
+            const city = where[0]?.split(',')[0].trim()
+            if (where.length !== 1 || !city || isCountryOrRegion(city)) return []
+            return findSite(company, where)
           },
         } : {}),
         ...(crawlGet ? { get: crawlGet } : {}),
