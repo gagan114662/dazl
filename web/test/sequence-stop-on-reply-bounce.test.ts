@@ -14,8 +14,8 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateAutopilot, enable, CONSENT_VERSION, ATTESTATIONS } from '../lib/outreach/autopilot.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
-import { migrateReplies, acceptReadConsent, syncReplies } from '../lib/outreach/replies.ts'
-import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
+import { migrateReplies, acceptReadConsent, hasReadConsent, revokeReadConsent, syncReplies } from '../lib/outreach/replies.ts'
+import { completeOAuth, gmailStatus, startOAuth, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE } from '../lib/gmail/oauth.ts'
 import { approve, saveSettings, sendMessage, suppress } from '../lib/outreach/service.ts'
 import { migrateSequences, createSequence, approveSequence, runSequences, sequenceStatusByLead, stopSequenceForThread } from '../lib/outreach/sequences.ts'
 import { applyBounceVerdict } from '../lib/outreach/bounce-ledger.ts'
@@ -26,11 +26,17 @@ const env = { GOOGLE_CLIENT_ID: 'client', GOOGLE_CLIENT_SECRET: 'secret', PUBLIC
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status })
 const idToken = (email: string) => 'x.' + Buffer.from(JSON.stringify({ email, email_verified: true })).toString('base64url') + '.y'
 
+async function connectMailbox(db: Database.Database, scope: string) {
+  const state = new URL(startOAuth(db, 'A', { env, now: NOW })).searchParams.get('state')!
+  await completeOAuth(db, 'A', 'c', state, { env, master, now: NOW, fetchImpl: async () => json({
+    refresh_token: 'test-token', scope, id_token: idToken('me@acme.example'),
+  }) })
+}
+
 async function setup() {
   const db = new Database(':memory:')
   migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateAutopilot(db); migrateLedger(db); migrateReplies(db); migrateSequences(db)
-  const state = new URL(startOAuth(db, 'A', { env, now: NOW })).searchParams.get('state')!
-  await completeOAuth(db, 'A', 'c', state, { env, master, now: NOW, fetchImpl: (async () => json({ refresh_token: 'test-token', scope: `https://www.googleapis.com/auth/gmail.send ${GMAIL_READ_SCOPE}`, id_token: idToken('me@acme.example') })) as unknown as typeof fetch })
+  await connectMailbox(db, `${GMAIL_SEND_SCOPE} ${GMAIL_READ_SCOPE}`)
   saveSettings(db, 'A', { sender_name: 'Pat Smith', postal_address: '1 King St W, Toronto ON M5H 1A1, Canada' })
   enable(db, 'A', { version: CONSENT_VERSION, attestations: [...ATTESTATIONS], daily_cap: 25 })
   acceptReadConsent(db, 'A')
@@ -125,11 +131,17 @@ test('an unsubscribe stops the sequence and reads as Unsubscribed', async () => 
   assert.equal(byLead(db, lead)?.stop_reason, 'Unsubscribed')
 })
 
-test('the user stopping a sequence by hand ends it, and it reads Stopped by you', async () => {
+test('after a send-only reconnect, manually stopping a sequence ends it and reads Stopped by you', async () => {
   const db = await setup()
   const m = mock()
-  const { lead } = await started(db, m)
+  const { lead, seq } = await started(db, m)
+  await connectMailbox(db, GMAIL_SEND_SCOPE)
+  assert.equal(gmailStatus(db, 'A')?.read_granted, false)
+  revokeReadConsent(db, 'A')
+  assert.equal(hasReadConsent(db, 'A'), false)
+  assert.equal(seqRow(db, seq).status, 'active')
   stopSequenceForThread(db, 'A', lead, 'stopped', 'user_stopped', NOW + 60) // the row the sequences page's stop action writes
+  assert.deepEqual(seqRow(db, seq), { status: 'stopped', stop_reason: 'user_stopped' })
   assert.equal((await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 3 * DAY })).sent, 0)
   assert.equal((await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 7 * DAY })).sent, 0)
   assert.equal(m.calls.length, 1)
