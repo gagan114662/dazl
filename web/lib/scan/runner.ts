@@ -1546,7 +1546,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   try { await enqueuePostEngagement(sqliteDb(db), job.user_id, job.id, [...checked.map(l => l.evidence_url), ...run.pages]) } catch { /* the scan's own leads stand */ }
   // ...and the competitor pages Settings carries (#1588): one read of each per week, only with dazl Connect paired.
   // The same gate (working hours, one page at a time, 40 a day) paces them; nothing is queued otherwise.
-  try { await enqueueCompetitorPages(sqliteDb(db), job.user_id) } catch { /* the competitor reads re-arm on the next scan */ }
+  try { await enqueueCompetitorPages(sqliteDb(db), job.user_id) } catch (e) { captureError(e, { source: 'worker', where: 'scan:enqueue-competitor-pages', tenantId: job.user_id, ref: job.id }) }
   // ...and the company People page of a lead whose person has no LinkedIn profile yet (lib/linkedin-tasks/lane-people.ts)
   try { await enqueueLanePeople(sqliteDb(db), job.user_id, job.id, forLinkedIn) } catch { /* the scan's own leads stand */ }
   return 'done'
