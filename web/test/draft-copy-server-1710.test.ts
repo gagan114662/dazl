@@ -67,3 +67,22 @@ test('MadeThis production draft profile yields a short personal draft without th
   assert.doesNotMatch(draft.body, /About dazl:|Saved excerpt|contact address published|https?:\/\//i)
   assert.ok(draft.body.split(/\s+/).length <= 120)
 })
+
+test('a different seller keeps its own offer and cannot unwrap another seller heading', () => {
+  const lead = {
+    name: 'Nora Patel',
+    company: 'Maple Couriers',
+    confidence: 90,
+    evidence_excerpt: 'Maple Couriers opened a new dispatch depot',
+  }
+
+  const { body } = composeDraftCopy(lead, 'River Workshop', 'About River Workshop: Cargo racks for delivery vans')
+  assert.match(body, /^Hi Nora,/)
+  assert.match(body, /Maple Couriers opened a new dispatch depot/)
+  assert.match(body, /At River Workshop, we offer cargo racks for delivery vans\./)
+  assert.doesNotMatch(body, /About River Workshop:/)
+  assert.throws(
+    () => composeDraftCopy(lead, 'River Workshop', 'About Other Seller: Outsourced payroll'),
+    { code: 'seller_offer_required' },
+  )
+})
