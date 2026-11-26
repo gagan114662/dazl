@@ -79,7 +79,8 @@ const routeApi = async route => {
   }
   // #1038 PR3: the bulk bar's Push to CRM sends the same POST the single-lead control sends; GET stays unconfigured.
   if (u.pathname === '/api/crm' && m === 'POST') { crmCalls.push(JSON.parse(req.postData())); return json({ ok: true, message: 'Pushed to CRM' }) }
-  const q = /^\/api\/leads\/([a-f0-9]{24})\/quarantine$/.exec(u.pathname)
+  // Ids are 24 lowercase alnum: real leads are hex, the table fixture seeds letters g-v (#1038 PR3).
+  const q = /^\/api\/leads\/([a-z0-9]{24})\/quarantine$/.exec(u.pathname)
   if (q) { quarantineCalls.push({ method: m, lead: q[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ quarantined: m === 'POST' }) }
   if (u.pathname === '/api/enrich/held') return json(heldMode ? { held: [{ leadId: 'a'.repeat(24), company: 'Bright Dental', provider: 'apollo', step: 'people', since: 1762000000, costText: UNVERIFIED_COST, retryable: false }] } : { held: [] })
   const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
