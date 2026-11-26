@@ -44,16 +44,17 @@ type LaunchRegion = { ok: true; places: PlanPlace[] } | { ok: false; stop: strin
 const UNCONFIRMED_RESULT: LaunchRegion = { ok: false, stop: UNCONFIRMED, note: UNCONFIRMED_COPY }
 
 function namesDestination(query: string): boolean {
-  const reason = placeSkipReason(query)
-  const ambiguous = /^skipped_no_place:ambiguous:([a-z]+)$/i.exec(reason)?.[1]
-  if (ambiguous) {
-    const explicit = new RegExp(`\\b(?:in|near|around|across|from)\\s+(?:the\\s+)?${ambiguous}\\b`, 'i')
-    if (explicit.test(query) || query.trim().toLowerCase() === ambiguous.toLowerCase()) return true
-    // A shared city/name token is not sufficient by itself. Look for other places after removing it.
-    query = query.replace(new RegExp(`\\b${ambiguous}\\b`, 'gi'), '')
-    return Boolean(placeIn(query)) || worldCitiesIn(query).length > 0
+  let remaining = query
+  let reason = placeSkipReason(remaining)
+  for (let match = /^skipped_no_place:ambiguous:([a-z]+)$/i.exec(reason); match; match = /^skipped_no_place:ambiguous:([a-z]+)$/i.exec(reason)) {
+    const place = match[1]
+    const explicit = new RegExp(`\\b(?:in|near|around|across|from)\\s+(?:the\\s+)?${place}\\b|\\b${place}(?:\\s+|[-–]\\s*)based\\b`, 'i')
+    if (explicit.test(query) || query.trim().toLowerCase() === place.toLowerCase()) return true
+    // A city/name token without geographic context must not mask a later destination.
+    remaining = remaining.replace(new RegExp(`\\b${place}\\b`, 'gi'), ' ')
+    reason = placeSkipReason(remaining)
   }
-  return Boolean(placeIn(query)) || worldCitiesIn(query).length > 0 || reason !== 'skipped_no_place'
+  return Boolean(placeIn(remaining)) || worldCitiesIn(remaining).length > 0 || reason !== 'skipped_no_place'
 }
 
 export function launchSearchProfile(input: DiscoverInput): DiscoverInput['profile'] {

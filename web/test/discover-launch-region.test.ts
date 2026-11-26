@@ -272,6 +272,17 @@ test('an explicit ambiguous city still takes priority over the saved destination
   assert.deepEqual(result.leads.map(lead => lead.company), ['Local'])
 })
 
+for (const query of ['VP Sales for London-based companies', 'VP Sales at Cambridge Insurance in Hamilton']) {
+  test(`a saved destination cannot replace geography in "${query}"`, async () => {
+    const toronto = { text: 'Toronto', country: 'CA', city: 'Toronto', region: null }
+    const { requests, fetchImpl } = provider([toronto], [candidate('SavedDestination', 'CA')])
+    const result = await discoverLeads({ query, profile: { where: ['Toronto'] } }, { apiKey: 'test', fetch: fetchImpl })
+    assert.doesNotMatch(JSON.stringify(requests[0].messages), /Toronto/)
+    assert.equal(result.stop, 'search_region_unconfirmed')
+    assert.deepEqual(result.leads, [])
+  })
+}
+
 test('the saved profile grounds a place when the request leaves geography unspecified', async () => {
   const places = [{ text: 'Toronto', country: 'CA', city: 'Toronto', region: null }]
   const { fetchImpl } = provider(places, [candidate('Local', 'CA'), candidate('OutsideProfile', 'US')])
