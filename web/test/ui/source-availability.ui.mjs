@@ -3,8 +3,8 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call answered from a
 // stub in the browser: no scan runs, no key check. Off-host requests are aborted. It proves:
 //   1. the play entry lists only the sources a scan here CAN use (capability wording, never "every scan searches");
-//      a usable opt-in social source is not listed; with no key it says a scan cannot start until a key is added;
-//   2. each unavailable source is marked with its reason, and a link to fix it when the user can (no key -> Add key,
+//      a usable opt-in social source is not listed; with no key and the free searches used up it names the plan, never a key;
+//   2. each unavailable source is marked with its reason, and a link to fix it when the user can (no key and no searches left -> See your plan,
 //      social not connected / no consent -> Set up); operator-off sources say "not set up on this server", no link;
 //   3. the progress view names only usable sources plus the extras this run asked for, never an unavailable one, and
 //      no longer says "Searching sources...";
@@ -114,13 +114,15 @@ try {
   assert.deepEqual(writes, ['POST /api/scan/estimate', 'POST /api/scan'])
   await shot(page, 'progress')
   await ctx.close()
-  // No key and the free searches used up: research is unavailable, with Add key.
+  // No key and the free searches used up: analysis and extraction are out of searches; the fix is the plan, not a key.
   const nokey = await open({ server: { web_index: true, news: true, websites: true }, usage: { plan: 'free', scans_used: 3, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 0, cap: 3 } } })
   await nokey.page.getByTestId('sources-usable').waitFor()
   assert.equal(await nokey.page.getByTestId('sources-usable').textContent(), 'Discovery sources a scan here can use: Web search index, News articles. Extra sources are optional, under More sources.')
   assert.equal(await nokey.page.getByText(/every scan searches|searches:/i).count(), 0, 'no-key: nothing is claimed as searched')
-  assert.match(await nokey.page.getByTestId('analysis-prerequisite').textContent(), /AI key for analysis and extraction \(free searches used up; no key\)/)
-  assert.equal(await nokey.page.getByTestId('analysis-prerequisite').getByRole('link', { name: 'Add key' }).getAttribute('href'), '/app/settings#model-key')
+  const prereq = await nokey.page.getByTestId('analysis-prerequisite').textContent()
+  assert.match(prereq, /analysis and extraction \(free searches used up\)/)
+  assert.doesNotMatch(prereq, /AI key/i, 'no claim that a scan needs a key (#1703)')
+  assert.equal(await nokey.page.getByTestId('analysis-prerequisite').getByRole('link', { name: 'See your plan' }).getAttribute('href'), '/app/settings#plan')
   await shot(nokey.page, 'no-key')
   await nokey.ctx.close()
   // All primary sources OFF is not repaired by BYOK, funded trials, or enrichment-only crawl.

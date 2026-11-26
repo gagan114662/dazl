@@ -126,7 +126,7 @@ try {
     let { ctx, page, writes } = await open(SCENES.fresh, w, h)
     await card(page).waitFor()
     assert.deepEqual(await states(page), ['profile:todo*', 'search:todo', 'play:todo', 'qualified:todo', 'contact:todo', 'draft:todo', 'sender:todo'])
-    assert.deepEqual(await fixes(page), ['Build profile>/app?setup=brain', 'Add key>/app/settings#model-key', 'Run a search>/app/leads', '', '', '', 'Connect>/app/settings#gmail'])
+    assert.deepEqual(await fixes(page), ['Build profile>/app?setup=brain', 'See your plan>/app/settings#plan', 'Run a search>/app/leads', '', '', '', 'Connect>/app/settings#gmail'])
     assert.equal(await page.getByTestId('rc-progress').textContent(), '0 of 7 done')
     assert.equal(await card(page).locator('.btn-primary').count(), 0, 'Home keeps one primary action')
     assert.ok((await card(page).boundingBox()).y < (await page.getByTestId('journey').boundingBox()).y, 'the card sits above the journey')
@@ -241,7 +241,7 @@ try {
     await card(page).waitFor()
     const foot = page.getByTestId('by-signal-companies')
     await foot.waitFor()
-    assert.equal((await foot.innerText()).trim(), '4 leads; 1 without a company name. 1 company checked.', `${tag}: the by-signal footnote`)
+    assert.equal((await foot.innerText()).trim(), '4 leads from 2 companies; 1 without a company name. 1 company checked.', `${tag}: the by-signal footnote`)
     if (process.env.SHOTS) { await foot.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, `home-results-1772-${tag}.png`) }) }
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;

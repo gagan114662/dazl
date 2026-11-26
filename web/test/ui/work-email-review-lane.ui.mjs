@@ -65,6 +65,8 @@ const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  // The review lane is card JSX in BOTH Leads views (#1038): this fixture's leads all carry a review_reason, so the
+  // main list is empty and the Table/Cards toggle does not render - there is no view-cards to click here.
   // 1. one block on the eligible review row, with the button, before any confirm click; nothing was requested for it on load
   const blocks = page.locator('[data-testid="review-work-email"]')
   await blocks.first().waitFor({ timeout: 15000 }).catch(async e => { console.log('PAGE TEXT:', (await page.locator('body').innerText()).slice(0, 1500)); throw e })

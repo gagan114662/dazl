@@ -33,7 +33,7 @@ test('each reason has its own state and wording; only real account usage reads a
   assert.deepEqual(row({ blocked: 'ip_throttle', remaining: 3 }), ['throttled', 'Too many free searches from your network today. Try again tomorrow. You have used 0 of 3 free search attempts.'])
   assert.deepEqual(row({ blocked: 'global_daily_cap', remaining: 2 }), ['throttled', "Today's free searches are fully booked. Try again tomorrow (it resets at midnight UTC). You have used 1 of 3 free search attempts."])
   assert.deepEqual(row({ blocked: 'google_required', remaining: 3 }), ['ineligible', 'Free searches need Google sign-in on this account. Link Google to this account to use them (no card).'])
-  assert.deepEqual(row({ blocked: 'domain_used', remaining: 3 }), ['ineligible', "Your company's email domain has already had its free searches."])
+  assert.deepEqual(row({ blocked: 'domain_used', remaining: 3 }), ['ineligible', "Another account with your email domain already used the free searches."])
   assert.deepEqual(row({ blocked: 'something_new' }), ['unavailable', "Free searches can't run right now."])
   for (const b of ['not_configured', 'ip_throttle', 'global_daily_cap', 'google_required', 'domain_used', 'something_new']) {
     assert.doesNotMatch(trialCopy(t({ blocked: b, remaining: 3 })).text, /used up|used all/, `${b} is not usage`)

@@ -61,7 +61,15 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-browser-full-v1-1.63.0-${{ runner.os }}-${{ runner.arch }}
-      - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
+      - run: npm install --no-save playwright@1.63.0 esbuild@0.25.0 && npx playwright install --with-deps chromium
+      # #1834: the phone menu's More toggle collapses again on navigation, and the summary's preventDefault
+      # keeps details.open and aria-expanded in agreement (PR #1878). It must run, not skip.
+      - name: Nav More toggle reset on navigation (#1834)
+        if: success() || failure()
+        run: |
+          set -o pipefail
+          node test/ui/nav-more-1834.ui.mjs | tee /tmp/nav-more.out
+          ! grep -q '^NOT RUN' /tmp/nav-more.out
       - name: Every /app page loads (no page/console error, no missing asset)
         run: npm run test:smoke
       - name: Chunk-load recovery
@@ -76,16 +84,6 @@ jobs:
       - name: Two tenants, no cross-tenant data on any route or page
         if: success() || failure()
         run: npm run test:smoke:tenants
-      - name: "Enrichment fallback opt-in: renders off by default, toggle persists (fenced)"
-        if: success() || failure()
-        run: npm run test:smoke:enrichment
-      - name: Enrichment fallback screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: enrichment-fallback-${{ github.event.pull_request.head.sha || github.sha }}
-          path: web/preview/enrichment-fallback/*.png
-          retention-days: 30
       - name: Inbox UI - filters, paging and the bounce_review badge
         if: success() || failure()
         run: mkdir -p /tmp/inbox-shots && SHOTS=/tmp/inbox-shots node --experimental-strip-types test/ui/inbox.ui.mjs

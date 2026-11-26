@@ -3,6 +3,8 @@
 // own people. It runs on the small model, in parallel, and only fills fields that are empty. It never changes the signal,
 // its date or its proof, and never replaces a person the first pass already found.
 import Anthropic from '@anthropic-ai/sdk'
+import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
+import { isPersonName } from '../people/job-title-name.ts'
 import { configuredSearchAllowance, createSearchBudget, type SearchBudget } from './search-budget.ts'
 import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage } from './agent.ts'
 
@@ -14,10 +16,10 @@ const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_ENRICH_FETCHES || 2)
 
 const SYSTEM = `You are given one company and what a seller wants to sell to it. Find these on the open web:
 1. the company's own website domain;
-2. the person at that company the seller should contact: the owner, founder or the leader of the team that would buy this. Give a name and title only when a page prints them, with that page's URL. If the request says "Person already found", keep that person and do not look for another.
+2. the person at that company the seller should contact: the owner, founder or the leader of the team that would buy this. For clinics, prefer the owner, a dentist or the practice manager. Read the business's team or about page first. A public registry can establish the person's name and current role at this exact business. Give a name and title only when a page prints them, with that page's URL. If the request says "Person already found", keep that person and do not look for another.
 
 3. that person's own LinkedIn profile. Search for the person's full name with the company name and the word LinkedIn. Give the profile address (it contains /in/) only when a search result or a page shows it with this same name and this company. A company page (/company/) is not a profile. Never build or guess a profile address.
-4. that person's own work email address, only if a page prints it, with that page's URL. A shared inbox (info@, sales@, hello@, contact@, reception@ and the like) is not a contact: leave email null rather than give one. Never build an address from a name.
+4. that person's own work email address, only if a page you opened on the business's own website prints that exact address next to their name. The address must use that same business domain. Prioritize reading that page before looking for LinkedIn. A shared inbox (info@, sales@, hello@, contact@, reception@ and the like) is not a contact: leave email null rather than give one. Never build an address from a name.
 
 The company's own website (team, about, leadership, contact pages), a press release or a news item that names the person are good sources. Make sure the person works at THIS company: the same name at another company is a wrong answer. If you cannot find a person, say so with nulls. Never guess a name, a title or a URL.
 
@@ -136,6 +138,75 @@ const usdOf = (u: Omit<DiscoverUsage, 'usd'>) => Math.round(((u.input_tokens * P
 export const enrichRequest = (lead: DiscoveredLead, offer: string | null): string => [`Company: ${lead.company}`, lead.domain ? `Website: ${lead.domain}` : '', `What we know: ${lead.signal}`, `Where we read it: ${lead.evidence_url}`,
   lead.person ? `Person already found: ${[lead.person, lead.title].filter(Boolean).join(', ')}` : '', offer ? `The seller sells: ${str(offer, 400)}` : ''].filter(Boolean).join('\n')
 
+function containsPhrase(text: string, phrase: string): boolean {
+  const normalize = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  const target = normalize(phrase)
+  return !!target && ` ${normalize(text)} `.includes(` ${target} `)
+}
+
+function* aroundName(text: string, name: string, radius: number) {
+  const words = name.normalize('NFKC').match(/[\p{L}\p{M}\p{N}]+/gu)
+  if (!words?.length) return
+  const pattern = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${words.join('[^\\p{L}\\p{M}\\p{N}]+')}(?![\\p{L}\\p{M}\\p{N}])`, 'giu')
+  const normalized = text.normalize('NFKC')
+  for (const match of normalized.matchAll(pattern)) {
+    const start = match.index
+    const end = start + match[0].length
+    yield { before: normalized.slice(Math.max(0, start - radius), start), after: normalized.slice(end, end + radius) }
+  }
+}
+
+function addressBesideName(text: string, name: string, email: string): boolean {
+  // A compact directory can show multiple addresses within 200 characters. In
+  // that case the address must also match this person's name, never a neighbour's.
+  const addressPattern = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g
+  const otherNameLabel = /(?:^|[\n;|])\s*(?:[\p{Lu}][\p{L}'’-]+ +){1,3}[\p{Lu}][\p{L}'’-]+\s*:/u
+  for (const { before, after } of aroundName(text, name, 200)) {
+    const addresses = new Set(`${before} ${after}`.toLowerCase().match(addressPattern))
+    if (!addresses.has(email) || (addresses.size > 1 && !nameBound(email.split('@')[0], name))) continue
+    for (const side of [before, after]) {
+      for (const match of side.toLowerCase().matchAll(addressPattern)) {
+        if (match[0] !== email) continue
+        const between = side === after ? side.slice(0, match.index) : side.slice(match.index + email.length)
+        if (!otherNameLabel.test(between)) return true
+      }
+    }
+  }
+  return false
+}
+
+function verifyContact(lead: DiscoveredLead, candidate: Enriched, seen: ReadonlyMap<string, SeenPage>): Enriched {
+  const personPage = candidate.person_source_url ? seen.get(candidate.person_source_url)?.text : null
+  const proposedDomain = candidate.domain
+  const domain = lead.domain ?? (proposedDomain && [...seen.values()].some(page =>
+    host(page.url) === proposedDomain && page.text && containsPhrase(page.text, lead.company)) ? proposedDomain : null)
+  candidate = { ...candidate, domain }
+  const ownPage = (url: string | null) => !!domain && !!url && host(url) === domain
+  const person = candidate.person
+  const title = candidate.title
+  const entries = !personPage ? [] : ownPage(candidate.person_source_url)
+    ? [personPage] : personPage.split(/\r?\n[ \t]*\r?\n/)
+  const verifiedPerson = person && isPersonName(person) && title && entries.some(entry => {
+    for (const { before, after } of aroundName(entry, person, 300)) {
+      const nearby = `${before} ${person} ${after}`
+      if (!containsPhrase(nearby, title) || (!ownPage(candidate.person_source_url) && !containsPhrase(nearby, lead.company))) continue
+      if (!/\b(?:former|retired|emeritus|assistant to)\b/i.test(`${before.slice(-30)} ${person} ${after.slice(0, 50)}`)) return true
+    }
+    return false
+  })
+  const contact = verifiedPerson ? candidate : { ...candidate, person: null, title: null, person_source_url: null, linkedin_url: null }
+  const buyer = lead.person ?? contact.person
+  const email = contact.email?.toLowerCase()
+  if (buyer && isPersonName(buyer) && (!person || samePerson(buyer, contact.person)) && email && ownPage(contact.email_source_url)) {
+    const [local, addressDomain] = email.split('@')
+    const mailbox = local.split('+')[0].replace(/[._-]/g, '').replace(/\d+$/, '')
+    const source = seen.get(contact.email_source_url!)?.text
+    if (addressDomain === domain && !isGenericInbox(mailbox) && !/^(?:support|billing|careers|hr|noreply|webmaster|helpdesk|patients?|manager|owner|doctor|dentist)$/.test(mailbox) &&
+      source && addressBesideName(source, buyer, email)) return { ...contact, email }
+  }
+  return { ...contact, email: null, email_source_url: null }
+}
+
 async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string | null, allSeen: Map<string, SeenPage>, usage: Omit<DiscoverUsage, 'usd'>, searchBudget: SearchBudget, safe: () => boolean, signal?: AbortSignal): Promise<Enriched> {
   const user = enrichRequest(lead, offer)
   const seen = new Map<string, SeenPage>()   // this lookup's own results: the profile check reads these only
@@ -176,7 +247,7 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
     messages.push({ role: 'assistant', content: res.content as Anthropic.ContentBlockParam[] })
   }
   for (const [url, page] of seen) if (!allSeen.has(url) || page.text) allSeen.set(url, page)
-  const kept = keepSeenProfile(parseEnriched(text), seen)
+  const kept = keepSeenProfile(verifyContact(lead, parseEnriched(text), seen), seen)
   if (kept.linkedin_url) return kept
   // no profile from the model, or one the rule refused: the results themselves may still show this person's profile at this company
   const who = kept.person ?? lead.person

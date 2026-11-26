@@ -51,7 +51,7 @@ bothEngines('#1319: a +tag sign-up links the Google account for its mailbox, wit
   assert.equal((await emailStatus(db, 'Q'))!.verified, true)
 })
 
-test('#1319 (6): Search can run offers Link Google (free trial) first, Add key second, when only Google blocks the trial', () => {
+test('#1319 (6): Search can run offers Link Google (free trial) first, See your plan second, when only Google blocks the trial', () => {
   const base = { profile: null, outreach: null, jobs: [], totals: { searches: 0, finished: 0 }, sources: { web_index: false, news: true, websites: true }, keys: [], advanced: null, messages: [], campaigns: [] }
   const blocked = readyItems({ ...base, usage: { has_key: false, scans_used: 0, scan_limit: 10, trial: { funded: false, remaining: 3, blocked: 'google_required' } } } as never)
   const s = blocked.find(x => x.id === 'search')!
@@ -59,9 +59,9 @@ test('#1319 (6): Search can run offers Link Google (free trial) first, Add key s
   assert.equal(s.fix?.label, 'Link Google (free trial)')
   assert.ok(s.fix?.primary)
   assert.match(s.fix!.href, /^\/api\/auth\/google\?link=1&next=%2Fapp%2Fleads$/)
-  assert.deepEqual(s.alt, { href: '/app/settings#model-key', label: 'Add key' })
-  // another refusal (e.g. the domain already had its trial): Add key only, as before
+  assert.deepEqual(s.alt, { href: '/app/settings#plan', label: 'See your plan' })
+  // another refusal (e.g. the domain already had its trial): See your plan only, as before
   const other = readyItems({ ...base, usage: { has_key: false, scans_used: 0, scan_limit: 10, trial: { funded: false, remaining: 0, blocked: 'domain_used' } } } as never).find(x => x.id === 'search')!
-  assert.equal(other.fix?.label, 'Add key')
+  assert.equal(other.fix?.label, 'See your plan')
   assert.equal(other.alt ?? null, null)
 })

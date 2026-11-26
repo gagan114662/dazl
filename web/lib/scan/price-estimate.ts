@@ -168,8 +168,8 @@ export function estimateRun(i: EstimateInput): RunEstimate {
       unit: 'search', unit_usd: '$0.01 per search plus model tokens', units: { min: 0, max: search.maxSearches * calls },
       usd: { min: 0, max: search.estimatedUsd * calls }, capped,
       note: i.companyFirst
-        ? `Company-first discovery makes up to ${calls} guarded Anthropic Sonnet call(s), at most ${search.maxSearches} searches per call. Includes ${CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH.toLocaleString('en-US')} assumed result input tokens per search plus an estimated prompt and capped output. Actual billed search-result input can exceed this soft estimate.`
-        : 'Optional, one Anthropic Sonnet call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
+        ? `Company-first discovery makes up to ${calls} guarded AI search call(s), at most ${search.maxSearches} searches per call. Includes ${CLAUDE_COMPANY_FIRST_ASSUMED_INPUT_PER_SEARCH.toLocaleString('en-US')} assumed result input tokens per search plus an estimated prompt and capped output. Actual billed search-result input can exceed this soft estimate.`
+        : 'Optional, one AI search call with at most two searches. Includes 25,000 assumed input tokens per search, an estimated prompt and up to 3,000 output tokens. Actual billed search-result input can exceed this soft estimate.',
     })
   }
   // #379: the fallback's search-result tokens cannot be bounded, so it now never runs - refused on every run,

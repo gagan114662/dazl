@@ -9,6 +9,6 @@ export function discoveryEstimate(lane: 'tiny' | 'small' | 'full', capped: boole
   return {
     id: 'claude_discover', label: 'Claude finds leads and checks their proof', provider: 'Anthropic', kind: 'search', unit: 'run',
     unit_usd: 'web searches, page reads and model tokens, billed at what the run uses', units: { min: 1, max: 1 }, usd, capped,
-    note: 'Sonnet 5.5 discovery and Haiku contact checks share at most 15 web searches for the whole scan. A second loop and contact checks run only when budget remains. Token charges are a soft estimate, not a provider billing ceiling.',
+    note: 'Finding leads and checking their contacts share at most 15 web searches for the whole scan. A second pass and the contact checks run only when budget remains. The AI usage charge is an estimate, not a billing limit.',
   }
 }
