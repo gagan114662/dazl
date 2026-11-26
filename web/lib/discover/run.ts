@@ -9,7 +9,7 @@ import { atsPostingRef } from '../sources/ats-posting.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance } from './search-budget.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
-import { checkLeads, isShown, type CheckedLead } from './check.ts'
+import { checkLeads, isShown, postingRecord, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
@@ -71,13 +71,27 @@ async function checkRunLeads(result: { leads: DiscoveredLead[]; seen: SeenPage[]
     return candidate ? [{ index, candidate }] : []
   })
   if (!alternates.length || deps.signal?.aborted) return checked
+  const records = alternates.map(({ candidate }) => postingRecord(new URL(candidate.evidence_url)))
+  const recordUrls = new Set(records.flatMap(record => record ? [record.url] : []))
+  const bodies = new Map<string, Promise<unknown>>()
   // A redirect cannot establish the date of the employer posting we intend to cite.
-  const read: typeof fetch = (url, init) => (deps.fetch ?? fetch)(url, { ...init, redirect: 'error',
-    signal: deps.signal && init?.signal ? AbortSignal.any([deps.signal, init.signal]) : deps.signal ?? init?.signal })
+  const read: typeof fetch = async (url, init) => {
+    const response = await (deps.fetch ?? fetch)(url, { ...init, redirect: 'error',
+      signal: deps.signal && init?.signal ? AbortSignal.any([deps.signal, init.signal]) : deps.signal ?? init?.signal })
+    if (response.ok && recordUrls.has(String(url))) bodies.set(String(url), response.clone().json().catch(() => null))
+    return response
+  }
   const rechecked = await checkLeads(alternates.map(item => item.candidate), result.seen, read)
   for (const [i, lead] of rechecked.entries()) {
     if (lead.proof !== 'confirmed' || !isShown(lead) || !lead.date || lead.date_source !== 'page') continue
-    // The checker read this date from the posting text, markup, or that exact posting's API record.
+    if (!lead.date_on_page) {
+      // Only the exact posting record can supply an otherwise unbound machine-readable date.
+      const record = records[i]
+      const value = record && record.day(await bodies.get(record.url))
+      const timestamp = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : NaN
+      const day = new Date(timestamp)
+      if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== lead.date) continue
+    }
     checked[alternates[i].index] = { ...lead, date_on_page: true }
   }
   return checked
