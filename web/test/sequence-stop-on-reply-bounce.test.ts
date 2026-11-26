@@ -131,6 +131,20 @@ test('an unsubscribe stops the sequence and reads as Unsubscribed', async () => 
   assert.equal(byLead(db, lead)?.stop_reason, 'Unsubscribed')
 })
 
+test('a manual stop prevents due follow-ups even when reply reading remains enabled', async () => {
+  const db = await setup()
+  const m = mock()
+  const { lead, seq } = await started(db, m)
+  assert.equal(hasReadConsent(db, 'A'), true)
+  assert.equal(gmailStatus(db, 'A')?.read_granted, true)
+  stopSequenceForThread(db, 'A', lead, 'stopped', 'user_stopped', NOW + 60)
+  assert.equal(seqRow(db, seq).status, 'stopped')
+  assert.equal((await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 3 * DAY })).sent, 0)
+  assert.equal((await runSequences(db, 'A', 'Acme', { ...m, now: NOW + 7 * DAY })).sent, 0)
+  assert.equal(m.calls.length, 1)
+  assert.equal(byLead(db, lead)?.stop_reason, 'Stopped by you')
+})
+
 test('after a send-only reconnect, manually stopping a sequence ends it and reads Stopped by you', async () => {
   const db = await setup()
   const m = mock()
