@@ -98,6 +98,7 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole; off?: key
   'api.lever.co': { name: 'Lever job boards', role: 'public_source' },
   'api.eu.lever.co': { name: 'Lever job boards', role: 'public_source' }, // EU-hosted Lever boards (lib/sources/ats-board-api.ts)
   'api.ashbyhq.com': { name: 'Ashby job boards', role: 'public_source' },
+  'apply.workable.com': { name: 'Workable job boards', role: 'public_source' }, // lib/discover/ats-dates.ts: the board's own public posting record
   'api.gdeltproject.org': { name: 'GDELT news index', role: 'public_source' },
   'data.brreg.no': { name: 'Brønnøysundregistrene (Norway business register API)', role: 'public_source' },
   'api.company-information.service.gov.uk': { name: 'Companies House (UK company register API)', role: 'public_source' },
@@ -201,7 +202,7 @@ export const PUBLIC_SOURCES: Record<string, string> = {
   web: 'company websites and public pages',
   v2ex: 'V2EX',
   youtube: 'YouTube',
-  jobboards: 'job boards (Greenhouse, Lever, Ashby)',
+  jobboards: 'job boards (Greenhouse, Lever, Ashby, Workable)',
   'sec-form-d': 'SEC EDGAR',
   brreg: 'Brønnøysundregistrene',
   careers: 'careers pages on company websites',
@@ -256,7 +257,7 @@ export const PRIVACY: Section[] = [
   { heading: 'Service providers', paragraphs: [
     `Google (sign-in, and sending the messages you approve from your Gmail), Anthropic (AI models, including the web searches and page reads its models make for your searches, and the free trial when it is enabled), Cloudflare (the dazl.ai domain name service, and routing of email sent to our dazl.ai addresses), and PostHog (product analytics: which steps of dazl an account reaches, such as signing up, connecting Gmail, starting a search and sending a message, with counts such as how many leads a search showed; never the names or email addresses of prospects). Hosting and backups: ${FACTS.hostingProvider}. Account emails such as password resets are sent through ${P.systemMailProvider}.`,
     `Providers you choose and connect with your own account or key: Anthropic (AI models, on your own key), and ${crm} (lead export to your CRM, only when you connect one in Settings). Their use of the data is governed by your agreement with them.`,
-    'Public sources dazl queries receive the search terms it sends - a company or industry name, for the Norwegian business register and UK Companies House a place and industry filter, and for SEC EDGAR a city, state and date range (a term can be personal data when it names a person, such as the name or address of a sole trader) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby), the GDELT news index, Hacker News search, SEC EDGAR, the Norwegian business register (Brønnøysundregistrene), careers pages on company websites, Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), public job feeds such as We Work Remotely, and, to find a company\'s own website, Wikidata (the company name) OpenStreetMap\'s Nominatim search (the company name and the requested place) and, as a last step, DuckDuckGo\'s HTML search (the company name and the requested place).',
+    'Public sources dazl queries receive the search terms it sends - a company or industry name, for the Norwegian business register and UK Companies House a place and industry filter, and for SEC EDGAR a city, state and date range (a term can be personal data when it names a person, such as the name or address of a sole trader) - and no account data: company websites and public pages, GitHub, job boards (Greenhouse, Lever, Ashby, Workable), the GDELT news index, Hacker News search, SEC EDGAR, the Norwegian business register (Brønnøysundregistrene), careers pages on company websites, Companies House (UK), RSS/Atom feeds you supply, YouTube (through the YouTube Data API), V2EX topics (read directly and through the sov2ex search service), public job feeds such as We Work Remotely, and, to find a company\'s own website, Wikidata (the company name) OpenStreetMap\'s Nominatim search (the company name and the requested place) and, as a last step, DuckDuckGo\'s HTML search (the company name and the requested place). dazl reads public job postings on these boards to confirm posting dates.',
     'Error reports go to an error-monitoring service or, through Telegram, to the dazl team. Both carry only the error type, code locations and a request id: never messages, account identifiers, request bodies or personal data. The server\'s own error log keeps the fuller scrubbed record, including the scrubbed message.',
     'We do not sell personal information, and we do not share it for advertising. We pass it only to the service providers listed here, to do the jobs described.',
   ] },

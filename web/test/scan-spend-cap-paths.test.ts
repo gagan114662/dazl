@@ -69,7 +69,10 @@ const FREE: Record<string, string> = {
   'https://api.github.com/search/repositories': 'GitHub search: free, rate-limited',
   'https://api.company-information.service.gov.uk': 'Companies House API with the deployment\'s free key: no per-call charge (lib/sources/companies-house.ts)',
   'https://api.ashbyhq.com/posting-api/job-board/': 'public job board API: free',
+  'https://api.lever.co': 'public job board API (the posting path is built at the call, lib/discover/ats-dates.ts): free',
+  'https://apply.workable.com/api/v1/accounts/': 'public job board API (lib/discover/ats-dates.ts): free',
   'https://api.lever.co/v0/postings/': 'public job board API: free',
+  'https://api.eu.lever.co': 'public job board API (EU-hosted Lever boards; the posting path is built at the call): free',
   'https://api.eu.lever.co/v0/postings/': 'public job board API (EU-hosted Lever boards): free',
   'https://boards-api.greenhouse.io/v1/boards/': 'public job board API: free',
   'https://r.jina.ai': 'Jina Reader without a key: free (lib/scrape/jina.ts)',
@@ -110,7 +113,7 @@ function files(dir: string): string[] {
   })
 }
 const SOURCES = [...files(join(ROOT, 'lib')), ...files(join(ROOT, 'app'))].map(p => ({ rel: relative(ROOT, p).split('\\').join('/'), text: readFileSync(p, 'utf8') }))
-const ENDPOINT = /https:\/\/[a-z0-9.-]*(?:api[a-z0-9.-]*|googleapis\.com|r\.jina\.ai)[^'"`\s?$)]*/g
+const ENDPOINT = /https:\/\/(?:apply\.workable\.com\/api\/|[a-z0-9.-]*(?:api[a-z0-9.-]*|googleapis\.com|r\.jina\.ai))[^'"`\s?$)]*/g
 const ENV_ENDPOINT = /\benv\.([A-Z0-9_]*(?:URL|ENDPOINT|BASE|HOST)[A-Z0-9_]*)/g
 
 // Pure so the narrow-scoping (a second, unexpected file naming a CLAIM_GATED endpoint must still fail) can be proved
