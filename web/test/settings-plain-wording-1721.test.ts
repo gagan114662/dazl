@@ -52,7 +52,11 @@ test('#1715 screen 4: the badge tells the reader what to expect, honestly per pl
   // A platform whose adapter IS built (consent + session below the badge) is not "not available": the badge says
   // what it needs (Gagan 2026-11-26 on #1917). Only an unbuilt adapter (supported === false) reads "Not available yet".
   assert.match(s, /worker: 'Needs your session'/, 'a built session platform says what it needs, in plain words')
-  assert.match(s, /supported === false \? 'Not available yet'/, 'only an unbuilt adapter reads "Not available yet"')
+  // "Needs your session" is only honest where the worker has the platform's fetcher wired (worker/server.js
+  // HANDLERS: reddit, x). Instagram/bilibili carry supported: true without a wired fetcher - an unverified
+  // "available after consent" claim - so they and unbuilt adapters (supported === false) keep "Not available yet".
+  assert.match(s, /const SESSION_READY = new Set\(\['reddit', 'x'\]\)/, 'the session-ready set matches the wired worker fetchers')
+  assert.match(s, /SESSION_READY\.has\(c\.platform\)\) \? 'Not available yet'/, 'only a wired, built platform escapes the unavailable badge')
   const reddit = CHANNELS.find(c => c.id === 'reddit')!
   assert.doesNotMatch(reddit.note, /^Not available yet\./, 'the Reddit note does not claim unavailable: its adapter is built')
 })
