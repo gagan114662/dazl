@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
 import { readHasKey } from './llm/key-store.ts'
 import { readScanQuota } from './plans.ts'
-import { trialFundable, trialQaExempt } from './billing/trial-budget.ts'
+import { trialQaExempt } from './billing/trial-budget.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
 import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
@@ -255,23 +255,21 @@ export async function pullInWeeklyRepeats(db: Db, now: number, fence: Fence = no
   return db.tx(function* (t) { yield* fence(t); return (yield* t.run(PULL_IN_SQL, [now, now, now + DAY_S + 3600, cutoff, PLAY_SKIPPED])).changes })
 }
 
-// A scheduler pause from before the exemption can otherwise strand an automatic repeat indefinitely.
-async function restoreExemptWatches(db: Db, fence: Fence, env: Record<string, string | undefined>) {
-  if (!env.DAZL_TRIAL_QA_EXEMPT?.trim() || !trialFundable(env as NodeJS.ProcessEnv)) return
-  const paused = await db.all<{ id: string; user_id: string; query: string; email: string }>(`
-    SELECT w.id, w.user_id, w.query, u.email FROM watches w
+// Before manual pause cleared its reason, an explicit pause and a scheduler pause could leave the same row.
+async function clearExemptTrialPauseReasons(db: Db, fence: Fence, env: Record<string, string | undefined>) {
+  if (!env.DAZL_TRIAL_QA_EXEMPT?.trim()) return
+  const paused = await db.all<{ id: string; user_id: string; email: string }>(`
+    SELECT w.id, w.user_id, u.email FROM watches w
     JOIN organizations o ON o.id = w.user_id AND o.kind = 'personal' AND o.created_by = o.id
     JOIN users u ON u.id = o.id
-    WHERE w.active = 0 AND w.paused_reason = 'trial_used'
-    ORDER BY w.next_run_at, w.id`)
+    WHERE w.active = 0 AND w.paused_reason = 'trial_used'`)
   for (const w of paused) {
     if (!trialQaExempt(w.email, env)) continue
     await db.tx(function* (t) {
       yield* fence(t)
       if (!(yield* isFirstPlayRepeatStep(t, w.user_id, w.id))) return
-      const refused = yield* activationCheck(t, w.user_id, w.query, w.id)
-      yield* t.run("UPDATE watches SET active = ?, paused_reason = NULL WHERE id = ? AND user_id = ? AND active = 0 AND paused_reason = 'trial_used'",
-        [refused ? 0 : 1, w.id, w.user_id])
+      yield* t.run("UPDATE watches SET paused_reason = NULL WHERE id = ? AND user_id = ? AND active = 0 AND paused_reason = 'trial_used'",
+        [w.id, w.user_id])
     })
   }
 }
@@ -283,9 +281,9 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
     if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
     captureError(e, { source: 'worker', where: 'watch:pull-in-weekly-repeats' })
   }
-  try { await restoreExemptWatches(db, fence, o.env ?? process.env) } catch (e) {
+  try { await clearExemptTrialPauseReasons(db, fence, o.env ?? process.env) } catch (e) {
     if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
-    captureError(e, { source: 'worker', where: 'watch:restore-exempt-repeat' })
+    captureError(e, { source: 'worker', where: 'watch:clear-exempt-pause-reason' })
   }
   const due = await db.all<Watch>('SELECT * FROM watches WHERE active = 1 AND next_run_at <= ? ORDER BY next_run_at, id', [now])
   let ran = 0, paused = 0, skipped = 0
