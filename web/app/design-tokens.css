@@ -5,7 +5,7 @@
   --color-dazl-subtle: #F5F5EF;
   --color-dazl-ink: #241E20;
   --color-dazl-secondary: #5A5355;
-  --color-dazl-muted: #8C8587;
+  --color-dazl-muted: #6D6668;
   --color-dazl-line: #E4E4DE;
   --color-dazl-line-strong: #DCDCDC;
   --color-dazl-neutral: #A3A3A3;
@@ -17,6 +17,8 @@
   --color-dazl-accent-text: #C93000;
   /* White text needs the darker action fill to meet 4.5:1. */
   --color-dazl-action: #C93000;
+  --color-dazl-ready: #C93000;
+  --color-dazl-ready-tint: #FFEDE5;
   --color-dazl-held: #8A6215;
   --color-dazl-held-tint: #F6EEDF;
   --color-dazl-blocked: #A2402F;
@@ -30,6 +32,7 @@
   --text-dazl-subheading--line-height: 1;
   --text-dazl-feature: clamp(2.25rem, 2.076rem + 0.87vw, 2.75rem);
   --text-dazl-feature--line-height: 1;
+  --text-dazl-feature--font-weight: 400;
   --tracking-dazl-display: -0.04em;
   --font-weight-dazl-display: 700;
   --font-weight-dazl-body: 450;

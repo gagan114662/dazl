@@ -28,6 +28,7 @@ test('#1601: the app loads a shared Tailwind theme and exposes its existing Geis
   assert.equal(value(css, 'color-dazl-canvas'), '#FFFFF9')
   assert.equal(value(css, 'color-dazl-ink'), '#241E20')
   assert.equal(value(css, 'color-dazl-accent'), '#FE3C01')
+  assert.equal(value(css, 'text-dazl-feature--font-weight'), '400')
   assert.equal(value(css, 'radius-dazl-control'), '5px')
   assert.equal(value(css, 'radius-dazl-card'), '8px')
   assert.equal(value(css, 'container-dazl-page'), '77.5rem')
@@ -42,6 +43,7 @@ test('#1601: body, accent text, and status token pairs meet WCAG AA contrast', (
   const css = tokens()
   for (const [ink, background] of [
     ['ink', 'canvas'], ['secondary', 'canvas'], ['secondary', 'surface'],
+    ['muted', 'canvas'], ['muted', 'surface'], ['ready', 'ready-tint'],
     ['accent-text', 'canvas'], ['surface', 'action'], ['held', 'held-tint'], ['blocked', 'blocked-tint'],
   ]) {
     const foreground = value(css, `color-dazl-${ink}`)
