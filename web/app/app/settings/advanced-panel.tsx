@@ -1,11 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { panelError } from './panel-error'
-import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
+import { CHANNELS, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 import LinkedinConnect, { type ConnectState } from './linkedin-connect'
 
 interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
+const GROUP_LABEL = { 0: 'Works without setup', 1: 'Needs your own account session', 2: 'Needs you to sign in' } as const
 const BADGE = { live: 'Working', worker: 'Not available yet', soon: 'Coming soon' } as const
 
 export default function AdvancedPanel() {
@@ -66,7 +67,7 @@ export default function AdvancedPanel() {
       <Caveat className="text-[#555] text-sm mb-4" summary="Your session is encrypted and used only for your scans; leads from pages behind a login always go to needs review.">Your session is encrypted, used only for your scans, rate limited, and logged below your scans in the lookup history. Leads from pages behind a login are never verified automatically. They go to needs review. Remove a session at any time.</Caveat>
       {([0, 1, 2] as const).map(t => (
         <div key={t} className="mt-5">
-          <div className="text-xs font-mono uppercase tracking-wider text-[#555] mb-1">{TIER_LABEL[t]}</div>
+          <div className="text-xs font-mono uppercase tracking-wider text-[#555] mb-1">{GROUP_LABEL[t]}</div>
           {CHANNELS.filter(c => c.tier === t && c.id !== 'linkedin' /* LinkedIn has its own card: linkedin-extension-panel.tsx */).map(c => {
             const p = c.platform ? st.platforms.find(x => x.platform === c.platform) : undefined
             return (

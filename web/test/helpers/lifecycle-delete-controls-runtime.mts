@@ -25,7 +25,7 @@ test('a non-owner sees no destructive control, only the owner-only note', () => 
 test('an owner sees the delete form', () => {
   const html = renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: true })))
   assert.ok(html.includes('Delete this account</button>'), 'the owner gets the delete button')
-  assert.ok(html.includes('Type the workspace id to confirm'), 'the owner gets the confirmation input')
+  assert.ok(html.includes('Type DELETE to confirm'), 'the owner gets the confirmation input')
 })
 
 test('a non-owner with an in-progress deletion sees its state but no resume control', () => {
@@ -52,7 +52,7 @@ const UNAVAILABLE = 'Account deletion is not available yet. Contact support to d
 test('an owner sees an unavailable note instead of the delete form when deletion is not enabled (no ledger)', () => {
   const html = renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: true, deletion_available: false })))
   assert.ok(!html.includes('Delete this account</button>'), 'no delete button the route would only 503')
-  assert.ok(!html.includes('Type the workspace id to confirm'), 'no confirmation input')
+  assert.ok(!html.includes('to confirm'), 'no confirmation input')
   assert.ok(!html.includes('name="sup"'), 'no opt-out policy choice')
   assert.ok(html.includes(UNAVAILABLE), 'the unavailable note matches the route 503 wording')
 })
@@ -83,3 +83,19 @@ test('deletion_available absent (an older server) keeps the old behavior', () =>
 })
 
 console.log('LIFECYCLE DELETE CONTROLS ok')
+
+import { confirmMatches, confirmWord } from '../../app/app/settings/lifecycle-delete-controls.tsx'
+test('#1721 delete still needs a typed confirmation: the workspace name, or DELETE when it has none; the raw id is never shown', () => {
+  const html = renderToStaticMarkup(h(DeleteControls, { ...props({ ...base, can_delete: true }), name: 'Acme Co' }))
+  assert.ok(html.includes('Type Acme Co to confirm'), 'asks for the workspace name')
+  assert.ok(!html.includes('tenant-a'), 'the raw workspace id is not on screen')
+  assert.match(html, /<button[^>]*disabled=""[^>]*>Delete this account<\/button>/, 'the delete button is disabled until the confirmation matches')
+  assert.ok(html.includes('Type DELETE to confirm') === false)
+  assert.ok(renderToStaticMarkup(h(DeleteControls, props({ ...base, can_delete: true }))).includes('Type DELETE to confirm'), 'no name: DELETE')
+  assert.equal(confirmWord('  '), 'DELETE')
+  assert.equal(confirmMatches('Acme Co', ''), false)
+  assert.equal(confirmMatches('Acme Co', 'acme'), false)
+  assert.equal(confirmMatches('Acme Co', ' Acme Co '), true)
+  assert.equal(confirmMatches('', 'delete'), true)
+  assert.equal(confirmMatches('', 'tenant-a'), false, 'the raw id no longer confirms')
+})
