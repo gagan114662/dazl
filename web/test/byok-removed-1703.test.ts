@@ -17,10 +17,11 @@ test('#1703: first-run never mounts a key editor and the retained component cann
   assert.equal(/fetch\(|<input\b|<form\b/.test(src('app/app/key-inline.tsx')), false)
 })
 
-test('#1703: a blocked automatic read offers the manual profile without parsing provider copy', () => {
+test('#1703: a blocked automatic read shows the server reason from the shared helper, never parsed provider copy', () => {
   const page = src('app/app/first-run.tsx')
   assert.doesNotMatch(page, /siteKeyReason/)
-  assert.ok(page.includes('The automatic read is unavailable. Describe your business yourself below.'))
+  assert.match(page, /siteReadReason\(/, 'the reason line comes from the reason-only helper in lib/scan/site-read-copy.ts')
+  assert.doesNotMatch(page, /Add your own|Anthropic key/, 'no provider key copy is parsed or pinned on the page')
 })
 
 test('#1703: no Settings trial line or next step asks for a key', () => {

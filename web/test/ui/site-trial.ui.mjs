@@ -5,8 +5,8 @@
 // test/trial-site-read.test.ts; the trial path to the first lead card is test/ui/one-sentence.ui.mjs.) It proves:
 //   1. on a readable page, below the route's own rate limit, the free read always answers 200 - the page's own
 //      facts render with their sources (the floor);
-//   2. when the trial could not fund the read, the profile screen offers the manual path (each refusal, read_failed included),
-//      never a free-start promise, and the manual profile is right there;
+//   2. when the trial could not fund the read, the profile screen says the refusal's own reason (lib/scan/site-read-copy.ts)
+//      and offers the manual path (each refusal, read_failed included), never a free-start promise, and the manual profile is right there;
 //   3. flag off / no trial path at all: the free read with the manual profile;
 //   4. a funded read lands the editable draft (and saves it, as a keyed read does);
 //   5. an owner-side 429 spend_limit shows the money-cap copy, never the rate-cap fallback; 6. no overflow at 390px.
@@ -54,6 +54,24 @@ const CASES = [
   ['spend-unavailable', 'spend_unavailable'],
   ['read-failed', 'read_failed'],
 ]
+// The reason line each refusal shows (lib/scan/site-read-copy.ts siteReadReason): the refusal's own reason, then the
+// one manual instruction. Pinned here as exact strings, so a silent copy change fails this check.
+const MANUAL = 'Describe your business yourself below.'
+const REASON = {
+  not_configured: `The free trial isn't available here right now. ${MANUAL}`,
+  site_reads_used: `You have used your three free website reads for now; they come back together, 30 days after the first. ${MANUAL}`,
+  site_reads_busy: `The free trial is busy right now. Try again later. ${MANUAL}`,
+  google_required: `Free website reads need a Google account: link Google to this account to read it free (no card). ${MANUAL}`,
+  domain_used: `Another account at your company's email domain has already started the free trial, and it belongs to that account. ${MANUAL}`,
+  attempts_cap: `Your free trial is used up. ${MANUAL}`,
+  account_total_cap: `Your free trial's spending allowance is used up (website reads on the trial count toward it). ${MANUAL}`,
+  global_daily_cap: `The free trial is busy right now. Try again later. ${MANUAL}`,
+  ip_throttle: `The free trial is busy right now. Try again later. ${MANUAL}`,
+  limit_unavailable: `The free trial is busy right now. Try again later. ${MANUAL}`,
+  workspace_not_eligible: `The free trial belongs to the account that created this workspace. ${MANUAL}`,
+  spend_unavailable: `The free trial could not fund this read just now; nothing was used up. Try again later. ${MANUAL}`,
+  read_failed: `dazl's free trial could not read your site just now; that read counted toward your three. Trying the read again uses another. ${MANUAL}`,
+}
 const FUNDED = { icp: { summary: 'Founders at small agencies that want hands-off books.', who: ['Agency founders'], industries: ['Professional services'], sizes: ['1-10'], where: [], signals: ['Hiring a bookkeeper'], exclude: [] }, source: 'https://ledgerline.example/', sells: 'Hands-off monthly bookkeeping', funded: 'trial' }
 const b = await chromium.launch()
 async function open(width, height, answer, usage) {
@@ -122,7 +140,8 @@ try {
       assert.match(await panel.innerText(), /books that close themselves/, `${name}: the page's own facts render`)
       assert.match(await panel.innerText(), /reconciled automatically/, `${name}: the description fact renders`)
       const stepText = await page.getByTestId('free-site-read').locator('..').innerText()
-      assert.ok(await page.getByText('The automatic read is unavailable. Describe your business yourself below.', { exact: true }).isVisible(), `${name}: a manual profile is available`)
+      assert.ok(await page.getByText(REASON[reason], { exact: true }).isVisible(), `${name}: the refusal's own reason, from the shared helper`)
+      assert.match(stepText, /Describe your business yourself below\./, `${name}: a manual profile is available`)
       assert.ok(await page.getByLabel('What you sell').isEditable())
       if (reason === 'google_required') assert.ok(await page.getByTestId('site-read-trial-refusal').getByRole('link', { name: 'Link Google' }).isVisible())
       assert.doesNotMatch(stepText, /free search|free scans? to start|3 free/i, `${name}: no free-start promise`)

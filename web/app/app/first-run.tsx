@@ -5,6 +5,7 @@ import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendin
 import { useRouter } from 'next/navigation'
 import { normalizeWebsite, suggestPlays, type Brain } from '@/lib/onboarding'
 import { knownErrorCopy } from '@/lib/error-copy'
+import { siteReadReason } from '@/lib/scan/site-read-copy'
 import InfoTip from './ui/info-tip'
 import { Icon } from './ui/icons'
 import { Avatar, Pill, Stepper } from './ui/bits'
@@ -30,7 +31,6 @@ const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
 
 
 type Step = 'site' | 'building' | 'ready' | 'review' | 'brain' | 'ask'
-const MANUAL_PROFILE = 'The automatic read is unavailable. Describe your business yourself below.'
 
 interface Usage { has_key: boolean; trial: TrialBlock | null }
 
@@ -208,7 +208,8 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       const j = await r.json().catch(() => ({}))
       if (!r.ok) {
         setStep('site')
-        if (j.error === 'no_api_key') return setError(MANUAL_PROFILE)
+        // #1703: no key of the user's own to add - the read cannot run, so the manual profile is the way on
+        if (j.error === 'no_api_key') return setError(siteReadReason(null))
         return setError(knownErrorCopy(j.error) ?? SITE_ERR[j.error] ?? (r.status === 429 ? 'Too many website reads. Try again later, or fill in the profile yourself.' : 'Could not read that site. Fill in the profile yourself instead.'))
       }
       if (j.free === true) {
@@ -594,7 +595,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
         </div>}
         {/* #1095: a password account is told how to link Google (the free read's guard), never "sign in with Google" */}
         {freeRead && !hasKey && freeRead.trial === 'google_required' && <div className="mb-1" data-testid="site-read-trial-refusal"><TrialRefusalNotice reason="google_required" query="" step="site" text="Link Google to this account to read your site free (no card)." /></div>}
-        {freeRead && !hasKey && <p>{MANUAL_PROFILE}</p>}
+        {freeRead && !hasKey && <p data-testid="site-read-reason">{siteReadReason(freeRead.trial ?? null)}</p>}
         {asResearchBlock(research) && <ResearchReview research={asResearchBlock(research)!} onChange={r => setResearch(r)} onAdd={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; set(prev => prev ? `${prev}; ${t}` : t) }} onRemove={(f, t) => { const set = { who: setWho, industries: setIndustries, sizes: setSizes, where: setWhere, exclude: setExclude }[f]; const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); set(prev => prev.split(';').map(x => x.trim()).filter(x => x && x.replace(/\s+/g, ' ').toLowerCase() !== target).join('; ')) }} onOfferPick={n => setSells(n)} />}
         <label className="flex flex-col gap-1">Business name <span className="text-xs text-[#666]">used in your email drafts</span><input className="field" maxLength={150} value={bizName} onChange={e => setBizName(e.target.value)} /></label>
         <label className="flex flex-col gap-1">What you sell<input className="field" required minLength={3} maxLength={150} value={sells} onChange={e => setSells(e.target.value)} placeholder="e.g. Scheduling software for dental practices" /></label>

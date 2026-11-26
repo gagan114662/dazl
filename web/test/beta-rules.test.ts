@@ -243,7 +243,9 @@ test('E: a new AI key is Anthropic (Claude) only; Settings has no key panel at a
   const inline = src('app/app/key-inline.tsx')
   assert.doesNotMatch(inline.replace(/^\s*\/\/.*$/gm, ''), /platform\.openai\.com|OpenAI/, 'nothing the user sees offers an OpenAI key')
   assert.match(inline, /return null/, 'the retired editor displays no provider instructions')
-  assert.match(src('app/app/first-run.tsx'), /Describe your business yourself below\./, 'a blocked website read offers the manual profile instead')
+  // #1703: the reason line (its every case ends with the manual instruction) lives in the shared reason-only helper,
+  // so a blocked read offers the manual profile without parsing provider copy at render time.
+  assert.match(src('app/app/first-run.tsx'), /siteReadReason\(/, 'a blocked website read shows the server reason and the manual profile (lib/scan/site-read-copy.ts)')
   for (const p of ['app/app/first-run.tsx', 'app/app/readiness.tsx']) assert.doesNotMatch(src(p), /Anthropic or OpenAI key/, p)
 })
 
