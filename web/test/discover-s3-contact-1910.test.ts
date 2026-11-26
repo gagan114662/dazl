@@ -103,3 +103,13 @@ test('S3 refuses the only published address when the neighboring dentist owns it
   ])
   assert.deepEqual([result.person, result.email, result.email_source_url], [name, null, null])
 })
+
+for (const mailbox of ['drruiz', 'dr.ruiz']) {
+  test(`S3 keeps a named dentist's published ${mailbox} address`, async () => {
+    const address = `${mailbox}@cedar.example`
+    const result = await lookup({ title: 'Dentist', email: address }, [
+      page(team, `Dana Ruiz, Dentist at Cedar Dental. ${address}`),
+    ])
+    assert.deepEqual([result.person, result.email, result.email_source_url], [name, address, team])
+  })
+}

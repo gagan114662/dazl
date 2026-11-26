@@ -249,8 +249,9 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
   for (const [url, page] of seen) if (!allSeen.has(url) || page.text) allSeen.set(url, page)
   const verified = keepSeenProfile(verifyContact(lead, parseEnriched(text), seen), seen)
   // A lone address on a team page can still belong to another person.
-  const buyer = lead.person ?? verified.person
-  const kept = verified.email && (!buyer || !nameBound(verified.email.split('@')[0], nameParts(buyer).join(' ')))
+  const buyer = nameParts(lead.person ?? verified.person).join(' ')
+  const mailbox = verified.email?.split('@')[0] ?? ''
+  const kept = verified.email && !nameBound(mailbox, buyer) && !nameBound(mailbox.replace(/^dr[._-]?/, ''), buyer)
     ? { ...verified, email: null, email_source_url: null }
     : verified
   if (kept.linkedin_url) return kept
