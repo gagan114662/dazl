@@ -1595,7 +1595,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
           const [buyer] = buyers
           addEnrichment(db, job.user_id, id, { ...buyer, connector: 'discover' })
           const addresses = siteRows.filter(row => row.kind === 'email' && row.source_url === buyer.source_url)
-          if (addresses.length === 1) addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover' })
+          if (addresses.length === 1) {
+            addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover', label: 'published on a public page' })
+          }
         }
       }
     } finally {
