@@ -76,10 +76,10 @@ const dayMonth = (d: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d); 
 // The card's date line: the claimed event date when there is one; else the page's published date, saying the event
 // date is unknown; else "No dated source". A date is never invented for an undated lead.
 export function cardDate(eventDate: string | null, publishedAt?: string | null, opts: { dayVerified?: boolean; windowMissed?: boolean } = {}): string {
-  // A proven event day is verified, not "claimed" (#498 chip coherence); anything unproven stays claimed.
+  // Attribute a source-backed date to the page. Anything unproven stays labeled as claimed.
   if (eventDate) {
     if (opts.dayVerified && opts.windowMissed) return `event date ${dayMonth(eventDate)} (verified on the cited source; outside the requested window)`
-    if (opts.dayVerified) return `event date ${dayMonth(eventDate)} (verified on the cited source)`
+    if (opts.dayVerified) return `Date seen on the source page: ${dayMonth(eventDate)}`
     return `claimed event date ${dayMonth(eventDate)}`
   }
   if (publishedAt) return `published ${dayMonth(publishedAt)}, event date unknown`

@@ -52,7 +52,7 @@ test('lead CSV uses the same timing rationale as the card instead of the raw mod
   const why = 'Proof taken from the search-result text; page not opened'
   const verified = savedGradeWhy({ why }, { timing: 'proof_backed' })
   const unconfirmed = savedGradeWhy({ why }, { timing: 'unconfirmed', reason: 'no_proof' })
-  assert.match(verified, /^Event timing is verified against the cited source\./)
+  assert.match(verified, /^Event timing is from the cited source\./)
   assert.match(unconfirmed, /^Event timing and current need are unconfirmed\./)
   for (const rationale of [verified, unconfirmed]) assert.doesNotMatch(rationale, /page not opened/)
 })

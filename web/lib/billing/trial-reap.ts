@@ -3,8 +3,15 @@
 // forever and counted its full reserve toward every later day. This settles such reservations at the job's final attempt, keeping the scan's RECORDED
 // spend (settled rows cost the job's one recorded cost, lib/scan/job-cost.ts via trial-budget.ts reservationCost; never less than recorded). Idempotent, portable SQL (epoch seconds are parameters). The synchronous-SQLite and raw-Postgres reapers run SETTLE_REAPED_TRIAL_SQL themselves (this module stays on the Db layer).
 // Only scan reservations of jobs that are already terminal failures; a running, queued or done scan is untouched.
-export const SETTLE_REAPED_TRIAL_SQL = `UPDATE trial_reservations SET settled_at = ?, settled_attempt = (SELECT j.attempts FROM scan_jobs j WHERE j.id = trial_reservations.job_id)
-  WHERE kind = 'scan' AND settled_at IS NULL AND job_id IN (SELECT id FROM scan_jobs WHERE status = 'failed' AND error IN ('accounting_uncertain', 'timeout'))`
+// A retry can inherit an older settlement, which does not settle the attempt the reaper just ended.
+export const SETTLE_REAPED_TRIAL_SQL = `UPDATE trial_reservations
+  SET settled_at = ?, settled_attempt = (SELECT j.attempts FROM scan_jobs j WHERE j.id = trial_reservations.job_id)
+  WHERE kind = 'scan' AND EXISTS (
+    SELECT 1 FROM scan_jobs j WHERE j.id = trial_reservations.job_id AND j.user_id = trial_reservations.tenant_id
+      AND j.status = 'failed' AND j.error IN ('accounting_uncertain', 'timeout')
+      AND (trial_reservations.settled_attempt IS NULL OR trial_reservations.settled_attempt < j.attempts
+        OR (trial_reservations.settled_attempt = j.attempts AND trial_reservations.settled_at IS NULL))
+  )`
 type AsyncDb = { run(sql: string, p?: unknown[]): Promise<unknown> }
 const nowS = () => Math.floor(Date.now() / 1000)
 export async function settleReapedTrial(db: AsyncDb, now = nowS()): Promise<void> { try { await db.run(SETTLE_REAPED_TRIAL_SQL, [now]) } catch { /* a store without the trial table: nothing to settle */ } }

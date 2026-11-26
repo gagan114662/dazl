@@ -34,7 +34,14 @@ export function playName(query: string | null, icp: PlayIcp | null): string {
   let who = (icp?.summary ?? '').split(/\s+(?:with|that|who|which|in|of)\s+|[,;:(-]/i)[0].trim()
   while (GENERIC.test(who)) who = who.replace(GENERIC, '')
   if (who.split(' ').length > 4) who = who.split(' ').slice(-3).join(' ')
-  if (!who) who = icp?.industries?.[0] ? `${icp.industries[0]} companies` : icp?.who?.[0] ?? ''
+  // #1722: an industry that already reads plural or collective keeps its own wording; a singular industry is
+  // suffixed. General string rule per the no-niche policy (no industry word lists): trailing 's' without a
+  // trailing 'ss'. Same rule as the play-suggestions audience copy.
+  if (!who) {
+    const ind = icp?.industries?.[0]?.trim()
+    if (ind) { const l = ind.toLowerCase(); who = l.endsWith('s') && !l.endsWith('ss') ? ind : `${ind} companies` }
+    else who = icp?.who?.[0] ?? ''
+  }
   const sig = icp?.signals?.[0] ?? q
   const happening = SIGNALS.find(([re]) => re.test(sig))?.[1] ?? ''
   const name = [place, who.toLowerCase(), happening].filter(Boolean).join(' ')
@@ -109,9 +116,11 @@ export function widenActions(query: string | null, icp: PlayIcp | null, causes?:
   const inText = /\b(\d+)\s*days?\b/i.exec(q)
   // Only when the request states its window as "<N> days" and N is the saved window: that one number changes.
   if ((!causes || causes.includes('older')) && typeof days === 'number' && days < 180 && inText && Number(inText[1]) === days) out.push({ label: 'Widen to 180 days', href: plays(q.replace(inText[0], `${180} days`)), testid: 'widen-window' })
-  out.push({ label: icp?.where?.length ? 'Change the place' : 'Add a place', href: plays(q), testid: 'widen-city' })
+  // #1722: 'Change the place' and 'Change the signal' opened the same URL - two buttons for one action. Both open the
+  // full request for editing (a sentence is not rewritten by pattern), so when both apply they are one button.
+  if ((icp?.signals?.length ?? 0) > 0 || causes?.length) out.push({ label: icp?.where?.length ? 'Change the place or signal' : 'Set the place or signal', href: plays(q), testid: 'widen-edit' })
+  else out.push({ label: icp?.where?.length ? 'Change the place' : 'Add a place', href: plays(q), testid: 'widen-city' })
   if (causes?.some(c => c === 'undated' || c === 'unsupported' || c === 'closed')) out.unshift({ label: 'Try a signal with dated sources', href: plays(q), testid: 'recover-dated' })
-  if ((icp?.signals?.length ?? 0) > 0 || causes?.length) out.push({ label: 'Change the signal', href: plays(q), testid: 'widen-signal' })
   if (causes?.includes('customer')) out.push({ label: 'Search another source', href: plays(q), testid: 'recover-source' })
   return out
 }
