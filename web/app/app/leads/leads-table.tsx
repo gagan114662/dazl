@@ -36,10 +36,10 @@ export default function LeadsTable({ leads, icpWho, drafted, approved }: {
             <th className="px-3 py-2 font-medium">Person</th>
             <th className="px-3 py-2 font-medium">
               Signal
-              <button type="button" data-testid="sort-date" onClick={() => choose('date')} className="ml-1 font-normal underline decoration-dotted">date{arrow('date')}</button>
+              <button type="button" data-testid="sort-date" onClick={() => choose('date')} className="ml-1 font-normal underline decoration-dotted inline-flex items-center justify-center min-w-11 min-h-11 -my-3">date{arrow('date')}</button>
             </th>
             <th className="px-3 py-2 font-medium">
-              <button type="button" data-testid="sort-fit" onClick={() => choose('fit')}>Fit{arrow('fit')}</button>
+              <button type="button" data-testid="sort-fit" onClick={() => choose('fit')} className="inline-flex items-center justify-center min-w-11 min-h-11 -my-3 -mx-2">Fit{arrow('fit')}</button>
             </th>
             <th className="px-3 py-2 font-medium">Email</th>
             <th className="px-3 py-2 font-medium">Approval</th>
@@ -50,19 +50,19 @@ export default function LeadsTable({ leads, icpWho, drafted, approved }: {
             const c = leadCardSummary(l, icpWho)
             const person = leadPerson(l.enrichments, icpWho)
             return (
-              <tr key={l.id} data-testid="leads-row" data-lead-id={l.id} className="align-top hover:bg-white transition-colors">
+              <tr key={l.id} data-testid="leads-row" data-lead-id={l.id} className="align-middle h-7 hover:bg-white transition-colors">
                 <td className="px-3 py-1 font-medium whitespace-nowrap">{c.company}</td>
                 <td className="px-3 py-1">
                   {person
-                    ? <><span>{person.name}</span>{person.title ? <span className="block text-xs text-[var(--ink-3)]">{person.title}</span> : null}</>
+                    ? <span className="block max-w-56 truncate whitespace-nowrap">{person.name}{person.title ? <span className="text-xs text-[var(--ink-3)]">{' · '}{person.title}</span> : null}</span>
                     : <span className="text-[var(--ink-3)]">No buyer named yet</span>}
                 </td>
-                <td className="px-3 py-1 max-w-72">
-                  <span className="line-clamp-2 inline">{l.signal}</span>{' '}
+                <td className="px-3 py-1 max-w-72 whitespace-nowrap truncate">
+                  <span className="inline">{l.signal}</span>{' '}
                   {c.date ? <span className="text-xs text-[var(--ink-3)] whitespace-nowrap">{c.date}</span> : null}
                 </td>
                 <td className="px-3 py-1">{l.fit ?? '—'}</td>
-                <td className="px-3 py-1">{c.contactStatus ? <ContactStatusLine status={c.contactStatus} /> : <span className="text-[var(--ink-3)]">—</span>}</td>
+                <td className="px-3 py-1 whitespace-nowrap max-w-48 truncate">{c.contactStatus ? <ContactStatusLine status={c.contactStatus} /> : <span className="text-[var(--ink-3)]">—</span>}</td>
                 <td className="px-3 py-1 whitespace-nowrap">
                   {l.quarantined_at
                     ? <Pill tone="pink">Rejected</Pill>
