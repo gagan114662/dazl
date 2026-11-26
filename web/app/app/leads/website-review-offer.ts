@@ -1,5 +1,5 @@
 import { carriedExclusions } from '../../../lib/scan/carry-exclusions.ts'
-import type { Icp } from '../../../lib/scan/icp.ts'
+import { normalizeIcp, type Icp } from '../../../lib/scan/icp.ts'
 import { carriedWorkspaceOfferConflict, completeOffer, effectiveOffer, statedOffer } from '../../../lib/scan/play-offer-text.ts'
 
 type Current = {offer:string|null; business:string; seller:string}
@@ -31,9 +31,10 @@ export function canQuoteWebsiteDraft(draft: {query:string; invalidated:boolean}|
 
 // A concrete buyer in a fresh request is the target of that play. Keep reviewed
 // exclusions on the existing request-only path without treating them as targeting.
-export function requestConfirmationProfile(query: string, prior: Icp | null, saved: Icp | null) {
+export function requestConfirmationProfile(query: string, prior: Pick<Icp, 'summary'> | null, saved: unknown) {
   if (prior || !saved) return null
   const target = query.trim().replace(/^(?:find|show me|look for)\s+/i, '')
   if (!/^(?!leads?\b|prospects?\b).+?\s+in\s+(?!need\b|search\b|the (?:last|past)\b)\p{L}/iu.test(target)) return null
-  return { carryExclude: carriedExclusions(saved) }
+  const profile = normalizeIcp(saved)
+  return profile ? { carryExclude: carriedExclusions(profile) } : null
 }
