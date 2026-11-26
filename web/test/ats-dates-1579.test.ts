@@ -159,5 +159,41 @@ test('DATES Workable: the account widget is the list record and a locale prefix 
   assert.equal(own?.date, '2026-11-19', 'the record prints the day as published')
   const listed = await atsListDate(index, localised, stub({ [rec!.apiUrl]: { body: { jobs: [{ shortcode: 'B48FCABF70', url: 'https://apply.workable.com/j/B48FCABF70', published_on: '2026-11-19' }] } } }).f, NOW)
   assert.equal(listed?.date, '2026-11-19', 'the widget list dates the same posting')
+
+})
+
+// A fifth board, verified before the code: a SmartRecruiters posting page is /<company>/<id>-<slug>, and the platform serves the same
+// posting at api.smartrecruiters.com/v1/companies/<company>/postings/<id> with the day in `releasedDate`. The body below is the real
+// record fetched on 2026-11-26; the company, its name and its id stay here and out of product code.
+const SR = {
+  id: '744000158320111',
+  name: 'Senior / Lead Engineering Operations Manager',
+  releasedDate: '2026-10-28T15:14:43.941Z',
+  postingUrl: 'https://jobs.smartrecruiters.com/smartrecruiters/744000158320111-senior-lead-engineering-operations-manager',
+}
+const SR_PAGE = 'https://jobs.smartrecruiters.com/SmartRecruiters/744000158320111-senior-lead-engineering-operations-manager'
+const SR_API = 'https://api.smartrecruiters.com/v1/companies/SmartRecruiters/postings/744000158320111'
+
+test('DATES SmartRecruiters: a posting page dates itself from its company record', async () => {
+  const { atsPosting } = await import('../lib/discover/ats-dates.ts')
+  assert.equal(atsPosting(SR_PAGE)?.platform, 'smartrecruiters')
+  assert.equal(atsPosting(SR_PAGE)?.apiUrl, SR_API)
+  const d = await atsDate(SR_PAGE, stub({ [SR_API]: { body: SR } }).f, NOW)
+  assert.deepEqual(d, { date: '2026-10-28', sourceUrl: SR_API, platform: 'smartrecruiters' })
+})
+
+test('DATES SmartRecruiters fails closed: no releasedDate, a future day, a stale day', async () => {
+  const { releasedDate, ...noDate } = SR
+  assert.equal(await atsDate(SR_PAGE, stub({ [SR_API]: { body: noDate } }).f, NOW), null, 'no releasedDate means no date')
+  assert.equal(await atsDate(SR_PAGE, stub({ [SR_API]: { body: { ...SR, releasedDate: '2027-03-01T00:00:00Z' } } }).f, NOW), null, 'a future day is refused')
+  assert.equal(await atsDate(SR_PAGE, stub({ [SR_API]: { body: { ...SR, releasedDate: '2019-01-02T00:00:00Z' } } }).f, NOW), null, 'a day outside the window is refused')
+})
+
+test('DATES SmartRecruiters control: the other four boards are untouched by the new branch', async () => {
+  const gh = 'https://boards.greenhouse.io/northlinecare/jobs/4466'
+  const ghApi = 'https://boards-api.greenhouse.io/v1/boards/northlinecare/jobs/4466'
+  const d = await atsDate(gh, stub({ [ghApi]: { body: { id: 4466, first_published: '2026-11-17T00:00:00Z' } } }).f, NOW)
+  assert.equal(d?.date, '2026-11-17')
+  assert.equal((await import('../lib/discover/ats-dates.ts')).atsPosting('https://jobs.smartrecruiters.com/')?.platform ?? null, null, 'a board root is not a posting')
 })
 
