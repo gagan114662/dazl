@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parsePolicy, policyProblems, preflight, calibratedDailyCap, LAUNCH_POLICY_VERSION, MAX_AUDIENCE_PLAYS, MAX_BENCHMARKS, MAX_EXCLUSIONS, MAX_LAUNCH_SPEND_USD, ROLLOUT_DAILY_CAP, type LaunchPolicy, type PreflightInput, type SampleDraft } from '../lib/outreach/launch-policy.ts'
+import { parsePolicy, policyProblems, preflight, outsidePolicy, calibratedDailyCap, LAUNCH_POLICY_VERSION, MAX_AUDIENCE_PLAYS, MAX_BENCHMARKS, MAX_EXCLUSIONS, MAX_LAUNCH_SPEND_USD, ROLLOUT_DAILY_CAP, type LaunchPolicy, type PreflightInput, type SampleDraft } from '../lib/outreach/launch-policy.ts'
 import { WARMUP_SENDS } from '../lib/outreach/autopilot.ts'
 
 // Synthetic sender, prospects and plays.
@@ -120,4 +120,24 @@ test('HOLD: stops are checked by name and fail closed; samples must be distinct 
     assert.equal(r.ok, false, JSON.stringify(bad)); assert.ok(r.failures.includes('sample_invalid') && r.failures.includes('too_few_samples'), JSON.stringify(bad))
   }
   assert.deepEqual(preflight(input()), { ok: true, failures: [], heldLeads: [] })
+})
+
+
+test('excluded root domains also exclude mail subdomains, case-insensitively, without matching lookalikes', () => {
+  const p = policy({ exclusions: { domains: ['customer.example'], emails: [] } })
+  for (const to of ['boss@customer.example', 'boss@mail.customer.example', 'boss@eu.customer.example', 'boss@MAIL.CUSTOMER.EXAMPLE', 'BOSS@Eu.Customer.Example']) {
+    assert.equal(outsidePolicy(p, 'play-1', to), 'excluded', to)
+    assert.ok(preflight(input({ policy: p, samples: [sample(1, { to }), sample(2), sample(3)] })).failures.includes('sample_excluded'), to)
+  }
+  for (const to of ['boss@notcustomer.example', 'boss@mail.notcustomer.example']) {
+    assert.equal(outsidePolicy(p, 'play-1', to), null, to)
+    assert.ok(!preflight(input({ policy: p, samples: [sample(1, { to }), sample(2), sample(3)] })).failures.includes('sample_excluded'), to)
+  }
+})
+
+test('undeliverable recipient is held with the named skip reason', () => {
+  const r = preflight(input({ samples: [sample(1, { to: 'NoReply+tag@prospect.test' }), sample(2), sample(3)] }))
+  assert.equal(r.ok, false)
+  assert.ok(r.failures.includes('undeliverable_address'))
+  assert.ok(r.heldLeads.includes('l1'))
 })

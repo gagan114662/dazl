@@ -13,6 +13,7 @@ import BrainGraph from './onboarding/brain-graph'
 import FirstReview from './onboarding/first-review'
 import { brainFacts, type BrainFact } from '@/lib/brain'
 import { siteKeyReason } from '@/lib/scan/site-read-copy'
+import { FREE_SEARCHES_USED_UP, trialCountText, trialSummary, type TrialBlock } from '@/lib/trial-copy'
 import { previewSplit, type PreviewLead } from '@/lib/journey'
 import ResearchReview, { asResearchBlock } from './research-review'
 import { approveState, leadCardSummary } from '@/lib/scan/lead-card'
@@ -31,7 +32,7 @@ const CLAUDE_SEARCH_POLICY = 'anthropic_estimated_v1'
 
 
 type Step = 'site' | 'building' | 'ready' | 'review' | 'brain' | 'ask'
-interface Usage { has_key: boolean; trial: { funded: boolean; remaining: number } | null }
+interface Usage { has_key: boolean; trial: TrialBlock | null }
 
 // Lists are separated by semicolons, as in Home's profile editor (lib/journey.ts), so an item that contains a comma
 // ("London, UK", "Head of Sales, EMEA") stays one item from the read to the scan.
@@ -340,7 +341,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       if (useClaudeSearch && (j.error === 'qa_isolation_unavailable' || j.error === 'qa_local_busy')) return setError(j.message || 'The Claude Web Search worker could not start. Nothing started.')
       // #1095: never the raw code; the reason in words and the way forward (Link Google for a password account)
       if (j.error === 'trial_unavailable') { setTrialRefused({ reason: j.reason ?? null, query: sentence.trim() }); return }
-      if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? 'Your free scans are used up. Add your AI key to keep going.' : '') }
+      if (j.error === 'no_api_key' || j.error === 'trial_exhausted') { setNeedKey(true); return setError(j.error === 'trial_exhausted' ? FREE_SEARCHES_USED_UP : '') }
       setError(knownErrorCopy(j.error) ?? (j.error === 'quota_exceeded' ? `You have used ${j.used} of ${j.limit} scans on your plan.` : j.error || 'Could not start the search.'))
     } catch { setError('Could not reach the server. Check your connection and try again.') } finally { setBusy(false) }
   }
@@ -442,7 +443,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               {trialRefused && <div className="mt-4 max-w-xl mx-auto" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} step="ready" /></div>}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-9">
                 <section className="onb-card p-5 sm:p-8 flex flex-col min-w-0" data-testid="ready-plan">
-                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 ? `${trialLeft} free search${trialLeft === 1 ? '' : 'es'} to start` : hasKey ? 'Runs on your own AI key' : 'Add your AI key to start'}</h2>
+                  <h2 className="text-xl font-bold tracking-tight">{trialLeft > 0 && usage?.trial ? trialCountText(usage.trial) : hasKey ? 'Runs on your own AI key' : usage?.trial ? trialSummary(usage.trial).text : 'Searches run on your own Anthropic key'}</h2>
                   <ul className="mt-5 space-y-3 text-[15px]">
                     {['Finds companies with a dated, public reason to buy', 'Every lead links to the page it came from', 'Leads that fail a check are held for your review', 'Emails go from your own Gmail; autopilot is off unless you turn it on'].map(t => <li key={t} className="flex gap-3"><span className="mt-0.5 inline-flex w-5 h-5 shrink-0 rounded-full bg-[var(--mint-bg)] items-center justify-center"><Icon name="check" className="w-3 h-3 text-[var(--live)]" /></span>{t}</li>)}
                   </ul>
@@ -587,7 +588,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
 
       {step === 'brain' && <form onSubmit={saveBrain} className="card p-6 flex flex-col gap-3 text-sm">
         <h2 className="text-xl font-semibold">{freeRead ? `We read ${freeRead.site} - here is what the page itself says` : manual ? 'Tell us what you sell and who buys it' : 'Here\'s what we think you sell and who buys it'}</h2>
-        <p className="text-[#555]">{freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself, or add your AI key for the full automatic read.' : `${manual ? 'Nothing was read from a website, so these start empty. Fill them in.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off.`} Saved to your account; your first search uses all of it.`}</p>
+        <p className="text-[#555]">{freeRead ? 'No AI was used for this read: these are the page\'s own words, nothing inferred. Fill in the rest yourself.' : `${manual ? 'Nothing was read from a website, so these start empty. Fill them in.' : `${readFrom ? `Drafted from ${readFrom}. ` : ''}Edit anything that is off.`} Saved to your account; your first search uses all of it.`}</p>
         {freeRead && <div className="rounded-[10px] border border-[#e5e5e5] bg-white p-3" data-testid="free-site-read">
           {freeRead.facts.length === 0
             ? <p className="text-[#555]">The page did not state a title or description in readable HTML.</p>
@@ -631,7 +632,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Back</button>
           <button type="button" className="btn-ghost btn-sm" onClick={() => setStep('brain')}>Edit profile</button>
           <InfoTip label="The profile this search uses"><span aria-label="Search profile">Searched with your profile: {[profile.who.join(', '), profile.industries.join(', '), profile.where.length ? `in ${profile.where.join(', ')}` : 'any location', profile.sizes.join(', '), profile.exclude.length ? `skipping ${profile.exclude.join(', ')}` : ''].filter(Boolean).join(' · ')}.</span></InfoTip>
-          {!needKey && !hasKey && trialLeft > 0 && <span className="pill pill-mint ml-auto" data-testid="trial-left">{trialLeft} free search{trialLeft === 1 ? '' : 'es'}</span>}
+          {!needKey && !hasKey && trialLeft > 0 && usage?.trial && <span className="pill pill-mint ml-auto" data-testid="trial-left">{trialCountText(usage.trial)}</span>}
         </div>
       </form>}
 

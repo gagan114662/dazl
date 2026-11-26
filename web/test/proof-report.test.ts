@@ -167,7 +167,8 @@ test('the homepage\u2019s illustrative examples can never become proof evidence'
   })))
   assert.ok(leads.length > 0)
   for (const s of EXAMPLES.scenarios) {
-    const p = buildProofPreview({ run: { jobId: 'job-x', tenantId: 't1', status: 'done', finishedAt: NOW, spendUsd: null }, inferredOffer: { text: s.play, sourceUrl: `https://${s.site}/` }, leads }, NOW)
+    // #1705: scenarios no longer carry a site domain (the demo types the ask now), so the illustrative source is built from the id.
+    const p = buildProofPreview({ run: { jobId: 'job-x', tenantId: 't1', status: 'done', finishedAt: NOW, spendUsd: null }, inferredOffer: { text: s.play, sourceUrl: `https://${s.id}.example/` }, leads }, NOW)
     assert.deepEqual(p, { status: 'hold', runId: 'job-x', reason: 'no_inferred_offer' }, `${s.id}: an illustrative site is never an offer source`)
   }
   const p = buildProofPreview({ run: { jobId: 'job-x', tenantId: 't1', status: 'done', finishedAt: NOW, spendUsd: null }, inferredOffer: OFFER, leads }, NOW)

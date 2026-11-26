@@ -36,7 +36,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'auth/signup', method: 'POST', auth: 'public', note: 'account creation; rate limited' },
   { path: 'auth/email', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'auth/email', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'read', fresh: true },
-  { path: 'auth/email/send-verification', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'auth/email/send-verification', method: 'POST', auth: 'public', note: 'resend confirmation link (#1647): unauthenticated branch answers the same for every well-formed address (same-origin + email), rate limited per IP and per email, mail deferred past the response; the signed-in branch keeps its session send' },
   { path: 'auth/reauth', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'auth/reauth', method: 'POST', auth: 'session', crossTenant: { covered: 'helpers/session-routes-runtime.mts' }, role: 'read' },
   { path: 'auth/sessions', method: 'GET', auth: 'session', crossTenant: { covered: 'helpers/session-routes-runtime.mts' }, role: 'read' },

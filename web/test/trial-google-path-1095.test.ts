@@ -6,29 +6,36 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { TRIAL_SCANS_PER_ACCOUNT } from '../lib/scan/trial.ts'
 import { TRIAL_REFUSALS } from '../lib/billing/trial-budget.ts'
-import { trialRefusalNotice, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, noticeAccount, signUpPlanLine, SIGN_UP_GOOGLE_CAPTION } from '../lib/trial-copy.ts'
+import { PASSWORD_TRIAL_SCANS } from '../lib/billing/trial-budget.ts'
+import { trialRefusalNotice, TRIAL_REFUSAL_COPY, ACCOUNT_LOAD_FAILED, noticeAccount, signUpPlanLine, trialRuleLine } from '../lib/trial-copy.ts'
 import { estimateRun, estimatePayerLine } from '../lib/scan/price-estimate.ts'
 import { safeNext, linkGoogleHref, googleLinkResultCopy, GOOGLE_LINK_RESULTS } from '../lib/google-link.ts'
 
 const RAW = /\b(trial_unavailable|google_required|domain_used|attempts_cap|account_total_cap|global_daily_cap|not_configured)\b/
 
-test('#1095: every TrialRefusal member has plain-English copy and a next step; a new member without copy fails here', () => {
+// #1704: the account's own key is no longer a way forward (BYOK is being removed, #1703). Google is the one step that opens
+// more free searches; a daily limit says when to come back; every other refusal is said in words with nothing to press.
+const NEXT: Record<string, string[]> = { google_required: ['link_google'], domain_used: [], attempts_cap: [], account_total_cap: [], global_daily_cap: [], not_configured: [] }
+test('#1095: every TrialRefusal member has plain-English copy and its exact next step; a new member without copy fails here', () => {
   assert.deepEqual(Object.keys(TRIAL_REFUSAL_COPY).sort(), [...TRIAL_REFUSALS].sort())
+  assert.deepEqual(Object.keys(NEXT).sort(), [...TRIAL_REFUSALS].sort(), 'every reason has its expected step here too')
   for (const r of TRIAL_REFUSALS) {
     const n = trialRefusalNotice(r, '/app', { verified: true, google: false })
     assert.ok(n.text.length > 20, r)
     assert.doesNotMatch(n.text, RAW, `${r}: no raw code on screen`)
-    assert.ok(n.actions.length >= 1, `${r}: always a way forward`)
+    assert.doesNotMatch(n.text, /AI key/, `${r}: no key to add`)
+    assert.deepEqual(n.actions.map(a => a.kind), NEXT[r], r)
     for (const a of n.actions) assert.doesNotMatch(a.label, RAW)
   }
-  // an unknown reason (a newer server) still reads as words with a next step
+  assert.match(trialRefusalNotice('global_daily_cap', '/app', { verified: true, google: false }).text, /Try again tomorrow/, 'a daily limit says when to come back')
+  // an unknown reason (a newer server) still reads as words, never the code
   const unknown = trialRefusalNotice('some_new_reason', '/app', { verified: true, google: false })
-  assert.doesNotMatch(unknown.text, RAW); assert.ok(unknown.actions.length >= 1)
+  assert.equal(unknown.text, "Free searches can't run right now."); assert.deepEqual(unknown.actions, [])
 })
 
 test('#1095: google_required on a verified password account offers Link Google back to the same page', () => {
   const n = trialRefusalNotice('google_required', '/app/leads?job_id=abc', { verified: true, google: false })
-  assert.match(n.text, /Free scans need a Google account\. Link Google to run this search free \(no card\)\./)
+  assert.match(n.text, /Free searches need a Google account\. Link Google to run this search free \(no card\)\./)
   const link = n.actions.find(a => a.kind === 'link_google')
   assert.ok(link, 'a Link Google button')
   assert.equal(link!.href, '/api/auth/google?link=1&next=%2Fapp%2Fleads%3Fjob_id%3Dabc')
@@ -95,16 +102,17 @@ test('#1095: when the account cannot be read, google_required still offers Link 
   const link = n.actions.find(a => a.kind === 'link_google')
   assert.ok(link, 'a Link Google button after a failed account read')
   assert.equal(link!.href, '/api/auth/google?link=1&next=%2Fapp%2Fleads')
-  assert.ok(n.actions.some(a => a.kind === 'add_key'), 'and Add your AI key')
+  assert.deepEqual(n.actions.map(a => a.kind), ['link_google'], 'Link Google only: no key to add (#1704)')
   assert.deepEqual(trialRefusalNotice('google_required', '/app/leads', null).actions, [], 'still loading is different from failed')
   assert.deepEqual(noticeAccount({ verified: false, google: false }, null), { verified: false, google: false, fresh: true })
 })
 
-test('#1095 / #1648: sign-up says the first search is free on both paths, and one caption says what Google adds', () => {
+test('#1095 / #1648 / #1704: sign-up says the first search is free on both paths, and one rule line says what Google adds', () => {
   const on = signUpPlanLine(true)
   // #1428: free beta wording, "search" defined, and no key implied where the free first search can run. (Was
   // 'Free plan: 50 scans a month with your own AI key. Sign in with Google (or link it later) for 3 free trial scans first. Upgrade any time.')
-  assert.equal(on, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Your first search is free, whether you sign up with Google or with email: no card, and no AI key of your own.')
+  assert.equal(on, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Your first search is free, whether you sign up with Google or with email. No card needed.')
+  assert.doesNotMatch(on, /AI key/, '#1704: no key mentioned where the free first search can run')
   assert.doesNotMatch(on, /New accounts may get 3 trial scans/)
   // Where no free search can run, the line says what a search needs here and promises no free one.
   const off = signUpPlanLine(false)
@@ -114,17 +122,19 @@ test('#1095 / #1648: sign-up says the first search is free on both paths, and on
   // the code enforces since #1630: a first free search on either path, up to TRIAL_SCANS_PER_ACCOUNT with Google.
   assert.doesNotMatch(on, /link it later|needs Google/)
   assert.equal(TRIAL_SCANS_PER_ACCOUNT, 3)
-  assert.equal(SIGN_UP_GOOGLE_CAPTION, 'With Google you can run up to three free searches.')
+  // #1704: the count under the Google button comes from the allowance constants, never a hand-written "three"
+  assert.equal(trialRuleLine({ funded: true, emailPath: true, cap: TRIAL_SCANS_PER_ACCOUNT, emailCap: PASSWORD_TRIAL_SCANS }), 'With Google: up to 3 free searches. With email: 1 free search.')
   // review of #1653: where an email sign-up cannot run a free search (the password switch off, or no mail to confirm the
   // address, so the search answers google_required), the line promises the free search with Google only.
   const googleOnly = signUpPlanLine(true, false)
-  assert.equal(googleOnly, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Your first search is free when you sign up with Google: no card, and no AI key of your own.')
+  assert.equal(googleOnly, 'dazl is free during the beta. A search is one run that looks for businesses that need what you sell. Your first search is free when you sign up with Google. No card needed.')
   assert.doesNotMatch(googleOnly, /with email/)
   assert.equal(signUpPlanLine(false, false), off)
   const page = readFileSync(new URL('../app/sign-up/page.tsx', import.meta.url), 'utf8')
   assert.match(page, /emailTrial=\{passwordTrialOn\(\) && systemMailAvailable\(\)\}/)
   const form = readFileSync(new URL('../app/sign-up/sign-up-form.tsx', import.meta.url), 'utf8')
   assert.match(form, /signUpPlanLine\(trialFunded, emailTrial\)/)
-  assert.match(form, /\{trialFunded \? SIGN_UP_GOOGLE_CAPTION : ''\}/)
+  assert.match(form, /data-testid="trial-rule">\{trialRule\}<\/p>/)
+  assert.match(page, /trialRule=\{trialRule\}/)
   assert.doesNotMatch(form, /needs Google sign-in/)
 })

@@ -1,3 +1,4 @@
+import { undeliverableAddress } from './undeliverable-address.ts'
 // Calibrated launch (#405): an alternative to approving the first WARMUP_SENDS emails by hand. The tenant writes one
 // explicit launch policy - who sends, to whom, what is excluded, how much, what the copy may claim, when to stop - and
 // the machine runs a preflight against it. Only a policy the tenant accepted at the current version, with every check
@@ -87,7 +88,7 @@ export interface PreflightInput {
 }
 
 export type PreflightFailure = PolicyProblem | 'policy_not_accepted' | 'mailbox_mismatch' | 'test_inbox_failed' | 'too_few_samples' | 'autopilot_off' | 'consent_required'
-  | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced' | 'policy_changed'
+  | 'undeliverable_address' | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced' | 'policy_changed'
 
 export const REQUIRED_STOPS = ['reply', 'optOut', 'bounce', 'uncertainPause', 'domainCap'] as const
 const validSample = (s: SampleDraft) => !!s && typeof s === 'object' && typeof s.leadId === 'string' && s.leadId.trim() !== ''
@@ -109,7 +110,8 @@ export function preflight(input: PreflightInput): PreflightResult {
   const valid = input.samples.filter(validSample)
   if (valid.length !== input.samples.length) failures.add('sample_invalid')
   if (new Set(valid.map(s => s.leadId)).size < MIN_SAMPLE_DRAFTS) failures.add('too_few_samples')
-  const excludedDomains = new Set(policy.exclusions.domains.map(d => d.trim().toLowerCase()))
+  const excludedDomains = policy.exclusions.domains.map(d => d.trim().toLowerCase())
+  const domainExcluded = (host: string | null) => !!host && excludedDomains.some(d => host === d || host.endsWith('.' + d))
   const excludedEmails = new Set(policy.exclusions.emails.map(e => e.trim().toLowerCase()))
   const held = new Set<string>()
   for (const s of input.samples) {
@@ -120,7 +122,8 @@ export function preflight(input: PreflightInput): PreflightResult {
     if (!s.dateOk) bad.push('sample_date')
     if (!s.contactOk) bad.push('sample_contact')
     if (s.claimIssues.length) bad.push('sample_claims')
-    if (excludedEmails.has(to) || excludedDomains.has(domainOf(to) ?? '')) bad.push('sample_excluded')
+    if (undeliverableAddress(s.to).blocked) bad.push('undeliverable_address')
+    if (excludedEmails.has(to) || domainExcluded(domainOf(to))) bad.push('sample_excluded')
     if (bad.length) { held.add(s.leadId); bad.forEach(b => failures.add(b)) }
   }
   // every required stop, by name, must be exactly true: a missing, extra-only or empty object fails closed
@@ -289,7 +292,8 @@ export function launchGate(db: Database.Database, tenantId: string, connectedMai
 export function outsidePolicy(policy: LaunchPolicy, playId: string, to: string): 'not_in_audience' | 'excluded' | null {
   if (!policy.audience.playIds.includes(playId)) return 'not_in_audience'
   const e = to.trim().toLowerCase()
-  if (policy.exclusions.emails.includes(e) || policy.exclusions.domains.includes(domainOf(e) ?? '')) return 'excluded'
+  const host = domainOf(e)
+  if (policy.exclusions.emails.includes(e) || (host !== null && policy.exclusions.domains.some(d => { const excluded = d.trim().toLowerCase(); return host === excluded || host.endsWith('.' + excluded) }))) return 'excluded'
   return null
 }
 

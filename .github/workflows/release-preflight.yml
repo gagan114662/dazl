@@ -7,6 +7,8 @@ on:
     paths: ['web/**', 'ops/**', 'session-worker/**', '.github/workflows/web-ci.yml', '.github/workflows/release-gate.yml', '.github/workflows/release-preflight.yml', '.github/workflows/session-worker-ci.yml']
   # Same exact-SHA coverage as web-ci: dispatchable at any ref.
   workflow_dispatch:
+  merge_group:
+    types: [checks_requested]
 permissions:
   contents: read
 concurrency:

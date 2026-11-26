@@ -1,9 +1,10 @@
 'use client'
-import { discoverCountParts, discoverLine, discoverSources, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
+import { discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
+import { FieldSource, PublishedEmailProvenance, WebsiteProvenance } from './field-provenance'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
@@ -102,10 +103,29 @@ interface CommenterBatch { batch_id: string; context: string; total: number; not
 // #1037: the one person a lead names (lib/people/lead-person.ts), on a ready card and on a held row alike: name, title and a
 // LinkedIn or source link with its basis, or plainly "No buyer named yet" (children: what the row offers next to that text).
 const onlyNameOnlyRows = (rows: Parameters<typeof contactsFromEnrichments>[0] | undefined, roles: string): boolean => onlyNameOnly(contactsFromEnrichments(rows ?? [], roles))
-function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }) {
-  return p
-    ? <div className="text-sm mt-0.5" data-testid="lead-person"><span className="font-medium">{p.name}</span><span className="text-[var(--ink-2)]"> · {p.title}</span>{p.linkedin ? <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></> : null}{p.source ? <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></> : null}<span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({personBasis(p)})</span></div>
-    : <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+type PersonLineProps = { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }
+
+function PersonLine({ p, nameOnly, children, sourceLink }: PersonLineProps & { sourceLink?: ReactNode }) {
+  if (!p) return <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
+
+  const title = p.title.trim()
+  const missing = title ? (p.linkedin ? null : 'No LinkedIn profile found')
+    : p.linkedin ? 'No job title found' : 'No job title or LinkedIn profile found'
+  return <div className="text-sm mt-0.5" data-testid="lead-person">
+    <span className="font-medium">{p.name}</span>
+    {title && <span className="text-[var(--ink-2)]"> · {title}</span>}
+    {p.linkedin && <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></>}
+    {sourceLink ?? (p.source && <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></>)}
+    <span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({personBasis(p)})</span>
+    {missing && <span className="block text-[var(--ink-2)]">{missing}</span>}
+  </div>
+}
+
+function PersonWithProvenance({ signalSource, ...props }: PersonLineProps & { signalSource: string }) {
+  // Older discover rows used the signal URL when no contact citation was recorded.
+  const { p } = props
+  const source = p && !p.current && p.source === signalSource ? null : p?.source
+  return <PersonLine {...props} sourceLink={<> · <FieldSource field="Contact" source={source} testId="lead-person-source" /></>} />
 }
 
 function ReviewCompanyWebsite({ lead }: { lead: Lead }) {
@@ -381,7 +401,9 @@ export default function LeadsClient() {
   // Rejected (it leaves the list), each with a one-line result above the list.
   const [leadTab, setLeadTab] = useState<'review' | 'approved' | 'rejected'>('review')
   const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
-  const scanActive = !!jobId && (status === 'pending' || status === 'running' || status === 'enriching')
+  const [otherActiveJobId, setOtherActiveJobId] = useState<string | null>(null)
+  const [otherActiveReadFailed, setOtherActiveReadFailed] = useState(false)
+  const scanActive = !!otherActiveJobId || (!!jobId && (status === 'pending' || status === 'running' || status === 'enriching'))
   const csvActive = !!csvBatch && ((csvBatch.counts.queued ?? 0) + (csvBatch.counts.running ?? 0) > 0)
   useEffect(() => {
     if (!csvActive || !csvBatch) return
@@ -597,6 +619,7 @@ export default function LeadsClient() {
     return true
   }
   async function run(withIcp: Icp | null, offer?: string, reviewed?: boolean, carryExclude?: string[]) {
+    if (scanActive) return
     if (websiteReadInFlight.current || !canQuoteWebsiteDraft(websiteDraft.current, latestOfferQuery.current, reviewed === true)) {
       reviewPanel.current?.focus()
       return
@@ -624,6 +647,7 @@ export default function LeadsClient() {
     }
   }
   async function confirmRun(ack: string, requested: string, withIcp: Icp | null, offer?: string, reviewed?: boolean, websiteApproval?:string, carryExclude?: string[]) {
+    if (scanActive) return
     if (requested !== latestOfferQuery.current || websiteReadInFlight.current ||
       !canQuoteWebsiteDraft(websiteDraft.current, requested, reviewed === true) ||
       (websiteDraft.current && (!websiteApproval || draft !== withIcp || offerText !== offer))) { setPendingEst(null); return }
@@ -780,15 +804,52 @@ export default function LeadsClient() {
       // A scan that is still queued/running is the one exception to "nothing autoselects": a reload or a
       // return from Home must show its progress and Stop control, not an enabled Find leads button.
       const active = jobs.find(x => !x.csv_domain && (x.status === 'pending' || x.status === 'running' || x.status === 'enriching'))
-      if (active) { passiveJob.current = new URLSearchParams(window.location.search).get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
+      const params = new URLSearchParams(window.location.search)
+      // The jobs request can resolve after the requested job has opened.
+      const requested = params.get('job_id') ?? ''
+      const viewing = viewedJob.current || (/^[a-f0-9]{24}$/.test(requested) ? requested : '')
+      if (viewing) {
+        setOtherActiveJobId(active && active.id !== viewing ? active.id : null)
+        return
+      }
+      if (active) { passiveJob.current = params.get('passive') === '1'; setJobId(active.id); setStatus(active.status) }
       // The sidebar's "Leads" link (?latest=1) is the user explicitly asking for their newest leads: open the newest own,
       // finished, non-test scan that saved any. No such scan => stay on Plays.
-      else if (new URLSearchParams(window.location.search).get('latest') === '1') {
+      else if (params.get('latest') === '1') {
         const newest = jobs.find(x => !x.csv_domain && !x.test_only && x.status === 'done' && x.lead_count > 0)
         if (newest) window.location.replace(`/app/leads?job_id=${newest.id}`)
       }
     } }).catch(() => {})
   }, [jobId])
+  useEffect(() => {
+    if (!otherActiveJobId) return
+    const controller = new AbortController()
+    const read = (url: string) => fetch(url, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(4500)]),
+    }).catch(() => null)
+    let reading = false
+    const timer = setInterval(async () => {
+      if (reading) return
+      reading = true
+      try {
+        const response = await read(`/api/scan/status?job_id=${otherActiveJobId}&readonly=1`)
+        let status = response?.ok ? (await response.json().catch(() => null))?.status : null
+        if (!status && response?.status !== 404 && !controller.signal.aborted) {
+          const history = await read('/api/scan/jobs')
+          const jobs = history?.ok ? (await history.json().catch(() => null))?.jobs : null
+          status = Array.isArray(jobs) ? jobs.find(job => job.id === otherActiveJobId)?.status : null
+        }
+        if (controller.signal.aborted) return
+        setOtherActiveReadFailed(!status && response?.status !== 404)
+        if (response?.status === 404 || status === 'done' || status === 'failed') {
+          setOtherActiveJobId(current => current === otherActiveJobId ? null : current)
+        }
+      } finally {
+        reading = false
+      }
+    }, 5000)
+    return () => { clearInterval(timer); controller.abort() }
+  }, [otherActiveJobId])
   // Restore the last profile so a reload never loses it (item: ICP persistence).
   useEffect(() => {
     if (jobId) return
@@ -861,6 +922,7 @@ export default function LeadsClient() {
   const input = 'field'
   // #1238: repeats are collapsed only when something new remains (lib/scan/leads-view.ts visibleReadyLeads)
   const currentView = resultView?.jobId === jobId ? resultView : null
+  const showResultActions = !jobId || (currentView !== null && leads.length > 0) || (!statusError && (status === 'done' || status === 'failed'))
   // #1238/#1062/#1620: an older-engine search's count line is its Campaigns card's split of the leads as they stand now (lib/scan/leads-view.ts
   // scanCountTags), read from the same GET /api/campaigns?view=history as the Leads history. null split = not read: the recorded funnel, marked.
   const [currentSplit, setCurrentSplit] = useState<{ jobId: string; split: CurrentScanSplit | null } | null>(null)
@@ -874,12 +936,16 @@ export default function LeadsClient() {
     return () => { live = false }
   }, [splitFor])
   const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
-  const visibleLeads = visibleReadyLeads(leads, showSeen)
+  const unconfirmedTiming = leads.filter(l => l.timing === 'unconfirmed' && !l.review_reason && !l.quarantined_at && l.human_confirmed_at == null)
+  const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
+  const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
+  const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)
   const reviewSplit = reviewListSplit(leads)
+  const researchLeads = [...reviewSplit.research, ...unconfirmedTiming]
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
   // currentView is set only by a successful GET /api/leads for this job: until then there is no per-lead line at all
-  const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads, showSeen, leadsRead: currentView !== null })
-  const repeats = readyRepeats(leads)
+  const perLead = costPerShownLead({ model_usd: cost?.actual?.model_usd ?? null, scanEnded: status === 'done' || status === 'failed', leads: readyCandidates, showSeen, leadsRead: currentView !== null })
+  const repeats = readyRepeats(readyCandidates)
 
   return (
     <div className="p-4 sm:p-8 max-w-6xl mx-auto flex flex-col">
@@ -889,19 +955,23 @@ export default function LeadsClient() {
           <h1 className="text-3xl font-bold tracking-tight">{jobId ? 'Leads' : 'Find leads'}</h1>
           <p className="text-[var(--ink-2)] text-sm mt-1">{jobId ? 'Approve the leads worth an email.' : 'Describe who you want to reach.'}<InfoTip>Companies matching your search, with the signal and source for each. Match is a heuristic - review fit yourself.</InfoTip></p>
         </div>
-        <div className="flex gap-2 items-center">
+        {showResultActions && <div className="flex gap-2 items-center">
           {/* The scan being viewed as one campaign: its play, every lead's status, drafts and sends. */}
           {jobId && <a className="btn-ghost btn-sm" href={`/app/campaigns/${jobId}`} data-testid="campaign-page-link"><Icon name="campaigns" className="w-4 h-4" />Campaign page</a>}
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
-        </div>
+        </div>}
       </div>
+      {otherActiveJobId && <p role="status" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">
+        A search is running. <a className="underline" href={`/app/leads?job_id=${otherActiveJobId}`}>View progress</a>
+        {otherActiveReadFailed && ' Progress is temporarily unavailable. Retrying.'}
+      </p>}
       {/* Back from Google (#1095): how the link went, and after a failure its way forward, above the search, on screen
           at any width (below the card it sat off screen at 390). */}
       {linkNote && <p role="status" data-testid="google-link-note" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">{linkNote.text}{linkNote.ok && query.trim() ? ' Your search is ready: run it.' : ''} <button type="button" className="underline ml-1" data-testid="google-link-note-dismiss" onClick={() => setLinkNote(null)}>Dismiss</button></p>}
       {linkNote && trialRefused && <div className="mb-4" data-testid="trial-refusal"><TrialRefusalNotice reason={trialRefused.reason} query={trialRefused.query} /></div>}
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
-      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval, pendingEst.carryExclude)} onCancel={() => setPendingEst(null)} />}
+      {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting || scanActive} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval, pendingEst.carryExclude)} onCancel={() => setPendingEst(null)} />}
       <form onSubmit={e => { e.preventDefault(); if (openWebsiteDraft) reviewPanel.current?.focus(); else void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
@@ -919,7 +989,7 @@ export default function LeadsClient() {
         </div>}
         <div className="flex flex-wrap gap-3 mt-4 items-center">
           <button type="button" disabled={query.trim().length < 3 || busy || starting || siteBusy || scanActive} onClick={() => void preview()} className="btn-ghost btn-sm disabled:opacity-40">{busy ? 'Working out your profile...' : 'Review profile first'}</button>
-          {scanActive && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
+          {scanActive && !otherActiveJobId && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
         {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
@@ -1061,7 +1131,7 @@ export default function LeadsClient() {
               <p className="text-gray-400" data-testid="draft-note">{draftNote.text}</p>
               {draftNote.dropped && <p className="text-sm border-l-2 border-[var(--pink)] pl-3 break-words" data-testid="draft-dropped"><span className="font-semibold">The generated profile originally left out: </span>&ldquo;&hellip;{draftNote.dropped}&rdquo;</p>}
             </div>
-            <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+            <button onClick={() => run(draft, offerText, true)} disabled={starting || scanActive || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary w-full lg:w-auto lg:shrink-0 disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
           </div>
           {/* What this play sells: reviewed with the profile, stored with this play only. */}
           <div className="mb-3" data-testid="review-offer">
@@ -1086,7 +1156,7 @@ export default function LeadsClient() {
             </div>
           ))}
           {asResearchBlock((draft as { research?: unknown }).research) && <ResearchReview research={asResearchBlock((draft as { research?: unknown }).research)!} onChange={r => setDraft(d => d ? { ...d, research: r } : d)} onAdd={(f, t) => setDraft(d => d ? { ...d, [f]: [...d[f], t] } : d)} onRemove={(f, t) => { const target = t.replace(/\s+/g, ' ').trim().toLowerCase(); setDraft(d => d ? { ...d, [f]: d[f].filter(x => x.replace(/\s+/g, ' ').trim().toLowerCase() !== target) } : d) }} onOfferPick={name => { const offer = completeOffer(name); if (!offer) return; setOfferText(offer); if (websiteDraft.current && reviewChoice) setOfferConflict(null) }} />}
-          <button onClick={() => run(draft, offerText, true)} disabled={starting || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
+          <button onClick={() => run(draft, offerText, true)} disabled={starting || scanActive || siteBusy || websiteDraftChanged || !!budgetCheck.error || !!reviewChoice || offerUnread || !offerReady(offerText)} className="btn-primary disabled:opacity-40">{starting ? 'Starting...' : 'Run scan with this profile'}</button>
         </div>
       )}
       {/* Outside the collapsed profile details: a closed <details> hid the notice and its button (found by the rendered check, test/ui/window-edit.ui.mjs). */}
@@ -1347,7 +1417,9 @@ export default function LeadsClient() {
           // #1579: with no scan open, nothing is said until the past scans have been read ("No leads yet" beside a list of them was false).
           status === 'loading' || status === 'failed' || statusError ? null
             : !jobId && !pastJobs ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{status === 'done' && currentView?.marked && currentView.counts?.reviewable === 0
+            : <p className="p-10 text-center text-gray-500 text-sm">{unconfirmedTiming.length > 0
+              ? 'Leads with unconfirmed timing are listed under Research only.'
+              : status === 'done' && currentView?.marked && currentView.counts?.reviewable === 0
               ? 'No leads passed the checks for review.'
               : status === 'done' && currentView?.marked && !currentView.counts
               ? 'Lead results could not be checked. Refresh to try again.'
@@ -1366,10 +1438,11 @@ export default function LeadsClient() {
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
-                    <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
+                    <PersonWithProvenance p={lp} signalSource={l.source_url} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonWithProvenance>
                     {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
+                    {!l.quarantined_at && <PublishedEmailProvenance lead={l} />}
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
                     {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
                       <li data-testid="contact-provenance">{c.route.provenance.text}</li>
@@ -1395,12 +1468,12 @@ export default function LeadsClient() {
                 </div>}
                 <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
                 {c.timing && <p className="text-xs text-[var(--ink-2)] mt-1" data-testid="card-timing">{c.timing}</p>}
-                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />Proof: {c.sourceHost}</a><span className="sr-only"> · </span>{l.company_domain && l.company_domain !== c.sourceHost && <><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" data-testid="lead-website" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">Website: {l.company_domain}</a><span className="sr-only"> · </span></>}<span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
+                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />Proof: {c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span><WebsiteProvenance lead={l} /></p>
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
-                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn<InfoTip label="Why LinkedIn and not email">An email draft is not available for this lead: {c.approve.reason} {c.linkedin.name}&apos;s own LinkedIn profile is known: open it and send the first message yourself.</InfoTip></div>
-                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet<InfoTip label="Why this lead is on hold">To approve: {c.approve.reason}</InfoTip></div> : null}
+                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{c.approve.reason}</span></div>
+                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{c.approve.reason}</span></div> : null}
               </div>
             })()}
             <details className="mt-2 text-sm">
@@ -1447,13 +1520,6 @@ export default function LeadsClient() {
                   <div className="text-gray-500 text-[10px]" data-people-section="search-only">Search result only</div>
                   {searchOnly.length > 0 ? searchOnly.map(row) : <div className="text-gray-500">None.</div>}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
-                  {l.company_first_published_email?.display_only === true && !l.quarantined_at && (
-                    <div data-testid="company-first-published-email">
-                      <span className="text-[#111]">{l.company_first_published_email.address}</span>{' '}
-                      <span className="text-gray-500">Published work email (display only)</span>{' '}
-                      <a className="underline text-[#111]" href={l.company_first_published_email.source_url} target="_blank" rel="noopener noreferrer nofollow">company source</a>
-                    </div>
-                  )}
                   {/* #1036: Find work email for the buyer-role people, only on a lead whose website is settled (lib/people/work-email-eligible.ts). */}
                   {!l.quarantined_at && workEmailOffered(l) && (() => {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)
@@ -1520,7 +1586,6 @@ export default function LeadsClient() {
             {l.stored_why && <details className="text-xs my-2"><summary>Saved historical grade (not a currentness verdict; a saved grade may have been made without your offer text and is not rescored)</summary><p>Saved intent: {l.stored_intent ?? 'unknown'}. {l.stored_why}</p></details>}
             {!l.currentness_held && !l.window_held && l.human_confirmed_at === null && l.confidence !== null && l.timing_proof_gap === null && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-proof">Draftable without your review: the event day is proven on the cited source inside your window, and the company website, a named contact and a contact route the company published are confirmed. A current buying need is still not verified.</p>}
             {isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="discover-confidence">{discoverLine(l)}</p>}
-            {isDiscoverLead(l) && <p className="text-xs pl-3 my-2" data-testid="discover-sources">Sources: {discoverSources(l).map((x, i) => <span key={x.field}>{i > 0 ? ' · ' : ''}<a className="underline underline-offset-2" href={x.url} target="_blank" rel="noreferrer noopener">{x.label}</a></span>)}</p>}
             {l.window_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2">Outside the time window you asked for, or its date is unknown - research only. It cannot be drafted or sent, even after you review the source. Run a scan with a wider window to include it.</p>}
             {l.gate_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="gate-held">A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.</p>}
             {l.currentness_held && !l.window_held && !l.gate_held && !isDiscoverLead(l) && (l.timing === 'proof_backed'
@@ -1583,7 +1648,7 @@ export default function LeadsClient() {
       )}
       {/* The count line's own split (lib/scan/leads-view.ts reviewListSplit): a lead a check can still make usable is listed under "Needs your review",
           every other lead with a reason under "Research only" (#352: that copy never asks the user to check or confirm). A heading shows only with its rows. */}
-      {([['review', reviewSplit.review], ['research', reviewSplit.research]] as const).map(([part, rows]) => rows.length > 0 && (
+      {([['review', reviewSplit.review], ['research', researchLeads]] as const).map(([part, rows]) => rows.length > 0 && (
         <div key={part} data-testid={`${part}-list`}>
           {part === 'review' ? <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
@@ -1596,11 +1661,12 @@ export default function LeadsClient() {
             {rows.map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <ReviewCompanyWebsite lead={l} />
+                {!l.quarantined_at && peopleSearchable(l.review_reason) && <div className="text-xs"><WebsiteProvenance lead={l} /><PublishedEmailProvenance lead={l} /></div>}
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
-                {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
+                {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonWithProvenance signalSource={l.source_url} nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>{hiringTimingLine(l.signal, l.signal_kind) && <div className="text-gray-400 text-xs" data-testid="hiring-not-buying">{hiringTimingLine(l.signal, l.signal_kind)}</div>}
-                <span className="text-[#333] text-xs mr-3">{l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
+                <span className="text-[#333] text-xs mr-3">{unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 {l.timing_note && <span className="text-[#333] text-xs mr-3" data-testid="timing-note-review">Researched opportunity - {l.timing_note}.</span>}
                 <DiscoveredVia l={l} />
@@ -1608,7 +1674,7 @@ export default function LeadsClient() {
                 {(() => { const t = reviewLaneWorkEmailTargets(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''); return t.length > 0 ? <div data-testid="review-work-email"><WorkEmail leadId={l.id} initial={workEmailInitial(l.id)} targets={t} /></div> : null })()}
                 {l.source_check && <div className="text-xs text-[#333] border-l-2 border-black/30 pl-3 my-2">
                   <p>Literal page check: {l.source_check.fetch_status}, checked {new Date(l.source_check.checked_at*1000).toISOString()}. Exact quote: {l.source_check.quote_match?'found':'not found'}. Company named with matching quote: {l.source_check.company_named?'yes':'no'}. Supplied email: {l.source_check.contact_match?'found on page':'not found or not supplied'}.</p>
-                  <p>{leadCardDateLine(l)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
+                  <p>{unconfirmedIds.has(l.id) && !l.day_verified ? 'Event date unconfirmed' : leadCardDateLine(l)}. No semantic signal verification, fit grade, named buyer, current need or consent.</p>
                 </div>}
                 <EvidenceRecheck leadId={l.id} />
                 {l.source_kind === 'hiring_feed' && <PageSignals leadId={l.id} />}
@@ -1620,9 +1686,9 @@ export default function LeadsClient() {
                 {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">
                   <div className="flex flex-wrap gap-2">
                     <a className="btn-ghost text-xs px-3 py-1.5" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">Open source</a>
-                    <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>
+                    {!unconfirmedIds.has(l.id) && <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>}
                   </div>
-                  <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>
+                  {!unconfirmedIds.has(l.id) && <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>}
                 </div> })()}
               </div>
             ))}

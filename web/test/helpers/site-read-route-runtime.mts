@@ -244,19 +244,19 @@ test('#444 probe R2 + pre-fetch principal: no read is attempted for an ineligibl
   process.env.DAZL_TRIAL_ACCOUNT_TOTAL_USD = '0.34'
   try {
     setUser({ id: F, business_name: 'b', email: 'f61@gmail.com' })
-    assert.deepEqual(await usage(), { funded: true, remaining: 3, cap: 3, blocked: null })
+    assert.deepEqual(await usage(), { funded: true, remaining: 3, cap: 3, blocked: null, used: 0, exempt: false })
     // a read the guard refused before any call: released, nothing changes
     next.outcome = 'guard_refused'
     r = await post()
     assert.equal(r.status, 200); assert.equal(r.body.trial, 'spend_unavailable', JSON.stringify(r.body))
-    assert.deepEqual(await usage(), { funded: true, remaining: 3, cap: 3, blocked: null }, 'a read refused before any call leaves the trial as it was')
+    assert.deepEqual(await usage(), { funded: true, remaining: 3, cap: 3, blocked: null, used: 0, exempt: false }, 'a read refused before any call leaves the trial as it was')
     assert.equal(Number((await db.get<{ n: number }>('SELECT COUNT(*) AS n FROM trial_reservations WHERE tenant_id = ?', [F]))!.n), 0)
     // a read whose call failed: its $0.05 stays on the account, so the money ceiling blocks a scan, and the counter says
     // so honestly: 3 attempts left, blocked by the allowance (lib/trial-copy.ts names the reads).
     next.outcome = 'call_failed'
     r = await post()
     assert.equal(r.status, 200); assert.equal(r.body.trial, 'read_failed', JSON.stringify(r.body))
-    assert.deepEqual(await usage(), { funded: false, remaining: 3, cap: 3, blocked: 'account_total_cap' })
+    assert.deepEqual(await usage(), { funded: false, remaining: 3, cap: 3, blocked: 'account_total_cap', used: 0, exempt: false })
   } finally { if (saved === undefined) delete process.env.DAZL_TRIAL_ACCOUNT_TOTAL_USD; else process.env.DAZL_TRIAL_ACCOUNT_TOTAL_USD = saved }
   console.log('SITE_READ_ROUTE_PROBE ok')
 })

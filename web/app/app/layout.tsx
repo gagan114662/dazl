@@ -25,8 +25,11 @@ async function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
+  // #1700: ONE scroller. The shell is exactly the visible height (h-dvh: on a phone 100vh is taller than what shows, which made the
+  // page scroll too), and `relative overflow-hidden` makes it the containing block that clips absolutely positioned descendants,
+  // which otherwise escape <main>'s overflow and stretch the page behind it (two vertical scrollbars at 390px).
   return (
-    <div className="app-ui flex flex-col md:flex-row h-screen">
+    <div className="app-ui app-shell relative overflow-hidden flex flex-col md:flex-row h-dvh">
       {/* CSS-only collapsing nav: a checkbox toggles the menu below md; a slim sidebar from md up */}
       {/* #534: md:hidden keeps the invisible checkbox out of the desktop Tab order; its focus ring shows on the Menu label (globals.css) */}
       <input id={NAV_TOGGLE_ID} type="checkbox" className="peer sr-only md:hidden" aria-label="Menu" />
@@ -34,7 +37,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Link href="/app" className="inline-flex items-center justify-center min-h-11 min-w-11 text-lg font-bold tracking-tight">dazl<span className="text-[var(--pink)]">.</span></Link>
         <label htmlFor={NAV_TOGGLE_ID} className="cursor-pointer inline-flex items-center min-h-11 text-sm font-semibold border border-[var(--line-2)] rounded-full px-4">Menu</label>
       </header>
-      <aside className="hidden peer-checked:flex md:flex md:w-60 shrink-0 max-md:max-h-[55svh] max-md:overflow-auto border-b md:border-b-0 md:border-r border-[var(--line)] bg-[var(--canvas)] flex-col py-4 md:py-6 px-3 md:overflow-auto">
+      <aside className="hidden peer-checked:flex md:flex md:w-60 shrink-0 max-md:flex-1 max-md:min-h-0 max-md:overflow-y-auto border-b md:border-b-0 md:border-r border-[var(--line)] bg-[var(--canvas)] flex-col py-4 md:py-6 px-3 md:overflow-auto">
         <Link href="/app" className="hidden md:block text-xl font-bold tracking-tight mb-6 px-3">dazl<span className="text-[var(--pink)]">.</span></Link>
         <Suspense fallback={null}><Nav /></Suspense>
         <div className="hidden md:block flex-1" />
@@ -45,7 +48,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           landed on <main> when the page was tall enough for Chromium to treat the scroller as focusable (Settings);
           Home and Inbox stayed on BODY. Its visible focus ring is #main:focus-visible in globals.css. MainFocus keeps
           that focus when the page swaps its loading view for the loaded one, or hydration re-creates the subtree. */}
-      <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto">
+      <main id="main" tabIndex={-1} className="flex-1 min-w-0 overflow-auto max-md:peer-checked:hidden">
         <Suspense fallback={
           <div id={OPENING_ID} className="p-4 sm:p-8" role="status">
             <p className="text-sm font-medium">Opening your workspace…</p>

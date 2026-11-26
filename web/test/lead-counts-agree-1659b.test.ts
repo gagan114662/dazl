@@ -58,7 +58,9 @@ test('finding 1: a rejected lead with a reason and a lead without one are never 
 
 test('finding 1: the Leads page renders the two lists from that split, each under its own heading', () => {
   assert.match(leadsPage, /const reviewSplit = reviewListSplit\(leads\)/)
-  assert.match(leadsPage, /\[\['review', reviewSplit\.review\], \['research', reviewSplit\.research\]\] as const\)\.map\(\(\[part, rows\]\) => rows\.length > 0 && \(/)
+  assert.match(leadsPage, /const unconfirmedTiming = leads\.filter\(l => l\.timing === 'unconfirmed' && !l\.review_reason && !l\.quarantined_at && l\.human_confirmed_at == null\)/)
+  assert.match(leadsPage, /const researchLeads = \[\.\.\.reviewSplit\.research, \.\.\.unconfirmedTiming\]/)
+  assert.match(leadsPage, /\[\['review', reviewSplit\.review\], \['research', researchLeads\]\] as const\)\.map\(\(\[part, rows\]\) => rows\.length > 0 && \(/)
   assert.doesNotMatch(leadsPage, /leads\.filter\(l => l\.review_reason\)\.map/, 'no single list of every lead with a reason')
   assert.doesNotMatch(leadsPage, /reviewAction\(l\)\.label !== 'Keep as research'\) \?/, 'the heading is not chosen by a second rule')
 })

@@ -10,6 +10,8 @@ on:
         description: Full ancestor SHA to compare (required for a manual run)
         required: true
         type: string
+  merge_group:
+    types: [checks_requested]
 permissions:
   contents: read
 concurrency:
@@ -32,7 +34,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Resolve exact comparison (never silently fall back)
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || inputs.base }}
         run: |
           set -euo pipefail
           [[ "$BASE" =~ ^[0-9a-f]{40}$ ]]

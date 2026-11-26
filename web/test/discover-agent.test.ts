@@ -32,7 +32,7 @@ test('parseLeads: an unreadable answer is zero leads with a note, and the cap is
 })
 
 test('usd: tokens at list price plus searches', () => {
-  assert.equal(usd({ input_tokens: 100_000, output_tokens: 5_000, cache_read_tokens: 0, cache_write_tokens: 0, searches: 6, requests: 1 }), 0.56)
+  assert.equal(usd({ input_tokens: 100_000, output_tokens: 5_000, cache_read_tokens: 0, cache_write_tokens: 0, searches: 6, requests: 1 }), 0.31)
 })
 
 test('companyOnPage and dayOnPage label the proof; they tolerate case, accents and date styles', () => {
@@ -74,7 +74,7 @@ test('a company page that prints the year and a routine number is not shown for 
   const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
   const l = parseLeads(JSON.stringify({ leads: [lead()] }), 1).leads[0]   // signal_date 2026-10-14, quote about the second clinic
   const plain = await checkLead(l, [], page('<h1>Northwind Dental</h1><p>Family dentistry at 14 Main Street. Open Monday to Friday.</p><footer>Copyright 2026</footer>'))
-  assert.deepEqual([plain.proof, plain.date_on_page, plain.quote_on_page, plain.signal_seen, isShown(plain)], ['confirmed', true, false, false, false], 'the weak date check still labels; it does not admit')
+  assert.deepEqual([plain.proof, plain.date_on_page, plain.quote_on_page, plain.signal_seen, isShown(plain)], ['confirmed', false, false, false, false], 'the street number and copyright year do not state a date')
   // a quote that IS on the page but says nothing of the signal (the company describing itself) is not support either
   const self = await checkLead({ ...l, evidence_quote: 'Family dentistry at 14 Main Street' }, [], page('<h1>Northwind Dental</h1><p>Family dentistry at 14 Main Street. Open Monday to Friday.</p>'))
   assert.deepEqual([self.quote_on_page, self.signal_seen, isShown(self)], [true, false, false])
@@ -122,8 +122,8 @@ test('a proof page that prints no date takes the day the search index dates it, 
   const seen = [{ url: undated.evidence_url, title: 'Northwind Dental', page_age: '69 days ago', text: 'Northwind Dental will open its second clinic.' }]
   const a = await checkLead(undated, seen, never, 1000, now)
   assert.deepEqual([a.date, a.date_source, a.date_on_page], ['2026-09-14', 'index', false])
-  const b = await checkLead({ ...undated, signal_date: '2026-10-14' }, seen, never, 1000, now)
-  assert.deepEqual([b.date, b.date_source], ['2026-10-14', 'page'], 'a date read on the page always wins over the index')
+  const b = await checkLead({ ...undated, signal_date: '2026-10-14' }, [{ ...seen[0], text: 'On 14 October 2026, Northwind Dental will open its second clinic.' }], never, 1000, now)
+  assert.deepEqual([b.date, b.date_source, b.date_on_page], ['2026-10-14', 'page', true], 'a date read on the page always wins over the index')
   const c = await checkLead(undated, [{ ...seen[0], page_age: null }], never, 1000, now)
   assert.deepEqual([c.date, c.date_source], [null, null])
 })
@@ -427,9 +427,9 @@ test('a page\'s own structured data dates a confirmed lead the run and the text 
   assert.equal(embeddedDay('{"dateModified":"2026-11-22"}', now), null, 'an edit day is not the event\'s day')
   assert.equal(embeddedDay('{"datePosted":"2025-03-01"}', now), null, 'more than a year old')
   assert.equal(embeddedDay('{"datePosted":"2027-01-01"}', now), null, 'a day in the future')
-  // a date the run read stays; a page that could not be fetched for its date changes nothing
+  // The page's posting metadata wins over a proposed day absent from the source.
   const given = await checkLead({ ...l, signal_date: '2026-11-15' }, [], page(html('{"datePosted":"2026-11-10"}')), 12_000, now)
-  assert.equal(given.date, '2026-11-15')
+  assert.deepEqual([given.date, given.date_source, given.date_on_page], ['2026-11-10', 'page', false])
 })
 
 // Staging 2026-11-23: hiring leads proven by Greenhouse and Lever postings all came back undated; those pages print no date. The

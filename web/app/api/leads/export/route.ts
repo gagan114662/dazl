@@ -5,6 +5,7 @@ import { getDb } from '@/lib/db/client'
 import { exportLeadCursor, exportLeadPage, parseExportLeadCursor } from '@/lib/scan/store-db'
 import { toCsv } from '@/lib/scan/csv'
 import { eventDateCopy } from '@/lib/scan/date-copy'
+import { savedGradeWhy } from '@/lib/scan/leads-view'
 import { timingUnconfirmedReason, eventDayVerified, surfaceStoredIntent, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
 import { jobWindowDays } from '@/lib/scan/window'
 import { exportEvidenceOrigin } from '@/lib/scan/evidence-origin'
@@ -29,7 +30,7 @@ const COLUMNS = [
   { key: 'name', label: 'Contact Name' },
   { key: 'contact', label: 'Contact' },
   { key: 'signal', label: 'Signal' },
-  { key: 'why', label: 'Why This Lead (model rationale)' },
+  { key: 'why', label: 'Why This Lead (saved grade assessment)' },
   { key: 'human_confirmed_from', label: 'Confirmed By User (reason dazl could not verify)' },
   { key: 'fit', label: 'Fit (0-5)' },
   { key: 'intent', label: 'Saved Intent (historical, not current need proof)' },
@@ -125,7 +126,46 @@ export async function GET(req: NextRequest) {
   const people = await bestPeople(db, user.tenantId, rows as { lead_id: string; job_id: string }[])
   // a discovery lead's person and published address, as its card shows them; a buyer the old reader found is kept
   const found = await discoverExportFields(db, user.tenantId, rows as { lead_id: string }[])
-  const csv = toCsv(rows.map(r => ({ ...r, ...people.get(r.lead_id as string), ...(people.get(r.lead_id as string)?.best_person ? { contact: found.get(r.lead_id as string)?.contact ?? r.contact, name: found.get(r.lead_id as string)?.name ?? r.name } : found.get(r.lead_id as string)), discovered_via: via.get(String(r.lead_id))?.text ?? '', discovered_via_link: via.get(String(r.lead_id))?.link ?? '', evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]), date_context: (() => { const lead = { intent: typeof r.intent === 'number' ? r.intent : null, event_date: typeof r.event_date === 'string' ? r.event_date : null, event_date_proof: typeof r.event_date_proof === 'string' ? r.event_date_proof : null, signal: typeof r.signal === 'string' ? r.signal : null, signal_kind: typeof r.signal_kind === 'string' ? r.signal_kind : null }; const w = jobWindowDays({ query: typeof r.job_query === 'string' ? r.job_query : null, icp: typeof r.job_icp === 'string' ? r.job_icp : null, run_budget: typeof r.job_run_budget === 'string' ? r.job_run_budget : null }); const o = { windowDays: w, timingRequired: w != null || TIMING_REQUESTED.test(typeof r.job_query === 'string' ? r.job_query : '') }; return eventDateCopy(lead.event_date, typeof r.date_status === 'string' ? r.date_status : null, surfaceStoredIntent(lead, o).timing, { dayVerified: eventDayVerified(lead), windowMissed: timingUnconfirmedReason(lead, o) === 'out_of_window' }) })(), created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at })), COLUMNS)
+  const csv = toCsv(rows.map(r => {
+    const lead = {
+      intent: typeof r.intent === 'number' ? r.intent : null,
+      event_date: typeof r.event_date === 'string' ? r.event_date : null,
+      event_date_proof: typeof r.event_date_proof === 'string' ? r.event_date_proof : null,
+      signal: typeof r.signal === 'string' ? r.signal : null,
+      signal_kind: typeof r.signal_kind === 'string' ? r.signal_kind : null,
+    }
+    const query = typeof r.job_query === 'string' ? r.job_query : null
+    const windowDays = jobWindowDays({ query, icp: typeof r.job_icp === 'string' ? r.job_icp : null, run_budget: typeof r.job_run_budget === 'string' ? r.job_run_budget : null })
+    const opts = { windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(query ?? '') }
+    const { timing } = surfaceStoredIntent(lead, opts)
+    const reason = timingUnconfirmedReason(lead, opts)
+    const dayVerified = eventDayVerified(lead)
+    const undatedDiscovery = r.source_kind === 'discover' && !dayVerified
+    const eventDate = undatedDiscovery ? null : lead.event_date
+    const dateStatus = undatedDiscovery ? 'undated' : typeof r.date_status === 'string' ? r.date_status : null
+    const rationale = {
+      why: typeof r.why === 'string' ? r.why : null,
+      fit: typeof r.fit === 'number' ? r.fit : null,
+      intent: lead.intent,
+      action: typeof r.action === 'number' ? r.action : null,
+    }
+    const id = String(r.lead_id)
+    const person = people.get(id)
+    const discoveryContact = found.get(id)
+    return {
+      ...r, ...person,
+      ...(person?.best_person ? { contact: discoveryContact?.contact ?? r.contact, name: discoveryContact?.name ?? r.name } : discoveryContact),
+      discovered_via: via.get(id)?.text ?? '',
+      discovered_via_link: via.get(id)?.link ?? '',
+      evidence_origin_label: exportEvidenceOrigin(r as Parameters<typeof exportEvidenceOrigin>[0]),
+      why: savedGradeWhy(rationale, { timing, reason }),
+      event_date: eventDate,
+      date_status: dateStatus,
+      date_context: eventDateCopy(eventDate, dateStatus, timing, { dayVerified, windowMissed: reason === 'out_of_window' }),
+      timing_note: undatedDiscovery ? null : r.timing_note,
+      created_at: typeof r.created_at === 'number' ? new Date(r.created_at * 1000).toISOString() : r.created_at,
+    }
+  }), COLUMNS)
   await audit(user, req, { action: 'export.leads', resource: jobId ? 'scan_job' : 'leads', id: jobId || null, summary: { rows: rows.length, fixtures: includeFixtures, ...(next ? { candidate_limit: EXPORT_WORK_LIMIT, truncated: true } : {}) } })
   return new NextResponse(csv, {
     headers: {

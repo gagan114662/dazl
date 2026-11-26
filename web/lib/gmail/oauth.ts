@@ -148,6 +148,14 @@ export async function getAccessToken(db: Database.Database, tenantId: string, de
 // #740's compare-and-set uses). Send paths pass it to recheckSendAuthority as expectRefreshCt, so a connection replaced
 // between the token fetch and the Gmail handoff - even to the same address - refuses the send. The value is a server-internal
 // comparison key: never log it or return it in a response.
+// Mark the connection needs_reconnect, scoped to the exact connection generation (refresh ciphertext)
+// the caller acted on: a connection replaced since must never be marked by a stale caller (#740).
+// Returns whether the row was marked. The token path uses it on a dead grant; the test-send path
+// (#1709) uses it when Gmail rejects the send itself with 401/403.
+export function markNeedsReconnectBound(db: Database.Database, tenantId: string, refreshCt: string): boolean {
+  return db.prepare("UPDATE gmail_accounts SET status = 'needs_reconnect' WHERE tenant_id = ? AND refresh_ct = ?").run(tenantId, refreshCt).changes === 1
+}
+
 export async function getAccessTokenBound(db: Database.Database, tenantId: string, deps: OAuthDeps = {}): Promise<{ token: string; refreshCt: string }> {
   const env: OAuthEnv = deps.env ?? (process.env as OAuthEnv)
   const staging = stagingGmail(E(env)).mode === 'stub'
@@ -179,8 +187,7 @@ export async function getAccessTokenBound(db: Database.Database, tenantId: strin
   if (res.status === 400 || res.status === 401) {
     const j = (await res.json().catch(() => ({}))) as { error?: string }
     if (j.error === 'invalid_grant' || res.status === 401) {
-      const r = db.prepare("UPDATE gmail_accounts SET status = 'needs_reconnect' WHERE tenant_id = ? AND refresh_ct = ?").run(tenantId, acc.refresh_ct)
-      if (r.changes !== 1) throw changed() ?? new GmailError('retry', 'connection_replaced')
+      if (!markNeedsReconnectBound(db, tenantId, acc.refresh_ct)) throw changed() ?? new GmailError('retry', 'connection_replaced')
       throw new GmailError('reconnect', 'grant_revoked')
     }
   }

@@ -50,7 +50,7 @@ test('#1571 the card header names the website a discovery lead carries; no websi
     lead('Harbour Smiles', { domain: null, person: 'Sam Lee', title: 'Owner', person_source_url: 'https://news.example/harbour-smiles' }),
     lead('Cedar Dental', { domain: 'not a domain', person: 'Kim Park', title: 'Owner', person_source_url: 'https://news.example/cedar-dental' }),
   ]
-  const canned: DiscoverResult = { leads, seen: leads.map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `${l.company} will open its second clinic this year.` })),
+  const canned: DiscoverResult = { leads, seen: leads.map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `${l.company} will open its second clinic. The opening was announced on ${l.signal_date}.` })),
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null }
   let asked = 0
   const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch
@@ -62,7 +62,7 @@ test('#1571 the card header names the website a discovery lead carries; no websi
   db.prepare("INSERT INTO leads (id, scan_job_id, name, company, contact, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind) VALUES ('legacy', ?, '', 'Bright Dental', '+1 416 555 0100', 'Opening a second clinic', 'https://news.example/bright', 85, 'Bright Dental will open its second clinic', ?, 'verified', 85, 4, 4, 'expanding', 'news')").run(old, new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10))
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(old)
 
-  type Row = { id: string; company: string; company_domain: string | null; source_kind?: string | null }
+  type Row = { id: string; company: string; company_domain: string | null; source_kind?: string | null; day_verified?: boolean }
   const read = async (jobId: string) => {
     const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${jobId}`))
     assert.equal(res.status, 200)
@@ -86,6 +86,7 @@ test('#1571 the card header names the website a discovery lead carries; no websi
   assert.equal(a.confirmed, false)
   assert.ok(!/Confirmed|Source confirmed/.test(a.html), 'identified is not ownership-verified')
   // 5. Approve is as it was for this lead (a dated signal, an address its own site prints)
+  assert.equal(nw.day_verified, true, 'the read page states the exact day')
   assert.deepEqual(a.approve, { ok: true })
   // 2. no stored website
   const hs = of('Harbour Smiles')
