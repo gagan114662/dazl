@@ -1,7 +1,7 @@
 // Reads a lead's proof page ourselves and labels the lead. It never hides one (launch brief, Step 3): a page we could not
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
 import type { DiscoveredLead, SeenPage } from './agent.ts'
-import { dateMentions } from '../scan/date-in-text.ts'
+import { dateMentions, datesStatedIn, eventYears } from '../scan/date-in-text.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -192,14 +192,26 @@ export function relativeDay(body: string, now: Date): string | null {
   const [d] = [...days]
   return d > 365 ? null : new Date(now.getTime() - d * 86_400_000).toISOString().slice(0, 10)
 }
+// #377/#1592: for a company event, the page's own publication day is not the event's day when the event's own words say
+// otherwise: the quote naming an older year, or the page's statement of the event dating it to a different day. The day
+// still shows (it is printed on the page) but never as a verified event date, so an old event cannot arrive as a fresh,
+// verified one. When the event's own words carry no date, an announcement's publication day remains its day, as the spec says.
+function eventDayMatches(lead: DiscoveredLead, said: string[], now: Date): boolean {
+  if (!lead.signal_date) return false
+  if (eventYears(lead.evidence_quote ?? '').some(y => y <= now.getUTCFullYear() - 2)) return false
+  const stated = new Set(said.flatMap(s => [...datesStatedIn(s)]))
+  return stated.size === 0 || stated.has(lead.signal_date)
+}
 function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_age: string | null, now: Date): CheckedLead {
   if (pageIsGone(body)) return { ...lead, amount: null, ...indexDate(page_age, now), proof: 'gone', proof_read_by: by, page_age, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
   // A read page supports the signal when the quoted evidence is on it and, in ONE place where it stands, the page's own statements
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
   const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
-  const statedDay = dayOnPage(lead.signal_date, body) ? lead.signal_date : null
-  const day = statedDay ?? relativeDay(body, now)
+  const onPage = dayOnPage(lead.signal_date, body)
+  const guarded = !!lead.event_kind && !!onPage && !eventDayMatches(lead, said, now)
+  const statedDay = onPage && !guarded ? lead.signal_date : null
+  const day = guarded ? lead.signal_date : statedDay ?? relativeDay(body, now)
   return { ...lead, amount: amountOnPage(lead.amount, body) ? lead.amount : null, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
     quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
 }

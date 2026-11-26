@@ -44,6 +44,30 @@ test('checkLead: the amount survives only when the proof page prints it; the lea
   assert.equal(dropped.event_kind, 'funding', 'the kind is a claim about the event, not about the page text')
 })
 
+test('checkLead (#377): an article published now about an old event does not arrive as a dated, verified event', async () => {
+  const never = (() => { throw new Error('must not be fetched') }) as unknown as typeof fetch
+  const now = new Date('2026-11-26T00:00:00Z')
+  // a today-published article whose quote names the event's own, older year; the model supplied the publication day
+  const old = await checkLead(event({ signal: 'Raised a seed round in 2019', evidence_quote: 'Northwind Dental raised a seed round of US$4.2 million in March 2019', signal_date: '2026-11-26' }),
+    [{ url: base.evidence_url, title: 't', page_age: null, text: 'Published 26 November 2026. Northwind Dental raised a seed round of US$4.2 million in March 2019, the company said.' }], never, undefined, now)
+  assert.equal(old.proof, 'confirmed', 'the company and the quote are on the page: the lead stands')
+  assert.equal(old.date, '2026-11-26', 'the day still shows')
+  assert.equal(old.date_on_page, false, 'a publication day over an event the quote itself dates to 2019 is not the event\'s day')
+  assert.equal(old.amount, 'US$4.2 million')
+  const v = discoveredLead({ ...old, date_source: 'page', proof_read_by: 'reader', page_age: null, quote_on_page: true, signal_seen: true, claim_lacks: [] } as never, 1_800_000_000)
+  assert.equal(v.event_date_proof, null, 'never page_bound for a freshened old event')
+  assert.equal(v.date_status, 'unverified')
+  // the page dating the event to another day than the supplied one: the same refusal
+  const other = await checkLead(event({ evidence_quote: 'Northwind Dental has raised a seed round', signal_date: '2026-11-26' }),
+    [{ url: base.evidence_url, title: 't', page_age: null, text: 'Published 26 November 2026. Northwind Dental has raised a seed round, the company announced on 12 May 2019.' }], never, undefined, now)
+  assert.equal(other.date_on_page, false, 'the event\'s own statement dates it to 2019-05-12, not the supplied day')
+  // control: an announcement whose own words carry no other date keeps its day
+  const announce = await checkLead(event({ evidence_quote: 'Northwind Dental has raised a seed round' }),
+    [{ url: base.evidence_url, title: 't', page_age: null, text: 'Published 14 October 2026. Northwind Dental has raised a seed round.' }], never, undefined, now)
+  assert.equal(announce.date_on_page, true, 'a page that is itself the announcement keeps its day')
+  assert.equal(announce.date, '2026-10-14')
+})
+
 test('discoveredLead: an event lead carries its kind, amount and why-now to the stored row', () => {
   const v = discoveredLead({ ...event(), date: '2026-10-14', date_source: 'page', date_on_page: true, proof: 'confirmed',
     proof_read_by: 'reader', page_age: null, quote_on_page: true, signal_seen: true, claim_lacks: [] } as never, 1_800_000_000)
