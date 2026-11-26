@@ -3,7 +3,7 @@
 // own people. It runs on the small model, in parallel, and only fills fields that are empty. It never changes the signal,
 // its date or its proof, and never replaces a person the first pass already found.
 import Anthropic from '@anthropic-ai/sdk'
-import { isGenericInbox } from '../outreach/generic-inbox.ts'
+import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
 import { isPersonName } from '../people/job-title-name.ts'
 import { configuredSearchAllowance, createSearchBudget, type SearchBudget } from './search-budget.ts'
 import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage } from './agent.ts'
@@ -144,6 +144,37 @@ function containsPhrase(text: string, phrase: string): boolean {
   return !!target && ` ${normalize(text)} `.includes(` ${target} `)
 }
 
+function* aroundName(text: string, name: string, radius: number) {
+  const words = name.normalize('NFKC').match(/[\p{L}\p{M}\p{N}]+/gu)
+  if (!words?.length) return
+  const pattern = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${words.join('[^\\p{L}\\p{M}\\p{N}]+')}(?![\\p{L}\\p{M}\\p{N}])`, 'giu')
+  const normalized = text.normalize('NFKC')
+  for (const match of normalized.matchAll(pattern)) {
+    const start = match.index
+    const end = start + match[0].length
+    yield { before: normalized.slice(Math.max(0, start - radius), start), after: normalized.slice(end, end + radius) }
+  }
+}
+
+function addressBesideName(text: string, name: string, email: string): boolean {
+  // A compact directory can show multiple addresses within 200 characters. In
+  // that case the address must also match this person's name, never a neighbour's.
+  const addressPattern = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g
+  const otherNameLabel = /(?:^|[\n;|])\s*(?:[\p{Lu}][\p{L}'’-]+ +){1,3}[\p{Lu}][\p{L}'’-]+\s*:/u
+  for (const { before, after } of aroundName(text, name, 200)) {
+    const addresses = new Set(`${before} ${after}`.toLowerCase().match(addressPattern))
+    if (!addresses.has(email) || (addresses.size > 1 && !nameBound(email.split('@')[0], name))) continue
+    for (const side of [before, after]) {
+      for (const match of side.toLowerCase().matchAll(addressPattern)) {
+        if (match[0] !== email) continue
+        const between = side === after ? side.slice(0, match.index) : side.slice(match.index + email.length)
+        if (!otherNameLabel.test(between)) return true
+      }
+    }
+  }
+  return false
+}
+
 function verifyContact(lead: DiscoveredLead, candidate: Enriched, seen: ReadonlyMap<string, SeenPage>): Enriched {
   const personPage = candidate.person_source_url ? seen.get(candidate.person_source_url)?.text : null
   const proposedDomain = candidate.domain
@@ -153,21 +184,25 @@ function verifyContact(lead: DiscoveredLead, candidate: Enriched, seen: Readonly
   const ownPage = (url: string | null) => !!domain && !!url && host(url) === domain
   const person = candidate.person
   const title = candidate.title
-  const verifiedPerson = person && isPersonName(person) && title && personPage &&
-    personPage.split(/\r?\n[ \t]*\r?\n/).some(block =>
-      block.length <= 800 && containsPhrase(block, person) && containsPhrase(block, title) &&
-      (ownPage(candidate.person_source_url) || containsPhrase(block, lead.company)) &&
-      !/\b(?:former|retired|emeritus|assistant to)\b/i.test(block))
+  const entries = !personPage ? [] : ownPage(candidate.person_source_url)
+    ? [personPage] : personPage.split(/\r?\n[ \t]*\r?\n/)
+  const verifiedPerson = person && isPersonName(person) && title && entries.some(entry => {
+    for (const { before, after } of aroundName(entry, person, 300)) {
+      const nearby = `${before} ${person} ${after}`
+      if (!containsPhrase(nearby, title) || (!ownPage(candidate.person_source_url) && !containsPhrase(nearby, lead.company))) continue
+      if (!/\b(?:former|retired|emeritus|assistant to)\b/i.test(`${before.slice(-30)} ${person} ${after.slice(0, 50)}`)) return true
+    }
+    return false
+  })
   const contact = verifiedPerson ? candidate : { ...candidate, person: null, title: null, person_source_url: null, linkedin_url: null }
   const buyer = lead.person ?? contact.person
-  const email = contact.email
+  const email = contact.email?.toLowerCase()
   if (buyer && isPersonName(buyer) && (!person || samePerson(buyer, contact.person)) && email && ownPage(contact.email_source_url)) {
     const [local, addressDomain] = email.split('@')
     const mailbox = local.split('+')[0].replace(/[._-]/g, '').replace(/\d+$/, '')
     const source = seen.get(contact.email_source_url!)?.text
     if (addressDomain === domain && !isGenericInbox(mailbox) && !/^(?:support|billing|careers|hr|noreply|webmaster|helpdesk|patients?|manager|owner|doctor|dentist)$/.test(mailbox) &&
-      source?.split(/\r?\n[ \t]*\r?\n/).some(block => block.length <= 400 && containsPhrase(block, buyer) &&
-        block.toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g)?.includes(email))) return contact
+      source && addressBesideName(source, buyer, email)) return { ...contact, email }
   }
   return { ...contact, email: null, email_source_url: null }
 }

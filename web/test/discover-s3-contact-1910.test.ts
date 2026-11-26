@@ -78,3 +78,20 @@ test('S3 needs the registry to tie the person to this business in the same entry
   ])
   assert.deepEqual([result.person, result.email], [null, null])
 })
+
+test('S3 reads a long single-line team page and keeps only the matching person’s address', async () => {
+  const teamLine = [
+    'About our team. '.repeat(150),
+    'Avery Chen, Dentist: avery@cedar.example.',
+    'Taylor Kay, Dentist: taylor@cedar.example.',
+    'Dana Ruiz, Practice Manager: DANA@CEDAR.EXAMPLE.',
+    'Morgan Lee, Dentist: morgan@cedar.example.',
+    'Robin Shah, Owner: robin@cedar.example.',
+  ].join(' ')
+  assert.ok(teamLine.length > 2_000)
+  const sources = [page(team, teamLine)]
+  const kept = await lookup({ email: 'Dana@Cedar.example' }, sources)
+  assert.deepEqual([kept.person, kept.title, kept.email], [name, title, email])
+  const neighbour = await lookup({ email: 'morgan@cedar.example' }, sources)
+  assert.deepEqual([neighbour.person, neighbour.email], [name, null])
+})
