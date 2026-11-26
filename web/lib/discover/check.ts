@@ -87,27 +87,48 @@ export function statesSignal(signal: string, company: string, textToSearch: stri
 export type AskSignal = (signal: string, company: string, statements: string[]) => Promise<boolean>
 // The page's own statements: a line or block, cut again where a full stop, question mark, exclamation mark or semicolon ends one.
 const statements = (page: string): string[] => page.split(/\n+|(?<=[.!?…;])\s+/).map(s => s.trim()).filter(Boolean)
-// The quoted evidence as the PAGE states it: for each place the quoted words stand (the whole quote, or any six consecutive words of
-// it: a quote is often trimmed or joined with an ellipsis), the statements those words run through THERE, each read to its end. Empty
-// when the quote is not on the page.
+// The quoted evidence must be contiguous after formatting normalization, even if its edges clip a word. An explicit ellipsis can omit
+// words inside a single statement, but each quoted fragment must still occur there in order.
 // This, not the run's excerpt, is what a claim is judged against: an excerpt stops where the run cut it (300 characters at most), and
 // words in an excerpt that the page does not print are not evidence. A word in the next statement is not this statement's word.
 // Each place is its own evidence and is judged alone. The same words often stand in several places (a heading, a menu, two unrelated
 // sentences); pooling them let one place's words finish another's claim (review of #1575 at 0db467b5).
 export function quoteStatements(quote: string | null, page: string): string[] {
-  const q = fold(quote ?? '').split(' ').filter(Boolean)
-  if (q.join(' ').length < 12) return []
-  const all = statements(page), words: string[] = [], at: number[] = []
-  all.forEach((s, i) => { for (const w of fold(s).split(' ')) if (w) { words.push(w); at.push(i) } })
+  const q = fold(quote ?? '')
+  if (q.length < 12) return []
+  const all = statements(page)
+  const parts: string[] = [], starts: number[] = [], statementIndices: number[] = []
+  let offset = 0
+  all.forEach((statement, i) => {
+    const part = fold(statement)
+    if (!part) return
+    parts.push(part)
+    starts.push(offset)
+    statementIndices.push(i)
+    offset += part.length + 1
+  })
+  const normalized = parts.join(' ')
   const places = new Set<string>()
-  const find = (needle: string[]): boolean => {
-    let found = false
-    for (let i = words.indexOf(needle[0]); i >= 0 && i + needle.length <= words.length; i = words.indexOf(needle[0], i + 1)) {
-      if (needle.every((w, j) => words[i + j] === w)) { found = true; places.add(all.slice(at[i], at[i + needle.length - 1] + 1).join(' ')) }
-    }
-    return found
+  let first = 0, last = 0
+  for (let at = normalized.indexOf(q); at >= 0; at = normalized.indexOf(q, at + 1)) {
+    while (starts[first + 1] <= at) first++
+    const end = at + q.length - 1
+    while (starts[last + 1] <= end) last++
+    places.add(all.slice(statementIndices[first], statementIndices[last] + 1).join(' '))
   }
-  if (!find(q)) for (let i = 0; i + 6 <= q.length; i++) find(q.slice(i, i + 6))
+  if (places.size === 0) {
+    const fragments = (quote ?? '').split(/…|\.{3}/).map(fold).filter(Boolean)
+    if (fragments.length > 1) for (const statement of all) {
+      const line = ` ${fold(statement)} `
+      let next = 0
+      if (fragments.every(fragment => {
+        const start = line.indexOf(` ${fragment} `, next)
+        if (start < 0) return false
+        next = start + fragment.length + 1
+        return true
+      })) places.add(statement)
+    }
+  }
   return [...places]
 }
 export const quoteOnPage = (quote: string | null, page: string): boolean => quoteStatements(quote, page).length > 0
@@ -280,13 +301,24 @@ export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fet
   if (hit?.text) return fromPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
   // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
+  let denied = false
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
       if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
+      denied = r.status === 401 || r.status === 403
       // dazl asked and the address is gone: a search result's title does not bring it back
       if (r.status === 404 || r.status === 410) return { ...lead, ...indexDate(hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
     } catch { /* fall through to what the search results say */ }
+  }
+  const alternate = lead.alternate_evidence
+  if (denied && alternate && publicUrl(alternate.url) && pageKey(alternate.url) !== key) {
+    const read = seen.find(p => p.text && pageKey(p.url) === pageKey(alternate.url))
+    if (read?.text) {
+      const candidate = { ...lead, evidence_url: alternate.url, evidence_quote: alternate.quote, signal_date: alternate.date }
+      const checked = await settle(judge(candidate, read.text, 'reader', read.page_age, now), read.text, ask)
+      if (isShown(checked)) return checked
+    }
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
   const base = { ...lead, ...indexDate(hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
