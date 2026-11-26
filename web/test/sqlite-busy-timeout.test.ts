@@ -15,7 +15,7 @@ const check = `
 
 function openApp(timeout: string | undefined) {
   const dir = mkdtempSync(join(tmpdir(), 'sqlite-timeout-'))
-  const env = { ...process.env, DB_PATH: join(dir, 'app.db') }
+  const env: NodeJS.ProcessEnv = { ...process.env, DB_PATH: join(dir, 'app.db') }
   delete env.DATABASE_URL
   if (timeout === undefined) delete env.DAZL_SQLITE_BUSY_TIMEOUT_MS
   else env.DAZL_SQLITE_BUSY_TIMEOUT_MS = timeout
