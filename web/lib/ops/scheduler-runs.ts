@@ -172,8 +172,13 @@ export async function recordProgress(d: DbLike, runId: string, tenantId: string,
                 consecutive_failures = CASE excluded.last_outcome WHEN 'success' THEN 0 WHEN 'hold' THEN scheduler_progress.consecutive_failures ELSE scheduler_progress.consecutive_failures + 1 END,
                 last_run_id = excluded.last_run_id`,
     [tenantId, kind, now, o.outcome === 'success' ? (typeof o.freshAsOf === 'number' && Number.isFinite(o.freshAsOf) ? Math.min(now, Math.floor(o.freshAsOf)) : now) : null, err, o.outcome, held, o.outcome === 'failure' ? 1 : 0, runId])
-  await db.run(`UPDATE scheduler_runs SET tenants_attempted = (SELECT count(DISTINCT tenant_id) FROM scheduler_progress WHERE last_run_id = ?),
-              tenants_failed = (SELECT count(DISTINCT tenant_id) FROM scheduler_progress WHERE last_run_id = ? AND last_outcome = 'failure') WHERE id = ?`, [runId, runId, runId])
+  await db.tx(function* (tx) {
+    // In Postgres, a waiting UPDATE can retain the snapshot it took before getting the row lock.
+    // Lock first so the totals query takes its snapshot after any preceding recomputation commits.
+    if (tx.kind === 'pg') yield* tx.get('SELECT id FROM scheduler_runs WHERE id = ? FOR UPDATE', [runId])
+    yield* tx.run(`UPDATE scheduler_runs SET tenants_attempted = (SELECT count(DISTINCT tenant_id) FROM scheduler_progress WHERE last_run_id = ?),
+                  tenants_failed = (SELECT count(DISTINCT tenant_id) FROM scheduler_progress WHERE last_run_id = ? AND last_outcome = 'failure') WHERE id = ?`, [runId, runId, runId])
+  })
 }
 export async function finishRun(d: DbLike, runId: string, status: 'ok' | 'partial' | 'failed' | 'lease_lost', error?: unknown, now = nowS()): Promise<void> {
   await asDb(d).run("UPDATE scheduler_runs SET finished_at = ?, status = ?, error = ? WHERE id = ? AND status = 'running'", [now, status, error === undefined ? null : failureReason(error), runId])
