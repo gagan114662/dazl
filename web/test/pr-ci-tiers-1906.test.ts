@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import test from 'node:test'
 
-type Step = { if?: string; run?: string }
+type Step = { 'working-directory'?: string; if?: string; run?: string }
 type Job = { if?: string; env?: Record<string, string>; needs?: string[]; steps: Step[] }
 type Workflow = { on: { pull_request: { types: string[]; paths?: string[] } }; env?: Record<string, string>; jobs: Record<string, Job> }
 const { load } = createRequire(import.meta.url)('js-yaml') as { load: (yaml: string) => unknown }
@@ -80,3 +80,15 @@ test('#1906 an unlabeled PR cannot pass the full-suite check even when every oth
     if (tier === 'false') assert.match(run.stdout, /add ready-to-merge or quest-approved/i)
   }
 })
+
+for (const name of ['web-ci', 'release-gate', 'release-preflight']) {
+  test(`#1906 ${name} can report full-suite deferral without a checkout`, () => {
+    const deferred = Object.entries(read(name).jobs).flatMap(([id, job]) =>
+      job.steps.filter(step => step.run?.includes('full suite deferred until ready-to-merge'))
+        .map(step => ({ id, step })))
+    assert.ok(deferred.length, 'the workflow reports full-suite deferral')
+    for (const { id, step } of deferred) {
+      assert.equal(step['working-directory'], '.', `${id} must run from the runner workspace root`)
+    }
+  })
+}

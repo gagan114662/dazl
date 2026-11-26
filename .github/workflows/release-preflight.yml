@@ -22,6 +22,7 @@ jobs:
     steps:
       - name: Explain deferred full suite
         if: env.FULL_CI != 'true'
+        working-directory: .
         run: echo "full suite deferred until ready-to-merge" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
         if: env.FULL_CI == 'true'

@@ -218,7 +218,8 @@ jobs:
       FAST: ${{ needs.fast-pr.result }}
       SHARDS: ${{ needs.sqlite-shard.result }}
     steps:
-      - run: |
+      - working-directory: .
+        run: |
           if [ "$EVENT" = pull_request ] && [ "$FAST" != success ]; then
             echo "::error::Fast PR checks: $FAST"
             exit 1
@@ -240,7 +241,8 @@ jobs:
       FAST: ${{ needs.fast-pr.result }}
       SHARDS: ${{ needs.postgres-shard.result }}
     steps:
-      - run: |
+      - working-directory: .
+        run: |
           if [ "$EVENT" = pull_request ] && [ "$FAST" != success ]; then
             echo "::error::Fast PR checks: $FAST"
             exit 1
