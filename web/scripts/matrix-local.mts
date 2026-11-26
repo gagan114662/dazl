@@ -4,7 +4,7 @@
 // PASS/FAIL. The DEFINITIONS differ in places (see the footer the table prints), so compare a local row with a local row: run it
 // BEFORE a change and AFTER it, and show both in the PR.
 //
-//   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--dry] [--json] [--timeout 300]
+//   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--apollo-budget N] [--dry] [--json] [--timeout 300]
 //        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir]
 //
 // Keys (never printed, never stored; the in-memory store dies with the process). Same ones the staging scans use:
@@ -14,7 +14,7 @@
 //   other scan knob: the staging values, so a local scan behaves like a staging scan
 // --env-file reads KEY=VALUE lines into the environment BEFORE the pipeline loads (a non-empty value already in the environment wins).
 // --contacts: run WITHOUT a run dollar limit on the job, as Hermes's staging matrix does, so the paid contact pass (the tenant's
-// Apollo/PDL keys: MATRIX_PDL_KEY, MATRIX_APOLLO_KEY, saved for each case when set) runs and named % / email % can include its
+// PDL key: MATRIX_PDL_KEY, saved for each case when set) runs and named % / email % can include its
 // contacts. Without --contacts every case carries a run budget, which switches that pass OFF (the table says which mode ran).
 // In --contacts mode the cap is the scan spend ledger's per-scan cap (DAZL_SCAN_CAP_CAD, set by this script to the case cap and
 // checked before every paid call), and the runner also stops the job when its recorded spend reaches the cap.
@@ -69,7 +69,22 @@ const commit = (() => { try { return execSync('git rev-parse --short HEAD', { cw
 const date = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 const contacts = flag('contacts')
-const contactKeys = { pdl: (process.env.MATRIX_PDL_KEY || '').trim(), apollo: (process.env.MATRIX_APOLLO_KEY || '').trim() }
+const requestedApolloBudget = opt('apollo-budget') ?? ''
+const operatorApolloCap = Number(process.env.APOLLO_CREDIT_CAP)
+let apolloBudget = 0
+if (flag('apollo-budget')) {
+  if (!contacts) refuse('--apollo-budget requires --contacts. Not running.')
+  const requested = Number(requestedApolloBudget)
+  if (!/^[0-9]+$/.test(requestedApolloBudget) || !Number.isSafeInteger(requested) || requested < 1) {
+    refuse('--apollo-budget must be a positive whole number. Not running.')
+  }
+  if (!Number.isSafeInteger(operatorApolloCap) || operatorApolloCap < 1) {
+    refuse('--apollo-budget requires a positive operator APOLLO_CREDIT_CAP. Not running.')
+  }
+  apolloBudget = Math.min(requested, operatorApolloCap)
+}
+process.env.APOLLO_CREDIT_CAP = String(apolloBudget)
+const pdlKey = (process.env.MATRIX_PDL_KEY || '').trim()
 if (flag('dry')) {
   // no network, no model call, nothing created: the plan and what is missing
   console.log(`engine: ${engine}`)
@@ -77,7 +92,7 @@ if (flag('dry')) {
   for (const c of cases) console.log(`  ${c.id.padEnd(24)} ${c.query}`)
   const knobs = ['TINYFISH_SEARCHES_PER_SCAN', 'TINYFISH_FETCHES_PER_SCAN', 'SITECRAWL_ENABLED', 'NEWS_SEARCH_ENABLED', 'EMAIL_GUESS_ENABLED']
   console.log(`keys: TINYFISH_API_KEY ${tinyfish ? 'set' : 'MISSING'}; Anthropic key ${anthropic ? 'set' : 'MISSING'} (MATRIX_ANTHROPIC_KEY / SCOREBOARD_ANTHROPIC_KEY / DAZL_TRIAL_ANTHROPIC_KEY)`)
-  console.log(`mode: ${contacts ? `--contacts (no run dollar limit; contact pass on; PDL key ${contactKeys.pdl ? 'set' : 'MISSING'}, Apollo key ${contactKeys.apollo ? 'set' : 'MISSING'})` : 'run budget per case (paid contact pass OFF; use --contacts to measure it)'}`)
+  console.log(`mode: ${contacts ? `--contacts (no run dollar limit; contact pass on; PDL key ${pdlKey ? 'set' : 'MISSING'}, ${apolloBudget ? `Apollo budget ${apolloBudget}` : 'Apollo off'})` : 'run budget per case (paid contact pass OFF; use --contacts to measure it)'}`)
   console.log(`staging knobs: ${knobs.map(k => `${k}=${process.env[k] === undefined ? 'unset' : 'set'}`).join(' ')}`)
   process.exit(anthropic && tinyfish ? 0 : 2)
 }
@@ -105,11 +120,10 @@ for (const c of cases) saveKey(db, tenantOf(c), 'anthropic', anthropic, master)
 const savedContactKeys: string[] = []
 if (contacts) {
   const { saveCredential } = await import('../lib/connectors/store.ts')
-  const { ENRICH_APOLLO, ENRICH_PDL } = await import('../lib/enrich/index.ts')
-  for (const [name, key, connector] of [['PDL', contactKeys.pdl, ENRICH_PDL], ['Apollo', contactKeys.apollo, ENRICH_APOLLO]] as const) {
-    if (!key) continue
-    for (const c of cases) saveCredential(db, tenantOf(c), connector, key, master)
-    savedContactKeys.push(name)
+  const { ENRICH_PDL } = await import('../lib/enrich/index.ts')
+  if (pdlKey) {
+    for (const c of cases) saveCredential(db, tenantOf(c), ENRICH_PDL, pdlKey, master)
+    savedContactKeys.push('PDL')
   }
 }
 
