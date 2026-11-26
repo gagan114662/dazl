@@ -73,29 +73,46 @@
     } catch { return null }
   }
   // The post's date as the page shows it: its own timestamp (a YYYY-MM-DD or a full datetime), or a relative marker
-  // ("3d", "2w", "5mo", "1y") resolved to the calendar day it names. Anything else is no date, never a guess.
+  // ("45m", "3h", "3d", "2w", "5mo", "1y"). A marker names a RANGE of days, so the day returned is the OLDEST one it
+  // could mean (2w -> 14-20 days ago -> the 20th): never newer than the truth, so the server's 30-day window never
+  // lets an old post in. Anything else is no date, never a guess.
   function postDate(shown) {
     const t = squash(shown)
     const abs = /^(\d{4}-\d{2}-\d{2})/.exec(t)
     if (abs) return abs[1]
-    const rel = /^(\d+)\s*(d|w|mo|y)/i.exec(t)
+    const rel = /^(\d+)\s*(m(?!o)|h|d|w|mo|y)/i.exec(t)
     if (!rel) return null
     const n = Number(rel[1]), u = rel[2].toLowerCase()
-    const days = u === 'y' ? n * 365 : u === 'mo' ? n * 30 : u === 'w' ? n * 7 : n
+    const days = u === 'y' ? (n + 1) * 365 - 1 : u === 'mo' ? (n + 1) * 30 - 1 : u === 'w' ? (n + 1) * 7 - 1 : u === 'd' ? n + 1 : 1
     const d = new Date(Date.now() - days * 86400000)
     const p = x => String(x).padStart(2, '0')
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
   }
-  // The posts a competitor's own page links to: the post's own URL and its own date, one per post (#1588).
+  // True when the day is the page's own timestamp; false when a relative marker was resolved to its oldest day.
+  function postDateExact(shown) { return /^\d{4}-\d{2}-\d{2}/.test(squash(shown)) }
+  // A page URL of the shape a competitor's own page or a person's profile has, or null.
+  function pageUrl(href) {
+    try {
+      const u = new URL(href, 'https://www.linkedin.com')
+      if (!u.hostname.endsWith('linkedin.com')) return null
+      const m = /^\/(company\/[A-Za-z0-9%_.-]{1,100}|in\/[A-Za-z0-9%_-]{2,100})\/?/.exec(u.pathname)
+      return m ? `https://www.linkedin.com/${m[1]}/` : null
+    } catch { return null }
+  }
+  // The posts a competitor's own page links to: the post's own URL, its own date, and the page that authored it.
+  // A post whose author the page does not name is dropped: a link is not proof the competitor wrote it (#1588).
   function companyPosts(records) {
     const out = [], seen = new Set()
     for (const r of records || []) {
       const url = postUrl(r && r.href)
       if (!url || seen.has(url)) continue
-      seen.add(url); out.push({ url, date: postDate(r && r.date) })
+      const author = pageUrl(r && r.author)
+      if (!author) continue
+      const date = postDate(r && r.date)
+      seen.add(url); out.push({ url, date, approx: date != null && !postDateExact(r && r.date), author })
       if (out.length >= 25) break
     }
     return out
   }
-  root.dazlExtract = { people, postEngagers, companyPosts, postUrl, postDate, profileUrl, cleanName, blockedReason, pageProblem }
+  root.dazlExtract = { people, postEngagers, companyPosts, postUrl, postDate, postDateExact, pageUrl, profileUrl, cleanName, blockedReason, pageProblem }
 })(typeof globalThis !== 'undefined' ? globalThis : this)

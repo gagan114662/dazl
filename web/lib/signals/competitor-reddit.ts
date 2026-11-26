@@ -59,7 +59,7 @@ export async function readCompetitorsStrict(db: Db, tenantId: string): Promise<s
 
 // On the Db layer: the list is replaced in one transaction. An entry is a name, or a name with its LinkedIn page
 // (#1588: the page dazl Connect reads the competitor's own posts from). Names alone stay valid, as they always were.
-export type CompetitorEntry = string | { name: unknown; page_url?: unknown }
+export type CompetitorEntry = string | { name?: unknown; page_url?: unknown }
 export interface CompetitorPage { name: string; page_url: string }
 export async function setCompetitors(db: Db, tenantId: string, entries: CompetitorEntry[]): Promise<{ ok: boolean; error?: string; names: string[]; pages: CompetitorPage[] }> {
   const cleaned = [...new Set(entries.map(e => cleanCompetitorName(typeof e === 'string' ? e : (e as { name?: unknown }).name)).filter(Boolean))]
@@ -67,9 +67,15 @@ export async function setCompetitors(db: Db, tenantId: string, entries: Competit
   for (const n of cleaned) if (n.length < 2) return { ok: false, error: 'Competitor names need at least 2 characters', names: [], pages: [] }
   const pages = new Map<string, string>()
   for (const e of entries) {
-    if (typeof e === 'string' || e?.page_url == null || typeof e.page_url !== 'string' || !e.page_url.trim()) continue
-    const name = cleanCompetitorName(e.name)
-    const url = taskUrlOk('company_posts', e.page_url)
+    if (typeof e === 'string') continue
+    // An entry with fields is a full row: it must carry a usable name, or the whole save is refused - a malformed row
+    // must never normalize away and silently replace a saved list with a shorter one (#1588 review).
+    const name = cleanCompetitorName(e?.name)
+    if (!name) return { ok: false, error: 'Each competitor entry needs a name', names: [], pages: [] }
+    const raw = e?.page_url
+    if (raw == null) continue
+    if (typeof raw !== 'string' || !raw.trim()) return { ok: false, error: 'A competitor page must be a full LinkedIn link: https://www.linkedin.com/company/... or https://www.linkedin.com/in/...', names: [], pages: [] }
+    const url = taskUrlOk('company_posts', raw)
     if (!url) return { ok: false, error: 'Competitor pages must be full LinkedIn links: https://www.linkedin.com/company/... or https://www.linkedin.com/in/...', names: [], pages: [] }
     pages.set(name, url)
   }

@@ -29,13 +29,16 @@ function postEngagement() {
     ['.comments-comment-meta__description-subtitle', '.comments-post-meta__headline'],
     ['.comments-comment-item__content-body', '.attributed-text.text-body-medium', '.update-components-text-view']))
 }
-// #1588: the posts a competitor's own page links to, each with its own date as the page shows it.
+// #1588: the posts a competitor's own page links to, each with its own date and the page that authored it. A post whose
+// author the card does not name is dropped in extract.js: a link alone is not proof the competitor wrote it.
 function companyPosts() {
   const out = []
   for (const a of document.querySelectorAll('a[href*="/posts/"], a[href*="/feed/update/urn:li:activity:"]')) {
     const card = a.closest('div[data-urn], article, .feed-shared-update-v2, li') || a
     const t = card.querySelector('time[datetime]')
-    out.push({ href: a.getAttribute('href'), date: t ? t.getAttribute('datetime') : text(card.querySelector('time, .update-components-actor__sub-description')) })
+    const actor = card.querySelector('.update-components-actor__image a, .update-components-actor__meta-link, a[data-test-id="actor-menu-trigger"], .feed-shared-actor__image a, .feed-shared-actor__meta-link')
+    out.push({ href: a.getAttribute('href'), date: t ? t.getAttribute('datetime') : text(card.querySelector('time, .update-components-actor__sub-description')),
+      author: actor ? actor.getAttribute('href') : null })
   }
   return X.companyPosts(out)
 }

@@ -77,17 +77,20 @@ export function personOk(v: unknown): ReadPerson | null {
 }
 export const MAX_PEOPLE = 100
 
-// A post link as the extension read it on a competitor's own page: the post's own URL and its own date (YYYY-MM-DD), or
-// null when the page showed no date. #1588: a post whose recency cannot be proven is never opened.
-export interface ReadPost { url: string; date: string | null }
+// A post link as the extension read it on a competitor's own page: the post's own URL, its own date (YYYY-MM-DD, or
+// null when the page showed none), whether that day came from a timestamp or a relative marker resolved to its oldest
+// plausible day, and the page that authored the post - a company page or a person's profile, never assumed. #1588: a
+// post whose recency cannot be proven, or whose author the page did not name, is never opened.
+export interface ReadPost { url: string; date: string | null; approx: boolean; author: string }
 export const MAX_POSTS_PER_PAGE = 25
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
 export function postOk(v: unknown): ReadPost | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null
   const o = v as Record<string, unknown>
   const url = taskUrlOk('post_engagement', o.url)
+  const author = taskUrlOk('company_posts', o.author)
   const date = typeof o.date === 'string' && ISO_DAY.test(o.date) ? o.date : null
-  return url ? { url, date } : null
+  return url && author ? { url, date, approx: o.approx === true, author } : null
 }
 
 // A person engaging with a post, as the post page showed them: the ReadPerson fields plus what they did. A record from a
