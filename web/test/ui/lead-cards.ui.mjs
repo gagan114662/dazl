@@ -60,7 +60,9 @@ let heldMode = false; const retryCalls = []
 const writes = []; const outreachBodies = []; const quarantineCalls = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
-await ctx.route('**/*', async route => {
+// Named so the 390px sub-context below installs the same stub (an inline arrow here left routeApi undefined and
+// crashed the run after the density assert had passed - release-gate run 45739033537).
+const routeApi = async route => {
   const req = route.request(); const u = new URL(req.url()); const m = req.method()
   if (u.origin !== base) return route.abort()
   if (!u.pathname.startsWith('/api/')) return route.continue()
@@ -81,7 +83,8 @@ await ctx.route('**/*', async route => {
   const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
   if (er && m === 'POST') { retryCalls.push({ lead: er[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
   return json({}, 404)
-})
+}
+await ctx.route('**/*', routeApi)
 const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 try {
