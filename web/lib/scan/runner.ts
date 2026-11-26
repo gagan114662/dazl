@@ -1450,7 +1450,7 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
   return {
     name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
     score: DISCOVER_SCORE[l.confidence], confidence: DISCOVER_SCORE[l.confidence], excerpt: (l.evidence_quote ?? l.signal).slice(0, 400),
-    event_date: l.date, event_date_proof: printed && l.date_on_page && l.proof === 'confirmed' ? 'page_bound' : null,
+    event_date: l.date, event_date_proof: printed && l.date_on_page && l.proof === 'confirmed' && l.signal_seen ? 'page_bound' : null,
     event_date_proof_note: printed && l.date_on_page ? 'the date is printed on the proof page' : null,
     timing_note: l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
     date_status: dated ? (printed && l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
@@ -1539,7 +1539,10 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const shown = live.filter(isShown), unconfirmed = live.filter(l => !isShown(l))
   const out: VerifyOutcome = {
     leads: shown.map(l => discoveredLead(l, now)),
-    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required' })),
+    review: unconfirmed.map(l => ({
+      ...discoveredLead(l, now),
+      review_reason: l.proof === 'confirmed' && !l.signal_seen ? 'quote_unconfirmed' : 'source_review_required',
+    })),
     dropped: gone.length ? { page_not_found: gone.length } : {},   // the Leads page's words for it: "page no longer exists"
   }
   // #1579: the lane's own account goes into the saved run report, so a search that returns nothing says why (which budget it ran

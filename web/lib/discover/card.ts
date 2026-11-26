@@ -115,6 +115,7 @@ export function discoverProofHold(l: ProofLead, now: Date = new Date()): string 
   if (l.quarantined_at) return 'Rejected. Undo to use it again.'
   if (l.gate_held) return 'A required check has not passed. Research only.'
   if (l.review_reason === 'public_sector_non_buyer') return 'Not a fit for this offer. The organization is a public-sector body.'
+  if (l.review_reason === 'quote_unconfirmed') return 'The proof page does not confirm the claimed signal. Check the source under Needs your review.'
   if (l.review_reason) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
   if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
   if (!hasDiscoveryEventDate(l)) return 'The event date is unconfirmed. Research only.'
@@ -186,7 +187,7 @@ export function discoverNotReady(lead: DiscoverStateLead): string | null {
   const s = discoverState(lead)
   if (discoverReady(s)) return null
   if (s === 'rejected') return 'rejected'
-  if (s === 'review') return 'needs your review'
+  if (s === 'review' && lead.review_reason !== 'quote_unconfirmed') return 'needs your review'
   if (s === 'no_contact') return 'no contact found yet'
   const first = (discoverProofHold(asSaved(lead)) ?? '').split('. ')[0].replace(/\.$/, '')
   return first.charAt(0).toLowerCase() + first.slice(1)

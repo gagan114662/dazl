@@ -314,9 +314,14 @@ async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeo
   const key = pageKey(lead.evidence_url)
   const hit = seen.find(p => pageKey(p.url) === key) ?? null
   // 1. the text Claude's reader returned for this very page
-  if (hit?.text) return fromPage(await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask), null, publicUrl(lead.evidence_url), fetchImpl, timeoutMs, now)
-  // 2. dazl's own read of the page
   const u = publicUrl(lead.evidence_url)
+  const reader = hit?.text ? await settle(judge(lead, hit.text, 'reader', hit.page_age, now), hit.text, ask) : null
+  // A reader excerpt can name the company and give the date while omitting the actual evidence.
+  // Read the same page once before holding the lead. Its full text must independently prove the signal.
+  if (reader && (!u || reader.proof !== 'confirmed' || reader.date_source !== 'page' || reader.signal_seen)) {
+    return fromPage(reader, null, u, fetchImpl, timeoutMs, now)
+  }
+  // 2. dazl's own read of the page
   let denied = false
   if (u) {
     try {
@@ -336,6 +341,7 @@ async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeo
       if (isShown(checked)) return checked
     }
   }
+  if (reader) return reader
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
   const base = { ...lead, ...indexDate(hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
   // An unread search result supports the signal when its own title states the signal line.
