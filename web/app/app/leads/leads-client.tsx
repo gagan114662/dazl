@@ -1452,7 +1452,7 @@ export default function LeadsClient() {
                     <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{emailSource && <> · <EmailSourceLink url={emailSource} /></>}</div>
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
-                    {!l.quarantined_at && emailSource && <PublishedEmailProvenance lead={l} />}
+                    {!l.quarantined_at && (emailSource || l.company_first_published_email?.display_only ? <PublishedEmailProvenance lead={l} /> : <div className="text-xs text-[var(--ink-2)]">Published work email unavailable</div>)}
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
                     {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
                       <li data-testid="contact-provenance">{c.route.provenance.text}</li>

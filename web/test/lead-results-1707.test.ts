@@ -114,3 +114,21 @@ test('the ready response attaches details from the winning lead without crossing
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), encoding: 'utf8', timeout: 30_000 })
   assert.equal(child.status, 0, child.stdout + child.stderr)
 })
+
+test('lead cards show cited display-only email and label unavailable email', () => {
+  const card = leads.slice(leads.indexOf('data-testid="lead-card"'), leads.indexOf('data-testid="card-actions"'))
+  const row = card.split('\n').find(line => line.includes('<PublishedEmailProvenance lead={l} />'))?.trim()
+  assert.ok(row)
+  const expression = row.slice(1, -1)
+    .replace('<PublishedEmailProvenance lead={l} />', 'publishedEmailProvenance(l)')
+    .replace(/<div[^>]*>Published work email unavailable<\/div>/, '"Published work email unavailable"')
+  const render = (l: object, emailSource: string | undefined) => runInNewContext(expression, {
+    l, emailSource, publishedEmailProvenance: (lead: {company_first_published_email?: {address: string; source_url: string}}) =>
+      lead.company_first_published_email ?? 'Sourced email',
+  })
+  const proof = { display_only: true, address: 'buyer@example.com', source_url: 'https://example.com/contact' }
+  assert.deepEqual(render({ company_first_published_email: proof }, undefined), proof)
+  assert.equal(render({}, undefined), 'Published work email unavailable')
+  assert.equal(render({}, 'https://example.com/proof'), 'Sourced email')
+  assert.equal(render({ quarantined_at: 1, company_first_published_email: proof }, undefined), false)
+})
