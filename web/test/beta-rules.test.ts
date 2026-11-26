@@ -243,7 +243,7 @@ test('E: a new AI key is Anthropic (Claude) only; a saved OpenAI key is still li
   assert.match(panel, /k\.vendor === 'anthropic' \? 'Anthropic' : 'OpenAI'/, 'an already-saved OpenAI key is still shown')
   const inline = src('app/app/key-inline.tsx')
   assert.doesNotMatch(inline.replace(/^\s*\/\/.*$/gm, ''), /platform\.openai\.com|OpenAI/, 'nothing the user sees offers an OpenAI key')
-  assert.match(inline, /Searches run on Claude/)
+  assert.match(inline, /return null/, 'KeyInline renders nothing (#1703)')
   for (const p of ['app/app/first-run.tsx', 'app/app/readiness.tsx']) assert.doesNotMatch(src(p), /Anthropic or OpenAI key/, p)
 })
 

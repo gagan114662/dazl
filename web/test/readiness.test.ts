@@ -15,7 +15,7 @@ test('a new account: the steps in order, each to-do with its fix; Gmail goes to 
   assert.deepEqual(r.brain.fix, { kind: 'link', href: '/app?setup=brain', label: 'Build' })
   assert.equal(r.site.label, 'Website and business details', 'name, sells, and where the buyer profile comes from (website or a saved manual buyer profile)')
   assert.deepEqual(r.play.fix, { kind: 'link', href: '/app/leads', label: 'Write a play' })
-  assert.equal(r.key.detail, 'needed for searches')
+  assert.equal(r.key.detail, 'free runs are used up')
   assert.deepEqual(r.gmail.fix, { kind: 'link', href: '/app/settings#gmail', label: 'Connect' })
   assert.deepEqual(r.sender.fix, { kind: 'inline', label: 'Add' })
   assert.equal(r.limit.detail, 'up to 20 emails a day; 0 sent in the last 24 hours')
@@ -146,7 +146,7 @@ test('lead sources: capabilities, never "searched"; no usable key means a scan c
   const ON = { web_index: false, news: true, websites: false }
   // Instinct #255: enabled news must not make the row done when no scan can start.
   const nokey = src(ON, { has_key: false, trial: null })
-  assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start until you add an AI key for analysis and extraction; a key does not enable discovery. Not available: Web search index (not set up on this server), Company website enrichment (not set up on this server)', { kind: 'link', href: '/app/settings#model-key', label: 'Add key' }])
+  assert.deepEqual([nokey.state, nokey.detail, nokey.fix], ['todo', 'a scan cannot start because your free runs are used up. Not available: Web search index (not set up on this server), Company website enrichment (not set up on this server)', { kind: 'link', href: '/app/settings#plan', label: 'See your plan' }])
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 0 } }).state, 'todo', 'free searches used up')
   assert.deepEqual(src(ON, { has_key: true }), { id: 'sources', label: 'Lead sources', state: 'done', detail: 'a scan can use News articles. Not available: Web search index (not set up on this server), Company website enrichment (not set up on this server)', fix: null })
   assert.equal(src(ON, { has_key: false, trial: { funded: true, remaining: 2 } }).state, 'done', 'free searches left')
@@ -166,22 +166,15 @@ test('brain: done only with a saved buyer profile (who or a summary); the fix re
 // Home readiness: "AI key valid" and truthful source availability.
 // Instinct #275: the evidence (and what clears it) is server-side (test/key-evidence.test.ts). The record never says
 // which key a scan used, so Home names none, and never infers acceptance from other scans.
-test('AI key: done with no open rejection; a server-reported rejection is a to-do that names no key', () => {
+test('#1703 Searches row: a saved key is not mentioned and its rejection is not shown; nobody is asked to replace a key', () => {
   const key = (keys: object[] | null, rejection: object | null, jobs: object[] = []) => byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: keys as never, rejection: rejection as never, jobs: jobs as never })).key
   const K = [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1000 }]
-  const K2 = [...K, { vendor: 'openai', last4: 'Zz99', validated_at: 5000 }]
-  assert.deepEqual(key(K, null), { id: 'key', label: 'AI key', state: 'done', detail: 'saved (ending Ab12); your provider accepted it when it was saved', fix: null })
-  const one = key(K, { error: 'key_rejected' })
-  assert.deepEqual([one.state, one.detail, one.fix], ['todo', 'a scan stopped because the AI provider rejected its key, after your key was last saved - save your key again to confirm it works', { kind: 'inline', label: 'Replace key' }])
-  assert.equal(key(K2, { error: 'key_rejected' }).detail, 'a scan stopped because the AI provider rejected its key, after your keys were last saved - save each of your keys again to confirm they work')
-  assert.equal(key(K, { error: 'key_unreadable' }).detail, 'a scan could not read its AI key after your key was last saved - save your key again to confirm it works')
-  for (const k of [K, K2]) assert.doesNotMatch(key(k, { error: 'key_rejected' }).detail, /Anthropic|OpenAI|Ab12|Zz99/, 'no key is named')
-  const job = (created_at: number, status: string, error: string | null) => ({ id: String(created_at), status, error, query: 'q', csv_domain: null, created_at, lead_count: 0 })
-  assert.equal(key(K, { error: 'key_rejected' }, [job(2000, 'failed', 'key_rejected'), job(3000, 'failed', 'cancelled'), job(4000, 'done', null)]).state, 'todo')
-  assert.equal(key(K, null, [job(2000, 'failed', 'key_rejected')]).state, 'done', 'the jobs list alone is not evidence; the server read is')
-  assert.equal(key(null, null).detail, 'saved', 'key status not loaded: no claim either way')
-  const src = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: K as never, rejection: { error: 'key_rejected' }, sources: { web_index: true, news: true, websites: true } })).sources
-  assert.deepEqual([src.state, src.detail, src.fix], ['todo', 'a scan may not run until you save your AI key again', { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' }], 'a rejected key is not listed as a usable source')
+  for (const rej of [null, { error: 'key_rejected' }, { error: 'key_unreadable' }]) {
+    assert.deepEqual(key(K, rej), { id: 'key', label: 'Searches', state: 'done', detail: 'ready to run', fix: null })
+  }
+  const src = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: K as never, rejection: { error: 'key_rejected' } as never, sources: { web_index: true, news: true, websites: true } })).sources
+  assert.equal(src.state, 'done')
+  assert.equal(src.fix, null)
 })
 
 test('lead sources: only usable sources are named as usable; social sources that are not set up are listed with their reason and fix', () => {
@@ -284,6 +277,6 @@ test('#919 Home source capability matrix: funding, discovery/enrichment, social,
  }
  assert.equal(row(null,{has_key:true}).state,'unknown')
  assert.equal(row({web_index:true,news:false,websites:false},null).state,'unknown')
- assert.equal(row({web_index:true,news:false,websites:false},{has_key:true},null,{error:'key_rejected'}).fix?.label,'Replace key')
- for(const usage of [{has_key:false},{has_key:false,trial:{funded:true,remaining:0}}]) assert.equal(row({web_index:false,news:true,websites:false},usage).fix?.label,'Add key')
+ assert.equal(row({web_index:true,news:false,websites:false},{has_key:true},null,{error:'key_rejected'}).fix?.label,undefined, 'a saved key rejection offers no key button (#1703)')
+ for(const usage of [{has_key:false},{has_key:false,trial:{funded:true,remaining:0}}]) assert.equal(row({web_index:false,news:true,websites:false},usage).fix?.label,'See your plan')
 })

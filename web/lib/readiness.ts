@@ -69,19 +69,13 @@ export function readinessRows(i: ReadinessInput): Row[] {
   // A saved key was accepted by its provider when it was saved. After that, the server reports a rejection while any
   // saved key has not been accepted again since that scan; it cannot say which key the scan used, so neither does Home.
   // A later cancelled, failed or done scan never clears it. Without the key status loaded, no claim either way.
-  const rej = u?.has_key ? i.rejection ?? null : null
-  const keyError = rej?.error ?? null
-  const last4 = i.keys?.length === 1 ? ` (ending ${i.keys[0].last4})` : ''
-  const again = (i.keys?.length ?? 0) > 1 ? 'save each of your keys again to confirm they work' : 'save your key again to confirm it works'
-  const rejDetail = !rej ? '' : rej.error === 'key_rejected'
-    ? `a scan stopped because the AI provider rejected its key, after your key${(i.keys?.length ?? 0) > 1 ? 's were' : ' was'} last saved - ${again}`
-    : `a scan could not read its AI key after your key${(i.keys?.length ?? 0) > 1 ? 's were' : ' was'} last saved - ${again}`
-  const key: Row = !u ? { id: 'key', label: 'AI key', state: 'unknown', detail: 'could not check - your plan and key status did not load', fix: null }
-    : keyError ? { id: 'key', label: 'AI key', state: 'todo', detail: rejDetail, fix: { kind: 'inline', label: 'Replace key' } }
-    : u.has_key ? { id: 'key', label: 'AI key', state: 'done', detail: i.keys?.length ? `saved${last4}; your provider accepted it when it was saved` : 'saved', fix: null }
+  // #1703: no customer is asked for an AI key. Searches run on dazl's own keys; a key saved before is not mentioned and its
+  // rejection is not shown (there is nothing a customer can do about it). When free searches run out the way forward is the plan.
+  const key: Row = !u ? { id: 'key', label: 'Searches', state: 'unknown', detail: 'could not check - your plan status did not load', fix: null }
+    : u.has_key ? { id: 'key', label: 'Searches', state: 'done', detail: 'ready to run', fix: null }
     // Free searches cover the first scan; the row comes back as a to-do when they run out.
-    : trialLeft > 0 ? { id: 'key', label: 'AI key', state: 'done', detail: u.trial?.exempt ? 'using free searches' : `using free searches (${trialLeft} left)`, fix: null }
-    : { id: 'key', label: 'AI key', state: 'todo', detail: 'needed for searches', fix: { kind: 'inline', label: 'Add key' } }
+    : trialLeft > 0 ? { id: 'key', label: 'Searches', state: 'done', detail: u.trial?.exempt ? 'using free searches' : `using free searches (${trialLeft} left)`, fix: null }
+    : { id: 'key', label: 'Searches', state: 'todo', detail: 'free runs are used up', fix: { kind: 'link', href: '/app/settings#plan', label: 'See your plan' } }
   // At least one source a scan here can use (capabilities, as Leads shows them; a scan may still skip one). Without a
   // usable AI key no scan can start, so that is a to-do whatever else is switched on. Unknown unless both checks loaded;
   // adding a key is the only fix a user can make, so it is the one link offered.
@@ -97,10 +91,8 @@ export function readinessRows(i: ReadinessInput): Row[] {
   const enrichment = core ? enrichmentLabels(core) : ''
   const enrichText = enrichment ? `. After discovery: ${enrichment} (enrichment only)` : ''
   const sources: Row = !core ? { id: 'sources', label: 'Lead sources', state: 'unknown', detail: 'could not check - the source settings did not load', fix: null }
-    // The key row's evidence that the saved key stopped working means web research cannot run either.
-    : keyError ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan may not run until you save your AI key again${offText}`, fix: { kind: 'link', href: '/app/settings#model-key', label: 'Replace key' } }
-    : !analysis?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start until you add an AI key for analysis and extraction; a key does not enable discovery${offText}`, fix: analysis?.fix ? { kind: 'link', href: analysis.fix.href, label: analysis.fix.label } : null }
-    : usableSources.length === 0 ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `no usable discovery source is available; adding an AI key does not enable web research${enrichText}${offText}`, fix: offFix ? {kind:'link',href:offFix.href,label:offFix.label} : null }
+    : !analysis?.usable ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `a scan cannot start because your free runs are used up${offText}`, fix: analysis?.fix ? { kind: 'link', href: analysis.fix.href, label: analysis.fix.label } : null }
+    : usableSources.length === 0 ? { id: 'sources', label: 'Lead sources', state: 'todo', detail: `no usable discovery source is available${enrichText}${offText}`, fix: offFix ? {kind:'link',href:offFix.href,label:offFix.label} : null }
     : { id: 'sources', label: 'Lead sources', state: 'done', detail: `a scan can use ${usableSources.map(r => r.label).join(', ')}${enrichText}${offText}`, fix: offFix ? { kind: 'link', href: offFix.href, label: offFix.label } : null }
   const gmail: Row = !o ? { id: 'gmail', label: 'Gmail', state: 'unknown', detail: 'could not check - your sending settings did not load', fix: null }
     : o.gmail?.status === 'active' ? { id: 'gmail', label: 'Gmail', state: 'done', detail: `sending from ${o.gmail.email ?? 'your Gmail'}`, fix: null }
