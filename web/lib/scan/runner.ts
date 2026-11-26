@@ -1446,15 +1446,17 @@ export function laneSwitchedOn(job: Pick<Job, 'query' | 'csv_domain'>, deps: Pic
   return deps.discover === true || (deps.discover !== false && env.DAZL_DISCOVER_LANE !== '0')
 }
 const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
-function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
-  const dated = !!l.date, printed = l.date_source === 'page'
+export function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
+  // #2004: a day the proof page states in its own typed markup is on the page, but it is not PRINTED on it - the two are different
+  // proofs, and only the printed one may be called page_bound.
+  const dated = !!l.date, printed = l.date_source === 'page' && !l.date_on_page_field
   return {
     name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
     score: DISCOVER_SCORE[l.confidence], confidence: DISCOVER_SCORE[l.confidence], excerpt: (l.evidence_quote ?? l.signal).slice(0, 400),
-    event_date: l.date, event_date_proof: printed && l.date_on_page && l.proof === 'confirmed' ? 'page_bound' : null,
-    event_date_proof_note: printed && l.date_on_page ? 'the date is printed on the proof page' : null,
+    event_date: l.date, event_date_proof: l.date_on_page && l.proof === 'confirmed' ? (printed ? 'page_bound' : 'page_structured') : null,
+    event_date_proof_note: !l.date_on_page ? null : printed ? 'the date is printed on the proof page' : `the proof page's own typed ${l.date_on_page_field} states the day`,
     timing_note: l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
-    date_status: dated ? (printed && l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
+    date_status: dated ? (l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }

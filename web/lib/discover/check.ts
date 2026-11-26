@@ -13,7 +13,7 @@ import { atsDate } from './ats-dates.ts'
 export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen' | 'gone'
 // date_source distinguishes a date taken from an opened source from the search index's day for the page itself.
 // date_on_page records whether the exact calendar day was found in the proof page's text.
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; signal_by?: 'claude' }
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; date_on_page_field?: string | null; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; signal_by?: 'claude' }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
 //   - a page whose text was read: the words the run quoted as evidence are in that text, and in one place where they stand the page's
@@ -241,6 +241,34 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
 // The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
 // tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
 // moves it), not a day in the future, not one more than a year old.
+// #2004: the day the proof page states in its OWN typed markup, named so the proof can say which field it came from. A hiring signal
+// takes a JobPosting's datePosted; any other signal takes an Article/NewsArticle/BlogPosting's datePublished. dateModified is never read
+// (a template edit moves it), a bare "datePublished" string with no node typing it is not evidence, and the age and future guards apply
+// exactly as they do to a printed day.
+const ARTICLE_TYPES = /^(?:Article|NewsArticle|BlogPosting)$/i
+export function structuredDay(html: string, now: Date, hiringOnly: boolean): { day: string; field: string } | null {
+  let found: { day: string; field: string } | null = null
+  const visit = (value: unknown): void => {
+    if (found) return
+    if (Array.isArray(value)) { for (const item of value) visit(item); return }
+    if (!value || typeof value !== 'object') return
+    const o = value as Record<string, unknown>
+    const types = (Array.isArray(o['@type']) ? o['@type'] : [o['@type']]).filter((t): t is string => typeof t === 'string')
+    const type = types.find(t => hiringOnly ? /^JobPosting$/i.test(t) : ARTICLE_TYPES.test(t))
+    const field = hiringOnly ? 'datePosted' : 'datePublished'
+    const raw = type ? o[field] : undefined
+    if (type && typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
+      const day = validDay(Date.parse(`${raw.slice(0, 10)}T00:00:00Z`), now)
+      if (day) found = { day, field: `${type}.${field}` }
+      return
+    }
+    if (o['@graph']) visit(o['@graph'])
+  }
+  for (const block of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try { visit(JSON.parse(block[1])) } catch { /* malformed structured data is not date evidence */ }
+  }
+  return found
+}
 export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
   const posted = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
   if (posted) return validDay(Date.parse(`${posted[1]}T00:00:00Z`), now)
@@ -333,7 +361,11 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
     try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
   }
   if (!raw) return out
-  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (stillDate) {
+    const hiring = isDiscoveryHiringLead(c), typed = structuredDay(raw, now, hiring)
+    if (typed) out = { ...out, date: typed.day, date_source: 'page', date_on_page: true, date_on_page_field: typed.field }
+    else { const day = embeddedDay(raw, now, hiring); if (day) out = { ...out, date: day, date_source: 'page' } }
+  }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }
