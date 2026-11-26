@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import { runInNewContext } from 'node:vm'
 
 const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
 const home = read('../app/app/home-results.tsx')
@@ -32,13 +33,12 @@ test('#1812: the sidebar latest-search redirect keeps the workspace total visibl
   assert.ok(redirect, 'latest-search redirect')
   const destinations: string[] = []
   const id = 'a'.repeat(24)
-  new Function('params', 'jobs', 'window', redirect)(
-    new URL(sidebar, 'https://example.com').searchParams,
-    [{ id, status: 'done', lead_count: 1 }],
-    { location: { replace: (url: string) => destinations.push(url) } },
-  )
+  runInNewContext(redirect, {
+    params: new URL(sidebar, 'https://example.com').searchParams,
+    jobs: [{ id, status: 'done', lead_count: 1 }],
+    window: { location: { replace: (url: string) => destinations.push(url) } },
+  })
   assert.deepEqual(destinations, [`/app/leads?job_id=${id}`])
-
 
   const effect = leads.match(/const \[ready, setReady\][\s\S]*?const \[pastJobs, setPastJobs\]/)?.[0]
   assert.ok(effect, 'workspace count read')
