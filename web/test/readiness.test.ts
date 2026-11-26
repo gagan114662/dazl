@@ -166,12 +166,15 @@ test('brain: done only with a saved buyer profile (who or a summary); the fix re
 // Home readiness: "AI key valid" and truthful source availability.
 // Instinct #275: the evidence (and what clears it) is server-side (test/key-evidence.test.ts). The record never says
 // which key a scan used, so Home names none, and never infers acceptance from other scans.
-test('#1703 Searches row: a saved key is not mentioned and its rejection is not shown; nobody is asked to replace a key', () => {
+test('#1703 Searches row: a saved key is never named; an open rejection reads as our-side stopped, never "ready", and nobody is asked for a key', () => {
   const key = (keys: object[] | null, rejection: object | null, jobs: object[] = []) => byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: keys as never, rejection: rejection as never, jobs: jobs as never })).key
   const K = [{ vendor: 'anthropic', last4: 'Ab12', validated_at: 1000 }]
-  for (const rej of [null, { error: 'key_rejected' }, { error: 'key_unreadable' }]) {
-    assert.deepEqual(key(K, rej), { id: 'key', label: 'Searches', state: 'done', detail: 'ready to run', fix: null })
+  assert.deepEqual(key(K, null), { id: 'key', label: 'Searches', state: 'done', detail: 'ready to run', fix: null })
+  for (const rej of [{ error: 'key_rejected' }, { error: 'key_unreadable' }]) {
+    assert.deepEqual(key(K, rej), { id: 'key', label: 'Searches', state: 'unknown', detail: 'a recent search stopped on our side - we are fixing it', fix: null })
   }
+  // a rejection with no saved key says nothing about it
+  assert.equal(byId(readinessRows({ profile: null, usage: { has_key: false, trial: { funded: true, remaining: 2 } }, outreach: null, rejection: { error: 'key_rejected' } as never })).key.state, 'done')
   const src = byId(readinessRows({ profile: null, usage: { has_key: true }, outreach: null, keys: K as never, rejection: { error: 'key_rejected' } as never, sources: { web_index: true, news: true, websites: true } })).sources
   assert.equal(src.state, 'done')
   assert.equal(src.fix, null)

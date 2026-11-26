@@ -69,16 +69,19 @@ export function readinessRows(i: ReadinessInput): Row[] {
   // A saved key was accepted by its provider when it was saved. After that, the server reports a rejection while any
   // saved key has not been accepted again since that scan; it cannot say which key the scan used, so neither does Home.
   // A later cancelled, failed or done scan never clears it. Without the key status loaded, no claim either way.
-  // #1703: no customer is asked for an AI key. Searches run on dazl's own keys; a key saved before is not mentioned and its
-  // rejection is not shown (there is nothing a customer can do about it). When free searches run out the way forward is the plan.
+  // #1703: no customer is asked for an AI key. Searches run on dazl's own keys and a key saved before is never named. An open
+  // rejection means the latest scan stopped on our side, so the row is unknown - never "ready to run" while searches would fail.
+  // When free searches run out the way forward is the plan.
+  const keyRej = u?.has_key ? i.rejection ?? null : null
   const key: Row = !u ? { id: 'key', label: 'Searches', state: 'unknown', detail: 'could not check - your plan status did not load', fix: null }
+    : keyRej ? { id: 'key', label: 'Searches', state: 'unknown', detail: 'a recent search stopped on our side - we are fixing it', fix: null }
     : u.has_key ? { id: 'key', label: 'Searches', state: 'done', detail: 'ready to run', fix: null }
     // Free searches cover the first scan; the row comes back as a to-do when they run out.
     : trialLeft > 0 ? { id: 'key', label: 'Searches', state: 'done', detail: u.trial?.exempt ? 'using free searches' : `using free searches (${trialLeft} left)`, fix: null }
     : { id: 'key', label: 'Searches', state: 'todo', detail: 'free runs are used up', fix: { kind: 'link', href: '/app/settings#plan', label: 'See your plan' } }
-  // At least one source a scan here can use (capabilities, as Leads shows them; a scan may still skip one). Without a
-  // usable AI key no scan can start, so that is a to-do whatever else is switched on. Unknown unless both checks loaded;
-  // adding a key is the only fix a user can make, so it is the one link offered.
+  // At least one source a scan here can use (capabilities, as Leads shows them; a scan may still skip one). When the free
+  // runs are used up no scan can start, so that is a to-do whatever else is switched on. Unknown unless both checks loaded;
+  // #1703: the only fix offered is the plan link - nobody is asked for a key.
   const core = coreSources(i.sources ?? null, u ? { has_key: u.has_key, trial: u.trial } : null)
   const analysis = analysisPrerequisite(u ? {has_key:u.has_key,trial:u.trial} : null)
   // Only usable sources are named as usable; every other source is listed as not available, with its reason. Social

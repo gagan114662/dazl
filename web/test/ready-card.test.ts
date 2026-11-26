@@ -55,10 +55,10 @@ test('contact then draft: each fix opens the latest search\'s leads', () => {
   assert.equal(st({ ...all, campaigns: [camp({ you: 1 })] })[3], 'qualified:done', 'a lead you confirmed counts')
 })
 
-test('a running first search links to its live view; free searches count as working; a saved-key rejection is no longer shown (#1703)', () => {
+test('a running first search links to its live view; free searches count as working; a saved-key error reads unknown, never a key ask (#1703)', () => {
   assert.equal(st({ ...all, jobs: [job('r1', 'running')], totals: { searches: 1, finished: 0 }, campaigns: [] })[2], 'play:todo*>Watch it live@/app/leads?job_id=r1')
   assert.equal(st({ ...all, usage: { has_key: false, trial: { funded: true, remaining: 2 } }, keys: [] })[1], 'search:done')
-  assert.equal(st({ ...all, rejection: { error: 'key_rejected' } })[1], 'search:done', 'no customer is sent to a key form (#1703)')
+  assert.equal(st({ ...all, rejection: { error: 'key_rejected' } })[1], 'search:unknown', 'a key error is not ready, and nobody is sent to a key form (#1703)')
 })
 
 test('failed or capped reads are "could not check": no button, never a tick, card kept up', () => {

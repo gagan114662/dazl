@@ -3,8 +3,9 @@
 // screenshots; BEFORE_ONLY=1 only takes them, for a build without this change).
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, and EVERY /api/* CALL ANSWERED
 // FROM A STUB in the browser: no scan, no key check against a provider, nothing saved. It proves:
-//   1. a rejection the server reports (no acceptance of every saved key since) reads as a to-do that names no key, with
-//      "Replace key" (the key form in place); a later cancelled scan or saving one of two keys leaves it a to-do;
+//   1. a rejection the server reports (the latest scan stopped on a key error) is never "ready": the Searches row names
+//      no key, shows no check, button or link, and reads "a recent search stopped on our side - we are fixing it";
+//      once the server clears the rejection the row reads "ready to run" with its check;
 //   2. the Lead sources row names only usable sources as usable and lists every other offered source as not available
 //      with its reason (server switch off, consent needed), with a one-click "Set up" link for the one a user can fix;
 //   3. while the key is refused no source is called usable; a platform this server does not offer is not listed;
@@ -71,7 +72,18 @@ try {
   await row('key').scrollIntoViewIfNeeded()
   await shot('readiness')
   if (process.env.BEFORE_ONLY !== '1') {
-    // #1703: a saved key's rejection is not shown and nobody is sent to a key form. The row reads as ready.
+    // #1703: an open rejection (the latest scan stopped on a key error) is never "ready" - the row names no key,
+    // shows no check, button or link, and reads as stopped on our side.
+    assert.match(await row('key').textContent(), /Searches - a recent search stopped on our side - we are fixing it/)
+    assert.doesNotMatch(await row('key').textContent(), /key|Anthropic|OpenAI|Ab12|Zz99/i, 'no key is named or asked for')
+    assert.equal(await row('key').getByText('✓').count(), 0, 'a rejection is never a check')
+    assert.equal(await row('key').getByRole('button').count(), 0, 'no key form button')
+    assert.equal(await row('key').getByRole('link').count(), 0, 'no link while our side fixes it')
+    // The server clears the rejection; then the row reads ready, with its check back.
+    state.rejection = null
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.getByTestId('setup-details').evaluate(d => { d.open = true }, null, { timeout: 15000 })
+    await row('key').waitFor({ timeout: 15000 })
     assert.match(await row('key').textContent(), /Searches - ready to run/)
     assert.doesNotMatch(await row('key').textContent(), /key|Anthropic|OpenAI|Ab12|Zz99/i, 'no key is named or asked for')
     assert.equal(await row('key').getByText('✓').count(), 1)
@@ -86,7 +98,7 @@ try {
     await shot('sources-available')
   }
   assert.deepEqual(writes, [], 'loading Home writes nothing')
-  console.log(process.env.BEFORE_ONLY === '1' ? 'screenshots taken (BEFORE_ONLY)' : 'readiness truth UI check passed: a saved-key rejection is not shown and no key form is offered; only usable sources are named usable, the rest listed with reasons and a Set up link; no writes')
+  console.log(process.env.BEFORE_ONLY === '1' ? 'screenshots taken (BEFORE_ONLY)' : 'readiness truth UI check passed: an open key-error rejection reads unknown (never ready, no key named, no button or link) and reads ready once cleared; only usable sources are named usable, the rest listed with reasons and a Set up link; no writes')
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
 }
