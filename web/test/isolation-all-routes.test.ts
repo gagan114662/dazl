@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 // #830: the one sweep over every route that takes the id of a tenant-owned thing (helpers/isolation-all-routes-runtime.mts).
-test("workspace isolation: no id-taking route lets workspace B read or change workspace A's data with A's ids", () => {
+test("#830 workspace isolation: no id-taking route lets workspace B read or change workspace A's data with A's ids", () => {
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
   const result = spawnSync(process.execPath, [
