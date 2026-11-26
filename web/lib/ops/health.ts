@@ -2,7 +2,7 @@
 // Liveness: the process answers. No dependency is touched, so a slow database never gets a healthy process restarted.
 // Readiness: this instance can serve: the store answers (Postgres when DATABASE_URL is set, else SQLite), its schema
 // has every migration this build ships (Postgres), the scan work queue (work_queue, lib/queue) answers in that store,
-// and the SQLite file the raw-handle modules still use answers.
+// and the backend does not split tenant data across stores.
 // env (when wired): the variables web/docs/DEPLOY.md requires are set and have their basic shape; the body says how
 // many are missing, never which or their values, and the names go to the error reporter when the set changes.
 // Each check has a 2 s budget (timed() says what it can and cannot interrupt). The response names which check failed,
@@ -26,6 +26,9 @@ import type { DeletionCheck, MailCheck } from './launch-checks.ts'
 import type { OutboxCheck } from '../system-mail.ts'
 
 export type CheckResult = { ok: true; ms: number } | { ok: false; ms: number; reason: 'error' | 'timeout' | 'behind' }
+type StoreProbe = CheckResult | { ok: true; skipped: 'not_configured' }
+const NOT_CONFIGURED = { ok: true, skipped: 'not_configured' } as const
+
 export interface Readiness {
   ok: boolean
   launch: { ok: boolean; required: boolean }
@@ -39,7 +42,7 @@ export interface Readiness {
     store: CheckResult & { engine: Db['kind'] | 'unknown' }
     schema: CheckResult | { ok: true; skipped: 'sqlite' }
     queue: CheckResult
-    sqlite: CheckResult
+    sqlite: StoreProbe
     split: { ok: true; skipped: 'sqlite' } | { ok: boolean; raw_sqlite_modules: number }
     env: { ok: boolean; missing: number } | { ok: true; skipped: 'not_wired' }
     // #1089: can account mail leave the host, and can an account be deleted (lib/ops/launch-checks.ts)
@@ -52,7 +55,7 @@ export interface Readiness {
 
 export interface ReadinessDeps {
   db: () => Promise<Db>
-  sqlite: () => { prepare(sql: string): { get(): unknown } }
+  sqliteProbe?: () => unknown
   // versions of the PG migrations this build ships (lib/db/migrations/pg)
   migrations: () => number[]
   // modules still on the raw SQLite handle (lib/db/pg-port-status.ts); 0 when every module is on Db
@@ -91,14 +94,18 @@ export function absoluteHttpUrl(v: string): boolean {
   try { u = new URL(v) } catch { return false }
   return (u.protocol === 'https:' || u.protocol === 'http:') && u.hostname.length > 0 && !u.username && !u.password && !u.search && !u.hash
 }
-export function missingEnv(env: Record<string, string | undefined>): string[] {
-  return REQUIRED_ENV.filter(([name, ok]) => { const v = env[name]; return !v || !ok(v) }).map(([name]) => name)
+export function missingEnv(env: Record<string, string | undefined>, engine?: Db['kind']): string[] {
+  return REQUIRED_ENV.filter(([name, ok]) => {
+    if (name === 'DB_PATH' && engine === 'pg') return false
+    const v = env[name]
+    return !v || !ok(v)
+  }).map(([name]) => name)
 }
 // Reported when the missing set changes, not on every probe (a load balancer asks every few seconds).
 let lastMissing = ''
 export const resetEnvReport = () => { lastMissing = '' }
-function envCheck(env: Record<string, string | undefined>): { ok: boolean; missing: number } {
-  const missing = missingEnv(env)
+function envCheck(env: Record<string, string | undefined>, engine?: Db['kind']): { ok: boolean; missing: number } {
+  const missing = missingEnv(env, engine)
   const key = missing.join(',')
   if (key && key !== lastMissing) captureError(new Error(`required environment missing or malformed: ${key}`), { source: 'health', where: 'readiness:env' })
   lastMissing = key
@@ -169,10 +176,13 @@ export async function readiness(d: ReadinessDeps): Promise<Readiness> {
   if (read) reportQueueAlerts(read)
   const queueBody: Readiness['queue'] = stats === null ? null
     : read ? { alerts: read } : { alerts: null, reason: !stats.ok && stats.reason === 'timeout' ? 'timeout' : 'error' }
-  const sqlite = await timed('sqlite', async () => { d.sqlite().prepare('SELECT 1').get(); return 'ok' }, timeoutMs, clock)
+  const sqliteProbe = d.sqliteProbe
+  const sqlite = engine === 'pg' ? NOT_CONFIGURED
+    : sqliteProbe ? await timed('sqlite', async () => { await sqliteProbe(); return 'ok' }, timeoutMs, clock)
+    : store
   const raw = d.rawSqliteModules?.() ?? 0
   const split = engine === 'sqlite' ? { ok: true as const, skipped: 'sqlite' as const } : { ok: raw === 0, raw_sqlite_modules: raw }
-  const env = d.env ? envCheck(d.env()) : { ok: true as const, skipped: 'not_wired' as const }
+  const env = d.env ? envCheck(d.env(), db?.kind) : { ok: true as const, skipped: 'not_wired' as const }
   const mail = d.mail ? d.mail() : { ok: true as const, skipped: 'not_wired' as const }
   const deletion = d.deletion ? d.deletion() : { ok: true as const, skipped: 'not_wired' as const }
   const outbox = d.outbox ? await timedOutbox(d.outbox, timeoutMs) : { ok: true as const, skipped: 'not_wired' as const }
@@ -213,18 +223,18 @@ function reportQueueAlerts(alerts: QueueAlert[]): void {
   if (key) captureError(new Error(`queue alerts: ${key}`), { source: 'health', where: 'readiness:queue' })
 }
 
-// Database reachability for /api/health (lib/ops/health-route.ts): the SQLite file the app opens, and Postgres when
-// DATABASE_URL is set ('not_configured' otherwise, which is not a failure). One cheap query each, on the same 2 s budget
-// as readiness. ok only when every configured store answers. Lighter than readiness: no schema, queue or env checks.
+// Database reachability for /api/health. Unconfigured stores are reported as
+// such and do not need a connection. Readiness separately enforces the split gate.
 export interface DbHealth {
   ok: boolean
-  checks: { sqlite: CheckResult; postgres: CheckResult | { ok: true; skipped: 'not_configured' } }
+  checks: { sqlite: StoreProbe; postgres: StoreProbe }
 }
-export async function dbHealth(d: { sqlite: () => { prepare(sql: string): { get(): unknown } }; postgres: (() => Promise<Db>) | null; timeoutMs?: number; clock?: () => number }): Promise<DbHealth> {
+export async function dbHealth(d: { sqlite: (() => Promise<Db>) | null; postgres: (() => Promise<Db>) | null; timeoutMs?: number; clock?: () => number }): Promise<DbHealth> {
   const timeoutMs = d.timeoutMs ?? 2000, clock = d.clock ?? Date.now
-  const sqlite = await timed('health:sqlite', async () => { d.sqlite().prepare('SELECT 1').get(); return 'ok' }, timeoutMs, clock)
-  const pg = d.postgres
-  const postgres = pg ? await timed('health:postgres', async () => { await (await pg()).get('SELECT 1 AS x'); return 'ok' }, timeoutMs, clock)
-    : { ok: true as const, skipped: 'not_configured' as const }
+  const probe = (kind: 'sqlite' | 'postgres', open: (() => Promise<Db>) | null) =>
+    open ? timed(`health:${kind}`, async () => { await (await open()).get('SELECT 1 AS x'); return 'ok' }, timeoutMs, clock)
+      : Promise.resolve(NOT_CONFIGURED)
+  const sqlite = await probe('sqlite', d.sqlite)
+  const postgres = await probe('postgres', d.postgres)
   return { ok: sqlite.ok && postgres.ok, checks: { sqlite, postgres } }
 }

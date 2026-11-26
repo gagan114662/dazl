@@ -40,6 +40,7 @@ if (mode === 'stats-hang') {
   setDb({ ...base, all: (sql, params) => /FROM work_queue GROUP BY kind/.test(sql) ? new Promise(() => {}) : base.all(sql, params) })
 }
 const livePg = mode === 'pg' || mode === 'pg-behind'
+if (livePg || mode === 'pg-down') process.env.DB_PATH = '/dev/null/no-sqlite.db'
 const schema = livePg ? await freshSchema() : null
 if (schema) {
   const admin = pgDb({ connectionString: PG_URL!, searchPath: schema.schema, max: 1 })
@@ -67,8 +68,7 @@ test(`health routes (${mode})`, async () => {
   assert.deepEqual(Object.keys(lb).sort(), ['commit', 'db', 'instance', 'ok'])
   assert.deepEqual([lb.ok, lb.db], [true, backend])
   ids.add(lb.instance)
-  // /api/health: the commit and whether each configured database answers. SQLite always; Postgres only with
-  // DATABASE_URL (not_configured otherwise). 503 when one does not answer, with no error text in the body.
+  // /api/health probes the configured backend. 503 if it does not answer, without exposing errors.
   const h = await health()
   const hb = await h.json()
   assert.equal(h.headers.get('cache-control'), 'no-store')
@@ -76,6 +76,7 @@ test(`health routes (${mode})`, async () => {
   assert.equal(hb.commit, lb.commit)
   assert.equal(hb.db, backend)
   assert.equal(hb.checks.sqlite.ok, true, JSON.stringify(hb))
+  if (backend === 'postgres') assert.deepEqual(hb.checks.sqlite, { ok: true, skipped: 'not_configured' })
   ids.add(hb.instance)
   if (backend === 'sqlite') {
     assert.deepEqual([h.status, hb.ok, hb.checks.postgres], [200, true, { ok: true, skipped: 'not_configured' }])

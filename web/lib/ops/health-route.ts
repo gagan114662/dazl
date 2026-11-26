@@ -1,11 +1,10 @@
-// Wiring for the health routes: the real store, the real SQLite file, the PG migrations this build ships.
+// Wiring for the health routes: the configured store and the PG migrations this build ships.
 import { deletionCheck, launchRequired, mailCheck } from './launch-checks.ts'
 import { outboxReadiness } from '../system-mail.ts'
 import { readdirSync } from 'node:fs'
 import path from 'node:path'
 import { NextResponse } from 'next/server'
 import { getDb } from '../db/client.ts'
-import { getAuthDb } from '../db/sqlite-store.ts'
 import { resolveServedCommit } from '../commit-marker.ts'
 import { dbHealth, readiness } from './health.ts'
 import { RAW_SQLITE_MODULES } from '../db/pg-port-status.ts'
@@ -24,15 +23,14 @@ export function liveResponse(): NextResponse {
   return NextResponse.json({ ok: true, commit: resolveServedCommit(), instance: instanceId(), db: dbBackend() }, { headers: { 'Cache-Control': 'no-store' } })
 }
 
-// Health (/api/health): the commit, the instance and whether each configured database answers: the SQLite file, and
-// Postgres when DATABASE_URL is set. 200 with ok: true only when they all do, else 503; the deploy smoke check
-// (scripts/health-smoke.mjs) fails a deploy on anything but ok with the expected commit. Check names and timings only.
+// Health (/api/health): only the configured backend is probed.
 export async function healthResponse(): Promise<NextResponse> {
-  const h = await dbHealth({ sqlite: getAuthDb, postgres: dbBackend() === 'postgres' ? getDb : null })
+  const postgres = dbBackend() === 'postgres'
+  const h = await dbHealth({ sqlite: postgres ? null : getDb, postgres: postgres ? getDb : null })
   return NextResponse.json({ ok: h.ok, commit: resolveServedCommit(), instance: instanceId(), db: dbBackend(), checks: h.checks }, { status: h.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }
 
 export async function readyResponse(): Promise<NextResponse> {
-  const r = await readiness({ db: getDb, sqlite: getAuthDb, migrations, rawSqliteModules: () => Object.keys(RAW_SQLITE_MODULES).length, env: () => process.env, mail: () => mailCheck(process.env), deletion: () => deletionCheck(process.env), outbox: async () => outboxReadiness(await getDb()), launchRequired: () => launchRequired(process.env) })
+  const r = await readiness({ db: getDb, migrations, rawSqliteModules: () => Object.keys(RAW_SQLITE_MODULES).length, env: () => process.env, mail: () => mailCheck(process.env), deletion: () => deletionCheck(process.env), outbox: async () => outboxReadiness(await getDb()), launchRequired: () => launchRequired(process.env) })
   return NextResponse.json({ ...r, commit: resolveServedCommit(), instance: instanceId(), db: dbBackend() }, { status: r.ok ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }
