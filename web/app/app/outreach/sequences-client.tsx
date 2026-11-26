@@ -4,12 +4,13 @@ import Caveat from '@/app/app/caveat'
 import { holdCopy, kindCopy, reasonCopy } from '@/lib/ops/scheduler-copy'
 
 type Step = { step: number; subject: string; body: string; status: string }
-type Sequence = { currentness_held?: boolean; id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; evidence_state?: 'machine' | 'human' | 'unverified'; steps: Step[] }
+type LinkedinTask = { id: string; sequence_id: string; lead_id: string; kind: 'connect' | 'message'; body: string; profile_url: string | null; due_at: number | null; status: string; done_at: number | null; company?: string; name?: string | null }
+type Sequence = { currentness_held?: boolean; id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; evidence_state?: 'machine' | 'human' | 'unverified'; steps: Step[]; linkedin_tasks?: LinkedinTask[] }
 type Analytics = { sent: number; delivered: number; replied: number; bounced: number; optOuts: number }
 type Freshness = { scheduler: 'never_ran'|'running'|'fresh'|'stale'|'crashed'; state: 'healthy'|'idle'|'stale'|'blocked'|'held'; reasons: string[]; holds: string[]; work: { kind: string; last_success_at: number|null; consecutive_failures: number }[]; oldest_due: { due_at: number; overdue_s: number }|null }
 const ago = (t: number) => { const m = Math.max(0, Math.round((Date.now() / 1000 - t) / 60)); return m < 1 ? 'just now' : m < 120 ? `${m} min ago` : `${Math.round(m / 60)} h ago` }
 type AutoPolicy = { version: string; text: string[]; accepted: boolean; available?: boolean }
-type Data = { freshness?: Freshness; gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'configured_on'|'operator_off'|'kill_switch'|'paused'; sequences: Sequence[]; test_addresses: string[]; auto_policy?: AutoPolicy; status: Record<string,{status:string;step:number;next_due_at:number|null;stop_reason:string|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
+type Data = { freshness?: Freshness; gates?: {id:string;ok:boolean;scope:string}[]; scheduler?: 'configured_on'|'operator_off'|'kill_switch'|'paused'; sequences: Sequence[]; due_linkedin_tasks?: LinkedinTask[]; linkedin_touches?: number; test_addresses: string[]; auto_policy?: AutoPolicy; status: Record<string,{status:string;step:number;next_due_at:number|null;stop_reason:string|null}>; campaigns: { id: string; query: string; analytics: Analytics }[] }
 // #1679: a new Gmail connection is send-only (#1603), so dazl cannot see replies and a sequence could never stop on one. The page said
 // that reply reading had to stay connected and to enable it in Settings, which no new account can do. One sentence, the same everywhere.
 const SEQUENCES_NEED_READING = 'Follow-up sequences are not available for your account: dazl connects to Gmail send-only and does not read replies, and a sequence has to stop when someone replies. Nothing is sent automatically. You can still approve and send each email yourself.'
@@ -97,6 +98,21 @@ export default function SequencesClient() {
       <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'create_reply_stop_fixture'}, '/api/outreach/sequences/fixture')}>Create the reply-stop test fixture</button>
     </div>}
     {note&&<p role="status" className="text-sm mt-3 text-[#555]">{note}</p>}
+    {/* #1039: due LinkedIn tasks. The user does these on LinkedIn themselves; dazl never sends or opens anything. */}
+    {data?.due_linkedin_tasks&&data.due_linkedin_tasks.length>0&&<div className="mt-6" data-testid="linkedin-today">
+      <h3 className="text-base font-semibold">Today — LinkedIn tasks</h3>
+      <p className="text-xs text-[#555] mt-1">Copy the words, open the profile in your own browser, send it yourself on LinkedIn, then mark it done. dazl does not send these. LinkedIn touches so far: {data.linkedin_touches ?? 0}.</p>
+      {data.due_linkedin_tasks.map(t=><article key={t.id} className="card p-4 mt-3 text-sm">
+        <div className="font-medium">{t.kind==='connect'?'LinkedIn connect':'LinkedIn message'} — {t.name ?? ''}{t.company?` (${t.company})`:''}</div>
+        <pre className="font-sans whitespace-pre-wrap break-words text-[#333] mt-2">{t.body}</pre>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button disabled={busy} className="btn-ghost text-xs" onClick={()=>{void navigator.clipboard?.writeText(t.body).then(()=>setNote('Copied.')).catch(()=>setNote('Copy failed — select the text and copy it yourself.'))}}>Copy</button>
+          {t.profile_url?<a className="btn-ghost text-xs" href={t.profile_url} target="_blank" rel="noreferrer">Open profile</a>:<span className="text-xs text-[#555]">No LinkedIn profile on file for this person.</span>}
+          <button disabled={busy} className="btn-primary text-xs" onClick={()=>void action({action:'linkedin_done',task_id:t.id})}>Mark done</button>
+          <button disabled={busy} className="btn-ghost text-xs" onClick={()=>void action({action:'linkedin_skip',task_id:t.id})}>Skip</button>
+        </div>
+      </article>)}
+    </div>}
     {data?.sequences.map(s=>{
       const state=data.status[s.lead_id]
       const label=s.status==='active'?`Step ${state?.step??1} sent / awaiting step ${(state?.step??1)+1}`:s.status
@@ -114,6 +130,13 @@ export default function SequencesClient() {
             <button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'edit',...edit})}>Save and remove set approval</button>
           </div>:<><p className="mt-2 font-medium">{st.subject}</p><pre className="font-sans whitespace-pre-wrap text-[#333] mt-1">{st.body}</pre>{['draft','approved'].includes(s.status)&&<button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>setEdit({id:s.id,step:st.step,subject:st.subject,body:st.body})}>Edit step {st.step}</button>}</>}
           {st.status==='uncertain'&&<div className="mt-2"><p>Check Gmail Sent before resolving. The account remains paused until you explicitly resume sending below.</p><button disabled={busy} onClick={()=>void action({action:'mark_sent',id:s.id,step:st.step})}>I confirmed it was sent</button> / <button disabled={busy} onClick={()=>void action({action:'retry',id:s.id,step:st.step})}>I confirmed it was not sent</button></div>}
+        </div>)}
+        {(s.linkedin_tasks??[]).map(t=><div key={t.id} className="mt-4 border-t border-black/10 pt-3" data-testid="linkedin-task">
+          <h3 className="font-medium">LinkedIn {t.kind==='connect'?'connect':'message'} task ({t.status})</h3>
+          <p className="text-xs text-[#555] mt-1">{t.kind==='connect'?'Runs before step 1.':'Runs between steps 1 and 2.'} You send this yourself on LinkedIn — dazl does not send it{t.due_at&&t.status==='pending'?`; due ${new Date(t.due_at*1000).toLocaleString()}`:''}{t.status==='done'&&t.done_at?`; done ${new Date(t.done_at*1000).toLocaleString()}`:''}.</p>
+          <pre className="font-sans whitespace-pre-wrap break-words text-[#333] mt-1">{t.body}</pre>
+          {t.profile_url?<p className="text-xs mt-1"><a href={t.profile_url} target="_blank" rel="noreferrer">Open profile</a></p>:<p className="text-xs text-[#555] mt-1">No LinkedIn profile on file for this person.</p>}
+          {t.status==='pending'&&<button disabled={busy} className="btn-ghost text-xs mt-2" onClick={()=>void action({action:'linkedin_remove',task_id:t.id})}>Remove LinkedIn {t.kind} task</button>}
         </div>)}
         {!s.currentness_held&&s.evidence_state!=='unverified'&&s.status==='draft'&&<button disabled={busy||!!edit} className="btn-primary text-xs mt-4" onClick={()=>void action({action:'approve',id:s.id})}>Approve exact words of all 3 steps</button>}
         {['draft','approved','active'].includes(s.status)&&<button disabled={busy} className="btn-ghost text-xs mt-4 ml-2" onClick={()=>void action({action:'stop',id:s.id})}>Stop sequence</button>}
