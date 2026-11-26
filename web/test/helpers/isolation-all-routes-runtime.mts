@@ -277,6 +277,19 @@ test("every id-taking route: tenant B with tenant A's id is refused (404/403), A
   const f = await build()
   const before = aRows(f.db)
   const failures: string[] = []
+  as('B')
+  const replyActions = CASES.filter(c => c.route === 'POST /api/replies/[id]' || c.route === 'POST /api/replies')
+  for (const c of replyActions) {
+    const foreign = await c.call(f)
+    const missing = await c.call({ ...f, thread: hex() })
+    assert.ok(foreign, label(c))
+    assert.ok(missing, label(c))
+    assert.equal(foreign.status, 404, label(c))
+    assert.equal(missing.status, 404, label(c))
+    assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'), label(c))
+    assert.equal(await foreign.text(), await missing.text(), label(c))
+  }
+  assert.equal(aRows(f.db), before, 'reply action denials leave the other workspace unchanged')
   const refusals: Record<number, number> = {}
   for (const c of CASES) {
     as('B')
