@@ -4,6 +4,11 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
+import { register } from 'node:module'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+
+register('./helpers/tsx-loader.mjs', import.meta.url)
 
 const leads = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
 const checked = readFileSync(new URL('../app/app/leads/checked/checked-client.tsx', import.meta.url), 'utf8')
@@ -115,20 +120,28 @@ test('the ready response attaches details from the winning lead without crossing
   assert.equal(child.status, 0, child.stdout + child.stderr)
 })
 
-test('lead cards show cited display-only email and label unavailable email', () => {
+test('lead cards show cited display-only email and label unavailable email', async () => {
+  const { PublishedEmailProvenance } = await import('../app/app/leads/field-provenance.tsx')
+  type Lead = Parameters<typeof PublishedEmailProvenance>[0] & { quarantined_at?: number }
   const card = leads.slice(leads.indexOf('data-testid="lead-card"'), leads.indexOf('data-testid="card-actions"'))
   const row = card.split('\n').find(line => line.includes('<PublishedEmailProvenance lead={l} />'))?.trim()
   assert.ok(row)
   const expression = row.slice(1, -1)
     .replace('<PublishedEmailProvenance lead={l} />', 'publishedEmailProvenance(l)')
     .replace(/<div[^>]*>Published work email unavailable<\/div>/, '"Published work email unavailable"')
-  const render = (l: object, emailSource: string | undefined) => runInNewContext(expression, {
-    l, emailSource, publishedEmailProvenance: (lead: {company_first_published_email?: {address: string; source_url: string}}) =>
-      lead.company_first_published_email ?? 'Sourced email',
+  const render = (lead: Omit<Lead, 'company_domain' | 'contact'> & Partial<Pick<Lead, 'contact'>>, emailSource: string | undefined) => runInNewContext(expression, {
+    l: { company_domain: 'example.com', contact: null, ...lead }, emailSource,
+    publishedEmailProvenance: (l: Lead) => renderToStaticMarkup(createElement(PublishedEmailProvenance, { lead: l })),
   })
-  const proof = { display_only: true, address: 'buyer@example.com', source_url: 'https://example.com/contact' }
-  assert.deepEqual(render({ company_first_published_email: proof }, undefined), proof)
+  const proof = { display_only: true as const, address: 'buyer@example.com', source_url: 'https://example.com/contact' }
+  const displayOnly = render({ company_first_published_email: proof }, undefined)
+  assert.match(displayOnly, /Published work email \(display only\): buyer@example\.com/)
+  assert.match(displayOnly, /href="https:\/\/example\.com\/contact"[^>]*>Email source<\/a>/)
   assert.equal(render({}, undefined), 'Published work email unavailable')
-  assert.equal(render({}, 'https://example.com/proof'), 'Sourced email')
+  const sourced = render({
+    contact: proof.address,
+    contact_context: { source_url: proof.source_url, excerpt: `Contact ${proof.address}` },
+  }, proof.source_url)
+  assert.match(sourced, /href="https:\/\/example\.com\/contact"[^>]*>Email source<\/a>/)
   assert.equal(render({ quarantined_at: 1, company_first_published_email: proof }, undefined), false)
 })
