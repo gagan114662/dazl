@@ -191,7 +191,7 @@ export const getSettings = (db: Database.Database, tenantId: string) =>
 const hash = (to: string, subject: string, body: string) => createHash('sha256').update(JSON.stringify([to, subject, body])).digest('hex')
 const id24 = () => randomBytes(12).toString('hex')
 
-interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null; review_reason?: string | null }
+interface Lead { id: string; company: string; name: string; contact: string | null; signal: string; source_url: string; evidence_excerpt: string | null; confidence: number | null; fit: number | null; intent: number | null; human_confirmed_at: number | null; review_reason?: string | null; event_date?: string | null; event_date_proof?: string | null; signal_kind?: string | null }
 
 export function draftTemplate(lead: Lead, businessName: string, positioning = '', addressUrl: string = lead.source_url): { subject: string; body: string } {
   // Literal seller-authored context only: never infer an offer from a buyer signal.
@@ -367,7 +367,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
 
 function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
   const lead = db.prepare(
-    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason, l.event_date, l.event_date_proof, l.signal_kind
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as Lead | undefined
   if (!lead) throw new OutreachError('not_found')

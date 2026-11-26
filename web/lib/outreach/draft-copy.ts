@@ -8,9 +8,10 @@
 // - The seller's offer becomes a sentence ("At dazl, we offer ..." / "we find ..."), never a pasted profile
 //   line, and nothing is added to it: literal seller-authored context only, no inferred need, no claimed
 //   pain, no personal detail the page did not publish (the template's standing rules).
-// - One ask, the wrong-person escape, and the same sign-off contract as the template ("Thanks," — the send
+// - One ask and the same sign-off contract as the template ("Thanks," — the send
 //   footer adds the sender's name).
 //
+import { eventDayVerified } from '../scan/scoreboard.ts'
 import { evidenceStateOf } from './evidence-state.ts'
 
 export interface DraftCopyLead {
@@ -21,6 +22,9 @@ export interface DraftCopyLead {
   confidence?: number | null
   human_confirmed_at?: number | null
   review_reason?: string | null
+  event_date?: string | null
+  event_date_proof?: string | null
+  signal_kind?: string | null
 }
 
 export class DraftCopyError extends Error {
@@ -86,13 +90,18 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
   }
   const excerpt = !lead.review_reason && evidenceStateOf(evidence) === 'machine' ? evidence.evidence_excerpt ?? '' : ''
   const seen = takeWords(trimWords(clean(excerpt, 400), 140), 40).replace(/\.+$/, '')
+  const signalDay = seen && lead.event_date && eventDayVerified(lead)
+    ? new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(lead.event_date))
+    : null
   const opener = !seen
     ? `I came across ${company || 'your company'} and thought it was worth writing directly.`
-    : company && seen.startsWith(company)
-      ? `I saw ${seen}.`
-      : `I saw that ${lowerFirst(seen)}.`
+    : signalDay
+      ? `I saw that on ${signalDay}, ${company && seen.startsWith(company) ? seen : lowerFirst(seen)}.`
+      : company && seen.startsWith(company)
+        ? `I saw ${seen}.`
+        : `I saw that ${lowerFirst(seen)}.`
   return {
     subject: `Quick question for ${company || lead.name || 'you'}`.slice(0, 150),
-    body: `Hi ${who},\n\n${opener}\n\n${offerSentence(name, offer)}\n\nWould a short conversation about whether this fits your team's work be useful? If I have the wrong person, could you point me to the right one?\n\nThanks,`,
+    body: `Hi ${who},\n\n${opener}\n\n${offerSentence(name, offer)}\n\nOpen to a quick chat?\n\nThanks,`,
   }
 }

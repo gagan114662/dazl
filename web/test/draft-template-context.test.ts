@@ -24,12 +24,13 @@ test('template uses only this tenant saved positioning, literally and without pr
   try {
     saveMemory(db, 'A', { positioning: 'Find leads from public signals, with source links and quotes.' })
     saveMemory(db, 'B', { positioning: 'Unrelated tenant consulting service' })
+    db.prepare("UPDATE leads SET event_date = '2025-11-12', event_date_proof = 'page_bound' WHERE id = 'one'").run()
     const id = createDraft(db, 'A', 'one', 'dazl', { manual: true })
     assert.match(body(db,id), /At dazl, we find leads from public signals, with source links and quotes\./)
     assert.doesNotMatch(body(db,id), /Unrelated tenant|consulting/)
-    assert.match(body(db,id), /I saw Buyer is hiring an SDR\./)
+    assert.match(body(db,id), /I saw that on November 12, 2025, Buyer is hiring an SDR\./)
     assert.doesNotMatch(body(db,id), /Saved excerpt|contact address published|About \S+:|https?:\/\//)
-    assert.match(body(db,id), /could you point me to the right one\?/)
+    assert.match(body(db,id), /Open to a quick chat\?/)
     assert.doesNotMatch(body(db,id), /researching businesses|pain|struggl|noticed|congrat/i, 'no stock research claim and no invented need')
     const row = db.prepare('SELECT status,approved_hash,sent_at FROM outreach_messages WHERE id=?').get(id) as {status:string;approved_hash:null;sent_at:null}
     assert.deepEqual(row, {status:'draft',approved_hash:null,sent_at:null})
