@@ -1457,7 +1457,13 @@ function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet }: Pick<RunDeps, 'fetchImpl' | 'crawlGet'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+function isJobBankPosting(raw: string): boolean {
+  const url = URL.parse(raw)
+  return !!url && url.protocol === 'https:' && /(^|\.)(?:jobbank|guichetemplois)\.gc\.ca$/i.test(url.hostname) &&
+    /^\/jobsearch\/jobposting\/\d+\/?$/.test(url.pathname)
+}
+
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet, freeSiteFetch }: Pick<RunDeps, 'fetchImpl' | 'crawlGet' | 'freeSiteFetch'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
   const savedSource = sells?.icp_inferred
@@ -1556,12 +1562,14 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const forLinkedIn: LaneLead[] = []
   const needsContactCrawl: { id: string; company: string; source_url: string; signal: string; evidence_excerpt: string | null; person: string | null }[] = []
   const siteHints: { company: string; website: string }[] = []
+  const jobBankDomainLookups = new Set<string>()
   for (const l of checked) {
     const row = rows.find(r => r.source_url === l.evidence_url && r.company === l.company.slice(0, 150))
     if (!row) continue
     if (isShown(l)) {
       forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
       if (!l.person || !l.email) {
+        if (!l.domain && isJobBankPosting(l.evidence_url)) jobBankDomainLookups.add(row.id)
         needsContactCrawl.push({ ...row, signal: l.signal, evidence_excerpt: l.evidence_quote, person: l.person })
         if (l.domain) siteHints.push({ company: l.company, website: l.domain })
       }
@@ -1577,11 +1585,22 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   if (needsContactCrawl.length && sitecrawlEnabled()) {
     beginEnrichment(db, job.id, job.attempts)
     try {
+      const signal = AbortSignal.timeout(postFinishBudgetMs())
+      const findSite = jobBankDomainLookups.size
+        ? freeSiteFinderFor(db, job, { freeSiteFetch, crawlGet }, signal)
+        : undefined
       await crawlJob(db, job.user_id, job.id, {
         leads: needsContactCrawl,
         textSites: siteHints,
         companyFirstContacts: true,
-        signal: AbortSignal.timeout(postFinishBudgetMs()),
+        signal,
+        ...(findSite ? {
+          findSites: async (company, where, { id, places }) => {
+            if (!jobBankDomainLookups.has(id) || !postFinishAliveStrict(db, job)) return []
+            const location = where.length ? where : places
+            return location.length ? findSite(company, location) : []
+          },
+        } : {}),
         ...(crawlGet ? { get: crawlGet } : {}),
       })
       if (postFinishAliveStrict(db, job)) {
