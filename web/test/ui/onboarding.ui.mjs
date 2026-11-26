@@ -3,7 +3,8 @@
 // Runs the real production build with a throwaway database. /api/settings/profile goes to the REAL route (and that
 // temporary database); every other /api/* call is answered from a stub in the browser: no scan, no model call, no key
 // check, no email. Off-host requests are aborted. It proves:
-//   1. a first-run account sees the website step, and a keyless site read asks for the key inline (one field);
+//   1. a first-run account sees the website step, and a keyless site read runs without ever asking for a key (#1703:
+//      searches and reads run on dazl's own keys; the fixture answers the funded founder read);
 //   2. the site read builds the brain and opens "Your brain is ready." (no scan starts on its own); "Edit what dazl
 //      inferred" opens the editable profile, filled from the read, including "what you sell";
 //   3. the play step is one "Who do you want to find?" box and three one-click suggested plays, with no caveat paragraphs;
@@ -39,7 +40,7 @@ const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'),'start','-p',String(port),'-H','127.0.0.1'], { cwd: dir, env: { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED:'0', NEWS_SEARCH_ENABLED:'0', NODE_OPTIONS: `--experimental-strip-types --import ${path.join(dir, 'test/helpers/net-fence.ts')}` }, stdio: 'ignore' })
 for (let i=0;i<100;i++){ try { await fetch(base+'/sign-in'); break } catch { await new Promise(r=>setTimeout(r,200)) } }
 const calls = []; const scanBodies = []; const realProfile = []
-const state = { hasKey: false, sender: null, oldFirstPlayServer: false, searchResponse: null }
+const state = { sender: null, oldFirstPlayServer: false, searchResponse: null }
 const ICP = { summary: 'Independent dental practices with 2-10 chairs that are growing.', who: ['Practice owners', 'Office managers'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['Opened a new location', 'Hiring front-desk staff', 'Switched practice software'], exclude: [] }
 const b = await chromium.launch(process.env.DAZL_UI_CHROMIUM ? { executablePath: process.env.DAZL_UI_CHROMIUM } : {}); const ctx = await b.newContext({ viewport: { width: 1280, height: 900 } })
 await ctx.addCookies([{ name:'dazl_session', value: token, url: base }])
@@ -53,9 +54,10 @@ await ctx.route('**/*', async route => {
   if (p === '/api/scan/jobs') return json({ jobs: [] })
   // NOT stubbed: the real profile route on the production server and its temporary SQLite database.
   if (p === '/api/settings/profile') { calls.pop(); realProfile.push(m); return route.continue() }
-  if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: state.hasKey, trial: state.hasKey ? null : { funded: false, remaining: 0, cap: 3 } })
-  if (p === '/api/scan/icp-from-url') return state.hasKey ? json({ icp: ICP, source: 'https://brightsmile.example/', sells: 'Online booking and reminders for dental practices' }) : json({ error: 'no_api_key' }, 400)
-  if (p === '/api/settings/llm-key' && m === 'PUT') { state.hasKey = true; return json({ ok: true, vendor: 'anthropic', last4: 'abcd' }) }
+  if (p === '/api/usage') return json({ plan: 'free', scans_used: 0, scan_limit: 10, has_key: false, trial: { funded: true, remaining: 3, cap: 3 } })
+  // #1703: a fresh founder's read is funded by the trial - no customer key is involved at any point.
+  if (p === '/api/scan/icp-from-url') return json({ icp: ICP, source: 'https://brightsmile.example/', sells: 'Online booking and reminders for dental practices' })
+  if (p === '/api/settings/llm-key' && m === 'PUT') return json({ error: 'gone' }, 410)
   if (p === '/api/scan' && m === 'POST') {
     const body = JSON.parse(req.postData()); scanBodies.push(body)
     assert.ok(body.mode === undefined || body.mode === 'first5', 'production onboarding never posts a QA mode')
@@ -88,9 +90,11 @@ const PROFILE = { summary: ICP.summary, who: ICP.who, industries: ICP.industries
 // Scenario 1: website -> inline key -> profile -> plays; then Back, change Ohio to NYC, continue, Find leads.
 await page.goto(base + '/app', { waitUntil: 'networkidle' }); await shot('home')
 await page.getByText("What's your website?").waitFor()
-await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click(); await page.getByLabel('Your AI key').waitFor(); await shot('key-needed')
+await page.getByLabel('Your website').fill('brightsmile.example'); await page.getByRole('button', { name: 'Read my site' }).click(); await shot('site-read')
 assert.ok(!calls.includes('POST /api/scan'), 'nothing is scanned before Find leads')
-await page.getByLabel('Your AI key').fill('sk-ant-api03-' + 'x'.repeat(30)); await page.getByRole('button', { name: 'Save key' }).click()
+// #1703: no customer is asked for a key, here or anywhere in the flow.
+assert.equal(await page.getByLabel('Your AI key').count(), 0, 'no key field is offered (#1703)')
+assert.equal(await page.getByRole('button', { name: 'Save key' }).count(), 0, 'no Save key button (#1703)')
 // The read builds the brain, saves what it inferred and opens "Your brain is ready."; the profile stays editable.
 await page.getByTestId('ready-step').waitFor({ timeout: 15000 }); await shot('ready')
 const registryNote = page.getByTestId('ready-step').getByTestId('optional-registry-note')
