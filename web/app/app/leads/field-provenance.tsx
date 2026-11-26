@@ -31,7 +31,8 @@ export function WebsiteProvenance({ lead }: { lead: WebsiteLead }) {
   const sameSite = pageHost === domain || pageHost?.endsWith(`.${domain}`)
   const stored = lead.enrichments?.find(row =>
     row.connector === 'discover' && row.kind === 'domain' && discoverSite(row.value) === domain)
-  const basisSource = basis.kind !== 'unrecorded' && basis.domain === domain
+  // Legacy crawl rows can cite a page on the saved site without an ownership classification.
+  const basisSource = basis.domain === domain
     && (sameSite || basis.kind === 'linked' || basis.kind === 'link_text_only') ? page?.href : null
 
   return <span className="inline-flex flex-wrap items-center gap-x-2 text-[var(--ink-2)]">
