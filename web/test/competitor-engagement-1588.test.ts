@@ -3,14 +3,12 @@
 // connected dazl Connect is one page read a week, its recent posts become post_engagement reads inside the same pacing gate,
 // and the commenters become leads carrying the competitor, the post, their own comment and a confidence that ranks
 // question/complaint comments over plain ones over likes. Invented competitors, people and posts; nothing here touches LinkedIn.
-import test from 'node:test'
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
 import { completeTask, nextTask } from '../lib/linkedin-tasks/store.ts'
 import { pairLinkedIn } from './helpers/li-pair.ts'
 import { enqueueCompetitorPages, onTaskResult, MAX_POSTS_PER_COMPETITOR, MAX_ENGAGERS_PER_POST } from '../lib/linkedin-tasks/competitors.ts'
 import { readCompetitorPages, setCompetitors, MAX_COMPETITORS } from '../lib/signals/competitor-reddit.ts'
-import type { Db } from '../lib/db/client.ts'
 
 const PAGE = 'https://www.linkedin.com/company/acme-rivals/'
 const PROFILE_PAGE = 'https://www.linkedin.com/in/acme-founder/'
