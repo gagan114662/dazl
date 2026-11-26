@@ -3,9 +3,9 @@ const INSTITUTION_FORMS = new Set([
   'police department', 'fire department', 'public agency', 'housing authority', 'transit authority', 'public works',
 ]);
 
-const PUBLIC_HEALTH_FORM = /\b(?:health sciences|health network|health services|health region|lhin)$/;
-const PUBLIC_HOSPITAL_FORM = /\b(?:general|regional|memorial|district|university|children s|public) hospitals?$/;
-const COMMERCIAL_HOSPITAL_FORM = /\b(?:animal|veterinary|vet|pet|laptop|phone|computer|doll|teddy|toy|private)\b/;
+const PUBLIC_HEALTH_FORMS = new Set(['health sciences', 'health network', 'health services', 'health region']);
+const PUBLIC_HOSPITAL_MODIFIERS = new Set(['general', 'regional', 'memorial', 'district', 'university', 'public']);
+const COMMERCIAL_HOSPITAL_WORDS = new Set(['animal', 'veterinary', 'vet', 'pet', 'laptop', 'phone', 'computer', 'doll', 'teddy', 'toy', 'private']);
 
 export function isPublicSectorBody(input: {
   company: string;
@@ -41,10 +41,12 @@ export function isPublicSectorBody(input: {
   const localGovernment = first !== 'the' && words.length > 1 && (
     last === 'county' || last === 'township' || (words.length > 2 && (lastTwo === 'city council' || lastTwo === 'town council'))
   );
-  const hospital = /\bhospitals?$/.test(company) && !COMMERCIAL_HOSPITAL_FORM.test(company);
+  const hospital = (last === 'hospital' || last === 'hospitals') && !words.some(word => COMMERCIAL_HOSPITAL_WORDS.has(word));
+  const hospitalModifier = words.at(-2) ?? '';
+  const publicHospital = hospital && (PUBLIC_HOSPITAL_MODIFIERS.has(hospitalModifier) || words.slice(-3, -1).join(' ') === 'children s');
   const provincialHealthDomain = hospital && /(?:^|\.)on\.ca$/.test(domain);
   const namedBody = civicPlace || council || localGovernment || INSTITUTION_FORMS.has(lastTwo) ||
-    PUBLIC_HEALTH_FORM.test(company) || (hospital && PUBLIC_HOSPITAL_FORM.test(company));
+    PUBLIC_HEALTH_FORMS.has(lastTwo) || last === 'lhin' || publicHospital;
   const requiresGovernmentDomain = first === 'ministry' || first === 'department' || first === 'government';
 
   if (govDomain || provincialHealthDomain || (namedBody && !requiresGovernmentDomain)) {
