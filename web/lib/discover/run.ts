@@ -13,7 +13,17 @@ import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from '
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
 export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean }
-export interface DiscoveryDeps { apiKey: string; fetch?: typeof fetch; signal?: AbortSignal; discover?: typeof discoverLeads; enrich?: typeof enrichLeads | null; judge?: SignalJudge | null; now?: Date }
+export interface DiscoveryDeps {
+  apiKey: string
+  fetch?: typeof fetch
+  /** Provider transport only; public proof reads still use fetch. */
+  providerFetch?: typeof fetch
+  signal?: AbortSignal
+  discover?: typeof discoverLeads
+  enrich?: typeof enrichLeads | null
+  judge?: SignalJudge | null
+  now?: Date
+}
 
 const r4 = (n: number) => Math.round(n * 10000) / 10000
 // What the people pass has cost at most on the benchmark; a second search pass must leave room for it under the run's ceiling.
@@ -25,7 +35,7 @@ const PEOPLE_LEAD_USD = 0.045
 
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
   const discover = deps.discover ?? discoverLeads, enrich = deps.enrich === undefined ? enrichLeads : deps.enrich
-  const api = { apiKey: deps.apiKey, fetch: deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(searchAllowance(budget.maxSearches ?? input.maxSearches)) }
+  const api = { apiKey: deps.apiKey, fetch: deps.providerFetch ?? deps.fetch, signal: deps.signal, searchBudget: createSearchBudget(searchAllowance(budget.maxSearches ?? input.maxSearches)) }
   const sized = { ...input, ...(budget.maxSearches !== undefined ? { maxSearches: budget.maxSearches } : {}), ...(budget.maxFetches ? { maxFetches: budget.maxFetches } : {}) }
   const want = budget.wantShown ?? 5
   const usage: Pick<DiscoverUsage, 'usd' | 'searches' | 'requests'> = { usd: 0, searches: 0, requests: 0 }
