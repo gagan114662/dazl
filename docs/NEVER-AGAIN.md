@@ -137,3 +137,10 @@ Times are US Eastern unless marked Z.
   passing C$10. A task that does not name its spend limit and the running total runs free checks only.
 - **Enforced by (note-only):** the coordinator's task files name the limit and the running total; the reviewer checks
   that each paid test posted its cost. Nothing in this repo meters spend on tests.
+
+## 12. New merges cancelling active main CI
+
+- **Mistake:** successive main pushes cancelled active web CI and release gate runs in their shared concurrency groups. Deploys waited for a green main commit.
+- **Date:** 2026-11-25.
+- **Rule:** let active main runs finish and keep only the newest pending run per workflow. Pull requests still cancel stale runs.
+- **Enforced by (automated):** `web/test/main-ci-concurrency-1895.test.ts` parses the workflows and checks their concurrency settings.
