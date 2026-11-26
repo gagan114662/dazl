@@ -27,14 +27,9 @@ for name in GITHUB_ENV GITHUB_OUTPUT GITHUB_PATH GITHUB_STEP_SUMMARY GITHUB_STAT
   file="${!name:-}"
   if [ -n "$file" ] && [ -f "$file" ]; then chown ci:ci -- "$file"; fi
 done
-# --cpus is a quota: without an affinity the container reports every host CPU, so node --test / next build
-# would start ~19 workers on a 4-CPU budget (timeouts, timing flakes). Pin commands to 4 CPUs (the
-# GitHub-hosted vCPU count) so os.availableParallelism() matches the quota.
-n=$(nproc --all)
-cpus="$(( n > 4 ? n - 4 : 0 ))-$(( n - 1 ))"
 # Docker exec and PAM/sudo may reset the mask. Establish it in the final
 # non-root process, not merely in the listener or container entrypoint.
-exec taskset -c "$cpus" sudo -E -H -u ci env "PATH=$PATH" /bin/bash --noprofile --norc -c \
+exec sudo -E -H -u ci env "PATH=$PATH" /bin/bash --noprofile --norc -c \
   'umask 0022; exec /bin/bash --noprofile --norc -e -o pipefail "$@"' ci-bash "$@"
 CI_SHELL
 chmod 0755 /usr/local/bin/ci-bash
