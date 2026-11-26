@@ -1098,7 +1098,9 @@ export default function LeadsClient() {
         </p>}
         </div>
       </form>
-      {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}
+      {/* #1038: the results list owns the top of a finished scan (the dense table needs 15 rows on a
+          1440x900 screen); saved research moves below the list with the play box and settings. */}
+      {jobId && status === 'done' && <div className="order-last"><PlayResearch key={jobId} jobId={jobId} /></div>}
       {/* Everything that tunes a play lives in one drawer, closed by default: sources, imports, past source results and
           warm paths. The play box above stays the only thing asking for attention. */}
       <details className={`drawer card ${jobId ? 'order-last' : 'mb-6'}`} data-testid="play-settings">
