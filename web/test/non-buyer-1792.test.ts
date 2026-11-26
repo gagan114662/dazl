@@ -67,3 +67,12 @@ test('recognizes public-sector bodies and preserves commercial buyers', () => {
     assert.ok(result.reason.trim().length > 0, `${name}: reason must be non-empty`);
   }
 });
+
+test('hospitals and health authorities are public-sector bodies for private-sector offers', () => {
+  const offer = 'Accounting software for private companies';
+  for (const company of ['Hamilton General Hospital', 'North Valley Health Authority']) {
+    assert.equal(isPublicSectorBody({ company, domain: 'hhsc.ca', offer }).nonBuyer, true, company);
+    assert.equal(isPublicSectorBody({ company, offer: 'Software for public sector procurement' }).nonBuyer, false, company);
+  }
+  assert.equal(isPublicSectorBody({ company: 'North Valley Hospital Supplies', offer }).nonBuyer, false);
+});
