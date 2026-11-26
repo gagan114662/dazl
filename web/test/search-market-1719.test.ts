@@ -173,3 +173,10 @@ test('#1719: overlapping or stopped polls cannot restore an obsolete market noti
   await thirdPoll
   assert.deepEqual(notices, [null])
 })
+
+test('#1719: a bare built-in city beats the saved market without overriding a qualified namesake', () => {
+  const account = { country: 'CH', language: 'fr' }
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find manufacturers near London', null, account)), { location: 'GB' })
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders near New York City', null, account)), { location: 'US' })
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find manufacturers near London, Ontario', null, account)), { location: 'CA' })
+})

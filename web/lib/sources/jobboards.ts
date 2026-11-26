@@ -90,10 +90,10 @@ function nonUkLondon(q: string): boolean {
 // #1205: a city that shares its name with a built-in city place (London) is that other city only when a posting names its own state,
 // province or country, and never for a remote posting: "London EC2A 2BB", "City of London", "Remote - London" are the UK's London.
 const namesakeOfBuiltIn = (city: string): boolean => CITY_PLACES.some(c => norm(c.name) === norm(city))
-const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; shared?: true; ok: (l: string) => boolean }[] = [
-  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', shared: true, ok: l => LONDON_OK.test(l) },
+const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; country: string; shared?: true; ok: (l: string) => boolean }[] = [
+  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', country: 'GB', shared: true, ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
-  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
+  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', country: 'US', ok: l => NYC_OK.test(l) },
 ]
 const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
   { ask: /\b(?:united kingdom|great britain|england|uk)\b/i, name: 'United Kingdom', ok: l => /\b(?:united kingdom|england|scotland|wales|great britain|u\.k\.|uk|gb)\b/i.test(l) },
@@ -101,8 +101,8 @@ const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[
 // #1205: a place text (a qualifier, or a country code such as "GB") names the UK when the built-in UK places read it as theirs: the UK London's own
 // markers ("London, UK", "London, GB") or the United Kingdom place ("Scotland", "Wales"). No country is spelled here: the built-in places define it.
 function ukMarker(t: string): boolean { return LONDON_OK.test(`London, ${t}`) || COUNTRY_PLACES.some(c => c.ok(t)) }
-export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
-const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
+export interface Place { name: string; country?: string; ok: (...locs: (string | undefined)[]) => boolean }
+const placeOf = (c: { name: string; country?: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ...(c.country ? { country: c.country } : {}), ok: (...l) => l.some(x => !!x && c.ok(x)) })
 // Any other "<City>, <Country>" in the request (Toronto, Canada / toronto canada / Cambridge, UK / Gurugram India): a posting is in the place when its location names the city as a whole word, in any
 // letter case, and does not name a different country. A city is taken from the words right before a country name when they are separated from it by a comma, follow "in / at / near / from", or are all
 // capitalized ("Berlin Germany"); a bare lowercase noun before a country ("dentists UK") is not a city. The CITY stays the place: "Cambridge, UK" is Cambridge, not the whole United Kingdom.
@@ -153,7 +153,7 @@ export function cityCountryPlace(city: string, country: string, region: string |
     if (namesake && (/\bremote\b/i.test(l) || (named.length === 0 && regions.length === 0))) return false
     return true
   })
-  return { name: city.trim(), ok }
+  return { name: city.trim(), country, ok }
 }
 // #1095 (live staging trial, 2026-11-13): "Austin B2B SaaS companies hiring their first account executive", whose profile resolved the place
 // to "Austin, TX", named no place this function knew (a US city is neither London/NYC, a state name nor "<City>, <Country>"), so the free
