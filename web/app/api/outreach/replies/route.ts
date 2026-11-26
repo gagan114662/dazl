@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, syncReplies } from '@/lib/outreach/replies'
+import { READ_CONSENT_TEXT, READ_CONSENT_VERSION, syncReplies } from '@/lib/outreach/replies'
 import { BOUNCE_SCAN_CONSENT_TEXT, BOUNCE_SCAN_CONSENT_VERSION } from '@/lib/outreach/bounce-scan'
-import { followupsEnabled, runFollowups, setFollowups } from '@/lib/outreach/followups'
-import { autopilotAvailable, getState } from '@/lib/outreach/autopilot'
+import { followupsEnabled, runFollowups } from '@/lib/outreach/followups'
+import { autopilotAvailable, CONSENT_VERSION } from '@/lib/outreach/autopilot'
 import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { getDb } from '@/lib/db/client'
 import { readGmailStatus } from '@/lib/gmail/oauth'
-import { disableReplyFollowups, recordReplyConsent, removeReplyConsent } from '@/lib/outreach/reply-consent-db'
+import { disableReplyFollowups, enableReplyFollowups, recordReplyConsent, removeReplyConsent } from '@/lib/outreach/reply-consent-db'
 import { audit } from '@/lib/audit-route'
 
 export async function GET() {
@@ -74,14 +74,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
     case 'followups_on': {
-      const db = getScanDb()
-      const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
-      if (!hasReadConsent(db, user.tenantId) || acc?.read_granted !== 1) return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })
-      if (!autopilotAvailable()) return NextResponse.json({ error: AUTOPILOT_BETA_TEXT, code: 'autopilot_unavailable' }, { status: 400 })
-      if (!getState(db, user.tenantId).enabled || !getState(db, user.tenantId).consent_current) return NextResponse.json({ error: 'Turn on autopilot first' }, { status: 400 })
-      const was = followupsEnabled(db, user.tenantId)
-      setFollowups(db, user.tenantId, true)
-      if (!was) await audit(user, req, { action: 'followups.enabled', resource: 'followups' })
+      const result = await enableReplyFollowups(await getDb(), user.tenantId, {
+        replyVersion: READ_CONSENT_VERSION,
+        autopilotVersion: CONSENT_VERSION,
+        autopilotAvailable: autopilotAvailable(),
+      })
+      if (result === 'read_required') return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })
+      if (result === 'unavailable') return NextResponse.json({ error: AUTOPILOT_BETA_TEXT, code: 'autopilot_unavailable' }, { status: 400 })
+      if (result === 'autopilot_required') return NextResponse.json({ error: 'Turn on autopilot first' }, { status: 400 })
+      if (result === 'enabled') await audit(user, req, { action: 'followups.enabled', resource: 'followups' })
       return NextResponse.json({ ok: true })
     }
     case 'sync': {

@@ -84,7 +84,7 @@ test('lifecycle: a refused sync says not checked; unauthenticated and cross-site
   as('t5'); assert.equal(await state(), 'disconnected', 'another tenant sees none of t4')
 })
 
-test('reply settings and consent use Postgres without a raw SQLite handle and keeps tenants separate', { skip: pgSkip }, async () => {
+test('reply settings and consent use Postgres without a raw SQLite handle and keeps tenants separate', { skip: pgSkip }, async t => {
   const { schema, drop } = await freshSchema()
   const pg = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 3 })
   try {
@@ -127,5 +127,33 @@ test('reply settings and consent use Postgres without a raw SQLite handle and ke
     assert.deepEqual(await pg.all('SELECT tenant_id, action FROM autopilot_audit'), [{ tenant_id: 'owner', action: 'followups_off' }])
     as('neighbor')
     assert.equal((await info()).followups_enabled, true)
+    const prev = { AUTOPILOT_ENABLED: process.env.AUTOPILOT_ENABLED, AUTOPILOT_AVAILABLE: process.env.AUTOPILOT_AVAILABLE, AUTOPILOT_KILL: process.env.AUTOPILOT_KILL }
+    t.after(() => {
+      for (const [key, value] of Object.entries(prev)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    })
+    process.env.AUTOPILOT_ENABLED = '1'
+    process.env.AUTOPILOT_AVAILABLE = '1'
+    process.env.AUTOPILOT_KILL = '0'
+    assert.equal((await post({ action: 'followups_on' })).status, 400)
+    as('owner')
+    assert.equal((await post({ action: 'followups_on' })).status, 400)
+    const { CONSENT_VERSION } = await import('../../lib/outreach/autopilot.ts')
+    await pg.run('UPDATE autopilot_settings SET enabled = 1, consent_version = ? WHERE tenant_id = ?', [CONSENT_VERSION, 'owner'])
+    assert.equal((await post({ action: 'followups_on' })).status, 200)
+    assert.equal((await info()).followups_enabled, true)
+    assert.equal((await post({ action: 'followups_off' })).status, 200)
+    const [enabled, revokedAgain] = await Promise.all([
+      post({ action: 'followups_on' }),
+      post({ action: 'revoke' }),
+    ])
+    assert.ok([200, 400].includes(enabled.status), 'enabling either serialized before revoke or saw no consent')
+    assert.equal(revokedAgain.status, 200)
+    const final = await info()
+    assert.deepEqual([final.consent.accepted, final.followups_enabled], [false, false])
+    assert.equal((await post({ action: 'followups_on' })).status, 400)
+
   } finally { setDb(null); await pg.close(); await drop() }
 })
