@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
@@ -9,6 +9,7 @@ import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 import { addEnrichment } from '../../lib/connectors/store.ts'
 import { historyTotals } from '../../lib/scan/history-jobs.ts'
+import { POST as actOnDraft } from '../../app/api/outreach/[id]/route.ts'
 import { POST as createDraft } from '../../app/api/outreach/route.ts'
 import { GET as readBusiness } from '../../app/api/settings/profile/route.ts'
 import { GET as readUsage } from '../../app/api/usage/route.ts'
@@ -92,18 +93,18 @@ test('saving a sender refreshes the mounted Sequences gate on the same workspace
   assert.deepEqual(displayed, [false, true], 'the mounted gate reflects the saved sender')
 })
 
-test('starting approval uses the Business name already saved for the workspace', async t => {
+function seedDraftApproval(t: TestContext, name: string, businessName: string) {
   const db = new Database(':memory:')
   t.after(() => db.close())
   migrateAllSqlite(db)
   setScanDb(db)
-  const tenant = 'saved-business'
+  const tenant = businessName ? 'saved-business' : 'solo-seller'
   const job = 'a'.repeat(24)
   const lead = 'b'.repeat(24)
   const now = Math.floor(Date.now() / 1000)
   const date = new Date((now - 86_400) * 1000).toISOString().slice(0, 10)
   setUser({ id: tenant, business_name: '' })
-  db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, 'owner@seller.example', 'Owner', 'Saved Business', 'x', 'y')").run(tenant)
+  db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, 'owner@seller.example', ?, ?, 'x', 'y')").run(tenant, name, businessName)
   db.prepare(`INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, seller)
     VALUES (?, ?, 'Workspace', 'services', '-', 'Companies opening another site', 'running', 'We provide commercial fit-outs')`).run(job, tenant)
   db.prepare(`INSERT INTO leads (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt,
@@ -119,6 +120,11 @@ test('starting approval uses the Business name already saved for the workspace',
     method: 'POST', headers: { host: 'dazl.test', origin: 'https://dazl.test', 'content-type': 'application/json' },
     body: JSON.stringify({ lead_id: lead }),
   })
+  return { db, tenant, lead, request }
+}
+
+test('starting approval uses the Business name already saved for the workspace', async t => {
+  const { db, tenant, lead, request } = seedDraftApproval(t, '', 'Saved Business')
   const business = await readBusiness()
   assert.equal(business.status, 200)
   assert.equal((await business.json()).business_name, 'Saved Business')
@@ -132,6 +138,36 @@ test('starting approval uses the Business name already saved for the workspace',
   const created = await createDraft(request())
   assert.equal(created.status, 201, await created.clone().text())
   assert.match((db.prepare('SELECT body FROM outreach_messages WHERE lead_id = ?').get(lead) as { body: string }).body, /Saved Business/)
+})
+
+test('a solo seller with only a personal name can create and approve a draft', async t => {
+  const { db, tenant, request } = seedDraftApproval(t, 'Robin Ellis', '')
+  const profile = await (await readBusiness()).json()
+  assert.equal(profile.business_name, '')
+  assert.equal(profile.website, '')
+  assert.equal(db.prepare('SELECT 1 FROM outreach_settings WHERE tenant_id = ?').get(tenant), undefined)
+
+  const draft = await createDraft(request())
+  assert.equal(draft.status, 201, await draft.clone().text())
+  const { id } = await draft.json()
+  // The existing send setup still uses a personal sender name and postal address.
+  const settings = await saveSettings(new NextRequest('https://dazl.test/api/outreach/settings', {
+    method: 'PUT', headers: { host: 'dazl.test', origin: 'https://dazl.test', 'content-type': 'application/json' },
+    body: JSON.stringify({ sender_name: 'Robin Ellis', postal_address: '12 Main Street, Example City' }),
+  }))
+  assert.equal(settings.status, 200, await settings.clone().text())
+  db.prepare("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status) VALUES (?, 'owner@seller.example', 'fixture', 'active')").run(tenant)
+  const approval = await actOnDraft(new NextRequest(`https://dazl.test/api/outreach/${id}`, {
+    method: 'POST', headers: { host: 'dazl.test', origin: 'https://dazl.test', 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'approve' }),
+  }), { params: Promise.resolve({ id }) })
+  assert.equal(approval.status, 200, await approval.clone().text())
+  const saved = db.prepare('SELECT status, body, sent_at FROM outreach_messages WHERE id = ?').get(id) as {
+    status: string; body: string; sent_at: number | null
+  }
+  assert.equal(saved.status, 'approved')
+  assert.match(saved.body, /Robin Ellis/)
+  assert.equal(saved.sent_at, null)
 })
 
 test('Settings reports the same seven finished searches as Home and one used free search', async t => {
