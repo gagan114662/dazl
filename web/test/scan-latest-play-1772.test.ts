@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { bothEngines } from './helpers/engines.ts'
 import { jobQueryIcp, latestQueryJob } from '../lib/scan/store-db.ts'
+import { journey } from '../lib/journey.ts'
 
 const IN = Math.floor(Date.now() / 1000)
 const job = (id: string, user: string, query: string, icp: object, at: number): [string, [string, string, string, string, number]] =>
@@ -27,4 +28,30 @@ test('#1772: the journey card guards its ICP by play id, and the latest route ac
   const route = readFileSync(new URL('../app/api/scan/latest/route.ts', import.meta.url), 'utf8')
   assert.match(route, /searchParams\.get\('job_id'\)/, 'the route takes the play id')
   assert.match(route, /jobQueryIcp/, 'the route reads the play-keyed ICP')
+})
+
+test("#1875: the card's title, tooltip and link all read the one featured play", () => {
+  // Two plays share the request text (the #1772 collision family; the place lives in the ICP). Whichever run Home
+  // features, the card's name, the request behind its (i) and its action link are that same run's - never a mix
+  // of one play's title over another play's request or leads.
+  const Q = 'dental clinics hiring in the past 90 days'
+  const base = { status: 'done', error: null, query: Q, csv_domain: null, candidates: 3, verified: 1, needs_review: 1, dropped: 1, lead_count: 3, test_only: false }
+  const A = { ...base, id: 'a'.repeat(24), created_at: 100 }
+  const B = { ...base, id: 'b'.repeat(24), created_at: 200 }
+  // currentPlay takes the first watch whose sentence matches the newest job, so the watch order decides the
+  // featured run; pin each order to its play so a selection regression cannot pass both iterations.
+  for (const [watches, expected] of [
+    [[{ query: Q, last_job_id: B.id }, { query: Q, last_job_id: A.id }], B.id],
+    [[{ query: Q, last_job_id: A.id }, { query: Q, last_job_id: B.id }], A.id],
+  ] as const) {
+    const j = journey({ profile: { website: 'https://x.example', sells: 'y', buyer: null }, jobs: [A, B], leads: null, drafts: null, watches: [...watches] })
+    assert.equal(j.play?.id, expected, 'the first matching watch supplies the featured run')
+    assert.equal(j.action?.href, `/app/leads?job_id=${expected}`, 'the action link opens the featured run, never another play')
+  }
+  const tsx = readFileSync(new URL('../app/app/journey.tsx', import.meta.url), 'utf8')
+  assert.match(tsx, /playName\(j\.play\.query, icp\)/, 'the title names the featured play')
+  assert.match(tsx, /data-testid="play-request">\{j\.play\.query\}</, 'the (i) tooltip shows the featured play\'s own request')
+  assert.match(tsx, /playIcp\.jobId === j\.play\.id/, 'the title ICP is keyed to the featured play (#1772)')
+  const lib = readFileSync(new URL('../lib/journey.ts', import.meta.url), 'utf8')
+  assert.match(lib, /leadsHref = `\/app\/leads\?job_id=\$\{play\.id\}`/, 'the card link carries the featured play\'s job id')
 })
