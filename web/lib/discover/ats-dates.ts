@@ -3,7 +3,7 @@
 // carries one. That record is the proof page's own data (no third party), so the day it names counts.
 //
 // Never invent a date: a field that is missing, unparseable, in the future or older than the window gives nothing.
-export type AtsPlatform = 'greenhouse' | 'lever' | 'workable' | 'ashby'
+export type AtsPlatform = 'greenhouse' | 'lever' | 'workable' | 'ashby' | 'smartrecruiters'
 
 export interface AtsPosting {
   platform: AtsPlatform
@@ -73,6 +73,11 @@ export function atsPosting(url: string | URL): AtsPosting | null {
         return obj(hit).publishedAt
       },
     }
+
+  if (host === 'jobs.smartrecruiters.com' && seg.length >= 2) {
+    const m = /^(\d{6,})(?:-|$)/.exec(seg[1])
+    if (m) return { platform: 'smartrecruiters', apiUrl: `https://api.smartrecruiters.com/v1/companies/${enc(seg[0])}/postings/${m[1]}`, read: j => obj(j).releasedDate }
+  }
 
   return null
 }
