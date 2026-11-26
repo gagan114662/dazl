@@ -122,5 +122,13 @@ for (const [buyerTitle, mailbox, expected] of [
     assert.equal(discoverState(row), expected)
     assert.equal(discoverApprove(row).ok, expected === 'ready_email')
     assert.deepEqual(discoverContact(row)?.email, expected === 'ready_email' ? { address, source: team } : null)
+    if (expected === 'ready_email') {
+      for (const recipient_refused of ['unreadable', 'do_not_contact']) {
+        const refused = { ...row, recipient_refused }
+        assert.equal(discoverState(refused), 'no_contact')
+        assert.equal(discoverApprove(refused).ok, false)
+        assert.deepEqual(discoverContact(refused)?.email, { address, source: team })
+      }
+    }
   })
 }
