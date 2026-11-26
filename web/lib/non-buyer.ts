@@ -5,11 +5,14 @@ export function isPublicSectorBody(input: {
 }): { nonBuyer: boolean; reason: string } {
   const company = input.company.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const domain = hostname(input.domain);
-  const offer = (input.offer ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const offerClauses = (input.offer ?? '').toLowerCase().split(/[.!?;\n]+/);
 
   const governmentOffer = /\bserves? government agencies\b|\b(?:serves?|for) (?:municipalities|(?:local|state|federal) governments?)\b|\bserves? public schools\b|\bpublic sector procurement\b|\bgovtech\b|\bsled\b|\bpublic sector\b/;
-  const negation = /\b(?:not|never|don t|do not|no longer|isn t|aren t|doesn t|won t|exclud(?:e|es|ing))\b/;
-  const offerTargetsGovernment = governmentOffer.test(offer) && !governmentOfferMatchesNegated(offer, governmentOffer, negation);
+  const negation = /\b(?:not|never|don t|do not|no|isn t|aren t|doesn t|won t|exclud(?:e|es|ing))\b/;
+  const offerTargetsGovernment = offerClauses.some(clause => {
+    const words = clause.replace(/[^a-z0-9]+/g, ' ').trim();
+    return governmentOffer.test(words) && !governmentOfferMatchesNegated(words, governmentOffer, negation);
+  });
   if (offerTargetsGovernment) {
     return { nonBuyer: false, reason: 'The offer is explicitly aimed at government or public-sector buyers.' };
   }

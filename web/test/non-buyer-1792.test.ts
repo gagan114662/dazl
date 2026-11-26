@@ -53,6 +53,10 @@ test('recognizes public-sector bodies and preserves commercial buyers', () => {
     { name: 'Prince Edward County Winery', input: { company: 'Prince Edward County Winery' }, expected: false },
     { name: 'Department of Brand', input: { company: 'Department of Brand' }, expected: false },
     { name: 'Government of Tomorrow', input: { company: 'Government of Tomorrow' }, expected: false },
+    { name: 'public audience excluded', input: { company: 'City of Toronto', offer: 'No public sector customers; we only sell to private companies.' }, expected: true },
+    { name: 'unrelated exclusion', input: { company: 'City of Toronto', offer: 'We do not serve hospitals. Our platform serves government agencies.' }, expected: false },
+    { name: 'municipal buyers targeted', input: { company: 'Town of Oakville', offer: 'Our platform is built for municipalities.' }, expected: false },
+    { name: 'government domain with commercial wording', input: { company: 'Department of Education Software', domain: 'education.gov' }, expected: true },
     { name: 'ordinary business', input: { company: 'Northstar Analytics' }, expected: false },
   ];
 
