@@ -28,6 +28,11 @@ export function profileLines(p: DiscoverProfile | null | undefined, carried = fa
   const lines = [p.summary ? `Who they sell to: ${str(p.summary, 400)}` : '', list('Buyer roles', p.who), list('Industries', p.industries), list('Company sizes', p.sizes), list(carried ? 'Usual locations (apply only if the request names no place)' : 'Locations (only companies in these places, unless the request names another place)', p.where), list('Leave out', p.exclude)].filter(Boolean)
   return lines.length ? [carried ? CARRIED_PROFILE_HEAD : "The seller's saved buyer profile:", ...lines] : []
 }
+// #1592: a company event (funding, a new location or expansion, a launch, a contract won) is a lead like any other,
+// with the event's own kind and, for funding, the amount exactly as the proof page prints it. The kind is the model's
+// claim about the event; check.ts keeps the amount only when the page prints it.
+export const EVENT_KINDS = ['funding', 'expansion', 'launch', 'contract', 'other'] as const
+export type EventKind = (typeof EVENT_KINDS)[number]
 export interface DiscoveredLead {
   company: string
   domain: string | null
@@ -42,7 +47,9 @@ export interface DiscoveredLead {
   email: string | null              // only an address a public page prints for this company or person; never built from a pattern
   email_source_url: string | null   // the page that prints it
   confidence: 'high' | 'medium' | 'low'
-  why: string                       // one line: why this company fits the request
+  why: string                       // one line: why this company fits the request; for an event, why the event creates the need now
+  event_kind: EventKind | null      // set only when the sign is a company event (#1592)
+  amount: string | null             // a funding amount, as the proof page prints it; never for any other kind
 }
 export interface DiscoverUsage { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number; searches: number; requests: number; usd: number }
 // A page Claude's own tools returned during the run: a search result (title, and the page's age when the index knows it) or a page it
@@ -63,6 +70,11 @@ How to work:
 - evidence_quote is the sentence on the proof page that states the event itself, copied word for word, 300 characters at most. A job posting usually has no such sentence: there, evidence_quote is the posting's own title line exactly as the page prints it (the role, with the place when it stands on the same line), never a sentence of your own such as "X is hiring a Y". A line that only describes the company (its services, its address, its opening hours) is not a quote for the event. Write signal as one short line that says what that sentence says, keeping the sentence's own words for what happened and its numbers and names. Leave out of signal any detail the proof page does not state.
 - The proof page must be about this one company: a single job posting, one news item, a press release, the company's own page. A search-results page, a job-board listing or a directory that shows many companies is not proof, even when the company appears in it. When a listing page shows a promising company, open that company's own posting or careers page and use that as the proof; if you cannot reach one, leave the company out.
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
+- When the sign is a company event - funding or an investment round, a new location or expansion, a product or market launch, a big contract won - set event_kind to "funding", "expansion", "launch", "contract" or "other". Give the buyer who owns what the event created (the person who owns growth, the new site, the launched product or the contract), not just anyone at the company. In why, say why THIS event creates the need now for what the seller sells, in one line.
+- A company event must have happened within the last 90 days unless the request itself asks for a longer window. An older event is not a lead: leave it out, however strong the company otherwise looks. Never treat an event from an earlier year as fresh.
+- event_date for a company event is the day the event itself happened or was announced, taken from the source that reports it. When the page's own printed date is only its publication day and the event happened on a different, unstated day, set signal_date to null rather than use the publication day as the event's day; a page that reports an old event today is reporting an old event.
+- For funding, also give amount: the sum exactly as the proof page prints it (its currency, its words, its digits). Give amount only for funding, and only when the page prints the sum; never estimate, total or convert one.
+- A same-named company is not this company. When the proof page is about a different company with the same or a similar name (another city, another industry, another owner), it is not proof: leave the company out rather than attach another company's event to it.
 - Every qualifier in the request is a requirement, not a hint: "first" (a first sales hire means no sales team yet), "new", a funding stage, a size, an industry, a place. When the page shows the company does not meet one (it already has a sales team, it is a different industry), it is not a lead: leave it out.
 - Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give the person's own LinkedIn profile address (it contains /in/) only when a page links it or a search result shows it for this name at this company; never build one. If you cannot find a person, leave the person fields null and still return the lead.
 - Give an email address only when a page prints it for this company or this person, and give that page's URL. Never build an address from a name or a pattern.
@@ -74,7 +86,7 @@ How to work:
 confidence: "high" when the proof page clearly shows the dated signal and the company clearly matches the request; "medium" when one of those is partly unclear; "low" when you are unsure but it is still worth a look.
 
 When you are done, reply with ONLY a JSON object inside <json></json> tags, in this shape:
-<json>{"leads":[{"company":"","domain":null,"signal":"","signal_date":null,"evidence_url":"","evidence_quote":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null,"email":null,"email_source_url":null,"confidence":"medium","why":""}],"note":null}</json>
+<json>{"leads":[{"company":"","domain":null,"signal":"","signal_date":null,"event_kind":null,"amount":null,"evidence_url":"","evidence_quote":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null,"email":null,"email_source_url":null,"confidence":"medium","why":""}],"note":null}</json>
 Use "note" for one sentence when you found fewer leads than asked for, saying why.`
 
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '')
@@ -113,6 +125,9 @@ export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]
       linkedin_url: linkedin && /(^|\.)linkedin\.com$/.test(new URL(linkedin).hostname) && /^\/in\/[^/]{2,}\/?$/.test(new URL(linkedin).pathname) ? linkedin : null,
       ...publishedEmail(l.email, l.email_source_url),
       confidence: l.confidence === 'high' || l.confidence === 'low' ? l.confidence : 'medium', why: str(l.why, 300),
+      // #1592: the event kind is kept only as one of the five words; the amount is a funding fact, as printed, funding only
+      event_kind: EVENT_KINDS.find(k => k === l.event_kind) ?? null,
+      amount: (EVENT_KINDS.find(k => k === l.event_kind) === 'funding' ? str(l.amount, 60) : null) || null,
     })
     if (out.length >= max) break
   }

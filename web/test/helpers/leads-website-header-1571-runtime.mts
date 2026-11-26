@@ -32,7 +32,7 @@ import { GET as leadsGET } from '../../app/api/leads/route.ts'
 
 globalThis.fetch = (async () => { throw new Error('Unexpected network call') }) as typeof fetch
 
-const lead = (company: string, o: Partial<DiscoveredLead>): DiscoveredLead => ({ company, domain: null, signal: 'Opening a second clinic', signal_date: new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10), evidence_url: `https://news.example/${company.toLowerCase().replace(/\W+/g, '-')}`, evidence_quote: `${company} will open its second clinic`, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'high', why: 'expanding', ...o })
+const lead = (company: string, o: Partial<DiscoveredLead>): DiscoveredLead => ({ company, domain: null, signal: 'Opening a second clinic', signal_date: new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10), evidence_url: `https://news.example/${company.toLowerCase().replace(/\W+/g, '-')}`, evidence_quote: `${company} will open its second clinic`, person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null, confidence: 'high', why: 'expanding', event_kind: null, amount: null, ...o })
 const NONE = 'Unconfirmed - the company\'s own website was not identified.'
 const unescape = (s: string) => s.replace(/&#x27;|&#39;/g, '\'').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
 
