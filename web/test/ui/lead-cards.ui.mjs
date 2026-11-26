@@ -54,13 +54,17 @@ const LEADS = [
   lead('f'.repeat(24), 'Twin Dental', { contact: 'hello@a-dental.example', enrichments: [dom('a-dental.example', 'name_probe'), dom('b-dental.example', 'evidence_link_domain_label'), row('email', 'hello@a-dental.example')] }),
   lead('1'.repeat(24), 'Quiet Dental', { contact: 'privacy@quietdental.example' }),
   lead('2'.repeat(24), 'Former Dental', { contact: 'hello@formerdental.example', enrichments: [row('person', 'Pat Lee, Former practice owner')] }),
+  // #1837: the full three-action row (Approve held - no email; Message on LinkedIn; Reject) under a long one-line summary.
+  lead('3'.repeat(24), 'Northgate Dental', { signal: 'Northgate Dental opened a second office in Columbus, OH and is expanding its front-desk team across both locations this quarter', why: null, source_kind: 'discover', enrichments: [{ connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: null, source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }, { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/dana-ruiz', label: 'linked from a public page', source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }] }),
 ]
 let outreachMode = 'ok'
 let heldMode = false; const retryCalls = []
 const writes = []; const outreachBodies = []; const quarantineCalls = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
-await ctx.route('**/*', async route => {
+// One API stub for every context in this file: register it on each new context (a context without it
+// would hit the real server and see no seeded leads - the first 390px run failed exactly this way).
+const routeApi = async route => {
   const req = route.request(); const u = new URL(req.url()); const m = req.method()
   if (u.origin !== base) return route.abort()
   if (!u.pathname.startsWith('/api/')) return route.continue()
@@ -81,14 +85,15 @@ await ctx.route('**/*', async route => {
   const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
   if (er && m === 'POST') { retryCalls.push({ lead: er[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
   return json({}, 404)
-})
+}
+await ctx.route('**/*', routeApi)
 const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
   const cards = page.getByTestId('lead-card')
   await cards.first().waitFor({ timeout: 15000 })
-  assert.equal(await cards.count(), 7)
+  assert.equal(await cards.count(), 8)
   assert.equal(await page.getByTestId('campaign-page-link').getAttribute('href'), `/app/campaigns/${JOB}`, 'Leads links the scan being viewed to its campaign page')
   await page.locator('main').evaluate(m => m.scrollTo(0, m.scrollHeight)); await shot('cards')
 
@@ -222,6 +227,32 @@ try {
   heldMode = false // the retry cleared it
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal(await page.getByTestId('enrich-held').count(), 0, 'the notice clears once nothing is held')
+  // #1837: at 390x844 the full action row (Approve / Message on LinkedIn / Reject) and the summary text stay inside
+  // the phone - the row wraps instead of forcing the centered column wider than the viewport (prod clipped the row's
+  // right edge and the summary's left edge with no sideways scroll).
+  const ctx390 = await b.newContext({ viewport: { width: 390, height: 844 } })
+  await ctx390.addCookies([{ name: 'dazl_session', value: token, url: base }])
+  await ctx390.route('**/*', routeApi)
+  const p390 = await ctx390.newPage()
+  await p390.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  // Card layout is what this scenario asserts: select the Cards view explicitly where the view toggle exists
+  // (#1038 makes the table the default; the toggle is absent on bases before it, where cards are the only view).
+  if (await p390.getByTestId('view-cards').count()) await p390.getByTestId('view-cards').click()
+  const north = p390.getByTestId('lead-card').filter({ hasText: 'Northgate Dental' })
+  await north.waitFor({ timeout: 15000 })
+  assert.equal(await p390.evaluate(() => document.documentElement.scrollWidth <= 390), true, 'the page never grows wider than a 390px phone')
+  const actions = north.getByTestId('card-actions')
+  await actions.getByRole('link', { name: 'Message on LinkedIn' }).waitFor()
+  for (const el of await actions.locator('button, a').all()) {
+    const r = await el.boundingBox()
+    assert.ok(r && r.x >= -0.5 && r.x + r.width <= 390.5, `every action stays inside 390px, got ${JSON.stringify(r)}`)
+  }
+  const whyText = 'Northgate Dental opened a second office in Columbus, OH and is expanding its front-desk team across both locations this quarter'
+  const wr = await north.getByText(whyText, { exact: true }).boundingBox()
+  const cr = await north.boundingBox()
+  assert.ok(wr && cr && wr.x >= cr.x - 0.5 && wr.x + wr.width <= cr.x + cr.width + 0.5, `the summary line stays inside its card: ${JSON.stringify({ wr, cr })}`)
+  if (process.env.SHOTS) { await north.scrollIntoViewIfNeeded(); await p390.screenshot({ path: path.join(process.env.SHOTS, 'cards-390.png') }) }
+  await ctx390.close()
   console.log('lead cards UI check passed:', writes.join(', '))
 } finally {
   await b.close(); srv.kill(); rmSync(tmp, { recursive: true, force: true })
