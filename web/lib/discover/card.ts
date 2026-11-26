@@ -53,7 +53,7 @@ export function discoverSources(l: { source_url?: string | null; name?: string |
 // (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
 // email: the person's or company's own published address. A shared inbox (info@, sales@ ...) is never one (#1250); sharedInbox says one was published.
 export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null; sharedInbox: boolean; otherAddress: boolean }
-type Row = { kind: string; connector?: string; value?: string; source_url?: string | null; retrieved_at?: number | null; suppressed?: number | null; verification?: string | null }
+type Row = { kind: string; connector?: string; value?: string; source_url?: string | null; retrieved_at?: number | null; suppressed?: number | null }
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
@@ -165,7 +165,6 @@ export function discoverApprove(l: ProofLead & { company_domain?: string | null;
 export type DiscoverState = 'rejected' | 'review' | 'research' | 'ready_email' | 'ready_linkedin' | 'no_contact'
 export type DiscoverStateLead = Parameters<typeof discoverApprove>[0] & {
   stored_intent?: number | null
-  email_candidates?: { address: string; verification: string }[]
 }
 const asSaved = (l: DiscoverStateLead): DiscoverStateLead => l.stored_intent !== undefined ? { ...l, intent: l.stored_intent } : l
 export function discoverState(lead: DiscoverStateLead): DiscoverState {
@@ -180,10 +179,9 @@ export function discoverState(lead: DiscoverStateLead): DiscoverState {
   if (!address || !emailOnCompanySite(address, null, l.company_domain)) return 'no_contact'
   const rows = l.enrichments ?? []
   const storedEmailRefused = rows.some(row => row.kind === 'email' && row.value?.trim().toLowerCase() === address &&
-    (row.suppressed === 1 || row.verification === 'undeliverable'))
-  const candidateRefused = l.email_candidates?.some(candidate => candidate.address.toLowerCase() === address && candidate.verification === 'undeliverable')
+    row.suppressed === 1)
   const failedDelivery = deliverabilityBlocked(address, rows.flatMap(row => row.value && row.kind === 'deliverability' ? [{ ...row, value: row.value, connector: row.connector ?? '' }] : []))
-  return storedEmailRefused || candidateRefused || failedDelivery ? 'no_contact' : 'ready_email'
+  return storedEmailRefused || failedDelivery ? 'no_contact' : 'ready_email'
 }
 // The words for one lead's state, the same on every page that labels a lead.
 export const DISCOVER_STATE_LABEL: Record<DiscoverState, string> = { rejected: 'Rejected', review: 'Needs your review', research: 'Research only - checking the source cannot make it ready',
