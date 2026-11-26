@@ -27,14 +27,15 @@ export type PolishResult =
 // Accounting only: vendor, requested + served model, bounded outcome code, token
 // counts, request id. Never secrets, never the prompt, never the output text,
 // never raw provider error text.
+type PolishPurpose = 'polish' | 'polish_platform'
 type PolishOutcome = 'pending' | 'rewritten' | 'unusable' | 'blocked_claim' | 'error' | 'no_key' | 'no_profile' | 'offer_conflict' | 'offer_unreadable' | 'superseded' | 'spend_limit'
 
 // A durable PENDING attempt is written before any provider call. If it cannot be
 // recorded, the paid call is refused - no invisible spend. Null means "do not call".
-function beginAttempt(db: Database.Database, tenantId: string, messageId: string, vendor: Vendor, requestedModel: string | null): number | null {
+function beginAttempt(db: Database.Database, tenantId: string, messageId: string, vendor: Vendor, requestedModel: string | null, purpose: PolishPurpose): number | null {
   try {
-    const r = db.prepare("INSERT INTO outreach_llm_usage (tenant_id, message_id, purpose, vendor, requested_model, outcome) VALUES (?, ?, 'polish', ?, ?, 'pending')")
-      .run(tenantId, messageId, vendor, requestedModel)
+    const r = db.prepare("INSERT INTO outreach_llm_usage (tenant_id, message_id, purpose, vendor, requested_model, outcome) VALUES (?, ?, ?, ?, ?, 'pending')")
+      .run(tenantId, messageId, purpose, vendor, requestedModel)
     return Number(r.lastInsertRowid)
   } catch {
     return null
@@ -52,26 +53,30 @@ function finishAttempt(db: Database.Database, attemptId: number, outcome: Polish
 }
 
 // Best-effort record for attempts refused before any provider call (no spend risk).
-function recordRefusal(db: Database.Database, tenantId: string, messageId: string, vendor: Vendor | null, outcome: PolishOutcome): void {
+function recordRefusal(db: Database.Database, tenantId: string, messageId: string, vendor: Vendor | null, outcome: PolishOutcome, purpose: PolishPurpose = 'polish'): void {
   try {
-    db.prepare("INSERT INTO outreach_llm_usage (tenant_id, message_id, purpose, vendor, outcome) VALUES (?, ?, 'polish', ?, ?)")
-      .run(tenantId, messageId, vendor, outcome)
+    db.prepare("INSERT INTO outreach_llm_usage (tenant_id, message_id, purpose, vendor, outcome) VALUES (?, ?, ?, ?, ?)")
+      .run(tenantId, messageId, purpose, vendor, outcome)
   } catch { /* refusals carry no spend; a missing table must not mask the refusal */ }
 }
 
-function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps, allowPlatform = false): { provider: Provider; key: string; vendor: Vendor } | null {
+function pickProvider(db: Database.Database, tenantId: string, deps: LlmDeps, allowPlatform = false): { provider: Provider; key: string; vendor: Vendor; purpose: PolishPurpose } | null {
   let vendor: ReturnType<typeof defaultVendor> = null
   try { vendor = defaultVendor(db, tenantId) } catch { return null } // key table may predate this deploy
   let key = vendor ? getKey(db, tenantId, vendor, deps.master ?? getMasterKey()) : null
+  let purpose: PolishPurpose = 'polish'
   if (!vendor && allowPlatform) {
     const platform = operatorKey()
-    if (platform) ({ vendor, key } = platform)
+    if (platform) {
+      ({ vendor, key } = platform)
+      purpose = 'polish_platform'
+    }
   }
   if (!vendor || !key) return null
   const raw = (deps.providers ?? providers)[vendor]
   // The owner's spend pool (lib/llm/owner-guard.ts): every completion reserves its worst case first.
   const provider = raw && ownerGuarded(db, tenantId, raw)
-  return provider?.complete || provider?.completeDetailed ? { provider, key, vendor } : null
+  return provider?.complete || provider?.completeDetailed ? { provider, key, vendor, purpose } : null
 }
 
 interface LeadCtx { company: string; name: string; signal: string; source_url: string; evidence_excerpt?: string | null }
@@ -131,17 +136,17 @@ export async function polishDraftWithWords(db: Database.Database, tenantId: stri
   const p = pickProvider(db, tenantId, deps, allowPlatform)
   if (!p) { recordRefusal(db, tenantId, messageId, null, 'no_key'); return { rewritten: false, reason: 'no_key' } }
   const msg = db.prepare("SELECT m.id, m.words_rev, m.lead_id, l.company, l.name, l.signal, l.source_url, l.evidence_excerpt FROM outreach_messages m JOIN leads l ON l.id = m.lead_id WHERE m.id = ? AND m.tenant_id = ? AND m.status = 'draft'").get(messageId, tenantId) as { lead_id: string; words_rev: number } & LeadCtx & { id: string } | undefined
-  if (!msg || (baseRev !== undefined && msg.words_rev !== baseRev)) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded'); return { rewritten: false, reason: 'error' } }
+  if (!msg || (baseRev !== undefined && msg.words_rev !== baseRev)) { recordRefusal(db, tenantId, messageId, p.vendor, 'superseded', p.purpose); return { rewritten: false, reason: 'error' } }
   let memory: Memory | null, r: ReturnType<typeof draftOffer>
   // The owner's claim authority (#402): a launch policy that binds the product truth record. An unreadable policy row
   // binds nothing here; under a launch the send gates stop on it (launchGate throws), and without one a person approves.
   const claims: LaunchPolicy['claims'] | undefined = launchPolicyView(db, tenantId).accepted?.policy.claims
   const truth = claims?.productTruthVersion !== undefined ? productTruth() : null
-  try { memory = getMemory(db, tenantId); r = draftOffer(playOfferRow(db, tenantId, msg.lead_id), readTenantOffer(db, tenantId)) } catch { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_unreadable'); return { rewritten: false, reason: 'offer_unreadable' } } // no paid call
-  if (r.refuse) { recordRefusal(db, tenantId, messageId, p.vendor, r.refuse); return { rewritten: false, reason: r.refuse } }
-  if (!r.offer) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile'); return { rewritten: false, reason: 'no_profile' } }
+  try { memory = getMemory(db, tenantId); r = draftOffer(playOfferRow(db, tenantId, msg.lead_id), readTenantOffer(db, tenantId)) } catch { recordRefusal(db, tenantId, messageId, p.vendor, 'offer_unreadable', p.purpose); return { rewritten: false, reason: 'offer_unreadable' } } // no paid call
+  if (r.refuse) { recordRefusal(db, tenantId, messageId, p.vendor, r.refuse, p.purpose); return { rewritten: false, reason: r.refuse } }
+  if (!r.offer) { recordRefusal(db, tenantId, messageId, p.vendor, 'no_profile', p.purpose); return { rewritten: false, reason: 'no_profile' } }
   memory = { ...(memory ?? { icp: '', positioning: '', tone: '', exclusions: [], objections: [], updated_at: 0 }), positioning: r.offer }
-  const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null)
+  const attemptId = beginAttempt(db, tenantId, messageId, p.vendor, p.provider.configuredModel?.() ?? null, p.purpose)
   if (attemptId === null) return { rewritten: false, reason: 'error' } // audit unavailable: refuse the paid call
   const finish = (outcome: PolishOutcome, d?: DetailedCompletion) => finishAttempt(db, attemptId, outcome, d)
   // usage rides along only when the provider reported it - no undefined keys.
