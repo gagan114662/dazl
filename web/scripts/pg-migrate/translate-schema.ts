@@ -225,7 +225,9 @@ if (process.env.PG_MIGRATION_OUT) {
 // Slice subset for the pg-mem contract test: the leads-read tables and their
 // indexes, same translated types/defaults as the full file. No guard, no DROP -
 // pg-mem is in-memory and does not run plpgsql DO blocks.
-const SLICE = ['scan_jobs', 'leads', 'outreach_messages', 'sequences', 'sequence_steps', 'sequence_settings', 'lead_enrichments', 'company_events', 'suppressions', 'inbound_messages']
+// scan_spend_calls: the leads-read slice's own reaper test (test/leads-read-db.test.ts) claims and finalizes jobs with
+// reserved spend rows, so its table travels with the slice.
+const SLICE = ['scan_jobs', 'leads', 'outreach_messages', 'sequences', 'sequence_steps', 'sequence_settings', 'lead_enrichments', 'company_events', 'suppressions', 'inbound_messages', 'scan_spend_calls']
 const sliceStmts = finalStmts.filter(st => {
   const sq = st.match(/^CREATE SEQUENCE IF NOT EXISTS (\w+)_insert_seq_seq$/)
   if (sq) return SLICE.includes(sq[1])
