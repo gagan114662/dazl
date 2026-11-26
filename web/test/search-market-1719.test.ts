@@ -1,3 +1,4 @@
+import { mergeIntoRunReport } from '../lib/scan/enrichment-trace.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
@@ -119,5 +120,12 @@ test('the result notice stays available when optional diagnostics are disabled',
   assert.equal(writeRunReport(raw, job, 1, buildRunReport({}, [], [], 1), env), false)
   const report = buildRunReport({ queries: ['exporters'], market_notice: MARKET_NOTICE }, [], [], 1)
   assert.equal(writeRunReport(raw, job, 2, report, env), true)
+  assert.equal(mergeIntoRunReport(raw, job, 2, { enrichment: [], held_lead_ids: ['private-id'] }), false)
   assert.deepEqual(await readRunReport(sqliteDb(raw), 'tenant', job), [{ attempt: 2, market_notice: MARKET_NOTICE }])
+})
+
+
+test('#1719: two requested countries do not inherit an unrelated saved market', () => {
+  const market = resolveSearchMarket('Find manufacturers in France, Germany', { country: 'CA', language: 'en' }, { country: 'CH', language: 'fr' })
+  assert.deepEqual(tinyfishMarket(market), {})
 })

@@ -28,6 +28,7 @@ export function resolveSearchMarket(query: string, profile?: Partial<SearchMarke
   const cityCountry = place && WORLD_CITIES[place] ? countriesIn(WORLD_CITIES[place]) : []
   const regions = place ? regionsIn(place).map(countryOfRegion) : []
   const queryCountries = [...new Set(countries.length ? countries : regions.length ? regions : cityCountry)]
+  if (queryCountries.length > 1) return { country: null, language: null }
   const savedProfile = profileMarket(profile)
   const profileCountry = savedProfile.country
   const accountCountry = isoCountry(account?.country)
