@@ -41,9 +41,14 @@ for (const { name, src } of layouts) {
 }
 
 test('#1782 the pages keep their own centring and the fix stays in the layouts', () => {
-  const signIn = readFileSync(new URL('../app/sign-in/page.tsx', import.meta.url), 'utf8')
-  const signUp = readFileSync(new URL('../app/sign-up/sign-up-form.tsx', import.meta.url), 'utf8')
-  for (const src of [signIn, signUp]) {
-    assert.match(src, /<main id="main" className="min-h-screen flex items-center justify-center glow px-4 py-10">/, 'the <main> still centres the card; the layout removes its floor and padding')
+  // sign-in/page.tsx renders SignInForm from sign-up-form.tsx (#1736), so the <main> lives in the form for both pages,
+  // and the form renders one per state. Check every <main> those files render rather than one exact class string.
+  const sources = ['../app/sign-in/page.tsx', '../app/sign-up/sign-up-form.tsx'].map((p) => readFileSync(new URL(p, import.meta.url), 'utf8'))
+  const mains = sources.flatMap((src) => [...src.matchAll(/<main\b[^>]*>/g)].map((m) => m[0]))
+  assert.ok(mains.length > 0, 'the auth pages render a <main>')
+  for (const tag of mains) {
+    for (const cls of ['min-h-screen', 'flex', 'items-center', 'justify-center']) {
+      assert.match(tag, new RegExp(`\\b${cls}\\b`), `the <main> keeps ${cls}: the layout removes its floor and padding, and it centres the card`)
+    }
   }
 })
