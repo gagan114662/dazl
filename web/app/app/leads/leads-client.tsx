@@ -1,6 +1,7 @@
 'use client'
 import { discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
+import type { HomeReady } from '@/lib/outreach/home-ready'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
@@ -786,6 +787,21 @@ export default function LeadsClient() {
     if (j?.error) setWatchNote(j.error)
     await loadWatches()
   }
+  const [ready, setReady] = useState<HomeReady | 'failed' | null>(null)
+  const completedSearch = status === 'done' ? jobId : null
+  useEffect(() => {
+    const request = new AbortController()
+    void fetch('/api/home/ready', { signal: AbortSignal.any([request.signal, AbortSignal.timeout(20000)]) })
+      .then(async response => {
+        if (!response.ok) throw new Error(String(response.status))
+        const result: HomeReady = await response.json()
+        if (!Number.isFinite(result?.ready) || !Number.isFinite(result.judged) ||
+          !Number.isFinite(result.window_days) || !Array.isArray(result.scans)) throw new Error('shape')
+        if (!request.signal.aborted) setReady(result)
+      })
+      .catch(() => { if (!request.signal.aborted) setReady('failed') })
+    return () => request.abort()
+  }, [completedSearch])
   const [pastJobs, setPastJobs] = useState<JobSummary[] | null>(null)
   // #1136: each past scan's current status (the Campaigns card's: leads as they stand now), by scan id; 'failed' = the read
   // failed, so the cards say their counts are as recorded when the scan finished
@@ -961,6 +977,13 @@ export default function LeadsClient() {
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
         </div>}
       </div>
+      {ready && (
+        <p className="mb-3 text-sm text-[var(--ink-2)]" data-testid="leads-overall-total">
+          {ready === 'failed' ? 'Could not check workspace lead totals. Refresh to retry.' : <>
+            Last {ready.window_days} days: {ready.ready}{ready.capped ? ' or more' : ''} ready of {ready.judged} {ready.judged === 1 ? 'company' : 'companies'} checked{ready.scans.length > 0 && `, across ${ready.scans.length} ${ready.scans.length === 1 ? 'search' : 'searches'}`}{ready.capped ? ' so far.' : '.'}
+          </>}
+        </p>
+      )}
       {otherActiveJobId && <p role="status" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">
         A search is running. <a className="underline" href={`/app/leads?job_id=${otherActiveJobId}`}>View progress</a>
         {otherActiveReadFailed && ' Progress is temporarily unavailable. Retrying.'}
@@ -1315,6 +1338,18 @@ export default function LeadsClient() {
       {!jobId && pastJobs && pastJobs.length > 0 && (
         <section className="mb-6" aria-labelledby="your-plays">
           <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
+          {pastJobs.length >= 20 && ready && ready !== 'failed' && (() => {
+            const listed = new Set(pastJobs.map(job => job.id))
+            const older = ready.scans.filter(scan => !listed.has(scan.job_id))
+            return <details className="mb-3 text-sm">
+              <summary className="cursor-pointer">Show older searches with ready leads</summary>
+              {older.length > 0 ? <ul className="mt-2 space-y-1">
+                {older.map((scan, index) => <li key={scan.job_id}>
+                  <a className="underline" href={`/app/leads?job_id=${encodeURIComponent(scan.job_id)}`}>Older search {index + 1} · {scan.ready} ready</a>
+                </li>)}
+              </ul> : <p className="mt-2">No additional searches with ready leads in the Home results.</p>}
+            </details>
+          })()}
           {/* always mounted, so the failure is announced when it is filled in */}
           <div role="status" className="text-sm">{currentRuns === 'failed' && <p className="mb-3" data-testid="history-recorded">Showing each scan as it was when it finished: its current counts could not be loaded. Refresh to retry.</p>}</div>
           <div className="grid gap-3 md:grid-cols-2">
