@@ -66,7 +66,7 @@ let liveSender = null
 let settingsSlowUntil = 0
 let profileSlowFirst = 0 // one-shot: delays the first /api/settings/profile response (the mount read)
 const b = await chromium.launch()
-async function open(sc, width, height, opts = {}) {
+async function open(sc, width, height) {
   liveSender = null
   settingsSlowUntil = 0
   const ctx = await b.newContext({ viewport: { width, height } })
