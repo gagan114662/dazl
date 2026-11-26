@@ -140,6 +140,22 @@ test('#1726: an extraction shortfall shows the recorded cause instead of asserti
   assert.doesNotMatch(html, /Nothing matched this search/)
 })
 
+test('#1726: an inconclusive discovery stop keeps the recorded source gap', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    run_report: [{ discover: { stop: 'max_tokens', searches: 2 } }],
+    outcome: {
+      kind: 'none_extracted',
+      label: 'No candidates - a source was unavailable',
+      detail: 'The search has no recorded source counts.',
+      next: null,
+    },
+  }, true, true)
+  assert.match(html, /a source was unavailable/)
+  assert.match(html, /no recorded source counts/)
+  assert.match(html, /Try rewording/)
+})
+
 const limitInput = {
   query: scan.query, candidates: 0, rejected: 0, searchesUsed: 0, searchAllowance: Infinity,
 }

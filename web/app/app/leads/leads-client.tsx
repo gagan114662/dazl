@@ -240,7 +240,8 @@ function renderZeroResultReason(scan: ZeroResultScan | null) {
   const outcome = scan.outcome
   const trialStop = scan.error === 'trial_budget_reached' && outcome?.kind === 'stopped'
   const zeroMatch = !stop && outcome?.kind === 'zero_match' && helper.code !== 'budget_spent'
-  const extractionShortfall = !stop && outcome?.kind === 'none_extracted' && helper.code === 'unknown'
+  const extractionShortfall = outcome?.kind === 'none_extracted' && helper.code === 'unknown' &&
+    (!stop || stop === discoveryStop)
   const reason = trialStop || extractionShortfall ? outcome.label : zeroMatch ? 'Nothing matched this search.' : helper.reason
   const detail = trialStop || extractionShortfall ? outcome.detail : null
   const next = trialStop || zeroMatch ? outcome.next : null
