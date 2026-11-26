@@ -28,17 +28,32 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER || 'ubuntu-latest' }}
+    # PC lane only (docs/CI-PC.md): a disposable rootless job container; '' = no container (GitHub-hosted).
+    container: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && fromJSON('{"image":"ubuntu:24.04","options":"--cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022"}') || '' }}
     # Gate 2: PRs get a hard 20-minute budget (affected tests only; 5 minutes cancelled most pull requests that touch a shared file, 2026-11-23); main runs the full suite (gate 3).
     # A reviewer-applied `full-suite-ci` label gives a PR the 45-minute ceiling AND forces ALL (#1099/#1273, Hermes F1).
     timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
     defaults:
       run:
+        shell: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && 'ci-bash {0}' || 'bash -e {0}' }}
         working-directory: web
     steps:
+      - name: PC lane job prerequisites
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' }}
+        shell: bash
+        working-directory: /
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo age sqlite3 rsync passwd
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: PC lane non-root command shell
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' }}
+        shell: bash
+        working-directory: /
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ci-container-bootstrap.sh"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -117,14 +132,17 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER || 'ubuntu-latest' }}
+    # PC lane only (docs/CI-PC.md): a disposable rootless job container; '' = no container (GitHub-hosted).
+    container: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && fromJSON('{"image":"ubuntu:24.04","options":"--cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022"}') || '' }}
     timeout-minutes: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-suite-ci') && 20 || 45 }}
     services:
       postgres:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
+        # PC lane: no published host port (all WSL distros share one network namespace); hosted keeps 5432:5432.
+        ports: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && fromJSON('[]') || fromJSON('["5432:5432"]') }}
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
@@ -133,11 +151,32 @@ jobs:
       DAZL_REQUIRE_PG: "1"
     defaults:
       run:
+        shell: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && 'ci-bash {0}' || 'bash -e {0}' }}
         working-directory: web
     steps:
+      - name: PC lane job prerequisites
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' }}
+        shell: bash
+        working-directory: /
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates curl git tar gzip xz-utils unzip python3 python3-yaml build-essential sudo age sqlite3 rsync passwd socat postgresql-client
+      - name: PC lane private loopback PostgreSQL bridge (no published host port)
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' }}
+        shell: bash
+        working-directory: /
+        run: |
+          socat TCP4-LISTEN:5432,bind=127.0.0.1,reuseaddr,fork TCP4:postgres:5432 >"$RUNNER_TEMP/postgres-proxy.log" 2>&1 &
+          for i in $(seq 1 30); do pg_isready -h 127.0.0.1 -p 5432 -U postgres && break; sleep 1; done
+          pg_isready -h 127.0.0.1 -p 5432 -U postgres
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: PC lane non-root command shell
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' }}
+        shell: bash
+        working-directory: /
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ci-container-bootstrap.sh"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
