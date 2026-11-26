@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkIsolation, postgresTarget } from './app-load-postgres.ts'
+import { checkIsolation, postgresTarget, assertNoRawSqliteModules } from './app-load-postgres.ts'
 
 test('foreign probes fail on a foreign row even with 404 or a disguised response', () => {
   const probe = { own: 'own-marker', foreign: ['foreign-marker', 'foreign-row-id'] }
@@ -59,4 +59,11 @@ test('the preload supplies a real SDK stream and fences unrelated provider hosts
     assert.equal(child.status, 0, child.stdout + child.stderr)
     assert.equal(readFileSync(trace, 'utf8'), 'search\n')
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+
+test('Postgres load accepts an empty raw-SQLite manifest and refuses every nonempty manifest', () => {
+  assert.doesNotThrow(() => assertNoRawSqliteModules({}))
+  assert.throws(() => assertNoRawSqliteModules({ 'one-runtime-module.ts': 0 }), /1 raw SQLite module/)
+  assert.throws(() => assertNoRawSqliteModules({ 'first.ts': 0, 'second.ts': 3 }), /2 raw SQLite modules/)
 })

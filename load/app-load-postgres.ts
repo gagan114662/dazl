@@ -21,6 +21,11 @@ export function postgresTarget(value: string): URL {
   return url
 }
 
+export function assertNoRawSqliteModules(modules: Readonly<Record<string, number>>): void {
+  const count = Object.keys(modules).length
+  if (count !== 0) throw new Error(`Postgres split-store gate closed: ${count} raw SQLite modules`)
+}
+
 type Probe = { own?: string; foreign: readonly string[] }
 export function checkIsolation(status: number, body: string, probe: Probe, foreignRead = false) {
   let leak = probe.foreign.some(value => body.includes(value))
@@ -60,7 +65,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
   const expectedSha = process.env.LOAD_STAGING_SHA ?? ''
   if (!/^[a-f0-9]{40}$/.test(expectedSha)) throw new Error('LOAD_STAGING_SHA must be the full SHA of the staging build')
   const { RAW_SQLITE_MODULES } = await import('../web/lib/db/pg-port-status.ts')
-  if (Object.keys(RAW_SQLITE_MODULES).length) throw new Error(`Postgres split-store gate closed: ${Object.keys(RAW_SQLITE_MODULES).length} raw SQLite modules`)
+  assertNoRawSqliteModules(RAW_SQLITE_MODULES)
   const { pgDb } = await import('../web/lib/db/client.ts')
   const { runPgMigrations } = await import('../web/lib/db/migrate-pg.ts')
   const { writeKey } = await import('../web/lib/llm/key-store.ts')
