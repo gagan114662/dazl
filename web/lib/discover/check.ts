@@ -200,7 +200,13 @@ export function relativeDay(body: string, now: Date, hiringOnly = false): string
   for (const m of body.matchAll(/\b(?:posted|published|listed|updated)\s*:?\s*(?:on\s+)?(\d{1,3})\+?\s*(hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b/gi)) {
     if (hiringOnly && !/^posted\b/i.test(m[0])) continue
     const n = Number(m[1]), u = m[2].toLowerCase()
-    days.add(u.startsWith('h') ? 0 : u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
+    if (u.startsWith('h')) {
+      const postedAt = now.getTime() - n * 3_600_000
+      const utcDaysBack = Math.floor(now.getTime() / 86_400_000) - Math.floor(postedAt / 86_400_000)
+      days.add(hiringOnly ? utcDaysBack : 0)
+      continue
+    }
+    days.add(u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
   }
   if (days.size !== 1) return null
   const [d] = [...days]
