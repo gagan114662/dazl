@@ -1,7 +1,7 @@
 import type { Db } from '../db/client.ts'
 import { discoverContact, discoverProofHold, discoverSite, type DiscoverStateLead } from '../discover/card.ts'
 import { timingOptsFor } from '../outreach/lead-hold.ts'
-import { selectPublishedCandidate, splitName, type PublishedCandidateRow } from '../people/email-pattern.ts'
+import { hasPublishedAddressForDb, splitName } from '../people/email-pattern.ts'
 import { requiredGateHeldForJob } from '../scan/held-state.ts'
 import { eventDayVerified, timingUnconfirmedReason } from '../scan/scoreboard.ts'
 import { domainConfirmedDb } from '../signals/domain-basis.ts'
@@ -46,10 +46,7 @@ export async function collectApolloScanEvidence(
     if (!buyer?.source) continue
     const name = splitName(buyer.name)
     if (!name || enrichments.some(row => row.kind === 'email')) continue
-    const published = await db.all<PublishedCandidateRow>(
-      "SELECT person, address, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'published' AND source_url IS NOT NULL ORDER BY address",
-      [tenantId, leadId])
-    if (selectPublishedCandidate(published, buyer.name)) continue
+    if (await hasPublishedAddressForDb(db, tenantId, leadId, buyer.name)) continue
     candidates.push({ leadId, evidence: { first: name.first, last: name.last, confirmedDomain: domain,
       dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published' } })
   }
