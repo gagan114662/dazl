@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
-import { migrateConnectors } from '../lib/connectors/store.ts'
+import { addEnrichment, migrateConnectors } from '../lib/connectors/store.ts'
 import { migrateMemory, saveMemory } from '../lib/memory.ts'
 import { createDraft, draftBlockReason, manualDraftBlockReason, OutreachError } from '../lib/outreach/service.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { createJob, migrateScan } from '../lib/scan/store.ts'
 
-test('Refs #1793: automated inboxes yield a reason and no outreach draft', async t => {
+function draftFixture(t: TestContext) {
   const db = new Database(':memory:')
   t.after(() => db.close())
   migrateScan(db)
@@ -18,6 +18,11 @@ test('Refs #1793: automated inboxes yield a reason and no outreach draft', async
   saveMemory(db, 'T', { positioning: 'Fit-out services' })
   const job = createJob(db, 'T', { business_name: 'Seller', industry: 'retail', location: 'Canada' })
   db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  return { db, job }
+}
+
+test('Refs #1793: automated inboxes yield a reason and no outreach draft', async t => {
+  const { db, job } = draftFixture(t)
   const addLead = db.prepare(`
     INSERT INTO leads (id, scan_job_id, company, contact, signal, source_url, evidence_excerpt, confidence,
       human_confirmed_at, human_confirmed_from)
@@ -55,6 +60,37 @@ test('Refs #1793: automated inboxes yield a reason and no outreach draft', async
       })
     })
   }
+})
+
+test('#1793 discovery approval refuses a published no-reply mailbox', t => {
+  const { db, job } = draftFixture(t)
+  const leadId = 'discovered'
+  const date = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+  db.prepare(`
+    INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, evidence_excerpt,
+      confidence, fit, intent, event_date, date_status, source_kind, company_domain)
+    VALUES (?, ?, 'No Reply', 'Example Shop', 'Opening a second shop', 'https://shop.example/news',
+      'Example Shop is opening a second shop', 90, 4, 4, ?, 'verified', 'discover', 'shop.example')
+  `).run(leadId, job, date)
+
+  // The recorded name and mailbox pass the discovery path's name binding, which is why this guard matters.
+  addEnrichment(db, 'T', leadId, {
+    connector: 'discover',
+    kind: 'email',
+    value: 'no-reply@shop.example',
+    label: 'published on a public page',
+    source_url: 'https://shop.example/contact',
+    source_date: date,
+    confidence: null,
+    retrieved_at: Math.floor(Date.now() / 1000),
+  })
+
+  assert.throws(
+    () => createDraft(db, 'T', leadId, 'Seller', { manual: true }),
+    (error: unknown) => error instanceof OutreachError && error.code === 'undeliverable_address',
+  )
+  assert.equal(manualDraftBlockReason(db, 'T', leadId), 'undeliverable_address')
+  assert.equal(db.prepare('SELECT to_email FROM outreach_messages WHERE lead_id = ?').get(leadId), undefined)
 })
 
 test('#1793 draft refusal exposes a plain API reason', () => {
