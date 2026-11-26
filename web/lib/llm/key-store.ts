@@ -71,6 +71,15 @@ export function defaultVendor(db: Database.Database, tenantId: string, env: Reco
   return usableVendor(rows, env)?.vendor ?? null
 }
 
+export async function readDefaultVendor(db: Db, tenantId: string, env: Record<string, string | undefined> = process.env): Promise<Vendor | null> {
+  // Keep the legacy SQLite tie-break. Postgres has no insertion order for same-second keys.
+  const sql = db.kind === 'sqlite'
+    ? 'SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC'
+    : 'SELECT vendor FROM tenant_llm_keys WHERE tenant_id = ? ORDER BY created_at DESC, vendor ASC'
+  const rows = await db.all<{ vendor: Vendor }>(sql, [tenantId])
+  return usableVendor(rows, env)?.vendor ?? null
+}
+
 // Server-side only (the scan runner). Never return this from an API route. Sync on the raw handle (the runner today);
 // fetchKey/readTenantKey are the same on the Db layer (the runner's storage port, behind DAZL_SCAN_SHARED_QUEUE).
 const KEY_SQL = 'SELECT ciphertext FROM tenant_llm_keys WHERE tenant_id = ? AND vendor = ?'
