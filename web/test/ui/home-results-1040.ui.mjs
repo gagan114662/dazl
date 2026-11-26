@@ -168,8 +168,10 @@ try {
   for (const width of [1280, 390]) {
     const det = (email, undeliverable) => ({ signal: 'Opened a second location', event_date: '2026-11-10', day_verified: true, contact_name: 'Dana Ruiz', contact_title: 'Owner', email, ...(undeliverable ? { email_undeliverable: true } : {}) })
     const bad = mk({ scans_checked: 1, scans_in_window: 1, scans: [{ job_id: JA, ready: 3 }], held: [], companies: [
-      { lead_id: 'u-1', company: 'Rejected Co', job_id: JA, ready: true, reason: '', details: det(null, true) },
-      { lead_id: 'u-2', company: 'Bounced Co', job_id: JA, ready: true, reason: '', details: det(null, true) },
+      // The recorded verdicts are rejected (u-1) and no_mx (u-2). These rows carry the address AND the flag, so the page must
+      // hide the address on the flag alone: without the row's email_undeliverable branch the address is printed and this fails.
+      { lead_id: 'u-1', company: 'Rejected Co', job_id: JA, ready: true, reason: '', details: det('dana@rejected.example', true) },
+      { lead_id: 'u-2', company: 'Bounced Co', job_id: JA, ready: true, reason: '', details: det('dana@bounced.example', true) },
       { lead_id: 'u-3', company: 'Usable Co', job_id: JA, ready: true, reason: '', details: det('dana@usable.example', false) }] })
     const { ctx, page } = await open(width, FULL, bad)
     await page.goto(`${base}/app/leads/checked?why=ready`); await page.getByTestId('checked-list').waitFor({ timeout: 20000 })
@@ -179,7 +181,8 @@ try {
     assert.equal(await emailOf(1), "This address can't receive email", `${width}px: a no_mx address row says so`)
     assert.equal(await emailOf(2), 'dana@usable.example', `${width}px: a usable address still shows`)
     const text = (await page.getByTestId('checked-list').textContent()) ?? ''
-    assert.ok(!/rejected\.example|bounced\.example/.test(text), 'no undeliverable address is printed')
+    assert.ok(!/rejected\.example|bounced\.example/.test(text), `${width}px: no undeliverable address is printed`)
+    assert.ok(text.includes('dana@usable.example'), `${width}px: the usable address is printed (the check above is not vacuous)`)
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true, `${width}px: no horizontal scroll`)
     if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `checked-undeliverable-1833-${width}.png`) })
     out.push(`1833 at ${width}px: rejected and no_mx ready rows say "This address can't receive email", a usable address shows`); await ctx.close() }
