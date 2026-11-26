@@ -7,6 +7,7 @@ export interface DiscoverCardLead {
   name: string; company_domain: string | null; enrichments?: { kind: string; connector?: string }[]
 }
 export const isDiscoverLead = (l: { source_kind?: string | null }): boolean => l.source_kind === 'discover'
+export const NO_BUYER_NAMED = 'no_buyer_named'
 export function discoverConfidence(l: Pick<DiscoverCardLead, 'confidence'>): 'high' | 'medium' | 'low' {
   const c = l.confidence ?? 0
   return c >= 80 ? 'high' : c >= 60 ? 'medium' : 'low'
@@ -108,10 +109,11 @@ type ProofLead = { quarantined_at?: number | null; gate_held?: boolean | null; r
 export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
   if (l.quarantined_at) return 'Rejected. Undo to use it again.'
   if (l.gate_held) return 'A required check has not passed. Research only.'
-  if (l.review_reason) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
+  if (l.review_reason && l.review_reason !== NO_BUYER_NAMED) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
   if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
   if (signalStale(l.event_date, now)) return 'The signal is more than a year old. It stays here as background; it is not a reason to write now.'
   if (l.fit === 0 && l.intent === null) return 'Graded as not a fit for your profile.'
+  if (l.review_reason === NO_BUYER_NAMED) return 'No buyer named yet.'
   return null
 }
 // Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
@@ -161,6 +163,7 @@ const asSaved = (l: DiscoverStateLead): DiscoverStateLead => l.stored_intent !==
 export function discoverState(lead: DiscoverStateLead): DiscoverState {
   const l = asSaved(lead)
   if (l.quarantined_at) return 'rejected'
+  if (l.review_reason === NO_BUYER_NAMED) return discoverProofHold({ ...l, review_reason: null }) ? 'research' : 'no_contact'
   const held = discoverProofHold(l)
   // Would the hold go away, or change, if the user confirmed the proof page? Then it is theirs to check. Otherwise no check lifts it.
   if (held) return discoverProofHold({ ...l, review_reason: null }) !== held ? 'review' : 'research'

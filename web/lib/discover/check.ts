@@ -336,6 +336,7 @@ async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeo
       if (isShown(checked)) return checked
     }
   }
+  if (denied) return { ...lead, ...indexDate(hit?.page_age ?? null, now), proof: 'unseen', proof_read_by: null, page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company
   const base = { ...lead, ...indexDate(hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
   // An unread search result supports the signal when its own title states the signal line.
