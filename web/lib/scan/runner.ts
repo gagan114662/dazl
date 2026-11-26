@@ -36,7 +36,7 @@ import { requestedHiringRoles, matchedHiringRole, type RequestedHiringRole } fro
 import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting } from '../sources/ats-posting.ts'
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
-import { resolveSearchProfile, SearchProfileError } from './profile-match.ts'
+import { resolveSearchProfile } from './profile-match.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
 import { collectAdvanced, xSearchQuery } from '../advanced/index.ts'
@@ -1466,11 +1466,12 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     assertOwned(db, job)
     let resolved: Awaited<ReturnType<typeof resolveSearchProfile>> | { source: 'request_only'; profile: Icp }
     try {
-      if (!profileProvider.complete) throw new SearchProfileError('completion_unavailable')
+      if (!profileProvider.complete) throw new Error('search_profile:completion_unavailable')
       resolved = await resolveSearchProfile(job.query, profile, key, fetchImpl, profileProvider.complete)
     } catch (error) {
-      const reason = error instanceof SearchProfileError || error instanceof SpendRefused ? error.message
-        : error instanceof ProviderError ? error.kind : 'completion_error'
+      const code = error instanceof Error ? /^search_profile:([a-z_]+)$/.exec(error.message)?.[1] : undefined
+      const reason = code ?? (error instanceof SpendRefused ? error.reason
+        : error instanceof ProviderError ? error.kind : 'completion_error')
       console.warn('Scan profile resolution used request-only fallback', reason)
       resolved = { source: 'request_only', profile: fallbackIcp(job.query) }
     }

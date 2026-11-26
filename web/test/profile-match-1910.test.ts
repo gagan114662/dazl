@@ -11,7 +11,7 @@ import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { readScanStatus } from '../lib/scan/status-read-service.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
 import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
-import { resolveSearchProfile, SearchProfileError } from '../lib/scan/profile-match.ts'
+import { resolveSearchProfile } from '../lib/scan/profile-match.ts'
 
 const saved: Icp = {
   summary: 'Small marketing agencies in Toronto',
@@ -85,7 +85,7 @@ test('uncertain or ungrounded model output cannot authorize use of the saved pro
     { decision: 'replace', buyer: 'small marketing agencies', place: null, profile: { summary: query } },
     { decision: 'replace', buyer: 'Dental clinics', place: 'Toronto', profile: { summary: query } },
   ]) {
-    await assert.rejects(resolveFixture(query, reply), SearchProfileError)
+    await assert.rejects(resolveFixture(query, reply), /^Error: search_profile:/)
   }
 })
 

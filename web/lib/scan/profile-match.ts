@@ -6,7 +6,7 @@ export type SearchProfile =
   | { source: 'carried'; profile: Icp }
   | { source: 'inferred'; profile: Icp }
 
-export class SearchProfileError extends Error {}
+const profileError = (code: string) => new Error(`search_profile:${code}`)
 
 function statedPhrase(value: unknown, request: string): string | null {
   if (value === null) return null
@@ -15,7 +15,7 @@ function statedPhrase(value: unknown, request: string): string | null {
     const matched = new RegExp(words.join('\\s+'), 'iu').exec(request)
     if (matched) return matched[0]
   }
-  throw new SearchProfileError('constraint_not_quoted')
+  throw profileError('constraint_not_quoted')
 }
 
 export async function resolveSearchProfile(
@@ -40,13 +40,13 @@ The runner preserves the saved buyer or geography only when the request leaves t
 Do not carry over saved size, exclusions or seller research. Do not infer a country or language without a stated place. Return only JSON.`
   const reply = jsonOnly(await complete(apiKey, prompt, fetchImpl, 1000)) as Record<string, unknown> | null
   if (reply?.decision === 'keep') return { source: 'carried', profile: saved }
-  if (reply?.decision !== 'replace') throw new SearchProfileError('invalid_decision')
+  if (reply?.decision !== 'replace') throw profileError('invalid_decision')
 
   const buyer = statedPhrase(reply.buyer, request)
   const place = statedPhrase(reply.place, request)
   const draft = reply.profile
   if ((!buyer && !place) || !draft || typeof draft !== 'object' || Array.isArray(draft)) {
-    throw new SearchProfileError('incomplete_replacement')
+    throw profileError('incomplete_replacement')
   }
   const { industries, sizes, signals, exclude, country, language } = draft as Record<string, unknown>
   const profile = normalizeIcp({
@@ -57,16 +57,16 @@ Do not carry over saved size, exclusions or seller research. Do not infer a coun
     sizes, signals, exclude,
     ...(place ? { country, language } : { country: saved.country, language: saved.language }),
   })
-  if (!profile) throw new SearchProfileError('invalid_replacement')
+  if (!profile) throw profileError('invalid_replacement')
   // Keep the writer's spelling and spacing for the quoted fields, after checking the profile's normal bounds.
   if (buyer && profile.who[0] !== buyer.replace(/\s+/gu, ' ').trim() ||
       place && profile.where[0] !== place.replace(/\s+/gu, ' ').trim()) {
-    throw new SearchProfileError('constraint_exceeds_profile_bounds')
+    throw profileError('constraint_exceeds_profile_bounds')
   }
   const drafted = keepStatedFundingStage(request, profile)
   if (drafted.who[0] === profile.who[0] && buyer) drafted.who = [buyer]
   if (drafted.where[0] === profile.where[0] && place) drafted.where = [place]
   const bounded = budgetedIcp(drafted)
-  if (!bounded.ok) throw new SearchProfileError('replacement_storage_budget')
+  if (!bounded.ok) throw profileError('replacement_storage_budget')
   return { source: 'inferred', profile: bounded.icp }
 }
