@@ -12,6 +12,7 @@ const BUSINESS_ASSERTION = new RegExp(String.raw`^${POSSESSIVE}\s+(?:is\s+(?:a|a
 export function hasSellerDescription(query: string | null | undefined): boolean {
   return (query ?? '').split(/[.!?;\n]/u).some(clause => {
     const text = clause.replace(/^\s*(?:(?:hi|hello)[,!]?\s+)?/iu, '')
-    return ARTICLE_IDENTITY.test(text) || PLURAL_IDENTITY.test(text) || BUSINESS_ASSERTION.test(text)
+    const namedBusiness = /^(?:i|we)\s+(?:run|own|operate)\s+(\p{L}+)/iu.exec(text)?.[1]
+    return (namedBusiness !== undefined && /^\p{Lu}/u.test(namedBusiness)) || ARTICLE_IDENTITY.test(text) || PLURAL_IDENTITY.test(text) || BUSINESS_ASSERTION.test(text)
   })
 }

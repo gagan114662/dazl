@@ -59,7 +59,7 @@ function hasOpenOfferParenthesis(text: string): boolean {
 // founders.", "Do not target people selling services to dental practices.") and negations ("We don't sell to agencies.",
 // "We are not selling hardware.") state none, and neither does "We sell to <buyers>" (a target, not an offer).
 const LEAD = String.raw`(?:^|[,;:\u2013\u2014]\s*|\s-\s*)(?:(?:hi|hello|note|fyi|also|and|but|so|ps)[,:]?\s+)?`
-const SPEAKER = String.raw`(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)`
+const SPEAKER = String.raw`(?:(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)|(?:my|our)\s+(?:company|business|agency|practice)\s+(?:sells|offers|provides))`
 const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'di')

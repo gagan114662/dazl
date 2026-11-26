@@ -123,7 +123,7 @@ test('POST /api/scan new typed buyer replaces saved positives without implicit r
     const s4 = storedJob(db, b4.job_id!)
     assert.equal(hyp(s4.icp.research, 'practice managers').s, 'reviewed', 'the explicit review promotes the kept statement')
     assert.equal(hyp(s4.icp.research, 'front-desk leads').s, 'sourced', 'a statement not in the fields stays sourced even here')
-    assert.equal(s4.icp_inferred, 0, 'a review-flow submit stores as user-reviewed')
+    assert.equal(s4.icp_inferred, 4, 'a review-flow submit stores as user-reviewed')
 
     // 5. LEGACY/origin-0 repeat: an ordinary repeat (no flag) of a stored 'user' job is NOT a new review. Mixed
     // statuses are preserved verbatim - reviewed stays reviewed, sourced stays sourced, rejections and the typed

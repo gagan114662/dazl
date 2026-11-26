@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { requestTarget } from '../lib/scan/request-target.ts'
+import { icpTextFor } from '../lib/scan/score.ts'
 import { normalizeIcp, icpLoss, type Icp } from '../lib/scan/icp.ts'
 import { lookalikeOf } from '../lib/scan/lookalike-block.ts'
 import { dropKnown, accountKeys, keyHash } from '../lib/scan/lookalike-discovery.ts'
@@ -13,7 +14,7 @@ test('query-derived long target survives normalization and resubmission without 
   const normalized = normalizeIcp(projected)!
   assert.deepEqual(icpLoss(projected), [])
   assert.deepEqual(normalized, projected)
-  assert.equal((normalized as Icp & { request?: string }).request, query)
+  assert.ok(icpTextFor(normalized, query).includes('Exclude Acme and competitors.'))
 })
 
 test('a new query drops old market and time constraints while explicit review retains them', () => {
@@ -40,4 +41,11 @@ test('fresh targeting retains supplied-account exclusions without inheriting pos
   assert.deepEqual(la.k, block.k)
   assert.deepEqual(la.f, [])
   assert.equal(dropKnown(la, [{ company: 'Existing customer', website: 'https://customer.example' }]).kept.length, 0)
+})
+
+test('grading sees the full request without storing its duplicate in the profile', () => {
+  const query = 'Independent design studios '.repeat(16) + 'Exclude existing competitors.'
+  const projected = requestTarget(query, profile, false)!
+  assert.ok(icpTextFor(projected, query).includes('Exclude existing competitors.'))
+  assert.equal(Object.hasOwn(projected, 'request'), false)
 })

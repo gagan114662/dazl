@@ -54,8 +54,6 @@ import { leadCardDateLine } from '@/lib/scan/date-copy'
 import BudgetPanel from './budget-panel'
 import EstimateConfirm from './estimate-confirm'
 import { directOfferRun, scanOfferConflict, offerReady, estimateFailureCopy } from './offer-preflight'
-import { requestTarget } from '@/lib/scan/request-target'
-import { normalizeIcp } from '@/lib/scan/icp'
 import { completeOffer, MAX_OFFER } from '@/lib/scan/play-offer-text'
 import type { RunEstimate } from '@/lib/scan/price-estimate'
 import { budgetFromForm, EMPTY_BUDGET_FORM, type BudgetForm } from '@/lib/scan/run-budget-form'
@@ -987,8 +985,10 @@ export default function LeadsClient() {
   // changed their profile got the old play's profile and lost the new location). Only a profile reviewed for this same sentence repeats as it is.
   const sameSentence = !!icp?.query && icp.query.trim().toLowerCase() === query.trim().toLowerCase()
   const priorIcp = icp && sameSentence && (icp.source === 'user' || (icp.source === 'carried' && !savedBuyer)) ? icp.icp : null
-  // New typed targets replace saved buyers before estimate; exact reviewed repeats retain their own target.
-  const startIcp = priorIcp ?? requestTarget(query.trim(), normalizeIcp(savedBuyer), false)
+  // A first scan (no earlier play's profile to carry): run with the saved business profile instead of letting the
+  // server work out a new one, which silently discarded the review. The estimate step shows it before anything starts;
+  // Review profile first still builds a fresh one from the sentence.
+  const startIcp = priorIcp ?? savedBuyer ?? null
   // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
   // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
   const startReviewed = startIcp ? false : undefined
@@ -1101,7 +1101,7 @@ export default function LeadsClient() {
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
         {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
-          {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses your current search, not your saved buyer:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. {priorIcp ? 'Use Review profile first to build a new one from your sentence.' : 'Your saved offer stays the same. Use Review profile first to edit this search’s target.'}
+          {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Use Review profile first to build a new one from your sentence.
         </p>}
         </div>
       </form>
@@ -1879,7 +1879,9 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
   const targeting = c.freshTarget && !onWrite
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    {c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
+    {c.incomplete && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request says you sell <strong>{c.stated}</strong>. Confirm this offer before running the search.</p>
+      : c.incomplete && !c.saved ? <p className="mt-1 text-[var(--ink-2)]">There is no saved offer for this workspace. Write what this play sells before running the search.</p>
+      : c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
       : targeting && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
       : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-names-workspace">This request names <strong>{c.stated}</strong>; your saved offer is <strong>{c.saved.replace(/\.$/, "")}</strong>. Choose what this play sells. Neither choice changes Settings.</p>
       : c.stated

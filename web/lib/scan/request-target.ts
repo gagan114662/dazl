@@ -5,9 +5,11 @@ import { fallbackIcp, type Icp } from './icp.ts'
 // A reviewed editor or manual-target submission already supplies this play's target.
 export function requestTarget(query: string, profile: Icp | null, reviewed: boolean): Icp | null {
   if (reviewed || query.length < 3) return profile
+  const target = query.trim().replace(/^(?:find|show me|look for)\s+/i, '')
+  if (/^(?:(?:a|an|the|some)\s+)?(?:leads?|prospects?|customers?|clients?|buyers?|business(?:es)?|compan(?:y|ies)|accounts?|people|persons?)(?:\s+(?:in|near)\b|$)/i.test(target) ||
+      /\b(?:in\s+my\s+area|near\s+me)\b/i.test(target)) return profile
   return {
     ...fallbackIcp(query),
-    request: query,
     exclude: profile?.exclude ?? [],
     ...(profile?.carry_exclude ? { carry_exclude: profile.carry_exclude } : {}),
     ...(profile?.research ? { research: profile.research } : {}),
@@ -16,5 +18,5 @@ export function requestTarget(query: string, profile: Icp | null, reviewed: bool
 }
 
 export function queryProfileOrigin(input: { icp?: string | null; icpReviewed?: boolean; icpFromQuery?: boolean; icpRetained?: boolean }): number {
-  return input.icpRetained === true ? 4 : input.icpReviewed === true ? 0 : input.icpFromQuery === true ? 2 : 3
+  return input.icpRetained === true || input.icpReviewed === true ? 4 : input.icpFromQuery === true ? 2 : 3
 }

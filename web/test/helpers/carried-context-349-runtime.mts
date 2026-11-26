@@ -99,7 +99,7 @@ test('explicitly reviewed targeting is not replaced and another tenant and histo
   assert.equal(result.status, 202, JSON.stringify(result))
   const row = db.prepare('SELECT icp,icp_inferred FROM scan_jobs WHERE id=?').get(result.job_id) as {icp:string;icp_inferred:number}
   assert.deepEqual(JSON.parse(row.icp), profile)
-  assert.equal(row.icp_inferred, 0, 'a fresh explicit review is recorded as reviewed')
+  assert.equal(row.icp_inferred, 4, 'a fresh explicit review is recorded as reviewed')
   assert.deepEqual(db.prepare('SELECT * FROM scan_jobs WHERE id=?').get(old.job_id), before)
 })
 
@@ -114,7 +114,7 @@ test('explicitly reviewed same-query repeats retain their saved per-play target 
   assert.equal(repeated.status, 202, JSON.stringify(repeated))
   const row = db.prepare('SELECT icp,icp_inferred FROM scan_jobs WHERE id=?').get(repeated.job_id) as { icp:string; icp_inferred:number }
   assert.deepEqual(JSON.parse(row.icp), reviewed)
-  assert.equal(row.icp_inferred, 4, 'retained authority is distinct from a fresh review and unreviewed background')
+  assert.equal(row.icp_inferred, 4, 'the explicit review authority survives the repeat')
   db.prepare("UPDATE scan_jobs SET status='running', attempts=1, claimed_at=1 WHERE id=?").run(repeated.job_id)
   db.prepare("UPDATE scan_jobs SET status='done', claimed_at=NULL WHERE id=?").run(repeated.job_id)
   const third = await request(t, SCAN, { query, icp: reviewed, reviewed: false })
@@ -124,7 +124,7 @@ test('explicitly reviewed same-query repeats retain their saved per-play target 
 
 test('a stored reviewed target is retained verbatim on repeat without re-opening the review', async () => {
   const t = tenant()
-  db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,query,icp,icp_inferred) VALUES (?,?, 'Fixture','-', '-',?,?,0)").run(randomBytes(12).toString('hex'), t, query, JSON.stringify(profile))
+  db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,query,icp,icp_inferred) VALUES (?,?, 'Fixture','-', '-',?,?,4)").run(randomBytes(12).toString('hex'), t, query, JSON.stringify(profile))
   db.prepare("UPDATE scan_jobs SET status='running',attempts=1,claimed_at=1 WHERE user_id=?").run(t)
   db.prepare("UPDATE scan_jobs SET status='done',claimed_at=NULL WHERE user_id=?").run(t)
   const result = await request(t, SCAN, { query, icp: profile, reviewed: false })
@@ -227,3 +227,17 @@ test('carried hiring criteria do not change the estimate for a non-hiring typed 
   assert.equal(stale.status, 200, JSON.stringify(stale))
   assert.deepEqual(stale.estimate.rows, fresh.estimate.rows, 'estimate uses this target, not saved hiring requirements')
 })
+
+for (const generic of ['Find customers in my area', 'Companies in Toronto']) {
+  test(`an unreviewed generic request retains the buyer profile: ${generic}`, async () => {
+    const t = tenant()
+    const payload = { query: generic, icp: profile, reviewed: false }
+    const estimate = await request(t, ESTIMATE, payload)
+    assert.equal(estimate.status, 200, JSON.stringify(estimate))
+    const submitted = await request(t, SCAN, { ...payload, estimate_ack: estimate.estimate.ack })
+    assert.equal(submitted.status, 202, JSON.stringify(submitted))
+    const row = db.prepare('SELECT icp, icp_inferred FROM scan_jobs WHERE id=? AND user_id=?').get(submitted.job_id, t) as { icp: string; icp_inferred: number }
+    assert.deepEqual(JSON.parse(row.icp), profile)
+    assert.equal(row.icp_inferred, 3)
+  })
+}

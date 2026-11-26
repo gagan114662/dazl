@@ -136,7 +136,7 @@ test('POST /api/scan stores a reviewed profile exactly as sent (icp_inferred 0) 
   const db = setup(); as(db)
   const r = await post({ query: Q, icp: REVIEWED, reviewed: true }); assert.equal(r.status, 202)
   const row = db.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
-  assert.deepEqual(JSON.parse(row.icp), REVIEWED, 'stored as reviewed: nothing added, widened or split'); assert.equal(row.icp_inferred, 0, 'the explicit review event stores 0')
+  assert.deepEqual(JSON.parse(row.icp), REVIEWED, 'stored as reviewed: nothing added, widened or split'); assert.equal(row.icp_inferred, 4, 'the explicit review event stores marker 4')
   // A new typed target without a review replaces positive saved criteria; exclusions survive.
   const dbC = setup(); as(dbC)
   const rc = await post({ query: Q, icp: REVIEWED }); assert.equal(rc.status, 202)

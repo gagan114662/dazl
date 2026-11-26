@@ -126,8 +126,8 @@ export async function POST(req: NextRequest) {
   // nothing in it is confirmed or rejected by this request alone (applyReviewedDraft).
   const reviewedProfile = icp && bindOffer ? applyReviewedDraft(icp, bindOffer, { reviewed: body?.reviewed === true }) : icp
   const retained = body?.reviewed !== true && !manualTarget && await retainedReviewedTarget(getScanDb(), user.tenantId, query, reviewedProfile)
-  const fromQuery = query.length >= 3 && body?.reviewed !== true && !manualTarget && !retained
-  const projected = reviewedProfile ? requestTarget(query, reviewedProfile, !fromQuery) : null
+  const projected = reviewedProfile ? requestTarget(query, reviewedProfile, body?.reviewed === true || manualTarget || retained) : null
+  const fromQuery = projected !== reviewedProfile
   const effective = projected && carry.stub ? applyCarriedExclusions(projected, carry.stub) : projected
   // Manual targeting is one play, not a fresh research decision. Do not resurrect
   // dismissed exact targets or silently launch against the changed scope.

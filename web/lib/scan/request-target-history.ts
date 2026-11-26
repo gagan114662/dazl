@@ -8,7 +8,7 @@ import { normalizeIcp, type Icp } from './icp.ts'
 export async function retainedReviewedTarget(db: DbLike, tenant: string, query: string, profile: Icp | null): Promise<boolean> {
   if (!profile || query.length < 3) return false
   const rows = await asDb(db).all<{ icp: string }>(
-    'SELECT icp FROM scan_jobs WHERE user_id=? AND query=? AND icp_inferred IN (0,4)', [tenant, query],
+    'SELECT icp FROM scan_jobs WHERE user_id=? AND query=? AND icp_inferred=4', [tenant, query],
   )
   return rows.some(row => {
     try { return isDeepStrictEqual(normalizeIcp(JSON.parse(row.icp)), profile) }

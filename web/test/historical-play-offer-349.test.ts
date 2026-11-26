@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { reviewOffer, websiteReviewOffer } from '../app/app/leads/website-review-offer.ts'
@@ -39,4 +40,21 @@ test('#349 profile review asks for an offer on an identity-only new request', ()
 
 test('#349 website profile review asks for an offer on an identity-only new request', () => {
   assert.deepEqual(websiteReviewOffer(query, saved, saved.offer), choice)
+})
+
+test('#349 a bare named business in the request requires its own offer choice', () => {
+  assert.deepEqual(reviewOffer('We operate Acme. Find expanding businesses', saved), choice)
+})
+
+test('#349 an explicitly stated company product is available for selection', () => {
+  assert.deepEqual(reviewOffer('My company offers CRM setup to agencies. Find prospects', saved), {
+    offer: 'CRM setup',
+    conflict: { stated: 'CRM setup', recorded: saved.offer },
+  })
+})
+
+test('#349 offer chooser distinguishes a request offer from no saved offer', () => {
+  const client = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.match(client, /This request says you sell <strong>\{c.stated\}<\/strong>\. Confirm this offer/)
+  assert.match(client, /There is no saved offer for this workspace\. Write what this play sells/)
 })
