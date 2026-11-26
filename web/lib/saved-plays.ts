@@ -26,6 +26,9 @@ const PAUSED: Record<string, string> = {
   quota: "Paused: this month's scans are used up", quota_exceeded: "Paused: this month's scans are used up",
   trial_used: 'Paused: your free searches are used up. Add your AI key in Settings to keep it running',
 }
+function pauseLabel(reason: string | null, trialExempt: boolean): string {
+  return reason && !(trialExempt && reason === 'trial_used') ? PAUSED[reason] ?? 'Paused' : 'Paused'
+}
 // #1042: one line under a play about how it repeats and the email after each run
 export const AUTO_NOTE = 'dazl set your first play to search again every day. Pause it any time.'
 export const MAIL_NOTE = 'After each run that finds new leads you get an email listing them. Pausing the play stops the runs and the emails.'
@@ -67,14 +70,14 @@ export function whenOf(t: number, timeZone?: string): string {
 
 // `now` (unix seconds) only decides whether a live play's next run is already due: the scheduler runs it on its next
 // check, so the page says so rather than showing a time in the past.
-export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | null, timeZone?: string, now = Math.floor(Date.now() / 1000), emails = false): SavedPlay[] {
+export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | null, timeZone?: string, now = Math.floor(Date.now() / 1000), emails = false, trialExempt = false): SavedPlay[] {
   const when = (t: number) => whenOf(t, timeZone)
   const next = (t: number) => t <= now ? 'Due now: runs on the next scheduled check' : whenOf(t, timeZone)
   const out: SavedPlay[] = []
   for (const w of watches ?? []) {
     const icp = asIcp(w.icp)
     const running = w.last_status === 'pending' || w.last_status === 'running' || w.last_status === 'enriching'
-    const status: SavedPlay['status'] = !w.active ? { tone: 'paused', label: (w.paused_reason && PAUSED[w.paused_reason]) || 'Paused' }
+    const status: SavedPlay['status'] = !w.active ? { tone: 'paused', label: pauseLabel(w.paused_reason, trialExempt) }
       : running ? { tone: 'running', label: 'Running now' }
       : w.last_status === 'failed' ? { tone: 'failed', label: 'Live, last run failed' }
       : { tone: 'live', label: 'Live' }
@@ -95,7 +98,7 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
       lastRun: m.last_run_at ? `${when(m.last_run_at)}${m.last_new_count != null ? `, ${m.last_new_count} new` : ''}` : 'Not run yet',
       lastHref: m.last_job_id ? `/app/leads?job_id=${m.last_job_id}` : null,
       nextRun: on && m.next_run_at ? next(m.next_run_at) : 'Paused: resume to schedule it',
-      status: on ? { tone: 'live', label: 'Live' } : { tone: 'paused', label: (m.paused_reason && PAUSED[m.paused_reason]) || 'Paused' },
+      status: on ? { tone: 'live', label: 'Live' } : { tone: 'paused', label: pauseLabel(m.paused_reason, trialExempt) },
       active: on, note: null,
     })
   }
@@ -112,7 +115,7 @@ export function savedPlays(watches: WatchRow[] | null, monitors: MonitorRow[] | 
 // its search, when it ran and its leads. A repeating play whose row is missing from the answer is still listed, by its
 // sentence, so the two pages never disagree on what exists.
 export interface ListedPlay { key: string; kind: 'watch' | 'monitor' | 'once'; id: string; query: string; runs: string[]; last_job_id: string | null; last_run_at: number | null; last_status: string | null }
-export interface PlaysAnswer { plays: ListedPlay[]; watches: WatchRow[]; monitors: MonitorRow[]; emails?: boolean }
+export interface PlaysAnswer { plays: ListedPlay[]; watches: WatchRow[]; monitors: MonitorRow[]; emails?: boolean; trial_exempt?: boolean }
 export interface OncePlay { id: string; name: string; sentence: string; schedule: string; lastRun: string; lastHref: string; campaignHref: string; status: { tone: PlayTone; label: string } }
 export type PlaysPageItem = { key: string; saved: SavedPlay; once?: undefined } | { key: string; once: OncePlay; saved?: undefined }
 const ONCE_STATUS: Record<string, { tone: PlayTone; label: string }> = {
@@ -120,7 +123,7 @@ const ONCE_STATUS: Record<string, { tone: PlayTone; label: string }> = {
   failed: { tone: 'failed', label: 'Ran once, did not finish' },
 }
 export function playsPageItems(a: PlaysAnswer, timeZone?: string, now = Math.floor(Date.now() / 1000)): PlaysPageItem[] {
-  const saved = new Map(savedPlays(a.watches, a.monitors, timeZone, now, a.emails === true).map(p => [`${p.kind}-${p.id}`, p]))
+  const saved = new Map(savedPlays(a.watches, a.monitors, timeZone, now, a.emails === true, a.trial_exempt === true).map(p => [`${p.kind}-${p.id}`, p]))
   const items: PlaysPageItem[] = a.plays.map(p => {
     const s = p.kind === 'once' ? undefined : saved.get(p.key)
     if (s) return { key: p.key, saved: s }
