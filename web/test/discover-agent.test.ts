@@ -428,7 +428,7 @@ test('a page\'s own structured data dates a confirmed lead the run and the text 
   assert.equal(embeddedDay('{"datePosted":"2025-03-01"}', now), null, 'more than a year old')
   assert.equal(embeddedDay('{"datePosted":"2027-01-01"}', now), null, 'a day in the future')
   // The page's posting metadata wins over a proposed day absent from the source.
-  const given = await checkLead({ ...l, signal_date: '2026-11-15' }, [], page(html('{"datePosted":"2026-11-10"}')), 12_000, now)
+  const given = await checkLead({ ...l, signal_date: '2026-11-15' }, [], page(html('{"@type":"JobPosting","datePosted":"2026-11-10"}')), 12_000, now)
   assert.deepEqual([given.date, given.date_source, given.date_on_page], ['2026-11-10', 'page', false])
 })
 

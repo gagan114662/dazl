@@ -3,6 +3,7 @@
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
 import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
+import { structuredSourceDay } from './structured-source-date.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -229,15 +230,9 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
   const said = quoteStatements(c.evidence_quote, body).slice(0, 4).map(s => s.slice(0, 600))
   try { return (await ask(c.signal, c.company, said)) ? { ...c, signal_seen: true, signal_by: 'claude' } : { ...c, signal_by: 'claude' } } catch { return c }
 }
-// The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
-// tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
-// moves it), not a day in the future, not one more than a year old.
+// Keep the page's stated calendar day (including for timestamps with a timezone).
 export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
-  const m = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html) ?? (hiringOnly ? null : /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
-    ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html))
-  if (!m) return null
-  const t = Date.parse(`${m[1]}T00:00:00Z`)
-  return hiringOnly ? validDay(t, now) : Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
+  return structuredSourceDay(html, now, hiringOnly, INDEX_DATE_MAX_AGE_DAYS)
 }
 // A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
 // the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging
@@ -287,7 +282,7 @@ export function profileOnPage(html: string, person: string): string | null {
 // What the proof page itself adds to a confirmed lead: a date (the job board's own record of the posting, else the page's structured
 // data) when the run and the page text gave none, and the named person's LinkedIn profile when the page links it. `html` is dazl's raw
 // read when it has one; otherwise the page is fetched once, and only when something is still missing.
-async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<CheckedLead> {
+async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date, sameSource = true): Promise<CheckedLead> {
   if (c.proof !== 'confirmed') return c
   const needDate = c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
   if (!needDate && !needProfile) return c
@@ -297,10 +292,21 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   if (!stillDate && !needProfile) return out
   let raw = html
   if (raw === null && u) {
-    try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
+    try {
+      const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
+      if (r.ok) {
+        raw = (await r.text()).slice(0, 1_500_000)
+        const body = text(raw)
+        sameSource = (!r.url || pageKey(r.url) === pageKey(u.href)) &&
+          companyOnPage(c.company, body) && quoteOnPage(c.evidence_quote, body)
+      }
+    } catch { /* nothing more from the page */ }
   }
   if (!raw) return out
-  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (stillDate && sameSource && c.quote_on_page) {
+    const day = structuredSourceDay(raw, now, isDiscoveryHiringLead(c), INDEX_DATE_MAX_AGE_DAYS, u ?? undefined)
+    if (day) out = { ...out, date: day, date_source: 'page' }
+  }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }
@@ -321,7 +327,11 @@ async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeo
   if (u) {
     try {
       const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } })
-      if (r.ok) { const html = (await r.text()).slice(0, 1_500_000), body = text(html); return fromPage(await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask), html, u, fetchImpl, timeoutMs, now) }
+      if (r.ok) {
+        const html = (await r.text()).slice(0, 1_500_000), body = text(html)
+        const checked = await settle(judge(lead, body, 'dazl', hit?.page_age ?? null, now), body, ask)
+        return fromPage(checked, html, u, fetchImpl, timeoutMs, now, !r.url || pageKey(r.url) === pageKey(u.href))
+      }
       denied = r.status === 401 || r.status === 403
       // dazl asked and the address is gone: a search result's title does not bring it back
       if (r.status === 404 || r.status === 410) return { ...lead, ...indexDate(hit?.page_age ?? null, now), proof: 'gone', proof_read_by: 'dazl', page_age: hit?.page_age ?? null, quote_on_page: false, signal_seen: false, claim_lacks: [], date_on_page: false }
