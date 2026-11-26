@@ -3,6 +3,7 @@
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
 import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
+import { atsDate } from './ats-dates.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -202,7 +203,13 @@ export function relativeDay(body: string, now: Date, hiringOnly = false): string
     // A label like "Posted 30+ days ago" gives a lower bound, not a posting date.
     if (hiringOnly && m[0].includes('+')) return null
     const n = Number(m[1]), u = m[2].toLowerCase()
-    days.add(u.startsWith('h') ? 0 : u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
+    if (u.startsWith('h')) {
+      const postedAt = now.getTime() - n * 3_600_000
+      const utcDaysBack = Math.floor(now.getTime() / 86_400_000) - Math.floor(postedAt / 86_400_000)
+      days.add(hiringOnly ? utcDaysBack : 0)
+      continue
+    }
+    days.add(u.startsWith('d') ? n : u.startsWith('w') ? n * 7 : n * 30)
   }
   if (days.size !== 1) return null
   const [d] = [...days]
@@ -311,7 +318,14 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   const needDate = c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
   if (!needDate && !needProfile) return c
   let out = c
-  if (needDate && u) { const posted = await postingDay(u, fetchImpl, timeoutMs, now); if (posted) out = { ...out, date: posted, date_source: 'page' } }
+  // A posting on Greenhouse, Lever, Workable, Ashby or BambooHR carries its day in the board's own API record, with the record's URL as
+  // the source. That covers first_published, createdAt, published_on and the board listings; the page/JSON-LD path stays for
+  // everything else.
+  if (needDate && u) {
+    const ats = await atsDate(u, fetchImpl, now)
+    const posted = ats?.date ?? await postingDay(u, fetchImpl, timeoutMs, now)
+    if (posted) out = { ...out, date: posted, date_source: 'page' }
+  }
   const stillDate = needDate && out.date_source !== 'page'
   if (!stillDate && !needProfile) return out
   let raw = html

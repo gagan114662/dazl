@@ -1674,7 +1674,7 @@ export function crawlEligibleHolds(): string[] {
   return [...new Set(['outside_window_undated', ...SEARCHABLE_HOLDS])].filter(r => !EVENT_OVER_HOLDS.has(r))
 }
 
-export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; textSites?: { company: string; website: string }[]; buyerCitedUrls?: readonly string[]; atsLookup?: boolean; atsFetch?: typeof fetch; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; onContactReadComplete?: (leadId: string) => void; findSites?: ((company: string, where: string[]) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
+export async function crawlJob(db: Database.Database, tenantId: string, jobId: string, deps: { citedUrls?: string[]; textSites?: { company: string; website: string }[]; buyerCitedUrls?: readonly string[]; atsLookup?: boolean; atsFetch?: typeof fetch; redirectOf?: (host: string) => Promise<string | null>; get?: Get; gapMs?: number; env?: Record<string, string | undefined>; now?: number; leads?: { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]; skipEvidenceFetch?: boolean; signal?: AbortSignal; concurrency?: number; nativeOnly?: boolean; companyFirstContacts?: boolean; onBuyerRead?: (event: { site: string; pages: number; stored: number }) => void; onContactReadComplete?: (leadId: string) => void; findSites?: ((company: string, where: string[], leadId: string) => Promise<string[]>) & { recordSite?: (site: string, company: string) => boolean } } = {}): Promise<void> {
   try {
     if (!sitecrawlEnabled(deps.env)) return
     // Caller-supplied jobs and lead subsets are not an ownership boundary. Fail closed before any network or write.
@@ -2076,7 +2076,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         if (i >= sites.length) {
           lookupPending = false
           let found: string[] = []
-          try { found = await deps.findSites!(l.company, where) } catch { /* failed lookup: only local guesses remain */ }
+          try { found = await deps.findSites!(l.company, where, l.id) } catch { /* failed lookup: only local guesses remain */ }
           if (deps.signal?.aborted) return
           // A public record can supply new identity provenance for a host already probed. Re-evaluate it
           // against the cached homepage (no extra network), with recordSite now bound to this company.
