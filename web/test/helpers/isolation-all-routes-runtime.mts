@@ -289,6 +289,18 @@ test("every id-taking route: tenant B with tenant A's id is refused (404/403), A
     const after = aRows(f.db)
     if (after !== before) { failures.push(`${label(c)}: A's data changed in ${changedTables(before, after).join(', ')}`); break }
   }
+  as('B')
+  for (const c of CASES.filter(c => c.route === 'POST /api/outreach/sequences')) {
+    const foreign = await c.call(f)
+    const missing = await c.call({ ...f, seqDraft2: hex(), sequence: hex() })
+    assert.ok(foreign, label(c))
+    assert.ok(missing, label(c))
+    assert.equal(foreign.status, 404, label(c))
+    assert.equal(missing.status, 404, label(c))
+    assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'), label(c))
+    assert.equal(await foreign.text(), await missing.text(), label(c))
+  }
+  assert.equal(aRows(f.db), before, 'sequence action denials leave the other workspace unchanged')
   assert.equal(fetchCalls.length, 0, `B caused network attempts: ${fetchCalls.join(', ')}`)
 
   // Positive controls: the same call as A, each on a fresh fixture, gets past the ownership check.
