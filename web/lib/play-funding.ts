@@ -76,8 +76,8 @@ export async function releaseTrialRun(db: Db, userId: string, run: TrialRun): Pr
 
 // What a refused trial admission does to the scheduled play: pause it with a reason the Plays page explains, or (the
 // global daily ceiling, which frees up tomorrow) leave it due so a later tick runs it.
-export function trialPauseReason(r: TrialRefusal): 'trial_used' | 'no_api_key' | null {
+export function trialPauseReason(r: TrialRefusal, exempt = false): 'trial_used' | 'no_api_key' | null {
   if (r === 'global_daily_cap') return null
-  if (r === 'attempts_cap' || r === 'account_total_cap') return 'trial_used'
+  if (r === 'attempts_cap' || r === 'account_total_cap') return exempt ? null : 'trial_used'
   return 'no_api_key'
 }
