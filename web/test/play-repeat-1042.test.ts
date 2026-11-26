@@ -225,7 +225,7 @@ bothEngines('#1042 with the trial off, or for a hand-made watch, a keyless run p
   assert.equal(await num(db, 'SELECT count(*) AS n FROM scan_jobs WHERE created_at = ?', [due]), 0)
   // the Plays page names the reason (it showed a bare "Paused" for no_api_key on main)
   const [p] = savedPlays((await listWatches(db, A)) as never, null, 'UTC', due)
-  assert.equal(p.status.label, 'Paused: no AI key to run it')
+  assert.equal(p.status.label, "Paused: this play can't run on your account right now")
 })
 
 bothEngines('#1042 the trial caps decide: 3 searches per account, then the repeat pauses as "free searches used up"; the day\'s ceiling only delays it', async ({ db }) => {
