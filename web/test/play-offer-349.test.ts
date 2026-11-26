@@ -100,7 +100,7 @@ test('#349 onboarding only (users.sells, no Memory): template and AI rewrite sta
     // a play from before seller snapshots: the tenant context is its offer
     db.prepare("UPDATE scan_jobs SET seller = NULL WHERE id = 'dental'").run()
     const id = createDraft(db, 'A', 'lead-dental', 'Acme', { manual: true })
-    assert.match(body(db, id), new RegExp(ONBOARDED))
+    assert.match(body(db, id), new RegExp(ONBOARDED, 'i'))
     const r = recording()
     const res = await polishDraft(db, 'A', id, 'Acme', { master, providers: r.providers })
     assert.ok(res.rewritten || res.reason !== 'no_profile', JSON.stringify(res))

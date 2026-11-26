@@ -114,16 +114,16 @@ test('drafts follow their play: dental stays dental, London says CRM consulting,
   const raw = draftDb()
   try {
     const d = createDraft(raw, 'A', 'lead-dental', 'Acme', { manual: true })
-    assert.match(body(raw, d), new RegExp(`About Acme: ${DENTAL}`))
+    assert.match(body(raw, d), new RegExp(DENTAL, 'i'))
     const l = createDraft(raw, 'A', 'lead-london', 'Acme', { manual: true })
-    assert.match(body(raw, l), new RegExp(`About Acme: ${CRM}`))
+    assert.match(body(raw, l), new RegExp(CRM, 'i'))
     assert.doesNotMatch(body(raw, l), /dental/i)
     assert.throws(() => createDraft(raw, 'A', 'lead-legacy', 'Acme', { manual: true }), /offer_conflict/)
     assert.equal((raw.prepare("SELECT count(*) n FROM outreach_messages WHERE lead_id = 'lead-legacy'").get() as { n: number }).n, 0, 'nothing drafted')
     await setPlayOffer(sqliteDb(raw), 'A', 'legacy', CRM)
-    assert.match(body(raw, createDraft(raw, 'A', 'lead-legacy', 'Acme', { manual: true })), new RegExp(`About Acme: ${CRM}`))
+    assert.match(body(raw, createDraft(raw, 'A', 'lead-legacy', 'Acme', { manual: true })), new RegExp(CRM, 'i'))
     // the dental draft already written is never rewritten
-    assert.match(body(raw, d), new RegExp(DENTAL))
+    assert.match(body(raw, d), new RegExp(DENTAL, 'i'))
   } finally { raw.close() }
 })
 
@@ -131,9 +131,9 @@ test('a play with a recorded offer wins over the tenant-wide Memory positioning;
   const raw = draftDb()
   try {
     saveMemory(raw, 'A', { positioning: 'Tenant-wide positioning text' })
-    assert.match(body(raw, createDraft(raw, 'A', 'lead-dental', 'Acme', { manual: true })), new RegExp(DENTAL))
+    assert.match(body(raw, createDraft(raw, 'A', 'lead-dental', 'Acme', { manual: true })), new RegExp(DENTAL, 'i'))
     raw.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES('old','A','Request','test','test','running')").run()
     raw.prepare("INSERT INTO leads(id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,human_confirmed_from) VALUES('lead-old','old','Buyer','sales@buyer.invalid','Buyer is hiring an SDR','https://buyer.invalid/careers','Buyer is hiring an SDR',70,1800000000,'test_review')").run()
-    assert.match(body(raw, createDraft(raw, 'A', 'lead-old', 'Acme', { manual: true })), /Tenant-wide positioning text/)
+    assert.match(body(raw, createDraft(raw, 'A', 'lead-old', 'Acme', { manual: true })), /Tenant-wide positioning text/i)
   } finally { raw.close() }
 })

@@ -10,7 +10,7 @@ import { composeDraftCopy, DraftCopyError } from '../lib/outreach/draft-copy.ts'
 // The prod repro shape (Quest, MadeThis draft): address page differs from the source page, excerpt present,
 // offer is the raw stored profile line.
 const lead = (over: Record<string, unknown> = {}) => ({
-  name: 'Alex Chen', company: 'MadeThis', signal: 'MadeThis is hiring SDRs',
+  name: 'Alex Chen', company: 'MadeThis', confidence: 90, signal: 'MadeThis is hiring SDRs',
   evidence_excerpt: 'MadeThis is hiring two SDRs to sell its AI design tool',
   source_url: 'https://madethis.example/about', ...over,
 })
@@ -28,7 +28,7 @@ test('it is a short personal note: first name, the signal in words, the offer as
   assert.match(d.body, /I saw MadeThis is hiring two SDRs/, 'the saved signal is referenced in plain words')
   assert.doesNotMatch(d.body, /"/, 'the source sentence is not quoted word for word in quotation marks')
   assert.match(d.body, /we offer a B2B sales-automation SaaS/, 'the profile line becomes a sentence, not a paste')
-  assert.match(d.body, /could you point me to the right one\?/, 'one ask, with the wrong-person escape')
+  assert.match(d.body, /Open to a quick chat\?/, 'one short ask')
   assert.ok(d.body.trimEnd().endsWith('Thanks,'), 'signs off like the template contract (the footer adds the sender name)')
   assert.match(d.subject, /MadeThis/)
   const words = d.body.split(/\s+/).filter(Boolean).length
@@ -81,4 +81,45 @@ test('(Qodo) the 120-word cap holds even when every field is many short words', 
   const d = composeDraftCopy(lead({ evidence_excerpt: `MadeThis ${many(300)}` }), 'dazl', many(300))
   const words = d.body.split(/\s+/).filter(Boolean).length
   assert.ok(words <= 120, `body is ${words} words`)
+})
+
+test('unverified and human-only excerpts never produce an I saw opener', () => {
+  for (const unverified of [
+    { ...lead(), confidence: null, human_confirmed_at: null },
+    { ...lead(), confidence: null, human_confirmed_at: 1 },
+    { ...lead(), evidence_excerpt: null },
+  ]) {
+    const draft = composeDraftCopy(unverified, 'dazl', OFFER)
+    assert.doesNotMatch(draft.body, /\bI saw\b|hiring|SDRs/i)
+  }
+})
+
+test('a capitalized article is lowered in the offer while B2B and SaaS keep their casing', () => {
+  for (const offer of [OFFER, 'A' + OFFER.slice(1)]) {
+    assert.match(composeDraftCopy(lead(), 'dazl', offer).body, /At dazl, we offer a B2B sales-automation SaaS to small marketing agencies\./)
+  }
+  assert.match(composeDraftCopy(lead(), 'dazl', 'B2B sales-automation SaaS').body, /At dazl, we offer B2B sales-automation SaaS\./)
+})
+
+test('a held signal with a stored excerpt still gets a neutral opener', () => {
+  const held = { ...lead(), review_reason: 'quote_unconfirmed' }
+  assert.doesNotMatch(composeDraftCopy(held, 'dazl', OFFER).body, /\bI saw\b|hiring|SDRs/i)
+})
+
+test('a verified signal day is included in the opener, with one short ask', () => {
+  const dated = { ...lead(), event_date: '2025-11-12', event_date_proof: 'page_bound' }
+  const { body } = composeDraftCopy(dated, 'dazl', OFFER)
+  assert.match(body, /November 12, 2025.*MadeThis is hiring two SDRs/i)
+  assert.match(body, /Open to a quick chat\?/)
+  assert.equal((body.match(/\?/g) ?? []).length, 1)
+})
+
+test('unverified, future and held signal days stay out of the draft', () => {
+  for (const fields of [
+    { event_date: '2025-11-12', event_date_proof: null },
+    { event_date: '2999-11-12', event_date_proof: 'page_bound' },
+    { event_date: '2025-11-12', event_date_proof: 'page_bound', review_reason: 'needs_review' },
+  ]) {
+    assert.doesNotMatch(composeDraftCopy({ ...lead(), ...fields }, 'dazl', OFFER).body, /November 12/)
+  }
 })
