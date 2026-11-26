@@ -5,8 +5,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
-import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setScanDb, setUser, trapScanDb } from './tenant-route-db.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
+import { getDb, pgDb, setDb } from '../../lib/db/client.ts'
+import { runPgMigrations } from '../../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './pg-test.ts'
 import { actionMessage, replyReadingState, type RepliesViewInput } from '../../lib/outreach/replies-view.ts'
 
 globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network call ${String(u)}`) }) as typeof fetch
@@ -79,4 +82,29 @@ test('lifecycle: a refused sync says not checked; unauthenticated and cross-site
   assert.equal((await GET()).status, 401); assert.equal((await post({ action: 'revoke' })).status, 401)
   as('t4'); assert.equal(await state(), 'consent_needed', 'the signed-out revoke/consent attempts changed nothing')
   as('t5'); assert.equal(await state(), 'disconnected', 'another tenant sees none of t4')
+})
+
+test('reply settings GET uses Postgres without a raw SQLite handle and keeps tenants separate', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const pg = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 3 })
+  try {
+    await runPgMigrations(pg.pool)
+    const { READ_CONSENT_VERSION } = await import('../../lib/outreach/read-consent.ts')
+    const { BOUNCE_SCAN_CONSENT_VERSION } = await import('../../lib/outreach/bounce-scan.ts')
+    await pg.run("INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES ('owner', 'owner@example.test', 'ct', 'active', 1), ('neighbor', 'neighbor@example.test', 'ct', 'needs_reconnect', 0)")
+    await pg.run('INSERT INTO mail_read_consent (tenant_id, version) VALUES (?, ?)', ['owner', READ_CONSENT_VERSION])
+    await pg.run('INSERT INTO mail_bounce_scan_consent (tenant_id, version) VALUES (?, ?)', ['neighbor', BOUNCE_SCAN_CONSENT_VERSION])
+    await pg.run("INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, from_email, excerpt, classification, received_at) VALUES ('reply', 'owner', 'thread', 'buyer@example.test', 'Interested', 'positive', 100)")
+    trapScanDb()
+    setDb(pg)
+    assert.equal((await getDb()).kind, 'pg', 'engine canary: the route reads Postgres')
+    as('owner')
+    const owner = await info() as Info & { inbound: { excerpt: string }[] }
+    assert.deepEqual([owner.gmail_connected, owner.read_granted, owner.consent.accepted, owner.bounce_scan.accepted], [true, true, true, false])
+    assert.deepEqual(owner.inbound.map(row => row.excerpt), ['Interested'])
+    as('neighbor')
+    const neighbor = await info() as Info & { inbound: unknown[] }
+    assert.deepEqual([neighbor.gmail_connected, neighbor.read_granted, neighbor.consent.accepted, neighbor.bounce_scan.accepted], [false, false, false, true])
+    assert.deepEqual(neighbor.inbound, [])
+  } finally { setDb(null); await pg.close(); await drop() }
 })

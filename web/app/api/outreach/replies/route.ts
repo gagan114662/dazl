@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, recentInbound, revokeReadConsent, syncReplies } from '@/lib/outreach/replies'
+import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, revokeReadConsent, syncReplies } from '@/lib/outreach/replies'
 import { acceptBounceScanConsent, BOUNCE_SCAN_CONSENT_TEXT, BOUNCE_SCAN_CONSENT_VERSION, hasBounceScanConsent, revokeBounceScanConsent } from '@/lib/outreach/bounce-scan'
 import { followupsEnabled, runFollowups, setFollowups } from '@/lib/outreach/followups'
 import { autopilotAvailable, getState } from '@/lib/outreach/autopilot'
@@ -8,16 +8,37 @@ import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
+import { getDb } from '@/lib/db/client'
+import { readGmailStatus } from '@/lib/gmail/oauth'
 import { audit } from '@/lib/audit-route'
 
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const db = getScanDb()
-  const acc = db.prepare('SELECT read_granted, status FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number; status: string } | undefined
-  const gmail_status = !acc ? 'none' : acc.status === 'active' ? 'active' : 'needs_reconnect'
-  // #931: connected means an ACTIVE account; a needs_reconnect row is reported separately, not as connected
-  return NextResponse.json({ available: true, gmail_connected: gmail_status === 'active', gmail_status, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: hasReadConsent(db, user.tenantId) }, bounce_scan: { version: BOUNCE_SCAN_CONSENT_VERSION, text: BOUNCE_SCAN_CONSENT_TEXT, accepted: hasBounceScanConsent(db, user.tenantId) }, read_granted: acc?.read_granted === 1, followups_enabled: followupsEnabled(db, user.tenantId), autopilot_available: autopilotAvailable(), autopilot_on: autopilotAvailable() && getState(db, user.tenantId).enabled, inbound: recentInbound(db, user.tenantId) })
+  const db = await getDb()
+  const tenant = user.tenantId
+  const [gmail, consent, bounceConsent, settings, inbound] = await Promise.all([
+    readGmailStatus(db, tenant),
+    db.get<{ version: string }>('SELECT version FROM mail_read_consent WHERE tenant_id = ?', [tenant]),
+    db.get<{ version: string }>('SELECT version FROM mail_bounce_scan_consent WHERE tenant_id = ?', [tenant]),
+    db.get<{ enabled: number; followups_enabled: number }>('SELECT enabled, followups_enabled FROM autopilot_settings WHERE tenant_id = ?', [tenant]),
+    db.all<{ from_email: string; excerpt: string; classification: string; received_at: number }>(
+      'SELECT from_email, excerpt, classification, received_at FROM inbound_messages WHERE tenant_id = ? ORDER BY received_at DESC LIMIT 30', [tenant]),
+  ])
+  const gmail_status = !gmail ? 'none' : gmail.status === 'active' ? 'active' : 'needs_reconnect'
+  const autopilot_available = autopilotAvailable()
+  return NextResponse.json({
+    available: true,
+    gmail_connected: gmail_status === 'active',
+    gmail_status,
+    consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: consent?.version === READ_CONSENT_VERSION },
+    bounce_scan: { version: BOUNCE_SCAN_CONSENT_VERSION, text: BOUNCE_SCAN_CONSENT_TEXT, accepted: bounceConsent?.version === BOUNCE_SCAN_CONSENT_VERSION },
+    read_granted: gmail?.read_granted ?? false,
+    followups_enabled: Number(settings?.followups_enabled) === 1,
+    autopilot_available,
+    autopilot_on: autopilot_available && Number(settings?.enabled) === 1,
+    inbound: inbound.map(row => ({ ...row, received_at: Number(row.received_at) })),
+  })
 }
 
 export async function POST(req: NextRequest) {
