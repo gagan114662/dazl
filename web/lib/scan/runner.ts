@@ -27,6 +27,8 @@ import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
+import { readAccountMarket } from '../settings/search-market-store.ts'
+import { MARKET_NOTICE, resolveSearchMarket, tinyfishMarket, type SearchMarket } from './search-market.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
@@ -1125,7 +1127,7 @@ export function isMonitorRun(db: Database.Database, job: Pick<Job, 'id' | 'user_
 }
 interface AdaptiveRound { queries: string[]; skipUrls: ReadonlySet<string> }
 
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet, round?: AdaptiveRound, caps?: { searches: number; fetches: number }): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, market: SearchMarket, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet, round?: AdaptiveRound, caps?: { searches: number; fetches: number }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   // caps (#1037 first-play fallback): a HARD per-run limit below the ordinary per-scan counts, applied by starting the per-scan counters
@@ -1170,8 +1172,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
-  // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
-  const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
+  const geo = tinyfishMarket(market)
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) }); if (diag?.tfFlags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { diag.tfFlags.attempted = true; if (!r.ok) diag.tfFlags.failed = true } if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // An adaptive round reads only pages round one never saw: a page already read cannot change the result, and is not paid for twice.
   if (round) { const seen = new Set([...round.skipUrls].map(u => canonicalUrl(u) ?? u)); for (let i = hits.length - 1; i >= 0; i--) if (seen.has(canonicalUrl(hits[i].url) ?? hits[i].url)) hits.splice(i, 1) }
@@ -1520,11 +1521,12 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     providerDispatchStarted = true
     return (fetchImpl ?? fetch)(input, init)
   }
+  const market = resolveSearchMarket(job.query!, profile, await readAccountMarket(process.env.DATABASE_URL ? await getDb() : sqliteDb(db), job.user_id))
   const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
   let run: DiscoveryRun
   try {
     // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
-    run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile, profileCarried } : {}), ...(known.length ? { exclude: known } : {}) },
+    run = await runDiscovery({ query: job.query!, market, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile, profileCarried } : {}), ...(known.length ? { exclude: known } : {}) },
       { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? (room < DISCOVER_SMALL_MIN_USD ? DISCOVER_TINY_BUDGET : DISCOVER_TRIAL_BUDGET) : {}) },
       { apiKey: key, fetch: fetchImpl, providerFetch, discover, enrich })
   } catch (e) {
@@ -1784,12 +1786,14 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: deps.trace ? deps.fetchImpl : undefined, tfFlags: { attempted: false, failed: false } }
     // The TinyFish lead search. An ordinary scan runs it first; a first play (first5) runs it only as the capped fallback below,
     // after the free news search could not serve the play (#1037).
+    let market: SearchMarket | undefined
     const runTinyfishStage = async (caps?: { searches: number; fetches: number }) => {
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         // The capped first-play fallback does not repeat the news search the play already ran (or had switched off).
-        leads = await tinyfishLeads(db, job, icpForSources!, providers_[vendor], key, deps.fetchImpl, diag, newsOn && !caps ? deps.newsHttp ?? safeGet : undefined, undefined, caps)
+        market ??= resolveSearchMarket(job.query!, icpForSources, await readAccountMarket(process.env.DATABASE_URL ? await getDb() : sqliteDb(db), job.user_id))
+        leads = await tinyfishLeads(db, job, icpForSources!, market, providers_[vendor], key, deps.fetchImpl, diag, newsOn && !caps ? deps.newsHttp ?? safeGet : undefined, undefined, caps)
         if (leads?.length) partial.candidates = leads
         tfCandidates = leads?.length ?? 0
         // Provenance: a search request that was SENT and failed is this source's error (never 'skipped'); a refusal before any send (budget hold / daily cap) is skipped_hold; zero hits from searches that ran stays 'unavailable' (not proof of failure).
@@ -1816,6 +1820,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         leads = null
       }
       if (leads && leads.length === 0) leads = null
+      if (market && !market.country && summarizeTrace(diag.trace).searches_attempted > 0) ledger.report({ market_notice: MARKET_NOTICE })
       if (diag.trace.events.length > 0 || diag.info.query_source) ledger.stats('search:tinyfish', { ...summarizeTrace(diag.trace), ...diag.info })
     }
     if (claudeOnly && tinyfishEnabled()) ledger.record('search:tinyfish', 'skipped_hold')
@@ -2495,7 +2500,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         try {
           ledger.record('search:adaptive', 'started')
           assertOwned(db, job)
-          const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
+          const more = await tinyfishLeads(db, job, icpForSources, market!, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
           const st = summarizeTrace(diag2.trace)
           ledger.stats('search:adaptive', { ...st, ...diag2.info })
           capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0

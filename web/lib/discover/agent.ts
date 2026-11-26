@@ -15,7 +15,9 @@ const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
-export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean }
+import type { SearchMarket } from '../scan/search-market.ts'
+
+export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean; market?: SearchMarket }
 // The customer's saved buyer profile for this play, in their own words. One they reviewed for THIS search narrows the request; the
 // request's own words win where they differ. One carried over unreviewed from an earlier search (profileCarried, #1579) is background
 // only: a new typed request for other buyers ran beside "Toronto agencies hiring an SDR" on production and found nothing, twice.
@@ -145,6 +147,8 @@ export function userMessage(input: DiscoverInput, today: string, max: number): s
     input.profileCarried === true && profile.length ? 'The request above is the whole search: it decides who to look for, where, and which signal.' : '',
     ...profile,
     input.profile?.carry_exclude?.length ? `Mandatory exclusions (apply even when the profile above is background): ${input.profile.carry_exclude.map(c => str(c, 200)).filter(Boolean).join('; ')}` : '',
+    input.market?.country ? `Search market country ${input.market.country}. The request's specific places take precedence.` : '',
+    input.market?.language ? `Prefer sources in language ${input.market.language} when relevant to the request.` : '',
     // a play that runs again: the companies it already found are not leads this time
     input.exclude?.length ? `Already found, do not return these companies again: ${input.exclude.slice(0, 80).map(c => str(c, 80)).filter(Boolean).join('; ')}` : '',
     `Return up to ${max} leads.`].filter(Boolean).join('\n')
