@@ -4,23 +4,43 @@ export function isPublicSectorBody(input: {
   offer?: string | null;
 }): { nonBuyer: boolean; reason: string } {
   const company = input.company.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const domain = (input.domain ?? '').toLowerCase().trim().replace(/^https?:\/\//, '').split(/[/:?#]/, 1)[0];
+  const domain = hostname(input.domain);
   const offer = (input.offer ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-  const governmentOffer = /\bserves? government agencies\b|\bserves? municipalities\b|\bserves? public schools\b|\bpublic sector procurement\b|\bgovtech\b|\bsled\b|\bpublic sector\b/;
-  const negation = /\b(?:not|never|don t|do not|no longer|isn t|aren t|doesn t|won t)\b/;
+  const governmentOffer = /\bserves? government agencies\b|\b(?:serves?|for) (?:municipalities|(?:local|state|federal) governments?)\b|\bserves? public schools\b|\bpublic sector procurement\b|\bgovtech\b|\bsled\b|\bpublic sector\b/;
+  const negation = /\b(?:not|never|don t|do not|no longer|isn t|aren t|doesn t|won t|exclud(?:e|es|ing))\b/;
   const offerTargetsGovernment = governmentOffer.test(offer) && !governmentOfferMatchesNegated(offer, governmentOffer, negation);
   if (offerTargetsGovernment) {
     return { nonBuyer: false, reason: 'The offer is explicitly aimed at government or public-sector buyers.' };
   }
 
-  const govDomain = /(?:^|\.)gov$/.test(domain) || /(?:^|\.)gc\.ca$/.test(domain) || /(?:^|\.)mil$/.test(domain);
-  const publicBody = /^(?:(?:city|town|county) of [a-z0-9]+|(?:ministry|department) of [a-z0-9]+|[a-z0-9]+(?: [a-z0-9]+)* (?:school district|school board|district school board|police department|fire department))$/.test(company);
+  const govDomain = /(?:^|\.)(?:gov(?:\.[a-z]{2})?|gc\.ca|mil|ontario\.ca|canada\.ca)$/.test(domain);
+  const civicName = company.match(/^(?:regional municipality|town|city|county|township|village|municipality|region|province|state|district|borough) of (.+)$/);
+  const place = civicName?.[1] ?? '';
+  // Ambiguous multiword names need civic wording, a geographic ending, or a matching site.
+  const civicPlace = /^[a-z0-9]+$/.test(place) ||
+    /^.+ (?:bay|creek|falls|harbour|harbor|heights|hills|island|lake|mountain|rapids|river|springs|valley)$/.test(place) ||
+    (place.includes(' ') && domain.replace(/^www\./, '').split('.')[0].replace(/-/g, '') === place.replace(/ /g, ''));
+  const namedBody = civicPlace ||
+    /^(?:city|town) of .+ council$/.test(company) ||
+    /^(?!the\b).+ (?:county|township|city council|town council)$/.test(company) ||
+    /(?:^| )(?:school board|school district|public schools|public library|public health|police department|fire department|public agency|housing authority|transit authority|public works)$/.test(company);
+  const requiresGovernmentDomain = /^(?:ministry|department|government)(?: |$)/.test(company);
 
-  if (govDomain || publicBody) {
+  if (govDomain || (namedBody && !requiresGovernmentDomain)) {
     return { nonBuyer: true, reason: govDomain ? 'The domain identifies a government or public-sector organization.' : 'The organization name identifies a government or public-sector body.' };
   }
   return { nonBuyer: false, reason: 'No clear public-sector identity was found.' };
+}
+
+function hostname(domain: string | null | undefined): string {
+  if (!domain?.trim()) return '';
+  const value = domain.trim();
+  try {
+    return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`).hostname.replace(/\.$/, '');
+  } catch {
+    return '';
+  }
 }
 
 function governmentOfferMatchesNegated(

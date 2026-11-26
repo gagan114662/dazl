@@ -108,6 +108,7 @@ type ProofLead = { quarantined_at?: number | null; gate_held?: boolean | null; r
 export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
   if (l.quarantined_at) return 'Rejected. Undo to use it again.'
   if (l.gate_held) return 'A required check has not passed. Research only.'
+  if (l.review_reason === 'public_sector_non_buyer') return 'Not a fit for this offer. The organization is a public-sector body.'
   if (l.review_reason) return 'dazl could not confirm this lead\'s proof page. Check the source under Needs your review first.'
   if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
   if (signalStale(l.event_date, now)) return 'The signal is more than a year old. It stays here as background; it is not a reason to write now.'
@@ -161,6 +162,7 @@ const asSaved = (l: DiscoverStateLead): DiscoverStateLead => l.stored_intent !==
 export function discoverState(lead: DiscoverStateLead): DiscoverState {
   const l = asSaved(lead)
   if (l.quarantined_at) return 'rejected'
+  if (l.review_reason === 'public_sector_non_buyer') return 'research'
   const held = discoverProofHold(l)
   // Would the hold go away, or change, if the user confirmed the proof page? Then it is theirs to check. Otherwise no check lifts it.
   if (held) return discoverProofHold({ ...l, review_reason: null }) !== held ? 'review' : 'research'
