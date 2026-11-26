@@ -32,3 +32,10 @@ for (const mailbox of ['drmorgan', 'info', 'office', 'reception']) {
     assert.equal(discoverContact(row)?.email, null)
   })
 }
+
+test('#1910: a practice manager cannot use a same-surname doctor mailbox', () => {
+  const row = lead('drruiz')
+  row.enrichments[0].value = 'Dana Ruiz, Practice Manager'
+  assert.equal(discoverState(row), 'no_contact')
+  assert.equal(discoverApprove(row).ok, false)
+})

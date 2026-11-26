@@ -72,7 +72,8 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   const own = (r: Row) => {
     if (!person || isGenericInbox(r.value)) return false
     const local = r.value!.trim().toLowerCase().split('@')[0]
-    return nameBound(local, person.name) || nameBound(local.replace(/^dr[._-]?/, ''), person.name)
+    const doctor = /^dr\.?\s/i.test(person.name) || /\b(?:dentist|doctor|dds|dmd|[a-z]*odontist)\b/i.test(person.title ?? '')
+    return nameBound(local, person.name) || (doctor && nameBound(local.replace(/^dr[._-]?/, ''), person.name))
   }
   const e = mails.find(own)
   return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
