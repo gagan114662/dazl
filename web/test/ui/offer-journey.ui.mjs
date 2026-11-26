@@ -184,8 +184,10 @@ try {
   { const { ctx: c, page: p } = await context(tokenA, 1280)
     await p.goto(base + `/app/outreach?job_id=${london.id}`, { waitUntil: 'networkidle' })
     const card = p.locator('.card', { hasText: 'hello@syntheticsaas.example' }).first(); await card.waitFor({ timeout: 15000 })
-    await card.getByRole('button', { name: 'Rewrite with AI (uses your key)' }).click()
-    await p.getByText(/Rewritten with your Anthropic key/).waitFor({ timeout: 15000 })
+    const rewrite = card.getByRole('button', { name: 'Rewrite with AI', exact: true })
+    assert.equal(await rewrite.getAttribute('title'), 'Rewrite the draft text with AI')
+    await rewrite.click()
+    await p.getByText(/Draft rewritten with AI/).waitFor({ timeout: 15000 })
     await p.locator('.card', { hasText: 'I saw the role you are hiring for' }).first().waitFor({ timeout: 15000 })
     await shot(p, 'journey-3c-london-rewritten-1280')
     await c.close() }
@@ -207,7 +209,7 @@ try {
   // and through the rendered button on the drafts page: the refusal message, the original draft text kept
   await page.goto(base + `/app/outreach?job_id=${OLD}`, { waitUntil: 'networkidle' })
   const oldCard = page.locator('.card', { hasText: 'A synthetic draft body for the contested play.' }).first(); await oldCard.waitFor({ timeout: 15000 })
-  await oldCard.getByRole('button', { name: 'Rewrite with AI (uses your key)' }).click()
+  await oldCard.getByRole('button', { name: 'Rewrite with AI', exact: true }).click()
   await page.getByText(/names a different offer than the one it was created with/).waitFor({ timeout: 15000 })
   await shot(page, 'journey-5-rewrite-refused-1280')
   assert.equal(providerCalls().length, calls5, 'no provider call for a contested play')
