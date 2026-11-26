@@ -8,7 +8,7 @@ import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
 import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
-import { discoverCounts, type DiscoverCounts } from '../discover/card.ts'
+import { discoverCounts, discoverLinkedIn, type DiscoverCounts } from '../discover/card.ts'
 import { DISCOVER_LEAD_COLUMNS, discoverNoTable, discoverStatesFromRows, discoverStatesOfDb, discoverStoredSql, type DiscoverStoredRow } from '../discover/state-db.ts'
 import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
@@ -201,8 +201,15 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // the draft). Every draft is made by hand during the beta.
     const emailReady = dStates ? every.filter(r => dStates.get(r.id) === 'ready_email') : []
     const undrafted = [...liveRows, ...emailReady].filter(r => !byChecks(r.id) && !drafted.has(r.id) && manualDraftBlockReason(db, tenantId, r.id) === null).length
-    // ready on LinkedIn (the one state rule, lib/discover/card.ts discoverState): the card's "Message on LinkedIn"
-    const linkedinOnly = dc?.ready_linkedin ?? 0
+    // The card can offer manual LinkedIn outreach even when no email makes a lead Ready.
+    const storedByLead = new Map<string, DiscoverStoredRow[]>()
+    for (const row of dStored) {
+      const stored = storedByLead.get(row.lead_id) ?? []
+      stored.push(row)
+      storedByLead.set(row.lead_id, stored)
+    }
+    const linkedinOnly = every.filter(row => dStates?.get(row.id) === 'no_contact' && !byChecks(row.id) &&
+      discoverLinkedIn({ ...row, enrichments: storedByLead.get(row.id) })).length
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
@@ -237,7 +244,7 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   // Every lead this search found has been rejected: none passed, whatever the scan recorded when it finished.
   if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
-  // No email draft is possible for these, but the person's LinkedIn profile is known (#1583; lib/discover/card.ts discoverState).
+  // The person can still be reached manually on LinkedIn (#1583).
   // dazl opens the profile; the user sends the message.
   const linkedin = c.contact.linkedinOnly ?? c.qualification.discover?.ready_linkedin ?? 0
   if (linkedin > 0) return { label: `Message ${plural(linkedin, 'lead', 'leads')} on LinkedIn: open ${linkedin === 1 ? 'the lead' : 'each lead'} and use "Message on LinkedIn"`, href: leadsHref }
