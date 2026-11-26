@@ -7,7 +7,7 @@ import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
-import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
+import { confirmedSendResult, getAccessTokenBound, gmailSend, GmailSendError, isConnectionReplaced, gmailStatus, markNeedsReconnectBound, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
 import { grantConsent } from './ledger.ts'
 import { recheckSendAuthority } from './send-authority.ts'
@@ -588,7 +588,11 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
       auditAt(db, tenantId, 'sequence_sent', `step ${stepRow.step}`, s.lead_id, s.message_id, now)
       out.sent++
       if (stepRow.step >= MAX_STEPS) db.prepare("UPDATE sequences SET status = 'done' WHERE tenant_id = ? AND id = ?").run(tenantId, s.id)
-    } catch {
+    } catch (error) {
+      if (error instanceof GmailSendError && error.status === 401) {
+        db.prepare("UPDATE sequence_steps SET status = 'approved', claimed_at = NULL WHERE tenant_id = ? AND sequence_id = ? AND step = ? AND status = 'sending'").run(tenantId, s.id, stepRow.step)
+        return stop(markNeedsReconnectBound(db, tenantId, tokenGen) ? 'gmail_reconnect_needed' : 'connection_replaced')
+      }
       db.prepare("UPDATE sequence_steps SET status = 'uncertain' WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(tenantId, s.id, stepRow.step)
       auditAt(db, tenantId, 'uncertain', 'sequence step outcome unknown', s.lead_id, s.message_id, now)
       pause(db, tenantId, 'uncertain_send')

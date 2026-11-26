@@ -208,3 +208,35 @@ test('#1804: both surfaces take the notice from the shared decision', () => {
     assert.ok(!src.includes("'needs_reconnect'"), `${name} carries no inline status comparison of its own`)
   }
 })
+
+test('Gmail send HTTP 401 leaves the due sequence step queued and surfaces reconnect', async t => {
+  const db = await setup()
+  t.after(() => db.close())
+  const ok = mock()
+  const { mid } = addDraft(db)
+  const seq = createSequence(db, 'A', mid)
+  approveSequence(db, 'A', seq, id => approve(db, 'A', id, true), NOW)
+  await sendMessage(db, 'A', mid, ok)
+  await runSequences(db, 'A', 'Acme', ok)
+
+  let handoffs = 0
+  const result = await runSequences(db, 'A', 'Acme', {
+    ...ok, now: NOW + 3 * DAY, sendFn: undefined,
+    fetchImpl: async (url, init) => {
+      if (String(url).endsWith('/messages/send')) {
+        handoffs++
+        return json({ error: { code: 401, message: 'Invalid Credentials' } }, 401)
+      }
+      return ok.fetchImpl(url, init)
+    },
+  })
+  assert.equal(handoffs, 1)
+  assert.equal(result.sent, 0)
+  assert.equal(result.stopped, 'gmail_reconnect_needed')
+  assert.equal(stepRow(db, seq, 2).status, 'approved')
+  assert.equal(gmailReconnectNotice(gmailStatus(db, 'A')?.status), true)
+  const state = new URL(startOAuth(db, 'A', { env, now: NOW + 3 * DAY })).searchParams.get('state')!
+  await completeOAuth(db, 'A', 'reconnect', state, { env, master, now: NOW + 3 * DAY, fetchImpl: oauthOk })
+  assert.equal((await runSequences(db, 'A', 'Acme', { ...ok, now: NOW + 3 * DAY })).sent, 1)
+  assert.equal((await runSequences(db, 'A', 'Acme', { ...ok, now: NOW + 3 * DAY })).sent, 0)
+})
