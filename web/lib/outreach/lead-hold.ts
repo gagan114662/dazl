@@ -11,8 +11,8 @@ import { isUnconfirmedTimingResearch } from '../lead-state.ts'
 import { discoverRecipientRefusal } from './service.ts'
 
 export interface TimingOpts { windowDays: number | null; timingRequired: boolean }
-export const timingOptsFor = (job: { query: string | null; icp: string | null }): TimingOpts => {
-  const windowDays = jobWindowDays(job as never)
+export const timingOptsFor = (job: Parameters<typeof jobWindowDays>[0]): TimingOpts => {
+  const windowDays = jobWindowDays(job)
   return { windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(job.query ?? '') }
 }
 

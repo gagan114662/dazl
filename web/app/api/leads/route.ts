@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
-    currentness_held:companyFirst ? !results?.readyIds.has(l.id) : currentnessHeld(scanDb,user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:requiredGateHeld(getScanDb(),user.tenantId,l.id) !== null, recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
+    currentness_held:currentnessHeld(scanDb,user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:requiredGateHeld(getScanDb(),user.tenantId,l.id) !== null, recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
     lookalike_fit:la && la !== 'unreadable' ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
   // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and
   // domain evidence (lib/scan/need-evidence.ts). Read-only; absent records and drift read unproven, never guessed.

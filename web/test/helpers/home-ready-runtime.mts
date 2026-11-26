@@ -331,3 +331,42 @@ test('#2012 a LinkedIn-only buyer is held on Home, Leads, the header and the sca
     lead: suppressed.leads.find(row => row.id === 'verified-email')?.discover_state,
   }, { home: 0, header: 0, scan: 0, lead: 'no_contact' })
 })
+
+test('#2012 Home and the company-first Leads route count the same email-ready leads', async t => {
+  const { db, job, lead } = seed()
+  t.after(() => db.close())
+  const { markCompanyFirstBudget } = await import('../../lib/company-first/product-discovery.ts')
+  const id = 'e'.repeat(24)
+  job(id, 'A', 'Businesses opening another site', NOW - DAY)
+  for (const key of ['missing-email', 'confirmed-email']) {
+    const domain = `${key}.example`
+    lead(key, id, { machine: true, date: recent, domain, source: 'discover', buyer: false })
+    db.prepare('UPDATE leads SET intent = 4 WHERE id = ?').run(key)
+    const proof = { connector: 'discover', label: 'published on a public page',
+      source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW }
+    addEnrichment(db, 'A', key, { ...proof, kind: 'person', value: 'Lee Rivera, Owner' })
+    if (key === 'confirmed-email') addEnrichment(db, 'A', key, { ...proof, kind: 'email', value: `lee.rivera@${domain}` })
+  }
+  db.prepare("UPDATE scan_jobs SET status = 'done', enrich_finished_at = ?, run_budget = ? WHERE id = ?")
+    .run(NOW - DAY, markCompanyFirstBudget(null), id)
+
+  const home = await readyGET()
+  const leads = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
+  assert.equal(home.status, 200)
+  assert.equal(leads.status, 200)
+  const homeReady = await home.json() as { ready: number; companies: { lead_id: string; ready: boolean }[] }
+  const run = await leads.json() as {
+    company_first: boolean
+    company_first_counts: { ready: number }
+    discover_counts: { ready: number }
+    leads: { id: string; discover_state: string; currentness_held: boolean }[]
+  }
+  assert.equal(run.company_first, true)
+  assert.equal(homeReady.ready, 1)
+  assert.deepEqual(homeReady.companies.filter(row => row.ready).map(row => row.lead_id), ['confirmed-email'])
+  assert.deepEqual(Object.fromEntries(run.leads.map(row => [row.id, row.discover_state])),
+    { 'confirmed-email': 'ready_email', 'missing-email': 'no_contact' })
+  assert.equal(run.discover_counts.ready, homeReady.ready)
+  assert.equal(run.company_first_counts.ready, homeReady.ready)
+  assert.equal(run.leads.find(row => row.id === 'missing-email')?.currentness_held, false)
+})
