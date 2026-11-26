@@ -29,9 +29,6 @@ test('every file NEVER-AGAIN.md cites exists', () => {
 })
 
 test('the gates NEVER-AGAIN.md names are still wired', () => {
-  const acc = read('.github/workflows/acceptance-gate.yml')
-  assert.match(acc, /^  no-closing-keywords:\n    if: github\.event_name == 'pull_request'/m, '#6: no-closing-keywords job')
-  assert.match(acc, /^on:\n  pull_request:/m)
   assert.match(read('web/test/tenant-isolation-manifest.test.ts'), /test\('the manifest lists exactly the route handlers that exist'/, '#7')
   assert.match(read('web/test/request-log.test.ts'), /test\('the route list matches the route files under app\//, '#7')
   assert.match(JSON.parse(read('web/package.json')).scripts.test, /test\/\*\.test\.ts/, '#7: npm test runs test/*.test.ts')
@@ -53,6 +50,23 @@ test('the gates NEVER-AGAIN.md names are still wired', () => {
   assert.match(read('ops/staging/deploy.sh'), /REFUSED: no on-box build/, '#1 staging')
   assert.match(read('.github/workflows/release-preflight.yml'), /unittest discover -s ops -p 'test_\*\.py'/, '#1: ops/test_never_again.py runs')
   assert.ok(existsSync(path.join(repo, '.github/workflows/live-check-gate.yml')), '#3')
+})
+
+test('PR body edits only run the closing-keyword check, without rescheduling tagged acceptance', () => {
+  const acceptance = read('.github/workflows/acceptance-gate.yml')
+  assert.match(acceptance, /^name: acceptance-gate$/m)
+  assert.match(acceptance, /^on:\n  pull_request:\n    types: \[opened, synchronize, reopened\]$/m)
+  assert.match(acceptance, /^  cancel-in-progress: \$\{\{ github\.event\.action == 'synchronize' \}\}$/m)
+  assert.doesNotMatch(acceptance, /^  no-closing-keywords:/m)
+  assert.match(acceptance, /^  tag-scope:/m)
+  assert.match(acceptance, /^  tagged-tests:/m)
+
+  const wording = read('.github/workflows/no-closing-keywords.yml')
+  assert.match(wording, /^name: acceptance-gate$/m, 'keep the required workflow display name')
+  assert.match(wording, /^on:\n  pull_request:\n    types: \[opened, edited, synchronize, reopened\]$/m)
+  assert.match(wording, /^  merge_group:\n    types: \[checks_requested\]$/m)
+  assert.deepEqual([...wording.split('jobs:\n')[1].matchAll(/^  ([\w-]+):$/gm)].map(m => m[1]), ['no-closing-keywords'])
+  assert.match(wording, /^  no-closing-keywords:\n    if: github\.event_name == 'pull_request'/m, '#6: check PR bodies and commits')
 })
 
 test('every session is told to read docs/NEVER-AGAIN.md first', () => {
