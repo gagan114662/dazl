@@ -77,7 +77,7 @@ try {
     assert.equal(savedBody.sells, 'CRM cleanup for sales teams.', `${tag}: the save carries the typed sells`)
     assert.equal(savedBody.website, 'https://acme.example', `${tag}: the save carries the normalized website`)
     assert.equal(savedBody.buyer?.summary, 'Sales ops teams at B2B SaaS companies.', `${tag}: the save carries the typed buyer`)
-    if (process.env.SHOTS) await page.locator('[data-testid=onboarding-screen]').first().screenshot({ path: path.join(process.env.SHOTS, `brain-no-key-${tag}.png`) })
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `brain-no-key-${tag}.png`) })
     await ctx.close()
     console.log(`PASS ${tag}: brain form has no key field; continue runs one profile POST, no native POST, no key call`)
   }
