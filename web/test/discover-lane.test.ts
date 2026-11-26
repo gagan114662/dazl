@@ -271,7 +271,8 @@ for (const hasPersonalAddress of [false, true]) test(
   }
   assert.ok(completion.enrich_started_at, 'Discovery starts post-finish contact enrichment')
   assert.ok(completion.enrich_finished_at, 'Discovery finishes post-finish contact enrichment')
-  const [saved] = listLeads(db, 'T', id, 50, false)
+  type SavedLead = Parameters<typeof discoverApprove>[0] & { id: string; date_status: string | null }
+  const [saved] = listLeads(db, 'T', id, 50, false) as SavedLead[]
   assert.ok(saved)
   assert.equal(saved.date_status, 'verified')
   assert.equal(saved.event_date, '2026-11-20')
@@ -283,5 +284,8 @@ for (const hasPersonalAddress of [false, true]) test(
   const displayed = discoverContact(contactLead)
   assert.equal(displayed?.person?.name, 'Dana Ruiz')
   assert.equal(displayed?.email?.address ?? null, hasPersonalAddress ? address : null)
+  const adoptedEmail = contacts.find(row => row.connector === 'discover' && row.kind === 'email')
+  assert.deepEqual(adoptedEmail && [adoptedEmail.label, adoptedEmail.source_url],
+    hasPersonalAddress ? ['published on a public page', origin + '/team'] : undefined)
   assert.equal(discoverApprove(contactLead, new Date(Date.now())).ok, hasPersonalAddress)
 })
