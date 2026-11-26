@@ -23,7 +23,8 @@ function request(path: string, body: object) {
   })
 }
 const create = (lead_id: string) => draft(request('/api/outreach', { lead_id }))
-const approve = (id: string) => act(request(`/api/outreach/${id}`, { action: 'approve' }), { params: Promise.resolve({ id }) })
+const actOnDraft = (id: string, action: 'approve' | 'send') =>
+  act(request(`/api/outreach/${id}`, { action }), { params: Promise.resolve({ id }) })
 
 try {
   migrateAllSqlite(db)
@@ -55,7 +56,7 @@ try {
 
   db.prepare(`INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body)
     VALUES (?, ?, ?, 'lee.rivera@buyer.example', 'Existing draft', 'This unsent draft was saved before the date was checked.')`).run(oldDraft, tenant, indexLead)
-  const blocked = await approve(oldDraft)
+  const blocked = await actOnDraft(oldDraft, 'approve')
   assert.equal(blocked.status, 409)
   assert.equal((await blocked.json()).error, 'lead_currentness_unconfirmed')
   const message = db.prepare('SELECT status, approved_hash, sent_at FROM outreach_messages WHERE id = ?')
@@ -64,12 +65,19 @@ try {
   const created = await create(datedLead)
   assert.equal(created.status, 201, await created.clone().text())
   const { id } = await created.json() as { id: string }
-  const approved = await approve(id)
+  const approved = await actOnDraft(id, 'approve')
   assert.equal(approved.status, 200, await approved.clone().text())
   const saved = message.get(id) as { status: string; approved_hash: string | null; sent_at: number | null }
   assert.equal(saved.status, 'approved')
   assert.ok(saved.approved_hash)
   assert.equal(saved.sent_at, null)
+
+  db.prepare('UPDATE leads SET event_date_proof = NULL, timing_note = ? WHERE id = ?')
+    .run('The page prints no date. This is the day the search index dates the page.', datedLead)
+  const send = await actOnDraft(id, 'send')
+  assert.equal(send.status, 409, await send.clone().text())
+  assert.equal((await send.json()).error, 'lead_currentness_unconfirmed')
+  assert.deepEqual(message.get(id), saved)
 } finally {
   db.close()
 }
