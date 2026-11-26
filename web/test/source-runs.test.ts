@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './helpers/pg-test.ts'
+import * as runs from '../lib/scan/source-runs.ts'
 import { randomBytes } from 'node:crypto'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
@@ -139,4 +143,27 @@ test('a source still started when the scan ends converts to error at write (it r
   l.write(db, id, 1, null, null, new Set())
   const rows = db.prepare('SELECT collector, status FROM scan_source_runs ORDER BY collector').all() as { collector: string; status: string }[]
   assert.deepEqual(rows, [{ collector: 'search:anthropic', status: 'skipped_hold' }, { collector: 'search:news', status: 'ok' }, { collector: 'search:tinyfish', status: 'error' }])
+})
+
+test('Postgres live progress keeps counters scoped to the current running attempt', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(db.pool)
+    for (const [job, owner] of [['mine', 'owner'], ['other', 'neighbor']]) {
+      await db.run("INSERT INTO scan_jobs (id, user_id, status, attempts, business_name, industry, location) VALUES (?, ?, 'running', 2, 'Seller', 'Services', 'Region')", [job, owner])
+    }
+    const running = { jobId: 'mine', tenantId: 'owner', attempt: 2, collector: 'adapter:test', status: 'started', evidence: null, candidates: null }
+    assert.equal(await runs.writeLiveSourceRun(db, running), true)
+    assert.equal(await runs.writeLiveSourceRun(db, { ...running, status: 'ok', evidence: 3, candidates: 1 }), true)
+    assert.equal(await runs.writeLiveSourceRun(db, { ...running, attempt: 1 }), false)
+    assert.equal(await runs.writeLiveSourceRun(db, { ...running, jobId: 'other' }), false)
+    assert.equal(await runs.writeLiveSourceRun(db, { ...running, jobId: 'other', tenantId: 'neighbor' }), true)
+    await db.run("UPDATE scan_jobs SET status = 'done' WHERE id = ?", ['mine'])
+    assert.equal(await runs.writeLiveSourceRun(db, running), false)
+    assert.deepEqual(await db.all('SELECT job_id, attempt, status, evidence_count, candidate_count, verified_count, inserted_count FROM scan_source_runs ORDER BY job_id'), [
+      { job_id: 'mine', attempt: 2, status: 'ok', evidence_count: 3, candidate_count: 1, verified_count: null, inserted_count: 0 },
+      { job_id: 'other', attempt: 2, status: 'started', evidence_count: null, candidate_count: null, verified_count: null, inserted_count: 0 },
+    ])
+  } finally { await db.close(); await drop() }
 })
