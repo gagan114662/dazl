@@ -2,14 +2,14 @@
 // Raw codes like "key_unreadable" must never reach the page - route every
 // user-facing API error through knownErrorCopy before falling back.
 export const KEY_UNREADABLE_COPY =
-  'Your stored AI key could not be read. Re-enter it in Settings.'
+  'The AI service could not start. Try again later.'
 
-export const DRAFT_UNREADABLE_COPY = 'Your AI key worked, but its answer could not be turned into a profile draft, so nothing was filled in. Your key is fine. Fill the profile in by hand, or try reading the site again later.'
+export const DRAFT_UNREADABLE_COPY = 'The AI response could not be turned into a profile draft, so nothing was filled in. Fill the profile in by hand, or try reading the site again later.'
 
-export const PROVIDER_FAILED_COPY = 'The AI provider did not return an answer, so nothing was filled in. Your key was not rejected. Try again shortly.'
+export const PROVIDER_FAILED_COPY = 'The AI provider did not return an answer, so nothing was filled in. Try again shortly.'
 
 // #1435: dazl finds leads with Claude only. A workspace whose only key is from another provider is told so, with the next step.
-export const CLAUDE_KEY_REQUIRED_COPY = 'dazl searches with Claude. Add your Anthropic key in Settings to run a search. No search was run and nothing was charged.'
+export const CLAUDE_KEY_REQUIRED_COPY = 'Claude search is currently unavailable for this workspace. No search was run and nothing was charged.'
 
 // Friendly copy for codes that mean the same thing on every surface.
 // Returns null for codes a caller phrases in its own context (or unknown
@@ -23,7 +23,7 @@ export function knownErrorCopy(code: unknown): string | null {
     case 'key_unreadable':
       return KEY_UNREADABLE_COPY
     case 'key_rejected':
-      return 'Your AI key was rejected. Check it in Settings.'
+      return 'The AI provider refused the request. Try again later.'
     // The call completed but its answer could not be turned into a profile. Not a key problem: nothing to re-enter.
     case 'draft_unreadable':
       return DRAFT_UNREADABLE_COPY
@@ -36,7 +36,7 @@ export function knownErrorCopy(code: unknown): string | null {
     case 'model_unpriced':
       return 'The AI model configured for this workspace has no price bound, so the read was refused before it ran. Nothing was charged.'
     case 'accounting_pending':
-      return 'The cost of an AI call could not be recorded, so paid generation is paused until that record settles. A recent call - possibly this request - may still be billed to your key.'
+      return 'The cost of an AI call could not be recorded, so paid generation is paused until that record settles. A recent call - possibly this request - may still be billed.'
     case 'preview_accounting_blocked':
       return 'A previous AI call’s cost is unresolved, so this profile preview did not run and was not charged. The earlier call may still be billed. Retrying now or raising the limit will not resolve the earlier charge.'
     case 'preview_spend_busy':

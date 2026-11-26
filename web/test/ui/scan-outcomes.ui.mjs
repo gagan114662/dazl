@@ -122,9 +122,9 @@ const EXPECT = {
   failed: ['failed', /Failed/, 'Try again', '/app/leads'],
   old: ['unrecorded', /did not record whether nothing matched or everything was dropped/, 'Run the search again', '/app/leads'],
   // The jobs read never reports 'user' (it is the column default, not proof); even if it did, the wording stays neutral.
-  ownKey: ['failed', /Failed - the AI provider rejected the key this scan used/, 'Check your AI key in Settings', '/app/settings'],
-  trialKey: ['failed', /Failed - the free-search key had trouble \(not your key\)/, 'Try again later', '/app/leads'],
-  unknownKey: ['failed', /Failed - the AI provider rejected the key this scan used/, 'Check your AI key in Settings', '/app/settings'],
+  ownKey: ['failed', /Failed - the AI provider refused a request/, 'Review your plan in Settings', '/app/settings'],
+  trialKey: ['failed', /Failed - the free-search service had trouble/, 'Try again later', '/app/leads'],
+  unknownKey: ['failed', /Failed - the AI provider refused a request/, 'Review your plan in Settings', '/app/settings'],
   enriching: ['enriching', /Finishing - finding contacts and checking fit/, null, null],
   interrupted: ['leads', /5 found: 2 source-checked, 0 need your review, 3 dropped; contacts and fit checks did not finish/, null, null],
   sourceErr: ['failed', /Failed - News had an error/, 'Try again', '/app/leads'],
@@ -185,7 +185,7 @@ try {
   await home(['readNone', 'budget', 'dropped', 'failed', 'interrupted'], ['no candidates extracted', 'stopped', '6 found, all dropped by the checks', 'failed', '2 source-checked, 0 need your review'])
   await page.getByTestId('play-campaign-link').first().scrollIntoViewIfNeeded()
   await shot('home-plays')
-  await home(['ownKey', 'trialKey', 'unknownKey', 'enriching', 'noHits'], ['failed: AI key rejected', 'failed: free-search key trouble', 'failed: AI key rejected', 'finishing', 'no candidates extracted'])
+  await home(['ownKey', 'trialKey', 'unknownKey', 'enriching', 'noHits'], ['failed: AI provider refused a request', 'failed: free-search service trouble', 'failed: AI provider refused a request', 'finishing', 'no candidates extracted'])
   await page.getByTestId('play-campaign-link').first().scrollIntoViewIfNeeded()
   await shot('home-plays-keys')
   // Home short words for the stop classes (lib/readiness.ts outcomeOf over scanOutcome): source error is 'failed',

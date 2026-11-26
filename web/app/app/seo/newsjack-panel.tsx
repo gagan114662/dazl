@@ -50,7 +50,7 @@ export default function NewsjackPanel() {
   return (
     <div className="card p-6 mb-8">
       <h2 className="font-semibold mb-1">Newsjacking drafts</h2>
-      <p className="text-[#555] text-sm mb-3">Paste a news link, get a draft take on your own AI key. dazl never posts anything - approve the draft, copy it, and publish it yourself in your own Notion or channels.</p>
+      <p className="text-[#555] text-sm mb-3">Paste a news link, get a draft take to review. dazl never posts anything - approve the draft, copy it, and publish it yourself in your own Notion or channels.</p>
       <div className="flex gap-2 mb-3">
         <input className="field flex-1" type="url" placeholder="https://news-site.example/big-story" value={url} onChange={e => setUrl(e.target.value)} maxLength={480} />
         <button className="btn-primary text-sm" disabled={busy || !url.trim().startsWith('https://')} onClick={create}>{busy ? 'Reading + drafting...' : 'Draft take'}</button>
