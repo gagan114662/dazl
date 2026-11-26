@@ -537,11 +537,24 @@ export default function LeadsClient() {
   const [approving, setApproving] = useState<Record<string, boolean>>({})
   const [approved, setApproved] = useState<Record<string, boolean>>({})
   const approvingRef = useRef<Set<string>>(new Set())
-  async function approveLead(leadId: string) {
-    if (approvingRef.current.has(leadId)) return
+  async function approveLead(leadId: string, quiet = false): Promise<boolean> {
+    if (approvingRef.current.has(leadId)) return false
     approvingRef.current.add(leadId); setApproving(a => ({ ...a, [leadId]: true }))
-    try { if (await makeDraft(leadId)) { setApproved(a => ({ ...a, [leadId]: true })); setCardResult({ kind: 'approved', id: leadId, company: leads.find(l => l.id === leadId)?.company ?? 'This lead' }); void loadScanDrafts() } }
+    let ok = false
+    try { if (await makeDraft(leadId)) { ok = true; setApproved(a => ({ ...a, [leadId]: true })); if (!quiet) setCardResult({ kind: 'approved', id: leadId, company: leads.find(l => l.id === leadId)?.company ?? 'This lead' }); void loadScanDrafts() } }
     finally { approvingRef.current.delete(leadId); setApproving(a => ({ ...a, [leadId]: false })) }
+    return ok
+  }
+  // The table's bulk bar (#1038 PR 3) runs the EXISTING per-lead actions, one row at a time: approveLead in
+  // its quiet form (the bar reports the count, not five result lines), the default-reason quarantine, and the
+  // same /api/crm push the single-lead control sends, with each row's own result text.
+  async function pushOne(leadId: string): Promise<string> {
+    try {
+      const r = await fetch('/api/crm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'push', lead_id: leadId }) })
+      const j = await r.json().catch(() => ({})) as { message?: unknown; error?: unknown }
+      if (r.ok) return typeof j.message === 'string' && j.message ? j.message : 'Pushed to CRM'
+      return typeof j.error === 'string' && j.error ? j.error : 'Push failed'
+    } catch { return 'Could not reach the server' }
   }
   async function makeDraft(leadId: string): Promise<boolean> {
     // Network failure or a non-JSON body (proxy page, server error) must still show a message, never an unhandled rejection.
@@ -1544,7 +1557,7 @@ export default function LeadsClient() {
               ? 'Lead results could not be checked. Refresh to try again.'
               : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? (currentView.discover ? quality?.needs_review : countLine?.needsReview) : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
         ) : leadsView === 'table' ? (
-          <LeadsTable leads={visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id]))} icpWho={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} drafted={draftedLeads} approved={approved} />
+          <LeadsTable leads={visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id]))} icpWho={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} drafted={draftedLeads} approved={approved} onApprove={id => approveLead(id, true)} onReject={id => quarantine(id, false, 'Rejected')} onPush={pushOne} />
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
