@@ -19,6 +19,7 @@ import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
 import { discoverContact, emailOnCompanySite, signalStale } from '../discover/card.ts'
 import { isGenericInbox } from './generic-inbox.ts'
+import { undeliverableAddress } from './undeliverable-address.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
 import { isMissingSchema, draftOffer } from '../scan/play-offer-text.ts'
 import { readTenantOffer } from './play-memory.ts'
@@ -353,6 +354,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   const to = norm(row?.value ?? '')
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  if (undeliverableAddress(to).blocked) throw new OutreachError('undeliverable_address')
   if (classifyPurpose(to).purpose === 'non-sales') throw new OutreachError('not_sales_contact')
   if (!emailOnCompanySite(to, row!.source_url, state?.company_domain ?? null)) throw new OutreachError('domain_unconfirmed')
   if (deliverabilityBlocked(to, readDeliverabilityRows(db, tenantId, lead.id))) throw new OutreachError('undeliverable')
@@ -404,6 +406,7 @@ function draftChecks(db: Database.Database, tenantId: string, leadId: string, ma
   const to = norm(published)
   if (isInboxFixtureAddress(to)) throw new OutreachError('fixture_recipient')
   if (!EMAIL_RE.test(to)) throw new OutreachError('no_email_contact')
+  if (undeliverableAddress(to).blocked) throw new OutreachError('undeliverable_address')
   // Beta rule (owner, 2026-11-23): no automatic function ever drafts to a shared inbox (info@, sales@, hello@, reception@, founders@ ...;
   // lib/outreach/generic-inbox.ts). Every draft a person did not ask for by hand comes through here with manual false: autopilot,
   // calibration, the scheduler. A shared inbox reaches a desk, not a person, so for them it is the same as no contact.
