@@ -1,8 +1,6 @@
 import { reserveScanSpend, unitCostUsd } from './spend-cap.ts'
 import { scanLookupAll, scanLookupCb } from '../net/scan-dns.ts' // #1463: c-ares, never a libuv pool thread
 import https from 'node:https'
-import { social } from '@crawlee/utils'
-import { revealEmails } from '../people/email-reveal.ts'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
 import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl, type BoardIdentity } from '../sources/ats-posting.ts'
@@ -196,14 +194,16 @@ export function ldJsonBlocks(html: string): string[] {
   for (const m of html.slice(0, 600_000).matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) { if (m[1].length <= 40_000) out.push(m[1]); if (out.length >= 8) break }
   return out
 }
-export function htmlToText(html: string, includeEmailLinks = false): { text: string; title: string; published: string | null; structured: string[] } {
+export function htmlToText(html: string): { text: string; title: string; published: string | null; structured: string[] } {
   const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
-  const body = html
-    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-  const content = includeEmailLinks ? revealEmails(body) : body
-  const readable = decode(content.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
-  const text = includeEmailLinks ? [readable, ...social.parseHandlesFromHtml(content).emails].join(' ') : readable
+  const text = decode(
+    html
+      .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<[^>]+>/g, ' '),
+  )
+    .replace(/\s+/g, ' ')
+    .trim()
   return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html), structured: ldJsonBlocks(html) }
 }
 
@@ -258,7 +258,7 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
 }
 
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
-export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: { allow: (url: URL) => boolean; blocked: (url: URL) => void; includeEmailLinks?: boolean }): Promise<Page | FetchFail> {
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: { allow: (url: URL) => boolean; blocked: (url: URL) => void }): Promise<Page | FetchFail> {
   // #533: a posting on a public ATS board is read from the board's own API record, never from the posting page
   const posting = atsPostingRef(rawUrl)
   try {
@@ -300,7 +300,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         try { rec = ref ? renderBrregRecord(JSON.parse(html), ref.id) : null } catch { rec = null }
         return rec ? { text: rec.text, title: rec.title, retrievedAt: Math.floor(Date.now() / 1000), published: null, structured: [] } : { fail: 'error' }
       } else {
-        const t = htmlToText(html, hopPolicy?.includeEmailLinks)
+        const t = htmlToText(html)
         thin = classifyThin(html, t.text)
         if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }
       }
@@ -310,7 +310,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       // blocked or JavaScript-only: try the rendering service if one is configured
       const rendered = await render(url.toString())
       if (rendered) {
-        const t = htmlToText(rendered, hopPolicy?.includeEmailLinks)
+        const t = htmlToText(rendered)
         if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000) }
       }
       return { fail: thin }
