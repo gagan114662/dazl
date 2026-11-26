@@ -103,13 +103,14 @@ test('polish records an attempt row per outcome: rewritten, blocked_claim, error
   assert.equal(rows2[3].model, null)
 })
 
-test('template truth: the default draft is neutral and never interpolates the signal', () => {
+test('template truth: a human-only lead gets a neutral draft without the unverified signal', () => {
   const db = setup()
+  db.prepare("UPDATE leads SET confidence = NULL, evidence_excerpt = 'Acme is hiring AEs' WHERE id = 'l1'").run()
   const id = createDraft(db, 'A', 'l1', 'Dazl')
   const row = db.prepare('SELECT subject, body FROM outreach_messages WHERE id = ?').get(id) as { subject: string; body: string }
   assert.equal(row.subject, 'Quick question for Acme')
-  assert.match(row.body, /contact address published on Acme's page/)
-  assert.doesNotMatch(row.body, /hiring AEs|I saw this reported/)
+  assert.match(row.body, /I came across Acme/)
+  assert.doesNotMatch(row.body, /hiring AEs|I saw|contact address published|https?:\/\//)
   assert.doesNotMatch(row.body, /congratulat/i)
 })
 
