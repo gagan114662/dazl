@@ -13,7 +13,7 @@ const evidenceUrl = 'https://fixture.example/announcement'
 const date = new Date().toISOString().slice(0, 10)
 const quote = 'Cedar Fixture announced that it is opening a second office.'
 const lead = {
-  company: 'Cedar Fixture', signal: 'Opening a second office', signal_date: date,
+  company: 'Cedar Fixture', country: 'US', location_evidence: 'United States', signal: 'Opening a second office', signal_date: date,
   evidence_url: evidenceUrl, evidence_quote: quote, confidence: 'high',
 }
 
@@ -51,7 +51,7 @@ async function fixture({ paused, needsFinalAnswer = false }: { paused: boolean; 
             type: 'web_search_tool_result', tool_use_id: 'srvtoolu_fixture',
             content: [{ type: 'web_search_result', url: evidenceUrl, title: 'Cedar Fixture announcement', encrypted_content: 'fixture', page_age: date }],
           }] : []),
-          { type: 'text', text: needsFinalAnswer && first ? 'I found relevant evidence.' : '<json>' + JSON.stringify({ leads: hasCandidate ? [lead] : [], note: null }) + '</json>' },
+          { type: 'text', text: needsFinalAnswer && first ? 'I found relevant evidence.' : '<json>' + JSON.stringify({ request_plan: { offer: null, buyer_type: null, industry_code: null, places: [], signals: [], exclusions: [], language: 'en' }, leads: hasCandidate ? [lead] : [], note: null }) + '</json>' },
         ],
         usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 0,
           cache_creation_input_tokens: 0, server_tool_use: { web_search_requests: allowance } },
