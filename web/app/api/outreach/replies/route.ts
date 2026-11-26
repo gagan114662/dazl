@@ -10,7 +10,7 @@ import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { getDb } from '@/lib/db/client'
 import { readGmailStatus } from '@/lib/gmail/oauth'
-import { recordReplyConsent, removeReplyConsent } from '@/lib/outreach/reply-consent-db'
+import { disableReplyFollowups, recordReplyConsent, removeReplyConsent } from '@/lib/outreach/reply-consent-db'
 import { audit } from '@/lib/audit-route'
 
 export async function GET() {
@@ -70,10 +70,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
     case 'followups_off': {
-      const db = getScanDb()
-      const was = followupsEnabled(db, user.tenantId)
-      setFollowups(db, user.tenantId, false)
-      if (was) await audit(user, req, { action: 'followups.disabled', resource: 'followups' })
+      if (await disableReplyFollowups(await getDb(), user.tenantId)) await audit(user, req, { action: 'followups.disabled', resource: 'followups' })
       return NextResponse.json({ ok: true })
     }
     case 'followups_on': {
