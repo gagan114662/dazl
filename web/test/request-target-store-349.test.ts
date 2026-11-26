@@ -36,6 +36,7 @@ bothEngines('only explicitly reviewed history authorizes carrying the exact targ
   const profile = normalizeIcp(JSON.parse(icp))
   const legacy = await createQueryJob(db, tenant, { query, icp })
   await db.run('UPDATE scan_jobs SET icp_inferred = 0 WHERE id = ?', [legacy])
+  assert.equal((await readScanStatus(db, tenant, legacy))?.icp_source, 'carried')
   assert.equal(await retainedReviewedTarget(db, tenant, query, profile), false)
 
   const reviewed = await createQueryJob(db, tenant, { query, icp, icpReviewed: true })

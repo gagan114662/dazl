@@ -35,7 +35,7 @@ async function request(t: string, handler: typeof SCAN, body: unknown) {
 }
 
 test('new Austin and Ontario targets replace the carried Toronto buyer while keeping the saved seller', async () => {
-  for (const next of [query, 'dental clinics in Ontario opening a new location']) {
+  for (const next of [query, 'dental clinics in Ontario opening a new location', 'Dentists in Toronto that are hiring']) {
     const t=tenant()
     const before = db.prepare('SELECT * FROM users WHERE id=?').get(t)
     const estimate=await request(t,ESTIMATE,{query:next,icp:profile,reviewed:false,target_from_query:true})
