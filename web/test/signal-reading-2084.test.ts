@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { businessPlays, type BrainProfile } from '../lib/business-brain.ts'
-import { MAX_READINGS, parseReading, promptFor, readSignals, READING_SYSTEM, type ReadSignal, type ReadWordings, type SignalReading } from '../lib/scan/signal-reading.ts'
+import { parseReading, promptForAll, READING_SYSTEM, type ReadWordings, type SignalReading } from '../lib/scan/signal-reading.ts'
 import { withReadings } from '../lib/scan/signal-readings.ts'
 import { normalizeIcp } from '../lib/scan/icp.ts'
 
@@ -39,25 +39,15 @@ test('#2084 the judge answer is parsed from a fixed shape; anything else is no r
   assert.equal(parseReading('Sure! Here is what I think'), null, 'prose is not a reading')
 })
 
-test('#2084 the question names no language and no wording list: the signal is read in its own language', () => {
+test('#2084 the question names no language: each wording is passed verbatim, in its own language', () => {
   assert.match(READING_SYSTEM, /any language/i)
-  const p = promptFor('Wir stellen SDRs ein', 'de')
+  const p = promptForAll(['Wir stellen SDRs ein'], 'de')
   assert.match(p, /LANGUAGE: de/)
-  assert.match(p, /SIGNAL: Wir stellen SDRs ein/, 'the signal is passed verbatim')
+  assert.match(p, /1\. Wir stellen SDRs ein/, 'the wording is passed verbatim')
   assert.doesNotMatch(p, /\b(?:freeze|stopped|paused)\b.*\b(?:German|Spanish|French)\b/i)
 })
 
-test('#2084 one call per signal, capped, and a failed reading is left out rather than guessed', async () => {
-  const asked: string[] = []
-  const read: ReadSignal = async s => { asked.push(s); if (s === 'boom') throw new Error('upstream'); return { kind: 'hiring', role: 'SDRs' } }
-  const got = await readSignals(['a', 'a', 'boom', ...Array.from({ length: 10 }, (_, i) => `s${i}`)], 'de', read)
-  assert.ok(asked.length <= MAX_READINGS, `asked ${asked.length}`)
-  assert.equal(asked.filter(s => s === 'a').length, 1, 'a signal is asked once')
-  assert.ok(!('boom' in got), 'a failed reading is not stored')
-  assert.equal(got.a?.kind, 'hiring')
-})
-
-// --- readings are filled once, at save, and reused ----------------------------------------------------------------------------
+// --- readings are filled once per scan, and reused ----------------------------------------------------------------------------
 
 test('#2084 readings are stored with the profile and reused; an English profile asks the judge nothing', async () => {
   const de = normalizeIcp({ ...buyer('de', ['Wir stellen SDRs ein', 'Einstellungsstopp']), summary: 'Dental practices in Ohio' })!

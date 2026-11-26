@@ -7,7 +7,6 @@
 // answer shape, and the bound; the caller supplies the metered completion.
 import type { SignalReading } from './role-words.ts'
 export type { SignalReading }
-export type ReadSignal = (signal: string, lang: string | null) => Promise<SignalReading | null>
 export type ReadWordings = (prompt: string) => Promise<string>
 
 // What the person is told when a wording could not be read at all: the same sentence in every surface, so it is never mistaken for
@@ -24,7 +23,6 @@ OTHER
 HIRING when the signal says companies are hiring a role now, including a freeze that has lifted or hiring that resumed.
 NOT_HIRING when it says hiring stopped, paused, froze, slowed, or that a role is not wanted.
 OTHER when it says neither, or you cannot tell.`
-export const promptFor = (signal: string, lang: string | null): string => `${READING_SYSTEM}\n\nLANGUAGE: ${lang ?? 'unknown'}\nSIGNAL: ${signal.trim().slice(0, 600)}`
 
 const HIRING_LINE = /^\s*hiring\s*:?\s*(.*)$/i
 const NOT_HIRING_LINE = /^\s*not[_\s-]?hiring\b/i
@@ -64,14 +62,4 @@ export async function readWordings(wordings: string[], lang: string | null, read
   if (!asked.length) return {}
   const answers = parseReadings(await read(promptForAll(asked, lang)), asked.length)
   return Object.fromEntries(asked.map((w, i) => [w, answers[i] ?? null]))
-}
-
-// One call per signal, at most MAX_READINGS. Kept for the single-signal question; a scan uses readWordings above.
-export const MAX_READINGS = 5
-export async function readSignals(signals: string[], lang: string | null, read: ReadSignal): Promise<Record<string, SignalReading>> {
-  const out: Record<string, SignalReading> = {}
-  for (const s of [...new Set(signals.map(x => x.trim()).filter(Boolean))].slice(0, MAX_READINGS)) {
-    try { const r = await read(s, lang); if (r) out[s] = r } catch { /* no reading: the signal makes no play */ }
-  }
-  return out
 }
