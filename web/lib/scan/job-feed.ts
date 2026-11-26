@@ -146,8 +146,11 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
       const signal = `Posted a role titled "${it.role}" (hiring signal only: not buying intent, fit or current need)`
       if (db.prepare("INSERT OR IGNORE INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at,claim) VALUES(?,?,?,?,'reading',?,?)").run(leadId, tenant, jobId, k, now, claimOf.get(leadId) ?? (claimOf.set(leadId, randomBytes(8).toString('hex')), claimOf.get(leadId)!)).changes !== 1) continue
       if (!rows.length) db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Hiring feed intake','manual','manual','running')").run(jobId, tenant)
-      // The date is the feed's posting date, kept as an unverified claim; it is not a current-need date.
-      db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,contact,event_date,date_status,retrieved_at,confidence,review_reason,source_kind) VALUES(?,?,?,?,?,?,NULL,?,?,?,NULL,'source_review_required','hiring_feed')")
+      // The date is the feed's posting date, kept as an unverified claim; it is not a current-need date. The kind names the
+      // role match the lane already proved (#1589): only postings whose title contains the request's own role words are
+      // here. It is the taxonomy's hiring_relevant_role, so every hiring consumer (isHiringTrigger, isHiringSignal,
+      // HIRING_KINDS) already reads it - still "hiring signal only", still source-review-required.
+      db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,contact,event_date,date_status,retrieved_at,confidence,review_reason,source_kind,signal_kind) VALUES(?,?,?,?,?,?,NULL,?,?,?,NULL,'source_review_required','hiring_feed','hiring_relevant_role')")
         .run(leadId, jobId, it.company, signal, it.url, quote, it.date, it.date ? 'unverified' : 'undated', page.retrievedAt)
       db.prepare('INSERT INTO source_reviews(id,tenant_id,job_id,lead_id,input_json,fetch_status,quote_match,company_named,contact_match,checked_at) VALUES(?,?,?,?,?,?,1,?,0,?)')
         .run(randomBytes(12).toString('hex'), tenant, jobId, leadId, JSON.stringify({ company: it.company, signal, source_url: it.url, excerpt: quote, contact: null, event_date: it.date, feed }), 'fetched', +named, page.retrievedAt)
