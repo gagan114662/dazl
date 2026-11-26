@@ -33,17 +33,27 @@ const ACTIONABLE_CONNECTOR = 'scan:actionable' // lib/scan/actionable.ts ACTIONA
 export type TimingProofGap = 'no_lead' | 'not_machine_verified' | 'needs_review' | 'quarantined' | 'unresolved_recency_bound' | 'timing_unproven'
   | 'no_domain' | 'domain_unconfirmed' | 'not_actionable' | 'no_record' | 'version_mismatch' | 'binding_changed'
 
+export function isDiscoveryHiringLead(lead: { signal: string; evidence_url: string }): boolean {
+  if (isHiringTrigger(lead.signal) || /^\s*recruiting\s+(?:an?\s+)?\S/i.test(lead.signal)) return true
+  let url: URL
+  try { url = new URL(lead.evidence_url) } catch { return false }
+  if (/(^|\.)(?:jobbank\.gc\.ca|indeed\.[a-z.]+|ziprecruiter\.com|myworkdayjobs\.com|greenhouse\.io|lever\.co|ashbyhq\.com|workopolis\.com|workopia\.io)$/i.test(url.hostname)) return true
+  return /(?:^|\/)(?:jobs|careers|vacancies)(?:\/|$)/i.test(url.pathname)
+}
+
 // Discovery stores a display date separately from its origin. An index date can
 // describe a search result, but cannot establish when a hiring posting appeared.
 export function discoveryHiringDateProven(lead: {
   signal: string
+  evidence_url: string
   date: string | null
   date_source: 'page' | 'index' | null
   proof: string
 }, windowDays: number, now: Date): boolean {
-  if (!isHiringTrigger(lead.signal)) return true
+  if (!isDiscoveryHiringLead(lead)) return true
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   return lead.proof === 'confirmed' && lead.date_source === 'page' &&
-    proofBackedTiming({ signal: lead.signal, event_date: lead.date, event_date_proof: 'page_bound' }, windowDays, now)
+    proofBackedTiming({ signal: lead.signal, event_date: lead.date, event_date_proof: 'page_bound' }, windowDays, today)
 }
 
 interface Binding { v: number; proof: string; date: string; domain: string; route: string }

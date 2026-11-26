@@ -2,8 +2,7 @@
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
-import { isHiringTrigger } from '../scan/scoreboard.ts'
-import { discoveryHiringDateProven } from '../scan/timing-proof.ts'
+import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -213,7 +212,7 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
   const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
-  const hiring = isHiringTrigger(lead.signal)
+  const hiring = isDiscoveryHiringLead(lead)
   const posted = hiring ? [...new Set(dateMentions(body).filter(mention =>
     /\bposted(?:\s+on)?[\s:–—-]*$/i.test(body.slice(Math.max(0, mention.index - 32), mention.index)),
   ).map(mention => mention.day))] : []
@@ -238,12 +237,16 @@ export function embeddedDay(html: string, now: Date, hiringOnly = false): string
     ?? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html))
   if (!m) return null
   const t = Date.parse(`${m[1]}T00:00:00Z`)
-  return Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
+  return hiringOnly ? validDay(t, now) : Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : m[1]
 }
 // A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
 // the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging
 // 2026-11-23: every hiring lead on these boards came back undated.
-const validDay = (t: number, now: Date): string | null => Number.isNaN(t) || t > now.getTime() + 86_400_000 || now.getTime() - t > INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? null : new Date(t).toISOString().slice(0, 10)
+function validDay(t: number, now: Date): string | null {
+  if (!Number.isFinite(t)) return null
+  const age = Math.floor(now.getTime() / 86_400_000) - Math.floor(t / 86_400_000)
+  return age < 0 || age > INDEX_DATE_MAX_AGE_DAYS ? null : new Date(t).toISOString().slice(0, 10)
+}
 export function postingRecord(u: URL): { url: string; day: (j: unknown) => unknown } | null {
   const h = u.hostname.toLowerCase(), seg = u.pathname.split('/').filter(Boolean)
   const obj = (j: unknown) => (j && typeof j === 'object' ? j as Record<string, unknown> : {})
@@ -297,7 +300,7 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
     try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
   }
   if (!raw) return out
-  if (stillDate) { const day = embeddedDay(raw, now, isHiringTrigger(c.signal)); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }
