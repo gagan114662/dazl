@@ -95,3 +95,35 @@ test('S3 reads a long single-line team page and keeps only the matching personâ€
   const neighbour = await lookup({ email: 'morgan@cedar.example' }, sources)
   assert.deepEqual([neighbour.person, neighbour.email], [name, null])
 })
+
+test('S3 refuses the only published address when the neighboring dentist owns it', async () => {
+  const neighboringAddress = 'morgan@cedar.example'
+  const result = await lookup({ email: neighboringAddress }, [
+    page(team, 'Dana Ruiz, Practice Manager. Morgan Lee, Dentist: ' + neighboringAddress),
+  ])
+  assert.deepEqual([result.person, result.email, result.email_source_url], [name, null, null])
+})
+
+for (const mailbox of ['drruiz', 'dr.ruiz']) {
+  test(`S3 keeps a named dentist's published ${mailbox} address`, async () => {
+    const address = `${mailbox}@cedar.example`
+    const result = await lookup({ title: 'Dentist', email: address }, [
+      page(team, `Dana Ruiz, Dentist at Cedar Dental. ${address}`),
+    ])
+    assert.deepEqual([result.person, result.email, result.email_source_url], [name, address, team])
+  })
+}
+
+test('S3 refuses a same-surname dentist mailbox for a practice manager', async () => {
+  const address = 'drruiz@cedar.example'
+  const result = await lookup({ email: address }, [
+    page(team, `Dana Ruiz, Practice Manager. Dr. Luis Ruiz, Dentist: ${address}`),
+  ])
+  assert.deepEqual([result.person, result.email, result.email_source_url], [name, null, null])
+})
+
+test('S3 keeps a published name-matched mailbox with a numeric suffix', async () => {
+  const address = 'dana.ruiz2@cedar.example'
+  const result = await lookup({ email: address }, [page(team, `${personText} ${address}`)])
+  assert.deepEqual([result.person, result.email, result.email_source_url], [name, address, team])
+})

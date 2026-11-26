@@ -19,7 +19,11 @@ export function FieldSource({ field, source, testId }: { field: string; source?:
     : <span>{field} source unavailable</span>
 }
 
-type WebsiteLead = Pick<PublishedEmailLead, 'enrichments'> & { company_domain: string | null }
+type DisplayEmail = { address: string; source_url: string; display_only: true }
+type WebsiteLead = Pick<PublishedEmailLead, 'enrichments'> & {
+  company_domain: string | null
+  company_first_published_email?: DisplayEmail | null
+}
 
 export function WebsiteProvenance({ lead }: { lead: WebsiteLead }) {
   const domain = discoverSite(lead.company_domain)
@@ -35,9 +39,21 @@ export function WebsiteProvenance({ lead }: { lead: WebsiteLead }) {
   const basisSource = basis.domain === domain
     && (sameSite || basis.kind === 'linked' || basis.kind === 'link_text_only') ? page?.href : null
 
+  // Discovery rows can have a saved contact page without a crawler domain-basis row.
+  // Only a recorded page on the displayed site can support that website.
+  const contactPages = [
+    lead.company_first_published_email?.source_url,
+    ...(lead.enrichments ?? []).filter(row =>
+      row.connector === 'discover' && (row.kind === 'person' || row.kind === 'email')).map(row => row.source_url),
+  ]
+  const contactSource = contactPages.map(webUrl).find(url => {
+    const host = url && discoverSite(url.hostname)
+    return host === domain || host?.endsWith(`.${domain}`)
+  })
+
   return <span className="inline-flex flex-wrap items-center gap-x-2 text-[var(--ink-2)]">
     <a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={`https://${domain}`} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-website">Website: {domain}</a>
-    <FieldSource field="Website" source={stored?.source_url ?? basisSource} />
+    <FieldSource field="Website" source={webUrl(stored?.source_url)?.href ?? basisSource ?? contactSource?.href} />
   </span>
 }
 
@@ -45,7 +61,7 @@ type EmailLead = PublishedEmailLead & {
   company_domain: string | null
   name?: string | null
   source_kind?: string | null
-  company_first_published_email?: { address: string; source_url: string; display_only: true } | null
+  company_first_published_email?: DisplayEmail | null
 }
 
 function emailEvidence(lead: EmailLead): { address: string; source: string | null | undefined } | null {

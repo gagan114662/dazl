@@ -23,6 +23,8 @@ export interface MimeInput {
 
 export function buildMime(m: MimeInput): string {
   if (!EMAIL_RE.test(m.fromEmail) || !EMAIL_RE.test(m.to)) throw new Error('bad_address')
+  // #1622: a message with no usable unsubscribe link is not compliant, so it is never built. `<>` satisfied nobody.
+  if (!/^https?:\/\/\S+$/i.test(m.unsubscribeUrl.trim())) throw new Error('missing_unsubscribe')
   const name = clean(m.fromName).replace(/["\\]/g, '')
   const from = name ? `${ascii(name) ? `"${name}"` : encWord(name)} <${m.fromEmail}>` : m.fromEmail
   const headers = [
