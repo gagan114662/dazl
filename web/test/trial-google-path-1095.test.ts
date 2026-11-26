@@ -92,7 +92,7 @@ test('#1095: a blocked free-trial cost panel never says the shared free trial pa
   }
   // a trial run that can go ahead still says who pays; an own-key run says it is billed to the account's keys
   assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'trial', limited: true, trialUsed: 0 })), 'Paid by the shared free trial, not billed to you.')
-  assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'you' })), 'Billed to your own keys and plans.')
+  assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'you' })), 'Usage depends on your workspace plan.')
 })
 
 test('#1095: when the account cannot be read, google_required still offers Link Google back to this page (never a dead end)', () => {

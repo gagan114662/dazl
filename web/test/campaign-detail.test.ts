@@ -71,7 +71,7 @@ test('the campaign read carries the counts the runner recorded, so the page can 
   db.prepare("UPDATE scan_jobs SET status='failed', error='key_rejected' WHERE id=?").run(ownKey)
   db.prepare("UPDATE scan_jobs SET status='failed', error='key_rejected', funded_by='trial' WHERE id=?").run(trialKey)
   const label = async (id: string) => scanOutcome((await campaignDetail(sqliteDb(db), 'A', id))!.job).label
-  assert.deepEqual([await label(ownKey), await label(trialKey)], ['Failed - the AI provider rejected the key this scan used', 'Failed - the free-search key had trouble (not your key)'], 'only a known trial job is attributed')
+  assert.deepEqual([await label(ownKey), await label(trialKey)], ['Failed - the AI provider refused a request', 'Failed - the free-search service had trouble'], 'only a known trial job is attributed')
   assert.equal((await campaignDetail(sqliteDb(db), 'A', ownKey))!.job.funded_by, null, "the 'user' column default is not reported as an owner")
   const kind = async (id: string) => { const d = (await campaignDetail(sqliteDb(db), 'A', id))!; return scanOutcome({ ...d.job, lead_count: d.leads.length }).kind }
   const droppedJob = (await campaignDetail(sqliteDb(db), 'A', dropped))!.job

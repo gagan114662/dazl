@@ -6,12 +6,12 @@ import { KEY_UNREADABLE_COPY, knownErrorCopy } from '../lib/error-copy.ts'
 test('knownErrorCopy: key_unreadable maps to the friendly message, never the raw code', () => {
   const copy = knownErrorCopy('key_unreadable')
   assert.equal(copy, KEY_UNREADABLE_COPY)
-  assert.match(copy!, /Re-enter it in Settings\./)
+  assert.match(copy!, /Try again later\./)
   assert.ok(!copy!.includes('key_unreadable'))
 })
 
 test('knownErrorCopy: shared codes map, context-specific and unknown codes return null', () => {
-  assert.match(knownErrorCopy('key_rejected')!, /rejected/)
+  assert.match(knownErrorCopy('key_rejected')!, /provider refused the request/)
   assert.match(knownErrorCopy('trial_key_invalid')!, /try again later/i)
   assert.match(knownErrorCopy('spend_limit')!, /spend limit.*nothing was charged/) // a money cap, never 'too many requests'
   assert.equal(knownErrorCopy('no_api_key'), null) // callers phrase this per surface

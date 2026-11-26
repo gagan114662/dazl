@@ -74,7 +74,7 @@ const sourcesFailed = (j: ScanRecord) => (j.failed_sources ?? []).length > 0
 const NEW_SCAN = '/app/leads'
 // The scan page shows what the run recorded about it (search results, pages read, what extraction was given).
 const NONE_EXTRACTED = (open: string, why?: string | null): ScanOutcome => ({ kind: 'none_extracted', label: 'No candidates were extracted', detail: why || 'Nothing more was recorded about what the search returned. This does not show that no matching companies exist.', next: { text: 'See what the scan read', href: open } })
-const TRIAL_KEY: ScanOutcome = { kind: 'failed', label: 'Failed - the free-search key had trouble (not your key)', next: { text: 'Try again later', href: NEW_SCAN } }
+const TRIAL_KEY: ScanOutcome = { kind: 'failed', label: 'Failed - the free-search service had trouble', next: { text: 'Try again later', href: NEW_SCAN } }
 // A free scan that reached its spending limit (lib/billing/trial-budget.ts): it stopped early and kept what it found, in
 // the review list, since some checks may not have run.
 // "Nothing was charged" only when the scan's recorded spend is a number (or a numeric string, as Postgres returns it) that is exactly zero.
@@ -127,7 +127,7 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
         if (room && typeof room === 'object' && amount(room.left_usd) && amount(room.needed_usd)) {
           const limit = r === 'over_limit' ? "this run's spending limit" : r === 'owner_pool_limit' ? "the account's day or month spending limit" : r === 'trial_budget_reached' ? "this free scan's spending limit" : "this run's spending cap"
           return { kind: 'stopped', says_what_to_do: true, label: 'Not started - too little budget was left for a search', detail: `A search needs at least ${usd(room.needed_usd)} to start, and ${usd(room.left_usd)} was left under ${limit}. No search was run, so nothing was concluded about whether leads exist.`,
-            next: r === 'over_limit' ? { text: 'Run it again with a larger budget', href: NEW_SCAN } : r === 'trial_budget_reached' ? { text: 'Add your own Anthropic key in Settings', href: '/app/settings' } : { text: 'Try again later', href: NEW_SCAN } }
+            next: r === 'over_limit' ? { text: 'Run it again with a larger budget', href: NEW_SCAN } : r === 'trial_budget_reached' ? { text: 'Review your plan in Settings', href: '/app/settings' } : { text: 'Try again later', href: NEW_SCAN } }
         }
         if (r === 'trial_budget_reached')   // TRIAL_BUDGET_REASON (trial-budget.ts); a free scan searches the web only in fixed-price calls
           return { kind: 'stopped', label: 'This free scan found no companies within its spending limit', detail: 'A free scan searches the web only in ways whose cost is fixed in advance, so this does not show that no company matches.', next: { text: 'Try a broader search', href: NEW_SCAN } }
@@ -173,13 +173,13 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
       case 'scan_timeout': return { kind: 'stopped', label: 'Stopped at its time limit - nothing was saved', next: { text: 'Try a narrower search', href: NEW_SCAN } }
       case 'cancelled': return { kind: 'stopped', label: 'Cancelled', next: { text: 'Start a new scan', href: NEW_SCAN } }
       // #1435: dazl finds leads with Claude only, so a search needs an Anthropic key. Nothing ran in its place.
-      case 'claude_key_required': return { kind: 'failed', says_what_to_do: true, label: 'Not started - this workspace has no Anthropic key', detail: CLAUDE_KEY_REQUIRED_COPY, next: { text: 'Add your Anthropic key in Settings', href: '/app/settings' } }
-      case 'key_unreadable': case 'no_api_key': return { kind: 'failed', label: 'Failed - your AI key could not be used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
+      case 'claude_key_required': return { kind: 'failed', says_what_to_do: true, label: 'Not started - Claude search is unavailable for this workspace', detail: CLAUDE_KEY_REQUIRED_COPY, next: { text: 'Review your plan in Settings', href: '/app/settings' } }
+      case 'key_unreadable': case 'no_api_key': return { kind: 'failed', label: 'Failed - the AI service could not start', next: { text: 'Review your plan in Settings', href: '/app/settings' } }
       case 'trial_key_invalid': return TRIAL_KEY
-      case 'trial_unavailable': return { kind: 'failed', says_what_to_do: true, label: 'Not started - free scans are not available right now', detail: 'No search was run. Add your own Anthropic key in Settings to run a search.', next: { text: 'Try again later', href: NEW_SCAN } }
+      case 'trial_unavailable': return { kind: 'failed', says_what_to_do: true, label: 'Not started - free scans are not available right now', detail: 'No search was run.', next: { text: 'Try again later', href: NEW_SCAN } }
       case 'key_rejected':
         return j.funded_by === 'trial' ? TRIAL_KEY
-          : { kind: 'failed', label: 'Failed - the AI provider rejected the key this scan used', next: { text: 'Check your AI key in Settings', href: '/app/settings' } }
+          : { kind: 'failed', label: 'Failed - the AI provider refused a request', next: { text: 'Review your plan in Settings', href: '/app/settings' } }
       default: return sourcesFailed(j)
         ? { kind: 'failed', label: `Failed - ${j.failed_sources!.join(', ')} had an error`, detail: 'A source or an infrastructure step failed; this is not an empty search.', next: { text: 'Try again', href: NEW_SCAN } }
         : { kind: 'failed', label: 'Failed', next: { text: 'Try again', href: NEW_SCAN } }

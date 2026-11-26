@@ -102,8 +102,8 @@ test('the Anthropic provider reports why it stopped (stop_reason), without chang
 }))
 test('the copy for these errors is truthful: an unreadable answer is not a key problem and a provider failure is not a rejection', () => {
   for (const c of ['draft_unreadable', 'provider_failed']) { const m = knownErrorCopy(c); assert.ok(m, c); assert.doesNotMatch(m!, /was rejected|key is invalid|bad key/i, c) }
-  assert.match(knownErrorCopy('draft_unreadable')!, /key worked|key is fine/i); assert.match(knownErrorCopy('provider_failed')!, /not rejected/i)
-  assert.equal(knownErrorCopy('key_rejected'), 'Your AI key was rejected. Check it in Settings.')
+  assert.match(knownErrorCopy('draft_unreadable')!, /could not be turned into a profile draft/i); assert.match(knownErrorCopy('provider_failed')!, /did not return an answer/i)
+  assert.equal(knownErrorCopy('key_rejected'), 'The AI provider refused the request. Try again later.')
 })
 
 test('recovery is anchored to the TOP-LEVEL draft only: a nested "draft" inside an offer or item is never the profile (cut off before, or with no, top-level draft)', async () => {

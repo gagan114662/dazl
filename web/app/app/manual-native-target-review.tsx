@@ -36,7 +36,7 @@ export default function ManualNativeTargetReview({query,initial,retained,makeBod
         <strong>Stays the same for this search:</strong><ul>{retained.map(row=><li key={row}>{row}</li>)}</ul>
       </div>}
       {error&&<div role="alert">Check the target details. Replace any existing criterion rather than leaving it empty.</div>}
-      <div className="text-sm">Uses your Anthropic key. Target cost is under US$5; actual charges can vary and may exceed that estimate.</div>
+      <div className="text-sm">Claude Web Search has a target cost under US$5. Actual provider costs can exceed that estimate.</div>
       <button type="submit" className="btn-primary">Confirm targets and find leads</button>{' '}
       <button type="button" className="btn-ghost" onClick={onCancel}>Cancel</button>
     </form>

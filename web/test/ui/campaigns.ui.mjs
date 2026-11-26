@@ -10,7 +10,7 @@
 //      that step and its checks live;
 //   3b. a run that produced no leads says how it ended, in the same words as its page and the Leads history: Austin
 //      extracted nothing (not "failed") and offers "See what the scan read"; Leeds is a technical failure (key
-//      rejected) and offers "Check your AI key in Settings";
+//      rejected) and offers "Review your plan in Settings";
 //   4. loading the page writes nothing.
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
@@ -66,8 +66,8 @@ try {
   assert.equal(await austin.getByTestId('next-action').textContent(), 'See what the scan read')
   assert.equal(await austin.getByTestId('next-action').getAttribute('href'), `/app/leads?job_id=${'c'.repeat(24)}`)
   assert.equal(await leeds.getByTestId('run-tag').textContent(), 'Technical failure')
-  assert.equal(await leeds.getByTestId('run-label').textContent(), 'Failed - the AI provider rejected the key this scan used')
-  assert.equal(await leeds.getByTestId('next-action').textContent(), 'Check your AI key in Settings')
+  assert.equal(await leeds.getByTestId('run-label').textContent(), 'Failed - the AI provider refused a request')
+  assert.equal(await leeds.getByTestId('next-action').textContent(), 'Review your plan in Settings')
   assert.equal(await ohio.getByTestId('run-tag').textContent(), 'Leads found (counts not recorded)', 'an older run that saved leads but not its check counts')
   assert.equal(await ohio.getByTestId('run-label').count(), 0, 'a run with results keeps the pipeline\'s next action, no extra line')
   // NYC's two stored drafts are for leads whose timing is not confirmed: the approve gate refuses them, so the card

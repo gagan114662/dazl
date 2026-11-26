@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
     funded = 'trial'
   }
   if (claudeOnly && query.length < 3) return NextResponse.json({ error: 'invalid_mode', message: 'Claude-only first play requires a search query. Nothing was started.' }, { status: 400 })
-  if (claudeOnly && funded === 'user' && pickVendor(db, user.tenantId) !== 'anthropic') return NextResponse.json({ error: 'qa_provider_disabled', message: 'Claude-only first play requires a Claude key. Nothing was started.' }, { status: 409 })
+  if (claudeOnly && funded === 'user' && pickVendor(db, user.tenantId) !== 'anthropic') return NextResponse.json({ error: 'qa_provider_disabled', message: 'Claude-only first play is unavailable for this workspace. Nothing was started.' }, { status: 409 })
   // One scan at a time per account: a scan that is running, queued OR still enriching (contacts, people, fit) is active. The Find leads button is
   // disabled for the same reason, but this is the guard: a second paid scan must not start beside an unfinished one.
   if (countActiveJobs(db, user.tenantId) >= 1) {
