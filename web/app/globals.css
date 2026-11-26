@@ -21,6 +21,10 @@
 html, body { background-color: #fff !important; color: var(--ink); min-height: 100vh; }
 /* #1700: keyed on .app-shell (only the signed-in shell has it; .app-ui is also on the public landing page). The signed-in app shell is exactly the visible height and scrolls inside <main>; a 100vh floor taller than a phone's visible area made the page scroll as well */
 html:has(.app-shell), body:has(.app-shell) { min-height: 0; }
+/* #1771: the staging banner is a body sibling above the shell, so a 100dvh shell plus the banner scrolled the page (24px, a second scrollbar). Body owns the visible height as a column; the shell takes what the banner leaves. Without a banner the shell is the full 100dvh as before. */
+body:has(> .app-shell) { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+body:has(> .app-shell) > [data-testid="staging-banner"] { flex: none; }
+body:has(> .app-shell) > .app-shell { height: auto; flex: 1 1 0; min-height: 0; }
 body { font-size: 16px; line-height: 1.5; }
 
 .glow { background-color: #fff; }

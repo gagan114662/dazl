@@ -36,7 +36,7 @@ jobs:
           if (!/^[a-f0-9]{40}$/.test(sha) || fs.statSync(file).size>2*1024*1024) process.exit(2)
           const event=JSON.parse(fs.readFileSync(file,'utf8'))
           if (event.repository?.id!==1288615110) process.exit(2)
-          if (type==='push' && event.ref==='refs/heads/main' && event.after===sha) console.log('refs/heads/main')
+          if (type==='push' && event.ref==='refs/heads/main' && event.after===sha) console.log(sha)
           else if (type==='pull_request' && event.pull_request?.base?.ref==='main' &&
             event.pull_request.base.repo?.id===1288615110 && Number.isSafeInteger(event.number) &&
             event.number===event.pull_request.number && event.number>0) console.log('refs/pull/'+event.number+'/merge')

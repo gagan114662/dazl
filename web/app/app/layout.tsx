@@ -9,6 +9,7 @@ import Nav from './nav'
 import { NAV_TOGGLE_ID } from './nav-toggle'
 import MainFocus from './main-focus'
 import StallWatch from './stall-watch'
+import WorkspaceReloadHint from './workspace-reload-hint'
 import { Icon } from './ui/icons'
 import { OPENING_ID, stallWatchScript } from '@/lib/stall-recovery'
 
@@ -52,7 +53,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Suspense fallback={
           <div id={OPENING_ID} className="p-4 sm:p-8" role="status">
             <p className="text-sm font-medium">Opening your workspace…</p>
-            <p className="mt-1 text-sm text-[var(--ink-2)]">If this screen stays here, reload the page to try again.</p>
+            <WorkspaceReloadHint />
             {/* #1463: reloads once if the streamed page never arrives, then shows a Reload button (lib/stall-recovery.ts) */}
             <script dangerouslySetInnerHTML={{ __html: stallWatchScript() }} />
           </div>
