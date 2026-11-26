@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { createRequire } from 'node:module'
 import ts from 'typescript'
 
 // Legacy auth URLs must permanently redirect to canonical pages and keep query values.
@@ -60,15 +59,7 @@ test('legacy auth redirects: every legacy URL has a route file', () => {
 })
 
 test('legacy auth redirects: real Next permanentRedirect preserves query values', async () => {
-      // #1929: the pages now `await connection()` before redirecting, and the real connection() throws
-    // outside a request scope. This harness only asserts redirect behavior (query preservation, 308),
-    // so stub the CJS resolution of next/server for the transpiled imports; the request-time binding
-    // itself is what test/auth-alias-redirects.test.ts asserts on the real sources.
-    const req = createRequire(import.meta.url)
-    const nextServerId = req.resolve('next/server')
-    const prior = req.cache[nextServerId]
-    req.cache[nextServerId] = { id: nextServerId, filename: nextServerId, loaded: true, exports: { connection: async () => {} } } as never
-    const tempDir = mkdtempSync(join(WEB_ROOT, '.tmp-redirect-test-'))
+  const tempDir = mkdtempSync(join(WEB_ROOT, '.tmp-redirect-test-'))
   try {
     const modules = new Map<string, { default: (arg: { searchParams: Promise<Record<string, string | string[] | undefined>> }) => Promise<never> }>()
     for (let i = 0; i < LEGACY_ROUTES.length; i++) {
@@ -114,8 +105,6 @@ test('legacy auth redirects: real Next permanentRedirect preserves query values'
       }
     }
   } finally {
-    if (prior) req.cache[nextServerId] = prior
-    else delete req.cache[nextServerId]
     rmSync(tempDir, { recursive: true, force: true })
   }
 })
