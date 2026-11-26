@@ -255,11 +255,13 @@ export async function trialScanAllowance(db: Db, userId: string, env: Record<str
 // counts toward today (admitted today, or admitted earlier and still running or ended today).
 // SETTLED_SQL and settled() are the same rule: the scan is finished and its current attempt's run has settled.
 const SETTLED_SQL = "(j.status IN ('done', 'failed') AND r.settled_at IS NOT NULL AND r.settled_attempt = j.attempts)"
-const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd, j.spend_cap_reserved_usd
+const HAS_SAVED_LEADS_SQL = 'EXISTS (SELECT 1 FROM leads l WHERE l.scan_job_id = j.id)'
+const LEDGER_SQL = `SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd, j.spend_cap_reserved_usd,
+  CASE WHEN j.error = 'accounting_uncertain' THEN ${HAS_SAVED_LEADS_SQL} END AS has_saved_leads
   FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
   WHERE r.tenant_id = ? OR r.day = ? OR (r.day < ? AND ((r.kind = 'site_read' AND COALESCE(r.settled_at, r.created_at + ${READ_GRACE_S}) >= ?)
     OR (r.kind <> 'site_read' AND (NOT COALESCE(${SETTLED_SQL}, FALSE) OR r.settled_at >= ?))))`
-export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; candidates?: number | null; attempts: number | null; spend_reserved_usd: number | null; spend_cap_reserved_usd?: number | string | null }
+export type LedgerRow = { tenant_id: string; kind?: string | null; reserve_usd: number; spent_usd?: number | null; day: number; created_at?: number | null; settled_at: number | null; settled_attempt: number | null; status: string | null; error?: string | null; candidates?: number | null; attempts: number | null; spend_reserved_usd: number | null; spend_cap_reserved_usd?: number | string | null; has_saved_leads?: boolean | 0 | 1 | null }
 const isRead = (r: LedgerRow) => r.kind === 'site_read'
 // A website read has ended once its call settled (settled_at); it then counts as the cost the provider reported (or its
 // full reserve, for a failed or unreported call). For the day ceiling only, a read that never settled counts as ended
@@ -281,11 +283,8 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
 // place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
 // failed after any paid step.
-// A scan that STOPPED AFTER AN INTERRUPTION (error accounting_uncertain: a paid step may already have been billed, so its results were
-// discarded) also gives its place back once its run has settled: the person got nothing, and the cost screen promises free scans, not
-// interrupted ones (owner decision 2026-11-11). Only the attempt COUNT is released: a settled scan still costs what it recorded
-// (scan_jobs.spend_reserved_usd, see reservationCost) against the account's dollar total and the day's budget, so the $0.30 / $1 / $10 caps
-// bind exactly as before. The same rule is applied by lib/scan/trial.ts TRIAL_USED_SQL (the first check and the usage counter), pinned equal
+// A settled interruption gives the attempt back only if it saved no leads. Its spend remains on the account and platform totals.
+// The attempt rule is also applied by lib/scan/trial.ts TRIAL_USED_SQL (the first check and the usage counter), pinned equal
 // by test/trial-interrupted-attempt.test.ts, and a reaped (dead-worker) scan is settled by lib/billing/trial-reap.ts so it is released too.
 // A free scan that STOPPED AT ITS SPENDING LIMIT before it found any company (status done, error trial_budget_reached, candidates recorded as 0)
 // also gives its place back once its run has settled: the person got nothing, and a free scan that cannot find anything is not a used one.
@@ -293,14 +292,17 @@ const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
 // kept any candidate, or whose candidate count was never recorded (null), keeps its place. Mirrored by lib/scan/trial.ts TRIAL_USED_SQL.
 const stoppedEmpty = (r: LedgerRow) => r.status === 'done' && r.error === TRIAL_BUDGET_REASON && r.candidates !== null && r.candidates !== undefined && Number(r.candidates) === 0
 export const releasedBeforeCost = (r: LedgerRow) => !isRead(r) && settled(r) && (stoppedEmpty(r) || (r.status === 'failed'
-  && ((r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0) || r.error === 'accounting_uncertain')))
+  && (r.error === 'accounting_uncertain'
+    ? r.has_saved_leads === false || r.has_saved_leads === 0
+    : r.error !== 'cancelled' && Number(r.spend_reserved_usd ?? 0) === 0)))
 export function ledger(rows: LedgerRow[], tenantId: string, day: number): { account: number; today: number; attempts: number } {
   let account = 0, today = 0, attempts = 0
   for (const r of rows) {
     // website reads are money in the wallet, not scan attempts
     if (r.tenant_id === tenantId && !isRead(r) && !releasedBeforeCost(r)) attempts++
-    if (r.tenant_id === tenantId) account += reservationCost(r)
-    if (countsToday(r, day)) today += reservationCost(r)
+    const cost = reservationCost(r)
+    if (r.tenant_id === tenantId) account += cost
+    if (countsToday(r, day)) today += cost
   }
   return { account, today, attempts }
 }
@@ -417,11 +419,23 @@ export async function trialAllowanceLeft(db: Db, tenantId: string, o: { now?: nu
   } catch { return null }
 }
 
+// The customer-facing outcome must only promise an attempt refund if the current trial attempt settled without saved leads.
+export async function interruptedTrialAttemptRestored(db: Db, tenantId: string, jobId: string): Promise<boolean> {
+  const row = await db.get(`SELECT 1 FROM trial_reservations r JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
+    WHERE r.tenant_id = ? AND r.job_id = ? AND r.kind = 'scan'
+      AND j.status = 'failed' AND j.error = 'accounting_uncertain' AND ${SETTLED_SQL} AND NOT ${HAS_SAVED_LEADS_SQL}`,
+    [tenantId, jobId]).catch(() => undefined)
+  return row != null
+}
+
 // Called by the runner as the very last step of a trial scan's run (lib/scan/runner.ts), after the scan, its enrichment
 // and every guarded paid call: the reservation may now count as what the scan recorded instead of its full reserve.
 // Best effort: if this write fails, the reservation keeps counting in full (never less than it could spend).
 export async function settleTrialReservation(db: DbLike, jobId: string, attempt: number, nowS = Math.floor(Date.now() / 1000)): Promise<void> {
-  try { await asDb(db).run('UPDATE trial_reservations SET settled_at = ?, settled_attempt = ? WHERE job_id = ?', [nowS, attempt, jobId]) }
+  try {
+    await asDb(db).run(`UPDATE trial_reservations SET settled_at = ?, settled_attempt = ?
+      WHERE job_id = ? AND (settled_attempt IS NULL OR settled_attempt <= ?)`, [nowS, attempt, jobId, attempt])
+  }
   catch (e) { captureError(e, { source: 'process', where: 'trial-budget:settleTrialReservation' }) } // stays at its full reserve; recorded (was silent on main)
 }
 

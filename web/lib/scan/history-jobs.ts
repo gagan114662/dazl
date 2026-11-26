@@ -1,3 +1,4 @@
+import { interruptedTrialAttemptRestored } from '../billing/trial-budget.ts'
 import type { Db } from '../db/client.ts'
 import { listJobs } from './store-db.ts'
 import { effectiveStatus } from './enrichment.ts'
@@ -18,6 +19,8 @@ export async function historyJobs(db: Db, userId: string) {
     ...j,
     // Recorded spend (the job's one cost, job-cost.ts: a positive amount is a paid call), only when it was read (an empty column on a read row = 0; a failed read = omitted): a free scan that stopped at its limit says whether anything was charged (scan-outcome.ts).
     ...(spend.get(j.id) != null ? { spend_usd: spend.get(j.id) } : {}),   // unread or unreadable: left out, never 0
+    ...(j.error === 'accounting_uncertain' && await interruptedTrialAttemptRestored(db, userId, j.id)
+      ? { trial_attempt_restored: true } : {}),
     funded_by: trial.has(j.id) ? 'trial' as const : null,
     status: effectiveStatus(j),
     // Why a scan extracted nothing, as recorded (counts only); null when not recorded or not that outcome.
