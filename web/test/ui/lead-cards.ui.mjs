@@ -20,7 +20,7 @@ import { createRequire } from 'node:module'
 const UNVERIFIED_COST = 'Retry unavailable: what this lookup costs on your Apollo account has not been verified, so it stays held and no new lookup is made. Whether the earlier interrupted attempt was already billed is not known. Apollo documents contact search as 0 credits on current plans, but older plans can differ. It can be retried once the cost on your account is confirmed.'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -57,7 +57,7 @@ const LEADS = [
 ]
 let outreachMode = 'ok'
 let heldMode = false; const retryCalls = []
-const writes = []; const outreachBodies = []; const quarantineCalls = []
+const writes = []; const outreachBodies = []; const quarantineCalls = []; const crmCalls = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
 // Named so the 390px sub-context below installs the same stub (an inline arrow here left routeApi undefined and
@@ -77,7 +77,10 @@ const routeApi = async route => {
     if (outreachMode === 'fail') { outreachMode = 'ok'; return json({ error: 'Could not create the draft right now' }, 500) }
     return json({ ok: true, message_id: 'm1' })
   }
-  const q = /^\/api\/leads\/([a-f0-9]{24})\/quarantine$/.exec(u.pathname)
+  // #1038 PR3: the bulk bar's Push to CRM sends the same POST the single-lead control sends; GET stays unconfigured.
+  if (u.pathname === '/api/crm' && m === 'POST') { crmCalls.push(JSON.parse(req.postData())); return json({ ok: true, message: 'Pushed to CRM' }) }
+  // Ids are 24 lowercase alnum: real leads are hex, the table fixture seeds letters g-v (#1038 PR3).
+  const q = /^\/api\/leads\/([a-z0-9]{24})\/quarantine$/.exec(u.pathname)
   if (q) { quarantineCalls.push({ method: m, lead: q[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ quarantined: m === 'POST' }) }
   if (u.pathname === '/api/enrich/held') return json(heldMode ? { held: [{ leadId: 'a'.repeat(24), company: 'Bright Dental', provider: 'apollo', step: 'people', since: 1762000000, costText: UNVERIFIED_COST, retryable: false }] } : { held: [] })
   const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
@@ -233,6 +236,7 @@ try {
     const i = k + 1
     return lead(String.fromCharCode(102 + i).repeat(24), `Table Co ${i}`, {
       fit: i, event_date: `2026-10-${String(17 - i).padStart(2, '0')}`,
+      contact: `hello@tableco${i}.example`, // a published address: the rows are approvable, so the bulk bar can draft them
       enrichments: i <= 2 ? [row('person', `Person ${i}, Practice owner`)] : [],
     })
   })
@@ -259,6 +263,37 @@ try {
   assert.equal(await firstRowId(), 'g'.repeat(24), 'date sort: newest first (2026-10-16 is lead g)')
   await page.getByTestId('sort-date').click()
   assert.equal(await firstRowId(), 'v'.repeat(24), 'date sort toggled: oldest first (2026-10-01 is lead v)')
+  // #1038 PR 3 of 3: the bulk bar. Select 5 rows; Approve drafts each through the existing per-lead action
+  // (one POST /api/outreach per row, in row order) and the rows move under Approved; Push to CRM from the
+  // Approved tab posts each and every row shows its own result; the CSV holds the selected rows only; Reject
+  // quarantines each selected row with the default reason.
+  const ids5 = ['v', 'u', 't', 's', 'r'].map(c => c.repeat(24))
+  const outreachBefore = outreachBodies.length, quarantinesBefore = quarantineCalls.length, crmBefore = crmCalls.length
+  for (const id of ids5) await page.getByTestId(`select-${id}`).check()
+  assert.match(await page.getByTestId('bulk-count').textContent(), /5 selected/)
+  await page.getByTestId('bulk-approve').click()
+  await page.getByTestId('bulk-result').getByText(/Approved 5 of 5/).waitFor({ timeout: 30000 })
+  assert.deepEqual(outreachBodies.slice(outreachBefore).map(b => b.lead_id), ids5, 'one draft request per selected row, in row order')
+  await page.getByTestId('tab-approved').click()
+  for (const id of ids5) await page.locator(`[data-lead-id="${id}"]`).getByText('Approved').waitFor()
+  for (const id of ids5) await page.getByTestId(`select-${id}`).check()
+  await page.getByTestId('bulk-push').click()
+  await page.getByTestId('bulk-result').getByText(/Pushed 5 of 5 to the CRM/).waitFor({ timeout: 15000 })
+  assert.deepEqual(crmCalls.slice(crmBefore), ids5.map(id => ({ action: 'push', lead_id: id })), 'one CRM push per selected row, in row order')
+  for (const id of ids5) assert.match(await page.locator(`[data-lead-id="${id}"]`).getByTestId('push-result').textContent(), /Pushed to CRM/, 'each row shows its own push result')
+  const dl = page.waitForEvent('download')
+  await page.getByTestId('bulk-csv').click()
+  const csvText = readFileSync(await (await dl).path(), 'utf8')
+  assert.match(csvText, /^Company,Person,Signal,Signal date,Fit,Email,Approval\n/, 'the CSV header')
+  for (const n of [16, 15, 14, 13, 12]) assert.match(csvText, new RegExp(`^Table Co ${n},`, 'm'), `selected row in the CSV: Table Co ${n}`)
+  assert.doesNotMatch(csvText, /Table Co 11,/, 'only the selected rows are exported')
+  await page.getByTestId('bulk-clear').click()
+  await page.getByTestId('tab-review').click()
+  const ids2 = ['q', 'p'].map(c => c.repeat(24))
+  for (const id of ids2) await page.getByTestId(`select-${id}`).check()
+  await page.getByTestId('bulk-reject').click()
+  await page.getByTestId('bulk-result').getByText(/Rejected 2 of 2/).waitFor({ timeout: 15000 })
+  assert.deepEqual(quarantineCalls.slice(quarantinesBefore).map(c => `${c.method} ${c.lead} ${c.body.reason}`), ids2.map(id => `POST ${id} Rejected`), 'each selected row is quarantined with the default reason')
   if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, 'leads-table-1440.png') })
   await page.getByTestId('view-cards').click()
   await page.getByTestId('lead-card').first().waitFor()
