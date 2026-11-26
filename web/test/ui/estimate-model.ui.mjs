@@ -46,7 +46,7 @@ const tokens = { openai: session('u-openai'), anthropic: session('u-anthropic') 
 db.close()
 
 const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
-const env = { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', SCAN_MAX_CONCURRENT: '0', NODE_OPTIONS: `--experimental-strip-types --import ${url('test/helpers/net-fence.ts')}` }
+const env = { PATH: process.env.PATH, DB_PATH: DB, DAZL_PAID_VENDORS: 'openai', SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', SCAN_MAX_CONCURRENT: '0', NODE_OPTIONS: `--experimental-strip-types --import ${url('test/helpers/net-fence.ts')}` }
 for (const k of ['SystemRoot', 'TEMP', 'TMP']) if (process.env[k]) env[k] = process.env[k] // Windows needs SystemRoot for sockets
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env, stdio: 'ignore' })
 let up = false
