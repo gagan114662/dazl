@@ -38,3 +38,13 @@ test('#1832 Research will not promote an unsupported address or show an unsafe l
   const unsafe = { ...lead, company_first_published_email: { address, source_url: 'javascript:alert(1)', display_only: true as const } }
   assert.equal(renderToStaticMarkup(createElement(ResearchPublishedEmail, { lead: unsafe })), '')
 })
+
+test('#1832 a sourced email stays hidden if the Research hold puts the company in doubt', async () => {
+  const { ResearchPublishedEmail } = await fields()
+  const sourced = { ...lead, name: 'Sample Buyer', source_kind: 'discover',
+    enrichments: [{ connector: 'discover', kind: 'email', value: 'sample.buyer@company.example', source_url: source, label: null }] }
+  const render = (review_reason: string) =>
+    renderToStaticMarkup(createElement(ResearchPublishedEmail, { lead: { ...sourced, review_reason } }))
+  assert.match(render('research_unverified'), /href="https:\/\/company\.example\/contact"/)
+  assert.equal(render('location_mismatch'), '')
+})
