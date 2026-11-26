@@ -304,3 +304,50 @@ test("every id-taking route: tenant B with tenant A's id is refused (404/403), A
   assert.deepEqual(failures, [])
   console.log('ID ROUTES', covered.size, 'CASES', CASES.length, 'B ANSWERS', JSON.stringify(refusals))
 })
+
+test('lead actions keep tenant checks when the parent lead belongs to the caller', async t => {
+  const f = await build()
+  t.after(() => f.db.close())
+  const tenant = B.id
+  const job = createJob(f.db, tenant, { business_name: B.business_name, industry: 'test', location: 'test' })
+  f.db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id = ?").run(job)
+  const lead = hex()
+  f.db.prepare('INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, ?, ?, ?, ?)')
+    .run(lead, job, B.business_name, 'Hiring', 'https://example.invalid/jobs')
+  const db = sqliteDb(f.db)
+  const ownFeedback = await recordFeedback(db, tenant, lead, { verdict: 'accept', actorId: tenant })
+  const ownPath = await addUserReportedPath(db, tenant, lead, 'https://www.linkedin.com/in/beta-fixture', 'Fixture Mutual')
+  assert.ok(ownPath)
+  const reset = (id: string) => m.feedback.DELETE(
+    req(`/api/leads/${lead}/feedback`, 'DELETE', { id, reason: 'Changed my mind' }), p({ lead }),
+  )
+  const remove = (id: string) => m.warm.DELETE(
+    req(`/api/leads/${lead}/warm-path`, 'DELETE', { id }), p({ lead }),
+  )
+  const draftFor = (id: string) => m.outreach.POST(req('/api/outreach', 'POST', { lead_id: id }), none)
+
+  const before = aRows(f.db)
+  const callsBefore = fetchCalls.length
+  as('B')
+  for (const [action, foreignId, status] of [
+    [reset, f.feedback, 404],
+    [remove, f.warmPath, 200],
+    [draftFor, f.withContact, 404],
+  ] as const) {
+    const foreign = await action(foreignId)
+    const missing = await action(hex())
+    assert.equal(foreign.status, status)
+    assert.equal(missing.status, status)
+    assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'))
+    const body = await foreign.text()
+    assert.equal(body, await missing.text())
+    if (action === remove) assert.deepEqual(JSON.parse(body), { deleted: false })
+  }
+  assert.equal(aRows(f.db), before, 'the other workspace’s rows stay unchanged')
+  assert.equal(fetchCalls.length, callsBefore, 'denied actions make no network requests')
+
+  assert.deepEqual(await (await reset(ownFeedback.id)).json(), { reset: true })
+  assert.deepEqual(await (await remove(ownPath.id)).json(), { deleted: true })
+  as('A')
+  assert.equal((await draftFor(f.withContact)).status, 201)
+})
