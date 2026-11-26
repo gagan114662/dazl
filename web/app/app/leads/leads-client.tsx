@@ -562,7 +562,7 @@ export default function LeadsClient() {
       const j = await r.json().catch(() => null) as { error?: unknown } | null
       if (!ok && typeof j?.error === 'string' && j.error) message = j.error
     } catch { /* offline or aborted: keep the fixed message */ }
-    setDrafted(d => ({ ...d, [leadId]: ok ? 'Draft created from the free template. Review it in Outreach - the AI rewrite there is a separate click that uses your key.' : message }))
+    setDrafted(d => ({ ...d, [leadId]: ok ? 'Draft created from the free template. Review it in Outreach. You can also choose Rewrite with AI there.' : message }))
     return ok
   }
 

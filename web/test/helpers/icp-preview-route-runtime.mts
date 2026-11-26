@@ -55,7 +55,7 @@ test('POST /api/scan/icp: spend and provider failures map to their own names and
         assert.ok(!/no new charge was made for this request|nothing was charged/i.test(j.message!), 'accounting_pending: never claims this request was not billed')
         assert.ok(!/key was rejected|rejected your key|invalid key/i.test(j.message!), 'accounting_pending: never mislabeled as a key problem')
       }
-      if (name === 'provider_failed') assert.ok(/key was not rejected/i.test(j.message ?? ''), 'provider_failed: says the key is fine')
+      if (name === 'provider_failed') assert.ok(/did not return an answer/i.test(j.message ?? ''), 'provider_failed: distinguishes a missing response')
     }
     // A good preview still passes through.
     setPreviewIcp(async () => ({ icp: { summary: 'Fintech founders', who: ['Founder'], industries: [], sizes: [], where: [], signals: [], exclude: [] }, inferred: true }) as never)

@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -9,7 +9,9 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migratePlans } from '../lib/plans.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { saveSettings, createDraft } from '../lib/outreach/service.ts'
-import { polishDraft } from '../lib/outreach/draft-llm.ts'
+import { migrateSpendPools, OWNER_POOL_LIMIT_REASON, periodOf } from '../lib/llm/spend-pool.ts'
+import { SpendRefused } from '../lib/llm/spend-guard.ts'
+import { polishDraft, polishDraftWithWords } from '../lib/outreach/draft-llm.ts'
 import { migrateMemory, saveMemory } from '../lib/memory.ts'
 import { anthropicProvider, openaiProvider, type Provider } from '../lib/llm/provider.ts'
 
@@ -17,10 +19,10 @@ const master = randomBytes(32)
 const KEY = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status })
 
-function setup() {
+function setup(withKey = true) {
   const db = new Database(':memory:')
   migrateScan(db); migrateKeys(db); migratePlans(db); migrateConnectors(db); migrateOutreach(db); migrateMemory(db)
-  saveKey(db, 'A', 'anthropic', KEY, master)
+  if (withKey) saveKey(db, 'A', 'anthropic', KEY, master)
   saveSettings(db, 'A', { sender_name: 'G', postal_address: '1 King St W, Toronto ON, Canada', booking_url: null })
   saveMemory(db, 'A', { positioning: 'software that ramps new sales hires' })
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES ('j1', 'A', 'b', 'i', 'l', 'running')").run()
@@ -224,4 +226,103 @@ test('migrating a pre-accountability usage table adds the columns and polish kee
   const r = await polishDraft(db, 'A', msg, 'Dazl', { master, providers })
   assert.equal(r.rewritten, true, 'polish works on a migrated old-schema database')
   db.close()
+})
+
+test('#1934 explicit rewrite uses the platform Anthropic key when the workspace has no key', async t => {
+  const previous = process.env.DAZL_TRIAL_ANTHROPIC_KEY
+  const platformKey = 'synthetic-platform-rewrite-key'
+  process.env.DAZL_TRIAL_ANTHROPIC_KEY = ` ${platformKey} `
+  const db = setup(false)
+  t.after(() => {
+    db.close()
+    if (previous === undefined) delete process.env.DAZL_TRIAL_ANTHROPIC_KEY
+    else process.env.DAZL_TRIAL_ANTHROPIC_KEY = previous
+  })
+  const id = createDraft(db, 'A', 'l1', 'Dazl')
+  const seen: string[] = []
+  const provider: Provider = {
+    research: async () => ({ text: '', citedUrls: [] }),
+    completeDetailed: async key => {
+      seen.push(key)
+      return { text: 'Subject: Helping new sales hires\n\nCould we talk about ramping your new sales hires?', model: 'claude-fixture', request_id: 'msg_1934', usage: { input_tokens: 10, output_tokens: 20 } }
+    },
+  }
+  const result = await polishDraft(db, 'A', id, 'Dazl', { master, providers: { anthropic: provider } })
+  assert.equal(result.rewritten, true)
+  assert.deepEqual(seen, [platformKey])
+  assert.deepEqual(usageRows(db).map(row => [row.vendor, row.outcome, row.request_id]), [['anthropic', 'rewritten', 'msg_1934']])
+  assert.deepEqual(db.prepare('SELECT purpose FROM outreach_llm_usage').all(), [{ purpose: 'polish_platform' }])
+  saveKey(db, 'A', 'anthropic', KEY, master)
+  assert.equal((await polishDraft(db, 'A', id, 'Dazl', { master, providers: { anthropic: provider } })).rewritten, true)
+  assert.deepEqual(seen, [platformKey, KEY])
+  assert.deepEqual(db.prepare('SELECT purpose FROM outreach_llm_usage ORDER BY id').all(),
+    [{ purpose: 'polish_platform' }, { purpose: 'polish' }])
+})
+
+function rewriteEnv(t: TestContext, values: Record<string, string | undefined>) {
+  for (const [key, value] of Object.entries(values)) {
+    const previous = process.env[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+    t.after(() => {
+      if (previous === undefined) delete process.env[key]
+      else process.env[key] = previous
+    })
+  }
+}
+
+for (const automation of [false, true]) {
+  test(`#1934 ${automation ? 'autopilot cannot use the platform key' : 'no platform key returns no_key'}`, async t => {
+    rewriteEnv(t, { DAZL_TRIAL_ANTHROPIC_KEY: automation ? 'synthetic-platform-rewrite-key' : undefined })
+    const db = setup(false)
+    t.after(() => db.close())
+    const id = createDraft(db, 'A', 'l1', 'Dazl')
+    let calls = 0
+    const fetchImpl: typeof fetch = async () => { calls++; throw new Error('unexpected provider call') }
+    const rewrite = automation ? polishDraftWithWords : polishDraft
+    assert.deepEqual(await rewrite(db, 'A', id, 'Dazl', { master, fetchImpl }), { rewritten: false, reason: 'no_key' })
+    assert.equal(calls, 0)
+    assert.deepEqual(usageRows(db).map(row => [row.outcome, row.input_tokens, row.output_tokens]), [['no_key', null, null]])
+  })
+}
+
+test('#1934 platform rewrite at the workspace cap refuses before calling or charging', async t => {
+  rewriteEnv(t, {
+    DAZL_TRIAL_ANTHROPIC_KEY: 'synthetic-platform-rewrite-key',
+    DAZL_RUN_MAX_USD_USERS: undefined,
+    DAZL_OWNER_MONTH_MAX_USD_USERS: undefined,
+    DAZL_OWNER_DAY_MAX_USD: '1',
+    DAZL_OWNER_MONTH_MAX_USD: '10',
+  })
+  const db = setup(false)
+  t.after(() => db.close())
+  migrateSpendPools(db)
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare('INSERT INTO tenant_spend_pools (tenant_id, period, reserved_usd, reported_usd, calls, updated_at) VALUES (?, ?, 1, 1, 1, ?)')
+    .run('A', periodOf('day', now), now)
+  const pool = db.prepare('SELECT * FROM tenant_spend_pools ORDER BY period')
+  const before = pool.all()
+  const id = createDraft(db, 'A', 'l1', 'Dazl')
+  const draft = db.prepare('SELECT subject, body, words_rev FROM outreach_messages WHERE id = ?')
+  const initial = draft.get(id)
+  let calls = 0
+  const refusals: string[] = []
+  const provider: Provider = {
+    ...anthropicProvider,
+    completeDetailed: async (...args) => {
+      try {
+        return await anthropicProvider.completeDetailed!(...args)
+      } catch (error) {
+        if (error instanceof SpendRefused) refusals.push(error.reason)
+        throw error
+      }
+    },
+  }
+  const fetchImpl: typeof fetch = async () => { calls++; throw new Error('unexpected provider call') }
+  assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, fetchImpl, providers: { anthropic: provider } }), { rewritten: false, reason: 'spend_limit' })
+  assert.deepEqual(refusals, [OWNER_POOL_LIMIT_REASON])
+  assert.equal(calls, 0)
+  assert.deepEqual(pool.all(), before)
+  assert.deepEqual(draft.get(id), initial)
+  assert.deepEqual(usageRows(db).map(row => [row.outcome, row.input_tokens, row.output_tokens]), [['spend_limit', null, null]])
 })
