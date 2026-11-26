@@ -70,7 +70,6 @@ const date = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 const contacts = flag('contacts')
 const requestedApolloBudget = opt('apollo-budget') ?? ''
-const operatorApolloCap = Number(process.env.APOLLO_CREDIT_CAP)
 let apolloBudget = 0
 if (flag('apollo-budget')) {
   if (!contacts) refuse('--apollo-budget requires --contacts. Not running.')
@@ -78,8 +77,10 @@ if (flag('apollo-budget')) {
   if (!/^[0-9]+$/.test(requestedApolloBudget) || !Number.isSafeInteger(requested) || requested < 1) {
     refuse('--apollo-budget must be a positive whole number. Not running.')
   }
-  if (!Number.isSafeInteger(operatorApolloCap) || operatorApolloCap < 1) {
-    refuse('--apollo-budget requires a positive operator APOLLO_CREDIT_CAP. Not running.')
+  const { apolloCreditCap, APOLLO_PILOT_MAX_CREDITS } = await import('../lib/enrich/apollo-credit-ledger.ts')
+  const operatorApolloCap = apolloCreditCap(process.env)
+  if (!operatorApolloCap) {
+    refuse(`--apollo-budget requires APOLLO_CREDIT_CAP from 1 to ${APOLLO_PILOT_MAX_CREDITS}. Not running.`)
   }
   apolloBudget = Math.min(requested, operatorApolloCap)
 }

@@ -3,10 +3,12 @@ import { asDb, type DbLike } from '../db/client.ts'
 type Env = Record<string, string | undefined>
 type ScanLimit = { id: string; limit: number }
 
-function creditCap(env: Env): number {
+export const APOLLO_PILOT_MAX_CREDITS = 50
+
+export function apolloCreditCap(env: Env): number {
   const raw = env.APOLLO_CREDIT_CAP ?? ''
   const cap = Number(raw)
-  return /^[0-9]+$/.test(raw) && Number.isSafeInteger(cap) && cap > 0 ? cap : 0
+  return /^[0-9]+$/.test(raw) && Number.isSafeInteger(cap) && cap > 0 && cap <= APOLLO_PILOT_MAX_CREDITS ? cap : 0
 }
 
 function validScan(scan: ScanLimit): boolean {
@@ -21,7 +23,7 @@ export async function reserveApolloLead(
   env: Env = process.env,
   scan: ScanLimit,
 ): Promise<boolean> {
-  const cap = creditCap(env)
+  const cap = apolloCreditCap(env)
   if (!cap || !tenantId || !leadId || !validScan(scan)) return false
 
   try {
@@ -60,7 +62,7 @@ export async function recordApolloResult(
 export async function planApolloReservations(
   store: DbLike, tenantId: string, leadIds: readonly string[], env: Env, scan: ScanLimit,
 ): Promise<string[]> {
-  const cap = creditCap(env)
+  const cap = apolloCreditCap(env)
   if (!cap || !tenantId || !validScan(scan) || !leadIds.length) return []
   let reservations: { tenant_id: string; lead_id: string; scan_id: string }[]
   try {
