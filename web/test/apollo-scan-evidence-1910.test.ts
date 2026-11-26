@@ -12,7 +12,7 @@ test('Apollo evidence comes only from owned, dated Discovery rows with completed
     migrateAllSqlite(db)
     const job = createQueryJob(db, 'tenant', { query: 'Find companies' })
     const otherJob = createQueryJob(db, 'other', { query: 'Find companies' })
-    db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id IN (?, ?)").run(job, otherJob)
+    db.prepare("UPDATE scan_jobs SET status = 'running' WHERE id IN (?, ?)").run(job, otherJob)
     const host = 'example.test'
     const source = `https://${host}/news`
     const add = (id: string, kind: string, value: string, connector = 'discover') =>
@@ -28,6 +28,7 @@ test('Apollo evidence comes only from owned, dated Discovery rows with completed
       if (id !== 'unconfirmed') add(id, 'domain', host + '|evidence_own_domain', 'sitecrawl')
       if (id === 'published') add(id, 'email', 'casey.olsen@example.test', 'sitecrawl')
     }
+    db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id IN (?, ?)").run(job, otherJob)
     const ids = ['eligible', 'undated', 'held', 'unconfirmed', 'published', 'foreign', 'eligible']
     const now = new Date('2026-11-26T00:00:00Z')
     const planned = collectApolloScanEvidence(db, 'tenant', job, ids, now)
