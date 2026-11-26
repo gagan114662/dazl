@@ -21,7 +21,7 @@ for (const name of ['web-ci', 'release-gate', 'release-preflight']) {
   })
 }
 
-test('#1906 web-ci defers shards while retaining the fast checks and failing closed on full runs', () => {
+test('#1906 required database checks block an unlabeled PR and require passing shards on a labeled PR', () => {
   const { jobs } = read('web-ci')
   for (const shard of ['sqlite-shard', 'postgres-shard']) assert.equal(jobs[shard].if, full)
   assert.equal(jobs['fast-pr'].if, "github.event_name == 'pull_request'")
@@ -32,9 +32,10 @@ test('#1906 web-ci defers shards while retaining the fast checks and failing clo
   for (const name of ['test-sqlite', 'test-postgres']) {
     const job = jobs[name]
     assert.ok(job.needs?.includes('fast-pr'))
+    assert.equal(job.env?.FULL_CI, full)
     const script = job.steps[0].run!
     for (const [tier, fast, shards, expected] of [
-      ['false', 'success', 'skipped', 0], ['false', 'failure', 'skipped', 1],
+      ['false', 'success', 'skipped', 1], ['false', 'failure', 'skipped', 1],
       ['true', 'success', 'success', 0], ['true', 'skipped', 'success', 0],
       ['true', 'success', 'skipped', 1], ['true', 'success', 'failure', 1],
     ] as const) {
@@ -42,7 +43,7 @@ test('#1906 web-ci defers shards while retaining the fast checks and failing clo
         encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '/dev/null', FULL_CI: tier, FAST: fast, SHARDS: shards, EVENT: fast === 'skipped' ? 'push' : 'pull_request' },
       })
       assert.equal(run.status, expected, run.stdout + run.stderr)
-      if (tier === 'false' && expected === 0) assert.match(run.stdout, /full suite deferred until ready-to-merge/)
+      if (tier === 'false' && fast === 'success') assert.match(run.stdout, /add ready-to-merge or quest-approved/i)
     }
   }
 })

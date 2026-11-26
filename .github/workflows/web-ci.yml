@@ -227,10 +227,10 @@ jobs:
             exit 1
           fi
           if [ "$FULL_CI" = false ] && [ "$SHARDS" = skipped ]; then
-            message="full suite deferred until ready-to-merge"
-            printf '%s\n' "$message"
+            message="full suite deferred until ready-to-merge. Add ready-to-merge or quest-approved to run the full suite before merging."
+            printf '::error::%s\n' "$message"
             printf '%s\n' "$message" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-            exit 0
+            exit 1
           fi
           [ "$FULL_CI" = true ] && [ "$SHARDS" = success ] || { echo "::error::Shards: $SHARDS"; exit 1; }
 
@@ -252,14 +252,14 @@ jobs:
             exit 1
           fi
           if [ "$FULL_CI" = false ] && [ "$SHARDS" = skipped ]; then
-            message="full suite deferred until ready-to-merge"
-            printf '%s\n' "$message"
+            message="full suite deferred until ready-to-merge. Add ready-to-merge or quest-approved to run the full suite before merging."
+            printf '::error::%s\n' "$message"
             printf '%s\n' "$message" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-            exit 0
+            exit 1
           fi
           [ "$FULL_CI" = true ] && [ "$SHARDS" = success ] || { echo "::error::Shards: $SHARDS"; exit 1; }
 
-  # Required on main's branch protection to prevent merging after just the fast tier.
+  # Reports the combined result of the two required database checks.
   full-suite:
     if: always()
     needs: [test-sqlite, test-postgres]
