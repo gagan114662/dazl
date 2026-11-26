@@ -209,3 +209,22 @@ test('DATES a job-boards.greenhouse.io board and posting are the same board', as
   assert.deepEqual(d, { date: '2026-11-17', sourceUrl: 'https://boards-api.greenhouse.io/v1/boards/northlinecare/jobs', platform: 'greenhouse' })
 })
 
+// Two readers exist for the same postings: lib/sources/ats-posting.ts (the verifier's, #460/#533) and lib/discover/ats-dates.ts
+// (mine). They must name the same day for the same body, or a lead is dated two ways depending on which path saw it. The
+// `updated_at` control is the reason: both readers must ignore it and read the platform's first-published field.
+test('DATES parity: both readers name the same day, and neither falls back to updated_at', async () => {
+  const dates = await import('../lib/discover/ats-dates.ts')
+  const { atsPostingRef, atsRecord } = await import('../lib/sources/ats-posting.ts')
+  const cases = [
+    { page: 'https://boards.greenhouse.io/northlinecare/jobs/4466', body: { id: 4466, title: 't', first_published: '2026-11-17T00:00:00Z', updated_at: '2026-11-24T00:00:00Z' }, day: '2026-11-17' },
+    { page: 'https://jobs.lever.co/leverdemo/ad208490-4052-4f91-a57e-433f2d1e484b', body: { id: 'ad208490-4052-4f91-a57e-433f2d1e484b', text: 't', createdAt: 1756512000000, updatedAt: 1764115200000 }, day: '2025-08-30' },
+    { page: 'https://jobs.ashbyhq.com/northlinecare/0f0a1f8e-2f9b-4c54-9d3f-1a2b3c4d5e6f', body: { jobs: [{ id: '0f0a1f8e-2f9b-4c54-9d3f-1a2b3c4d5e6f', title: 't', isListed: true, jobUrl: 'https://jobs.ashbyhq.com/northlinecare/0f0a1f8e-2f9b-4c54-9d3f-1a2b3c4d5e6f', publishedAt: '2026-11-18T12:00:00Z', updatedAt: '2026-11-25T12:00:00Z' }] }, day: '2026-11-18' },
+  ]
+  for (const c of cases) {
+    const mine = await dates.atsDate(c.page, stub({ [dates.atsPosting(c.page)!.apiUrl]: { body: c.body } }).f, NOW, 3650)
+    const theirs = atsRecord(c.body, atsPostingRef(c.page)!) as { posted: string | null } | null
+    assert.equal(mine?.date, c.day, `discover reader: ${c.page}`)
+    assert.equal(theirs?.posted, c.day, `verifier reader: ${c.page}`)
+  }
+})
+
