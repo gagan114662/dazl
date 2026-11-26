@@ -10,16 +10,21 @@
 // such a hold says the cited page is about someone else (a person's own post, or a customer the page merely mentions), so the row
 // is not established as this company's lead; it fails closed even when a website was recorded. Nothing here drafts or sends, and finding an
 // address never confirms the lead: it stays in review until the user decides.
+// #1177: a customer-mention row (counterparty_signal) is the one exception — with a settled own site (identityOf 'fact' or
+// 'user_confirmed' on a sitecrawl domain row), the company and the person are established independently of the cited page,
+// so the block is offered. The settled domain must also match the company name (domainMatchesCompany): a settled row
+// naming another company is that company's crawl, not this lead's own site. author_post gets no exception.
 import { identityOf } from '../scan/opportunity.ts'
 import { findContactOffered, NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
-import { siteSettled, targetKey, workEmailTargets } from './work-email-eligible.ts'
+import { domainMatchesCompany, siteSettled, targetKey, workEmailTargets } from './work-email-eligible.ts'
 import type { ContactEnrichment } from './rank.ts'
 
 export interface ReviewLaneLead { id: string; contact: string | null; company?: string | null; quarantined_at?: number | null; source_kind?: string | null; human_confirmed_from?: string | null; review_reason?: string | null; enrichments?: (ContactEnrichment & { connector: string })[] }
 export function reviewLaneWorkEmailTargets(l: ReviewLaneLead, buyerRoles: string, nowMs: number = Date.now()): { key: string; name: string; title: string | null }[] {
-  if (l.quarantined_at || !findContactOffered(l) || NON_COMPANY_REVIEW.includes(l.review_reason ?? '')) return []
+  if (l.quarantined_at || !findContactOffered(l)) return []
   const rows = l.enrichments ?? []
   const site = identityOf({ id: l.id, contact: l.contact }, rows)
+  if (NON_COMPANY_REVIEW.includes(l.review_reason ?? '') && !(l.review_reason === 'counterparty_signal' && siteSettled(site) && domainMatchesCompany(site.site, l.company))) return []
   if (!siteSettled(site)) return []
   return workEmailTargets(rows, buyerRoles, nowMs, site).map(p => ({ key: targetKey(p), name: p.name, title: p.title }))
 }
