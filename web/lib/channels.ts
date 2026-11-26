@@ -6,6 +6,18 @@ export type Tier = 0 | 1 | 2
 export type ChannelStatus = 'live' | 'worker' | 'soon'
 export interface Channel { id: string; name: string; tier: Tier; status: ChannelStatus; note: string; platform?: 'x' | 'reddit' | 'instagram' | 'facebook' | 'linkedin' | 'xiaohongshu' | 'bilibili' }
 
+// The Connectors row badge (#1721, Quest on #1917 2026-11-26). The session-ready truth is the production
+// session-worker's CAPABILITY (session-worker/src/fetchers.ts), mirrored into the app as PLATFORM_SUPPORT
+// (pinned equal by test/advanced-capability-sync.test.ts) and read here through the platform row's
+// supported flag. 'Not available yet' exactly when the row is missing, the adapter is unbuilt, or
+// connectors are off (the row then says "Not available on dazl yet."); otherwise the badge says what
+// the row below delivers.
+export const BADGE: Record<ChannelStatus, string> = { live: 'Working', worker: 'Needs your session', soon: 'Coming soon' }
+export function connectorBadge(c: Channel, p: { supported?: boolean; allowed: boolean } | undefined): string {
+  if (c.status === 'worker' && (!p || p.supported !== true || !p.allowed)) return 'Not available yet'
+  return BADGE[c.status]
+}
+
 export const CHANNELS: Channel[] = [
   { id: 'web', name: 'Web pages', tier: 0, status: 'live', note: 'On. Add page URLs in a scan under Sources. Pages are read through a third-party reader service: the URLs are sent to it, and it rate limits requests without a key.' },
   { id: 'youtube', name: 'YouTube', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Uses the official YouTube Data API when dazl has its own key for it (free daily quota); otherwise public mirror sites run by outside services, which receive the search keywords.' },

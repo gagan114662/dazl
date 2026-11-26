@@ -46,23 +46,12 @@ test('#1715 screen 3: the team panel says what you can do, and the operator role
   assert.match(s, /send\('\/api\/workspace\/invitations', 'POST', \{ email, role \}\)/, 'the invite still sends the stored value')
 })
 
-test('#1715 screen 4: the badge tells the reader what to expect, honestly per platform', () => {
+test('#1715 screen 4: the badge is a shared honest decision, and no supported worker note claims unavailable', () => {
   const s = src('settings/advanced-panel.tsx')
   assert.doesNotMatch(s, /Needs worker/, 'the "Needs worker" badge is gone')
-  // A platform whose adapter IS built (consent + session below the badge) is not "not available": the badge says
-  // what it needs (Gagan 2026-11-26 on #1917). Only an unbuilt adapter (supported === false) reads "Not available yet".
-  assert.match(s, /worker: 'Needs your session'/, 'a built session platform says what it needs, in plain words')
-  // The badge cases (Quest on #1917, 2026-11-26): 'Not available yet' when the platform row is missing (!p),
-  // the adapter is unbuilt (supported === false), or advanced connectors are off (!p.allowed) - the row below
-  // then says "Not available on dazl yet.", so the badge must not contradict it. 'Needs your session' otherwise.
-  assert.match(s, /!p \|\| p\.supported === false \|\| !p\.allowed/, 'missing row, unbuilt adapter and disallowed all read unavailable')
-  // Plus the conservative guard this branch verified: the worker wires fetchers for reddit and x only
-  // (worker/server.js HANDLERS; collection dispatches a generic POST {platform}), so a supported+allowed
-  // platform with no wired fetcher (instagram, bilibili) still cannot deliver a read after consent.
-  assert.match(s, /const SESSION_READY = new Set\(\['reddit', 'x'\]\)/, 'the session-ready set matches the wired worker fetchers')
-  assert.match(s, /SESSION_READY\.has\(c\.platform\)\)\) \? 'Not available yet'/, 'an unwired reader keeps the unavailable badge even when supported and allowed')
-  // No supported worker note starts with the unavailable claim: the badge alone carries availability (Facebook,
-  // supported: false, keeps its prefix by design).
+  assert.match(s, /connectorBadge\(c, p\)/, 'the row badges through the one tested decision (behavioral pins: connector-badge-1721.test.ts)')
+  // The badge alone carries availability (Quest on #1917): no supported worker note starts with the
+  // unavailable claim. Facebook (supported: false) keeps its prefix by design.
   for (const c of CHANNELS) {
     if (c.status !== 'worker' || !c.platform) continue
     if (c.id === 'facebook') { assert.match(c.note, /^Not available yet\./, 'Facebook keeps the unavailable prefix (unbuilt adapter)'); continue }

@@ -1,18 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { panelError } from './panel-error'
-import { CHANNELS, type Channel } from '@/lib/channels'
+import { CHANNELS, connectorBadge, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 import LinkedinConnect, { type ConnectState } from './linkedin-connect'
 
 interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
 const GROUP_LABEL = { 0: 'Works without setup', 1: 'Needs your own account session', 2: 'Needs you to sign in' } as const
-const BADGE = { live: 'Working', worker: 'Needs your session', soon: 'Coming soon' } as const
-// A session only gets a platform read when the worker has its fetcher wired (worker/server.js HANDLERS:
-// reddit and x today; collection dispatches a generic POST {platform}, so an unwired platform gets the
-// typed unsupported outcome). Instagram/bilibili carry supported: true with no wired fetcher, so they keep
-// "Not available yet" even when allowed - "Needs your session" would promise a read connecting cannot deliver.
-const SESSION_READY = new Set(['reddit', 'x'])
 
 export default function AdvancedPanel() {
   const [st, setSt] = useState<{ available: boolean; version: string; platforms: P[]; linkedin_connect?: ConnectState | null } | null>(null)
@@ -79,7 +73,7 @@ export default function AdvancedPanel() {
               <div key={c.id} className="border-t border-[#ddd] pt-3 mt-3 text-sm">
                 <div className="flex items-center justify-between gap-3 mb-1">
                   <span className="font-medium">{c.name}</span>
-                  <span className="badge">{c.status === 'worker' && (!p || p.supported === false || !p.allowed || !(c.platform != null && SESSION_READY.has(c.platform))) ? 'Not available yet' : BADGE[c.status]}</span>
+                  <span className="badge">{connectorBadge(c, p)}</span>
                 </div>
                 <p className="text-[#555] mb-2">{c.note}</p>
                 {p && Row(c, p)}
