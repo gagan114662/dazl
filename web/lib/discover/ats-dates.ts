@@ -85,6 +85,95 @@ export function atsPosting(url: string | URL): AtsPosting | null {
   return null
 }
 
+export interface AtsList {
+  platform: AtsPlatform
+  apiUrl: string
+  // every posting the board lists, with the URL it is linked at and the raw day field
+  read: (body: unknown) => { id: string; url: string; date: unknown }[]
+}
+
+const lastSeg = (u: string): string => {
+  try { return (new URL(u).pathname.split('/').filter(Boolean).pop() ?? '').toLowerCase() } catch { return '' }
+}
+
+// A careers index page on the board links to its postings but prints no dates; the board's own list record carries them.
+export function atsList(url: string | URL): AtsList | null {
+  let u: URL
+  try { u = typeof url === 'string' ? new URL(url) : url } catch { return null }
+  const host = u.hostname.toLowerCase(), seg = u.pathname.split('/').filter(Boolean)
+  const enc = encodeURIComponent
+  const ofJobs = (v: unknown): Record<string, unknown>[] => {
+    const r = obj(v)
+    const list = Array.isArray(v) ? v : Array.isArray(r.jobs) ? r.jobs : Array.isArray(r.result) ? r.result : []
+    return list.map(obj)
+  }
+
+  if (host === 'apply.workable.com' && seg.length === 1)
+    return {
+      platform: 'workable',
+      apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(seg[0])}/jobs?details=true`,
+      read: j => ofJobs(j).map(x => ({ id: String(x.shortcode ?? lastSeg(String(x.url ?? ''))), url: String(x.url ?? ''), date: x.published_on ?? x.published ?? x.created_at })),
+    }
+  const wa = /^([a-z0-9-]+)\.workable\.com$/.exec(host)
+  if (wa && seg.length === 0)
+    return {
+      platform: 'workable',
+      apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(wa[1])}/jobs?details=true`,
+      read: j => ofJobs(j).map(x => ({ id: String(x.shortcode ?? lastSeg(String(x.url ?? ''))), url: String(x.url ?? ''), date: x.published_on ?? x.published ?? x.created_at })),
+    }
+
+  if (/^jobs\.(?:eu\.)?lever\.co$/.test(host) && seg.length === 1)
+    return {
+      platform: 'lever',
+      apiUrl: `${host === 'jobs.eu.lever.co' ? 'https://api.eu.lever.co' : 'https://api.lever.co'}/v0/postings/${enc(seg[0])}?mode=json`,
+      read: j => ofJobs(j).map(x => ({ id: String(x.id ?? lastSeg(String(x.hostedUrl ?? ''))), url: String(x.hostedUrl ?? ''), date: x.createdAt })),
+    }
+
+  if (host === 'jobs.ashbyhq.com' && seg.length === 1)
+    return {
+      platform: 'ashby',
+      apiUrl: `https://api.ashbyhq.com/posting-api/job-board/${enc(seg[0])}`,
+      read: j => ofJobs(j).map(x => ({ id: String(x.id ?? lastSeg(String(x.jobUrl ?? ''))), url: String(x.jobUrl ?? ''), date: x.publishedAt })),
+    }
+
+  if (/(^|\.)greenhouse\.io$/.test(host) && seg.length === 1)
+    return {
+      platform: 'greenhouse',
+      apiUrl: `https://boards-api.greenhouse.io/v1/boards/${enc(seg[0])}/jobs`,
+      read: j => ofJobs(j).map(x => ({ id: String(x.id ?? lastSeg(String(x.absolute_url ?? ''))), url: String(x.absolute_url ?? ''), date: x.first_published })),
+    }
+
+  return null
+}
+
+// The day this board lists for one posting: only when the posting is listed with exactly one date the window accepts. Two different
+// days for the same posting, an entry with no date, or no entry at all give nothing - the list has not settled the fact.
+export async function atsListDate(
+  indexUrl: string | URL,
+  postingUrl: string | URL,
+  fetchImpl: typeof fetch,
+  now: Date = new Date(),
+  maxAgeDays = ATS_DATE_MAX_AGE_DAYS,
+  timeoutMs = 8_000,
+): Promise<AtsDate | null> {
+  const list = atsList(indexUrl), post = atsPosting(postingUrl)
+  if (!list || !post || list.platform !== post.platform) return null
+  const want = typeof postingUrl === 'string' ? lastSeg(postingUrl) : lastSeg(postingUrl.toString())
+  if (!want) return null
+  try {
+    const r = await fetchImpl(list.apiUrl, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)),
+      headers: { accept: 'application/json' },
+    })
+    if (!r.ok) return null
+    const hits = list.read(await r.json()).filter(e => e.id.toLowerCase() === want || lastSeg(e.url) === want)
+    const days = new Set(hits.map(h => dayOf(h.date, now, maxAgeDays)).filter((d): d is string => !!d))
+    if (days.size !== 1) return null
+    return { date: [...days][0], sourceUrl: list.apiUrl, platform: list.platform }
+  } catch { return null }
+}
+
 // A day counts only when the value really is one, is not after today, and is inside the window. Everything else is null.
 export function dayOf(v: unknown, now: Date, maxAgeDays = ATS_DATE_MAX_AGE_DAYS): string | null {
   let t: number
