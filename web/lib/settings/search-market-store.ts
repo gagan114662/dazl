@@ -3,9 +3,11 @@ import { browserMarket, marketLanguage, type SearchMarket } from '../scan/search
 import { isoCountry } from '../scan/icp.ts'
 
 export async function readAccountMarket(db: Db, tenantId: string): Promise<SearchMarket | null> {
-  // Standalone worker replay databases may contain only scan tables.
-  if (db.kind === 'sqlite' && !await db.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'organizations'")) return null
-  const row = await db.get<{ search_market: string | null }>('SELECT search_market FROM organizations WHERE id = ?', [tenantId])
+  const row = await db.get<{ search_market: string | null }>('SELECT search_market FROM organizations WHERE id = ?', [tenantId]).catch((error: unknown) => {
+    // Standalone worker replay databases may contain only scan tables.
+    if (db.kind === 'sqlite' && error instanceof Error && error.message === 'no such table: organizations') return undefined
+    throw error
+  })
   if (!row?.search_market) return null
   const market = JSON.parse(row.search_market) as SearchMarket
   return { country: isoCountry(market.country), language: marketLanguage(market.language) }
