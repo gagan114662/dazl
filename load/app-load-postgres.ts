@@ -51,6 +51,16 @@ export function checkIsolation(status: number, body: string, probe: Probe, forei
   return { leak, correct }
 }
 
+export function confirmLoadWorkspace(status: number, text: string, tenantId: string): boolean {
+  if (status !== 200) return false
+  try {
+    const payload = JSON.parse(text)
+    return payload?.ok === true && payload.tenant_id === tenantId
+  } catch {
+    return false
+  }
+}
+
 interface Tenant { id: string; job: string; leadIds: string[]; mark: string; users: User[] }
 interface User { email: string; password: string; ip: string; cookie?: string }
 type Sample = { ms: number; kind: 'api' | 'page' | 'completion'; ok: boolean }
@@ -173,7 +183,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
       } catch { return { status: 0, text: '', cookie: null, ms: performance.now() - start } }
     }
     const foreignTokens = (tenant: Tenant) => tenants.filter(other => other !== tenant).flatMap(other => [other.id, other.job, other.mark, other.leadIds[0]])
-    let foreignAttempts = 0, foreignFailures = 0, leaks = 0, incorrect = 0, signedIn = 0, submitted = 0, completed = 0
+    let foreignAttempts = 0, foreignFailures = 0, leaks = 0, incorrect = 0, signedIn = 0, switched = 0, submitted = 0, completed = 0
     const vUsers = tenants.flatMap((tenant, index) => tenant.users.map(user => ({ user, tenant, other: tenants[(index + 1) % tenants.length] })))
     await Promise.all(vUsers.map(async ({ user, tenant, other }) => {
       const sign = await request(user, '/api/auth/signin', { email: user.email, password: user.password })
@@ -185,6 +195,15 @@ export async function runPostgresLoad(web: string): Promise<number> {
       if (!signOk) return
       signedIn++
       user.cookie = cookie
+      const workspace = await request(user, '/api/workspace/switch', { tenant_id: tenant.id })
+      const workspaceOk = confirmLoadWorkspace(workspace.status, workspace.text, tenant.id)
+      record('workspace-switch', { ms: workspace.ms, kind: 'api', ok: workspaceOk })
+      if (foreign.some(token => workspace.text.includes(token))) leaks++
+      if (!workspaceOk) {
+        user.cookie = undefined
+        return
+      }
+      switched++
       await Promise.all([
         ['/app', 'home', 'page', false, ''],
         ['/app/leads', 'leads-page', 'page', false, ''],
@@ -245,7 +264,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
     const pages = requests.filter(s => s.kind === 'page').map(s => s.ms)
     const apiP95 = percentile(api, .95), apiP99 = percentile(api, .99), pageP95 = percentile(pages, .95)
     const mockSearchCalls = readFileSync(trace, 'utf8').split('\n').filter(line => line === 'search').length
-    const pass = mockSearchCalls >= completed && signedIn === vUsers.length && submitted === vUsers.length && completed === vUsers.length &&
+    const pass = mockSearchCalls >= completed && signedIn === vUsers.length && switched === vUsers.length && submitted === vUsers.length && completed === vUsers.length &&
       foreignAttempts === vUsers.length * 2 && foreignFailures === 0 && leaks === 0 && errorRate < .01 && correctness > .999 &&
       apiP95 < 1000 && apiP99 < 3000 && pageP95 < 2000
     const routes = Object.fromEntries([...byRoute].map(([name, items]) => [name, {
@@ -253,7 +272,7 @@ export async function runPostgresLoad(web: string): Promise<number> {
       p95_ms: percentile(items.map(s => s.ms), .95), p99_ms: percentile(items.map(s => s.ms), .99),
     }]))
     const report = { pass, sha: expectedSha, backend: health.store.engine, tenants: tenants.length, users: vUsers.length,
-      signedIn, submitted, completed, mockSearchCalls, foreignAttempts, foreignFailures, leaks, errorRate, correctness, apiP95, apiP99, pageP95, routes,
+      signedIn, switched, submitted, completed, mockSearchCalls, foreignAttempts, foreignFailures, leaks, errorRate, correctness, apiP95, apiP99, pageP95, routes,
       duration_ms: Math.round(performance.now() - scenarioStart),
       provider: 'local deterministic network stub', concurrentSearchPolicy: 'one active search per tenant' }
     console.log(JSON.stringify(report, null, 2))

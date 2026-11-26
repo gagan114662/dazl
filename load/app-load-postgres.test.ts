@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkIsolation, postgresTarget, assertNoRawSqliteModules } from './app-load-postgres.ts'
+import { checkIsolation, postgresTarget, assertNoRawSqliteModules, confirmLoadWorkspace } from './app-load-postgres.ts'
 
 test('foreign probes fail on a foreign row even with 404 or a disguised response', () => {
   const probe = { own: 'own-marker', foreign: ['foreign-marker', 'foreign-row-id'] }
@@ -77,4 +77,13 @@ test('the own Leads probe requires all seeded buying-need verdicts', () => {
   assert.deepEqual(read([a]), { leak: false, correct: false })
   assert.deepEqual(read([a, a]), { leak: false, correct: false })
   assert.deepEqual(read([a, { ...b, buying_need: null }]), { leak: false, correct: false })
+})
+
+
+test('signed-in load users must enter the exact team workspace before owner reads', () => {
+  assert.equal(confirmLoadWorkspace(200, '{"ok":true,"tenant_id":"team"}', 'team'), true)
+  assert.equal(confirmLoadWorkspace(200, '{"ok":true,"tenant_id":"personal"}', 'team'), false)
+  assert.equal(confirmLoadWorkspace(200, '{"ok":false,"tenant_id":"team"}', 'team'), false)
+  assert.equal(confirmLoadWorkspace(403, '{"ok":true,"tenant_id":"team"}', 'team'), false)
+  assert.equal(confirmLoadWorkspace(200, 'not JSON', 'team'), false)
 })
