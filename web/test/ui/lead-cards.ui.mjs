@@ -235,6 +235,9 @@ try {
   await ctx390.route('**/*', routeApi)
   const p390 = await ctx390.newPage()
   await p390.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  // Card layout is what this scenario asserts: select the Cards view explicitly where the view toggle exists
+  // (#1038 makes the table the default; the toggle is absent on bases before it, where cards are the only view).
+  if (await p390.getByTestId('view-cards').count()) await p390.getByTestId('view-cards').click()
   const north = p390.getByTestId('lead-card').filter({ hasText: 'Northgate Dental' })
   await north.waitFor({ timeout: 15000 })
   assert.equal(await p390.evaluate(() => document.documentElement.scrollWidth <= 390), true, 'the page never grows wider than a 390px phone')
