@@ -1,6 +1,7 @@
 'use client'
 import { discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
+import type { HomeResults } from '@/lib/outreach/home-results'
 import type { HomeReady } from '@/lib/outreach/home-ready'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
@@ -831,6 +832,7 @@ export default function LeadsClient() {
     await loadWatches()
   }
   const [ready, setReady] = useState<HomeReady | 'failed' | null>(null)
+  const [leadRowTotal, setLeadRowTotal] = useState<{ count: number; days: number } | 'failed' | null>(null)
   const completedSearch = status === 'done' ? jobId : null
   useEffect(() => {
     const request = new AbortController()
@@ -843,6 +845,14 @@ export default function LeadsClient() {
         if (!request.signal.aborted) setReady(result)
       })
       .catch(() => { if (!request.signal.aborted) setReady('failed') })
+    void fetch('/api/home/results', { signal: AbortSignal.any([request.signal, AbortSignal.timeout(20000)]) })
+      .then(async response => {
+        if (!response.ok) throw new Error(String(response.status))
+        const result: HomeResults = await response.json()
+        if (!Number.isFinite(result?.tiles?.leads) || !Number.isFinite(result?.window_days)) throw new Error('shape')
+        if (!request.signal.aborted) setLeadRowTotal({ count: result.tiles.leads, days: result.window_days })
+      })
+      .catch(() => { if (!request.signal.aborted) setLeadRowTotal('failed') })
     return () => request.abort()
   }, [completedSearch])
   const [pastJobs, setPastJobs] = useState<JobSummary[] | null>(null)
@@ -1021,6 +1031,11 @@ export default function LeadsClient() {
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
         </div>}
       </div>
+      {leadRowTotal && <p className="mb-3 text-sm text-[var(--ink-2)]" data-testid="leads-overall-row-total">
+        {leadRowTotal === 'failed' ? 'Could not load the total number of lead rows.' : <>
+          Last {leadRowTotal.days} days: {leadRowTotal.count} lead {leadRowTotal.count === 1 ? 'row' : 'rows'} found.
+        </>}
+      </p>}
       {ready && (
         <p className="mb-3 text-sm text-[var(--ink-2)]" data-testid="leads-overall-total">
           {ready === 'failed' ? 'Could not check workspace lead totals. Refresh to retry.' : <>
