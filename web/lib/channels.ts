@@ -17,6 +17,5 @@ export const CHANNELS: Channel[] = [
   { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Not available yet. Reddit limits automated access under its terms.' },
   { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Not available yet. Instagram disallows automated access in robots.txt and its terms.' },
   { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Not available yet. Facebook disallows automated access in robots.txt and its terms. dazl does not fetch Facebook yet.' },
-  { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Not available yet: it needs a background service and a separate switch dazl turns on. Highest ban risk. Public pages through that reader are not built yet.' },
+  { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Not available yet. It carries the highest risk of getting the account banned.' },
 ]
-export const TIER_LABEL: Record<Tier, string> = { 0: 'Tier 0 · no setup', 1: 'Tier 1 · your session', 2: 'Tier 2 · login required' }

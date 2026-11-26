@@ -23,6 +23,7 @@ test('#1721 the connector notes are in plain words: no operator, TinyFish, Piped
     assert.doesNotMatch(c.note, /TinyFish/i, `${c.id} names an internal service: ${c.note}`)
     assert.doesNotMatch(c.note, /Piped instances?/i, `${c.id} says "Piped instances": ${c.note}`)
     assert.doesNotMatch(c.note, /\bworker\b/i, `${c.id} says "worker": ${c.note}`)
+    assert.doesNotMatch(c.note, /not built|background service|separate switch/i, `${c.id} talks about what is built: ${c.note}`)
   }
 })
 
@@ -90,4 +91,13 @@ test('#1721 Settings has no Apollo / People Data Labs key rows, credit limits or
   assert.match(s, /Email address checks/)
   const page = src('settings/page.tsx')
   assert.doesNotMatch(page, /Model key|Enrichment'|your AI key/)
+})
+
+test('#1721 the pre-run cost notes say what it costs and does, without model names', () => {
+  for (const p of ['../lib/discover/pricing.ts', '../lib/scan/price-estimate.ts']) {
+    const text = readFileSync(new URL(`../${p.replace('../', '')}`, import.meta.url), 'utf8')
+    const notes = text.split('\n').filter(l => /^\s*(note:|\? `|: ')/.test(l)).join('\n')
+    assert.ok(notes.length > 0, `${p}: found the cost notes`)
+    assert.doesNotMatch(notes, /Sonnet|Haiku|Opus/, `${p}: a cost note names a model`)
+  }
 })
