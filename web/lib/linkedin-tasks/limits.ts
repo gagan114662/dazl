@@ -2,7 +2,7 @@
 // (lib/linkedin-tasks/store.ts nextTask); the extension only asks, so it cannot read faster, later or more than these.
 // The extension READS pages in the user's own browser. There are no write kinds: connection requests and messages are not
 // task kinds at all, so no request, flag or extension build can make dazl send one.
-export const TASK_KINDS = ['company_people', 'profile', 'post_engagement'] as const
+export const TASK_KINDS = ['company_people', 'profile', 'post_engagement', 'company_posts'] as const
 export type TaskKind = typeof TASK_KINDS[number]
 export const isTaskKind = (v: unknown): v is TaskKind => typeof v === 'string' && (TASK_KINDS as readonly string[]).includes(v)
 
@@ -57,6 +57,7 @@ export function taskUrlOk(kind: TaskKind, raw: unknown): string | null {
   if (u.protocol !== 'https:' || u.hostname !== 'www.linkedin.com' || u.username || u.password || u.port) return null
   const p = u.pathname
   const ok = kind === 'company_people' ? /^\/company\/[A-Za-z0-9%_.-]{1,100}\/people\/?$/.test(p)
+    : kind === 'company_posts' ? /^\/(?:company\/[A-Za-z0-9%_.-]{1,100}|in\/[A-Za-z0-9%_-]{2,100})\/?$/.test(p)
     : kind === 'profile' ? /^\/in\/[A-Za-z0-9%_-]{2,100}\/?$/.test(p)
     : /^\/(?:posts\/[A-Za-z0-9%_.-]{3,200}|feed\/update\/urn:li:activity:\d{5,25})\/?$/.test(p)
   return ok ? `https://www.linkedin.com${p}` : null
@@ -75,3 +76,29 @@ export function personOk(v: unknown): ReadPerson | null {
   return { name, title, profile_url: url }
 }
 export const MAX_PEOPLE = 100
+
+// A post link as the extension read it on a competitor's own page: the post's own URL and its own date (YYYY-MM-DD), or
+// null when the page showed no date. #1588: a post whose recency cannot be proven is never opened.
+export interface ReadPost { url: string; date: string | null }
+export const MAX_POSTS_PER_PAGE = 25
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
+export function postOk(v: unknown): ReadPost | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const o = v as Record<string, unknown>
+  const url = taskUrlOk('post_engagement', o.url)
+  const date = typeof o.date === 'string' && ISO_DAY.test(o.date) ? o.date : null
+  return url ? { url, date } : null
+}
+
+// A person engaging with a post, as the post page showed them: the ReadPerson fields plus what they did. A record from a
+// comment card (the only engagement a post page shows without a click) is a comment; action 'like' marks a reaction row
+// if LinkedIn renders one. The comment is the person's own words, capped; anything else is refused.
+export interface EngagerPerson extends ReadPerson { action: 'comment' | 'like'; comment: string | null }
+export function engagerOk(v: unknown): EngagerPerson | null {
+  const p = personOk(v)
+  if (!p) return null
+  const o = v as Record<string, unknown>
+  const action = o.action === 'like' ? 'like' : 'comment'
+  const comment = typeof o.comment === 'string' && o.comment.trim() ? o.comment.replace(/\s+/g, ' ').trim().slice(0, 500) : null
+  return { ...p, action, comment }
+}

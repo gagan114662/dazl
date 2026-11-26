@@ -9,6 +9,7 @@ import type { Evidence } from '../sources/types.ts'
 import { audit, getEnabledCredential, readEnabledCredential, writeAudit, type AuditEntry } from '../connectors/store.ts'
 import { advFlags, connectorId, maxCallsPerHour, platformAllowed, scopeFor } from '../advanced/config.ts'
 import { hasConsent, hasWorkerSession, httpWorker, readConsent, type WorkerAuthor, type WorkerFetch } from '../advanced/index.ts'
+import { taskUrlOk } from '../linkedin-tasks/limits.ts'
 
 export const MAX_COMPETITORS = 5
 const MAX_POST_AGE_DAYS = 30
@@ -25,9 +26,12 @@ const COMPLAINT_PLATFORMS: { platform: 'reddit' | 'x'; connector: string }[] = [
 
 export function migrateCompetitors(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS tenant_competitors (
-    tenant_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL,
+    tenant_id TEXT NOT NULL, name TEXT NOT NULL, position INTEGER NOT NULL, page_url TEXT,
     PRIMARY KEY (tenant_id, name)
   );`)
+  // A store that already has the table from before #1588 (competitors were names only) gains the page column.
+  const cols = db.prepare('PRAGMA table_info(tenant_competitors)').all() as { name: string }[]
+  if (!cols.some(c => c.name === 'page_url')) db.exec('ALTER TABLE tenant_competitors ADD COLUMN page_url TEXT')
 }
 
 export function cleanCompetitorName(v: unknown): string {
@@ -35,6 +39,8 @@ export function cleanCompetitorName(v: unknown): string {
 }
 
 const COMPETITORS_SQL = 'SELECT name FROM tenant_competitors WHERE tenant_id = ? ORDER BY position'
+// #1588: the competitor's own LinkedIn page (a company page or a founder profile), when Settings has one.
+const COMPETITOR_PAGES_SQL = 'SELECT name, page_url FROM tenant_competitors WHERE tenant_id = ? AND page_url IS NOT NULL ORDER BY position'
 // Sync for the complaint collector (scan runner, raw handle); readCompetitors for the settings route (Db layer).
 export function listCompetitors(db: Database.Database, tenantId: string): string[] {
   return (db.prepare(COMPETITORS_SQL).all(tenantId) as { name: string }[]).map(r => r.name)
@@ -51,16 +57,33 @@ export async function readCompetitorsStrict(db: Db, tenantId: string): Promise<s
   catch { return null }
 }
 
-// On the Db layer: the list is replaced in one transaction.
-export async function setCompetitors(db: Db, tenantId: string, names: string[]): Promise<{ ok: boolean; error?: string; names: string[] }> {
-  const cleaned = [...new Set(names.map(cleanCompetitorName).filter(Boolean))]
-  if (cleaned.length > MAX_COMPETITORS) return { ok: false, error: `Up to ${MAX_COMPETITORS} competitors`, names: [] }
-  for (const n of cleaned) if (n.length < 2) return { ok: false, error: 'Competitor names need at least 2 characters', names: [] }
+// On the Db layer: the list is replaced in one transaction. An entry is a name, or a name with its LinkedIn page
+// (#1588: the page dazl Connect reads the competitor's own posts from). Names alone stay valid, as they always were.
+export type CompetitorEntry = string | { name: unknown; page_url?: unknown }
+export interface CompetitorPage { name: string; page_url: string }
+export async function setCompetitors(db: Db, tenantId: string, entries: CompetitorEntry[]): Promise<{ ok: boolean; error?: string; names: string[]; pages: CompetitorPage[] }> {
+  const cleaned = [...new Set(entries.map(e => cleanCompetitorName(typeof e === 'string' ? e : (e as { name?: unknown }).name)).filter(Boolean))]
+  if (cleaned.length > MAX_COMPETITORS) return { ok: false, error: `Up to ${MAX_COMPETITORS} competitors`, names: [], pages: [] }
+  for (const n of cleaned) if (n.length < 2) return { ok: false, error: 'Competitor names need at least 2 characters', names: [], pages: [] }
+  const pages = new Map<string, string>()
+  for (const e of entries) {
+    if (typeof e === 'string' || e?.page_url == null || typeof e.page_url !== 'string' || !e.page_url.trim()) continue
+    const name = cleanCompetitorName(e.name)
+    const url = taskUrlOk('company_posts', e.page_url)
+    if (!url) return { ok: false, error: 'Competitor pages must be full LinkedIn links: https://www.linkedin.com/company/... or https://www.linkedin.com/in/...', names: [], pages: [] }
+    pages.set(name, url)
+  }
   await db.tx(function* (t: Tx): TxBody<void> {
     yield* t.run('DELETE FROM tenant_competitors WHERE tenant_id = ?', [tenantId])
-    for (const [i, n] of cleaned.entries()) yield* t.run('INSERT INTO tenant_competitors (tenant_id, name, position) VALUES (?, ?, ?)', [tenantId, n, i])
+    for (const [i, n] of cleaned.entries()) yield* t.run('INSERT INTO tenant_competitors (tenant_id, name, position, page_url) VALUES (?, ?, ?, ?)', [tenantId, n, i, pages.get(n) ?? null])
   })
-  return { ok: true, names: cleaned }
+  return { ok: true, names: cleaned, pages: cleaned.map(name => ({ name, page_url: pages.get(name) ?? '' })).filter(p => p.page_url) }
+}
+
+// The competitors that carry a LinkedIn page (#1588). A store that predates the page column reads as no pages.
+export async function readCompetitorPages(db: Db, tenantId: string): Promise<CompetitorPage[]> {
+  try { return (await db.all<{ name: string; page_url: string }>(COMPETITOR_PAGES_SQL, [tenantId])).map(r => ({ name: r.name, page_url: r.page_url })) }
+  catch (e) { if (e instanceof Error && /no such table|no such column|does not exist/i.test(e.message)) return [] /* a store that predates the column: no pages */ ; throw e }
 }
 
 export const complaintQuery = (name: string): string => `${name} (complaint OR alternative OR hate OR cancel)`
