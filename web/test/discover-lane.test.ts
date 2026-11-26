@@ -221,8 +221,8 @@ test('a lead whose proof page is gone is dropped and counted, never listed; the 
   assert.equal((JSON.parse(j.drop_reasons ?? '{}') as Record<string, number>).page_not_found, 1, 'counted as dropped, with the reason the Leads page already words as "page no longer exists"')
 })
 
-for (const hasPersonalAddress of [false, true]) test(
-  hasPersonalAddress ? 'Discovery starts contact enrichment and makes a proven named contact actionable'
+for (const [alreadyNamed, mailbox] of [[false, 'office'], [false, 'dana.ruiz'], [true, 'dana.ruiz'], [true, 'info'], [true, 'office'], [true, 'reception'], [true, 'alex.lee']] as const) test(
+  alreadyNamed ? `Discovery matches a named dentist to the clinic contact (${mailbox})` : mailbox === 'dana.ruiz' ? 'Discovery starts contact enrichment and makes a proven named contact actionable'
     : 'Discovery starts contact enrichment and keeps a shared inbox out of Ready',
   async t => {
   t.mock.method(Date, 'now', () => Date.parse('2026-11-26T12:00:00Z'))
@@ -237,19 +237,23 @@ for (const hasPersonalAddress of [false, true]) test(
   t.after(() => db.close())
   migrateAllSqlite(db)
   saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
-  const place = hasPersonalAddress ? 'Austin, TX' : 'Mississauga, ON'
+  const hasPersonalAddress = mailbox === 'dana.ruiz'
+  const ownEvidence = alreadyNamed || hasPersonalAddress
+  const dentist = mailbox === 'alex.lee' ? 'Alex Lee' : 'Dana Ruiz'
+  const title = alreadyNamed ? 'Dentist' : 'Practice Manager'
+  const place = ownEvidence ? 'Austin, TX' : 'Mississauga, ON'
   const id = createQueryJob(db, 'T', { query: 'Dentists in ' + place, seller: 'Dental supplies' })
-  db.prepare('UPDATE scan_jobs SET icp = ?, icp_inferred = 1 WHERE id = ?').run(JSON.stringify({ who: ['Practice Manager'], where: [place] }), id)
+  db.prepare('UPDATE scan_jobs SET icp = ?, icp_inferred = 1 WHERE id = ?').run(JSON.stringify({ who: [title], where: [place] }), id)
   const job = claimKeyedJob(db, id)
   assert.ok(job)
   const origin = 'https://ferndental.com'
-  const evidence = hasPersonalAddress ? origin + '/careers' : 'https://www.jobbank.gc.ca/jobsearch/jobposting/123456'
-  const address = hasPersonalAddress ? 'dana.ruiz@ferndental.com' : 'office@ferndental.com'
+  const evidence = ownEvidence ? origin + '/careers' : 'https://www.jobbank.gc.ca/jobsearch/jobposting/123456'
+  const address = mailbox + '@ferndental.com'
   const company = 'Fern Dental'
   const signal = 'Hiring a Dental Receptionist'
   const quote = 'Fern Dental is hiring a Dental Receptionist in ' + place
   const found: DiscoverResult = {
-    leads: [lead({ company, domain: hasPersonalAddress ? 'ferndental.com' : null, evidence_url: evidence, evidence_quote: quote, signal, signal_date: '2026-11-20', person: null, title: null, person_source_url: null })],
+    leads: [lead({ company, domain: ownEvidence ? 'ferndental.com' : null, evidence_url: evidence, evidence_quote: quote, signal, signal_date: '2026-11-20', person: alreadyNamed ? 'Dana Ruiz' : null, title: alreadyNamed ? title : null, person_source_url: alreadyNamed ? origin + '/team' : null })],
     seen: [{ url: evidence, title: company, page_age: null, text: 'Posted on November 20, 2026. ' + quote }],
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 },
     stop: 'end_turn', model: 'claude-opus-5-5', note: null,
@@ -258,8 +262,8 @@ for (const hasPersonalAddress of [false, true]) test(
   const pages: Record<string, string> = {
     [evidence]: '<html><body>' + quote + ' <a href="' + origin + '/">Fern Dental</a></body></html>',
     [origin + '/robots.txt']: 'User-agent: *\nAllow: /',
-    [origin + '/']: '<html><body><h1>Fern Dental</h1><p>100 Example Avenue, ' + place + (hasPersonalAddress ? ' 78702, United States' : ' L5B 1M1, Canada') + '.</p><a href="/team">Our team</a></body></html>',
-    [origin + '/team']: '<html><body><p>Our local clinic has served the neighbourhood for many years. We welcome new patients and offer appointments for families throughout the week.</p><article><h2>Dana Ruiz</h2><p>Practice Manager</p><a href="mailto:' + address + '">' + address + '</a></article></body></html>',
+    [origin + '/']: '<html><body><h1>Fern Dental</h1><p>100 Example Avenue, ' + place + (ownEvidence ? ' 78702, United States' : ' L5B 1M1, Canada') + '.</p><a href="/team">Our team</a></body></html>',
+    [origin + '/team']: '<html><body><p>Our local clinic has served the neighbourhood for many years. We welcome new patients and offer appointments for families throughout the week.</p><article><h2>' + dentist + '</h2><p>' + title + '</p><a href="mailto:' + address + '">' + address + '</a></article></body></html>',
   }
   assert.equal(await runJob(db, job, {
     master, discover: true, discoverImpl: async () => found, enrichImpl: null,
@@ -279,11 +283,12 @@ for (const hasPersonalAddress of [false, true]) test(
   assert.ok(db.prepare('SELECT 1 FROM crawl_pages WHERE scan_job_id = ? AND url = ?').get(id, origin + '/team'), crawlRequests.join(', '))
   assert.equal(saved.company_domain, 'ferndental.com')
   const contacts = enrichmentsForLeads(db, 'T', [saved.id])[saved.id] ?? []
-  assert.ok(contacts.some(row => row.kind === 'person' && row.value === 'Dana Ruiz, Practice Manager' && row.source_url === origin + '/team'))
+  assert.ok(contacts.some(row => row.kind === 'person' && row.value === 'Dana Ruiz, ' + title && row.source_url === origin + '/team'))
   const contactLead = { ...saved, enrichments: contacts }
   const displayed = discoverContact(contactLead)
   assert.equal(displayed?.person?.name, 'Dana Ruiz')
   assert.equal(displayed?.email?.address ?? null, hasPersonalAddress ? address : null)
+  assert.deepEqual(contacts.filter(row => row.connector === 'discover' && row.kind === 'person').map(row => row.value), ['Dana Ruiz, ' + title])
   const adoptedEmail = contacts.find(row => row.connector === 'discover' && row.kind === 'email')
   assert.deepEqual(adoptedEmail && [adoptedEmail.label, adoptedEmail.source_url],
     hasPersonalAddress ? ['published on a public page', origin + '/team'] : undefined)

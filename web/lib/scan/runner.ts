@@ -3,7 +3,7 @@ import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { discoverLeads, discoverProfileCarried } from '../discover/agent.ts'
 import { isShown, type CheckedLead } from '../discover/check.ts'
-import { enrichLeads } from '../discover/enrich.ts'
+import { enrichLeads, samePerson } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
 import { enqueuePostEngagement } from '../linkedin-tasks/engagers.ts'
 import { enqueueLanePeople, type LaneLead } from '../linkedin-tasks/lane-people.ts'
@@ -1554,15 +1554,15 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
   const tag = db.prepare('UPDATE leads SET source_kind = ?, company_domain = COALESCE(?, company_domain) WHERE id = ?')
   const forLinkedIn: LaneLead[] = []
-  const needsContactCrawl: { id: string; company: string; source_url: string; signal: string; evidence_excerpt: string | null }[] = []
+  const needsContactCrawl: { id: string; company: string; source_url: string; signal: string; evidence_excerpt: string | null; person: string | null }[] = []
   const siteHints: { company: string; website: string }[] = []
   for (const l of checked) {
     const row = rows.find(r => r.source_url === l.evidence_url && r.company === l.company.slice(0, 150))
     if (!row) continue
     if (isShown(l)) {
       forLinkedIn.push({ id: row.id, domain: l.domain, hasProfile: !!l.linkedin_url })
-      if (!l.person) {
-        needsContactCrawl.push({ ...row, signal: l.signal, evidence_excerpt: l.evidence_quote })
+      if (!l.person || !l.email) {
+        needsContactCrawl.push({ ...row, signal: l.signal, evidence_excerpt: l.evidence_quote, person: l.person })
         if (l.domain) siteHints.push({ company: l.company, website: l.domain })
       }
     }
@@ -1588,12 +1588,13 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
         // Discovery cards read their own connector. Carry over the strict crawl's
         // single buyer and any personal address proven on that buyer's page.
         const contacts = enrichmentsForLeads(db, job.user_id, needsContactCrawl.map(row => row.id))
-        for (const { id } of needsContactCrawl) {
+        for (const { id, person } of needsContactCrawl) {
           const siteRows = (contacts[id] ?? []).filter(row => row.connector === 'sitecrawl')
           const buyers = siteRows.filter(row => row.kind === 'person')
           if (buyers.length !== 1) continue
           const [buyer] = buyers
-          addEnrichment(db, job.user_id, id, { ...buyer, connector: 'discover' })
+          if (person && !samePerson(person, buyer.value.split(',')[0])) continue
+          if (!person) addEnrichment(db, job.user_id, id, { ...buyer, connector: 'discover' })
           const addresses = siteRows.filter(row => row.kind === 'email' && row.source_url === buyer.source_url)
           if (addresses.length === 1) {
             addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover', label: 'published on a public page' })
