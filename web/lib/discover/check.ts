@@ -228,7 +228,22 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   ).map(mention => mention.day))] : []
   const statedDay = hiring ? (posted.length === 1 ? posted[0] : null)
     : dayOnPage(lead.signal_date, body) && eventDateBound(lead.signal_date, body, lead.evidence_quote ?? '', lead.company).bound ? lead.signal_date : null
-  const day = statedDay ?? (posted.length > 1 ? null : relativeDay(body, now, hiring))
+  let day = statedDay
+  if (!day && hiring && posted.length <= 1) day = relativeDay(body, now, true)
+  if (!day && !hiring) {
+    const boundDays = new Set<string>()
+    for (const statement of said) {
+      for (const age of statement.matchAll(/\b(?:(\d{1,3}\s*(?:hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?)\s+ago)|il\s+y\s+a\s+(\d{1,3})\s+jours?)\b/gi)) {
+        const candidate = relativeDay(`Posted ${age[1] ?? `${age[2]} days ago`}`, now)
+        if (!candidate) continue
+        // Binding reads calendar days. Substitute only this occurrence in the evidence statement.
+        const normalized = statement.slice(0, age.index) + candidate + statement.slice(age.index + age[0].length)
+        const quote = (lead.evidence_quote ?? '').replace(age[0], candidate)
+        if (dayOnPage(candidate, normalized) && eventDateBound(candidate, normalized, quote, lead.company).bound) boundDays.add(candidate)
+      }
+    }
+    if (boundDays.size === 1) day = [...boundDays][0]
+  }
   return { ...lead, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
     quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
 }

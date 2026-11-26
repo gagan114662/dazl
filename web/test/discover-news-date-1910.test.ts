@@ -42,3 +42,27 @@ test('#1910: the explicit posting date still binds for a hiring lead', async () 
   const signal = 'Harbor Bakery is hiring a pastry chef.'
   assert.deepEqual(await checked(company, signal, `<p>Posted: 20 November 2026</p><p>${signal}</p>`, null), [day, 'page', true])
 })
+
+test('#1910: an archive publication age cannot date an undated expansion', async () => {
+  const company = 'Northwind Dental'
+  const signal = 'Northwind Dental announced a second clinic.'
+  assert.deepEqual(await checked(company, signal, `<main><p>${signal}</p></main><aside>Archive issue: 20 November 2026. Published 6 days ago</aside>`), [null, null, false])
+})
+
+test('#1910: a relative day in the announcement binds to the event', async () => {
+  const company = 'Maple Freight'
+  const signal = 'Maple Freight announced a second depot.'
+  assert.deepEqual(await checked(company, signal, `<p>6 days ago, ${signal}</p>`, null), [day, 'page', false])
+})
+
+test('#1910: a relative day in a French announcement binds to the event', async () => {
+  const company = 'Atelier Lumière'
+  const signal = 'Atelier Lumière annonce une deuxième usine.'
+  assert.deepEqual(await checked(company, signal, `<p>Il y a 6 jours, ${signal}</p>`, null), [day, 'page', false])
+})
+
+test('#1910: a hiring posting still keeps its relative posting day', async () => {
+  const company = 'Harbor Bakery'
+  const signal = 'Harbor Bakery is hiring a pastry chef.'
+  assert.deepEqual(await checked(company, signal, `<p>Posted: 6 days ago</p><p>${signal}</p>`, null), [day, 'page', false])
+})
