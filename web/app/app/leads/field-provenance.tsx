@@ -62,9 +62,16 @@ function emailEvidence(lead: EmailLead): { address: string; source: string | nul
     row.connector === 'sitecrawl' && row.kind === 'email' && row.value.trim().toLowerCase() === contact.email)
   const crawl = matchingRows.reduce<(typeof matchingRows)[number] | undefined>((latest, row) =>
     !latest || (row.retrieved_at ?? 0) > (latest.retrieved_at ?? 0) ? row : latest, undefined)
+  if (crawl) return { address: contact.email, source: crawl.source_url }
+
   const context = lead.contact_context
-  const citedAddress = context?.excerpt.toLowerCase().split(/[\s"'<>(),;:]+/).includes(contact.email)
-  return { address: contact.email, source: crawl ? crawl.source_url : citedAddress ? context?.source_url : null }
+  const citesAddress = (excerpt?: string | null) => {
+    const addresses = excerpt?.match(/(?<![a-z0-9._%+@-])[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9_@-]|\.[a-z0-9-])/gi)
+    return addresses?.some(address => address.toLowerCase() === contact.email)
+  }
+  const contactSource = context && citesAddress(context.excerpt) ? webUrl(context.source_url)?.href : null
+  const signalSource = citesAddress(lead.evidence_excerpt) ? lead.source_url : null
+  return { address: contact.email, source: contactSource ?? signalSource }
 }
 
 function EmailProvenance({ email, displayOnly }: { email: NonNullable<ReturnType<typeof emailEvidence>>; displayOnly: boolean }) {
