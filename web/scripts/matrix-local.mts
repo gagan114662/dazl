@@ -85,6 +85,41 @@ if (flag('apollo-budget')) {
 }
 process.env.APOLLO_CREDIT_CAP = String(apolloBudget)
 const pdlKey = (process.env.MATRIX_PDL_KEY || '').trim()
+if (flag('apollo-plan-db') || flag('apollo-plan-input')) {
+  const dbPath = opt('apollo-plan-db')
+  const inputPath = opt('apollo-plan-input')
+  if (!flag('dry') || !apolloBudget || !dbPath || !inputPath) {
+    refuse('Apollo planning requires --dry, --contacts, --apollo-budget, --apollo-plan-db and --apollo-plan-input.')
+  }
+  try {
+    const { default: Database } = await import('better-sqlite3')
+    const { planApolloBuyerMatches } = await import('../lib/enrich/apollo-ready-match.ts')
+    const snapshot = JSON.parse(readFileSync(expand(inputPath), 'utf8')) as {
+      tenantId: string
+      scanId: string
+      scanLimit: number
+      candidates: Parameters<typeof planApolloBuyerMatches>[2]
+    }
+    if (typeof snapshot.tenantId !== 'string' || !snapshot.tenantId ||
+      typeof snapshot.scanId !== 'string' || !snapshot.scanId ||
+      !Number.isSafeInteger(snapshot.scanLimit) || snapshot.scanLimit < 1 ||
+      !Array.isArray(snapshot.candidates) || snapshot.candidates.some(({ leadId, evidence }) =>
+        typeof leadId !== 'string' || !leadId || !evidence ||
+        typeof evidence.dayVerified !== 'boolean' || typeof evidence.otherwiseReady !== 'boolean')) {
+      throw new Error('invalid evidence snapshot')
+    }
+    const ledger = new Database(expand(dbPath), { readonly: true, fileMustExist: true })
+    try {
+      const planned = await planApolloBuyerMatches(ledger, snapshot.tenantId, snapshot.candidates,
+        { id: snapshot.scanId, limit: snapshot.scanLimit })
+      console.log(`Apollo calls planned: ${planned.length} (saved scan evidence; no calls made)`)
+    } finally { ledger.close() }
+  } catch {
+    refuse('Unable to read the Apollo evidence snapshot or credit ledger. Not running.')
+  }
+  process.exit(0)
+}
+
 if (flag('dry')) {
   // no network, no model call, nothing created: the plan and what is missing
   console.log(`engine: ${engine}`)
