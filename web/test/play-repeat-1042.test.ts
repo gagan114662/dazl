@@ -252,6 +252,34 @@ bothEngines('#1042 the trial caps decide: 3 searches per account, then the repea
   for (const r of ['not_configured', 'google_required', 'domain_used'] as const) assert.equal(trialPauseReason(r), 'no_api_key')
 })
 
+bothEngines('#1854 a scheduler trial-used pause recovers for an exempt repeat and still applies to an ordinary repeat', async ({ db }) => {
+  const exemptEmail = 'qa-fixture@example.test'
+  const exempt = await autoRepeat(db, A, exemptEmail)
+  const ordinary = await autoRepeat(db, B, 'regular-fixture@example.org')
+  const manual = await autoRepeat(db, C, 'manual-qa-fixture@example.net')
+  await db.run("UPDATE watches SET active = 0, paused_reason = 'trial_used' WHERE id = ?", [exempt])
+  await db.run("UPDATE watches SET active = 0, paused_reason = 'trial_used' WHERE id = ?", [manual])
+  assert.equal(await watchAction(db, C, manual, 'pause'), true)
+  for (const tenant of [A, B]) {
+    for (let i = 0; i < 3; i++) {
+      await db.run('INSERT INTO trial_reservations (id, tenant_id, job_id, reserve_usd, day, created_at) VALUES (?, ?, NULL, 0.3, ?, ?)',
+        [id24(), tenant, trialDay(NOW - 2 * DAY), NOW - 2 * DAY])
+    }
+  }
+
+  const env = { ...TRIAL_ENV, DAZL_TRIAL_QA_EXEMPT: exemptEmail + ',manual-qa-fixture@example.net' }
+  const state = (id: string) => db.get<{ active: number; paused_reason: string | null }>('SELECT active, paused_reason FROM watches WHERE id = ?', [id])
+  const blocked = await runDueWatches(db, { now: due, env: { ...env, DAZL_TRIAL_GLOBAL_DAILY_USD: '0.30' } })
+  assert.deepEqual(await state(exempt), { active: 1, paused_reason: null })
+  assert.deepEqual(await state(ordinary), { active: 0, paused_reason: 'trial_used' })
+  assert.deepEqual(await state(manual), { active: 0, paused_reason: null })
+  assert.deepEqual(blocked, { ran: 0, paused: 1, skipped: 0 })
+
+  assert.deepEqual(await runDueWatches(db, { now: due + 60, env }), { ran: 1, paused: 0, skipped: 0 })
+  assert.deepEqual(await state(exempt), { active: 1, paused_reason: null })
+  assert.equal((await jobsOf(db, A)).at(-1)?.funded_by, 'trial')
+})
+
 // #1095: without Google an account has one free scan, its first search; the repeat is a second one, so it still needs Google
 bothEngines('#1042 no Google sign-in (the trial needs one past the first search): the keyless repeat pauses; nothing more is reserved', async ({ db }) => {
   const w = await autoRepeat(db, A, 'a@a.example', { google: false })
