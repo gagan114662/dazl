@@ -92,7 +92,7 @@ test('#1095: a blocked free-trial cost panel never says the shared free trial pa
   }
   // a trial run that can go ahead still says who pays; an own-key run says it is billed to the account's keys
   assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'trial', limited: true, trialUsed: 0 })), 'Paid by the shared free trial, not billed to you.')
-  assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'you' })), 'Billed to your own keys and plans.')
+  assert.equal(estimatePayerLine(estimateRun({ budget: null, payer: 'you' })), 'Usage depends on your workspace plan.')
 })
 
 test('#1095: when the account cannot be read, google_required still offers Link Google back to this page (never a dead end)', () => {
@@ -131,10 +131,11 @@ test('#1095 / #1648 / #1704: sign-up says the first search is free on both paths
   assert.doesNotMatch(googleOnly, /with email/)
   assert.equal(signUpPlanLine(false, false), off)
   const page = readFileSync(new URL('../app/sign-up/page.tsx', import.meta.url), 'utf8')
-  assert.match(page, /emailTrial=\{passwordTrialOn\(\) && systemMailAvailable\(\)\}/)
+  const reader = readFileSync(new URL('../app/trial-allowance.tsx', import.meta.url), 'utf8')
+  assert.match(reader, /emailPath: passwordTrialOn\(\) && systemMailAvailable\(\)/)
   const form = readFileSync(new URL('../app/sign-up/sign-up-form.tsx', import.meta.url), 'utf8')
-  assert.match(form, /signUpPlanLine\(trialFunded, emailTrial\)/)
+  assert.match(form, /No card needed/)
   assert.match(form, /data-testid="trial-rule">\{trialRule\}<\/p>/)
-  assert.match(page, /trialRule=\{trialRule\}/)
+  assert.match(page, /trialRule=\{readPublicTrialAllowance\(\)\}/)
   assert.doesNotMatch(form, /needs Google sign-in/)
 })

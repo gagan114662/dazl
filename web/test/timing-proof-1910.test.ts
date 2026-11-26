@@ -79,11 +79,32 @@ test('#1910 the hiring date ceiling includes UTC day 365 and excludes day 366', 
   }
 })
 
+test('#1910 a relative posting lower bound cannot make a hiring lead Ready', async () => {
+  assert.equal(await readiness(null, '<p>Posted 5+ days ago</p>'), 'research')
+})
+
+test('#1910 an exact relative posting age can make a hiring lead Ready', async () => {
+  assert.equal(await readiness(null, '<p>Posted 5 days ago</p>'), 'ready_email')
+})
+
 test('#1910 dates in a URL or a relative publication or update label are not posting dates', async () => {
   for (const annotation of ['', 'Published 5 days ago', 'Updated 5 days ago']) {
     const checked = await checkLead({ ...lead, evidence_url: `${url}/${day}` }, [],
       htmlResponse(`<p>${opening}</p><p>${annotation}</p>`), undefined, now)
     assert.equal(checked.date, null, annotation || 'URL date')
+  }
+})
+
+test('#1910 hourly posting ages use the UTC day of the posting', async () => {
+  const readAt = new Date('2026-11-26T01:00:00Z')
+  for (const [label, expected] of [
+    ['Posted 2 hours ago', '2026-11-25'],
+    ['Posted 30 minutes ago', null],
+    ['Posted 1 hour ago', '2026-11-26'],
+    ['Posted 26 hours ago', '2026-11-24'],
+  ] as const) {
+    const checked = await checkLead(lead, [], htmlResponse(`<p>${opening}</p><p>${label}</p>`), undefined, readAt)
+    assert.equal(checked.date, expected, label)
   }
 })
 
@@ -101,4 +122,18 @@ test('#1910 timing proof rejects a page date when the source is unconfirmed', as
   const candidate = { ...lead, date: day, date_source: 'page' as const }
   assert.equal(discoveryHiringDateProven({ ...candidate, proof: 'confirmed' }, 365, now), true)
   assert.equal(discoveryHiringDateProven({ ...candidate, proof: 'listed' }, 365, now), false)
+})
+
+test('#1910 a relative posting age with a dash can make a hiring lead Ready', async () => {
+  for (const separator of ['—', '–', '-']) {
+    const label = `Posted ${separator} 5 days ago`
+    assert.equal(await readiness(null, `<p>${label}</p>`), 'ready_email', label)
+  }
+})
+
+test('#1910 a relative update age with a dash keeps a hiring lead in Research', async () => {
+  for (const separator of ['—', '–', '-']) {
+    const label = `Last updated ${separator} 5 days ago`
+    assert.equal(await readiness(null, `<p>${label}</p>`), 'research', label)
+  }
 })

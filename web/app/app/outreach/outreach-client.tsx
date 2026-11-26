@@ -83,7 +83,7 @@ export default function OutreachClient() {
     setNote('')
     const r = await fetch('/api/outreach/polish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message_id: id }) })
     const j = await r.json()
-    if (r.ok && j.rewritten) setNote(`Rewritten with your ${j.vendor === 'openai' ? 'OpenAI' : 'Anthropic'} key${j.usage?.model ? ` (${j.usage.model}${j.usage.input_tokens != null ? `, ${j.usage.input_tokens} in / ${j.usage.output_tokens} out tokens` : ''})` : ''}. Review the new text below before anything is approved.`)
+    if (r.ok && j.rewritten) setNote(`Draft rewritten with AI${j.usage?.model ? ` (${j.usage.model}${j.usage.input_tokens != null ? `, ${j.usage.input_tokens} in / ${j.usage.output_tokens} out tokens` : ''})` : ''}. Review the new text below before anything is approved.`)
     else setNote(j.note || j.error || 'The rewrite did not work - the original draft is unchanged.')
     void load()
   }
@@ -161,7 +161,7 @@ export default function OutreachClient() {
                   <div className="flex gap-2 flex-wrap">
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} onClick={() => setEdit({ ...edit, [m.id]: { subject: m.subject, body: m.body } })}>Edit</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && <button className={btn} onClick={() => act(m.id, 'approve')}>Approve</button>}
-                    {m.status === 'draft' && <button className={btn} title="Rewrites this draft with your own AI key - your provider bills you for the call" onClick={() => void polish(m.id)}>Rewrite with AI (uses your key)</button>}
+                    {m.status === 'draft' && <button className={btn} title="Rewrite the draft text with AI" onClick={() => void polish(m.id)}>Rewrite with AI</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'draft' && !sequenceMessages.includes(m.id) && !sequencesOff && <button className={btn} disabled={creating} onClick={()=>void createSequence(m.id)} title="Creates editable templates without an AI call or provider charge">Create 3-step sequence (templates)</button>}
                     {!m.currentness_held && m.evidence_state !== 'unverified' && m.status === 'approved' && <button className="btn-primary text-xs px-3 py-1.5" onClick={() => act(m.id, 'send')}>Send now</button>}
                     {(m.status === 'draft' || m.status === 'approved') && <button className={btn} title="Send the exact final email, footer and unsubscribe link included, to your own connected Gmail address" onClick={() => act(m.id, 'test')}>Send test to me</button>}

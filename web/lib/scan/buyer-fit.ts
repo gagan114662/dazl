@@ -12,6 +12,7 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { norm } from './evidence.ts'
 import { ICP_JSON_BUDGET, MAX_QUERY, type Icp } from './icp.ts'
 import { OFFER_MAX, WHY_MAX } from './score.ts'
+import { isPublicSectorBody } from '../non-buyer.ts'
 import { HIRING } from '../search/direct-queries.ts'
 
 export const MAX_LEADS = 5
@@ -35,7 +36,7 @@ const TARGET_CHARS = 1500
 // Native uses compact plain-text fields (no JSON expansion). An admitted ICP fits the JSON
 // budget, and the raw query/offer have their own bounds. Reserve room for labels and fixed rules.
 const NATIVE_TARGET_CHARS = ICP_JSON_BUDGET + MAX_QUERY + OFFER_MAX + 400
-type BuyerFitTarget = string | Readonly<{ kind: 'native_play'; text: string }>
+type BuyerFitTarget = string | Readonly<{ kind: 'native_play'; text: string; offer?: string }>
 const targetPart = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 // Keep the complete native play scope before the homepage prompt's existing cap. A clipped
@@ -54,7 +55,7 @@ export function nativeBuyerFitTarget(icp: Icp | null, query: string, offer: stri
     excluded.length ? 'A listed exclusion is not a fit; if the homepage cannot establish fit and resolve relevant exclusions, answer unknown.' : '',
   ].filter(Boolean).join('\n')
   if (query.length > MAX_QUERY || target.length > NATIVE_TARGET_CHARS) throw new Error('buyer_fit_context_unavailable')
-  return { kind: 'native_play', text: target }
+  return { kind: 'native_play', text: target, offer: sold }
 }
 
 export interface FitItem { n: number; company: string; homepage: string }
@@ -106,15 +107,24 @@ export interface BuyerFitDeps { fetchPage?: (url: string) => Promise<Page | Fetc
 
 // Returns how many leads were capped. Never throws: a failure caps (fail closed) and is reported in why.
 export async function applyBuyerFitGate(db: Database.Database, jobId: string, provider: Provider, apiKey: string, icpText: BuyerFitTarget, deps: BuyerFitDeps = {}): Promise<{ checked: number; confirmed: number; capped: number; noAnswer: number; noAnswerCause?: string }> {
-  const rows = db.prepare('SELECT id, company, signal, source_url, fit, why, company_domain FROM leads WHERE scan_job_id = ? AND review_reason IS NULL AND fit >= 4').all(jobId) as LeadRow[]
-  const hiring = rows.filter(isHiringLead).sort((a, b) => (b.fit ?? 0) - (a.fit ?? 0))
-  if (hiring.length === 0) return { checked: 0, confirmed: 0, capped: 0, noAnswer: 0 }
+  const rows = db.prepare('SELECT id, company, signal, source_url, fit, why, company_domain FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as LeadRow[]
+  const hold = db.prepare("UPDATE leads SET fit = CASE WHEN COALESCE(fit, 0) > ? THEN ? ELSE COALESCE(fit, 0) END, review_reason = 'public_sector_non_buyer', why = ? WHERE id = ? AND review_reason IS NULL")
+  const offer = typeof icpText === 'string' ? icpText : icpText.offer
+  let publicSectorCapped = 0
+  const hiring = rows.filter(l => {
+    const verdict = isPublicSectorBody({ company: l.company, domain: l.company_domain, offer })
+    if (!verdict.nonBuyer) return (l.fit ?? 0) >= 4 && isHiringLead(l)
+    publicSectorCapped += hold.run(FIT_CAP, FIT_CAP, `Not a fit: ${verdict.reason} ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes
+    return false
+  }).sort((a, b) => (b.fit ?? 0) - (a.fit ?? 0))
+  const checked = hiring.length + publicSectorCapped
+  if (hiring.length === 0) return { checked, confirmed: 0, capped: publicSectorCapped, noAnswer: 0 }
   const cap = db.prepare('UPDATE leads SET fit = MIN(COALESCE(fit, 0), ?), why = ? WHERE id = ?')
   const note = db.prepare('UPDATE leads SET why = ? WHERE id = ?')
   const capWith = (l: LeadRow, reason: string) => cap.run(FIT_CAP, `Buyer fit unconfirmed: ${reason} A job posting alone is not a buyer signal. ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id)
   const fetchPage = deps.fetchPage ?? fetchPageDetailed
   const items: (FitItem & { lead: LeadRow })[] = []
-  let capped = 0
+  let capped = publicSectorCapped
   for (const [i, l] of hiring.entries()) {
     if (i >= MAX_LEADS) { capWith(l, 'not checked (over the per-scan limit).'); capped++; continue }
     if (!l.company_domain) { capWith(l, 'the company\'s own site was not found or did not name the company.'); capped++; continue }
@@ -122,7 +132,7 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
     if (!page || isFail(page) || page.text.trim().length < 100) { capWith(l, 'the company\'s home page could not be read.'); capped++; continue }
     items.push({ n: items.length + 1, company: l.company, homepage: page.text, lead: l })
   }
-  if (items.length === 0) return { checked: hiring.length, confirmed: 0, capped, noAnswer: 0 }
+  if (items.length === 0) return { checked, confirmed: 0, capped, noAnswer: 0 }
   // Run e1334435: a call that fails or returns no readable line for a company is asked once more, for the unanswered companies only.
   // An answer that still never comes fails closed below, counted and named (noAnswer / noAnswerCause), never silently.
   const answers = new Map<number, FitAnswer>()
@@ -159,7 +169,7 @@ export async function applyBuyerFitGate(db: Database.Database, jobId: string, pr
       capped++
     }
   }
-  return { checked: hiring.length, confirmed, capped, noAnswer, ...(noAnswer ? { noAnswerCause: `${cause ?? 'no line for this company'}${reran ? ', after a rerun' : ', not rerun'}` } : {}) }
+  return { checked, confirmed, capped, noAnswer, ...(noAnswer ? { noAnswerCause: `${cause ?? 'no line for this company'}${reran ? ', after a rerun' : ', not rerun'}` } : {}) }
 }
 
 // The gate itself failed before it could cap anything (a database error, not a model answer): every hiring lead still graded fit >= 4 is capped below the qualified bar.

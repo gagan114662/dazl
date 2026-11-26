@@ -74,10 +74,9 @@ test('#1704 sign-up and sign-in: one rule line, built from the server allowance 
   assert.equal(copy.trialRuleLine({ funded: false, emailPath: true, cap: TRIAL_SCANS_PER_ACCOUNT, emailCap: PASSWORD_TRIAL_SCANS }), '', 'no promise where no free search can run')
   // the numbers come from the inputs, never from a word in the copy
   assert.equal(copy.trialRuleLine({ funded: true, emailPath: true, cap: 4, emailCap: 2 }), 'With Google: up to 4 free searches. With email: 2 free searches.')
-  for (const page of ['app/sign-up/page.tsx', 'app/sign-in/page.tsx']) {
-    const s = shown(page)
-    assert.match(s, /trialRuleLine\(\{ funded: trialFundable\(\), emailPath: passwordTrialOn\(\) && systemMailAvailable\(\), cap: TRIAL_SCANS_PER_ACCOUNT, emailCap: PASSWORD_TRIAL_SCANS \}\)/, `${page}: the same rule, read on the server`)
-  }
+  assert.match(shown('app/trial-allowance.tsx'), /trialRuleLine\(\{\s*funded: trialFundable\(\),\s*emailPath: passwordTrialOn\(\) && systemMailAvailable\(\),\s*cap: TRIAL_SCANS_PER_ACCOUNT,\s*emailCap: PASSWORD_TRIAL_SCANS/)
+  assert.match(shown('app/sign-up/page.tsx'), /trialRule=\{readPublicTrialAllowance\(\)\}/)
+  assert.match(shown('app/sign-in/page.tsx'), /<PublicTrialAllowance/)
   const form = shown('app/sign-up/sign-up-form.tsx')
   assert.equal((form.match(/\{trialRule\}/g) ?? []).length, 2, 'the sign-up and sign-in forms both show the rule line')
   assert.doesNotMatch(form + shown('app/sign-in/page.tsx'), /Free scans need Google sign-in|three free searches/)

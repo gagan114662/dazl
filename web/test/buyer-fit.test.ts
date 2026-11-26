@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
 import { ICP_JSON_BUDGET, normalizeIcp } from '../lib/scan/icp.ts'
+import { discoverApprove, discoverState } from '../lib/discover/card.ts'
 import type { Provider } from '../lib/llm/provider.ts'
 import { applyBuyerFitGate, isHiringLead, parseBuyerFit, confirmsFit, buyerFitPrompt, nativeBuyerFitTarget, FIT_CAP } from '../lib/scan/buyer-fit.ts'
 
@@ -112,4 +113,27 @@ test('legacy homepage cap is unchanged and malformed native overflow is not seri
   assert.throws(() => nativeBuyerFitTarget(profile, 'q'.repeat(601), 'Normal offer'), /buyer_fit_context_unavailable/)
   assert.throws(() => nativeBuyerFitTarget({ ...profile, where: ['w'.repeat(6000)] }, 'A request', 'Normal offer'), /buyer_fit_context_unavailable/)
   assert.doesNotMatch(buyerFitPrompt('x'.repeat(1500) + 'LEGACY-TAIL', []), /LEGACY-TAIL/)
+})
+
+test('public-sector non-buyers stay in research without consuming a fit check', async () => {
+  const db = setup([
+    { id: 'public', company: 'Town of Oakville', signal: 'Replacing its finance system', source_url: 'https://oakville.ca/news', fit: 5, domain: 'oakville.ca' },
+    { id: 'buyer', company: 'Ministry of Supply', signal: 'Replacing its finance system', source_url: 'https://ministryofsupply.com/news', fit: 5, domain: 'ministryofsupply.com' },
+    { id: 'held', company: 'City of Toronto Council', signal: 'Hiring a manager', source_url: 'https://toronto.ca/jobs', fit: 5, domain: 'toronto.ca' },
+  ])
+  try {
+    db.prepare("UPDATE leads SET review_reason = 'blocked_by_site' WHERE id = 'held'").run()
+    const seen: string[] = []
+    await applyBuyerFitGate(db, 'j', prov('', seen), 'k', 'Accounting software for private companies')
+    assert.equal(seen.length, 0)
+    assert.deepEqual(db.prepare('SELECT id, fit, review_reason FROM leads ORDER BY id').all(), [
+      { id: 'buyer', fit: 5, review_reason: null },
+      { id: 'held', fit: 5, review_reason: 'blocked_by_site' },
+      { id: 'public', fit: FIT_CAP, review_reason: 'public_sector_non_buyer' },
+    ])
+    assert.match(fitOf(db, 'public').why, /Not a fit:.*public-sector/)
+    const publicLead = { review_reason: 'public_sector_non_buyer', event_date: new Date().toISOString().slice(0, 10), fit: FIT_CAP }
+    assert.equal(discoverState(publicLead), 'research')
+    assert.deepEqual(discoverApprove(publicLead), { ok: false, reason: 'Not a fit for this offer. The organization is a public-sector body.' })
+  } finally { db.close() }
 })
