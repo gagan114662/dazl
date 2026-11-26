@@ -20,7 +20,7 @@ test('#1038 the table component renders the promised structure', () => {
   }
   assert.match(table, /ContactStatusLine/, 'email status reuses the card status line')
   assert.match(table, /leadPerson/, 'person comes from the same buyer logic as the cards')
-  assert.match(table, /from '\.\/leads-table-sort\.ts'/, 'the ordering lives in a dependency-free helper the table imports')
+  assert.match(table, /onSort/, 'the sort state is controlled by the client (so the side panel follows the visible order)')
 })
 
 test('#1038 sortLeads orders by fit and date, unknown fit last, stable on ties', () => {
@@ -48,6 +48,7 @@ test('#1038 the Leads page offers the table as default with a cards toggle', () 
   assert.match(client, /useState<'table' \| 'cards'>\(\(\) =>[\s\S]{0,240}'table'/, 'the table is the default view')
   assert.match(client, /LeadsTable/, 'the table component is wired in')
   assert.match(client, /leads-view/, 'the view choice is persisted too')
+  assert.match(client, /from '\.\/leads-table-sort\.ts'/, 'the client owns the sort via the dependency-free helper')
 })
 
 test('#1038 review fixes: the person cell reuses the card identity step and carries its caveat', () => {
