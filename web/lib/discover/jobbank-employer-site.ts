@@ -1,7 +1,7 @@
 const BLOCKED = /(?:^|\.)(?:jobbank\.gc\.ca|guichetemplois\.gc\.ca|indeed\.[a-z.]+|linkedin\.com|facebook\.com|instagram\.com|google\.[a-z.]+|square\.[a-z.]+|janeapp\.[a-z.]+|careerbeacon\.com|glassdoor\.[a-z.]+|monster\.[a-z.]+|ziprecruiter\.com|workopolis\.com|gmail\.com|hotmail\.[a-z.]+|outlook\.com|yahoo\.[a-z.]+|live\.com|icloud\.com|aol\.com|protonmail\.com|yandex\.[a-z.]+|talent\.com|greenhouse\.io|lever\.co|myworkdayjobs\.com|workday\.com|eluta\.ca|jobillico\.com|canada\.ca|smartrecruiters\.com|bamboohr\.com|icims\.com|jobvite\.com|workable\.com)$/i;
 
 /** Finds an employer-owned website explicitly printed or linked in a Job Bank posting. */
-export function findJobBankEmployerSite(html: string, _postingUrl?: string): string | null {
+export function findJobBankEmployerSite(html: string): string | null {
   const candidates: string[] = [];
   const clean = (value: string) => value.replace(/&amp;/gi, '&').replace(/&#(?:x([\da-f]+)|(\d+));/gi, (_m, hex, dec) => String.fromCodePoint(parseInt(hex || dec, hex ? 16 : 10)));
   const anchors = /<a\b([^>]*?)href\s*=\s*(["'])(.*?)\2([^>]*)>([\s\S]*?)<\/a\s*>/gi;
