@@ -13,7 +13,7 @@ import { timingProofGap, timingProofGapDb } from '../scan/timing-proof.ts'
 // scan that found it (stale, undated, invalid or future) is research only. Ordinary source or identity review never
 // lifts it; only a scan run with a window that covers the date does. An unreadable profile holds too.
 export function currentnessHeld(db: Database.Database, tenant: string, lead: string, now: Date = new Date()): boolean {
- const row=db.prepare('SELECT l.source_kind,l.human_confirmed_at,l.human_confirmed_from,l.review_reason,l.confidence,l.event_date,l.date_status,j.icp,j.query,j.run_budget FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {source_kind:string|null;date_status:string|null;human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null}|undefined
+ const row=db.prepare('SELECT l.source_kind,l.human_confirmed_at,l.human_confirmed_from,l.review_reason,l.confidence,l.event_date,l.timing_note,j.icp,j.query,j.run_budget FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {source_kind:string|null;timing_note:string|null;human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null}|undefined
  if (!row) return false
  // Discovery dates from the search index cannot authorize email, even on an existing draft.
  if (row.source_kind === 'discover') return !hasDiscoveryEventDate(row) || signalStale(row.event_date, now)

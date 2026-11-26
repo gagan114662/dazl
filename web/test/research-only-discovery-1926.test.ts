@@ -30,11 +30,11 @@ function fixture(t: { after(fn: () => void): void }) {
   ] as const) {
     db.prepare(`INSERT INTO leads
       (id, scan_job_id, name, company, company_domain, signal, source_url, evidence_excerpt,
-       event_date, event_date_proof, date_status, source_kind, score, confidence, fit, intent)
+       event_date, event_date_proof, date_status, timing_note, source_kind, score, confidence, fit, intent)
       VALUES (?, ?, 'Lee Rivera', ?, ?, 'Opening another site', ?, 'Opening another site',
-        ?, ?, ?, 'discover', 85, 85, 4, 4)`)
+        ?, ?, ?, ?, 'discover', 85, 85, 4, 4)`)
       .run(id, scan, company, `${company.toLowerCase()}.example`, `https://${company.toLowerCase()}.example/news`,
-        day, proof, proof ? 'verified' : 'unverified')
+        day, proof, 'unverified', proof ? null : 'The page prints no date. This is the day the search index dates the page.')
     const enrich = (kind: string, value: string) => addEnrichment(db, tenant, id, {
       connector: 'discover', kind, value, label: null, confidence: null,
       source_url: `https://${company.toLowerCase()}.example/team`, source_date: day, retrieved_at: 1,

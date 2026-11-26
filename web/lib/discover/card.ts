@@ -105,7 +105,7 @@ export const signalStale = (eventDate: string | null | undefined, now: Date = ne
 // What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, a signal more than
 // a year old, not graded a fit.
 // One list, read by Approve (email) and by the LinkedIn route below.
-type ProofLead = { date_status?: string | null; quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
+type ProofLead = { timing_note?: string | null; quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
 export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
   if (l.quarantined_at) return 'Rejected. Undo to use it again.'
   if (l.gate_held) return 'A required check has not passed. Research only.'
