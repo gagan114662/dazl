@@ -12,7 +12,7 @@ import { anthropicProvider, openaiProvider } from '../llm/provider.ts'
 import { accountLimits, ownerLimits, PENDING_STALE_S, periodOf, scanPoolRows } from '../llm/spend-pool.ts'
 import type { Db } from '../db/client.ts'
 import { usableVendor } from '../paid-vendors.ts'
-import { trialCaps, trialTinyfishPrices } from '../billing/trial-budget.ts'
+import { trialCaps, trialQaExemptAccount, trialTinyfishPrices } from '../billing/trial-budget.ts'
 import { salesHiringRequired } from './sales-hiring-required.ts'
 import { firstPlayPeopleCap, peopleSearchEnabled } from '../people/people-search.ts'
 import { effectiveFirstPlayLeadCaps, firstPlayLeadCaps } from '../people/first-play-cap.ts'
@@ -87,6 +87,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   // The same test the runner applies (runner.ts discoverLaneEnabled and its room check): an ordinary request on an Anthropic key, or a
   // free-trial run whose reserve covers one; a request that set its own limit under a full run gets the smaller budget.
   const trialReserve = ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null
+  const trialExempt = !ctx.hasOwnKey && await trialQaExemptAccount(ctx.db, ctx.tenantId).catch(() => false)
   const laneOn = process.env.DAZL_DISCOVER_LANE !== '0' && typeof query === 'string' && query.trim().length >= 3 && (ctx.hasOwnKey ? /^claude/i.test(own ?? '') : (trialReserve ?? 0) >= 0.3)
   const laneRoom = Math.min(trialReserve ?? Infinity, typeof budget?.max_usd === 'number' ? budget.max_usd : Infinity)
   const discoverLane = !laneOn || laneRoom < 0.3 ? null : laneRoom < 0.75 ? 'tiny' as const : laneRoom < 1.5 ? 'small' as const : 'full' as const
@@ -101,7 +102,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     trialTinyfishFetchUsd: ctx.hasOwnKey ? null : (trialCaps() ? trialTinyfishPrices()?.fetchUsd : null) ?? null,
     firstPlayLead: tinyfishEnabled() ? effectiveFirstPlayLeadCaps(firstPlayLeadCaps(), tinyfishLimits()) : { searches: 0, fetches: 0 },
     reservedUsd: pool.day, reservedMonthUsd: pool.month, poolUnknown: pool.unknown, poolUnsettled: pool.unsettled,
-    trialReserveUsd: ctx.hasOwnKey ? null : trialCaps()?.reserveUsd ?? null,
+    trialReserveUsd: trialReserve, trialExempt,
     trialRefusal: ctx.hasOwnKey ? null : ctx.trialRefusal ?? null, trialUsed: ctx.hasOwnKey ? null : ctx.trialUsed ?? null, trialAllowance: ctx.hasOwnKey ? null : ctx.trialAllowance ?? null,
     ownerCapUsd: caps.day, ownerMonthCapUsd: caps.month, ownerNamed: named !== null, scanCapUsd: Math.min(scanCap.capUsd, HARD_CAP_USD),
   })
