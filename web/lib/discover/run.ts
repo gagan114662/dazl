@@ -4,7 +4,9 @@
 //   2. if fewer than `wantShown` leads are shown and the budget has room, a second loop looks for different companies;
 //   3. a small-model pass fills the person, website and published email that shown leads still lack.
 // Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
-import { discoverLeads, type DiscoverInput, type DiscoverUsage } from './agent.ts'
+import { discoverLeads, type DiscoverInput, type DiscoverUsage, type DiscoveredLead, type SeenPage } from './agent.ts'
+import { atsPostingRef } from '../sources/ats-posting.ts'
+import { companyKey } from '../scan/evidence.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance } from './search-budget.ts'
 import { signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, type CheckedLead } from './check.ts'
@@ -33,6 +35,54 @@ const PEOPLE_PASS_USD = 0.15
 // That rare case is covered by the gap between what a run may spend (80% of its reservation) and the reservation itself.
 const PEOPLE_LEAD_USD = 0.045
 
+function employerPostingUrl(raw: string, lead: DiscoveredLead, aggregator: URL): string | null {
+  const url = URL.parse(raw)
+  if (url?.protocol !== 'https:' || url.username || url.password || url.port) return null
+  const host = url.hostname.replace(/^www\./, '')
+  if (host === aggregator.hostname.replace(/^www\./, '')) return null
+  const ats = atsPostingRef(url.href)
+  const employer = companyKey(lead.company).replace(/[^a-z0-9]/g, '')
+  const owned = ats
+    ? employer.length >= 4 && ats.org.toLowerCase().replace(/[^a-z0-9]/g, '') === employer
+    : host === lead.domain && /(?:^|\/)(?:careers|jobs|vacancies)(?:\/|$)/i.test(url.pathname)
+  return owned ? url.href : null
+}
+
+function employerAlternate(lead: DiscoveredLead, seen: SeenPage[]): DiscoveredLead | null {
+  const aggregator = URL.parse(lead.evidence_url)
+  if (!aggregator || !/(^|\.)(?:indeed\.[a-z.]+|ziprecruiter\.com|talent\.com)$/i.test(aggregator.hostname)) return null
+  const alternative = lead.alternate_evidence
+  const urls = new Set(seen.map(page => employerPostingUrl(page.url, lead, aggregator)).filter(url => url !== null))
+  const preferred = alternative && employerPostingUrl(alternative.url, lead, aggregator)
+  const explicit = preferred && urls.has(preferred)
+  const evidence_url = explicit ? preferred : urls.size === 1 ? [...urls][0] : null
+  const evidence_quote = explicit ? alternative?.quote : lead.evidence_quote
+  if (!evidence_url || !evidence_quote) return null
+  return { ...lead, evidence_url, evidence_quote, signal_date: null, alternate_evidence: undefined }
+}
+
+async function checkRunLeads(result: { leads: DiscoveredLead[]; seen: SeenPage[] }, deps: DiscoveryDeps, judge: SignalJudge | null): Promise<CheckedLead[]> {
+  const inputs = result.leads.map(lead => dropUnseenProfile(lead, result.seen))
+  const checked = await checkLeads(inputs, result.seen, deps.fetch, 4, judge?.ask)
+  const alternates = checked.flatMap((lead, index) => {
+    if (lead.proof === 'gone' || (isShown(lead) && lead.proof_read_by && lead.evidence_url === inputs[index].evidence_url)) return []
+    if (isShown(lead) && lead.date_source === 'page' && lead.date_on_page) return []
+    const candidate = employerAlternate(inputs[index], result.seen)
+    return candidate ? [{ index, candidate }] : []
+  })
+  if (!alternates.length || deps.signal?.aborted) return checked
+  // A redirect cannot establish the date of the employer posting we intend to cite.
+  const read: typeof fetch = (url, init) => (deps.fetch ?? fetch)(url, { ...init, redirect: 'error',
+    signal: deps.signal && init?.signal ? AbortSignal.any([deps.signal, init.signal]) : deps.signal ?? init?.signal })
+  const rechecked = await checkLeads(alternates.map(item => item.candidate), result.seen, read)
+  for (const [i, lead] of rechecked.entries()) {
+    if (lead.proof !== 'confirmed' || !isShown(lead) || !lead.date || lead.date_source !== 'page') continue
+    // The checker read this date from the posting text, markup, or that exact posting's API record.
+    checked[alternates[i].index] = { ...lead, date_on_page: true }
+  }
+  return checked
+}
+
 export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget, deps: DiscoveryDeps): Promise<DiscoveryRun> {
   const discover = deps.discover ?? discoverLeads, enrich = deps.enrich === undefined ? enrichLeads : deps.enrich
   // The profile limits each pass, while one durable ceiling applies across all passes and enrichment.
@@ -48,7 +98,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   add(first.usage)
   // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
   const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
-  let leads = await checkLeads(first.leads.map(l => dropUnseenProfile(l, first.seen)), first.seen, deps.fetch, 4, judge?.ask)
+  let leads = await checkRunLeads(first, deps, judge)
   const pages = first.seen.map(p => p.url)
   const model = first.model
   let stop = first.stop
@@ -60,7 +110,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       add(second.usage)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkLeads(second.leads.map(l => dropUnseenProfile(l, second.seen)), second.seen, deps.fetch, 4, judge?.ask)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = (await checkRunLeads(second, deps, judge)).filter(l => !known.has(l.company.toLowerCase()))
       leads = [...leads, ...more]
       passes = 2
       accountingUncertain ||= judge?.usage.accountingUncertain === true
